@@ -1,0 +1,14 @@
+# GitHub Pages (Jekyll). README.md is the front page.
+title: taut
+description: A GUI library for Rust, for Windows and Linux, with no dependencies.
+# Jekyll's plain theme, supported by GitHub Pages; adds no repository link.
+theme: minima
+# Page titles come from the first heading, which is then not repeated.
+titles_from_headings:
+  strip_title: true
+# Pages in the top bar, besides the front page.
+header_pages:
+  - 01-a-first-window.md
+  - what-is-in-it.md
+  - what-is-missing.md
+  - costs-and-speed.md

@@ -1,0 +1,107 @@
+# A moving picture written by hand for gifbuild (giflib): what other writers do not write.
+# Sixteen by twelve, four colours for the file, played three times in all.
+screen width 16
+screen height 12
+screen colors 4
+screen background 0
+pixel aspect byte 0
+
+screen map
+	sort flag off
+	rgb 255 255 255
+	rgb 220 038 038
+	rgb 037 099 235
+	rgb 022 163 074
+end
+
+netscape loop 2
+
+# The first frame fills the screen and stays.
+graphics control
+	disposal mode 1
+	user input flag off
+	delay 7
+	transparent index -1
+end
+
+image # 1
+image left 0
+image top 0
+image bits 16 by 12 hex
+00000000000000000000000000000000
+00010101010101010101010101010100
+00010000000000000000000000000100
+00010002020202020202020202000100
+00010002000000000000000002000100
+00010002000303030303030002000100
+00010002000303030303030002000100
+00010002000000000000000002000100
+00010002020202020202020202000100
+00010000000000000000000000000100
+00010101010101010101010101010100
+00000000000000000000000000000000
+
+# The second has colours of its own, one of them clear, lies off the corner, is stored
+# in passes, says no time at all, and is taken away when the next comes.
+graphics control
+	disposal mode 2
+	user input flag off
+	delay 0
+	transparent index 1
+end
+
+image # 2
+image left 3
+image top 2
+image interlaced
+image map
+	sort flag off
+	rgb 250 204 021
+	rgb 000 000 000
+	rgb 147 051 234
+	rgb 008 145 178
+end
+image bits 9 by 7 hex
+000000000000000000
+000101010101010100
+000102020202020100
+000102030303020100
+000102020202020100
+000101010101010100
+000000000000000000
+
+# The third is put on what was there before the second, and is itself taken off again:
+# what was there before it is put back.
+graphics control
+	disposal mode 3
+	user input flag off
+	delay 30
+	transparent index 0
+end
+
+image # 3
+image left 8
+image top 5
+image bits 8 by 7 hex
+0001010101010100
+0101020202020101
+0102020303020201
+0102030303030201
+0102020303020201
+0101020202020101
+0001010101010100
+
+# The fourth is small, and stays.
+graphics control
+	disposal mode 1
+	user input flag off
+	delay 5
+	transparent index -1
+end
+
+image # 4
+image left 1
+image top 9
+image bits 4 by 2 hex
+03020302
+02030203

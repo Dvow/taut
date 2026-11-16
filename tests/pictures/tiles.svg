@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Patterns: in units and in parts of a shape's box, moved and turned, fitted from a viewBox, taking after another. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="120" height="80" viewBox="0 0 120 80">
+  <defs>
+    <pattern id="checks" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#f59e0b"/><rect x="4" y="4" width="4" height="4" fill="#0ea5e9"/></pattern>
+    <pattern id="dots" width=".25" height=".25"><circle cx="4" cy="4" r="3" fill="#e11d48"/></pattern>
+    <pattern id="turned" xlink:href="#checks" patternTransform="translate(2 2) rotate(30)"/>
+    <pattern id="fitted" width="10" height="10" patternUnits="userSpaceOnUse" viewBox="0 0 4 4"><path d="M0 4L2 0L4 4z" fill="#16a34a"/></pattern>
+  </defs>
+  <rect x="4" y="4" width="32" height="32" fill="url(#checks)"/>
+  <rect x="44" y="4" width="32" height="32" fill="url(#dots)" stroke="#333"/>
+  <circle cx="100" cy="20" r="16" fill="url(#turned)"/>
+  <rect x="4" y="44" width="72" height="32" fill="url(#fitted)"/>
+  <rect x="84" y="44" width="32" height="32" fill="none" stroke="url(#checks)" stroke-width="8"/>
+</svg>

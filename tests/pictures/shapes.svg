@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [
+  <!ENTITY unused "a > b">
+]>
+<!-- A comment with <tags> in it, and a > of its own. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:other="http://example.org/other"
+     version="1.1" width="3in" height="2in" viewBox="-10 -10 150 100" other:note="x > y">
+  <title>Shapes &amp; such</title>
+  <metadata><other:made by="hand"><other:fill>red</other:fill></other:made></metadata>
+  <defs>
+    <symbol id="leaf"><path d="M12 2 C 15.5 2 19 4 22 8 C 16 16 8 16 2 8 C 5 4 8.5 2 12 2 Z"/></symbol>
+    <g id="pair"><rect width="8" height="8"/><circle cx="14" cy="4" r="4"/></g>
+    <rect id="unseen" x="-10" y="-10" width="200" height="200" fill="red"/>
+  </defs>
+  <rect x="-10" y="-10" width="100%" height="100%" fill="#f1f5f9"/>
+  <rect x="5%" y="5%" width="20" height="12" rx="3" fill="#0ea5e9"/>
+  <ellipse cx="50" cy="12" rx="14" ry="7" fill="#f97316" stroke="#7c2d12" stroke-width="2pt"/>
+  <line x1="70" y1="2" x2="92" y2="20" stroke="#16a34a" stroke-width="3" stroke-linecap="round"/>
+  <polyline points="100,2 112,2 100,14 112,14 100,26" fill="none" stroke="#9333ea" stroke-width="2" stroke-linejoin="round"/>
+  <polygon points="118 2 136 8 130 26 120 20" fill="#facc15" stroke="#422006"/>
+  <path d="M0 40 L30 40 L30 70 L0 70 Z M8 48 L22 48 L22 62 L8 62 Z M12 52 h6 v6 h-6 z" fill="#334155" fill-rule="evenodd"/>
+  <path d="M36 40 L66 40 L66 70 L36 70 Z M44 48 L44 62 L58 62 L58 48 Z M48 52 h6 v6 h-6 z" fill="#334155"/>
+  <use xlink:href="#leaf" x="70" y="42" fill="#15803d"/>
+  <use href="#leaf" transform="translate(72 60) rotate(20) scale(1.3 0.8)" fill="none" stroke="#15803d"/>
+  <g transform="matrix(0.8 0.3 -0.2 0.9 100 40)" fill="#be123c" stroke="#111" stroke-width="0.8">
+    <use xlink:href="#pair"/>
+    <use xlink:href="#pair" y="12" opacity="0.5"/>
+    <g transform="translate(0 24)" style="fill:#1d4ed8;stroke:none"><use xlink:href="#pair"/></g>
+  </g>
+  <svg x="110" y="62" width="20" height="20"><circle cx="8" cy="8" r="7" fill="#0f766e"/></svg>
+  <a xlink:href="http://example.org/"><rect x="0" y="76" width="12" height="8" fill="#a16207"/></a>
+  <switch><rect x="16" y="76" width="12" height="8" fill="#4d7c0f"/></switch>
+  <rect x="32" y="76" width="12" height="8" fill="#f00" display="none"/>
+  <g visibility="hidden"><rect x="32" y="76" width="12" height="8" fill="#f00"/><rect x="48" y="76" width="12" height="8" fill="#7e22ce" visibility="visible"/></g>
+  <rect x="64" y="76" width="12" height="8" fill="#0369a1" stroke="#0c4a6e" stroke-width="3" opacity="0.5"/>
+  <circle cx="90" cy="80" r="5" fill="#db2777" transform="rotate(30 90 80) skewY(15)" style="opacity:.8"/>
+  <rect x="100" y="84" width="10" height="4" fill="#fde047" stroke="#1e3a8a" stroke-width="3" paint-order="stroke fill"/>
+</svg>

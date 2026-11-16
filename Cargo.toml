@@ -1,0 +1,59 @@
+[package]
+name = "taut"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A Rust GUI library for Windows and Linux that aims to be small, fast and accessible, with zero dependencies and nothing compiled in that your program doesn't use."
+license = "(MIT OR Apache-2.0) AND Unicode-3.0"
+repository = "https://github.com/Dvow/taut"
+homepage = "https://dvow.github.io/taut/"
+documentation = "https://docs.rs/taut"
+readme = "README.md"
+keywords = ["gui", "ui", "immediate-mode", "widgets", "no-dependencies"]
+categories = ["gui", "accessibility", "rendering"]
+# The library, its examples, its tests (they read `tests/pictures` and `docs/`), and its documents.
+include = ["/src", "/examples", "/tests", "/docs", "/README.md", "/GUIDE.md", "/GOALS.md", "/CHANGELOG.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/THIRD-PARTY.md", "/rustfmt.toml"]
+
+# A program compiles in only what it calls. Features cover what calls can't reveal (what users
+# type, how they touch, what fonts and pictures they open). All off by default.
+[features]
+default = []
+# Hebrew, Arabic and other right-to-left scripts in Unicode order, Arabic and Syriac joined.
+# Without it, their letters show left to right, unjoined.
+right-to-left = []
+# Indic, South-East Asian and other scripts HarfBuzz shapes with its Indic or Universal Shaping
+# Engine, shaped by syllable. Without it, the system's text draws them (whole on Windows, letter
+# by letter on Linux).
+brahmic = []
+# Touch, pen and touchpad-pinch gestures (Windows, X11 via XInput 2, Wayland). Without it, a
+# finger is the system's mouse.
+touch = []
+# Colour emoji in all text, from the system's emoji font. Without it, emoji are plain letters
+# (`Ui::set_emoji` and `Ui::emoji_in_full` still give colour).
+emoji = []
+# Windows: letters a font lacks drawn in the font Windows would pick. Without it, Windows' linked
+# fonts are used in windows; `SystemText` on a surface and SVG text show missing-glyph boxes.
+# (Linux always uses Fontconfig's choice.)
+fallback-fonts = []
+# CFF and CFF2 fonts (most `.otf` files). Without it, `FontFile::read` rejects them.
+cff = []
+# Colour profiles and PNG gamma/chromaticities converted to the screen's colours. Without it,
+# pictures are shown as if sRGB.
+color-profiles = []
+# WOFF2 fonts, with a Brotli decoder. Without it, `FontFile::read` rejects them.
+woff2 = []
+
+# None.
+[dependencies]
+
+# The library in a DLL with a C interface.
+[[example]]
+name = "overlay"
+crate-type = ["cdylib"]
+
+# docs.rs: every feature, both supported targets, items marked with the system and feature they
+# need.
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--cfg", "docsrs"]

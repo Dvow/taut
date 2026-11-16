@@ -1,0 +1,28 @@
+# Two frames with nothing said about either, in the older form of the file (for gifbuild).
+screen width 6
+screen height 4
+screen colors 2
+screen background 0
+pixel aspect byte 0
+
+screen map
+	sort flag off
+	rgb 000 000 000
+	rgb 255 255 255
+end
+
+image # 1
+image left 0
+image top 0
+image bits 6 by 4 hex
+000100010001
+010001000100
+000100010001
+010001000100
+
+image # 2
+image left 2
+image top 1
+image bits 2 by 2 hex
+0101
+0101

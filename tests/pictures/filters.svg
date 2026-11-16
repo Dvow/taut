@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80">
+  <!-- Filters: a card's shadow (a blur of how solid it is, moved, in a colour, under it), a glow
+       (made thicker, blurred, coloured, and laid on in the screen's way), colours turned and
+       taken through functions, noise cut to a shape, tiles mixed with a shape, a shadow as one
+       step, a blur written as a function and cut after it, a line made thinner
+       (in a region in units: the box of a straight line has no height). -->
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="150%" height="150%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2.5"/>
+      <feOffset dx="2" dy="3" result="moved"/>
+      <feFlood flood-color="#123" flood-opacity=".6"/>
+      <feComposite in2="moved" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow" style="color-interpolation-filters:sRGB">
+      <feMorphology operator="dilate" radius="2" in="SourceAlpha"/>
+      <feGaussianBlur stdDeviation="3"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 1  0 0 0 0 .8  0 0 0 0 .2  0 0 0 1 0"/>
+      <feBlend in="SourceGraphic" mode="screen"/>
+    </filter>
+    <filter id="tone">
+      <feColorMatrix type="hueRotate" values="120"/>
+      <feComponentTransfer><feFuncA type="table" tableValues="0 .8"/><feFuncR type="gamma" exponent="1.5"/></feComponentTransfer>
+    </filter>
+    <filter id="noise" x="0" y="0" width="1" height="1">
+      <feTurbulence type="fractalNoise" baseFrequency=".08" numOctaves="3" seed="7"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="tiles" x="0" y="0" width="1" height="1">
+      <feFlood flood-color="#e11d48" x="84" y="46" width="6" height="6"/>
+      <feOffset dx="3" dy="3"/>
+      <feTile/>
+      <feComposite in2="SourceGraphic" operator="arithmetic" k2=".7" k3=".3"/>
+    </filter>
+    <filter id="drop"><feDropShadow dx="3" dy="2" stdDeviation="2" flood-color="#000" flood-opacity=".5"/></filter>
+    <filter id="thin" filterUnits="userSpaceOnUse"><feMorphology radius="1"/></filter>
+    <clipPath id="half"><rect x="56" y="4" width="8" height="36"/></clipPath>
+  </defs>
+  <rect x="8" y="8" width="44" height="28" rx="4" fill="#fafafa" filter="url(#shadow)"/>
+  <circle cx="82" cy="22" r="12" fill="#f97316" filter="url(#glow)"/>
+  <g filter="url(#tone)"><rect x="8" y="46" width="18" height="24" fill="#2563eb"/><circle cx="34" cy="58" r="10" fill="#16a34a"/></g>
+  <rect x="52" y="46" width="24" height="24" rx="12" fill="#000" filter="url(#noise)"/>
+  <rect x="84" y="46" width="28" height="24" fill="#334155" filter="url(#tiles)"/>
+  <path d="M100 4l8 14h-16z" fill="#7c3aed" filter="url(#drop)"/>
+  <g clip-path="url(#half)"><rect x="58" y="8" width="8" height="28" fill="#0ea5e9" style="filter:blur(2px)"/></g>
+  <path d="M8 76h104" stroke="#334155" stroke-width="4" filter="url(#thin)"/>
+</svg>

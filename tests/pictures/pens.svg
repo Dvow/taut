@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150">
+  <!-- What tests/pens.rs draws with pens, inks, shapes and moves of the library's own, said
+       the way an SVG file says it: rsvg-convert draws this for that test to be held against. -->
+  <defs>
+    <radialGradient id="around"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#2a78d6"/></radialGradient>
+    <linearGradient id="along"><stop offset="0" stop-color="#1baf7a"/><stop offset="1" stop-color="#6250d6"/></linearGradient>
+  </defs>
+  <rect width="200" height="150" fill="#ffffff"/>
+  <path d="M10 40 30 15 50 40 70 15" fill="none" stroke="#2a78d6" stroke-width="6" stroke-linejoin="miter"/>
+  <path d="M80 40 100 15 120 40 140 15" fill="none" stroke="#eb6834" stroke-width="6" stroke-linecap="square" stroke-linejoin="bevel"/>
+  <path d="M150 35C160 5 180 45 190 15" fill="none" stroke="#e34948" stroke-width="3" stroke-dasharray="6 3" stroke-dashoffset="2"/>
+  <path d="M0 0-8-4-8 4Z" transform="translate(190 15) rotate(-71.56505)" fill="#e34948"/>
+  <ellipse cx="35" cy="75" rx="25" ry="15" fill="url(#around)"/>
+  <path d="M6.80922 64.73940A30 30 0 0 1 63.19078 64.73940" fill="none" stroke="#e87ba4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M100 75 100 55A20 20 0 0 1 117.32051 85Z" fill="#eb6834"/>
+  <polygon points="160 55 164.70228 68.52786 179.02113 68.81966 167.60845 77.47214 171.75571 91.18034 160 83 148.24429 91.18034 152.39155 77.47214 140.97887 68.81966 155.29772 68.52786" fill="url(#along)"/>
+  <path d="M10 105H62A8 8 0 0 1 70 113V124A16 16 0 0 1 54 140H14A4 4 0 0 1 10 136Z" fill="#e34948"/>
+  <rect x="-15" y="-8" width="30" height="16" transform="translate(105 125) rotate(30)" fill="none" stroke="#6250d6" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M178 125A18 18 0 1 1 142 125A18 18 0 1 1 178 125ZM169 125A9 9 0 1 0 151 125A9 9 0 1 0 169 125Z" fill="#008300"/>
+</svg>

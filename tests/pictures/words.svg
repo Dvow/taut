@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100">
+  <text x="10" y="30" font-family="'Noto Sans', sans-serif" font-size="20" fill="#235">Taut &amp; text, AV To</text>
+  <text x="100" y="60" text-anchor="middle" font-family="sans-serif" font-size="16" font-weight="bold" fill="#a00">Middle <tspan fill="#070" dy="8">down</tspan></text>
+  <text x="190" y="90" text-anchor="end" font-family="serif" font-size="14" font-style="italic" letter-spacing="1">at the end</text>
+</svg>

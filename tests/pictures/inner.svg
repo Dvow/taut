@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Drawings in the drawing: symbols that a use fits into a box of its size, svg elements with a viewBox of their own, cut off at their edges or not. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="120" height="80" viewBox="0 0 120 80">
+  <defs>
+    <symbol id="sun" viewBox="0 0 10 10"><circle cx="5" cy="5" r="6" fill="#f59e0b"/><circle cx="5" cy="5" r="3" fill="#e11d48"/></symbol>
+    <symbol id="wide" viewBox="0 0 20 10" preserveAspectRatio="xMinYMid meet"><rect width="20" height="10" fill="#2563eb"/><rect x="5" y="2.5" width="10" height="5" fill="white"/></symbol>
+  </defs>
+  <use xlink:href="#sun" x="4" y="4" width="32" height="32"/>
+  <use href="#sun" x="44" y="8" width="16" height="16"/>
+  <use href="#wide" x="64" y="4" width="52" height="32"/>
+  <svg x="4" y="44" width="32" height="32" viewBox="-2 -2 14 14"><rect width="10" height="10" fill="#16a34a" transform="rotate(20 5 5)"/></svg>
+  <svg x="44" y="44" width="32" height="32" viewBox="0 0 10 10" overflow="visible"><circle cx="5" cy="5" r="6.5" fill="#9333ea"/></svg>
+  <svg x="84" y="44" width="32" height="32" viewBox="0 0 10 20" preserveAspectRatio="xMidYMid slice"><rect width="10" height="20" fill="#0ea5e9"/><rect y="9" width="10" height="2" fill="#333"/></svg>
+</svg>

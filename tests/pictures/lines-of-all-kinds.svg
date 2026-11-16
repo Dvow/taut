@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <style>
+    .thick { stroke-width: 6; fill: none }
+    path.blue, .blue { stroke: #1d4ed8 }
+    #dots { stroke: crimson; stroke-linecap: round; stroke-dasharray: 0 7 }
+  </style>
+  <g class="thick blue">
+    <path d="M8 10 L30 10" stroke-linecap="butt"/>
+    <path d="M8 20 L30 20" stroke-linecap="round"/>
+    <path d="M8 30 L30 30" stroke-linecap="square"/>
+    <path d="M40 30 L50 8 L60 30" stroke-linejoin="miter"/>
+    <path d="M65 30 L75 8 L85 30" stroke-linejoin="round"/>
+    <path d="M8 55 L18 38 L28 55" stroke-linejoin="bevel"/>
+    <path d="M36 55 L40 38 L44 55" stroke-linejoin="miter" stroke-miterlimit="2"/>
+    <path d="M52 55 L56 38 L60 55" stroke-linejoin="miter" stroke-miterlimit="10"/>
+  </g>
+  <path d="M68 40 l8 12 l8 -12 l8 14 h-22" fill="none" stroke="#047857" stroke-width="2.5" stroke-dasharray="6 3 1.5 3" stroke-dashoffset="2" stroke-linejoin="round"/>
+  <path id="dots" d="M10 66 H90" stroke-width="4" fill="none"/>
+  <rect x="8" y="74" width="26" height="18" rx="5" ry="8" fill="gold" stroke="#111" stroke-width="1"/>
+  <rect x="42" y="74" width="20" height="18" fill="none" stroke="purple" stroke-width="3" stroke-dasharray="5 2"/>
+  <path d="M70 76 h18 v14 h-18 z M74 80 v6 h10 v-6 z" fill="teal" stroke="black" stroke-width="0.6"/>
+  <path d="M66 96 L94 96" stroke="#000" stroke-width="0.3"/>
+  <path d="M46 62 l4 -4 l4 4 M46 58 l8 0" fill="none" stroke="#b45309" stroke-width="2" stroke-opacity="0.6"/>
+  <g transform="scale(0.5 0.25)"><path d="M132 244 q28 -32 56 0" fill="none" stroke="#7c3aed" stroke-width="1.5" vector-effect="non-scaling-stroke"/></g>
+</svg>
