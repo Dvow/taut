@@ -246,14 +246,21 @@ unsafe extern "C" {
 
 fn look() {
     let Ok(name) = std::env::var("TAUT_XVFB") else { println!("RESULT shown (no screen to read)"); return };
-    std::thread::sleep(std::time::Duration::from_millis(500));
     let name = std::ffi::CString::new(name).unwrap();
-    unsafe {
-        let d = XOpenDisplay(name.as_ptr());
-        let i = XGetImage(d, XDefaultRootWindow(d), 0, 0, 900, 600, !0, 2);
+    let d = unsafe { XOpenDisplay(name.as_ptr()) };
+    for tries in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let i = unsafe { XGetImage(d, XDefaultRootWindow(d), 0, 0, 900, 600, !0, 2) };
         let (mut red, mut blue, mut first) = (0, 0, None);
-        for y in 0..600 { for x in 0..900 { match XGetPixel(i, x, y) & 0xffffff { 0xff0000 => { red += 1; first.get_or_insert((x, y)); } 0x0000ff => blue += 1, _ => {} } } }
+        let mut seen = std::collections::HashMap::new();
+        for y in 0..600 { for x in 0..900 { let p = unsafe { XGetPixel(i, x, y) } & 0xffffff; *seen.entry(p).or_insert(0) += 1; match p { 0xff0000 => { red += 1; first.get_or_insert((x, y)); } 0x0000ff => blue += 1, _ => {} } } }
         let exact = red == 16384 && blue == 16384;
-        println!("RESULT {} red {red} blue {blue} (want 16384 each), red starts at {first:?}", if exact { "EXACT" } else { "WRONG" });
+        if exact || tries == 19 {
+            let mut most: Vec<_> = seen.into_iter().collect();
+            most.sort_by_key(|(_, n)| -(*n as i64));
+            println!("colours: {:x?}", &most[..most.len().min(6)]);
+            println!("RESULT {} after {} ms: red {red} blue {blue} (want 16384 each), red starts at {first:?}", if exact { "EXACT" } else { "WRONG" }, (tries + 1) * 500);
+            return;
+        }
     }
 }

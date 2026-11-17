@@ -29,7 +29,7 @@ desk() {
   DISPLAY=:${3/-/0} weston --backend=$1 --renderer=$2 --width=900 --height=600 --socket=probe-wl --no-config > $XDG_RUNTIME_DIR/weston.log 2>&1 &
   local K=$!
   for i in $(seq 100); do [ -S $XDG_RUNTIME_DIR/probe-wl ] && break; sleep 0.1; done
-  sleep 1
+  sleep 2
   echo "######## weston $1 $2"
   WAYLAND_DISPLAY=probe-wl timeout 30 $B/show
   kill $K $X 2>/dev/null
