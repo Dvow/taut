@@ -1,5 +1,7 @@
 # taut
 
+[![CI](https://github.com/Dvow/taut/actions/workflows/ci.yml/badge.svg)](https://github.com/Dvow/taut/actions/workflows/ci.yml)
+
 A GUI library for Rust on Windows and Linux with no dependencies: no crates, no web view, no
 graphics card needed. One function describes the window from the app's state; the library draws
 only what changed, and nothing while nothing happens.

@@ -39,7 +39,8 @@ A change is ready when:
 2. It is flat: `cargo test --test flat` passes.
 3. It has tests through the harness in `tests/common`, so its redraw is checked at every step.
 4. `cargo fmt` and `cargo clippy --all-targets` are clean (every public item documented).
-5. All tests pass on Windows, Ubuntu and Arch Linux, with no features and with all.
+5. All tests pass on Windows, Ubuntu and Arch Linux, with no features and with all. CI runs them
+   on Windows and Ubuntu (`.github/workflows/ci.yml`).
 6. Core changes are benchmarked before and after.
 7. `GUIDE.md` shows it in a compiled example; [costs](docs/costs-and-speed.md) and
    [what is missing](docs/what-is-missing.md) are updated.

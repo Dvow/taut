@@ -16,7 +16,7 @@ env:
   # No debug info: a third of the build time and most of the cache.
   CARGO_PROFILE_DEV_DEBUG: 0
   RUST_BACKTRACE: 1
-  # Read by the few tests that cannot run on a runner (see README, "CI").
+  # Skips what a runner cannot run: only OpenGL on Windows (tests/renderers.rs).
   TAUT_CI: 1
 
 jobs:

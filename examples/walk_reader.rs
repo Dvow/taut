@@ -409,6 +409,15 @@ mod reader {
         open.filter(|file| fs::read_link(file.path()).is_ok_and(|to| to.to_string_lossy().starts_with("socket:"))).count()
     }
 
+    /// Waits, 5 s at most, until a process has this many sockets open: a busy machine starts it
+    /// slowly.
+    fn opens_sockets(process: u32, count: usize) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while sockets(process) < count && Instant::now() < until {
+            rest(20);
+        }
+    }
+
     /// How much memory a process has in use, and how much of that is its own alone.
     fn memory(process: u32) -> String {
         let smaps = fs::read_to_string(format!("/proc/{process}/smaps_rollup")).unwrap_or_default();
@@ -492,6 +501,7 @@ mod reader {
             lonely.env_remove("DBUS_SESSION_BUS_ADDRESS").env_remove("XDG_RUNTIME_DIR").env_remove("AT_SPI_BUS_ADDRESS");
             lonely.envs(bus.map(|bus| ("DBUS_SESSION_BUS_ADDRESS", bus)));
             let mut alone = lonely.spawn().expect("the demo could not be started");
+            opens_sockets(alone.id(), 1);
             rest(700);
             let alive = lives(&mut alone);
             check(&format!("with {what}, the window opens and has one socket, to X"), alive && sockets(alone.id()) == 1, &format!("alive {}", if alive { "True" } else { "False" }));
@@ -532,6 +542,7 @@ mod reader {
         let given = env::var_os("AT_SPI_BUS_ADDRESS").is_some_and(|bus| !bus.is_empty());
         let registry = of_at_spi("at-spi2-registryd").filter(|_| given).map(|registry| Command::new(registry).stderr(Stdio::null()).spawn().expect("at-spi2-registryd could not be started"));
         let demo = Command::new(gallery).spawn().expect("the demo could not be started");
+        opens_sockets(demo.id(), 2);
         rest(1000);
         Some(Started { demo, launcher, registry, given })
     }

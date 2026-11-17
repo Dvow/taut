@@ -1727,8 +1727,9 @@ impl Ui {
                 let by_person = by_key + if wheeled[axis] == Some(at) { wheel[axis] } else { 0.0 };
                 let to = held.or(asked.and_then(|asked| asked.to(axis, by_person))).unwrap_or(offset[axis] + by_person);
                 // (`0.0 - shift`, not `-shift`: with no shift that would be -0.0, a different
-                // number, and a box scrolled back to its start would never be seen to settle.)
-                offset[axis] = to.min(self.tree.scroll_end(at, axis)).max(0.0 - self.tree.shift(at, axis));
+                // number, and a box scrolled back to its start would never be seen to settle. And
+                // `+ 0.0`: `min` and `max` of two zeros may give either, by how they are compiled.)
+                offset[axis] = to.min(self.tree.scroll_end(at, axis)).max(0.0 - self.tree.shift(at, axis)) + 0.0;
             }
             self.again |= offset != was || self.update_gutter(at);
             if let Some(ended) = self.asks.ended {
