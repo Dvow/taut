@@ -902,10 +902,10 @@ mod mac {
 
     /// The window of the next check: a text box with a misspelling, a table of three rows (the
     /// second selected), and a tree of a folder (with one thing in it) and a file.
-    fn structures(text: &mut String, table: &mut taut::Table, tree: &mut taut::TreeView, ui: &mut Ui) {
+    fn structures(text: &mut String, table: &mut taut::Table, tree: &mut taut::TreeView, ui: &mut Ui) -> taut::Response {
         ui.column().pad(10.0).gap(8.0).grow().open();
         ui.check_spelling(Some("en-US"));
-        ui.text_box(text, "Words");
+        let words = ui.text_box(text, "Words");
         let columns = [taut::Column::new("Name").px(120.0), taut::Column::new("Size").px(80.0)];
         ui.table(table, &columns);
         for row in ui.rows(3, 22.0) {
@@ -927,6 +927,7 @@ mod mac {
         }
         ui.close();
         ui.close();
+        words
     }
 
     /// A client reads a text box by ranges (its length, selection, pieces, a misspelling) and
@@ -936,7 +937,7 @@ mod mac {
         let (mut text, mut table, mut tree) = ("Hello wrold".to_string(), taut::Table::default(), taut::TreeView::default());
         let window = Window { title: "Structures", width: 420.0, height: 420.0, ..Default::default() };
         check(window, move |steps, ui| {
-            structures(&mut text, &mut table, &mut tree, ui);
+            let words = structures(&mut text, &mut table, &mut tree, ui);
             let Some(window) = window_titled("Structures") else { return };
             let all = || {
                 let program = unsafe { AXUIElementCreateApplication(std::process::id() as i32) };
@@ -1002,7 +1003,10 @@ mod mac {
                     if let Some(field) = find(&found, "AXTextField") {
                         let picked = range_of(ask(field, "AXSelectedTextRange"));
                         let said = ask(field, "AXSelectedText").and_then(text_of);
-                        steps.check(picked == Some([6, 5]) && said.as_deref() == Some("wrold"), || format!("selected by a reader: {picked:?}, {said:?}"));
+                        let focused = number_of(ask(field, "AXFocused"));
+                        steps.check(picked == Some([6, 5]) && said.as_deref() == Some("wrold"), || {
+                            format!("selected by a reader: {picked:?}, {said:?}; the box has focus {}, the reader says {focused:?}", words.focused)
+                        });
                     }
                     let outline = find(&found, "AXOutline");
                     let items_now = outline.and_then(|outline| ask(outline, "AXRows")).map(items).unwrap_or_default();
@@ -1260,7 +1264,8 @@ mod mac {
                     post_drag(from, to);
                     steps.next();
                 }
-                1 if outcome.is_some() || steps.waited(6000) => {
+                // (The other window may hear the drop after this one hears it was taken.)
+                1 if (outcome.is_some() && TAKEN.with_borrow(Option::is_some)) || steps.waited(6000) => {
                     // (Where the other window is, and what is at the place let go, to say.)
                     let screen = rect_of(items(send(class(c"NSScreen"), c"screens", ()))[0], c"frame");
                     let under: isize = send(class(c"NSWindow"), c"windowNumberAtPoint:belowWindowWithWindowNumber:", (NSPoint { x: 590.0, y: screen.size.height - 488.0 }, 0isize));
