@@ -1641,7 +1641,7 @@ pub(crate) mod harfbuzz {
     /// The system HarfBuzz's shaping of some words in the font at `path` (face `face` of a
     /// collection): each glyph with its position (left to right), and the total advance, in
     /// font units. Nothing without HarfBuzz.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     #[cfg(any(feature = "right-to-left", feature = "brahmic"))]
     pub(crate) fn harfbuzz(path: &std::path::Path, face: u32, words: &[String]) -> Option<Vec<Shaped>> {
         harfbuzz_in(path, face, words, "")
@@ -1650,7 +1650,7 @@ pub(crate) mod harfbuzz {
     /// The same, for words in a language as BCP 47 names it ("" for none). And from then on
     /// this thread places marks as that HarfBuzz does: before 14.3, marks followed every
     /// vertical move of their base (see `older`).
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     pub(crate) fn harfbuzz_in(path: &std::path::Path, face: u32, words: &[String], language: &str) -> Option<Vec<Shaped>> {
         shaped_by(path, face, words, language, false)
     }
@@ -1662,7 +1662,7 @@ pub(crate) mod harfbuzz {
         shaped_by(path, face, words, "", true)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fn shaped_by(path: &std::path::Path, face: u32, words: &[String], language: &str, downward: bool) -> Option<Vec<Shaped>> {
         use std::ffi::{CString, c_char, c_int, c_uint, c_void};
         unsafe extern "C" {
@@ -1673,7 +1673,7 @@ pub(crate) mod harfbuzz {
         // SAFETY: the library is opened by name and its functions found by theirs; each is
         // called as HarfBuzz declares it, on objects it made.
         unsafe {
-            let library = if cfg!(target_os = "macos") { dlopen(c"/opt/homebrew/lib/libharfbuzz.0.dylib".as_ptr(), 2) } else { dlopen(c"libharfbuzz.so.0".as_ptr(), 2) };
+            let library = dlopen(c"libharfbuzz.so.0".as_ptr(), 2);
             let function = |name: &std::ffi::CStr| Some(dlsym(library, name.as_ptr())).filter(|found| !library.is_null() && !found.is_null());
             let from_file: extern "C" fn(*const c_char) -> *mut c_void = std::mem::transmute(function(c"hb_blob_create_from_file")?);
             let face_of: extern "C" fn(*mut c_void, c_uint) -> *mut c_void = std::mem::transmute(function(c"hb_face_create")?);

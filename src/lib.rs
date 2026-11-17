@@ -151,6 +151,8 @@ mod normalization;
 mod notifications;
 #[cfg(target_os = "macos")]
 mod ns_accessibility;
+#[cfg(target_os = "macos")]
+mod ns_spell_checker;
 mod number;
 #[cfg(windows)]
 mod ole_drag;

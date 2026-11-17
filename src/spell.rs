@@ -37,8 +37,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// The most suggestions a menu offers.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-const OFFERED: usize = 5;
+pub(crate) const OFFERED: usize = 5;
 /// The longest word sent to a checker, in bytes: anything longer is no word.
 const LONGEST: usize = 64;
 /// How many words per language are cached before the cache is cleared.
@@ -801,21 +800,25 @@ impl Ui {
 // ---- the system's checkers ----
 
 /// The system checker for the language of this name ("" for the user's own), if any: on Windows
-/// its own; on Linux Enchant's, for whatever dictionary Enchant finds; elsewhere none.
+/// its own; on Linux Enchant's, for whatever dictionary Enchant finds; on macOS
+/// `NSSpellChecker` (`ns_spell_checker.rs`); elsewhere none.
 pub(crate) fn system(language: &str) -> Option<Box<dyn Check>> {
     let name = if language.is_empty() { own_language() } else { language.to_owned() };
     Speller::open(&name).map(|speller| Box::new(speller) as Box<dyn Check>)
 }
 
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(target_os = "macos")]
+use crate::ns_spell_checker::{Speller, own_language};
+
+#[cfg(not(any(windows, unix)))]
 struct Speller;
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(not(any(windows, unix)))]
 impl Speller {
     fn open(_: &str) -> Option<Speller> {
         None
     }
 }
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(not(any(windows, unix)))]
 impl Check for Speller {
     fn wrong(&self, _: &str) -> bool {
         false
@@ -825,7 +828,7 @@ impl Check for Speller {
     }
     fn add(&mut self, _: &str) {}
 }
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(not(any(windows, unix)))]
 fn own_language() -> String {
     String::new()
 }
