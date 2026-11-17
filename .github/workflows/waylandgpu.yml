@@ -15,24 +15,106 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
   RUST_BACKTRACE: 1
+  TAUT_CI: 1
 
 jobs:
-  probe:
+  dmabufs:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      # The tests fail where no device exports dmabufs, rather than fall back.
+      TAUT_DMABUF_EXPORTS: 1
     steps:
       - uses: actions/checkout@v4
-      - name: Packages, and /dev/udmabuf
+      - name: Weston, lavapipe, Xvfb; and /dev/udmabuf
         run: |
-          uname -r
-          grep -E 'UDMABUF|DMABUF_HEAPS|CONFIG_DRM_VGEM|CONFIG_DRM_VKMS|CONFIG_SYNC_FILE' /boot/config-$(uname -r) || true
-          find /lib/modules/$(uname -r) -name 'udmabuf*' -o -name 'vgem*' -o -name 'vkms*' | head
           sudo apt-get update
-          apt-cache search --names-only "linux-modules.*$(uname -r)" || true
-          sudo apt-get install -y linux-modules-extra-$(uname -r) || echo 'no modules-extra package'
-          sudo apt-get install -y --no-install-recommends weston xvfb xauth \
-            mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 libx11-dev
-          sudo modprobe udmabuf || echo 'no udmabuf module'
-          sudo chmod 666 /dev/udmabuf || true
-      - name: Probe
+          sudo apt-get install -y --no-install-recommends weston xvfb xauth dbus \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 \
+            libx11-6 libxtst6 libxi6 libxkbcommon0 libfontconfig1 libfreetype6 fonts-dejavu-core
+          uname -r
+          ls -l /dev/udmabuf
+          sudo chmod 666 /dev/udmabuf
+          weston --version
+          vulkaninfo --summary 2>&1 | grep -E "deviceName|driverInfo"
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
+      - name: Build the tests
+        run: cargo test --lib --all-features --no-run
+      - name: Probe (step 1)
         run: bash .github/waylandgpu/probe.sh
+      - name: Tests with a played compositor
+        run: cargo test --lib --all-features gpu_wayland -- --nocapture
+      - name: GL Weston on Xvfb (dmabufs, the screen read)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-x11-gl 31 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: GL Weston headless (dmabufs)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-gl 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: Pixman Weston (no dmabufs; shared memory)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: Pixman Weston on Xvfb (shared memory, the screen read)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-x11 32 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: How long frames take (release)
+        if: ${{ !cancelled() }}
+        run: |
+          bash .github/waylandgpu/desk.sh weston-x11-gl 33 cargo test --release --lib --all-features how_long_frames -- --ignored --nocapture
+          bash .github/waylandgpu/desk.sh weston-gl 0 cargo test --release --lib --all-features how_long_frames -- --ignored --nocapture
+
+  # The owner's checks (as the CI workflow runs them), on this branch.
+  ubuntu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: What the tests and walks load
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
+            libx11-6 libxtst6 libxi6 libxrandr2 libxkbcommon0 libfontconfig1 libfreetype6 libharfbuzz0b fonts-dejavu-core \
+            libegl1 libgles2 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 xclip
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable && rustc -V
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy, all features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy, no features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests, all features
+        if: ${{ !cancelled() }}
+        run: cargo test --all-features --no-fail-fast -- --test-threads=4
+      - name: Library tests, no features
+        if: ${{ !cancelled() }}
+        run: cargo test --lib --no-fail-fast
+      - name: Library tests with windows, on a display of their own
+        if: ${{ !cancelled() }}
+        run: |
+          export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
+          xvfb-run -n 190 -s "-screen 0 900x600x24" cargo test --lib --all-features --no-fail-fast -- --include-ignored --skip how_long --skip made_afresh
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable && rustc -V
+      - name: Clippy, all features
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy, no features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: The DLL tests/dll.rs loads
+        if: ${{ !cancelled() }}
+        run: cargo build --example overlay
+      - name: Tests, all features
+        if: ${{ !cancelled() }}
+        run: cargo test --all-features --no-fail-fast -- --test-threads=4
+      - name: Library tests, no features
+        if: ${{ !cancelled() }}
+        run: cargo test --lib --no-fail-fast
