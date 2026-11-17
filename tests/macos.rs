@@ -955,6 +955,9 @@ mod mac {
                         return;
                     }
                     told(view_of(window), 0, &mut Vec::new());
+                    // (Its text box shows the selection only while the window has the keyboard.)
+                    send::<()>(window, c"makeKeyAndOrderFront:", (std::ptr::null_mut::<c_void>(),));
+                    send::<()>(app(), c"activateIgnoringOtherApps:", (1u8,));
                     steps.next();
                 }
                 // (Spelling is checked on a thread of its own: its marks come a little later.)
@@ -1182,6 +1185,32 @@ mod mac {
         NSPoint { x: on_screen.origin.x, y: rect_of(main, c"frame").size.height - on_screen.origin.y }
     }
 
+    /// The whole main screen, as it shows: its width and pixels.
+    fn screen_picture(screen: NSRect) -> Option<(usize, Vec<u32>)> {
+        type Pictures = unsafe extern "C" fn(NSRect, u32, u32, u32) -> Obj;
+        let found = unsafe { dlsym(-2isize as *mut c_void, c"CGWindowListCreateImage".as_ptr()) };
+        if found.is_null() {
+            return None;
+        }
+        let picture = unsafe { std::mem::transmute::<*mut c_void, Pictures>(found) };
+        // Every window on the screen (1), at the screen's resolution (0).
+        let image = unsafe { picture(NSRect { origin: NSPoint::default(), size: screen.size }, 1, 0, 0) };
+        if image.is_null() {
+            return None;
+        }
+        unsafe {
+            let (width, height) = (CGImageGetWidth(image), CGImageGetHeight(image));
+            let mut pixels = vec![0u32; width * height];
+            let space = CGColorSpaceCreateDeviceRGB();
+            let context = CGBitmapContextCreate(pixels.as_mut_ptr().cast(), width, height, 8, width * 4, space, 2 << 12 | 2);
+            CGContextDrawImage(context, NSRect { origin: NSPoint::default(), size: NSSize { width: width as f64, height: height as f64 } }, image);
+            CGContextRelease(context);
+            CFRelease(space);
+            CGImageRelease(image);
+            Some((width, pixels))
+        }
+    }
+
     /// Posts a person's drag from one place on the screen to another (pressed, moved in steps,
     /// let go), from a thread of its own: the system's drag runs meanwhile.
     fn post_drag(from: NSPoint, to: NSPoint) {
@@ -1232,6 +1261,14 @@ mod mac {
                     steps.next();
                 }
                 1 if outcome.is_some() || steps.waited(6000) => {
+                    // (Where the other window is, and what is at the place let go, to say.)
+                    let screen = rect_of(items(send(class(c"NSScreen"), c"screens", ()))[0], c"frame");
+                    let under: isize = send(class(c"NSWindow"), c"windowNumberAtPoint:belowWindowWithWindowNumber:", (NSPoint { x: 590.0, y: screen.size.height - 488.0 }, 0isize));
+                    let theirs: isize = send(target, c"windowNumber", ());
+                    println!("    the other window is at {:?}, number {theirs}; at the place let go is window {under}; the screen is {:?}", rect_of(target, c"frame"), screen.size);
+                    if let Some((width, pixels)) = screen_picture(screen) {
+                        save("drag-out-screen.png", width, &pixels);
+                    }
                     let taken = TAKEN.take();
                     steps.check(taken.as_deref() == Some("from taut"), || format!("the other window took {taken:?}"));
                     steps.check(outcome == Some(taut::DropEffect::Copied), || format!("the box heard {outcome:?}"));
