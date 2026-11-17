@@ -3352,10 +3352,11 @@ pub(crate) mod tests {
         std::fs::write(folder.join("empty.ttf"), []).unwrap();
         assert!(FontFile::open(folder.join("empty.ttf")).is_none());
         std::fs::remove_dir_all(&folder).unwrap();
-        // A system font is mapped on Linux too.
+        // A system font is mapped on Linux too; unless the user can write it (some CI images ship fonts as 0777).
         #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
         for path in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf"].iter().filter(|path| std::path::Path::new(path).exists()) {
-            assert!(FontFile::open(path).is_some_and(|font| matches!(font.file, Held::Lying(_))), "{path}");
+            let untouchable = Lying::untouchable(&std::fs::File::open(path).unwrap());
+            assert!(FontFile::open(path).is_some_and(|font| matches!(font.file, Held::Lying(_)) == untouchable), "{path}");
         }
     }
 

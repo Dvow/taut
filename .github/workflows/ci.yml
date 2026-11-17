@@ -24,10 +24,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust
         run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable && rustc -V
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: target
           key: windows-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
@@ -52,8 +52,11 @@ jobs:
   ubuntu:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      # Tests built a little optimized: the Brotli check against the system's takes 5 min a run unoptimized.
+      CARGO_PROFILE_DEV_OPT_LEVEL: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: What the tests and walks load
         run: |
           sudo apt-get update
@@ -62,11 +65,7 @@ jobs:
             libegl1 libgles2 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 xclip
       - name: Rust
         run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
-      - name: PROBE
-        run: |
-          id; stat -L /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf; ls -la /usr/share/fonts/truetype/dejavu/; namei -l /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
-          dpkg -l | grep -iE "dbus|at-spi" || true; cat /usr/share/dbus-1/services/org.a11y.Bus.service || true; ls /usr/libexec/at-spi* || true
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: target
           key: ubuntu-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
@@ -95,9 +94,7 @@ jobs:
           export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
           # To a file: the accessibility bus it starts outlives it and would hold a pipe open.
           status=0
-          (for i in $(seq 1 40); do echo "== $i"; ps -eo pid,ppid,comm,args | grep -E "dbus|spi|gallery|walk" | grep -v grep; sleep 1; done) > ps.txt 2>&1 &
           xvfb-run -n 191 -s "-screen 0 900x600x24" dbus-run-session -- target/release/examples/walk_reader > reader.txt 2>&1 || status=$?
-          cat ps.txt
           pkill -f "$XDG_RUNTIME_DIR/at-spi" || true
           grep -v "^dbus-daemon" reader.txt
           exit $status
@@ -115,7 +112,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust 1.88 (rust-version in Cargo.toml)
         run: rustup toolchain install 1.88.0 --profile minimal && rustup default 1.88.0 && rustc -V
       - name: Check, all features
@@ -130,7 +127,7 @@ jobs:
     env:
       RUSTDOCFLAGS: -D warnings --cfg docsrs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Nightly, as docs.rs
         run: rustup toolchain install nightly --profile minimal -t x86_64-pc-windows-msvc && rustc +nightly -V
       - name: Docs for Linux
@@ -143,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Package (the file list builds on its own)

@@ -514,6 +514,13 @@ mod reader {
     /// is not on this machine.)
     fn start(gallery: &Path) -> Option<Started> {
         let launcher = Command::new(of_at_spi("at-spi-bus-launcher")?).env("GSETTINGS_BACKEND", "memory").stderr(Stdio::null()).spawn().expect("at-spi-bus-launcher could not be started");
+        // Asked before the launcher owns its name, the session bus would start a launcher of its own.
+        for _ in 0..100 {
+            if session(SESSION_BUS, "org.freedesktop.DBus.NameHasOwner", &[STATUS[0]]).contains("true") {
+                break;
+            }
+            rest(50);
+        }
         for _ in 0..100 {
             if session(STATUS, "org.freedesktop.DBus.Properties.GetAll", &["org.a11y.Status"]).contains("IsEnabled") {
                 break;
