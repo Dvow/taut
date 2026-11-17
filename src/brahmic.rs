@@ -2726,4 +2726,47 @@ mod tests {
         assert_eq!(cut(&[0, CONSONANT, 0]), [0x15, 0x20, 0x35]);
         assert_eq!(postfix("a ( b | c ) * d ?"), ["a", "b", "c", "|", "*", ".", "d", "?", "."]);
     }
+
+    /// The table tags of a font file (the first font of a collection).
+    #[cfg(target_os = "macos")]
+    fn probe_tags(file: &[u8]) -> String {
+        let be32 = |at: usize| u32::from_be_bytes(file[at..at + 4].try_into().unwrap()) as usize;
+        let start = if &file[..4] == b"ttcf" { be32(12) } else { 0 };
+        let count = u16::from_be_bytes(file[start + 4..start + 6].try_into().unwrap()) as usize;
+        (0..count).map(|n| String::from_utf8_lossy(&file[start + 12 + 16 * n..][..4]).into_owned()).collect::<Vec<_>>().join(" ")
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn probe_macos_fonts() {
+        for letter in ['\u{628}', '\u{5e9}', '\u{e01}', '\u{915}', '\u{995}', '\u{b95}', '\u{d9a}', '\u{1780}', '\u{1000}'] {
+            let path = crate::core_text::file_for(crate::text::Face::Regular, letter);
+            println!("PROBE {} {path:?}", letter.escape_unicode());
+            if let Some(path) = &path {
+                println!("PROBE   tables {}", probe_tags(&std::fs::read(path).unwrap()));
+            }
+        }
+        let thai = crate::core_text::file_for(crate::text::Face::Regular, '\u{e01}').unwrap();
+        let font = FontFile::open(&thai).unwrap();
+        for word in ["\u{e19}\u{e49}\u{e33}", "\u{e19}\u{e33}", "\u{e19}\u{e49}", "\u{e01}\u{e33}"] {
+            let mut plans = Vec::new();
+            let mine = ours(&font, &mut plans, word);
+            println!("PROBE thai {}: froms {:?} ours {mine:?}", word.escape_unicode(), froms(&font, word));
+            println!("PROBE   harfbuzz {:?}", crate::shaping::harfbuzz::harfbuzz(&thai, 0, &[word.to_string()]));
+        }
+        let arabic = crate::core_text::file_for(crate::text::Face::Regular, '\u{628}').unwrap();
+        let font = FontFile::open(&arabic).unwrap();
+        let line = "\u{628}\u{650}\u{633}\u{652}\u{645}\u{650} \u{627}\u{644}\u{644}\u{651}\u{64e}\u{647}\u{650} \u{627}\u{644}\u{631}\u{651}\u{64e}\u{62d}\u{652}\u{645}\u{64e}\u{670}\u{646}\u{650}";
+        println!("PROBE unit at 28 px: {}", font.unit(28.0));
+        for word in line.split(' ') {
+            let mut glyphs = Vec::new();
+            let total = font.shape(&crate::shaping::Plan::of(&font, Script::Arabic, true, Language::NONE), word, &mut glyphs);
+            println!("PROBE arabic {}: total {total}", word.escape_unicode());
+            for laid in &glyphs {
+                let (_, reach) = font.outline_through(laid.glyph, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+                println!("PROBE   glyph {} from {} advance {} offset {:?} ink {reach:?}", laid.glyph, laid.from, laid.advance, laid.offset);
+            }
+            println!("PROBE   harfbuzz {:?}", crate::shaping::harfbuzz::harfbuzz(&arabic, 0, &[word.to_string()]));
+        }
+    }
 }

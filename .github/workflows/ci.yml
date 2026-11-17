@@ -1,186 +1,34 @@
-# Every push and pull request: the checks the owner runs, on Windows, Ubuntu and macOS, plus the
-# oldest Rust taut supports, the docs as docs.rs builds them, and the package.
+# Temporary probe (macos2): only the macOS facts needed, put back to the full CI after.
 name: CI
 
 on:
   push:
-  pull_request:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: probe-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  CARGO_TERM_COLOR: always
+  CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: 0
-  # No debug info: a third of the build time and most of the cache.
   CARGO_PROFILE_DEV_DEBUG: 0
   RUST_BACKTRACE: 1
-  # Skips what a runner cannot run: only OpenGL on Windows (tests/renderers.rs).
   TAUT_CI: 1
 
 jobs:
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v7
-      - name: Rust
-        run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable && rustc -V
-      - uses: actions/cache@v6
-        with:
-          path: target
-          key: windows-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
-      - name: Format
-        run: cargo fmt --check
-      - name: Clippy, all features
-        if: ${{ !cancelled() }}
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Clippy, no features
-        if: ${{ !cancelled() }}
-        run: cargo clippy --all-targets -- -D warnings
-      - name: The DLL tests/dll.rs loads
-        if: ${{ !cancelled() }}
-        run: cargo build --example overlay
-      - name: Tests, all features
-        if: ${{ !cancelled() }}
-        run: cargo test --all-features --no-fail-fast -- --test-threads=4
-      - name: Library tests, no features
-        if: ${{ !cancelled() }}
-        run: cargo test --lib --no-fail-fast
-
-  ubuntu:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    env:
-      # Tests built a little optimized: the Brotli check against the system's takes 5 min a run unoptimized.
-      CARGO_PROFILE_DEV_OPT_LEVEL: 1
-    steps:
-      - uses: actions/checkout@v7
-      - name: What the tests and walks load
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
-            libx11-6 libxtst6 libxi6 libxrandr2 libxkbcommon0 libfontconfig1 libfreetype6 libharfbuzz0b fonts-dejavu-core \
-            libegl1 libgles2 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 xclip
-      - name: Rust
-        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
-      - uses: actions/cache@v6
-        with:
-          path: target
-          key: ubuntu-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
-      - name: Clippy, all features
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Clippy, no features
-        if: ${{ !cancelled() }}
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Tests, all features
-        if: ${{ !cancelled() }}
-        run: cargo test --all-features --no-fail-fast -- --test-threads=4
-      - name: Library tests, no features
-        if: ${{ !cancelled() }}
-        run: cargo test --lib --no-fail-fast
-      - name: Library tests with windows, on a display of their own
-        if: ${{ !cancelled() }}
-        run: |
-          export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
-          xvfb-run -n 190 -s "-screen 0 900x600x24" cargo test --lib --all-features --no-fail-fast -- --include-ignored --skip how_long --skip made_afresh
-      - name: Build the walks
-        if: ${{ !cancelled() }}
-        run: cargo build --release --all-features --example gallery --example walk --example walk_reader
-      - name: Walk as a screen reader
-        if: ${{ !cancelled() }}
-        run: |
-          export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
-          # To a file: the accessibility bus it starts outlives it and would hold a pipe open.
-          status=0
-          xvfb-run -n 191 -s "-screen 0 900x600x24" dbus-run-session -- target/release/examples/walk_reader > reader.txt 2>&1 || status=$?
-          pkill -f "$XDG_RUNTIME_DIR/at-spi" || true
-          grep -v "^dbus-daemon" reader.txt
-          exit $status
-      - name: Walk as a person
-        if: ${{ !cancelled() }}
-        run: |
-          export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
-          xvfb-run -n 192 -s "-screen 0 900x600x24" target/release/examples/walk "$RUNNER_TEMP/shots"
-
   macos:
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - name: Rust
-        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V && sw_vers
+        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V && sw_vers
       - uses: actions/cache@v6
         with:
           path: target
           key: macos-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
-      - name: Clippy, all features
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Clippy, no features
+      - name: HarfBuzz
+        run: brew install harfbuzz && ls /opt/homebrew/lib/libharfbuzz* && hb-shape --version
+      - name: Probe
         if: ${{ !cancelled() }}
-        run: cargo clippy --all-targets -- -D warnings
-      - name: Window checks (real windows on the runner's screen, which is nobody's)
-        if: ${{ !cancelled() }}
-        run: TAUT_SHOTS="$RUNNER_TEMP/shots" cargo test --test macos
-      - name: Window checks, all features
-        if: ${{ !cancelled() }}
-        run: TAUT_SHOTS="$RUNNER_TEMP/shots/all-features" cargo test --all-features --test macos
-      - name: Library tests, all features
-        if: ${{ !cancelled() }}
-        run: cargo test --lib --all-features --no-fail-fast
-      - name: Library tests, no features
-        if: ${{ !cancelled() }}
-        run: cargo test --lib --no-fail-fast
-      - name: Pictures of the windows
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-pictures
-          path: ${{ runner.temp }}/shots
-          if-no-files-found: warn
-
-  msrv:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-      - name: Rust 1.88 (rust-version in Cargo.toml)
-        run: rustup toolchain install 1.88.0 --profile minimal && rustup default 1.88.0 && rustc -V
-      - name: Check, all features
-        run: cargo check --all-targets --all-features
-      - name: Check, no features
-        if: ${{ !cancelled() }}
-        run: cargo check --all-targets
-
-  docs:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      RUSTDOCFLAGS: -D warnings --cfg docsrs
-    steps:
-      - uses: actions/checkout@v7
-      - name: Nightly, as docs.rs
-        run: rustup toolchain install nightly --profile minimal -t x86_64-pc-windows-msvc -t aarch64-apple-darwin && rustc +nightly -V
-      - name: Docs for Linux
-        run: cargo +nightly doc --all-features --no-deps --target x86_64-unknown-linux-gnu
-      - name: Docs for Windows
-        if: ${{ !cancelled() }}
-        run: cargo +nightly doc --all-features --no-deps --target x86_64-pc-windows-msvc
-      - name: Docs for macOS
-        if: ${{ !cancelled() }}
-        run: cargo +nightly doc --all-features --no-deps --target aarch64-apple-darwin
-
-  package:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - name: Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable
-      - name: Package (the file list builds on its own)
-        run: cargo package
+        run: bash .github/probe.sh
