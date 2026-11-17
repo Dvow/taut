@@ -100,12 +100,12 @@ Linux (Ubuntu in WSL, Xvfb, gallery, 1200×800; app CPU + X server CPU per frame
 
 Linux under Wayland (GitHub's Ubuntu runner, Weston 14's GL renderer on llvmpipe, dmabufs from
 lavapipe: a software device, so its copies are CPU work too; 800×500, release build, medians of
-60 frames, two runs):
+60 frames, three runs):
 
 | | Shared memory | Vulkan dmabufs |
 | --- | --- | --- |
 | One label changed: drawing | 5–10 µs | 33–92 µs |
-| All changed: drawing | 26–80 µs | 0.11–0.72 ms |
+| All changed: drawing | 26–80 µs | 0.11–0.77 ms |
 | Shown (the compositor's frame callback) after | 16–25 ms | 16–25 ms |
 
 - Drawing: painting, and for dmabufs the copy into an image and its wait. Shown: Weston's repaint
