@@ -138,6 +138,10 @@ mod locale;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
+mod macos_composing;
+#[cfg(target_os = "macos")]
+mod macos_drag_out;
+#[cfg(target_os = "macos")]
 mod macos_files;
 #[cfg(target_os = "macos")]
 mod macos_shell;

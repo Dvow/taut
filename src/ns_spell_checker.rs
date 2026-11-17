@@ -78,8 +78,8 @@ mod tests {
             let mut checker = system("en-US").expect("macOS has a checker for English");
             let wrong: Vec<bool> = ["helo", "hello", "recieve", "don't", "naïve"].iter().map(|word| checker.wrong(word)).collect();
             assert_eq!(wrong, [true, false, true, false, false]);
-            let offered = checker.offer("helo");
-            assert!(offered.contains(&"hello".to_owned()) && offered.len() <= OFFERED, "{offered:?}");
+            let offered = checker.offer("recieve");
+            assert!(offered.contains(&"receive".to_owned()) && offered.len() <= OFFERED, "{offered:?}");
             // British English, in which "colour" is right; German; and a language there is none for.
             let british = system("en-GB").expect("macOS has a checker for British English");
             assert!(!british.wrong("colour") && british.wrong("helo"));

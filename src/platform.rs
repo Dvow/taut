@@ -267,12 +267,14 @@ pub(crate) fn hand_drops() {
 /// Hands the windows their drag-out code, on this thread: the first time an app hands something
 /// out ([`Ui::drag_out`](crate::Ui::drag_out)). Reached no other way, so a program that never
 /// does is built without it. (On Windows OLE hands it to the system, see `ole_drag::Outward`;
-/// on X11 the windows speak XDND themselves.)
+/// on X11 the windows speak XDND themselves; on macOS see `macos_drag_out`.)
 pub(crate) fn enable_drag_out() {
     #[cfg(windows)]
     crate::windows::enable_drag_out();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::x11::enable_drag_out();
+    #[cfg(target_os = "macos")]
+    crate::macos_drag_out::enable();
 }
 
 /// Hands the windows their way to ask for the system's file dialog, on this thread: the first

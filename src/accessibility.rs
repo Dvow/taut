@@ -338,7 +338,7 @@ pub(crate) fn view(nodes: &[AccessNode], at: usize) -> Rect {
 }
 
 /// A cell's table, by node index.
-#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+#[cfg(any(windows, unix))]
 pub(crate) fn table_of(nodes: &[AccessNode], cell: usize) -> Option<usize> {
     let row = nodes.get(cell).filter(|cell| cell.role == Role::Cell)?.parent?;
     nodes.get(row)?.parent.filter(|table| nodes.get(*table).is_some_and(|table| table.role == Role::Table))
@@ -346,7 +346,7 @@ pub(crate) fn table_of(nodes: &[AccessNode], cell: usize) -> Option<usize> {
 
 /// A table's cell at a row and column from 0: its node index. None for a row out of view,
 /// whose cells have no nodes.
-#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+#[cfg(any(windows, unix))]
 pub(crate) fn cell_at(nodes: &[AccessNode], table: usize, place: [u32; 2]) -> Option<usize> {
     (table + 1..nodes.len()).find(|at| nodes[*at].grid == Some(place) && table_of(nodes, *at) == Some(table))
 }

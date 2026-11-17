@@ -180,38 +180,15 @@ mod mac {
         }
     }
 
-    /// What the screen shows of a window's content, through CoreGraphics' window picture where
-    /// the system still has it: its width and pixels, as `shown` gives them. (The picture has the
-    /// title bar on top: only the rows of the view are kept.)
+    /// What the screen shows of a window's content (see `window_picture`): the picture has the
+    /// title bar on top, so only the rows of the view are kept.
     fn on_screen(window: Obj) -> Option<(usize, Vec<u32>)> {
-        type Pictures = unsafe extern "C" fn(NSRect, u32, u32, u32) -> Obj;
-        let found = unsafe { dlsym(-2isize as *mut c_void, c"CGWindowListCreateImage".as_ptr()) };
-        if found.is_null() {
-            return None;
-        }
-        let picture = unsafe { std::mem::transmute::<*mut c_void, Pictures>(found) };
-        let number: isize = send(window, c"windowNumber", ());
-        // The rectangle that is none (`CGRectNull`): the window's own bounds. Just this window
-        // (8), without its frame (1), at its best resolution (8).
-        let null = NSRect { origin: NSPoint { x: f64::INFINITY, y: f64::INFINITY }, size: NSSize::default() };
-        let image = unsafe { picture(null, 8, number as u32, 1 | 8) };
-        if image.is_null() {
-            return None;
-        }
-        unsafe {
-            let (width, height) = (CGImageGetWidth(image), CGImageGetHeight(image));
-            let mut pixels = vec![0u32; width * height];
-            let space = CGColorSpaceCreateDeviceRGB();
-            let context = CGBitmapContextCreate(pixels.as_mut_ptr().cast(), width, height, 8, width * 4, space, 2 << 12 | 2);
-            CGContextDrawImage(context, NSRect { origin: NSPoint::default(), size: NSSize { width: width as f64, height: height as f64 } }, image);
-            CGContextRelease(context);
-            CFRelease(space);
-            CGImageRelease(image);
-            let view = rect_of(view_of(window), c"bounds").size.height;
-            let scale: f64 = send(window, c"backingScaleFactor", ());
-            let rows = ((view * scale).round() as usize).min(height);
-            Some((width, pixels[(height - rows) * width..].to_vec()))
-        }
+        let (width, pixels) = window_picture(window)?;
+        let height = pixels.len() / width.max(1);
+        let view = rect_of(view_of(window), c"bounds").size.height;
+        let scale: f64 = send(window, c"backingScaleFactor", ());
+        let rows = ((view * scale).round() as usize).min(height);
+        Some((width, pixels[(height - rows) * width..].to_vec()))
     }
 
     /// Saves a picture to the pictures folder, if there is one.
@@ -396,8 +373,44 @@ mod mac {
         })
     }
 
+    /// The window's child windows that show: what an input method composes shows in one.
+    fn shown_children(window: Obj) -> Vec<Obj> {
+        items(send(window, c"childWindows", ())).into_iter().filter(|child| send::<u8>(*child, c"isVisible", ()) == 1).collect()
+    }
+
+    /// What the screen shows of a window, through CoreGraphics' window picture where the system
+    /// still has it: its width and pixels, as `shown` gives them.
+    fn window_picture(window: Obj) -> Option<(usize, Vec<u32>)> {
+        type Pictures = unsafe extern "C" fn(NSRect, u32, u32, u32) -> Obj;
+        let found = unsafe { dlsym(-2isize as *mut c_void, c"CGWindowListCreateImage".as_ptr()) };
+        if found.is_null() {
+            return None;
+        }
+        let picture = unsafe { std::mem::transmute::<*mut c_void, Pictures>(found) };
+        let number: isize = send(window, c"windowNumber", ());
+        // The rectangle that is none (`CGRectNull`): the window's own bounds. Just this window
+        // (8), without its frame (1), at its best resolution (8).
+        let null = NSRect { origin: NSPoint { x: f64::INFINITY, y: f64::INFINITY }, size: NSSize::default() };
+        let image = unsafe { picture(null, 8, number as u32, 1 | 8) };
+        if image.is_null() {
+            return None;
+        }
+        unsafe {
+            let (width, height) = (CGImageGetWidth(image), CGImageGetHeight(image));
+            let mut pixels = vec![0u32; width * height];
+            let space = CGColorSpaceCreateDeviceRGB();
+            let context = CGBitmapContextCreate(pixels.as_mut_ptr().cast(), width, height, 8, width * 4, space, 2 << 12 | 2);
+            CGContextDrawImage(context, NSRect { origin: NSPoint::default(), size: NSSize { width: width as f64, height: height as f64 } }, image);
+            CGContextRelease(context);
+            CFRelease(space);
+            CGImageRelease(image);
+            Some((width, pixels))
+        }
+    }
+
     /// Keys posted as a person's reach the focused text box, through the system's text input;
-    /// an input method's text does too, and it is told where the text is.
+    /// an input method's text does too: what it composes shows at the text cursor until
+    /// committed, and it is told where the text is.
     fn keys_and_an_input_methods_text_reach_the_focused_box() -> Vec<String> {
         let mut text = String::new();
         let window = Window { title: "Typing", width: 360.0, height: 160.0, ..Default::default() };
@@ -427,8 +440,19 @@ mod mac {
                     let view = view_of(window);
                     let none = NSRange { location: usize::MAX >> 1, length: 0 };
                     send::<()>(view, c"setMarkedText:selectedRange:replacementRange:", (string("にほ"), NSRange { location: 2, length: 0 }, none));
+                    send::<()>(view, c"setMarkedText:selectedRange:replacementRange:", (string("日本ご"), NSRange { location: 0, length: 2 }, none));
                     let marked: u8 = send(view, c"hasMarkedText", ());
                     steps.check(marked == 1, || "an input method's text being composed is not noted".into());
+                    let (range, picked): (NSRange, NSRange) = (send(view, c"markedRange", ()), send(view, c"selectedRange", ()));
+                    steps.check((range.location, range.length, picked.location, picked.length) == (0, 3, 0, 2), || format!("composing: marked {range:?}, selected {picked:?}"));
+                    steps.next();
+                }
+                3 if steps.waited(300) => {
+                    let view = view_of(window);
+                    let none = NSRange { location: usize::MAX >> 1, length: 0 };
+                    let children = shown_children(window);
+                    steps.check(children.len() == 1, || format!("what is composed shows in {} windows of its own", children.len()));
+                    steps.check(text == "hxi", || format!("what is composed is not yet in the box, which holds {text:?}"));
                     let place: NSRect = send(view, c"firstRectForCharacterRange:actualRange:", (NSRange::default(), std::ptr::null_mut::<c_void>()));
                     let frame = rect_of(window, c"frame");
                     let inside = place.origin.x >= frame.origin.x
@@ -436,11 +460,29 @@ mod mac {
                         && place.origin.y >= frame.origin.y
                         && place.origin.y <= frame.origin.y + frame.size.height;
                     steps.check(inside && place.size.height > 0.0, || format!("the input method is told the text is at {place:?}, outside the window at {frame:?}"));
+                    if let Some(panel) = children.first().copied() {
+                        // At the text cursor: its top where the cursor's is, its left edge there.
+                        let shows = rect_of(panel, c"frame");
+                        let top = (shows.origin.y + shows.size.height - (place.origin.y + place.size.height)).abs();
+                        steps.check((shows.origin.x - place.origin.x).abs() <= 2.0 && top <= 2.0, || format!("what is composed shows at {shows:?}, the cursor is at {place:?}"));
+                        match window_picture(panel) {
+                            Some((width, pixels)) => {
+                                save("composing.png", width, &pixels);
+                                let dark = pixels.iter().filter(|pixel| (**pixel & 0xff) + (**pixel >> 8 & 0xff) + (**pixel >> 16 & 0xff) < 200).count();
+                                steps.check(dark > 20, || format!("what is composed shows {dark} dark pixels"));
+                            }
+                            None => println!("    no picture of what is composed to be had"),
+                        }
+                    }
                     send::<()>(view, c"insertText:replacementRange:", (string("日本"), none));
                     steps.next();
                 }
-                3 if text.contains("日本") || steps.waited(2000) => {
+                4 if text.contains("日本") || steps.waited(2000) => {
                     steps.check(text == "hx日本i", || format!("an input method's text: the box holds {text:?}"));
+                    let left = shown_children(window).len();
+                    steps.check(left == 0, || format!("committed, what was composed still shows in {left} windows"));
+                    let marked: u8 = send(view_of(window), c"hasMarkedText", ());
+                    steps.check(marked == 0, || "committed, the text is still noted as being composed".into());
                     steps.done = true;
                 }
                 _ => {}
@@ -725,6 +767,46 @@ mod mac {
         fn AXIsProcessTrusted() -> u8;
         fn AXUIElementCreateApplication(pid: i32) -> Obj;
         fn AXUIElementCopyAttributeValue(element: Obj, attribute: Obj, value: *mut Obj) -> i32;
+        fn AXUIElementCopyParameterizedAttributeValue(element: Obj, attribute: Obj, parameter: Obj, value: *mut Obj) -> i32;
+        fn AXUIElementSetAttributeValue(element: Obj, attribute: Obj, value: Obj) -> i32;
+        fn AXValueCreate(kind: u32, value: *const c_void) -> Obj;
+        fn AXValueGetValue(value: Obj, kind: u32, into: *mut c_void) -> u8;
+    }
+
+    /// `kAXValueCFRangeType`.
+    const RANGE_VALUE: u32 = 4;
+
+    /// An attribute of an element as a client reads it.
+    fn ask(element: Obj, name: &str) -> Option<Obj> {
+        let mut value: Obj = std::ptr::null_mut();
+        let failed = unsafe { AXUIElementCopyAttributeValue(element, string(name), &mut value) };
+        (failed == 0 && !value.is_null()).then_some(value)
+    }
+    /// The same, given something (a range, a place).
+    fn ask_of(element: Obj, name: &str, given: Obj) -> Option<Obj> {
+        let mut value: Obj = std::ptr::null_mut();
+        let failed = unsafe { AXUIElementCopyParameterizedAttributeValue(element, string(name), given, &mut value) };
+        (failed == 0 && !value.is_null()).then_some(value)
+    }
+    fn number_of(value: Option<Obj>) -> Option<i64> {
+        value.map(|value| send::<i64>(value, c"longLongValue", ()))
+    }
+    fn range_value(location: isize, length: isize) -> Obj {
+        unsafe { AXValueCreate(RANGE_VALUE, [location, length].as_ptr().cast()) }
+    }
+    fn range_of(value: Option<Obj>) -> Option<[isize; 2]> {
+        let mut range = [0isize; 2];
+        let read = value.is_some_and(|value| unsafe { AXValueGetValue(value, RANGE_VALUE, range.as_mut_ptr().cast()) } != 0);
+        read.then_some(range)
+    }
+
+    /// Every element under one, as a client reads them, with its role and title (or value).
+    fn all_under(element: Obj, depth: usize, into: &mut Vec<(Obj, String, String)>) {
+        let text = |name: &str| ask(element, name).and_then(|value| text_of(send(value, c"description", ()))).unwrap_or_default();
+        into.push((element, text("AXRole"), [text("AXTitle"), text("AXDescription")].concat()));
+        if let Some(children) = ask(element, "AXChildren").filter(|_| depth < 10) {
+            items(children).into_iter().for_each(|child| all_under(child, depth + 1, into));
+        }
     }
 
     /// What an element tells, as a reader hears it: role and name, then its children's, in
@@ -818,6 +900,124 @@ mod mac {
         })
     }
 
+    /// The window of the next check: a text box with a misspelling, a table of three rows (the
+    /// second selected), and a tree of a folder (with one thing in it) and a file.
+    fn structures(text: &mut String, table: &mut taut::Table, tree: &mut taut::TreeView, ui: &mut Ui) {
+        ui.column().pad(10.0).gap(8.0).grow().open();
+        ui.check_spelling(Some("en-US"));
+        ui.text_box(text, "Words");
+        let columns = [taut::Column::new("Name").px(120.0), taut::Column::new("Size").px(80.0)];
+        ui.table(table, &columns);
+        for row in ui.rows(3, 22.0) {
+            ui.selectable_row(row, row == 1);
+            ui.cell(["one", "two", "three"][row]);
+            ui.cell(["1 KB", "2 KB", "3 KB"][row]);
+            ui.close();
+        }
+        ui.close();
+        let under = |of: Option<usize>| match of {
+            None => vec![taut::TreeItem::with_children(1, "Folder"), taut::TreeItem::new(2, "File")],
+            Some(1) => vec![taut::TreeItem::new(3, "Inner")],
+            Some(_) => Vec::new(),
+        };
+        for row in ui.tree_view(tree, 20.0, under) {
+            ui.tree_row(tree, row);
+            ui.close();
+        }
+        ui.close();
+        ui.close();
+    }
+
+    /// A client reads a text box by ranges (its length, selection, pieces, a misspelling) and
+    /// selects in it; reads a table by rows, columns, headings and cells; and a tree by levels,
+    /// opening a folder in it.
+    fn a_reader_reads_text_by_ranges_and_tables_and_trees_by_rows() -> Vec<String> {
+        let (mut text, mut table, mut tree) = ("Hello wrold".to_string(), taut::Table::default(), taut::TreeView::default());
+        let window = Window { title: "Structures", width: 420.0, height: 420.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            structures(&mut text, &mut table, &mut tree, ui);
+            let Some(window) = window_titled("Structures") else { return };
+            let all = || {
+                let program = unsafe { AXUIElementCreateApplication(std::process::id() as i32) };
+                let windows = ask(program, "AXWindows").map(items).unwrap_or_default();
+                let mut found = Vec::new();
+                let ours = windows.into_iter().find(|one| ask(*one, "AXTitle").and_then(text_of).as_deref() == Some("Structures"));
+                ours.into_iter().for_each(|one| all_under(one, 0, &mut found));
+                found
+            };
+            let find = |found: &[(Obj, String, String)], role: &str| found.iter().find(|(_, of, _)| of == role).map(|(element, ..)| *element);
+            match steps.step {
+                0 if steps.waited(300) => {
+                    if unsafe { AXIsProcessTrusted() } == 0 {
+                        println!("    the system does not trust this program to read others: not read");
+                        steps.done = true;
+                        return;
+                    }
+                    told(view_of(window), 0, &mut Vec::new());
+                    steps.next();
+                }
+                // (Spelling is checked on a thread of its own: its marks come a little later.)
+                1 if steps.waited(1500) => {
+                    let found = all();
+                    let Some(field) = find(&found, "AXTextField") else { return steps.check(false, || format!("no text field among {} elements", found.len())) };
+                    let count = number_of(ask(field, "AXNumberOfCharacters"));
+                    steps.check(count == Some(11), || format!("the text box has {count:?} characters"));
+                    let piece = ask_of(field, "AXStringForRange", range_value(0, 5)).and_then(text_of);
+                    steps.check(piece.as_deref() == Some("Hello"), || format!("its first five characters are {piece:?}"));
+                    let marked = ask_of(field, "AXAttributedStringForRange", range_value(0, 11));
+                    let wrong = marked.map(|marked| send::<Obj>(marked, c"attribute:atIndex:effectiveRange:", (string("AXMarkedMisspelled"), 7usize, std::ptr::null_mut::<c_void>())));
+                    steps.check(wrong.is_some_and(|wrong| !wrong.is_null()), || "the misspelled word is not marked so".into());
+                    let set = unsafe { AXUIElementSetAttributeValue(field, string("AXSelectedTextRange"), range_value(6, 5)) };
+                    steps.check(set == 0, || format!("setting the selection failed: {set}"));
+                    let table = find(&found, "AXTable");
+                    let counts = table.map(|table| (number_of(ask(table, "AXRowCount")), number_of(ask(table, "AXColumnCount"))));
+                    steps.check(counts == Some((Some(3), Some(2))), || format!("the table has rows and columns {counts:?}"));
+                    let rows = table.and_then(|table| ask(table, "AXRows")).map(items).unwrap_or_default();
+                    let picked = table.and_then(|table| ask(table, "AXSelectedRows")).map(items).unwrap_or_default();
+                    let heads = table.and_then(|table| ask(table, "AXColumnHeaderUIElements")).map(items).unwrap_or_default();
+                    steps.check((rows.len(), picked.len(), heads.len()) == (3, 1, 2), || format!("rows {}, selected {}, headings {}", rows.len(), picked.len(), heads.len()));
+                    steps.check(number_of(picked.first().and_then(|row| ask(*row, "AXIndex"))) == Some(1), || "the selected row is not the second".into());
+                    let numbers: Vec<Obj> = [1i64, 2].iter().map(|n| send(class(c"NSNumber"), c"numberWithLongLong:", (*n,))).collect();
+                    let cell = table.and_then(|table| ask_of(table, "AXCellForColumnAndRow", array(&numbers)));
+                    let cell_row = range_of(cell.and_then(|cell| ask(cell, "AXRowIndexRange")));
+                    steps.check(cell_row == Some([2, 1]), || format!("the cell at column 1, row 2 says it is in rows {cell_row:?}"));
+                    let outline = find(&found, "AXOutline");
+                    let items_now = outline.and_then(|outline| ask(outline, "AXRows")).map(items).unwrap_or_default();
+                    steps.check(items_now.len() == 2, || format!("the tree has {} rows", items_now.len()));
+                    if let Some(folder) = items_now.first() {
+                        let (level, open) = (number_of(ask(*folder, "AXDisclosureLevel")), number_of(ask(*folder, "AXDisclosing")));
+                        steps.check((level, open) == (Some(0), Some(0)), || format!("the folder is at level {level:?}, open {open:?}"));
+                        let yes: Obj = send(class(c"NSNumber"), c"numberWithBool:", (1u8,));
+                        let opened = unsafe { AXUIElementSetAttributeValue(*folder, string("AXDisclosing"), yes) };
+                        steps.check(opened == 0, || format!("opening the folder failed: {opened}"));
+                    }
+                    steps.next();
+                }
+                2 if steps.waited(500) => {
+                    let found = all();
+                    if let Some(field) = find(&found, "AXTextField") {
+                        let picked = range_of(ask(field, "AXSelectedTextRange"));
+                        let said = ask(field, "AXSelectedText").and_then(text_of);
+                        steps.check(picked == Some([6, 5]) && said.as_deref() == Some("wrold"), || format!("selected by a reader: {picked:?}, {said:?}"));
+                    }
+                    let outline = find(&found, "AXOutline");
+                    let items_now = outline.and_then(|outline| ask(outline, "AXRows")).map(items).unwrap_or_default();
+                    steps.check(items_now.len() == 3, || format!("opened, the tree has {} rows", items_now.len()));
+                    if let [folder, inner, ..] = items_now[..] {
+                        let level = number_of(ask(inner, "AXDisclosureLevel"));
+                        let by = ask(inner, "AXDisclosedByRow");
+                        let under = ask(folder, "AXDisclosedRows").map(items).unwrap_or_default();
+                        let same = |a: Obj, b: Obj| send::<u8>(a, c"isEqual:", (b,)) == 1;
+                        steps.check(level == Some(1) && by.is_some_and(|by| same(by, folder)), || format!("the inner item is at level {level:?}, under {by:?}"));
+                        steps.check(under.len() == 1 && same(under[0], inner), || format!("the folder holds {} items", under.len()));
+                    }
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
     /// A view and all within it, as AppKit has them, that is of a class.
     fn views_of(view: Obj, class_name: &str, depth: usize, into: &mut Vec<Obj>) {
         if text_of(send(send::<Obj>(view, c"className", ()), c"description", ())).as_deref() == Some(class_name) {
@@ -891,6 +1091,7 @@ mod mac {
         fn CGEventCreateKeyboardEvent(source: Obj, code: u16, down: bool) -> Obj;
         fn CGEventSetFlags(event: Obj, flags: u64);
         fn CGEventPost(tap: u32, event: Obj);
+        fn CGEventCreateMouseEvent(source: Obj, kind: u32, at: NSPoint, button: u32) -> Obj;
     }
 
     /// A global hotkey is registered with the system; where this program may post keys as a
@@ -906,9 +1107,11 @@ mod mac {
                 0 if steps.waited(500) => {
                     steps.check(!ui.hotkey_refused("Ctrl+Alt+F9"), || "the system refused Ctrl+Alt+F9 (Command+Option+F9)".into());
                     // F9 (code 0x65) and K (0x28) with Command and Option, at the system's own input.
+                    // (A function key comes with the Fn flag, as from a Mac's keyboard.)
                     for (code, down) in [(0x65, true), (0x65, false), (0x28, true), (0x28, false)] {
                         let key = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), code, down) };
-                        unsafe { CGEventSetFlags(key, 0x0010_0000 | 0x0008_0000) };
+                        let function = if code == 0x65 { 0x0080_0000 } else { 0 };
+                        unsafe { CGEventSetFlags(key, 0x0010_0000 | 0x0008_0000 | function) };
                         unsafe { CGEventPost(0, key) };
                         unsafe { CFRelease(key) };
                     }
@@ -916,10 +1119,121 @@ mod mac {
                 }
                 1 if pressed >= 11 || steps.waited(2000) => {
                     match (pressed, unsafe { AXIsProcessTrusted() } != 0) {
-                        (0, true) => steps.check(false, || "a trusted program posted the hotkey, and it was not heard".into()),
+                        (11, _) => {}
+                        (_, true) => steps.check(false, || format!("a trusted program posted both hotkeys: F9 heard {} times, K {}", pressed % 10, pressed / 10)),
                         (0, false) => println!("    the system does not take keys this program posts: the press is not tried"),
                         _ => println!("    heard: F9 {} times, K {} times", pressed % 10, pressed / 10),
                     }
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
+    thread_local! {
+        /// What the stand-in for another program's window took dropped.
+        static TAKEN: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    extern "C" fn target_takes(_: Obj, _: *const c_void, _: Obj) -> usize {
+        1
+    }
+
+    extern "C" fn target_dropped(_: Obj, _: *const c_void, info: Obj) -> u8 {
+        let board: Obj = send(info, c"draggingPasteboard", ());
+        TAKEN.set(text_of(send(board, c"stringForType:", (unsafe { NSPasteboardTypeString },))));
+        1
+    }
+
+    /// A window that stands in for another program's: it takes text dropped on it, as a copy.
+    fn drop_target(frame: NSRect) -> Obj {
+        let mut made = class(c"TestDropTarget");
+        if made.is_null() {
+            unsafe {
+                made = objc_allocateClassPair(class(c"NSView"), c"TestDropTarget".as_ptr(), 0);
+                class_addMethod(made, sel(c"draggingEntered:"), target_takes as *const c_void, c"Q@:@".as_ptr());
+                class_addMethod(made, sel(c"draggingUpdated:"), target_takes as *const c_void, c"Q@:@".as_ptr());
+                class_addMethod(made, sel(c"performDragOperation:"), target_dropped as *const c_void, c"c@:@".as_ptr());
+                objc_registerClassPair(made);
+            }
+        }
+        let window: Obj = send(class(c"NSWindow"), c"alloc", ());
+        let window: Obj = send(window, c"initWithContentRect:styleMask:backing:defer:", (frame, 1usize, 2usize, 0u8));
+        let view: Obj = send(send::<Obj>(made, c"alloc", ()), c"initWithFrame:", (frame,));
+        send::<()>(view, c"registerForDraggedTypes:", (array(&[unsafe { NSPasteboardTypeString }]),));
+        send::<()>(window, c"setReleasedWhenClosed:", (0u8,));
+        send::<()>(window, c"setContentView:", (view,));
+        send::<()>(window, c"orderFront:", (std::ptr::null_mut::<c_void>(),));
+        window
+    }
+
+    /// The middle of a rectangle in a window's view, where the screen has it for posted mouse
+    /// events: from the top left of the main screen, downward.
+    fn on_the_screen(window: Obj, rect: Rect) -> NSPoint {
+        let view = view_of(window);
+        let middle = NSRect { origin: NSPoint { x: f64::from(rect.x + rect.w / 2.0), y: f64::from(rect.y + rect.h / 2.0) }, size: NSSize::default() };
+        let in_window: NSRect = send(view, c"convertRect:toView:", (middle, std::ptr::null_mut::<c_void>()));
+        let on_screen: NSRect = send(window, c"convertRectToScreen:", (in_window,));
+        let main: Obj = items(send(class(c"NSScreen"), c"screens", ()))[0];
+        NSPoint { x: on_screen.origin.x, y: rect_of(main, c"frame").size.height - on_screen.origin.y }
+    }
+
+    /// Posts a person's drag from one place on the screen to another (pressed, moved in steps,
+    /// let go), from a thread of its own: the system's drag runs meanwhile.
+    fn post_drag(from: NSPoint, to: NSPoint) {
+        let post = |kind: u32, at: NSPoint| {
+            let event = unsafe { CGEventCreateMouseEvent(std::ptr::null_mut(), kind, at, 0) };
+            unsafe { CGEventPost(0, event) };
+            unsafe { CFRelease(event) };
+            std::thread::sleep(Duration::from_millis(40));
+        };
+        std::thread::spawn(move || {
+            let at = |part: f64| NSPoint { x: from.x + (to.x - from.x) * part, y: from.y + (to.y - from.y) * part };
+            post(5, at(0.0));
+            post(1, at(0.0));
+            (1..=20).for_each(|step| post(6, at(f64::from(step) / 20.0)));
+            post(6, at(1.0));
+            post(2, at(1.0));
+        });
+    }
+
+    /// Dragged past the window's edge, what a box hands out goes to the system's drag: let go
+    /// on another window that takes text, that window has it, and the box hears it was copied.
+    fn a_drag_out_of_the_window_reaches_another_program() -> Vec<String> {
+        let mut outcome = None;
+        let mut target: Obj = std::ptr::null_mut();
+        let window = Window { title: "Drag out", width: 240.0, height: 140.0, position: Some((80, 120)), ..Default::default() };
+        check(window, move |steps, ui| {
+            ui.column().pad(16.0).open();
+            let source = ui.button("Drag me out");
+            ui.close();
+            if let Some(effect) = ui.drag_out(&source, taut::DragData::Text("from taut")) {
+                outcome = Some(effect);
+            }
+            let Some(window) = window_titled("Drag out") else { return };
+            match steps.step {
+                0 if steps.waited(500) => {
+                    if unsafe { AXIsProcessTrusted() } == 0 {
+                        println!("    the system does not take mouse events this program posts: not tried");
+                        steps.done = true;
+                        return;
+                    }
+                    target = drop_target(NSRect { origin: NSPoint { x: 480.0, y: 200.0 }, size: NSSize { width: 220.0, height: 160.0 } });
+                    let from = on_the_screen(window, source.rect);
+                    let frame = rect_of(target, c"frame");
+                    let main: Obj = items(send(class(c"NSScreen"), c"screens", ()))[0];
+                    let to = NSPoint { x: frame.origin.x + 110.0, y: rect_of(main, c"frame").size.height - frame.origin.y - 80.0 };
+                    post_drag(from, to);
+                    steps.next();
+                }
+                1 if outcome.is_some() || steps.waited(6000) => {
+                    let taken = TAKEN.take();
+                    steps.check(taken.as_deref() == Some("from taut"), || format!("the other window took {taken:?}"));
+                    steps.check(outcome == Some(taut::DropEffect::Copied), || format!("the box heard {outcome:?}"));
+                    steps.check(!source.pressed, || "the button is still held after the drop".into());
+                    send::<()>(target, c"close", ());
+                    send::<()>(target, c"release", ());
                     steps.done = true;
                 }
                 _ => {}
@@ -942,17 +1256,19 @@ mod mac {
     pub fn main() {
         unsafe { objc_setExceptionPreprocessor(thrown) };
         type Check = fn() -> Vec<String>;
-        let checks: [(&str, Check); 13] = [
+        let checks: [(&str, Check); 15] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
             ("keys and an input method's text reach the focused box", keys_and_an_input_methods_text_reach_the_focused_box),
             ("the clipboard is the system's", the_clipboard_is_the_systems),
             ("a second window opens, and its close button closes it", a_second_window_opens_and_its_close_button_closes_it),
             ("a window opens where asked, and is drawn whole at a new size", a_window_opens_where_asked_and_is_drawn_whole_at_a_new_size),
             ("files let go on a window reach its app", files_let_go_on_a_window_reach_its_app),
+            ("a drag out of the window reaches another program", a_drag_out_of_the_window_reaches_another_program),
             ("a see-through window is clear where nothing is drawn", a_see_through_window_is_clear_where_nothing_is_drawn),
             ("a window without a frame has no buttons", a_window_without_a_frame_has_no_buttons),
             ("a waker on another thread wakes the window", a_waker_on_another_thread_wakes_the_window),
             ("a reader reads the window and presses its button", a_reader_reads_the_window_and_presses_its_button),
+            ("a reader reads text by ranges, and tables and trees by rows", a_reader_reads_text_by_ranges_and_tables_and_trees_by_rows),
             ("the tray icon is a status item with a menu", the_tray_icon_is_a_status_item_with_a_menu),
             ("a global hotkey is registered and heard", a_global_hotkey_is_registered_and_heard),
             ("the system's file dialog comes as a sheet and answers", the_systems_file_dialog_comes_as_a_sheet_and_answers),

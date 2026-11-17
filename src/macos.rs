@@ -16,7 +16,7 @@
 //! Keys come as key codes, which name the keys whatever the layout; a letter key is the letter
 //! it types without modifiers. Typed text goes through the system's text input (the view is an
 //! `NSTextInputClient`), so input methods and dead keys work; what an input method is still
-//! composing is shown by its own window, not in the text box. Command and Control are both
+//! composing is shown at the text cursor (`macos_composing`). Command and Control are both
 //! `ctrl` (Command+C copies), Option is `alt`.
 //!
 //! Places on the desktop are in points from the top left of the main screen, as CoreGraphics
@@ -99,12 +99,14 @@ pub(crate) enum Heard {
 }
 
 /// What a view keeps between AppKit's calls: its cursor, the text cursor's place (for input
-/// methods), what an input method composes, the modifiers held, and what a key typed.
+/// methods), what an input method composes (its length in UTF-16 units, 0 for nothing, and its
+/// selected part), the modifiers held, and what a key typed.
 struct ViewState {
     view: Obj,
     cursor: Cursor,
     ime: Option<Rect>,
-    marked: bool,
+    marked: usize,
+    picked: NSRange,
     typed: Option<String>,
     held: Mods,
     /// The last press, kept (retained) for moving a window by the app's own title bar.
@@ -507,7 +509,7 @@ extern "C" fn key_down(view: Obj, _: Sel, event: Obj) {
         unsafe { send::<()>(view, c"interpretKeyEvents:", (ns_array(&[event]),)) };
     }
     let (typed, marked) = with_view(view, |state| (state.typed.take().unwrap_or_default(), state.marked)).unwrap_or_default();
-    if let Some(key) = key.filter(|_| was_marked == Some(false) && !marked) {
+    if let Some(key) = key.filter(|_| was_marked == Some(0) && marked == 0) {
         heard(Heard::Event(view, Event::Key(key, held)));
     }
     if !typed.is_empty() {
@@ -618,8 +620,9 @@ fn text_of(string: Obj) -> String {
 
 /// Text typed or committed by an input method: kept for the key that typed it, or heard now.
 fn typed(view: Obj, text: String) {
+    crate::macos_composing::hide(view);
     let kept = with_view(view, |state| {
-        state.marked = false;
+        state.marked = 0;
         state.typed.as_mut().map(|typed| typed.push_str(&text)).is_some()
     });
     if kept == Some(false) && !text.is_empty() {
@@ -635,29 +638,36 @@ extern "C" fn inserted_alone(view: Obj, _: Sel, string: Obj) {
     typed(view, text_of(string));
 }
 
-/// An input method composes: shown by itself; the view only notes that it does.
-extern "C" fn marked(view: Obj, _: Sel, string: Obj, _: NSRange, _: NSRange) {
-    let composing = !text_of(string).is_empty();
-    with_view(view, |state| state.marked = composing);
+/// An input method composes: shown at the text cursor (see `macos_composing`), and noted.
+extern "C" fn marked(view: Obj, _: Sel, string: Obj, picked: NSRange, _: NSRange) {
+    let text = text_of(string);
+    let at = with_view(view, |state| {
+        (state.marked, state.picked) = (text.encode_utf16().count(), picked);
+        state.ime
+    });
+    crate::macos_composing::show(view, &text, picked, at.flatten());
 }
 
 extern "C" fn unmarked(view: Obj, _: Sel) {
-    with_view(view, |state| state.marked = false);
+    with_view(view, |state| state.marked = 0);
+    crate::macos_composing::hide(view);
 }
 
 extern "C" fn has_marked(view: Obj, _: Sel) -> Bool {
-    with_view(view, |state| state.marked).unwrap_or(false) as Bool
+    (with_view(view, |state| state.marked).unwrap_or(0) > 0) as Bool
 }
 
+/// What is composed, as the input method sees the text: all of it, from the start.
 extern "C" fn marked_range(view: Obj, _: Sel) -> NSRange {
     match with_view(view, |state| state.marked) {
-        Some(true) => NSRange { location: 0, length: 1 },
+        Some(length) if length > 0 => NSRange { location: 0, length },
         _ => NSRange { location: NOT_FOUND, length: 0 },
     }
 }
 
-extern "C" fn selected_range(_: Obj, _: Sel) -> NSRange {
-    NSRange { location: 0, length: 0 }
+/// The input method's own selection within what it composes; else an empty one at the start.
+extern "C" fn selected_range(view: Obj, _: Sel) -> NSRange {
+    with_view(view, |state| if state.marked > 0 { state.picked } else { NSRange::default() }).unwrap_or_default()
 }
 
 extern "C" fn no_attributes(_: Obj, _: Sel) -> Obj {
@@ -766,7 +776,8 @@ impl Shown {
             Shown::placed(window, opening.open_at);
             let scale = send::<f64>(window, c"backingScaleFactor", ()) as f32;
             let size = Shown::content_size(view);
-            VIEWS.with_borrow_mut(|views| views.push(ViewState { view, cursor: Cursor::Arrow, ime: None, marked: false, typed: None, held: Mods::NONE, down: std::ptr::null_mut() }));
+            let state = ViewState { view, cursor: Cursor::Arrow, ime: None, marked: 0, picked: NSRange::default(), typed: None, held: Mods::NONE, down: std::ptr::null_mut() };
+            VIEWS.with_borrow_mut(|views| views.push(state));
             if let Some(drops) = crate::macos_files::DROPS.get() {
                 (drops.take)(view);
             }
@@ -875,6 +886,7 @@ impl Shown {
     fn close(self) {
         VIEWS.with_borrow_mut(|views| views.retain(|state| state.view != self.view));
         crate::ns_accessibility::forget(self.view);
+        crate::macos_composing::forget(self.view);
         // SAFETY: the window is the library's, made with a count of one, which it gives up
         // here; its delegate is unset first, so it says nothing more.
         unsafe {
@@ -1136,7 +1148,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// After a run, does what a window's interface asks of the window: a title, a cursor, the
     /// text cursor's place for input methods, minimize, maximize, full screen, stay on top,
-    /// come forward.
+    /// come forward, a drag out.
     fn follow(&mut self, at: usize) {
         let (view, drops) = (self.windows[at].view, crate::macos_files::DROPS.get());
         let asks = |ui: &mut Ui| {
@@ -1144,6 +1156,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             (ui.take_title(), ui.cursor(), ui.ime_area(), ui.take_minimize(), ui.take_maximized(), ui.take_full_screen(), ui.take_on_top(), ui.take_bring_to_front(), ui.take_file_dialog_request())
         };
         let Some((title, cursor, ime, minimize, fill, whole, on_top, forward, files)) = within(&mut self.ui, self.windows[at].known, asks) else { return };
+        if let Some(outward) = crate::macos_drag_out::OUTWARD.get() {
+            let down = with_view(view, |state| state.down).unwrap_or(std::ptr::null_mut());
+            self.rerun |= within(&mut self.ui, self.windows[at].known, |ui| outward(ui, view, down)) == Some(true);
+        }
         if let Some((ask, files)) = crate::macos_files::DIALOG.get().zip(files) {
             ask(self.windows[at].window, view, files);
         }
