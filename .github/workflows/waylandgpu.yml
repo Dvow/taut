@@ -1,0 +1,33 @@
+# The Wayland GPU path (zwp_linux_dmabuf_v1 from Vulkan), proven on a machine with /dev/udmabuf:
+# Mesa's lavapipe exports real dmabufs through it. Runs only on the branch waylandgpu.
+name: waylandgpu
+
+on:
+  push:
+    branches: [waylandgpu]
+
+concurrency:
+  group: waylandgpu
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages, and /dev/udmabuf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends linux-modules-extra-$(uname -r) weston xvfb xauth \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 libx11-dev
+          sudo modprobe udmabuf
+          sudo chmod 666 /dev/udmabuf
+      - name: Probe
+        run: bash .github/waylandgpu/probe.sh
