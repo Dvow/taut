@@ -226,13 +226,13 @@ fn main() {
     println!("created buffer {buffer:#x}");
     w.send(8, 1, &[buffer.to_le_bytes(), 0u32.to_le_bytes(), 0u32.to_le_bytes()].concat(), None);
     w.send(8, 2, &[0i32, 0, wd as i32, ht as i32].iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<_>>(), None);
-    w.send(8, 3, &13u32.to_le_bytes(), None); // frame -> 13
+    w.send(8, 3, &12u32.to_le_bytes(), None); // frame -> 12
     w.send(8, 6, &[], None);
     let start = std::time::Instant::now();
     loop {
         let (o, op, b) = w.next();
         if o == 1 && op == 0 { println!("RESULT error obj {} code {} {}", u(&b, 0), u(&b, 1), text(&b, 2)); return; }
-        if o == 13 { println!("frame done ({:?})", start.elapsed()); look(); return; }
+        if o == 12 { println!("frame done ({:?})", start.elapsed()); look(); return; }
     }
 }
 
