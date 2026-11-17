@@ -915,6 +915,7 @@ mod mac {
             ui.close();
         }
         ui.close();
+        ui.close();
         let under = |of: Option<usize>| match of {
             None => vec![taut::TreeItem::with_children(1, "Folder"), taut::TreeItem::new(2, "File")],
             Some(1) => vec![taut::TreeItem::new(3, "Inner")],
@@ -1142,7 +1143,9 @@ mod mac {
 
     extern "C" fn target_dropped(_: Obj, _: *const c_void, info: Obj) -> u8 {
         let board: Obj = send(info, c"draggingPasteboard", ());
-        TAKEN.set(text_of(send(board, c"stringForType:", (unsafe { NSPasteboardTypeString },))));
+        // (Where it holds no text, what it holds instead, to say.)
+        let text = text_of(send(board, c"stringForType:", (unsafe { NSPasteboardTypeString },)));
+        TAKEN.set(text.or_else(|| text_of(send(send::<Obj>(board, c"types", ()), c"description", ())).map(|kinds| format!("no text, but {kinds}"))));
         1
     }
 
@@ -1242,6 +1245,128 @@ mod mac {
         })
     }
 
+    #[link(name = "System")]
+    unsafe extern "C" {
+        static _NSConcreteGlobalBlock: [usize; 0];
+    }
+
+    /// A block as the compiler lays one out, holding nothing.
+    #[repr(C)]
+    struct Block {
+        isa: *const c_void,
+        flags: i32,
+        reserved: i32,
+        invoke: *const c_void,
+        descriptor: *const [usize; 2],
+    }
+
+    /// A block calling `invoke`, made to live for good.
+    fn block(invoke: *const c_void) -> *const Block {
+        static DESCRIBED: [usize; 2] = [0, size_of::<Block>()];
+        Box::leak(Box::new(Block { isa: (&raw const _NSConcreteGlobalBlock).cast(), flags: 1 << 28, reserved: 0, invoke, descriptor: &DESCRIBED }))
+    }
+
+    /// What the notification centre answered, from its own threads: the permission (+1 once
+    /// answered), how many notifications it shows (+1), and whether the click was answered.
+    static PERMISSION: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static SHOWING: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    static CLICK_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    extern "C" fn settings_came(_: *const Block, settings: Obj) {
+        PERMISSION.store(send::<i64>(settings, c"authorizationStatus", ()) + 1, std::sync::atomic::Ordering::SeqCst);
+    }
+    extern "C" fn showing_came(_: *const Block, shown: Obj) {
+        SHOWING.store(items(shown).len() as i64 + 1, std::sync::atomic::Ordering::SeqCst);
+    }
+    extern "C" fn click_done(_: *const Block) {
+        CLICK_DONE.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    extern "C" fn this_one(this: Obj, _: *const c_void) -> Obj {
+        this
+    }
+    extern "C" fn first_one(_: Obj, _: *const c_void) -> Obj {
+        string("1")
+    }
+
+    /// A stand-in for the system's answer to a click on notification 1: its notification, that
+    /// one's request, and its identifier, all as the system's answer them.
+    fn stand_in_click() -> Obj {
+        let mut made = class(c"TestResponse");
+        if made.is_null() {
+            unsafe {
+                made = objc_allocateClassPair(class(c"NSObject"), c"TestResponse".as_ptr(), 0);
+                class_addMethod(made, sel(c"notification"), this_one as *const c_void, c"@@:".as_ptr());
+                class_addMethod(made, sel(c"request"), this_one as *const c_void, c"@@:".as_ptr());
+                class_addMethod(made, sel(c"identifier"), first_one as *const c_void, c"@@:".as_ptr());
+                objc_registerClassPair(made);
+            }
+        }
+        send(send(send::<Obj>(made, c"alloc", ()), c"init", ()), c"autorelease", ())
+    }
+
+    /// Makes an app bundle of this program in a folder of its own, signed for this machine.
+    fn bundled_copy() -> std::io::Result<PathBuf> {
+        let app = std::env::temp_dir().join(format!("taut-check-{}", std::process::id())).join("TautCheck.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS"))?;
+        std::fs::copy(std::env::current_exe()?, app.join("Contents/MacOS/TautCheck"))?;
+        let keys = [("CFBundleIdentifier", "org.taut.check"), ("CFBundleExecutable", "TautCheck"), ("CFBundleName", "TautCheck"), ("CFBundlePackageType", "APPL"), ("CFBundleVersion", "1")];
+        let listed: String = keys.iter().map(|(key, value)| format!("<key>{key}</key><string>{value}</string>")).collect();
+        let head = r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">"#;
+        std::fs::write(app.join("Contents/Info.plist"), format!("{head}<plist version=\"1.0\"><dict>{listed}</dict></plist>"))?;
+        let _ = std::process::Command::new("codesign").args(["--force", "--sign", "-"]).arg(&app).output();
+        Ok(app.join("Contents/MacOS/TautCheck"))
+    }
+
+    /// Notifications go to the system's centre from an app bundle: this program is copied into
+    /// one and runs this check there. It shows one with a picture; the centre has it where the
+    /// system permits; a click reported by the centre reaches the app.
+    fn a_notification_from_an_app_bundle_reaches_the_system() -> Vec<String> {
+        if std::env::var_os("TAUT_BUNDLED").is_none() {
+            let ran = bundled_copy().and_then(|program| std::process::Command::new(program).arg("notification").env("TAUT_BUNDLED", "1").env_remove("TAUT_SHOTS").output());
+            return match ran {
+                Ok(done) if done.status.success() => {
+                    String::from_utf8_lossy(&done.stdout).lines().filter(|line| line.starts_with("    ")).for_each(|line| println!("{line}"));
+                    Vec::new()
+                }
+                Ok(done) => vec![format!("in a bundle: {}{}", String::from_utf8_lossy(&done.stdout), String::from_utf8_lossy(&done.stderr))],
+                Err(error) => vec![format!("no bundle to run in: {error}")],
+            };
+        }
+        let (mut shown, mut heard) = (None, None);
+        let window = Window { title: "Notices", width: 240.0, height: 120.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            ui.label("Notifications");
+            heard = heard.or(ui.notification_clicked());
+            match steps.step {
+                0 if steps.waited(300) => {
+                    shown = Some(ui.system_notification("Hello", "From taut", Some((2, &[0xffff_0000, 0xff00_ff00, 0xff00_00ff, 0xffff_ffff]))));
+                    steps.next();
+                }
+                1 if steps.waited(1500) => {
+                    let centre: Obj = send(class(c"UNUserNotificationCenter"), c"currentNotificationCenter", ());
+                    let delegate: Obj = send(centre, c"delegate", ());
+                    steps.check(!delegate.is_null(), || "the centre has no delegate: clicks would not be heard".into());
+                    send::<()>(centre, c"getNotificationSettingsWithCompletionHandler:", (block(settings_came as *const c_void),));
+                    send::<()>(centre, c"getDeliveredNotificationsWithCompletionHandler:", (block(showing_came as *const c_void),));
+                    let selector = c"userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:";
+                    send::<()>(delegate, selector, (centre, stand_in_click(), block(click_done as *const c_void)));
+                    steps.next();
+                }
+                2 if steps.waited(1000) => {
+                    let ordering = std::sync::atomic::Ordering::SeqCst;
+                    let (permission, showing) = (PERMISSION.load(ordering) - 1, SHOWING.load(ordering) - 1);
+                    println!("    in a bundle: permission {permission} (2 given, 1 refused, 0 not asked yet), {showing} notifications shown");
+                    steps.check(permission >= 0 && showing >= 0, || "the centre did not answer".into());
+                    steps.check(!matches!(permission, 2 | 3) || showing >= 1, || "permitted, the centre shows no notification".into());
+                    steps.check(heard == shown && shown.is_some(), || format!("clicked, the app heard {heard:?}, not {shown:?}"));
+                    steps.check(CLICK_DONE.load(ordering), || "the click was not answered to the centre".into());
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
     /// Says what an Objective-C exception was, as it is thrown: past Rust's frames it can only
     /// end the program.
     extern "C" fn thrown(exception: Obj) -> Obj {
@@ -1257,7 +1382,7 @@ mod mac {
     pub fn main() {
         unsafe { objc_setExceptionPreprocessor(thrown) };
         type Check = fn() -> Vec<String>;
-        let checks: [(&str, Check); 15] = [
+        let checks: [(&str, Check); 16] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
             ("keys and an input method's text reach the focused box", keys_and_an_input_methods_text_reach_the_focused_box),
             ("the clipboard is the system's", the_clipboard_is_the_systems),
@@ -1271,6 +1396,7 @@ mod mac {
             ("a reader reads the window and presses its button", a_reader_reads_the_window_and_presses_its_button),
             ("a reader reads text by ranges, and tables and trees by rows", a_reader_reads_text_by_ranges_and_tables_and_trees_by_rows),
             ("the tray icon is a status item with a menu", the_tray_icon_is_a_status_item_with_a_menu),
+            ("a notification from an app bundle reaches the system", a_notification_from_an_app_bundle_reaches_the_system),
             ("a global hotkey is registered and heard", a_global_hotkey_is_registered_and_heard),
             ("the system's file dialog comes as a sheet and answers", the_systems_file_dialog_comes_as_a_sheet_and_answers),
         ];

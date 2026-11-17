@@ -144,6 +144,8 @@ mod macos_drag_out;
 #[cfg(target_os = "macos")]
 mod macos_files;
 #[cfg(target_os = "macos")]
+mod macos_notifications;
+#[cfg(target_os = "macos")]
 mod macos_shell;
 #[cfg(target_os = "macos")]
 mod macos_sys;

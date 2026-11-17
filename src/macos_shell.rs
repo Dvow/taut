@@ -6,8 +6,8 @@
 //! brings the first window forward.
 //!
 //! Handed to the windows the first time an app asks for any of it (`platform::hand_desktop`),
-//! so a program that never does carries none of it. (System notifications need the program to
-//! be an app bundle on macOS; they are not shown, and dropped.)
+//! so a program that never does carries none of it. System notifications are in
+//! `macos_notifications`.
 use crate::hotkeys::{ALT, CTRL, HOTKEYS, LOGO, Named, Registration, SHIFT};
 use crate::macos::{Heard, heard};
 use crate::macos_sys::*;
@@ -89,7 +89,8 @@ pub(crate) fn hand_desktop() {
 }
 
 /// After a run: the tray icon follows what the app said; hotkeys are registered or released;
-/// the first window hides, or comes back, or comes forward for a later start.
+/// notifications show; the first window hides, or comes back, or comes forward for a later
+/// start.
 fn stood(ui: &mut Ui, window: Obj, _view: Obj) -> bool {
     let (described, changed, hide) = TRAY.with_borrow_mut(|tray| {
         let (described, changed) = tray.settle();
@@ -97,8 +98,8 @@ fn stood(ui: &mut Ui, window: Obj, _view: Obj) -> bool {
     });
     keep_icon(described, changed);
     let mut news = keep_hotkeys(ui);
-    // Notifications: macOS shows none for a program that is not an app bundle.
-    crate::notifications::NOTICES.with_borrow_mut(|notices| notices.out.clear());
+    let out = crate::notifications::NOTICES.with_borrow_mut(|notices| std::mem::take(&mut notices.out));
+    crate::macos_notifications::show(out);
     // SAFETY: plain requests of a window of the library's, and of the application.
     unsafe {
         if hide && !HIDDEN.replace(true) {
