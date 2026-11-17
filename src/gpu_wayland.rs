@@ -1044,11 +1044,13 @@ mod tests {
         ui.close();
     }
 
-    /// An interface with the built-in font, this big, run once with a count.
+    /// An interface with the built-in font, this big, run once with a count. (Its first
+    /// changes are taken: a new surface draws all of it anyway.)
     fn interface(size: Size, count: u32) -> Ui {
         let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
         ui.resize(size, 1.0);
         ui.run(&mut |ui| counted(&count, ui));
+        ui.changes();
         ui
     }
 
@@ -1494,12 +1496,15 @@ mod tests {
     }
 
     /// Whether a window may draw at once: the compositor showed its last frame, and holds not
-    /// every image (or buffer).
+    /// every image (or buffer). (An image whose buffer was made but not yet taken is free.)
     fn ready(host: &Windows) -> bool {
         let sheet = &host.windows[0].sheet;
         let gpu = host.link.gpu.borrow();
         let free = match (&sheet.way, gpu.as_ref()) {
-            (Way::Gpu(shows), Some(gpu)) => shows.images.iter().any(|image| image.buffer != 0 && !gpu.held.contains(&image.buffer)),
+            (Way::Gpu(shows), Some(gpu)) => shows.images.iter().any(|image| {
+                let made = gpu.answers.iter().any(|(params, buffer)| *params == image.params && *buffer != 0);
+                (image.buffer != 0 && !gpu.held.contains(&image.buffer)) || made
+            }),
             _ => sheet.buffers.len() < 2 || sheet.buffers.iter().any(|buffer| !buffer.busy),
         };
         sheet.waiting == 0 && free
