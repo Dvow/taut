@@ -3763,6 +3763,8 @@ pub(crate) mod tests {
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no dialog is shown on it");
         let folder = std::env::temp_dir().join(format!("taut-files-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
+        // The dialog answers with long names; a temp folder can have a short one (`RUNNER~1`).
+        let folder = PathBuf::from(std::fs::canonicalize(&folder).unwrap().to_string_lossy().trim_start_matches(r"\\?\"));
         std::fs::write(folder.join("report.txt"), "x").unwrap();
         // The user: presses a button of the dialog with this title (1: `IDOK`, 2: `IDCANCEL`)
         // once it is up, and again while it stays up: it takes a moment to initialize and
