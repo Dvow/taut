@@ -5,6 +5,22 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
 ## 0.2.1 (unreleased)
 
+- **Fixed:** a scrolled box could keep redrawing on Linux in optimised builds (its offset flipped
+  between 0.0 and -0.0).
+- **Renamed, old names kept** (deprecated, removed in 0.3):
+
+  | 0.2.0 | 0.2.1 |
+  | --- | --- |
+  | `Canvas::held_to` | `Canvas::with_clip` |
+  | `Canvas::ink` | `Canvas::fill_mask` |
+
+- **Documents:** words left from before 0.2 are gone (`set_screen_reader`, `set_full_screen`,
+  `Event::Zoom`, `AppFonts::unhinted`, the `gpu` feature's list of GPU paths). The guide's
+  "Kept between runs" is now "Saving settings between runs", and shows
+  `Window::with_placement`, not the old `placed`.
+- **`examples/walk.rs`** checks only what shows in a window, fails on a missing or one-colour
+  picture, on stale drawing (Linux) and on a demo that does not end when closed, and counts
+  its checks.
 - **macOS:** taut builds and runs there. AppKit windows (several, frameless, see-through,
   always on top, placed and sized, Retina), drawn by the CPU and shown by Core Animation;
   mouse, wheel and touchpad, pinch, keys, text input with input methods, cursors, focus;
@@ -27,6 +43,7 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   uses the layer. `Surface::upload` and `Upload`: each changed place as any renderer's texture
   upload takes it.
 - **Code changes:** `Window` has the field `renderer`: a `Window { .. }` written out in full
+  needs it (`..Default::default()` covers it).
 - **Renamed:** names say what things are, in the terms other GUI libraries use. No aliases:
   rename in your code, by the tables below. Examples `nodes` and `files` are now `node_editor`
   and `file_browser`.
@@ -214,8 +231,6 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 | `written_date` | `format_date` |
 | `written_number` | `format_number` |
 | `written_time` | `format_time` |
-
-  needs it (`..Default::default()` covers it).
 
 ## 0.1.0 (2026-11-16)
 

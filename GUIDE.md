@@ -14,7 +14,7 @@ Every call, in the order an app needs it. The examples compile with the tests.
 | fold (`ui.fold`) | collapsing header, expander |
 | tick box (`Role::CheckBox`); choice (`ui.radio`, `Role::RadioButton`) | checkbox; radio button |
 | select box (`ui.select`); `ui.combo` | drop-down, combo box; filterable combo box |
-| kept between runs (`taut::storage`, `to_string()`) | persisted settings |
+| saving settings between runs (`taut::storage`, `to_string()`) | persisted settings |
 | tell (`ui.tell`); access nodes (`ui.access_nodes()`) | accessibility info (role, name, state); accessibility tree |
 | notice (`ui.notice`) | toast, snackbar |
 | panel (`ui.panel`); second window (`SecondWindow`) | inner window (egui's `Window`); another OS window |
@@ -426,8 +426,8 @@ fn a_few_lines(state: &mut State, ui: &mut Ui) {
 ## The larger parts
 
 What the user does to these is stored in values the app keeps (`Table`, `TreeView`, `Panel`,
-`SecondWindow`, `Selection`, `Dock`), which can be saved ("Kept between runs"). Tables and trees tell
-screen readers their structure.
+`SecondWindow`, `Selection`, `Dock`), which can be saved ("Saving settings between runs").
+Tables and trees tell screen readers their structure.
 
 ```rust,no_run
 use taut::{Align, CellEditor, CellValue, Color, Column, Icon, Panel, Selection, Table, TreeItem, TreeView, Ui};
@@ -562,7 +562,7 @@ fn larger_parts(state: &mut State, ui: &mut Ui) {
     }
     ui.close();
 
-    // Drag and drop: carry an app number from one box to another.
+    // Drag and drop: drag an app number from one box to another.
     let file = ui.selectable(false, "report.txt");
     if ui.drag_source(&file, 7) {
         ui.label("report.txt"); // follows the pointer
@@ -588,8 +588,8 @@ fn plan(ui: &mut Ui, view: &mut PanZoom, rooms: &[(Rect, &str)]) {
     let t = ui.theme;
     ui.pan_zoom(view, "Plan", 0.1..=8.0); // (`pan_zoom_editor`: a plain drag is the app's)
     for (at, name) in rooms {
-        // Everything on it is told of, in sight or not: its bars, and showing all of it, go
-        // by that.
+        // Everything on it is told to screen readers, in view or not: its bars, and showing all
+        // of it, go by that.
         if ui.in_view(*at) {
             ui.el().offset(at.x, at.y).size(at.w, at.h).fill(t.panel).text(name, t.font, t.text).show();
         }
@@ -609,7 +609,7 @@ use taut::{Graph, GraphAction, Node, Ui};
 
 fn sums(ui: &mut Ui, graph: &mut Graph<f64>) {
     while let Some(n) = ui.graph(graph, "Sums") {
-        // Its title and ports are drawn by now: what is said here goes under them.
+        // Its title and ports are drawn by now: what is described here goes under them.
         ui.number(&mut graph.nodes[n].data, 1.0);
         ui.close();
     }
@@ -739,14 +739,14 @@ fn save_or_print(ui: &mut Ui, notes: &Markdown, printing: &mut Option<PrintJob>)
 }
 ```
 
-## Kept between runs
+## Saving settings between runs
 
 `Dock`, `Table`, `Panel`, `SecondWindow`, `PanZoom` and `ui.window_placement()` (the window) are each one line of
 text: `to_string()`, back with `parse()`. `taut::storage` gives the settings folder and writes
 files atomically (a crash leaves the old file whole):
 
 ```rust,no_run
-let file = taut::storage::folder("Notes").expect("a name that can be a folder").join("kept.txt");
+let file = taut::storage::folder("Notes").expect("a name that can be a folder").join("settings.txt");
 // As the app starts (nothing, the first time; `read` is below):
 let text = taut::storage::read(&file).unwrap_or_default();
 // As it closes, what `written` below gives:
@@ -758,7 +758,7 @@ The values, one per line:
 ```rust
 use taut::{Dock, Panel, Table, WindowPlacement};
 
-struct Kept {
+struct Saved {
     window: Option<WindowPlacement>,
     dock: Dock,
     table: Table,
@@ -766,25 +766,25 @@ struct Kept {
 }
 
 /// How the app opens the first time.
-fn first() -> Kept {
+fn first() -> Saved {
     let dock = Dock::of(&["Files"]).beside(Dock::of(&["Editor", "Notes"]), 0.25);
-    Kept { window: None, dock, table: Table::default(), tools: Panel::new(40.0, 60.0, 260.0, 320.0) }
+    Saved { window: None, dock, table: Table::default(), tools: Panel::new(40.0, 60.0, 260.0, 320.0) }
 }
 
 /// A line for each value, to write when the app closes. (`window` is what
 /// `ui.window_placement()` said last.)
-fn written(kept: &Kept) -> String {
-    let window = kept.window.map_or(String::new(), |placed| placed.to_string());
-    format!("{window}\n{}\n{}\n{}\n", kept.dock, kept.table, kept.tools)
+fn written(saved: &Saved) -> String {
+    let window = saved.window.map_or(String::new(), |placement| placement.to_string());
+    format!("{window}\n{}\n{}\n{}\n", saved.dock, saved.table, saved.tools)
 }
 
 /// And back. A line that is missing, or is not what was written (a file from another
 /// version, or one somebody typed into), gives an error: that value is then as it is the
 /// first time, and nothing is ever laid out by half a line.
-fn read(text: &str) -> Kept {
+fn read(text: &str) -> Saved {
     let (mut lines, first) = (text.lines(), first());
     let mut line = || lines.next().unwrap_or("");
-    Kept {
+    Saved {
         window: line().parse().ok(),
         // (`only`: without the panels this version of the app no longer has. The ones it
         // has got since join the first tabs by themselves.)
@@ -794,18 +794,18 @@ fn read(text: &str) -> Kept {
     }
 }
 
-let mut kept = first();
-kept.window = Some(WindowPlacement { position: (300, 200), width: 1000.0, height: 640.0, maximized: false });
-kept.table.hidden.push(1);
-kept.tools.folded = true;
-let text = written(&kept);
+let mut saved = first();
+saved.window = Some(WindowPlacement { position: (300, 200), width: 1000.0, height: 640.0, maximized: false });
+saved.table.hidden.push(1);
+saved.tools.folded = true;
+let text = written(&saved);
 assert_eq!(text, "300 200 1000 640 0\ns,1,0.25,1,2;t,0,Files;t,0,Editor,Notes|\n|||1|0\n40 60 260 320 1 1\n");
 let back = read(&text);
-assert!(back.window == kept.window && back.dock == kept.dock && back.table == kept.table && back.tools == kept.tools);
+assert!(back.window == saved.window && back.dock == saved.dock && back.table == saved.table && back.tools == saved.tools);
 assert!(read("nonsense").dock == first().dock);
 ```
 
-Reopen the window there with `Window { .. }.placed(kept.window)` ("Where a window is" below).
+Reopen the window there with `Window { .. }.with_placement(saved.window)` ("Where a window is" below).
 
 ## The rest of `Ui`
 
@@ -824,7 +824,7 @@ Reopen the window there with `Window { .. }.placed(kept.window)` ("Where a windo
 | Text boxes | Context menu: cut, copy, paste, select all (`ui.edit_words` translates) · `ui.check_spelling(None)` (or `Some("de-DE")`) before a box · `ui.enter_submits()`: Enter is the app's, Shift+Enter a new line · `ui.text_page(&mut text, hint)` fills its room · `ui.text_command(id, TextCommand::Undo)` (`Redo`, `Cut`, `Copy`, `Paste`, `SelectAll`) for Edit menus · `ui.text_edit_state(id)`: cursor, selection, undo state (`TextEditState::line_column(text)`) · `ui.select_text(id, [from, to])` |
 | Ids | `ui.next_id()` · `ui.id(key)` |
 | Motion and time | `ui.animate(id, target, duration)` · `ui.wake_after(duration)` · `ui.rerun()` |
-| Where a window is | `ui.window_placement()` (save on close) · `Window { .. }.with_placement(kept)` restores it · `SecondWindow::new(420.0, 300.0).position(x, y).min_size(200.0, 120.0)` · `ui.screens()`, `ui.screen()`, `Window { screen: Some(1), .. }`, `.on_screen(1)`: "Screens, kinds of second window, and closing" |
+| Where a window is | `ui.window_placement()` (save on close) · `Window { .. }.with_placement(saved)` restores it · `SecondWindow::new(420.0, 300.0).position(x, y).min_size(200.0, 120.0)` · `ui.screens()`, `ui.screen()`, `Window { screen: Some(1), .. }`, `.on_screen(1)`: "Screens, kinds of second window, and closing" |
 | Clipboard | `ui.copy(text)` · `ui.clipboard()` · `ui.copy_picture(width, &pixels)` · `ui.clipboard_picture()` · `ui.copy_files(&paths)` · `ui.clipboard_files()` |
 | Files and links | `taut::open_with_system(path_or_link)`: default program, on its own thread |
 | Pictures | `ui.add_picture_file(bytes)` (PNG, JPEG, GIF, WebP, BMP, ICO) · `ui.add_picture(width, pixels)` · `ui.set_picture(picture, width, pixels)` · `ui.drop_picture(picture)` · `ui.picture_size`, `ui.animation_size`, `ui.drawing_size` · SVG: `ui.add_drawing(svg_text)`, `.drawing(drawing, color)`, `ui.drop_drawing` · animations: `ui.add_animation(bytes)`, `.animation(animation)`, `ui.drop_animation` · decode: `png::decode`, `svg::decode(text, width, height)`, `gif::decode`, `webp::decode`, `bmp::decode`, `bmp::decode_icon` · encode: `png::encode(width, pixels)` (`None` unless whole rows), `png::encode_rgba`, `jpeg::encode(width, &pixels, quality)`, `bmp::encode_icon(&[(width, &pixels), …])` · SVG extras, once: `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()` |
@@ -904,7 +904,7 @@ fn describe(state: &mut State, ui: &mut Ui) {
         ui.set_full_screen(!whole);
     }
 
-    // A second window with no frame: its strip is said inside it, and `ui.quit()` there
+    // A second window with no frame: its title bar is described inside it, and `ui.quit()` there
     // closes it.
     if ui.frameless_window(&mut state.tools, "Tools") {
         let strip = ui.row().h(Length::Px(26.0)).pad((8.0, 0.0)).fill(t.panel).sense().open();
@@ -1095,7 +1095,7 @@ struct State {
 }
 
 fn describe(state: &mut State, ui: &mut Ui) {
-    // The icon and its menu, said whole in every run.
+    // The icon and its menu, described whole in every run.
     if ui.tray(&[(16, &state.icon)], "Notes").clicked {
         ui.bring_to_front();
     }

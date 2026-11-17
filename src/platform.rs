@@ -123,10 +123,11 @@ const BEST: [Renderer; 4] = [Renderer::Direct3D11, Renderer::Direct3D12, Rendere
 const BEST: [Renderer; 2] = [Renderer::OpenGL, Renderer::Vulkan];
 
 impl Renderer {
-    /// What the user `said` (`TAUT_RENDERER`, in any case) over the app's choice.
+    /// The renderer the user names in `TAUT_RENDERER` (`asked`, any case), over the app's
+    /// choice.
     #[cfg(all(feature = "gpu", not(target_os = "macos")))]
-    pub(crate) fn chosen(self, said: Option<&str>) -> Renderer {
-        match said.map(str::to_ascii_lowercase).as_deref() {
+    pub(crate) fn chosen(self, asked: Option<&str>) -> Renderer {
+        match asked.map(str::to_ascii_lowercase).as_deref() {
             Some("cpu") => Renderer::Cpu,
             Some("gpu") => Renderer::Gpu,
             Some("d3d11") => Renderer::Direct3D11,
@@ -267,11 +268,11 @@ pub(crate) fn hand_drops() {
 /// out ([`Ui::drag_out`](crate::Ui::drag_out)). Reached no other way, so a program that never
 /// does is built without it. (On Windows OLE hands it to the system, see `ole_drag::Outward`;
 /// on X11 the windows speak XDND themselves.)
-pub(crate) fn hands_out() {
+pub(crate) fn enable_drag_out() {
     #[cfg(windows)]
-    crate::windows::hands_out();
+    crate::windows::enable_drag_out();
     #[cfg(all(unix, not(target_os = "macos")))]
-    crate::x11::hands_out();
+    crate::x11::enable_drag_out();
 }
 
 /// Hands the windows their way to ask for the system's file dialog, on this thread: the first

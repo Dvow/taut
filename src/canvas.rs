@@ -98,10 +98,15 @@ impl<'a> Canvas<'a> {
         (self.clip, self.visible) = (clip, rect(left as f32 / s, top as f32 / s, (right - left) as f32 / s, (bottom - top) as f32 / s));
     }
     /// Runs `draw` clipped to `area`.
-    pub fn held_to(&mut self, area: Rect, draw: impl FnOnce(&mut Self)) {
+    pub fn with_clip(&mut self, area: Rect, draw: impl FnOnce(&mut Self)) {
         let before = self.clip(area);
         draw(self);
         self.restore_clip(before);
+    }
+    /// Renamed to [`with_clip`](Self::with_clip).
+    #[deprecated(since = "0.2.1", note = "renamed to `with_clip`")]
+    pub fn held_to(&mut self, area: Rect, draw: impl FnOnce(&mut Self)) {
+        self.with_clip(area, draw);
     }
 
     /// Saves the pixels under `area` (units) within the clip, appended to `kept`: what a
@@ -477,9 +482,9 @@ impl<'a> Canvas<'a> {
 
     /// Draws a buffer something was drawn on in white (canvas pixels), `width` per row, top
     /// left at `at` in window pixels: each canvas pixel covered by the buffer's coverage, in
-    /// the colour `ink` gives for its window position. So overlapping strokes are drawn into
+    /// the colour `color` gives for its window position. So overlapping strokes are drawn into
     /// such a buffer one by one and laid down at once, with a gradient.
-    pub fn ink(&mut self, block: &[u32], width: usize, [x, y]: [i32; 2], mut ink: impl FnMut(i32, i32) -> Color) {
+    pub fn fill_mask(&mut self, block: &[u32], width: usize, [x, y]: [i32; 2], mut color: impl FnMut(i32, i32) -> Color) {
         let ([cx0, cy0, cx1, cy1], high) = (self.clip, (block.len() / width.max(1)) as i32);
         let (from, to) = (x.max(cx0), x.saturating_add(width as i32).min(cx1));
         for row in y.max(cy0)..y.saturating_add(high).min(cy1) {
@@ -488,8 +493,13 @@ impl<'a> Canvas<'a> {
             }
             let start = (row - y) as usize * width + (from - x) as usize;
             let covered = self.row(row, from, to).iter_mut().zip(&block[start..]).zip(from..).filter(|((_, cover), _)| **cover >> 24 != 0);
-            covered.for_each(|((pixel, cover), x)| *pixel = ink(x, row).over(*pixel, cover >> 24));
+            covered.for_each(|((pixel, cover), x)| *pixel = color(x, row).over(*pixel, cover >> 24));
         }
+    }
+    /// Renamed to [`fill_mask`](Self::fill_mask).
+    #[deprecated(since = "0.2.1", note = "renamed to `fill_mask`")]
+    pub fn ink(&mut self, block: &[u32], width: usize, at: [i32; 2], color: impl FnMut(i32, i32) -> Color) {
+        self.fill_mask(block, width, at, color);
     }
 
     /// Draws a coverage mask, one byte per pixel (0 none, 255 full): a glyph, as the text
@@ -847,6 +857,28 @@ mod tests {
         c.rounded(rect(-10.0, -10.0, 100.0, 100.0), 3.0, Color::WHITE);
         c.stroke(&Path::svg("M-5 4h30"), pt(0.0, 0.0), 1.0, 2.0, Color::WHITE);
         assert!(px.chunks(8).all(|row| row[..4].iter().all(|p| *p == 0) && row[4..].iter().all(|p| *p != 0)));
+    }
+
+    /// The names 0.2.1 replaced still work, and draw what the new ones do.
+    #[test]
+    #[allow(deprecated)]
+    fn the_old_names_draw_as_the_new_ones() {
+        let mask: Vec<u32> = (0..16).map(|at| (at * 16) << 24 | 0x00ff_ffff).collect();
+        let draw = |old: bool| {
+            let mut px = block(8, 8);
+            let mut c = Canvas::new(&mut px, 8, 8, (0, 0), 1.0);
+            let fill = |c: &mut Canvas| c.rounded(rect(0.0, 0.0, 8.0, 8.0), 0.0, Color::WHITE);
+            let color = |x: i32, y: i32| Color::rgb(0x10_2030 + (x * 8 + y) as u32);
+            match old {
+                true => (c.held_to(rect(2.0, 2.0, 3.0, 3.0), fill), c.ink(&mask, 4, [5, 4], color)),
+                false => (c.with_clip(rect(2.0, 2.0, 3.0, 3.0), fill), c.fill_mask(&mask, 4, [5, 4], color)),
+            };
+            px
+        };
+        let new = draw(false);
+        assert_eq!(draw(true), new);
+        assert_eq!(new.iter().filter(|p| **p == Color::WHITE.0).count(), 9, "the clip held the fill to 3 by 3 pixels");
+        assert!(new[5 * 8 + 6] != 0, "the mask laid down its colours");
     }
 
     #[test]

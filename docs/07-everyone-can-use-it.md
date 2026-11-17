@@ -84,8 +84,8 @@ let mut loud = true;
 // (What a run says is put together after it: so a second run, which hears the first.)
 ui.run(&mut |ui| describe(&mut loud, ui));
 ui.run(&mut |ui| describe(&mut loud, ui));
-let told: Vec<(Role, &str, Option<bool>)> = ui.visible_access_nodes().iter().map(|said| (said.role, said.name.as_str(), said.on)).collect();
-assert_eq!(told, [(Role::Button, "Add a song", None), (Role::Switch, "Loud", Some(true)), (Role::Text, "Connected", None)]);
+let nodes: Vec<(Role, &str, Option<bool>)> = ui.visible_access_nodes().iter().map(|node| (node.role, node.name.as_str(), node.on)).collect();
+assert_eq!(nodes, [(Role::Button, "Add a song", None), (Role::Switch, "Loud", Some(true)), (Role::Text, "Connected", None)]);
 ```
 
 - Each `AccessNode` also has `rect`, focus, enabled state, and the rest a reader gets. Chapter 8 finds

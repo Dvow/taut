@@ -633,7 +633,7 @@ impl Ui {
     /// a click would ([`selectable_row`](Self::selectable_row)) without one: keys moved the
     /// cell onto it (`mods` says which were held), or a screen reader focused it, which moves
     /// the cell there.
-    pub(crate) fn keys_picked(&mut self, columns: [u32; 2], row: Id) -> bool {
+    pub(crate) fn keys_selected(&mut self, columns: [u32; 2], row: Id) -> bool {
         let Some(table) = self.table_now(columns) else { return false };
         let (id, nth, keys) = (self.grids.now[table].id, self.row_next(table), self.grids.now[table].keys);
         if self.listening && row != 0 && self.focus == row {

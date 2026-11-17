@@ -48,7 +48,7 @@ pub(crate) struct Picking {
 }
 
 /// Where the pointer is in `in_box`, each from 0 to 1, while it holds the box.
-fn spot(ui: &Ui, held: &Response, in_box: Rect) -> Option<[f32; 2]> {
+fn fraction_in(ui: &Ui, held: &Response, in_box: Rect) -> Option<[f32; 2]> {
     let at = ui.pointer().filter(|_| held.pressed)?;
     Some([((at.x - in_box.x) / in_box.w.max(1.0)).clamp(0.0, 1.0), ((at.y - in_box.y) / in_box.h.max(1.0)).clamp(0.0, 1.0)])
 }
@@ -231,7 +231,7 @@ impl Ui {
         if which == SQUARE_PART && std::mem::take(&mut self.picking.fresh) {
             self.set_focus(held.id);
         }
-        let mut to = spot(self, &held, held.rect);
+        let mut to = fraction_in(self, &held, held.rect);
         if held.focused {
             let mut key = |pressed: Key| (self.key(pressed, Mods::NONE) as i32 + 10 * self.key(pressed, Mods::SHIFT) as i32) as f32;
             let [right, left, down, up] = [Key::Right, Key::Left, Key::Down, Key::Up].map(&mut key);

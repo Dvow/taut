@@ -29,7 +29,7 @@ use crate::id::Id;
 use crate::macos_sys::*;
 use crate::platform::{Clipboard, PicturesAndFiles, Window, WindowPlacement};
 use crate::preferences::Preferences;
-use crate::screens::{Screen, Spot, spot};
+use crate::screens::{OpenAt, Screen, window_origin};
 use crate::second_window::{WindowKind, WindowOpening};
 use crate::surface::Surface;
 use crate::theme::ContrastColors;
@@ -731,7 +731,7 @@ struct Opening<'a> {
     title: &'a str,
     size: Size,
     min_size: Size,
-    spot: Spot,
+    open_at: OpenAt,
     frameless: bool,
     transparent: bool,
     kind: WindowKind,
@@ -763,7 +763,7 @@ impl Shown {
             send::<()>(view, c"release", ());
             prepare_view(view, opening.transparent);
             Shown::dressed(window, opening.frameless, opening.transparent, opening.kind);
-            Shown::placed(window, opening.spot);
+            Shown::placed(window, opening.open_at);
             let scale = send::<f64>(window, c"backingScaleFactor", ()) as f32;
             let size = Shown::content_size(view);
             VIEWS.with_borrow_mut(|views| views.push(ViewState { view, cursor: Cursor::Arrow, ime: None, marked: false, typed: None, held: Mods::NONE, down: std::ptr::null_mut() }));
@@ -798,12 +798,12 @@ impl Shown {
     /// Puts a window where its app asked (see `screens::spot`): its frame's top left at a
     /// desktop place, on the screen there or the nearest; in the middle of a screen, or of the
     /// window it belongs to. Else AppKit puts it in the middle of the main screen.
-    fn placed(window: Obj, asked: Spot) {
+    fn placed(window: Obj, asked: OpenAt) {
         // SAFETY: plain questions and a move of a window of the library's.
         unsafe {
             let frame = send_rect(window, c"frame", ());
             let size = [frame.size.width as f32, frame.size.height as f32];
-            let Some((_, at)) = spot(&screens(), asked, |_| size) else { return send::<()>(window, c"center", ()) };
+            let Some((_, at)) = window_origin(&screens(), asked, |_| size) else { return send::<()>(window, c"center", ()) };
             send::<()>(window, c"setFrameTopLeftPoint:", (NSPoint { x: f64::from(at.x), y: desk_height() - f64::from(at.y) },));
         }
     }
@@ -943,7 +943,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             title: window.title,
             size: Size { w: window.width, h: window.height },
             min_size: Size { w: window.min_width, h: window.min_height },
-            spot: window.position.map(|(x, y)| Spot::At(x, y)).or(window.screen.map(Spot::Middle)).unwrap_or_default(),
+            open_at: window.position.map(|(x, y)| OpenAt::At(x, y)).or(window.screen.map(OpenAt::Middle)).unwrap_or_default(),
             frameless: window.frameless,
             transparent: window.transparent,
             kind: WindowKind::Plain,
@@ -1117,13 +1117,13 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             let opens: WindowOpening = self.ui.window_opening(known).unwrap_or_default();
             // A dialog goes over the first window, unless its app says where.
             let over = || on_desk(unsafe { send_rect(self.windows[0].window, c"frame", ()) }, desk_height());
-            let spot = match (opens.position, opens.screen, opens.kind) {
-                (Some((x, y)), ..) => Spot::At(x, y),
-                (None, Some(nth), _) => Spot::Middle(nth),
-                (None, None, WindowKind::Dialog) => Spot::Over(over()),
-                _ => Spot::Any,
+            let open_at = match (opens.position, opens.screen, opens.kind) {
+                (Some((x, y)), ..) => OpenAt::At(x, y),
+                (None, Some(nth), _) => OpenAt::Middle(nth),
+                (None, None, WindowKind::Dialog) => OpenAt::Over(over()),
+                _ => OpenAt::Any,
             };
-            let opening = Opening { known: Some(known), title: &title, size, min_size: opens.min_size, spot, frameless: opens.frameless, transparent: false, kind: opens.kind };
+            let opening = Opening { known: Some(known), title: &title, size, min_size: opens.min_size, open_at, frameless: opens.frameless, transparent: false, kind: opens.kind };
             let shown = Shown::open(opening);
             if self.ui.listening {
                 self.ui.in_window(known, |ui| ui.set_screen_reader(true));

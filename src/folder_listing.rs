@@ -28,7 +28,7 @@ const BATCH: usize = 4096;
 /// `Entry::flags` bits: folder; hidden; selected; an image whose thumbnail was requested.
 const FOLDER: u8 = 1;
 const HIDDEN: u8 = 2;
-const PICKED: u8 = 4;
+const SELECTED: u8 = 4;
 const ASKED: u8 = 8;
 
 /// Extensions of files with thumbnails.
@@ -75,8 +75,8 @@ impl Entry {
         self.flags & FOLDER != 0
     }
     /// Selected by the user.
-    pub fn picked(&self) -> bool {
-        self.flags & PICKED != 0
+    pub fn selected(&self) -> bool {
+        self.flags & SELECTED != 0
     }
 }
 
@@ -261,9 +261,9 @@ impl Listing {
 
     /// Selects only this item, or nothing.
     pub fn pick_only(&mut self, at: Option<u32>) {
-        self.entries.iter_mut().for_each(|entry| entry.flags &= !PICKED);
+        self.entries.iter_mut().for_each(|entry| entry.flags &= !SELECTED);
         if let Some(entry) = at.and_then(|at| self.entries.get_mut(at as usize)) {
-            entry.flags |= PICKED;
+            entry.flags |= SELECTED;
         }
         self.anchor = at.unwrap_or(self.anchor);
     }
@@ -273,13 +273,13 @@ impl Listing {
         let Some(&at) = self.found.get(row) else { return };
         let from = self.found.iter().position(|other| *other == self.anchor).unwrap_or(row);
         if !ctrl {
-            self.entries.iter_mut().for_each(|entry| entry.flags &= !PICKED);
+            self.entries.iter_mut().for_each(|entry| entry.flags &= !SELECTED);
         }
         let rows = if shift { from.min(row)..from.max(row) + 1 } else { row..row + 1 };
-        let on = shift || self.entries[at as usize].flags & PICKED == 0;
+        let on = shift || self.entries[at as usize].flags & SELECTED == 0;
         for row in rows {
             let entry = &mut self.entries[self.found[row] as usize];
-            entry.flags = if on { entry.flags | PICKED } else { entry.flags & !PICKED };
+            entry.flags = if on { entry.flags | SELECTED } else { entry.flags & !SELECTED };
         }
         if !shift {
             self.anchor = at;
@@ -288,12 +288,12 @@ impl Listing {
     /// Selects everything visible.
     pub fn pick_all(&mut self) {
         let Listing { entries, found, .. } = self;
-        found.iter().for_each(|at| entries[*at as usize].flags |= PICKED);
+        found.iter().for_each(|at| entries[*at as usize].flags |= SELECTED);
     }
     /// The selected items, in visible order. (Selected items hidden by the search are left
     /// out.)
-    pub fn picked(&self) -> impl Iterator<Item = u32> + '_ {
-        self.found.iter().copied().filter(|at| self.entries[*at as usize].flags & PICKED != 0)
+    pub fn selected(&self) -> impl Iterator<Item = u32> + '_ {
+        self.found.iter().copied().filter(|at| self.entries[*at as usize].flags & SELECTED != 0)
     }
 
     /// Whether this item's thumbnail can be read and was not yet requested: if so, it now is
@@ -542,7 +542,7 @@ mod tests {
         listing.click(3, false, true);
         listing.click(10, true, false);
         listing.click(2, true, false);
-        let picked: Vec<&str> = listing.picked().map(|at| listing.name(at)).collect();
+        let picked: Vec<&str> = listing.selected().map(|at| listing.name(at)).collect();
         assert_eq!(picked, ["file 0.txt", "file 2.txt", "file 9.txt"]);
         assert_eq!(listing.starting("FILE 1", 0), Some(2));
         assert_eq!(listing.starting("file 1", 3), Some(11), "file 10, after file 9");

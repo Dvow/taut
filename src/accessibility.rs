@@ -592,7 +592,7 @@ struct NodeBuilder<'a> {
     /// The notes in box order, and their text.
     notes: &'a [Note],
     note_text: &'a str,
-    /// The long-list rows described (`Ui::rows_told`), and how many were placed: the first
+    /// The long-list rows described (`Ui::access_rows`), and how many were placed: the first
     /// node in such a row gives its position of how many.
     list_rows: &'a [(u32, [u32; 2])],
     rows_placed: usize,
@@ -791,8 +791,8 @@ fn place_radio_buttons(nodes: &mut [AccessNode], rovers: &[Rover]) {
 
 /// What screen readers are told, and what tests find things by.
 impl Ui {
-    /// A screen reader starts or stops listening to this window: from the next run on, `said`
-    /// is kept up to date, or not.
+    /// A screen reader starts or stops listening to this window: from the next run on,
+    /// [`visible_access_nodes`](Self::visible_access_nodes) is kept up to date, or not.
     pub fn set_screen_reader(&mut self, listening: bool) {
         (self.listening, self.again) = (listening, true);
         if listening {

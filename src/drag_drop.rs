@@ -3,13 +3,13 @@
 //! Inside the window, the dragged thing is a number the app chooses (a row, a file). Dragged
 //! past the window's edge, or over a window lying on it, it becomes what the app hands out
 //! ([`DragData`]): files, text, an image or a link, which another program takes as a copy or
-//! moves. The system carries it from then on; dragged back over its own window it is the number
+//! moves. The system drags it from then on; dragged back over its own window it is the number
 //! again, and drops as usual.
 //!
 //! ```ignore
 //! let file = ui.selectable(false, "report.txt");
 //! if ui.drag_source(&file, 7) {
-//!     ui.label("report.txt"); // follows the pointer while it is carried
+//!     ui.label("report.txt"); // follows the pointer while it is dragged
 //!     ui.close();
 //! }
 //! if ui.drag_out(&file, DragData::Files(&paths)) == Some(DropEffect::Moved) {
@@ -31,7 +31,7 @@ use std::path::PathBuf;
 /// How far the pointer moves with the button down before a drag starts.
 const SLACK: f32 = 4.0;
 /// Tells the drag layer's id from the box it was dragged from.
-const CARRIED: Id = 0xca22_1ed0_ca22_1ed0;
+const OUTSIDE_LAYER: Id = 0xca22_1ed0_ca22_1ed0;
 
 /// What a thing dragged out of the window is to the program it is dropped in.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -139,13 +139,13 @@ impl Ui {
         if self.dragging.is_none() && gone.x.abs().max(gone.y.abs()) > SLACK {
             self.dragging = Some((from.id, what));
         }
-        // Outside the window the system carries it: nothing of the window follows the pointer.
+        // Outside the window the system drags it: nothing of the window follows the pointer.
         let out = self.crossing.out.as_ref().is_some_and(|(id, _)| *id == from.id);
         let inside = |at: &crate::geom::Point| !out || rect(0.0, 0.0, self.size().w, self.size().h).contains(*at);
         let Some(at) = self.pointer().filter(|at| inside(at) && self.dragging.is_some_and(|(source, _)| source == from.id)) else { return false };
         let t = self.theme;
         self.set_cursor(Cursor::Move);
-        self.layer(from.id ^ CARRIED, Anchor::At(pt(at.x + 12.0, at.y + 14.0)), false, Color::NONE);
+        self.layer(from.id ^ OUTSIDE_LAYER, Anchor::At(pt(at.x + 12.0, at.y + 14.0)), false, Color::NONE);
         self.row().pad((8.0, 4.0)).fill(t.raised).border(t.line_strong, 1.0).radius(6.0).shadow(10.0).open();
         true
     }
@@ -159,7 +159,7 @@ impl Ui {
     /// moved. `None` otherwise, including when dropped where nothing took it, or cancelled with
     /// Escape. Only what is passed in the run it leaves is handed out: call it every run.
     pub fn drag_out(&mut self, from: &Response, what: DragData) -> Option<DropEffect> {
-        crate::platform::hands_out();
+        crate::platform::enable_drag_out();
         if let Some((_, taken)) = self.crossing.taken.take_if(|(id, _)| *id == from.id) {
             self.again = true;
             return Some(taken);
@@ -268,7 +268,7 @@ mod tests {
         /// Where the drag source box is, and the drop target.
         from: crate::geom::Rect,
         on: crate::geom::Rect,
-        carried: bool,
+        dragged_out: bool,
         dropped: Option<u64>,
         taken: Vec<DropEffect>,
         files: Option<Vec<PathBuf>>,
@@ -297,12 +297,12 @@ mod tests {
             let (seen, what) = (&mut self.seen, self.what);
             self.ui.run(&mut |ui| {
                 ui.column().pad(20.0).gap(20.0).open();
-                let from = ui.button("Carry me");
+                let from = ui.button("Drag me");
                 if ui.drag_source(&from, 7) {
                     ui.label("seven");
                     ui.close();
                 }
-                seen.carried |= ui.drag_payload().is_some();
+                seen.dragged_out |= ui.drag_payload().is_some();
                 seen.taken.extend(what.and_then(|what| ui.drag_out(&from, what)));
                 let on = ui.button("Let go here");
                 seen.dropped = seen.dropped.or(ui.dropped(&on));
@@ -329,13 +329,13 @@ mod tests {
     }
 
     #[test]
-    fn what_is_carried_past_the_windows_edge_goes_out_as_what_the_app_says_it_is() {
+    fn what_is_dragged_past_the_windows_edge_goes_out_as_what_the_app_says_it_is() {
         let paths = [PathBuf::from("/a/one.txt"), PathBuf::from("/b/two.png")];
         let paths: &'static [PathBuf] = Box::leak(Box::new(paths));
         let mut app = App::new(Some(DragData::Files(paths)));
         app.take();
         // Dragged inside the window, it is the number, and nothing goes out.
-        assert!(app.seen.carried && app.ui.drag_leaves_window());
+        assert!(app.seen.dragged_out && app.ui.drag_leaves_window());
         assert_eq!(app.ui.take_drag_out(), None);
         app.does(&[Event::Move(pt(290.0, 100.0))]);
         assert_eq!(app.ui.take_drag_out(), None, "still inside");

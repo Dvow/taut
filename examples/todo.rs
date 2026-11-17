@@ -30,15 +30,15 @@ struct App {
     renaming: Option<(u64, String)>,
     /// The number the next new task is known by.
     next: u64,
-    /// Where the window is, as it last said.
-    placed: Option<WindowPlacement>,
+    /// Where the window is, as it last reported.
+    placement: Option<WindowPlacement>,
     /// The file the list is kept in.
     file: PathBuf,
 }
 
 fn describe(app: &mut App, ui: &mut Ui) {
     ui.theme = if ui.system_dark() { Theme::dark() } else { Theme::light() };
-    app.placed = ui.window_placement().or(app.placed);
+    app.placement = ui.window_placement().or(app.placement);
     let mut changed = adding(app, ui);
     showing(app, ui);
     changed |= list(app, ui);
@@ -136,15 +136,15 @@ impl App {
     fn load(file: PathBuf) -> App {
         let text = std::fs::read_to_string(&file).unwrap_or_default();
         let mut lines = text.lines();
-        let placed = lines.next().and_then(|line| line.parse().ok());
+        let placement = lines.next().and_then(|line| line.parse().ok());
         let tasks: Vec<Task> = lines.enumerate().map(|(at, line)| Task { id: at as u64, done: line.starts_with("x "), text: line.get(2..).unwrap_or("").into() }).collect();
-        App { next: tasks.len() as u64, tasks, draft: String::new(), shown: 0, renaming: None, placed, file }
+        App { next: tasks.len() as u64, tasks, draft: String::new(), shown: 0, renaming: None, placement, file }
     }
 
     /// Writes the list into its file: where the window is on the first line, then a line for
     /// each task, with `x` before one that is done and `-` before one that is not.
     fn save(&self) -> std::io::Result<()> {
-        let mut text = self.placed.map_or(String::new(), |placed| placed.to_string());
+        let mut text = self.placement.map_or(String::new(), |placement| placement.to_string());
         for task in &self.tasks {
             text += &format!("\n{} {}", if task.done { "x" } else { "-" }, task.text);
         }
@@ -170,5 +170,5 @@ fn file() -> PathBuf {
 fn main() {
     let mut app = App::load(file());
     let window = Window { title: "To do", width: 400.0, height: 480.0, min_width: 280.0, min_height: 220.0, ..Default::default() };
-    taut::run(window.with_placement(app.placed), move |ui| describe(&mut app, ui));
+    taut::run(window.with_placement(app.placement), move |ui| describe(&mut app, ui));
 }

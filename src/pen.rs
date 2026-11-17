@@ -368,7 +368,7 @@ fn lines(canvas: &mut Canvas, (edges, ends): (&[[Point; 2]], &[usize]), to_pixel
         cover.fill_with(&mut placed(&edges[from..*end], to_pixels), false, |_, _| Color::WHITE);
         from = *end;
     }
-    canvas.ink(covers, across as usize, [left, first], ink);
+    canvas.fill_mask(covers, across as usize, [left, first], ink);
 }
 
 /// The fewest `to_pixels` input units per pixel: by its largest stretch. (So a curve flattened

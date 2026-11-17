@@ -534,8 +534,8 @@ impl FileDialog {
 
     /// The selected items' names for the name box: one alone, several each in quotes. Saving,
     /// only a file's name goes in: a folder is no name to save under.
-    fn picked_names(&self) -> Option<String> {
-        let names: Vec<&str> = self.listing.picked().filter(|at| !self.saving || !self.listing.entry(*at).folder()).map(|at| self.listing.name(at)).collect();
+    fn selected_names(&self) -> Option<String> {
+        let names: Vec<&str> = self.listing.selected().filter(|at| !self.saving || !self.listing.entry(*at).folder()).map(|at| self.listing.name(at)).collect();
         match names[..] {
             [] if self.saving => None,
             [] => Some(String::new()),
@@ -1119,7 +1119,7 @@ impl Ui {
     /// buffer.)
     fn file_row(&mut self, files: &FileDialog, at: u32, written: &mut String) -> Response {
         let (entry, name) = (files.listing.entry(at), files.listing.name(at));
-        let state = self.selectable_row(at, entry.picked());
+        let state = self.selectable_row(at, entry.selected());
         self.row().gap(6.0).align(Align::Start, Align::Center).open();
         self.icon(match (entry.folder(), files.listing.is_picture(at)) {
             (true, _) => FOLDER,
@@ -1169,7 +1169,7 @@ impl Ui {
         }
         if state.clicked {
             did.taken = did.taken.or((state.double_clicked || by_key && enter).then_some(at));
-        } else if arrived && !files.listing.entry(at).picked() {
+        } else if arrived && !files.listing.entry(at).selected() {
             files.listing.pick_only(Some(at));
             did.picked = true;
         }
@@ -1230,7 +1230,7 @@ impl Ui {
     fn file_cell(&mut self, files: &FileDialog, at: u32, [nth, count]: [usize; 2], did: &mut Did) -> Response {
         let (t, entry, name) = (self.theme, files.listing.entry(at), files.listing.name(at));
         let state = self.press(self.id(("cell", at)));
-        let fill = if entry.picked() {
+        let fill = if entry.selected() {
             t.selected
         } else if state.hovered {
             t.hover
@@ -1238,7 +1238,7 @@ impl Ui {
             crate::color::Color::NONE
         };
         self.column().key(("cell", at)).w(Length::Px(CELL)).h(Length::Grow(1.0)).pad(4.0).gap(4.0).align(Align::Start, Align::Center).fill(fill).radius(6.0).sense().focusable().open();
-        self.tell(&state, Role::Row, Some(entry.picked()), name);
+        self.tell(&state, Role::Row, Some(entry.selected()), name);
         self.tell_position(nth + 1, count);
         self.el().size(SMALL, SMALL).align(Align::Center, Align::Center).open();
         let mark = if entry.folder() {
@@ -1377,7 +1377,7 @@ impl Ui {
     /// After the list is described: the selection goes into the name box, then letters typed on
     /// the list, range and page keys, and the thumbnails wanted.
     fn after_list(&mut self, files: &mut FileDialog, did: &Did) {
-        if let Some(names) = files.picked_names().filter(|_| did.picked) {
+        if let Some(names) = files.selected_names().filter(|_| did.picked) {
             files.name = names;
         }
         if let Some(row) = did.on {
@@ -1448,7 +1448,7 @@ impl Ui {
             files.listing.pick_all();
         }
         if one || all {
-            files.name = files.picked_names().unwrap_or_default();
+            files.name = files.selected_names().unwrap_or_default();
             self.rerun();
         }
     }
@@ -1457,7 +1457,7 @@ impl Ui {
         let Some(row) = row else { return };
         let Some(&at) = files.listing.found.get(row) else { return };
         files.listing.pick_only(Some(at));
-        if let Some(names) = files.picked_names() {
+        if let Some(names) = files.selected_names() {
             files.name = names;
         }
         files.jump = Some(row);
@@ -1469,7 +1469,7 @@ impl Ui {
             return;
         }
         files.listing.click(row, false, true);
-        files.name = files.picked_names().unwrap_or_default();
+        files.name = files.selected_names().unwrap_or_default();
         files.jump = Some(row);
         self.rerun();
     }
@@ -1531,7 +1531,7 @@ impl Ui {
             files.go(Go::To(path), true);
             return None;
         }
-        if !files.many || !files.listing.entry(at).picked() {
+        if !files.many || !files.listing.entry(at).selected() {
             files.name = files.listing.name(at).into();
         }
         files.take()

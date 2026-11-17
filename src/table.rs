@@ -411,7 +411,7 @@ impl Ui {
         let before = (0..place).rev().map(|place| state.column_at(place, count)).find(|column| state.shows(*column));
         let after = (place + 1..count).map(|place| state.column_at(place, count)).find(|column| state.shows(*column));
         let (beside, left) = if at.x < held.rect.x { (before, true) } else { (after, false) };
-        let there = beside.map_or(Rect::EMPTY, |column| self.seen(self.id(column)));
+        let there = beside.map_or(Rect::EMPTY, |column| self.visible_rect(self.id(column)));
         let past = if left { at.x < there.x + there.w / 2.0 } else { at.x >= there.x + there.w / 2.0 };
         if let (Some(beside), true, false) = (beside, past, there.is_empty()) {
             state.move_column(number, beside, count);
@@ -501,7 +501,7 @@ impl Ui {
 
     /// The table the open box is in, for screen readers: the index of the note it was told by.
     /// (None outside a table, or while nobody listens.)
-    fn table_told(&self) -> Option<usize> {
+    fn open_table_note(&self) -> Option<usize> {
         let columns = self.open.last().filter(|_| self.listening)?.columns;
         // (The table's scrolling body is the outermost box with its columns; the table is that
         // box's parent.)
@@ -515,7 +515,7 @@ impl Ui {
     fn count_row(&mut self, columns: [u32; 2]) {
         let Some(around) = self.open.last() else { return };
         let (among, place) = (if around.row > 0.0 { around.count } else { 0 }, around.children);
-        let Some((table, rows)) = self.table_told().and_then(|table| Some((table, self.table_row_count(table)?))) else { return };
+        let Some((table, rows)) = self.open_table_note().and_then(|table| Some((table, self.table_row_count(table)?))) else { return };
         let row = if among > 0 { (*rows + place).saturating_sub(among + 1) } else { (*rows += 1, *rows - 1).1 };
         self.tell_row(row, columns, table);
     }
@@ -529,7 +529,7 @@ impl Ui {
         // In a table, focus is on the table's cell, not on each row; a row the keys move the
         // cell onto is selected as a click would.
         let keyed = self.table_now(columns).is_some();
-        state.clicked |= keyed && self.keys_picked(columns, id);
+        state.clicked |= keyed && self.keys_selected(columns, id);
         let fill = match (picked, state.hovered) {
             (true, _) => t.selected,
             (false, true) => t.hover,
@@ -566,7 +566,7 @@ impl Ui {
         let row = if row > 0.0 { row.max(self.text.metrics(self.theme.font, self.scale).height().ceil()) } else { row };
         // (In a table told to a screen reader, these are so many more of its rows, described or
         // not.)
-        if let Some(rows) = self.table_told().and_then(|table| self.table_row_count(table)) {
+        if let Some(rows) = self.open_table_note().and_then(|table| self.table_row_count(table)) {
             *rows += count as u32;
         }
         let (id, page) = (self.next_id(), self.open.first().map_or(0, |open| open.at));

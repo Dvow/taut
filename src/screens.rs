@@ -7,11 +7,11 @@
 //! tells the interface ([`set_screens`](Ui::set_screens)). All windows of a program share one
 //! list, main screen first.
 //!
-//! Where a window opens is worked out here, the same on every system (`spot`), from what its
-//! app asked: at a place (kept if a screen still shows it, else moved onto the nearest screen);
-//! in the middle of a screen; or in the middle of its owner. It always lies within its screen's
-//! work area as far as it fits. Only a window whose owner is on no screen stays with its owner,
-//! where nobody sees either.
+//! Where a window opens is worked out here, the same on every system (`window_origin`), from
+//! what its app asked: at a place (kept if a screen still shows it, else moved onto the nearest
+//! screen); in the middle of a screen; or in the middle of its owner. It always lies within its
+//! screen's work area as far as it fits. Only a window whose owner is on no screen stays with
+//! its owner, where nobody sees either.
 use crate::geom::{Point, Rect, pt, rect};
 use crate::ui::Ui;
 
@@ -30,7 +30,7 @@ pub struct Screen {
 
 /// Where an app asked a window to open, as handed on by whoever shows it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum Spot {
+pub(crate) enum OpenAt {
     /// Wherever the system, or the windows already open, would put it.
     #[default]
     Any,
@@ -69,23 +69,23 @@ pub(crate) fn nearest(screens: &[Screen], area: Rect) -> Option<usize> {
 /// system can create it there at that screen's scale. `size` gives the window's size with
 /// frame, in pixels at a scale. Nothing if the app asked for no place or there are no screens:
 /// then the system places it.
-pub(crate) fn spot(screens: &[Screen], asked: Spot, size: impl Fn(f32) -> [f32; 2]) -> Option<(usize, Point)> {
+pub(crate) fn window_origin(screens: &[Screen], asked: OpenAt, size: impl Fn(f32) -> [f32; 2]) -> Option<(usize, Point)> {
     let (on, middle) = match asked {
-        Spot::Any => return None,
-        Spot::At(x, y) => (nearest(screens, TITLE.moved(x as f32, y as f32))?, None),
-        Spot::Middle(nth) => (if nth < screens.len() { nth } else { 0 }, None),
-        Spot::Over(owner) => (nearest(screens, owner)?, Some(pt(owner.x + owner.w / 2.0, owner.y + owner.h / 2.0))),
+        OpenAt::Any => return None,
+        OpenAt::At(x, y) => (nearest(screens, TITLE.moved(x as f32, y as f32))?, None),
+        OpenAt::Middle(nth) => (if nth < screens.len() { nth } else { 0 }, None),
+        OpenAt::Over(owner) => (nearest(screens, owner)?, Some(pt(owner.x + owner.w / 2.0, owner.y + owner.h / 2.0))),
     };
     let screen = *screens.get(on)?;
     let [wide, high] = size(screen.scale);
     let work = screen.work_area;
     let middle = middle.unwrap_or(pt(work.x + work.w / 2.0, work.y + work.h / 2.0));
     let corner = match asked {
-        Spot::At(x, y) => pt(x as f32, y as f32),
+        OpenAt::At(x, y) => pt(x as f32, y as f32),
         _ => pt((middle.x - wide / 2.0).round(), (middle.y - high / 2.0).round()),
     };
     // A window over an owner on no screen stays with it, out of sight too.
-    if matches!(asked, Spot::Over(owner) if screen.rect.intersect(owner).is_empty()) {
+    if matches!(asked, OpenAt::Over(owner) if screen.rect.intersect(owner).is_empty()) {
         return Some((on, corner));
     }
     let x = corner.x.min(work.right() - wide).max(work.x);
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn a_place_a_screen_still_has_is_kept_and_any_other_is_moved_onto_the_nearest_screen() {
         let screens = desk();
-        let at = |x, y| spot(&screens, Spot::At(x, y), framed);
+        let at = |x, y| window_origin(&screens, OpenAt::At(x, y), framed);
         // Where it was, on its screen, at that screen's scale.
         assert_eq!(at(300, 200), Some((0, pt(300.0, 200.0))));
         assert_eq!(at(2500, 600), Some((1, pt(2500.0, 600.0))));
@@ -176,8 +176,8 @@ mod tests {
         // With its title on the 150% screen though its corner is just off it: on that one.
         assert_eq!(at(1900, 600), Some((1, pt(1920.0, 600.0))));
         // No place asked for, or no screens: the system places it.
-        assert_eq!(spot(&screens, Spot::Any, framed), None);
-        assert_eq!(spot(&[], Spot::At(300, 200), framed), None);
+        assert_eq!(window_origin(&screens, OpenAt::Any, framed), None);
+        assert_eq!(window_origin(&[], OpenAt::At(300, 200), framed), None);
     }
 
     #[test]
@@ -185,14 +185,14 @@ mod tests {
         let screens = desk();
         // In the middle of each screen's work area, at its scale; a missing screen means the
         // main one.
-        let middle = |nth| spot(&screens, Spot::Middle(nth), framed);
+        let middle = |nth| window_origin(&screens, OpenAt::Middle(nth), framed);
         assert_eq!(middle(0), Some((0, pt(960.0 - 208.0, 520.0 - 169.0))));
         assert_eq!(middle(1), Some((1, pt(1920.0 + 1280.0 - 312.0, (200.0 + 720.0 - 253.5f32).round()))));
         assert_eq!(middle(2), Some((2, pt(-1250.0 + 625.0 - 208.0, -300.0 + 512.0 - 169.0))));
         assert_eq!(middle(7), middle(0));
         // Over an owner: in its middle, on its screen; kept on that screen where the owner lies
         // near its edge.
-        let over = |owner| spot(&screens, Spot::Over(owner), framed);
+        let over = |owner| window_origin(&screens, OpenAt::Over(owner), framed);
         assert_eq!(over(rect(200.0, 100.0, 1000.0, 800.0)), Some((0, pt(700.0 - 208.0, 500.0 - 169.0))));
         assert_eq!(over(rect(2000.0, 300.0, 600.0, 400.0)), Some((1, pt(2300.0 - 312.0, (500.0 - 253.5f32).round()))));
         assert_eq!(over(rect(1500.0, 850.0, 300.0, 200.0)), Some((0, pt(1650.0 - 208.0, 1040.0 - 338.0))));
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(over(rect(-30000.0, -30000.0, 600.0, 400.0)), Some((2, pt(-30000.0 + 300.0 - 208.0, -30000.0 + 200.0 - 169.0))));
         // A window larger than its screen's work area lies at its top left.
         let huge = |_: f32| [3000.0, 2000.0];
-        assert_eq!(spot(&screens, Spot::Middle(0), huge), Some((0, pt(0.0, 0.0))));
+        assert_eq!(window_origin(&screens, OpenAt::Middle(0), huge), Some((0, pt(0.0, 0.0))));
     }
 
     #[test]

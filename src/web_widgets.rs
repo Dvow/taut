@@ -577,7 +577,7 @@ impl Ui {
         };
         let whole = self.el().flow(Flow::Stack).w(Length::Grow(1.0)).fill(ink.with_alpha(0.12)).border(ink.with_alpha(0.45), 1.0).radius(t.radius).sense().open();
         // Not in the last layout: it has just appeared.
-        if self.seen(whole.id).is_empty() {
+        if self.visible_rect(whole.id).is_empty() {
             self.announce(text);
         }
         self.tell(&whole, Role::Group, None, text);

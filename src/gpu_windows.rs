@@ -698,6 +698,6 @@ pub(crate) mod tests {
     #[test]
     fn with_the_feature_the_test_program_carries_the_gpu_path() {
         // The scan `windows::tests` makes without the feature, shown to find it with.
-        assert!(crate::windows::tests::carries_device_making());
+        assert!(crate::windows::tests::has_device_creation());
     }
 }

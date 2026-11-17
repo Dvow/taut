@@ -29,7 +29,7 @@ use crate::color::Color;
 use crate::font_file::{Bytes, FontFile, first_not};
 use crate::geom::{Point, pt};
 use crate::path::Path;
-use crate::svg::{Kept, Table, both, through, undone};
+use crate::svg::{ParsedDrawing, Table, both, through, undone};
 use std::f32::consts::{PI, TAU};
 
 /// The deepest paint nesting: beyond any real drawing.
@@ -77,7 +77,7 @@ fn written(font: &FontFile, svg: Bytes, glyph: u16, unit: f32, pen: [f32; 2], in
     let unpacked = if file.starts_with(&[0x1f, 0x8b, 8]) { Some(gunzip(file)?) } else { None };
     let text = std::str::from_utf8(unpacked.as_deref().unwrap_or(file)).ok()?;
     let em = 1.0 / font.unit(1.0);
-    let drawing = Kept::glyph(text, &format!("glyph{glyph}"), em)?;
+    let drawing = ParsedDrawing::glyph(text, &format!("glyph{glyph}"), em)?;
     // A drawing doesn't state its bounds. It is drawn on a layer with room for any glyph (half
     // an em left of the pen and below the baseline, an em and a half above and right), then
     // trimmed to what was drawn.

@@ -335,13 +335,15 @@ mod reader {
         c"window:destroy",
     ];
 
-    /// How many of the things that were checked did not hold.
+    /// How many things were checked, and how many of them did not hold.
+    static CHECKS: AtomicUsize = AtomicUsize::new(0);
     static FAILED: AtomicUsize = AtomicUsize::new(0);
 
-    /// Says whether one thing held, and keeps count of what did not.
+    /// Says whether one thing held, and keeps count.
     fn check(what: &str, fine: bool, more: &str) -> bool {
         let more = if fine || more.is_empty() { String::new() } else { format!("   [{more}]") };
         println!("{}{what}{more}", if fine { "ok   " } else { "FAIL " });
+        CHECKS.fetch_add(1, Ordering::Relaxed);
         FAILED.fetch_add(!fine as usize, Ordering::Relaxed);
         fine
     }
@@ -407,6 +409,15 @@ mod reader {
     fn sockets(process: u32) -> usize {
         let open = fs::read_dir(format!("/proc/{process}/fd")).into_iter().flatten().flatten();
         open.filter(|file| fs::read_link(file.path()).is_ok_and(|to| to.to_string_lossy().starts_with("socket:"))).count()
+    }
+
+    /// Waits, 5 s at most, until a process has this many sockets open: a busy machine starts it
+    /// slowly.
+    fn opens_sockets(process: u32, count: usize) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while sockets(process) < count && Instant::now() < until {
+            rest(20);
+        }
     }
 
     /// How much memory a process has in use, and how much of that is its own alone.
@@ -492,6 +503,7 @@ mod reader {
             lonely.env_remove("DBUS_SESSION_BUS_ADDRESS").env_remove("XDG_RUNTIME_DIR").env_remove("AT_SPI_BUS_ADDRESS");
             lonely.envs(bus.map(|bus| ("DBUS_SESSION_BUS_ADDRESS", bus)));
             let mut alone = lonely.spawn().expect("the demo could not be started");
+            opens_sockets(alone.id(), 1);
             rest(700);
             let alive = lives(&mut alone);
             check(&format!("with {what}, the window opens and has one socket, to X"), alive && sockets(alone.id()) == 1, &format!("alive {}", if alive { "True" } else { "False" }));
@@ -514,6 +526,13 @@ mod reader {
     /// is not on this machine.)
     fn start(gallery: &Path) -> Option<Started> {
         let launcher = Command::new(of_at_spi("at-spi-bus-launcher")?).env("GSETTINGS_BACKEND", "memory").stderr(Stdio::null()).spawn().expect("at-spi-bus-launcher could not be started");
+        // Asked before the launcher owns its name, the session bus would start a launcher of its own.
+        for _ in 0..100 {
+            if session(SESSION_BUS, "org.freedesktop.DBus.NameHasOwner", &[STATUS[0]]).contains("true") {
+                break;
+            }
+            rest(50);
+        }
         for _ in 0..100 {
             if session(STATUS, "org.freedesktop.DBus.Properties.GetAll", &["org.a11y.Status"]).contains("IsEnabled") {
                 break;
@@ -525,6 +544,7 @@ mod reader {
         let given = env::var_os("AT_SPI_BUS_ADDRESS").is_some_and(|bus| !bus.is_empty());
         let registry = of_at_spi("at-spi2-registryd").filter(|_| given).map(|registry| Command::new(registry).stderr(Stdio::null()).spawn().expect("at-spi2-registryd could not be started"));
         let demo = Command::new(gallery).spawn().expect("the demo could not be started");
+        opens_sockets(demo.id(), 2);
         rest(1000);
         Some(Started { demo, launcher, registry, given })
     }
@@ -1358,8 +1378,8 @@ mod reader {
             eprintln!("libatspi could not get an answer: {what}");
             return ExitCode::FAILURE;
         }
-        let failed = FAILED.load(Ordering::Relaxed);
-        println!("{}", if failed == 0 { "everything held".to_string() } else { format!("{failed} failed") });
+        let (failed, checked) = (FAILED.load(Ordering::Relaxed), CHECKS.load(Ordering::Relaxed));
+        println!("{} ({checked} checks)", if failed == 0 { "everything held".to_string() } else { format!("{failed} failed") });
         if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
     }
 }

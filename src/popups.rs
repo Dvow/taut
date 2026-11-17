@@ -511,7 +511,7 @@ impl Ui {
             self.tap_bar(first);
         }
         if self.key(Key::F(10), Mods::NONE) {
-            self.open_popup(first, self.seen(first));
+            self.open_popup(first, self.visible_rect(first));
             self.popups.iter_mut().for_each(|popup| popup.bar = true);
             (self.frame.keyed, self.frame.go_row) = (true, Some(0));
         }
@@ -603,7 +603,7 @@ impl Ui {
         // Its position follows from its size last time: below its anchor, centred on it, inside
         // the window.
         let whole = self.id("popover");
-        let (was, room) = (self.seen(whole), self.size());
+        let (was, room) = (self.visible_rect(whole), self.size());
         let under = by.bottom() + POINT[0] + was.h + EDGE <= room.h || by.y - POINT[0] - was.h < EDGE;
         let x = (by.x + by.w / 2.0 - was.w / 2.0).min(room.w - was.w - EDGE).max(EDGE).round();
         let y = if under { by.bottom() + POINT[0] } else { by.y - POINT[0] - was.h }.round();
