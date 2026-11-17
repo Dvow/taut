@@ -1,6 +1,6 @@
 # taut
 
-A GUI library for Rust on Windows and Linux with no dependencies: no crates, no web view, no
+A GUI library for Rust on Windows, Linux and macOS with no dependencies: no crates, no web view, no
 graphics card needed. One function describes the window from the app's state; the library draws
 only what changed, and nothing while nothing happens.
 
@@ -40,13 +40,16 @@ takes `&mut` to what it changes and returns what the user did.
 - **No dependencies:** 0 crates (iced 159, egui 179, Slint 245). No GPU needed.
 - **Fast:** a 1,000-row window is described and redrawn in 172 µs (one frame: Dear ImGui 244 µs,
   egui 6,114 µs). Idle costs nothing.
-- **Accessible:** full keyboard use; screen readers through UI Automation and AT-SPI.
-- **Tested:** over 1,100 tests on Windows 11, Ubuntu and Arch Linux; every interface test checks
-  partial against full redraw, pixel for pixel; every parser of outside data is fuzzed.
+- **Accessible:** full keyboard use; screen readers through UI Automation, AT-SPI and
+  NSAccessibility.
+- **Tested:** over 1,100 tests on Windows 11, Ubuntu and Arch Linux, and on macOS 26; every
+  interface test checks partial against full redraw, pixel for pixel; every parser of outside
+  data is fuzzed.
 
 ## At a glance
 
-- **Systems:** Windows; Linux on X11 or Wayland. Not macOS, iOS, Android or the web yet.
+- **Systems:** Windows; Linux on X11 or Wayland; macOS (AppKit). Not iOS, Android or the web
+  yet.
 - **Rust:** 1.88+. **Licence:** MIT or Apache-2.0.
 - **Features** (all off by default): `right-to-left`, `brahmic`, `emoji`, `fallback-fonts`,
   `touch`, `cff`, `woff2`, `color-profiles`, `gpu`

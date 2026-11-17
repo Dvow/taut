@@ -51,7 +51,8 @@ fn main() {
 ```
 
 On Linux, a window is a Wayland window where a compositor answers, else X11;
-`TAUT_BACKEND=x11` forces X.
+`TAUT_BACKEND=x11` forces X. On macOS, an AppKit window, run from the main thread; Command and
+Control are both `ctrl`.
 
 Features (off by default) cover what the calls can't reveal: `right-to-left`, `brahmic`,
 `touch`, `emoji`, `fallback-fonts`, `cff`, `woff2`, `color-profiles`
@@ -1139,6 +1140,8 @@ fn main() {
 - Linux: `StatusNotifierItem` and `com.canonical.dbusmenu`; `org.freedesktop.Notifications` (the
   portal when sandboxed); X grabs or the portal's `GlobalShortcuts`; a socket in the runtime
   folder.
+- macOS: `NSStatusItem` (its menu on a right click), `RegisterEventHotKey` (Ctrl is Command), a
+  socket in the temporary folder. No notifications.
 - Unused, none of it is compiled in.
 
 ## Scenes

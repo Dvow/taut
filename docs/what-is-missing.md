@@ -4,8 +4,20 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Systems
 
-- Windows, X11 and Wayland only (tested on Windows 11, Ubuntu 26.04, Arch Linux). No macOS, iOS
-  or Android; macOS, iOS and web builds stop with an error. Android untried.
+- Windows, X11, Wayland and macOS (tested on Windows 11, Ubuntu 26.04, Arch Linux; macOS 26 on
+  arm64, on a GitHub runner). No iOS or Android; iOS and web builds stop with an error. Android
+  untried.
+- macOS: the CPU draws and Core Animation shows; `Renderer` and `gpu` change nothing there. No
+  `layer_opengl` or `layer_vulkan` tests; no Metal layer.
+- macOS: what an input method composes shows in its own window, not in the text box. Readers get
+  each node's role, name, value, state and place, and press, step, focus and set values; not
+  text by character, word or line, nor tables and trees as such.
+- macOS: no system notifications (they need an app bundle), no spell checking, no dragging out
+  to other programs, no touch or pens beyond pinch; `emoji` finds no font (Apple Color Emoji
+  joins sequences in AAT tables, which are not read). Unchecked: x86-64 Macs, VoiceOver itself.
+- macOS: the tray icon's menu opens on a right click or Control-click; a click is `.clicked`.
+  Hotkeys: Ctrl is Command, Super is Control; no media keys. Desktop places are points from
+  the main screen's top left.
 - Wayland where a compositor answers, else X (`TAUT_BACKEND=x11` or `wayland` forces one).
   Wayland: no window positions, no always-on-top, bringing to front only if the compositor
   allows. Tested on KWin, Mutter, Sway and Weston. Weston: no fractional scale, no bringing to

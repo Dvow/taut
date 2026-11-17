@@ -3,6 +3,16 @@
 Changes an app can notice, newest first. Before 1.0, a new minor version (0.1 → 0.2) may need
 code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
+## 0.2.1 (unreleased)
+
+- **macOS:** taut builds and runs there. AppKit windows (several, frameless, see-through,
+  always on top, placed and sized, Retina), drawn by the CPU and shown by Core Animation;
+  mouse, wheel and touchpad, pinch, keys, text input with input methods, cursors, focus;
+  CoreText text with its fallback fonts; the clipboard (text, pictures, files); files and text
+  dropped in; `FileDialog::native` as a sheet; dark mode, accent, contrast, reduced motion,
+  screens, locale; screen readers through NSAccessibility; tray icon, global hotkeys, single
+  instance. Gaps: [what is missing](docs/what-is-missing.md).
+
 ## 0.2.0 (2026-11-17)
 
 - **GPU or CPU:** the feature `gpu` has the GPU show windows, byte for byte the pixels the CPU

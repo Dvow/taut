@@ -642,7 +642,9 @@ mod mac {
                 1 if steps.waited(1500) => {
                     let sheet: Obj = send(window, c"attachedSheet", ());
                     steps.check(!sheet.is_null(), || "no sheet on the window".into());
-                    send::<()>(sheet, c"ok:", (std::ptr::null_mut::<c_void>(),));
+                    // (The panel runs in another process: `ok:` is not there; ending the sheet with
+                    // OK is what its button does.)
+                    send::<()>(window, c"endSheet:returnCode:", (sheet, 1isize));
                     steps.next();
                 }
                 2 if got.is_some() || steps.waited(3000) => {
@@ -829,7 +831,7 @@ mod mac {
     /// The program's status item buttons, in the menu bar.
     fn status_buttons() -> Vec<Obj> {
         let mut found = Vec::new();
-        for window in items(send(app(), c"windows", ())) {
+        for window in items(send(app(), c"windows", ())).into_iter().filter(|window| send::<u8>(*window, c"isVisible", ()) == 1) {
             views_of(send(window, c"contentView", ()), "NSStatusBarButton", 0, &mut found);
         }
         found
@@ -862,9 +864,12 @@ mod mac {
                     let menu: Obj = send(button, c"menu", ());
                     let rows: Vec<String> = items(send(menu, c"itemArray", ())).into_iter().filter_map(|item| text_of(send(item, c"title", ()))).collect();
                     steps.check(rows == ["Show", "Quiet"], || format!("its menu has {rows:?}"));
-                    send::<()>(button, c"performClick:", (std::ptr::null_mut::<c_void>(),));
-                    send::<()>(menu, c"performActionForItemAtIndex:", (0isize,));
-                    send::<()>(menu, c"performActionForItemAtIndex:", (1isize,));
+                    // As a person's: between runs, from AppKit's loop (what a run does not take
+                    // is dropped).
+                    let later = |to: Obj, name: &CStr, with: Obj| send::<()>(to, c"performSelector:withObject:afterDelay:", (sel(name), with, 0.0f64));
+                    later(button, c"performClick:", std::ptr::null_mut());
+                    let rows = items(send(menu, c"itemArray", ()));
+                    rows.iter().for_each(|row| later(send(*row, c"target", ()), c"trayPicked:", *row));
                     steps.next();
                 }
                 1 if steps.waited(500) => {
@@ -896,23 +901,24 @@ mod mac {
         check(window, move |steps, ui| {
             ui.label("A hotkey");
             pressed += ui.hotkey("Ctrl+Alt+F9") as u32;
+            pressed += ui.hotkey("Ctrl+Alt+K") as u32 * 10;
             match steps.step {
                 0 if steps.waited(500) => {
                     steps.check(!ui.hotkey_refused("Ctrl+Alt+F9"), || "the system refused Ctrl+Alt+F9 (Command+Option+F9)".into());
-                    // F9 (code 0x65) with Command and Option, at the system's own input.
-                    for down in [true, false] {
-                        let key = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0x65, down) };
+                    // F9 (code 0x65) and K (0x28) with Command and Option, at the system's own input.
+                    for (code, down) in [(0x65, true), (0x65, false), (0x28, true), (0x28, false)] {
+                        let key = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), code, down) };
                         unsafe { CGEventSetFlags(key, 0x0010_0000 | 0x0008_0000) };
                         unsafe { CGEventPost(0, key) };
                         unsafe { CFRelease(key) };
                     }
                     steps.next();
                 }
-                1 if pressed > 0 || steps.waited(2000) => {
+                1 if pressed >= 11 || steps.waited(2000) => {
                     match (pressed, unsafe { AXIsProcessTrusted() } != 0) {
                         (0, true) => steps.check(false, || "a trusted program posted the hotkey, and it was not heard".into()),
                         (0, false) => println!("    the system does not take keys this program posts: the press is not tried"),
-                        _ => println!("    the hotkey was heard {pressed} times"),
+                        _ => println!("    heard: F9 {} times, K {} times", pressed % 10, pressed / 10),
                     }
                     steps.done = true;
                 }

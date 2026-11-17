@@ -136,7 +136,7 @@ Popovers anchored to their button.
   `taut::storage` writes atomically to the settings folder.
 - Drag and drop between boxes, from other programs (files, text) and out to them (files, text,
   pictures, links).
-- Clipboard (Windows, X11, Wayland): text, pictures, files.
+- Clipboard (Windows, X11, Wayland, macOS): text, pictures, files.
 - Open files and links with the default program.
 - Tray icon with native menu, system notifications, global hotkeys, single instance. Unused,
   none of it is compiled in.
@@ -152,7 +152,7 @@ Popovers anchored to their button.
   groups and tab rows are one stop each.
 - **Touch** (`touch`; Windows, X11, Wayland): tap, long press, inertial scrolling, pinch zoom;
   pens with pressure, tilt and eraser; touchpad pinch.
-- **Screen readers** (UI Automation, AT-SPI): role, name, state, position and shortcut for every
+- **Screen readers** (UI Automation, AT-SPI; NSAccessibility on macOS, with less): role, name, state, position and shortcut for every
   part, including off-screen content; tables and trees with full structure; text by character,
   word and line; announcements. Nothing is built until a reader asks.
 - **Themes:** dark, light, two high-contrast; accent, density and text scale; or follow the
