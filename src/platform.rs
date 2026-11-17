@@ -86,7 +86,7 @@ impl Default for Window<'_> {
 /// | --- | --- | --- |
 /// | Windows | Direct3D 11, Direct3D 12, Vulkan, OpenGL (WGL) | GDI |
 /// | Linux (X11) | OpenGL (EGL), Vulkan | X11 images |
-/// | Linux (Wayland) | none | shared memory |
+/// | Linux (Wayland) | Vulkan (dmabufs), never for `Auto` | shared memory |
 ///
 /// A path that is missing falls back along that order, then to the CPU. The GPU paths need the
 /// feature `gpu`; without it the CPU shows every window, and none of their code is compiled in.

@@ -52,8 +52,8 @@ takes `&mut` to what it changes and returns what the user did.
   `touch`, `cff`, `woff2`, `color-profiles`, `gpu`
   ([costs](docs/costs-and-speed.md#what-it-costs)).
 - **GPU or CPU:** the CPU draws every pixel; with `gpu`, the GPU shows them, byte for byte the
-  same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11
-  ([costs](docs/costs-and-speed.md#gpu-or-cpu)).
+  same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11;
+  Vulkan (dmabufs) under Wayland, when asked ([costs](docs/costs-and-speed.md#gpu-or-cpu)).
 - **State:** 0.1. Names may change before 1.0 ([changes](CHANGELOG.md),
   [what is missing](docs/what-is-missing.md)).
 

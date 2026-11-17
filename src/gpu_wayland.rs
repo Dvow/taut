@@ -1264,9 +1264,14 @@ mod tests {
         assert!(sheet.draw(&link, 1.0, &mut |canvas| ui.paint(canvas)));
         assert_eq!(attached(&said(&compositor, &link), sheet.surface), Some(THEIRS + 1));
         assert!(handed(&link, &sheet) == Surface::draw(&mut ui, 64).pixels);
+        // The surface goes while the compositor holds all three: each buffer goes once released.
         sheet.destroy(&link);
+        assert!(!said(&compositor, &link).iter().any(|(object, opcode, _)| *object >= THEIRS && *opcode == 0), "none while held");
+        (0..3).for_each(|at| compositor.send(THEIRS + at, 0, &[]));
+        hears(&compositor, &link);
         let gone = said(&compositor, &link);
-        assert!((0..3).all(|at| gone.iter().any(|(object, opcode, _)| (*object, *opcode) == (THEIRS + at, 0))), "every buffer destroyed with the surface");
+        assert!((0..3).all(|at| gone.iter().any(|(object, opcode, _)| (*object, *opcode) == (THEIRS + at, 0))), "every buffer goes once released");
+        assert!(link.gpu.borrow().as_ref().unwrap().retired.is_empty());
     }
 
     /// A surface of another size gets new pixels and images; the old images go, those the

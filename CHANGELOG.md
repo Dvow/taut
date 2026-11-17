@@ -3,6 +3,13 @@
 Changes an app can notice, newest first. Before 1.0, a new minor version (0.1 → 0.2) may need
 code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
+## 0.2.1 (unreleased)
+
+- **GPU under Wayland:** with `gpu`, a window asking for a GPU path (`Renderer::Vulkan`, `Gpu`,
+  another named, or `TAUT_RENDERER`) is shown through Vulkan: its pixels go to the compositor as
+  dmabufs (`zwp_linux_dmabuf_v1`), byte for byte the CPU's. `Auto` keeps shared memory. Any
+  failure falls back to shared memory.
+
 ## 0.2.0 (2026-11-17)
 
 - **GPU or CPU:** the feature `gpu` has the GPU show windows, byte for byte the pixels the CPU

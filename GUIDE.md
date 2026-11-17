@@ -967,7 +967,9 @@ fn main() {
 - `Renderer::Auto` (the default): the best GPU path when the feature is on and the computer has
   a GPU of its own, not over a remote desktop. `Gpu`: over a remote desktop too. `Cpu`: never.
 - `Direct3D11`, `Direct3D12`, `Vulkan`, `OpenGL`: that path first, then the others, best
-  first (Windows: Direct3D 11, 12, Vulkan, OpenGL; Linux: OpenGL, then Vulkan), then the CPU.
+  first (Windows: Direct3D 11, 12, Vulkan, OpenGL; X11: OpenGL, then Vulkan), then the CPU.
+- Wayland: any GPU path asked for is Vulkan, handing the compositor dmabufs; `Auto` keeps
+  shared memory.
 - `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl` overrides the app.
 - `ui.renderer()` says which path shows the window (`Direct3D11`, …): `Cpu` until the device
   is made, and after a lost device that can't be made again.
