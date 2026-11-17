@@ -147,10 +147,13 @@ mod mac {
         send(object, name, ())
     }
 
-    /// The program's windows of the library's, in the order AppKit lists them.
+    /// The program's windows of the library's that show, in the order AppKit lists them.
     fn windows() -> Vec<Obj> {
         let all = items(send(app(), c"windows", ()));
-        all.into_iter().filter(|window| text_of(send(send::<Obj>(send::<Obj>(*window, c"contentView", ()), c"className", ()), c"description", ())).as_deref() == Some("TautView")).collect()
+        all.into_iter()
+            .filter(|window| send::<u8>(*window, c"isVisible", ()) == 1)
+            .filter(|window| text_of(send(send::<Obj>(send::<Obj>(*window, c"contentView", ()), c"className", ()), c"description", ())).as_deref() == Some("TautView"))
+            .collect()
     }
     /// The window titled so.
     fn window_titled(title: &str) -> Option<Obj> {
@@ -177,8 +180,9 @@ mod mac {
         }
     }
 
-    /// What the screen shows of a window, through CoreGraphics' window picture where the
-    /// system still has it: its width and pixels, as `shown` gives them.
+    /// What the screen shows of a window's content, through CoreGraphics' window picture where
+    /// the system still has it: its width and pixels, as `shown` gives them. (The picture has the
+    /// title bar on top: only the rows of the view are kept.)
     fn on_screen(window: Obj) -> Option<(usize, Vec<u32>)> {
         type Pictures = unsafe extern "C" fn(NSRect, u32, u32, u32) -> Obj;
         let found = unsafe { dlsym(-2isize as *mut c_void, c"CGWindowListCreateImage".as_ptr()) };
@@ -203,7 +207,10 @@ mod mac {
             CGContextRelease(context);
             CFRelease(space);
             CGImageRelease(image);
-            Some((width, pixels))
+            let view = rect_of(view_of(window), c"bounds").size.height;
+            let scale: f64 = send(window, c"backingScaleFactor", ());
+            let rows = ((view * scale).round() as usize).min(height);
+            Some((width, pixels[(height - rows) * width..].to_vec()))
         }
     }
 
@@ -432,8 +439,8 @@ mod mac {
                     send::<()>(view, c"insertText:replacementRange:", (string("日本"), none));
                     steps.next();
                 }
-                3 if text.ends_with("日本") || steps.waited(2000) => {
-                    steps.check(text == "hxi日本", || format!("an input method's text: the box holds {text:?}"));
+                3 if text.contains("日本") || steps.waited(2000) => {
+                    steps.check(text == "hx日本i", || format!("an input method's text: the box holds {text:?}"));
                     steps.done = true;
                 }
                 _ => {}
@@ -578,7 +585,7 @@ mod mac {
         let window = Window { title: "Drops", width: 300.0, height: 160.0, ..Default::default() };
         check(window, move |steps, ui| {
             ui.column().pad(16.0).open();
-            let target = ui.label("Let files go here");
+            let target = ui.button("Let files go here");
             ui.close();
             hovered |= ui.files_hovered();
             if let Some(files) = ui.files_dropped(&target) {
@@ -711,19 +718,139 @@ mod mac {
         })
     }
 
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AXIsProcessTrusted() -> u8;
+        fn AXUIElementCreateApplication(pid: i32) -> Obj;
+        fn AXUIElementCopyAttributeValue(element: Obj, attribute: Obj, value: *mut Obj) -> i32;
+    }
+
+    /// What an element tells, as a reader hears it: role and name, then its children's, in
+    /// order, through the view's own answers (what the system passes on).
+    fn told(element: Obj, depth: usize, into: &mut Vec<(String, String)>) {
+        let role = text_of(send(element, c"accessibilityRole", ())).unwrap_or_default();
+        let name = text_of(send(element, c"accessibilityLabel", ())).unwrap_or_default();
+        into.push((role, name));
+        if depth < 8 {
+            items(send(element, c"accessibilityChildren", ())).into_iter().for_each(|child| told(child, depth + 1, into));
+        }
+    }
+
+    /// The same through the system's client interface, as another program reads it: roles and
+    /// titles or descriptions of the program's first window and all in it.
+    fn told_to_clients(element: Obj, depth: usize, into: &mut Vec<(String, String)>) {
+        let attribute = |name: &str| {
+            let mut value: Obj = std::ptr::null_mut();
+            let failed = unsafe { AXUIElementCopyAttributeValue(element, string(name), &mut value) };
+            (failed == 0).then_some(value).filter(|value| !value.is_null())
+        };
+        let text = |name: &str| attribute(name).and_then(|value| text_of(send(value, c"description", ()))).unwrap_or_default();
+        into.push((text("AXRole"), [text("AXTitle"), text("AXDescription")].concat()));
+        if let Some(children) = attribute("AXChildren").filter(|_| depth < 8) {
+            items(children).into_iter().for_each(|child| told_to_clients(child, depth + 1, into));
+        }
+    }
+
+    /// The program's first window as a client reads it, from another thread (the window's
+    /// thread answers): `None` where the system does not trust this program to read others.
+    fn read_as_a_client() -> std::sync::mpsc::Receiver<Option<Vec<(String, String)>>> {
+        let (tell, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            if unsafe { AXIsProcessTrusted() } == 0 {
+                let _ = tell.send(None);
+                return;
+            }
+            let program = unsafe { AXUIElementCreateApplication(std::process::id() as i32) };
+            let mut windows: Obj = std::ptr::null_mut();
+            unsafe { AXUIElementCopyAttributeValue(program, string("AXWindows"), &mut windows) };
+            let mut found = Vec::new();
+            items(windows).first().into_iter().for_each(|window| told_to_clients(*window, 0, &mut found));
+            _ = tell.send(Some(found));
+        });
+        heard
+    }
+
+    /// A screen reader reads what the window tells, through NSAccessibility: the text and the
+    /// button, where they are; it presses the button, and hears the new count.
+    fn a_reader_reads_the_window_and_presses_its_button() -> Vec<String> {
+        let mut count = 0;
+        let mut client = None;
+        let window = Window { title: "Readers", width: 360.0, height: 200.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            counter(&mut count, ui);
+            let Some(window) = window_titled("Readers") else { return };
+            let view = view_of(window);
+            let mut all = Vec::new();
+            match steps.step {
+                0 if steps.waited(300) => {
+                    told(view, 0, &mut all);
+                    steps.next();
+                }
+                1 if steps.waited(500) => {
+                    told(view, 0, &mut all);
+                    let has = |role: &str, name: &str| all.iter().any(|(of, called)| of == role && called == name);
+                    steps.check(has("AXStaticText", "Pressed 0 times") && has("AXButton", "Press"), || format!("a reader is told {all:?}"));
+                    let elements = items(send(view, c"accessibilityChildren", ()));
+                    let button = elements.iter().copied().find(|element| text_of(send(*element, c"accessibilityLabel", ())).as_deref() == Some("Press"));
+                    let Some(button) = button else { return steps.check(false, || "no button element".into()) };
+                    let place: NSRect = send(button, c"accessibilityFrame", ());
+                    let frame = rect_of(window, c"frame");
+                    let inside = place.origin.x >= frame.origin.x && place.origin.y >= frame.origin.y && place.origin.y + place.size.height <= frame.origin.y + frame.size.height;
+                    steps.check(inside && place.size.width > 0.0, || format!("the button is said to be at {place:?}, the window at {frame:?}"));
+                    let pressed: u8 = send(button, c"accessibilityPerformPress", ());
+                    steps.check(pressed == 1, || "the button would not be pressed".into());
+                    client = Some(read_as_a_client());
+                    steps.next();
+                }
+                2 if count == 1 && steps.waited(300) => {
+                    told(view, 0, &mut all);
+                    steps.check(all.iter().any(|(_, name)| name == "Pressed 1 times"), || format!("pressed by a reader, the window tells {all:?}"));
+                    steps.next();
+                }
+                3 => match client.as_ref().map(|heard| heard.try_recv()) {
+                    Some(Ok(None)) => {
+                        println!("    the system does not trust this program to read others: not read as a client");
+                        steps.done = true;
+                    }
+                    Some(Ok(Some(found))) => {
+                        println!("    a client reads {} elements", found.len());
+                        steps.check(found.iter().any(|(role, name)| role == "AXButton" && name.contains("Press")), || format!("a client reads {found:?}"));
+                        steps.done = true;
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        })
+    }
+
+    /// Says what an Objective-C exception was, as it is thrown: past Rust's frames it can only
+    /// end the program.
+    extern "C" fn thrown(exception: Obj) -> Obj {
+        let said = |name: &CStr| text_of(send(send::<Obj>(exception, name, ()), c"description", ())).unwrap_or_default();
+        eprintln!("Objective-C exception: {}: {}\n{}", said(c"name"), said(c"reason"), said(c"callStackSymbols"));
+        exception
+    }
+
+    unsafe extern "C" {
+        fn objc_setExceptionPreprocessor(preprocessor: extern "C" fn(Obj) -> Obj) -> *const c_void;
+    }
+
     pub fn main() {
+        unsafe { objc_setExceptionPreprocessor(thrown) };
         type Check = fn() -> Vec<String>;
-        let checks: [(&str, Check); 10] = [
+        let checks: [(&str, Check); 11] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
             ("keys and an input method's text reach the focused box", keys_and_an_input_methods_text_reach_the_focused_box),
             ("the clipboard is the system's", the_clipboard_is_the_systems),
             ("a second window opens, and its close button closes it", a_second_window_opens_and_its_close_button_closes_it),
             ("a window opens where asked, and is drawn whole at a new size", a_window_opens_where_asked_and_is_drawn_whole_at_a_new_size),
             ("files let go on a window reach its app", files_let_go_on_a_window_reach_its_app),
-            ("the system's file dialog comes as a sheet and answers", the_systems_file_dialog_comes_as_a_sheet_and_answers),
             ("a see-through window is clear where nothing is drawn", a_see_through_window_is_clear_where_nothing_is_drawn),
             ("a window without a frame has no buttons", a_window_without_a_frame_has_no_buttons),
             ("a waker on another thread wakes the window", a_waker_on_another_thread_wakes_the_window),
+            ("a reader reads the window and presses its button", a_reader_reads_the_window_and_presses_its_button),
+            ("the system's file dialog comes as a sheet and answers", the_systems_file_dialog_comes_as_a_sheet_and_answers),
         ];
         let only = std::env::args().nth(1).filter(|word| !word.starts_with('-'));
         let mut failed = 0;

@@ -227,6 +227,7 @@ fn main() {
         std::process::exit(1);
     }
     std::fs::create_dir_all(&folder).expect("the folder for the pictures could not be made");
+    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
     let tell = std::env::var_os("TAUT_WALK_TELL").is_some();
     #[cfg(windows)]
     let driver = windows::start(&folder, &program);

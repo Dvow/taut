@@ -357,6 +357,7 @@ pub(crate) fn view_class() -> Obj {
         (c"characterIndexForPoint:", no_index as *const c_void, format!("Q@:{POINT}")),
         (c"firstRectForCharacterRange:actualRange:", first_rect as *const c_void, format!("{RECT}@:{RANGE}^{RANGE}")),
     ]);
+    methods.extend(crate::ns_accessibility::view_methods());
     let listed: Vec<(&CStr, *const c_void, &str)> = methods.iter().map(|(name, imp, types)| (*name, *imp, types.as_str())).collect();
     made_class(c"TautView", c"NSView", &listed, &[c"NSTextInputClient", c"NSWindowDelegate"])
 }
@@ -876,6 +877,7 @@ impl Shown {
     /// Closes the window and lets it go.
     fn close(self) {
         VIEWS.with_borrow_mut(|views| views.retain(|state| state.view != self.view));
+        crate::ns_accessibility::forget(self.view);
         // SAFETY: the window is the library's, made with a count of one, which it gives up
         // here; its delegate is unset first, so it says nothing more.
         unsafe {
@@ -1077,6 +1079,27 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         (self.rerun, self.done) = (false, self.done || closes || self.ui.quitting());
         self.keep_up();
         (0..self.windows.len()).for_each(|at| self.follow(at));
+        if self.ui.listening {
+            self.tell_readers();
+        }
+    }
+
+    /// An assistive program asked: every window tells from now on (see `ns_accessibility`).
+    fn listen(&mut self) {
+        if self.ui.listening || !crate::ns_accessibility::listening() {
+            return;
+        }
+        for shown in &self.windows {
+            within(&mut self.ui, shown.known, |ui| ui.set_screen_reader(true));
+        }
+        self.rerun = true;
+    }
+
+    /// After a run an assistive program reads: each window's elements follow its nodes.
+    fn tell_readers(&mut self) {
+        for shown in &self.windows {
+            within(&mut self.ui, shown.known, |ui| crate::ns_accessibility::keep(shown.view, ui));
+        }
     }
 
     /// Closes the second windows the app stopped describing, and opens those described for the
@@ -1101,6 +1124,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             };
             let opening = Opening { known: Some(known), title: &title, size, min_size: opens.min_size, spot, frameless: opens.frameless, transparent: false, kind: opens.kind };
             let shown = Shown::open(opening);
+            if self.ui.listening {
+                self.ui.in_window(known, |ui| ui.set_screen_reader(true));
+            }
             shown.show(true);
             self.windows.push(shown);
             self.rerun = true;
@@ -1180,6 +1206,7 @@ impl<App: FnMut(&mut Ui)> Turns for Host<App> {
         self.ui.set_time(self.start.elapsed());
         self.rerun |= self.ui.wake_in() == Some(Duration::ZERO);
         self.take_heard();
+        self.listen();
         if self.rerun {
             self.describe();
         }

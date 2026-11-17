@@ -709,6 +709,8 @@ functions!(Checks {
     glScissor: fn(i32, i32, i32, i32);
 });
 
+// (macOS: no context of the kind made here.)
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 mod open_gl {
     use super::*;
     use std::ffi::CStr;

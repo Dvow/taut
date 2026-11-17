@@ -285,8 +285,37 @@ fn from_glibc(name: &std::ffi::CStr, [dates, numbers]: [bool; 2]) -> Locale {
     locale
 }
 
-/// Without Windows or glibc to ask: the library's formats.
-#[cfg(not(any(windows, all(target_os = "linux", target_env = "gnu"))))]
+/// Foundation's formats for the user's locale: the short date and the hour as the locale
+/// writes them (patterns in the letters Windows uses), the week's first day (1 Sunday), and the
+/// number separators.
+#[cfg(target_os = "macos")]
+fn read() -> Locale {
+    use crate::macos_sys::{class, ns_string, rust_string, send};
+    let _pool = crate::macos_sys::Pool::new();
+    // SAFETY: plain questions of the user's locale and calendar; nil answers nothing.
+    let said = unsafe {
+        let locale: crate::macos_sys::Obj = send(class(c"NSLocale"), c"currentLocale", ());
+        let pattern = |template: &str| rust_string(send(class(c"NSDateFormatter"), c"dateFormatFromTemplate:options:locale:", (ns_string(template), 0usize, locale))).unwrap_or_default();
+        let first_day: isize = send(send::<crate::macos_sys::Obj>(class(c"NSCalendar"), c"currentCalendar", ()), c"firstWeekday", ());
+        let [point, thousands] = [c"decimalSeparator", c"groupingSeparator"].map(|asked| rust_string(send(locale, asked, ())).unwrap_or_default());
+        (pattern("yMd"), pattern("j"), first_day, point, thousands)
+    };
+    let (date, time, first_day, point, thousands) = said;
+    let (order, between) = date_order(&date).unwrap_or((Locale::PLAIN.date_order, Locale::PLAIN.date_separator));
+    // Quoted text is literal; `h` and `K` are a 12-hour clock's hours.
+    let twelve_hours = time.split('\'').step_by(2).any(|plain| plain.contains(['h', 'K']));
+    Locale {
+        date_order: order,
+        date_separator: between,
+        first_weekday: ((first_day + 5).rem_euclid(7)) as u8,
+        twelve_hour_clock: twelve_hours,
+        thousands_separator: first(&thousands),
+        decimal_point: first(&point).unwrap_or('.'),
+    }
+}
+
+/// Without Windows, Foundation or glibc to ask: the library's formats.
+#[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
 fn read() -> Locale {
     Locale::PLAIN
 }
