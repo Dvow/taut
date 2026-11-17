@@ -341,13 +341,22 @@ impl Gpu {
         }
     }
 
-    /// The compositor answered request `params`: `buffer` made (0: refused). The request goes;
-    /// a buffer whose image is gone goes too.
+    /// The compositor answered request `params`: `buffer` made (0: refused). The answer waits
+    /// for its image (the request lives until then: its number is not used again meanwhile);
+    /// where the image is gone, the request and the buffer go.
     fn made(&mut self, wire: &Wire, params: u32, buffer: u32) {
-        wire.send(params, 0, &[]);
         let Some(at) = self.orphans.iter().position(|orphan| *orphan == params) else { return self.answers.push((params, buffer)) };
         self.orphans.swap_remove(at);
+        wire.send(params, 0, &[]);
         unbuffer(wire, buffer);
+    }
+
+    /// The answer to an image's request, if there is one yet: the request goes.
+    fn answer(&mut self, wire: &Wire, image: &mut Image) -> bool {
+        let Some(at) = self.answers.iter().position(|(params, _)| *params == image.params) else { return false };
+        wire.send(image.params, 0, &[]);
+        (image.params, image.buffer) = (0, self.answers.swap_remove(at).1);
+        true
     }
 
     /// Buffer `id` was released. Says whether it was an image's: one of an old size goes.
@@ -418,7 +427,7 @@ impl Gpu {
         if shows.size != size {
             self.fit(wire, shows, size)?;
         }
-        self.answered(shows)?;
+        self.answered(wire, shows)?;
         let held = &self.held;
         let Some(at) = shows.images.iter().position(|image| image.buffer != 0 && !held.contains(&image.buffer)) else { return Ok(None) };
         // SAFETY: the pixels are mapped, `size` big, and the GPU is done with them (every copy
@@ -444,11 +453,9 @@ impl Gpu {
     }
 
     /// Takes the compositor's answers for a surface's images. An error where it refused one.
-    fn answered(&mut self, shows: &mut Shows) -> Result<(), ()> {
+    fn answered(&mut self, wire: &Wire, shows: &mut Shows) -> Result<(), ()> {
         for image in shows.images.iter_mut().filter(|image| image.buffer == 0) {
-            let Some(at) = self.answers.iter().position(|(params, _)| *params == image.params) else { continue };
-            (image.params, image.buffer) = (0, self.answers.swap_remove(at).1);
-            if image.buffer == 0 {
+            if self.answer(wire, image) && image.buffer == 0 {
                 return Err(());
             }
         }
@@ -477,11 +484,8 @@ impl Gpu {
         if image.buffer != 0 && self.held.contains(&image.buffer) {
             return self.retired.push(image);
         }
-        if image.buffer == 0 && image.params != 0 {
-            match self.answers.iter().position(|(params, _)| *params == image.params) {
-                Some(at) => image.buffer = self.answers.swap_remove(at).1,
-                None => self.orphans.push(image.params),
-            }
+        if image.buffer == 0 && image.params != 0 && !self.answer(wire, &mut image) {
+            self.orphans.push(image.params);
         }
         self.unmake(wire, image);
     }
@@ -1217,9 +1221,11 @@ mod tests {
         let params = requests(&told, dmabuf, size, SOLID);
         assert_eq!(params.len(), IMAGES);
         made(&compositor, &link, &params, THEIRS);
-        assert!(said(&compositor, &link).iter().filter(|(object, opcode, _)| params.contains(object) && *opcode == 0).count() == IMAGES, "each request let go once answered");
+        // (Its number is not used again before: another surface's request would get its answer.)
+        assert!(!said(&compositor, &link).iter().any(|(object, opcode, _)| params.contains(object) && *opcode == 0), "a request lives until its image takes the answer");
         assert!(sheet.draw(&link, 1.0, &mut |canvas| ui.paint(canvas)));
         let told = said(&compositor, &link);
+        assert!(told.iter().filter(|(object, opcode, _)| params.contains(object) && *opcode == 0).count() == IMAGES, "each request let go once its answer is taken");
         assert_eq!(attached(&told, sheet.surface), Some(THEIRS));
         assert_eq!(damaged(&told, sheet.surface), [[0, 0, 200, 120]], "all of it is new");
         assert_eq!(shows(&sheet).copied, [[0, 0, 200, 120]]);
@@ -1236,7 +1242,7 @@ mod tests {
         // Released, the first is drawn into again: only what it missed and what changed now.
         compositor.send(THEIRS, 0, &[]);
         hears(&compositor, &link);
-        recount(&mut ui, &mut sheet, 77);
+        recount(&mut ui, &mut sheet, 7);
         let now: Vec<[i32; 4]> = sheet.changed.iter().map(|area| on_pixels(*area, 1.0, size)).collect();
         assert!(sheet.draw(&link, 1.0, &mut |canvas| ui.paint(canvas)));
         assert_eq!(attached(&said(&compositor, &link), sheet.surface), Some(THEIRS));
@@ -1245,10 +1251,10 @@ mod tests {
         assert!(copied < 200 * 120 / 2, "a part, not all of it: {:?}", shows(&sheet).copied);
         assert!(handed(&link, &sheet) == Surface::draw(&mut ui, 64).pixels);
         // Held: the third. All held: nothing until one is released.
-        recount(&mut ui, &mut sheet, 78);
+        recount(&mut ui, &mut sheet, 8);
         assert!(sheet.draw(&link, 1.0, &mut |canvas| ui.paint(canvas)));
         assert_eq!(attached(&said(&compositor, &link), sheet.surface), Some(THEIRS + 2));
-        recount(&mut ui, &mut sheet, 79);
+        recount(&mut ui, &mut sheet, 9);
         assert!(!sheet.draw(&link, 1.0, &mut |canvas| ui.paint(canvas)), "every image held");
         assert!(!sheet.changed.is_empty() && attached(&said(&compositor, &link), sheet.surface).is_none());
         compositor.send(THEIRS + 1, 0, &[]);
