@@ -56,11 +56,15 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   rectangles only with `VK_KHR_incremental_present`. OpenGL's window can't be pictured on a
   private desktop, so its tests compare the back buffer only. Smooth live resizing and tearing
   were not judged by eye.
-- `gpu` on Linux: X11 only. Wayland windows use shared memory; a GPU path needs dmabufs and a
-  GPU render node, not testable here. Vulkan tested on lavapipe and dozen (WSL); its device loss
-  is simulated. `Auto` takes only
-  a hardware device that shows frames directly (DRI3 with Mesa). Measured only under Xvfb, where
-  every frame goes through X and the GPU path costs more than the CPU's.
+- `gpu` on Linux: Vulkan tested on lavapipe and dozen (WSL); its device loss is simulated.
+  Under X, `Auto` takes only a hardware device that shows frames directly (DRI3 with Mesa).
+  Measured only under Xvfb, where every frame goes through X and the GPU path costs more than the
+  CPU's.
+- `gpu` under Wayland: Vulkan dmabufs only when asked; `Auto` keeps shared memory (cheaper on
+  the one device measured). Tested only with lavapipe exporting through `/dev/udmabuf` (GitHub's
+  Ubuntu runner) to Weston's GL renderer: no hardware GPU, Mutter, KWin or Sway, no tiled or
+  multi-plane layout. Feedback v4 and the main device only against a simulated compositor.
+  Waits for each copy before the commit (no explicit sync).
 
 ## Documents (Markdown)
 

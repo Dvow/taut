@@ -16,7 +16,7 @@
 //! - **Failures:** each falls back to shared memory (`wl_shm`) for good, and the surface is
 //!   drawn whole there: no Vulkan 1.2, no device exporting dmabufs, a compositor without the
 //!   protocol or a common layout, an image or buffer refused, a lost device.
-use super::{Host, Link, Sheet, on_pixels, paint_area};
+use super::{Host, Link, Sheet, on_pixels};
 use crate::canvas::Canvas;
 use crate::geom::{Rect, rect};
 use crate::platform::Renderer;
@@ -284,7 +284,7 @@ impl Sheet {
         let (units, size, clear) = (rect(0.0, 0.0, self.units[0] as f32, self.units[1] as f32), self.pixels, self.clear);
         let areas: Vec<Rect> = self.changed.iter().map(|area| area.intersect(units)).filter(|area| !area.is_empty()).collect();
         let places: Vec<[i32; 4]> = areas.iter().map(|area| on_pixels(*area, scale, size)).collect();
-        let mut painted = |pixels: &mut [u32]| areas.iter().for_each(|area| paint_area(pixels, size, *area, scale, clear, paint));
+        let mut painted = |pixels: &mut [u32]| areas.iter().for_each(|area| paint_pixels(pixels, size, *area, scale, clear, paint));
         let drawn = match link.gpu.borrow_mut().as_mut() {
             Some(gpu) => gpu.draw(&link.wire, &mut self.way, size, clear, &places, &mut painted),
             None => Drawn::Shm,
@@ -293,13 +293,25 @@ impl Sheet {
             Drawn::Shm => self.way = Way::Shm,
             Drawn::Fell => (self.way, self.changed) = (Way::Shm, vec![units]),
             Drawn::Waits => return Some(self.pay(link)),
-            Drawn::Buffer(buffer) => {
-                let changed = std::mem::take(&mut self.changed);
-                self.commit(link, buffer, &changed, scale);
-                return Some(true);
-            }
+            Drawn::Buffer(buffer) => return Some(self.hand_over(link, buffer, scale)),
         }
         None
+    }
+
+    /// Hands buffer `id` over, naming what changed as damage, and asks for a frame callback (as
+    /// `draw` does for a buffer of shared memory). Says it committed.
+    fn hand_over(&mut self, link: &Link, id: u32, scale: f32) -> bool {
+        let (wire, units) = (&link.wire, rect(0.0, 0.0, self.units[0] as f32, self.units[1] as f32));
+        wire.send(self.surface, 1, &[Arg::Object(id), Arg::Int(0), Arg::Int(0)]);
+        for area in std::mem::take(&mut self.changed) {
+            let [left, top, right, bottom] = on_pixels(area.intersect(units), scale, self.pixels);
+            wire.send(self.surface, 9, &[Arg::Int(left), Arg::Int(top), Arg::Int(right - left), Arg::Int(bottom - top)]);
+        }
+        self.waiting = wire.make(Interface::Callback);
+        wire.send(self.surface, 3, &[Arg::Uint(self.waiting)]);
+        wire.send(self.surface, 6, &[]);
+        (self.hurry, self.owed) = (false, false);
+        true
     }
 
     /// Lets go of what the GPU has of a surface.
@@ -523,6 +535,22 @@ impl Drop for Gpu {
             self.retired.iter().for_each(|image| vulkan.unmake(image));
         }
     }
+}
+
+/// Draws one area into pixels `size` big: a canvas over the rows it covers (as `paint_area`
+/// does into a buffer of shared memory).
+fn paint_pixels(pixels: &mut [u32], [width, height]: [i32; 2], area: Rect, scale: f32, clear: bool, paint: &mut dyn FnMut(&mut Canvas)) {
+    let [_, top, _, bottom] = on_pixels(area, scale, [width, height]);
+    if top >= bottom {
+        return;
+    }
+    let rows = &mut pixels[(top * width) as usize..(bottom * width) as usize];
+    let mut canvas = Canvas::new(rows, width as usize, (bottom - top) as usize, (0, top), scale);
+    canvas.clip(area.snap_to_pixels(scale));
+    if clear {
+        canvas.erase();
+    }
+    paint(&mut canvas);
 }
 
 /// Destroys a buffer the compositor made (0: none).

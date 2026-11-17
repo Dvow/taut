@@ -616,30 +616,23 @@ impl Sheet {
         if areas.len() > 16 {
             areas = vec![areas.iter().fold(Rect::EMPTY, |all, area| all.union(*area))];
         }
-        let (units, size, id) = (rect(0.0, 0.0, self.units[0] as f32, self.units[1] as f32), buffer.size, buffer.id);
-        let pixels = buffer.memory.pixels();
-        areas.iter().map(|area| area.intersect(units)).filter(|area| !area.is_empty()).for_each(|area| paint_area(pixels, size, area, scale, clear, paint));
-        buffer.busy = true;
-        // Every other buffer lacks what changed now.
-        let others = self.buffers.iter_mut().enumerate().filter(|(other, _)| *other != at);
-        others.for_each(|(_, buffer)| buffer.missing.extend_from_slice(&changed));
-        self.commit(link, id, &changed, scale);
-        true
-    }
-
-    /// Hands buffer `id` over, naming the places `changed` (in units), and asks for a frame
-    /// callback.
-    fn commit(&mut self, link: &Link, id: u32, changed: &[Rect], scale: f32) {
-        let (wire, units) = (&link.wire, rect(0.0, 0.0, self.units[0] as f32, self.units[1] as f32));
-        wire.send(self.surface, 1, &[Arg::Object(id), Arg::Int(0), Arg::Int(0)]);
-        for area in changed {
-            let [left, top, right, bottom] = on_pixels(area.intersect(units), scale, self.pixels);
+        let units = rect(0.0, 0.0, self.units[0] as f32, self.units[1] as f32);
+        areas.iter().map(|area| area.intersect(units)).filter(|area| !area.is_empty()).for_each(|area| paint_area(buffer, area, scale, clear, paint));
+        let wire = &link.wire;
+        wire.send(self.surface, 1, &[Arg::Object(buffer.id), Arg::Int(0), Arg::Int(0)]);
+        for area in &changed {
+            let [left, top, right, bottom] = on_pixels(area.intersect(units), scale, buffer.size);
             wire.send(self.surface, 9, &[Arg::Int(left), Arg::Int(top), Arg::Int(right - left), Arg::Int(bottom - top)]);
         }
+        buffer.busy = true;
         self.waiting = wire.make(Interface::Callback);
         wire.send(self.surface, 3, &[Arg::Uint(self.waiting)]);
         wire.send(self.surface, 6, &[]);
         (self.hurry, self.owed) = (false, false);
+        // Every other buffer lacks what changed now.
+        let others = self.buffers.iter_mut().enumerate().filter(|(other, _)| *other != at);
+        others.for_each(|(_, buffer)| buffer.missing.extend_from_slice(&changed));
+        true
     }
 
     /// Commits with nothing new where a commit is owed. Says whether it did.
@@ -669,14 +662,14 @@ fn on_pixels(area: Rect, scale: f32, [width, height]: [i32; 2]) -> [i32; 4] {
     [start(area.x, width), start(area.y, height), end(area.right(), width), end(area.bottom(), height)]
 }
 
-/// Draws one area into pixels `size` big: a canvas over the rows it covers.
-fn paint_area(pixels: &mut [u32], size: [i32; 2], area: Rect, scale: f32, clear: bool, paint: &mut dyn FnMut(&mut Canvas)) {
-    let [_, top, _, bottom] = on_pixels(area, scale, size);
-    let width = size[0];
+/// Draws one area into a buffer: a canvas over the rows it covers.
+fn paint_area(buffer: &mut Buffer, area: Rect, scale: f32, clear: bool, paint: &mut dyn FnMut(&mut Canvas)) {
+    let [_, top, _, bottom] = on_pixels(area, scale, buffer.size);
+    let width = buffer.size[0];
     if top >= bottom {
         return;
     }
-    let rows = &mut pixels[(top * width) as usize..(bottom * width) as usize];
+    let rows = &mut buffer.memory.pixels()[(top * width) as usize..(bottom * width) as usize];
     let mut canvas = Canvas::new(rows, width as usize, (bottom - top) as usize, (0, top), scale);
     canvas.clip(area.snap_to_pixels(scale));
     if clear {

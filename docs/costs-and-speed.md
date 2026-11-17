@@ -46,7 +46,7 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | `cff` | CFF and CFF2 fonts (most `.otf`) | not read | nothing; 17 KB | nothing; 17 KB |
 | `color-profiles` | colour profiles in picture files | colours as stored | nothing; 7 KB | nothing; 7 KB |
 | `woff2` | WOFF2 fonts (with a Brotli decoder) | not read | nothing; 95 KB | nothing; 99 KB |
-| `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | |
+| `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | 63 KB; 60 KB |
 
 - Each cost is the feature alone, in `hello` and in the gallery (which reads fonts and
   pictures). `brahmic` adds 77 KB (Linux 86 KB) to `hello` with `right-to-left` already on.
@@ -97,6 +97,21 @@ Linux (Ubuntu in WSL, Xvfb, gallery, 1200×800; app CPU + X server CPU per frame
 
 - Xvfb has no DRI3, so Mesa sends every whole frame through X: that is why `Auto` keeps the CPU
   there. A real desktop with DRI3 was not measured.
+
+Linux under Wayland (GitHub's Ubuntu runner, Weston 14's GL renderer on llvmpipe, dmabufs from
+lavapipe: a software device, so its copies are CPU work too; 800×500, release build, medians of
+60 frames, two runs):
+
+| | Shared memory | Vulkan dmabufs |
+| --- | --- | --- |
+| One label changed: drawing | 5–10 µs | 33–92 µs |
+| All changed: drawing | 26–80 µs | 0.11–0.72 ms |
+| Shown (the compositor's frame callback) after | 16–25 ms | 16–25 ms |
+
+- Drawing: painting, and for dmabufs the copy into an image and its wait. Shown: Weston's repaint
+  cycle (16 ms on Xvfb, 25 ms headless), the same on both paths.
+- On a software device dmabufs only add work: `Auto` keeps shared memory. A hardware GPU was not
+  measured.
 
 ## How fast it is
 
