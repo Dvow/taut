@@ -743,13 +743,8 @@ impl Shown {
         let (view_class, window_class) = (view_class(), window_class());
         let frame = NSRect::new(0.0, 0.0, f64::from(opening.size.w.max(1.0)), f64::from(opening.size.h.max(1.0)));
         let style = match (opening.transparent, opening.frameless) {
-            (true, sized) => {
-                if sized {
-                    RESIZABLE
-                } else {
-                    0
-                }
-            }
+            (true, true) => RESIZABLE,
+            (true, false) => 0,
             (false, true) => TITLED | CLOSABLE | MINIATURIZABLE | RESIZABLE | FULL_SIZE_CONTENT,
             (false, false) => TITLED | CLOSABLE | MINIATURIZABLE | RESIZABLE,
         };
