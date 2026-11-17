@@ -1141,7 +1141,7 @@ fn main() {
   portal when sandboxed); X grabs or the portal's `GlobalShortcuts`; a socket in the runtime
   folder.
 - macOS: `NSStatusItem` (its menu on a right click), `RegisterEventHotKey` (Ctrl is Command), a
-  socket in the temporary folder. No notifications.
+  socket in the temporary folder; `UNUserNotificationCenter`, for an app bundle only.
 - Unused, none of it is compiled in.
 
 ## Scenes

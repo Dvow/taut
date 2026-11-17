@@ -26,8 +26,10 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   mouse, wheel and touchpad, pinch, keys, text input with input methods, cursors, focus;
   CoreText text with its fallback fonts; the clipboard (text, pictures, files); files and text
   dropped in; `FileDialog::native` as a sheet; dark mode, accent, contrast, reduced motion,
-  screens, locale; screen readers through NSAccessibility; tray icon, global hotkeys, single
-  instance. Gaps: [what is missing](docs/what-is-missing.md).
+  screens, locale; screen readers through NSAccessibility (text ranges, tables and trees too);
+  tray icon, global hotkeys, single instance; notifications for app bundles; spell checking
+  (`NSSpellChecker`); dragging out to other programs; what an input method composes shown at
+  the cursor; `emoji` from Apple Color Emoji. Gaps: [what is missing](docs/what-is-missing.md).
 
 ## 0.2.0 (2026-11-17)
 

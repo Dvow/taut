@@ -49,7 +49,8 @@ Popovers anchored to their button.
 - Password box: dots only, no copy, no word jumps, only dots exposed to readers.
 - Multi-line boxes that fill their room, or leave Enter to the app (Shift+Enter: new line).
 - App Edit menus; readable and settable cursor and selection (with line and column).
-- Spell checking with the system's checker and user dictionary (Windows; Enchant on Linux),
+- Spell checking with the system's checker and user dictionary (Windows; Enchant on Linux;
+  `NSSpellChecker` on macOS),
   visible words only, on a background thread; suggestions, "Add to dictionary", "Ignore".
   About 30 KB, only when used.
 
@@ -138,8 +139,8 @@ Popovers anchored to their button.
   pictures, links).
 - Clipboard (Windows, X11, Wayland, macOS): text, pictures, files.
 - Open files and links with the default program.
-- Tray icon with native menu, system notifications, global hotkeys, single instance. Unused,
-  none of it is compiled in.
+- Tray icon with native menu, system notifications (on macOS for app bundles), global hotkeys,
+  single instance. Unused, none of it is compiled in.
 - **GPU or CPU** (`gpu`): Direct3D 11 or 12, Vulkan or OpenGL (Windows), or OpenGL ES 3 (EGL) and
   Vulkan (Linux, X11) show the pixels the CPU drew, byte for byte the same; whole frames in step with
   the screen; only changed rectangles uploaded (and presented, where the path can); a missing
@@ -152,7 +153,7 @@ Popovers anchored to their button.
   groups and tab rows are one stop each.
 - **Touch** (`touch`; Windows, X11, Wayland): tap, long press, inertial scrolling, pinch zoom;
   pens with pressure, tilt and eraser; touchpad pinch.
-- **Screen readers** (UI Automation, AT-SPI; NSAccessibility on macOS, with less): role, name, state, position and shortcut for every
+- **Screen readers** (UI Automation, AT-SPI, NSAccessibility): role, name, state, position and shortcut for every
   part, including off-screen content; tables and trees with full structure; text by character,
   word and line; announcements. Nothing is built until a reader asks.
 - **Themes:** dark, light, two high-contrast; accent, density and text scale; or follow the

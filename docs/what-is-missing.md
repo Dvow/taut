@@ -9,12 +9,12 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   untried.
 - macOS: the CPU draws and Core Animation shows; `Renderer` and `gpu` change nothing there. No
   `layer_opengl` or `layer_vulkan` tests; no Metal layer.
-- macOS: what an input method composes shows in its own window, not in the text box. Readers get
-  each node's role, name, value, state and place, and press, step, focus and set values; not
-  text by character, word or line, nor tables and trees as such.
-- macOS: no system notifications (they need an app bundle), no spell checking, no dragging out
-  to other programs, no touch or pens beyond pinch; `emoji` finds no font (Apple Color Emoji
-  joins sequences in AAT tables, which are not read). Unchecked: x86-64 Macs, VoiceOver itself.
+- macOS: what an input method composes shows in a small panel at the text cursor, over the box,
+  not laid into its text. A text range's place is its box's, as on Windows.
+- macOS: system notifications only for an app bundle (the notification centre serves no bare
+  executable); clicks are heard. No touch or pens beyond pinch. Apple Color Emoji's sequences
+  are shaped by CoreText, not `shaping.rs`. Unchecked: x86-64 Macs, VoiceOver itself, a
+  notification shown (the runner never grants permission).
 - macOS: the tray icon's menu opens on a right click or Control-click; a click is `.clicked`.
   Hotkeys: Ctrl is Command, Super is Control; no media keys. Desktop places are points from
   the main screen's top left.
