@@ -278,9 +278,3 @@ pub(crate) fn file_for(face: Face, letter: char) -> Option<PathBuf> {
     let path: Obj = unsafe { send(url.0.cast_mut(), c"path", ()) };
     rust_string(path).map(PathBuf::from)
 }
-
-/// The system's emoji font file.
-pub(crate) fn emoji_file() -> Option<PathBuf> {
-    let file = PathBuf::from("/System/Library/Fonts/Apple Color Emoji.ttc");
-    file.exists().then_some(file)
-}

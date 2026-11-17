@@ -106,6 +106,7 @@ fn off(got: &[u32], surface: &Surface, under: &[u32]) -> (u32, usize) {
 const TOLERANCE: u32 = 1;
 
 /// The rows of a picture `width` wide, the last first: OpenGL counts rows from the bottom.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn upside_down(pixels: &[u32], width: usize) -> Vec<u32> {
     pixels.rchunks(width).flatten().copied().collect()
 }

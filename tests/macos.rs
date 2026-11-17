@@ -751,30 +751,25 @@ mod mac {
         }
     }
 
-    /// The program's first window as a client reads it, from another thread (the window's
-    /// thread answers): `None` where the system does not trust this program to read others.
-    fn read_as_a_client() -> std::sync::mpsc::Receiver<Option<Vec<(String, String)>>> {
-        let (tell, heard) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            if unsafe { AXIsProcessTrusted() } == 0 {
-                let _ = tell.send(None);
-                return;
-            }
-            let program = unsafe { AXUIElementCreateApplication(std::process::id() as i32) };
-            let mut windows: Obj = std::ptr::null_mut();
-            unsafe { AXUIElementCopyAttributeValue(program, string("AXWindows"), &mut windows) };
-            let mut found = Vec::new();
-            items(windows).first().into_iter().for_each(|window| told_to_clients(*window, 0, &mut found));
-            _ = tell.send(Some(found));
-        });
-        heard
+    /// The program's first window as a client reads it: `None` where the system does not trust
+    /// this program to read others. (Asked of this program, the client interface answers on the
+    /// asking thread, and AppKit answers only on the window's: so it is asked here.)
+    fn read_as_a_client() -> Option<Vec<(String, String)>> {
+        if unsafe { AXIsProcessTrusted() } == 0 {
+            return None;
+        }
+        let program = unsafe { AXUIElementCreateApplication(std::process::id() as i32) };
+        let mut windows: Obj = std::ptr::null_mut();
+        unsafe { AXUIElementCopyAttributeValue(program, string("AXWindows"), &mut windows) };
+        let mut found = Vec::new();
+        items(windows).first().into_iter().for_each(|window| told_to_clients(*window, 0, &mut found));
+        Some(found)
     }
 
     /// A screen reader reads what the window tells, through NSAccessibility: the text and the
     /// button, where they are; it presses the button, and hears the new count.
     fn a_reader_reads_the_window_and_presses_its_button() -> Vec<String> {
         let mut count = 0;
-        let mut client = None;
         let window = Window { title: "Readers", width: 360.0, height: 200.0, ..Default::default() };
         check(window, move |steps, ui| {
             counter(&mut count, ui);
@@ -799,7 +794,6 @@ mod mac {
                     steps.check(inside && place.size.width > 0.0, || format!("the button is said to be at {place:?}, the window at {frame:?}"));
                     let pressed: u8 = send(button, c"accessibilityPerformPress", ());
                     steps.check(pressed == 1, || "the button would not be pressed".into());
-                    client = Some(read_as_a_client());
                     steps.next();
                 }
                 2 if count == 1 && steps.waited(300) => {
@@ -807,18 +801,121 @@ mod mac {
                     steps.check(all.iter().any(|(_, name)| name == "Pressed 1 times"), || format!("pressed by a reader, the window tells {all:?}"));
                     steps.next();
                 }
-                3 => match client.as_ref().map(|heard| heard.try_recv()) {
-                    Some(Ok(None)) => {
-                        println!("    the system does not trust this program to read others: not read as a client");
-                        steps.done = true;
+                3 => {
+                    match read_as_a_client() {
+                        None => println!("    the system does not trust this program to read others: not read as a client"),
+                        Some(found) => {
+                            println!("    a client reads {} elements", found.len());
+                            steps.check(found.iter().any(|(role, name)| role == "AXButton" && name.contains("Press")), || format!("a client reads {found:?}"));
+                        }
                     }
-                    Some(Ok(Some(found))) => {
-                        println!("    a client reads {} elements", found.len());
-                        steps.check(found.iter().any(|(role, name)| role == "AXButton" && name.contains("Press")), || format!("a client reads {found:?}"));
-                        steps.done = true;
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
+    /// A view and all within it, as AppKit has them, that is of a class.
+    fn views_of(view: Obj, class_name: &str, depth: usize, into: &mut Vec<Obj>) {
+        if text_of(send(send::<Obj>(view, c"className", ()), c"description", ())).as_deref() == Some(class_name) {
+            into.push(view);
+        }
+        if depth < 6 {
+            items(send(view, c"subviews", ())).into_iter().for_each(|under| views_of(under, class_name, depth + 1, into));
+        }
+    }
+
+    /// The program's status item buttons, in the menu bar.
+    fn status_buttons() -> Vec<Obj> {
+        let mut found = Vec::new();
+        for window in items(send(app(), c"windows", ())) {
+            views_of(send(window, c"contentView", ()), "NSStatusBarButton", 0, &mut found);
+        }
+        found
+    }
+
+    /// The tray icon is a status item in the menu bar: its picture and hint as the app says, a
+    /// click heard as one, its menu's rows picked; gone when the app stops saying it.
+    fn the_tray_icon_is_a_status_item_with_a_menu() -> Vec<String> {
+        let (mut heard, mut quiet, mut shown) = (Vec::new(), false, true);
+        let icon: Vec<u32> = vec![0xff20_60e0; 16 * 16];
+        let window = Window { title: "Tray", width: 240.0, height: 120.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            ui.label("A tray icon");
+            if shown {
+                if ui.tray(&[(16, &icon)], "Taut in the tray").clicked {
+                    heard.push("clicked");
+                }
+                if ui.tray_item("&Show") {
+                    heard.push("show");
+                }
+                ui.tray_checkbox(&mut quiet, "&Quiet");
+            }
+            match steps.step {
+                0 if steps.waited(500) => {
+                    let buttons = status_buttons();
+                    let Some(button) = buttons.first().copied() else { return steps.check(false, || "no status item in the menu bar".into()) };
+                    let hint = text_of(send(button, c"toolTip", ()));
+                    steps.check(hint.as_deref() == Some("Taut in the tray"), || format!("its hint is {hint:?}"));
+                    steps.check(!send::<Obj>(button, c"image", ()).is_null(), || "it has no picture".into());
+                    let menu: Obj = send(button, c"menu", ());
+                    let rows: Vec<String> = items(send(menu, c"itemArray", ())).into_iter().filter_map(|item| text_of(send(item, c"title", ()))).collect();
+                    steps.check(rows == ["Show", "Quiet"], || format!("its menu has {rows:?}"));
+                    send::<()>(button, c"performClick:", (std::ptr::null_mut::<c_void>(),));
+                    send::<()>(menu, c"performActionForItemAtIndex:", (0isize,));
+                    send::<()>(menu, c"performActionForItemAtIndex:", (1isize,));
+                    steps.next();
+                }
+                1 if steps.waited(500) => {
+                    steps.check(heard == ["clicked", "show"] && quiet, || format!("clicked and picked, the app heard {heard:?}, quiet: {quiet}"));
+                    shown = false;
+                    steps.next();
+                }
+                2 if steps.waited(500) => {
+                    steps.check(status_buttons().is_empty(), || "the status item stays after the app stopped saying it".into());
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventCreateKeyboardEvent(source: Obj, code: u16, down: bool) -> Obj;
+        fn CGEventSetFlags(event: Obj, flags: u64);
+        fn CGEventPost(tap: u32, event: Obj);
+    }
+
+    /// A global hotkey is registered with the system; where this program may post keys as a
+    /// person's, a press of it is heard.
+    fn a_global_hotkey_is_registered_and_heard() -> Vec<String> {
+        let mut pressed = 0;
+        let window = Window { title: "Hotkey", width: 240.0, height: 120.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            ui.label("A hotkey");
+            pressed += ui.hotkey("Ctrl+Alt+F9") as u32;
+            match steps.step {
+                0 if steps.waited(500) => {
+                    steps.check(!ui.hotkey_refused("Ctrl+Alt+F9"), || "the system refused Ctrl+Alt+F9 (Command+Option+F9)".into());
+                    // F9 (code 0x65) with Command and Option, at the system's own input.
+                    for down in [true, false] {
+                        let key = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0x65, down) };
+                        unsafe { CGEventSetFlags(key, 0x0010_0000 | 0x0008_0000) };
+                        unsafe { CGEventPost(0, key) };
+                        unsafe { CFRelease(key) };
                     }
-                    _ => {}
-                },
+                    steps.next();
+                }
+                1 if pressed > 0 || steps.waited(2000) => {
+                    match (pressed, unsafe { AXIsProcessTrusted() } != 0) {
+                        (0, true) => steps.check(false, || "a trusted program posted the hotkey, and it was not heard".into()),
+                        (0, false) => println!("    the system does not take keys this program posts: the press is not tried"),
+                        _ => println!("    the hotkey was heard {pressed} times"),
+                    }
+                    steps.done = true;
+                }
                 _ => {}
             }
         })
@@ -839,7 +936,7 @@ mod mac {
     pub fn main() {
         unsafe { objc_setExceptionPreprocessor(thrown) };
         type Check = fn() -> Vec<String>;
-        let checks: [(&str, Check); 11] = [
+        let checks: [(&str, Check); 13] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
             ("keys and an input method's text reach the focused box", keys_and_an_input_methods_text_reach_the_focused_box),
             ("the clipboard is the system's", the_clipboard_is_the_systems),
@@ -850,6 +947,8 @@ mod mac {
             ("a window without a frame has no buttons", a_window_without_a_frame_has_no_buttons),
             ("a waker on another thread wakes the window", a_waker_on_another_thread_wakes_the_window),
             ("a reader reads the window and presses its button", a_reader_reads_the_window_and_presses_its_button),
+            ("the tray icon is a status item with a menu", the_tray_icon_is_a_status_item_with_a_menu),
+            ("a global hotkey is registered and heard", a_global_hotkey_is_registered_and_heard),
             ("the system's file dialog comes as a sheet and answers", the_systems_file_dialog_comes_as_a_sheet_and_answers),
         ];
         let only = std::env::args().nth(1).filter(|word| !word.starts_with('-'));

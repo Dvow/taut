@@ -124,7 +124,7 @@ const BEST: [Renderer; 2] = [Renderer::OpenGL, Renderer::Vulkan];
 
 impl Renderer {
     /// What the user `said` (`TAUT_RENDERER`, in any case) over the app's choice.
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", not(target_os = "macos")))]
     pub(crate) fn chosen(self, said: Option<&str>) -> Renderer {
         match said.map(str::to_ascii_lowercase).as_deref() {
             Some("cpu") => Renderer::Cpu,
@@ -302,6 +302,8 @@ pub(crate) fn hand_desktop() {
     crate::x11::hand_desktop();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::wayland::hand_desktop();
+    #[cfg(target_os = "macos")]
+    crate::macos_shell::hand_desktop();
 }
 
 /// An in-process clipboard, for where there is no system to ask: what is copied stays inside

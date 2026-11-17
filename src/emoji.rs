@@ -430,7 +430,7 @@ fn system(full: bool) -> Option<FontFile> {
     #[cfg(not(target_os = "macos"))]
     let named = crate::x11::emoji_file().and_then(FontFile::open).filter(smiles);
     #[cfg(target_os = "macos")]
-    let named = crate::core_text::emoji_file().and_then(FontFile::open).filter(smiles);
+    let named = None;
     if named.is_some() {
         return named;
     }

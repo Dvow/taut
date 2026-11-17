@@ -37,6 +37,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// The most suggestions a menu offers.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const OFFERED: usize = 5;
 /// The longest word sent to a checker, in bytes: anything longer is no word.
 const LONGEST: usize = 64;
@@ -1431,6 +1432,7 @@ pub(crate) mod tests {
 
     /// Misspelled English words by the system checker, if it has this language: its verdicts,
     /// and its suggestions for the first.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn system_says(language: &str, words: &[&str]) -> Option<(Vec<bool>, Vec<String>)> {
         let mut checker = system(language)?;
         let wrong = words.iter().map(|word| checker.wrong(word)).collect();

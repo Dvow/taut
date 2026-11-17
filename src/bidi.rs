@@ -1314,8 +1314,14 @@ pub(crate) fn system(face: Face, letter: char) -> Option<FontFile> {
     crate::x11::file_for(face, letter).and_then(FontFile::open).filter(|font| font.glyph(letter) != 0)
 }
 
+/// The same on macOS: the file CoreText draws the character from.
+#[cfg(target_os = "macos")]
+pub(crate) fn system(face: Face, letter: char) -> Option<FontFile> {
+    crate::core_text::file_for(face, letter).and_then(FontFile::open).filter(|font| font.glyph(letter) != 0)
+}
+
 /// The system font for a character: none known here.
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(not(any(windows, unix)))]
 pub(crate) fn system(_face: Face, _letter: char) -> Option<FontFile> {
     None
 }

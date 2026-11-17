@@ -149,6 +149,7 @@ mod tests {
     /// A stand-in for whatever the system would start: built in a folder whose name has a space
     /// and a non-ASCII letter, it writes what it was handed (one per line) into `opened.txt`
     /// beside itself, and shows nothing.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn stand_in(name: &str) -> PathBuf {
         let folder = std::env::current_exe().unwrap().parent().unwrap().join(format!("stand in \u{e9} {name}"));
         _ = std::fs::remove_dir_all(&folder);
@@ -167,6 +168,7 @@ mod tests {
 
     /// What the stand-in at `program` was handed, once it ran; nothing if it did not run within
     /// a few seconds.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn handed(program: &Path) -> Option<String> {
         let note = program.with_file_name("opened.txt");
         let since = std::time::Instant::now();

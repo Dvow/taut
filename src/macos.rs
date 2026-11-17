@@ -92,6 +92,8 @@ pub(crate) enum Heard {
     Looks,
     /// The program was asked to quit (its menu, logging out).
     Quit,
+    /// The desktop part heard something for the app: its tray icon, a hotkey.
+    Desktop,
     /// Something only a handed-in part knows of (drops, the file dialog).
     Other(Obj, Box<dyn FnOnce(&mut Ui) -> bool>),
 }
@@ -123,7 +125,7 @@ impl Heard {
     fn view(&self) -> Obj {
         match self {
             Heard::Event(view, _) | Heard::Close(view) | Heard::Resized(view) | Heard::Moved(view) | Heard::Minimized(view, _) | Heard::Focused(view, _) | Heard::Other(view, _) => *view,
-            Heard::Looks | Heard::Quit => std::ptr::null_mut(),
+            Heard::Looks | Heard::Quit | Heard::Desktop => std::ptr::null_mut(),
         }
     }
 }
@@ -996,6 +998,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         match (what, at) {
             (Heard::Looks, _) => self.rerun |= self.ui.set_preferences(preferences()) | self.ui.set_screens(screens()),
             (Heard::Quit, _) => self.closed(0),
+            (Heard::Desktop, _) => self.rerun = true,
             (_, None) => {}
             (Heard::Event(_, event), Some(at)) => self.hear(at, event),
             (Heard::Close(_), Some(at)) => self.closed(at),
@@ -1077,6 +1080,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         self.ui.run(&mut self.app);
         let closes = self.ui.take_closing() == Some(Ok(()));
         (self.rerun, self.done) = (false, self.done || closes || self.ui.quitting());
+        if let Some(stood) = crate::macos_shell::DESKTOP.get() {
+            self.rerun |= stood(&mut self.ui, self.windows[0].window, self.windows[0].view);
+        }
         self.keep_up();
         (0..self.windows.len()).for_each(|at| self.follow(at));
         if self.ui.listening {

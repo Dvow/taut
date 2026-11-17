@@ -140,6 +140,8 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod macos_files;
 #[cfg(target_os = "macos")]
+mod macos_shell;
+#[cfg(target_os = "macos")]
 mod macos_sys;
 mod markdown;
 mod markdown_pages;

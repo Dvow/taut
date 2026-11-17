@@ -179,7 +179,7 @@ pub(crate) fn named(result: i32) -> &'static str {
 
 // Windows shown through Vulkan (feature `gpu`: `gpu_vulkan_windows`, `gpu_vulkan_x11`): the
 // instance, devices, surfaces and swap chains.
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 structures! {
     VkApplicationInfo { kind: u32, next: *const c_void, name: *const c_char, version: u32, engine: *const c_char, engine_version: u32, api_version: u32, }
     VkInstanceCreateInfo { kind: u32, next: *const c_void, flags: u32, application: *const VkApplicationInfo, layer_count: u32, layers: *const *const c_char, extension_count: u32, extensions: *const *const c_char, }
@@ -200,23 +200,23 @@ structures! {
 
 #[cfg(all(windows, feature = "gpu"))]
 pub(crate) const LAYOUT_TRANSFER_SOURCE: u32 = 6;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 pub(crate) const LAYOUT_PRESENT: u32 = 1_000_001_002;
 #[cfg(all(windows, feature = "gpu"))]
 pub(crate) const ACCESS_TRANSFER_READ: u32 = 0x800;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 pub(crate) const STAGE_BOTTOM: u32 = 0x2000;
 // Kinds of use of an image or buffer.
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 pub(crate) const USAGE_TRANSFER_SOURCE: u32 = 0x1;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 pub(crate) const USAGE_TRANSFER_DESTINATION: u32 = 0x2;
 // Results.
 #[cfg(all(windows, feature = "gpu"))]
 pub(crate) const DEVICE_LOST: i32 = -4;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 pub(crate) const OUT_OF_DATE: i32 = -1_000_001_004;
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 /// One layer of an image's colour: aspect, level, first layer, layers.
 pub(crate) const LAYER: [u32; 4] = [0x1, 0, 0, 1];
 
@@ -276,7 +276,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(all(feature = "gpu", not(target_os = "macos")))]
     #[test]
     fn what_showing_a_window_takes_is_laid_out_as_vulkan_lays_it_out() {
         let sizes = [
