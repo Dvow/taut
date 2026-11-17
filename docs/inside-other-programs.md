@@ -7,8 +7,9 @@ and Linux), a program keeps a `Surface`, forwards input, and shows the surface a
 
 ```rust,ignore
 ui.run(&mut describe);                             // when something happened
-for [left, top, right, bottom] in surface.update(&mut ui) {
+for place in surface.update(&mut ui) {
     // draws just the places that changed again: copy these pixels into your texture
+    let up = surface.upload(place);                // x, y, width, height, bytes, bytes_per_row
 }
 ```
 
@@ -17,12 +18,15 @@ for [left, top, right, bottom] in surface.update(&mut ui) {
 - `ui.theme.bg = Color::NONE` makes the background transparent, for overlays.
 - `platform::system_text()` uses system fonts on any surface; on Windows, `platform::Messages`
   turns another window's messages into events.
-- Direct3D 11 and OpenGL 3.3+: `layer_d3d11::Layer::new(device, context)` or
-  `layer_opengl::Layer::new(find)` once, then `layer.draw(&mut ui)` each frame after the
-  program's drawing. It uploads only changed regions (`UpdateSubresource`, `glTexSubImage2D`),
-  draws one quad at the viewport, restores all state, and returns errors as values. Unused,
-  it isn't compiled in. Examples: `d3d11.rs`, `opengl.rs`; `vulkan.rs` by hand; wgpu in
-  chapter 9. `tests/renderers.rs` compares each with the surface.
-- No layers for Vulkan, Direct3D 9 or 12, or Metal.
+- Layers for Direct3D 9, 11 and 12, OpenGL 3.3+ and Vulkan: made once from the program's
+  device (`layer_d3d9`, `layer_d3d11`, `layer_d3d12`, `layer_opengl`, `layer_vulkan`), then
+  `layer.draw(..)` each frame after the program's drawing. Each uploads only changed regions,
+  draws one quad, and returns errors as values; Direct3D 9 and 11 and OpenGL restore all state
+  they set. Unused, a layer isn't compiled in. Examples: `d3d9.rs`, `d3d11.rs`, `d3d12.rs`,
+  `opengl.rs`, `vulkan.rs`; wgpu in chapter 9. `tests/renderers.rs` compares each with the
+  surface.
+- Any other renderer: `surface.upload(place)` gives each changed place as a texture upload
+  takes it.
+- No layer for Metal.
 - `examples/overlay.rs`: everything as a DLL with a C interface; `tests/dll.rs` loads and
   drives it.

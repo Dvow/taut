@@ -26,7 +26,7 @@
 //! `svg.rs` doesn't read.
 use crate::canvas::{Canvas, coverage};
 use crate::color::Color;
-use crate::font::{Bytes, FontFile, first_not};
+use crate::font_file::{Bytes, FontFile, first_not};
 use crate::geom::{Point, pt};
 use crate::path::Path;
 use crate::svg::{Kept, Table, both, through, undone};
@@ -98,7 +98,7 @@ fn gunzip(file: &[u8]) -> Option<Vec<u8>> {
     if flags & 4 != 0 {
         at += 2 + u16::from_le_bytes(*file.get(at..)?.first_chunk::<2>()?) as usize;
     }
-    for _ in [8, 16].into_iter().filter(|said| flags & said != 0) {
+    for _ in [8, 16].into_iter().filter(|flag| flags & flag != 0) {
         at += file.get(at..)?.iter().position(|byte| *byte == 0)? + 1;
     }
     at += if flags & 2 != 0 { 2 } else { 0 };
@@ -786,7 +786,7 @@ fn with_light(colour: [f32; 3], to: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::font::tests::{coloured, file, words};
+    use crate::font_file::tests::{coloured, file, words};
 
     /// Big-endian 4-byte numbers.
     fn longs(numbers: &[u32]) -> Vec<u8> {
@@ -862,7 +862,7 @@ mod tests {
         table
     }
 
-    /// The test emoji font of `font.rs`'s tests, with this `COLR` instead of its own, plus
+    /// The test emoji font of `font_file.rs`'s tests, with this `COLR` instead of its own, plus
     /// these tables. At 1024 units, glyph 0 is a box from 64 to 256 across and up to 448, glyph
     /// 8 a small box from 128 to 256 across and up to 128.
     fn font(colr: Vec<u8>, more: &[(&[u8; 4], Vec<u8>)]) -> FontFile {
@@ -1001,7 +1001,7 @@ mod tests {
 
     /// Bytes as a gzip file, with a name.
     fn gzipped(bytes: &[u8]) -> Vec<u8> {
-        let zlib = crate::png::pack(bytes);
+        let zlib = crate::png::zlib_compress(bytes);
         let checks: [u32; 256] = std::array::from_fn(|byte| (0..8).fold(byte as u32, |check, _| if check & 1 == 1 { check >> 1 ^ 0xEDB8_8320 } else { check >> 1 }));
         let check = !bytes.iter().fold(!0u32, |check, byte| checks[(check as u8 ^ byte) as usize] ^ check >> 8);
         [&[0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 255][..], b"glyph.svg\0", &zlib[2..zlib.len() - 4], &check.to_le_bytes(), &(bytes.len() as u32).to_le_bytes()].concat()
@@ -1102,7 +1102,7 @@ mod tests {
                 worst = if mean > worst.0 { (mean, glyph) } else { worst };
                 if let Some(folder) = std::env::var_os("TAUT_PICTURES").filter(|_| mean > 30.0 && glyph % 7 == 0) {
                     let ours: Vec<u32> = (0..png.len()).map(|n| at(&mine, picture.left as i32 + (n % width) as i32, -picture.top as i32 + (n / width) as i32)).collect();
-                    std::fs::write(std::path::Path::new(&folder).join(format!("{drawn_by}-{glyph}-{mean:.0}.png")), crate::png::encode_clear(width, &[ours, png.clone()].concat()).unwrap()).unwrap();
+                    std::fs::write(std::path::Path::new(&folder).join(format!("{drawn_by}-{glyph}-{mean:.0}.png")), crate::png::encode_rgba(width, &[ours, png.clone()].concat()).unwrap()).unwrap();
                 }
             }
             println!(

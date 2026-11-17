@@ -11,27 +11,28 @@
 //! memory, and one text system writes in all.
 //!
 //! A frameless window is an ordinary window whose client area is all of it: it says so to
-//! `WM_NCCALCSIZE`, and answers `WM_NCHITTEST` from what `bare` works out, so the system still
-//! moves, resizes and snaps it by the strip and edges the app gives. A see-through window is
-//! the one kind not drawn through the strip: Windows shows it from a full picture the window
-//! keeps and draws into (`Clear`, a layered window).
+//! `WM_NCCALCSIZE`, and answers `WM_NCHITTEST` from what `frameless` works out, so the system
+//! still moves, resizes and snaps it by the strip and edges the app gives. A see-through window
+//! is the one kind not drawn through the strip: Windows shows it from a full picture the window
+//! keeps and draws into (`SeeThrough`, a layered window).
 //!
 //! Drag and drop from other programs comes through OLE: the window registers a hand-written COM
 //! `DropTarget`; dropped text arrives the same way. Dragging out to other programs also goes
-//! through OLE, in `ole`: the window hands it over between two messages and hears what became
-//! of it. (Screen reader requests are in `uia`: the window only passes their messages on.)
-use crate::bare::Grip;
+//! through OLE, in `ole_drag`: the window hands it over between two messages and hears what
+//! became of it. (Screen reader requests are in `uia`: the window only passes their messages
+//! on.)
 use crate::canvas::Canvas;
 use crate::color::Color;
-use crate::contacts::{self, WM_POINTERCAPTURECHANGED, WM_POINTERUPDATE};
 use crate::event::{Button, Cursor, Event, Key, Mods};
-use crate::files::FileAsk;
+use crate::file_dialog::FileDialogRequest;
+use crate::frameless::HitTest;
 use crate::geom::{Rect, Size, pt, rect};
 use crate::id::Id;
-use crate::platform::{Clipboard, PicturesAndFiles, Placed, Window};
+use crate::platform::{Clipboard, PicturesAndFiles, Window, WindowPlacement};
 use crate::screens::{Screen, Spot, spot};
-use crate::second::{Opening, WindowKind};
+use crate::second_window::{WindowKind, WindowOpening};
 use crate::text::{Face, Font, Metrics, TextSystem};
+use crate::touch_windows::{self, WM_POINTERCAPTURECHANGED, WM_POINTERUPDATE};
 use crate::ui::Ui;
 use crate::uia;
 use std::cell::{Cell, RefCell};
@@ -568,7 +569,7 @@ struct Fonts {
     made: HashMap<(Face, i32), (HANDLE, Metrics)>,
     utf16: Vec<u16>,
     each: Vec<i32>,
-    /// A line's pieces by the font each uses (see `fonts::pieces`).
+    /// A line's pieces by the font each uses (see `system_fonts::pieces`).
     pieces: Vec<(std::ops::Range<usize>, Face)>,
 }
 
@@ -587,8 +588,8 @@ impl Fonts {
             self.free();
         }
         *self.made.entry((font.face, px)).or_insert_with(|| {
-            // The first of the face's names installed (see `fonts`).
-            let asked = crate::fonts::asked(font.face);
+            // The first of the face's names installed (see `system_fonts`).
+            let asked = crate::system_fonts::asked(font.face);
             let px = ((px as f32 * asked.scale).round() as i32).max(1);
             // SAFETY: plain calls. With none of the names installed, the font is
             // `DEFAULT_GUI_FONT` (17), always there.
@@ -601,15 +602,15 @@ impl Fonts {
                 SelectObject(dc, handle);
                 GetTextMetricsW(dc, &mut m);
                 let mut reach = |of: char| if GetGlyphOutlineW(dc, of as u32, 0, &mut letter, 0, std::ptr::null_mut(), &upright) == u32::MAX { 0.0 } else { letter.origin.y as f32 / scale };
-                (handle, Metrics { ascent: m.ascent as f32 / scale, descent: m.descent as f32 / scale, cap: reach('H'), small: reach('x') })
+                (handle, Metrics { ascent: m.ascent as f32 / scale, descent: m.descent as f32 / scale, cap_height: reach('H'), x_height: reach('x') })
             }
         })
     }
 
     /// How wide `text` is on one line, and with `stops`, where each character ends: letters the
-    /// face's font lacks measured in its fallbacks (see `fonts`).
+    /// face's font lacks measured in its fallbacks (see `system_fonts`).
     fn measure(&mut self, text: &str, font: Font, scale: f32, mut stops: Option<&mut Vec<f32>>) -> f32 {
-        if !crate::fonts::pieces(text, font.face, &mut self.pieces) {
+        if !crate::system_fonts::pieces(text, font.face, &mut self.pieces) {
             return self.measure_one(text, font, scale, stops);
         }
         let (pieces, mut wide) = (std::mem::take(&mut self.pieces), 0.0);
@@ -681,7 +682,7 @@ impl TextSystem for GdiText {
     }
 
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
-        if !crate::fonts::pieces(text, font.face, &mut self.fonts.pieces) {
+        if !crate::system_fonts::pieces(text, font.face, &mut self.fonts.pieces) {
             return self.draw_one(canvas, text, x, y, font, color);
         }
         // Each piece in its own font after the one before, on the baseline of the face's own
@@ -810,7 +811,7 @@ impl TextSystem for SystemText {
         let (mut pen, line) = ((x * scale).round() as i32, (y * scale).round() as i32 + ascent);
         for letter in text.chars() {
             // A letter the face's font lacks comes from its fallback.
-            let glyph = self.glyph(Font { face: crate::fonts::face_for(font.face, letter), ..font }, scale, letter);
+            let glyph = self.glyph(Font { face: crate::system_fonts::face_for(font.face, letter), ..font }, scale, letter);
             canvas.cover(pen + glyph.left, line - glyph.top, glyph.width, &glyph.cover, color);
             pen += glyph.advance;
         }
@@ -848,12 +849,12 @@ impl Messages {
     /// `w` and `l` are what Windows sent with `msg`. (For `WM_DROPFILES`, `w` is the `HDROP`,
     /// read here: it must be live, or 0.)
     pub unsafe fn events(&mut self, msg: u32, w: usize, l: isize, scale: f32, mut each: impl FnMut(Event)) {
-        // Pointer messages of fingers and pens are read in `contacts`; the mouse messages
+        // Pointer messages of fingers and pens are read in `touch_windows`; the mouse messages
         // Windows also synthesizes from them, where left to it, are skipped.
         if cfg!(feature = "touch") && (WM_POINTERUPDATE..=WM_POINTERCAPTURECHANGED).contains(&msg) {
-            return contacts::events(msg, w, scale, &mut each);
+            return touch_windows::events(msg, w, scale, &mut each);
         }
-        if cfg!(feature = "touch") && (WM_MOUSEMOVE..=WM_MBUTTONUP).contains(&msg) && contacts::made_up() {
+        if cfg!(feature = "touch") && (WM_MOUSEMOVE..=WM_MBUTTONUP).contains(&msg) && touch_windows::made_up() {
             return;
         }
         let at = Event::Move(pt((l & 0xffff) as i16 as f32 / scale, (l >> 16 & 0xffff) as i16 as f32 / scale));
@@ -876,14 +877,14 @@ impl Messages {
             WM_MOUSEWHEEL => [self.wheel_at(l, scale), Some(Event::Wheel(0.0, -turn))],
             // Shift, Control and Alt are news when pressed, not on each repeat; and when
             // released.
-            WM_KEYDOWN | WM_SYSKEYDOWN if (0x10..=0x12).contains(&w) => [(l >> 30 & 1 == 0).then(|| Event::Held(held_with(w, true))), None],
-            WM_KEYUP | WM_SYSKEYUP if (0x10..=0x12).contains(&w) => [Some(Event::Held(held_with(w, false))), None],
+            WM_KEYDOWN | WM_SYSKEYDOWN if (0x10..=0x12).contains(&w) => [(l >> 30 & 1 == 0).then(|| Event::ModifiersChanged(held_with(w, true))), None],
+            WM_KEYUP | WM_SYSKEYUP if (0x10..=0x12).contains(&w) => [Some(Event::ModifiersChanged(held_with(w, false))), None],
             // A key pressed with Alt says so itself, in bit 29.
             WM_KEYDOWN | WM_SYSKEYDOWN => [key(w).map(|key| Event::Key(key, Mods { alt: mods().alt || l >> 29 & 1 == 1, ..mods() })), None],
             WM_KEYUP | WM_SYSKEYUP => [key(w).map(Event::KeyUp), None],
             WM_CHAR => [self.typed(w as u16).map(Event::Text), None],
-            WM_SETFOCUS => [Some(Event::Focus(true)), None],
-            WM_KILLFOCUS => [Some(Event::Focus(false)), None],
+            WM_SETFOCUS => [Some(Event::Focused(true)), None],
+            WM_KILLFOCUS => [Some(Event::Focused(false)), None],
             // SAFETY: as the caller promises. (Only where the app asks about files: see
             // `Drops`.)
             WM_DROPFILES => DROPS.get().map_or([None, None], |drops| unsafe { (drops.dropped)(w as HANDLE, scale) }),
@@ -930,7 +931,7 @@ fn pointer_at(window: HANDLE, mut screen: POINT, scale: f32) -> Option<Event> {
 unsafe fn dropped(drop: HANDLE, scale: f32) -> [Option<Event>; 2] {
     // SAFETY: as the caller promises.
     let (Some(at), files) = (unsafe { dropped_files(drop) }) else { return [None, None] };
-    [Some(Event::Move(pt(at.x as f32 / scale, at.y as f32 / scale))), Some(Event::Files(files))]
+    [Some(Event::Move(pt(at.x as f32 / scale, at.y as f32 / scale))), Some(Event::FilesDropped(files))]
 }
 
 /// Reads an `HDROP`: the drop point in the window, and the files.
@@ -990,17 +991,17 @@ struct Open {
     /// Client width in pixels.
     wide: i32,
     /// The least size the person can resize it to, in units.
-    min: (f32, f32),
+    min_size: (f32, f32),
     /// Whether `TrackMouseEvent` was asked to report the pointer leaving.
     tracking: bool,
     /// What turns Windows' messages into events.
     messages: Messages,
     /// Where the system was last told the text cursor is.
-    typing: RECT,
+    ime_spot: RECT,
     /// Its place and size while not maximized.
-    normal: Placed,
+    normal: WindowPlacement,
     /// The input methods are kept off it: what is typed now must not be seen.
-    hidden: bool,
+    ime_off: bool,
     /// Whether it accepts dropped files yet.
     files: bool,
     /// Its title bar is dark: for an interface with a dark background.
@@ -1011,25 +1012,30 @@ struct Open {
     /// only the window is at hand: that is kept on the window, `styles_of`.)
     edges: bool,
     /// Something of it is the window's, not the interface's, as of the last run: a resize edge
-    /// or a move strip. (Only then is the interface asked what is under the pointer for
+    /// or a title bar. (Only then is the interface asked what is under the pointer for
     /// `WM_NCHITTEST`.)
-    grips: bool,
+    asks_hit_test: bool,
     /// The picture Windows shows it from, if see-through.
-    clear: Option<Clear>,
+    transparent: Option<SeeThrough>,
     /// What it restores to from fullscreen: the style bits removed for it, and its
     /// `WINDOWPLACEMENT` as Windows keeps it. Nothing while not fullscreen.
-    over_all: Option<(isize, [i32; 11])>,
+    before_fullscreen: Option<(isize, [i32; 11])>,
     /// A dialog opened after it is open: it takes neither keyboard nor pointer.
     blocked: bool,
     /// Its app hid it entirely to live in the tray ([`Ui::hide_window`]), until it comes
     /// forward.
     withdrawn: bool,
+    /// What shows it, while a GPU path does; and whether it is hidden until its first paint.
+    #[cfg(feature = "gpu")]
+    shown: Option<crate::gpu_windows::Shown>,
+    #[cfg(feature = "gpu")]
+    cloaked: bool,
 }
 
 /// The full picture of a see-through (layered) window, which Windows shows it from: not drawn
 /// piecewise but handed over whole, with per-pixel alpha. (So it takes four bytes per pixel,
 /// where the other windows share one strip.)
-struct Clear {
+struct SeeThrough {
     dc: HANDLE,
     bitmap: HANDLE,
     pixels: *mut u32,
@@ -1037,11 +1043,11 @@ struct Clear {
     size: [i32; 2],
 }
 
-impl Clear {
+impl SeeThrough {
     /// A picture with nothing in it yet.
-    fn new() -> Clear {
+    fn new() -> SeeThrough {
         // SAFETY: a memory DC of the program's own, to hold the picture.
-        Clear { dc: unsafe { CreateCompatibleDC(0) }, bitmap: 0, pixels: std::ptr::null_mut(), size: [0; 2] }
+        SeeThrough { dc: unsafe { CreateCompatibleDC(0) }, bitmap: 0, pixels: std::ptr::null_mut(), size: [0; 2] }
     }
 
     /// Makes the picture `size` pixels if it is not already. Says whether it was remade: then
@@ -1075,7 +1081,7 @@ impl Clear {
         // SAFETY: the picture holds that many pixels, and nothing else uses them now.
         let block = unsafe { std::slice::from_raw_parts_mut(self.pixels, wide * high) };
         let mut canvas = Canvas::new(block, wide, high, (0, 0), scale);
-        canvas.clip(area.on_pixels(scale));
+        canvas.clip(area.snap_to_pixels(scale));
         canvas.erase();
         ui.paint(&mut canvas);
     }
@@ -1091,7 +1097,7 @@ impl Clear {
     }
 }
 
-impl Drop for Clear {
+impl Drop for SeeThrough {
     /// Frees the DC and the picture.
     fn drop(&mut self) {
         // SAFETY: both were made for this picture, which nothing holds any more. The DC goes
@@ -1122,8 +1128,8 @@ unsafe fn show_minimized(hwnd: HANDLE, filling: bool) {
 }
 
 /// The outer edges of a window with a `w` by `h` unit client on a `dpi` screen, with the window
-/// styles `frame` (`styles`), relative to the client's top left, in pixels. (A bare window has
-/// no styles here: its edges are its client's.)
+/// styles `frame` (`styles`), relative to the client's top left, in pixels. (A frameless window
+/// has no styles here: its edges are its client's.)
 fn framed(w: f32, h: f32, dpi: u32, frame: Option<[u32; 2]>) -> RECT {
     let scale = dpi as f32 / 96.0;
     let mut area = RECT { left: 0, top: 0, right: (w * scale) as i32, bottom: (h * scale) as i32 };
@@ -1139,15 +1145,15 @@ fn framed(w: f32, h: f32, dpi: u32, frame: Option<[u32; 2]>) -> RECT {
 /// button (0x0003_0000); a tool window is `WS_EX_TOOLWINDOW` (0x80), a dialog
 /// `WS_EX_DLGMODALFRAME` (1), an always-on-top one `WS_EX_TOPMOST` (8). A see-through window is
 /// layered (0x0008_0000).
-fn styles(kind: WindowKind, edges: bool, clear: bool) -> [u32; 2] {
-    let style = if clear && !edges { WS_PLAIN } else { WS_OVERLAPPEDWINDOW };
+fn styles(kind: WindowKind, edges: bool, transparent: bool) -> [u32; 2] {
+    let style = if transparent && !edges { WS_PLAIN } else { WS_OVERLAPPEDWINDOW };
     let (boxes, more) = match kind {
         WindowKind::Plain => (0, 0),
         WindowKind::Tool => (0x0003_0000, 0x80),
         WindowKind::Dialog => (0x0003_0000, 1),
         WindowKind::OnTop => (0, 8),
     };
-    [style & !boxes, more | if clear { 0x0008_0000 } else { 0 }]
+    [style & !boxes, more | if transparent { 0x0008_0000 } else { 0 }]
 }
 
 /// The styles of a framed window as created; none for a frameless one (which records that in
@@ -1176,7 +1182,7 @@ unsafe extern "system" fn each_screen(screen: HANDLE, _: HANDLE, _: *mut RECT, i
         let found = &mut *(into as *mut Vec<Screen>);
         if GetMonitorInfoW(screen, &mut info) != 0 {
             GetDpiForMonitor(screen, 0, &mut dpi[0], &mut dpi[1]);
-            found.insert(if info.flags & 1 != 0 { 0 } else { found.len() }, Screen { all: area(info.all), work: area(info.work), scale: dpi[0] as f32 / 96.0 });
+            found.insert(if info.flags & 1 != 0 { 0 } else { found.len() }, Screen { rect: area(info.all), work_area: area(info.work), scale: dpi[0] as f32 / 96.0 });
         }
     }
     1
@@ -1206,7 +1212,7 @@ fn pixels_of(part: Rect, scale: f32) -> RECT {
     RECT { left: (part.x * scale).floor() as i32, top: (part.y * scale).floor() as i32, right: (part.right() * scale).ceil() as i32, bottom: (part.bottom() * scale).ceil() as i32 }
 }
 
-/// Where a window with a `size` client and frame `looks` (`styles`; none if bare) goes as
+/// Where a window with a `size` client and frame `looks` (`styles`; none if frameless) goes as
 /// `asked` on `screens` (see `screens::spot`): a screen DPI, and its frame corner there.
 /// Nothing where the system places it.
 fn place_on(screens: &[Screen], asked: Spot, size: Size, looks: Option<[u32; 2]>) -> Option<(u32, POINT)> {
@@ -1242,15 +1248,15 @@ impl Stale {
 
 impl Open {
     /// Creates a hidden window as `opening` says (least size, kind, frame), owned by `owner` (0
-    /// for none), see-through if `clear` (then frameless too). Its client is `size` units at
-    /// the scale of the screen it lands on, at `place`: its frame corner at a desktop point, on
-    /// a screen of that DPI; or where the system puts it. Nothing if Windows creates none.
-    fn make(title: &str, size: Size, opening: Opening, clear: bool, place: Option<(u32, POINT)>, id: Id, owner: HANDLE) -> Option<Open> {
-        let (edges, bare, min) = (opening.bare, opening.bare || clear, (opening.least.w, opening.least.h));
+    /// for none), see-through if `transparent` (then frameless too). Its client is `size` units
+    /// at the scale of the screen it lands on, at `place`: its frame corner at a desktop point,
+    /// on a screen of that DPI; or where the system puts it. Nothing if Windows creates none.
+    fn make(title: &str, size: Size, opening: WindowOpening, transparent: bool, place: Option<(u32, POINT)>, id: Id, owner: HANDLE) -> Option<Open> {
+        let (edges, frameless, min_size) = (opening.frameless, opening.frameless || transparent, (opening.min_size.w, opening.min_size.h));
         // A window the person resizes uses a resizable frame style even if it shows none, so
         // the system resizes and snaps it.
-        let [style, more] = styles(opening.kind, edges, clear);
-        let looks = (!bare).then_some([style, more]);
+        let [style, more] = styles(opening.kind, edges, transparent);
+        let looks = (!frameless).then_some([style, more]);
         // Created where it goes and at its size there, so it is created at that screen's scale.
         // (A place or size of `i32::MIN` is left to the system.)
         let (at, big) = match place {
@@ -1267,7 +1273,7 @@ impl Open {
             }
             // That it is frameless is kept in the window's own extra bytes, which every window
             // of this class has: Windows asks when nothing else of it is at hand.
-            SetWindowLongPtrW(hwnd, 0, bare as isize);
+            SetWindowLongPtrW(hwnd, 0, frameless as isize);
             let (dpi, mut size) = (GetDpiForWindow(hwnd), size);
             let frame = framed(size.w, size.h, dpi, looks);
             // No larger than its screen's work area; and where the system chose the place,
@@ -1290,28 +1296,32 @@ impl Open {
             let nowhere = MonitorFromWindow(hwnd, 0) == 0;
             SetWindowPos(hwnd, 0, to.x, to.y, wide, high, if place.is_some() || nowhere { 0x0036 } else { 0x0034 });
             let (corner, messages) = (corner_of(hwnd), Messages::of(hwnd));
-            let normal = Placed { at: (corner.x, corner.y), width: size.w, height: size.h, maximized: false };
-            let clear = clear.then(Clear::new);
+            let normal = WindowPlacement { position: (corner.x, corner.y), width: size.w, height: size.h, maximized: false };
+            let transparent = transparent.then(SeeThrough::new);
             let mut made = Open {
                 hwnd,
                 id,
                 scale: dpi as f32 / 96.0,
                 wide: 0,
-                min,
+                min_size,
                 tracking: false,
                 messages,
-                typing: RECT::default(),
+                ime_spot: RECT::default(),
                 normal,
-                hidden: false,
+                ime_off: false,
                 files: false,
                 dark: false,
                 high: 0,
                 edges,
-                grips: false,
-                clear,
-                over_all: None,
+                asks_hit_test: false,
+                transparent,
+                before_fullscreen: None,
                 blocked: false,
                 withdrawn: false,
+                #[cfg(feature = "gpu")]
+                shown: None,
+                #[cfg(feature = "gpu")]
+                cloaked: false,
             };
             made.frame(true); // themes are dark until an app says otherwise
             Some(made)
@@ -1321,7 +1331,7 @@ impl Open {
     /// Shows the window again if hidden (5: `SW_SHOW`), restores it if minimized (9:
     /// `SW_RESTORE`), and asks to bring it to the front. (Windows grants that to the foreground
     /// program and to one it allowed.)
-    fn come_forward(&mut self) {
+    fn bring_to_front(&mut self) {
         // SAFETY: the window is alive.
         unsafe {
             if std::mem::take(&mut self.withdrawn) {
@@ -1338,7 +1348,7 @@ impl Open {
     /// giving its frame, and its `WINDOWPLACEMENT` (eleven numbers, the first their length). It
     /// is moved, resized and sent `WM_NCCALCSIZE`, nothing else changing, not the z-order
     /// (0x0234).
-    fn lie_over(&mut self) {
+    fn enter_fullscreen(&mut self) {
         let (hwnd, mut place, mut screen) = (self.hwnd, [0i32; 11], MONITORINFO { size: size_of::<MONITORINFO>() as u32, all: RECT::default(), work: RECT::default(), flags: 0 });
         place[0] = 44;
         // SAFETY: plain calls about a live window; Windows fills in the numbers. (A minimized
@@ -1353,15 +1363,15 @@ impl Open {
             let (style, all, frame) = (GetWindowLongPtrW(hwnd, -16), screen.all, WS_OVERLAPPEDWINDOW as isize);
             SetWindowLongPtrW(hwnd, -16, style & !frame);
             SetWindowPos(hwnd, 0, all.left, all.top, all.right - all.left, all.bottom - all.top, 0x0234);
-            self.over_all = Some((style & frame, place));
+            self.before_fullscreen = Some((style & frame, place));
         }
     }
 
     /// Restores the window from fullscreen: its frame back, where it was, maximized if it was.
     /// One minimized meanwhile stays so, and is all that once restored (2 and 7, as for a
     /// window opening minimized).
-    fn lie_back(&mut self) {
-        let Some((frame, mut place)) = self.over_all.take() else { return };
+    fn leave_fullscreen(&mut self) {
+        let Some((frame, mut place)) = self.before_fullscreen.take() else { return };
         // SAFETY: plain calls about a live window; the numbers are those Windows filled in. Its
         // frame is redrawn and nothing else changes (0x0237).
         unsafe {
@@ -1377,15 +1387,15 @@ impl Open {
     /// Does what the app asked of the window's state: fullscreen or back; maximize (3) or
     /// restore (9), not asked of a fullscreen window; minimize (6). Says whether anything was
     /// asked: Windows reported the result while nothing was listening.
-    fn stand(&mut self, minimize: bool, fill: Option<bool>, whole: Option<bool>) -> bool {
+    fn apply_state(&mut self, minimize: bool, fill: Option<bool>, whole: Option<bool>) -> bool {
         match whole {
-            Some(true) if self.over_all.is_none() => self.lie_over(),
-            Some(false) => self.lie_back(),
+            Some(true) if self.before_fullscreen.is_none() => self.enter_fullscreen(),
+            Some(false) => self.leave_fullscreen(),
             _ => {}
         }
         // SAFETY: the window is alive.
         unsafe {
-            match fill.filter(|_| self.over_all.is_none()) {
+            match fill.filter(|_| self.before_fullscreen.is_none()) {
                 Some(true) => _ = ShowWindow(self.hwnd, 3),
                 Some(false) if IsZoomed(self.hwnd) != 0 => _ = ShowWindow(self.hwnd, 9),
                 _ => {}
@@ -1403,18 +1413,18 @@ impl Open {
     /// the whole window.
     fn changed(&mut self, ui: &mut Ui) {
         let (all, scale) = (rect(0.0, 0.0, ui.size().w, ui.size().h), self.scale);
-        let Some(clear) = &mut self.clear else {
+        let Some(picture) = &mut self.transparent else {
             return ui.changes().for_each(|place| self.invalidate(place));
         };
-        let afresh = clear.fit([self.wide, self.high]);
+        let afresh = picture.fit([self.wide, self.high]);
         let (around, places) = if afresh { (all, 1) } else { (ui.around, ui.places.len()) };
         for place in 0..places {
             let area = if afresh { all } else { ui.places[place] };
-            clear.draw(ui, area, scale);
+            picture.draw(ui, area, scale);
         }
         ui.changes();
         if !around.is_empty() {
-            clear.show(self.hwnd, pixels_of(around.intersect(all), scale));
+            picture.show(self.hwnd, pixels_of(around.intersect(all), scale));
         }
     }
 
@@ -1434,6 +1444,8 @@ impl Open {
 
     /// Destroys a second window. (Windows destroys the first when the person closes it.)
     fn destroy(self) {
+        #[cfg(feature = "gpu")]
+        drop(self.shown);
         // Accessibility clients are told it is gone.
         uia::gone(self.hwnd);
         // SAFETY: Windows releases the window's drop target, if any, which frees it. The window
@@ -1494,8 +1506,8 @@ impl Open {
     /// Keeps the input methods off the window while what is typed must not be seen, and lets
     /// them back after. (An input method shows typed text in its own window and offers it again
     /// later: not for a password.)
-    fn hide_typing(&mut self, hidden: bool) {
-        if std::mem::replace(&mut self.hidden, hidden) == hidden {
+    fn keep_ime_off(&mut self, hidden: bool) {
+        if std::mem::replace(&mut self.ime_off, hidden) == hidden {
             return;
         }
         // SAFETY: the window is alive. It is detached from its input context (none, 0) or given
@@ -1511,7 +1523,7 @@ impl Open {
     fn follow_cursor(&mut self, cursor: Option<Rect>) {
         let Some(cursor) = cursor else { return };
         let spot = cursor_pixels(cursor, self.scale);
-        if std::mem::replace(&mut self.typing, spot) == spot {
+        if std::mem::replace(&mut self.ime_spot, spot) == spot {
             return;
         }
         // Composition starts at the cursor's top left (`CFS_POINT`, 2, which the system may
@@ -1571,6 +1583,12 @@ struct State {
     /// Whether OLE (for drag and drop) is initialized for the windows; nothing while none has
     /// asked for drops.
     ole: Option<bool>,
+    /// The device the GPU shows the windows with, none while the CPU does; and the one being
+    /// made, until it comes.
+    #[cfg(feature = "gpu")]
+    device: Option<crate::gpu_windows::Device>,
+    #[cfg(feature = "gpu")]
+    coming: Option<std::thread::JoinHandle<Option<crate::gpu_windows::Device>>>,
 }
 
 impl State {
@@ -1588,77 +1606,12 @@ impl State {
     /// something happened in), and handles what follows for each.
     fn run(&mut self) {
         self.ui.run(&mut self.app);
-        self.keep_step();
+        self.sync_windows();
         let mut came = false;
         for at in 0..self.windows.len() {
-            // What a run leaves a window: places to redraw, a title, whether to accept drops
-            // from now on, a drag out. (Each place is invalidated by itself: two small changes
-            // far apart are two small areas, not all between; the bounding rectangle a second
-            // window keeps until asked is not needed then.)
-            let Some((title, takes, top, forward, stood, going)) = self.in_window(at, |ui, window| {
-                window.frame(ui.theme.bg.is_dark());
-                uia::tell(window.hwnd, ui);
-                uia::announce(window.hwnd, ui);
-                window.changed(ui);
-                ui.changed();
-                window.grips = window.edges || ui.stand.strip != 0;
-                window.hide_typing(ui.typing_hidden());
-                // The system file dialog, if the app just asked for it, is shown once this
-                // message is handled.
-                ui.take_file_ask().into_iter().for_each(|ask| ASKED.with_borrow_mut(|asked| asked.push((window.hwnd, ask))));
-                let stood = window.stand(ui.take_minimize(), ui.take_maximized(), ui.take_full_screen());
-                let takes = ui.takes_files.get() || ui.crossing.takes_text.get();
-                let going = ui.going_out().zip(OUTWARD.get()).map(|(what, outward)| ((outward.made)(what), outward));
-                (ui.take_title(), takes, ui.take_on_top(), ui.take_forward(), stood, going)
-            }) else {
-                continue;
-            };
-            let window = &mut self.windows[at];
-            came |= stood;
-            if let Some(on) = top {
-                // SAFETY: the window goes topmost or back (-1, -2), nothing else changing: not
-                // its place, size or activation (0x13).
-                unsafe { SetWindowPos(window.hwnd, if on { -1 } else { -2 }, 0, 0, 0, 0, 0x0013) };
-            }
-            if forward {
-                window.come_forward();
-                came = true;
-            }
-            if let Some(title) = title {
-                // SAFETY: the title ends in a zero.
-                unsafe { SetWindowTextW(window.hwnd, wide(&title).as_ptr()) };
-            }
-            // SAFETY: OLE (for dragging in and out) is initialized on this thread the first
-            // time a window wants drops or drags something out (unless the program already uses
-            // COM in a way that rules it out). It stays for all windows and is released when
-            // the first window is destroyed: the window that asked may close mid-drop, which is
-            // no time to release OLE.
-            let ole = (takes && !window.files) || going.is_some();
-            let ole = ole && *self.ole.get_or_insert_with(|| unsafe { OleInitialize(std::ptr::null_mut()) } >= 0);
-            if let Some(drops) = DROPS.get().filter(|_| takes && !window.files) {
-                (drops.take)(window, ole);
-            }
-            // A drag out is handed to Windows once this message is handled, which needs OLE:
-            // without it nothing goes out.
-            if let Some((data, outward)) = going {
-                self.carry_out(at, data, outward, ole);
-            }
+            came |= self.apply_run(at);
         }
-        // What the app asked of the desktop goes to Windows once an app on this thread asked
-        // for any (see `shell`): the first window is hidden for the tray, or comes forward for
-        // a later start of the program.
-        if let Some(desktop) = DESKTOP.get() {
-            let (asked, first) = ((desktop.after)(), &mut self.windows[0]);
-            if asked.hide && !first.withdrawn {
-                // SAFETY: the window is alive; it is hidden (0), its task bar button too.
-                unsafe { ShowWindow(first.hwnd, 0) };
-                (first.withdrawn, came) = (true, true);
-            }
-            if asked.forward {
-                first.come_forward();
-                came = true;
-            }
-        }
+        came |= self.apply_desktop_requests();
         // A window that came forward is no longer minimized, has a size again, and has focus;
         // one minimized, maximized or made fullscreen has another size, or none: Windows said
         // so while this was busy and was not heard. So it is asked now, and what is news is run
@@ -1672,7 +1625,7 @@ impl State {
         }
         // No accessibility client is left: the tree kept for them is dropped.
         if self.ui.listening && uia::nobody_left() {
-            self.ui.listen(false);
+            self.ui.set_screen_reader(false);
         }
         // A blinking cursor or a due tooltip, in any window: the interface asks to run again
         // later.
@@ -1690,47 +1643,102 @@ impl State {
         }
     }
 
+    /// Does what a run left window `at`: places to redraw, a title, whether to accept drops
+    /// from now on, a drag out. (Each place is invalidated by itself: two small changes far
+    /// apart are two small areas, not all between; the bounding rectangle a second window keeps
+    /// until asked is not needed then.) Says whether the window's state changed or it came
+    /// forward: Windows reported that while nothing was listening.
+    fn apply_run(&mut self, at: usize) -> bool {
+        let Some((title, takes, top, forward, stood, going)) = self.in_window(at, |ui, window| {
+            window.frame(ui.theme.bg.is_dark());
+            uia::tell(window.hwnd, ui);
+            uia::announce(window.hwnd, ui);
+            window.changed(ui);
+            ui.changed();
+            window.asks_hit_test = window.edges || ui.window_state.title_bar != 0;
+            window.keep_ime_off(ui.password_focused());
+            // The system file dialog, if the app just asked for it, is shown once this message
+            // is handled.
+            ui.take_file_dialog_request().into_iter().for_each(|ask| ASKED.with_borrow_mut(|asked| asked.push((window.hwnd, ask))));
+            let stood = window.apply_state(ui.take_minimize(), ui.take_maximized(), ui.take_full_screen());
+            let takes = ui.takes_files.get() || ui.crossing.takes_text.get();
+            let going = ui.take_drag_out().zip(OUTWARD.get()).map(|(what, outward)| ((outward.made)(what), outward));
+            (ui.take_title(), takes, ui.take_on_top(), ui.take_bring_to_front(), stood, going)
+        }) else {
+            return false;
+        };
+        let window = &mut self.windows[at];
+        if let Some(on) = top {
+            // SAFETY: the window goes topmost or back (-1, -2), nothing else changing: not its
+            // place, size or activation (0x13).
+            unsafe { SetWindowPos(window.hwnd, if on { -1 } else { -2 }, 0, 0, 0, 0, 0x0013) };
+        }
+        if forward {
+            window.bring_to_front();
+        }
+        if let Some(title) = title {
+            // SAFETY: the title ends in a zero.
+            unsafe { SetWindowTextW(window.hwnd, wide(&title).as_ptr()) };
+        }
+        // SAFETY: OLE (for dragging in and out) is initialized on this thread the first time a
+        // window wants drops or drags something out (unless the program already uses COM in a
+        // way that rules it out). It stays for all windows and is released when the first
+        // window is destroyed: the window that asked may close mid-drop, which is no time to
+        // release OLE.
+        let ole = (takes && !window.files) || going.is_some();
+        let ole = ole && *self.ole.get_or_insert_with(|| unsafe { OleInitialize(std::ptr::null_mut()) } >= 0);
+        if let Some(drops) = DROPS.get().filter(|_| takes && !window.files) {
+            (drops.take)(window, ole);
+        }
+        // A drag out is handed to Windows once this message is handled, which needs OLE:
+        // without it nothing goes out.
+        if let Some((data, outward)) = going {
+            self.carry_out(at, data, outward, ole);
+        }
+        stood || forward
+    }
+
+    /// What the app asked of the desktop goes to Windows once an app on this thread asked for
+    /// any (see `windows_shell`): the first window is hidden for the tray, or comes forward for
+    /// a later start of the program. Says whether either happened.
+    fn apply_desktop_requests(&mut self) -> bool {
+        let Some(desktop) = DESKTOP.get() else { return false };
+        let (asked, first) = ((desktop.after)(), &mut self.windows[0]);
+        let hide = asked.hide && !first.withdrawn;
+        if hide {
+            // SAFETY: the window is alive; it is hidden (0), its task bar button too.
+            unsafe { ShowWindow(first.hwnd, 0) };
+            first.withdrawn = true;
+        }
+        if asked.forward {
+            first.bring_to_front();
+        }
+        hide || asked.forward
+    }
+
     /// Queues what is dragged out of window `at`, with how, to be handed to Windows
     /// (`carry_out_asked`); or without OLE, drops it at once, and the interface hears nothing
     /// took it.
-    fn carry_out(&mut self, at: usize, data: *mut crate::ole::Carried, outward: crate::ole::Outward, ole: bool) {
+    fn carry_out(&mut self, at: usize, data: *mut crate::ole_drag::Carried, outward: crate::ole_drag::Outward, ole: bool) {
         let hwnd = self.windows[at].hwnd;
         let gone = if ole { OUTGOING.replace(Some((hwnd, data, outward))).map(|(_, was, _)| was) } else { Some(data) };
         if let Some(gone) = gone {
             // SAFETY: the object has one reference, its maker's, which goes to the queue or is
             // released here.
-            unsafe { crate::ole::let_go(gone) };
+            unsafe { crate::ole_drag::let_go(gone) };
         }
         if !ole {
-            self.in_window(at, |ui, _| ui.set_taken(None));
+            self.in_window(at, |ui, _| ui.set_drop_effect(None));
         }
     }
 
     /// Brings the windows in line with the second windows the interface has after a run: one it
     /// no longer has is destroyed, a new one created.
-    fn keep_step(&mut self) {
-        let (was, state) = (self.windows.len(), self as *mut State as isize);
-        for at in (1..was).rev() {
-            if self.ui.windows().all(|(id, ..)| id != self.windows[at].id) {
-                // A window blocked by a dialog now closing gets keyboard and pointer back
-                // first, so Windows returns focus to it.
-                self.keep_blocked();
-                self.windows.remove(at).destroy();
-            }
-        }
+    fn sync_windows(&mut self) {
+        let was = self.windows.len();
+        self.destroy_gone_windows();
         let kept = self.windows.len();
-        for nth in 0..self.ui.windows().count() {
-            let new = self.ui.windows().nth(nth).filter(|(id, ..)| self.windows[1..].iter().all(|window| window.id != *id));
-            let Some((id, title, size)) = new else { continue };
-            // A tool window and a dialog are owned by the first window: Windows keeps them
-            // above it, off the task bar, and minimizes them with it.
-            let opening = self.ui.window_opens(id).unwrap_or_default();
-            let owner = if matches!(opening.kind, WindowKind::Tool | WindowKind::Dialog) { self.windows[0].hwnd } else { 0 };
-            let Some(window) = Open::make(title, size, opening, false, self.place_for(size, opening), id, owner) else { continue };
-            // SAFETY: the window finds the state by the same pointer the first one does.
-            unsafe { SetWindowLongPtrW(window.hwnd, -21, state) };
-            self.windows.push(window);
-        }
+        self.create_new_windows();
         if (was, kept) == (kept, self.windows.len()) {
             return;
         }
@@ -1760,12 +1768,43 @@ impl State {
         }
     }
 
-    /// Where a new window's frame corner goes, its client `size`, frame `looks` (none if bare),
-    /// and at what DPI: a step down and right of the window the person is in (or the last
-    /// created, when the program is not in front), and a step more while another window's
-    /// corner is there, so every title shows. Then moved back just enough to lie on that
-    /// window's screen, at its scale. (Nothing when every window is minimized: then the system
-    /// places it.)
+    /// Destroys each second window the interface no longer has.
+    fn destroy_gone_windows(&mut self) {
+        for at in (1..self.windows.len()).rev() {
+            if self.ui.windows().all(|(id, ..)| id != self.windows[at].id) {
+                // A window blocked by a dialog now closing gets keyboard and pointer back
+                // first, so Windows returns focus to it.
+                self.keep_blocked();
+                self.windows.remove(at).destroy();
+            }
+        }
+    }
+
+    /// Creates, hidden, each second window the interface has and Windows does not yet.
+    fn create_new_windows(&mut self) {
+        let state = self as *mut State as isize;
+        for nth in 0..self.ui.windows().count() {
+            let new = self.ui.windows().nth(nth).filter(|(id, ..)| self.windows[1..].iter().all(|window| window.id != *id));
+            let Some((id, title, size)) = new else { continue };
+            // A tool window and a dialog are owned by the first window: Windows keeps them
+            // above it, off the task bar, and minimizes them with it.
+            let opening = self.ui.window_opening(id).unwrap_or_default();
+            let owner = if matches!(opening.kind, WindowKind::Tool | WindowKind::Dialog) { self.windows[0].hwnd } else { 0 };
+            let Some(window) = Open::make(title, size, opening, false, self.place_for(size, opening), id, owner) else { continue };
+            // SAFETY: the window finds the state by the same pointer the first one does.
+            unsafe { SetWindowLongPtrW(window.hwnd, -21, state) };
+            self.windows.push(window);
+            #[cfg(feature = "gpu")]
+            self.give_shown(self.windows.len() - 1, true);
+        }
+    }
+
+    /// Where a new window's frame corner goes, its client `size`, frame `looks` (none if
+    /// frameless), and at what DPI: a step down and right of the window the person is in (or
+    /// the last created, when the program is not in front), and a step more while another
+    /// window's corner is there, so every title shows. Then moved back just enough to lie on
+    /// that window's screen, at its scale. (Nothing when every window is minimized: then the
+    /// system places it.)
     fn corner(&self, size: Size, looks: Option<[u32; 2]>) -> Option<(u32, POINT)> {
         let windows = || self.windows.iter().map(|window| window.hwnd);
         // SAFETY: plain queries about live windows and the screen one is on. (Style -16 bit
@@ -1793,9 +1832,9 @@ impl State {
     /// centred on a screen if given; a dialog centred on the first window; any other a step
     /// from the front window (`corner`). A screen DPI and the frame corner there; nothing where
     /// the system places it.
-    fn place_for(&self, size: Size, opening: Opening) -> Option<(u32, POINT)> {
-        let looks = (!opening.bare).then(|| styles(opening.kind, false, false));
-        let asked = match (opening.at, opening.screen, opening.kind) {
+    fn place_for(&self, size: Size, opening: WindowOpening) -> Option<(u32, POINT)> {
+        let looks = (!opening.frameless).then(|| styles(opening.kind, false, false));
+        let asked = match (opening.position, opening.screen, opening.kind) {
             (Some((x, y)), ..) => Spot::At(x, y),
             (None, Some(nth), _) => Spot::Middle(nth),
             (None, None, WindowKind::Dialog) => Spot::Over(self.area_of(0)),
@@ -1813,7 +1852,7 @@ impl State {
             return rect(area.left as f32, area.top as f32, (area.right - area.left) as f32, (area.bottom - area.top) as f32);
         }
         let normal = window.normal;
-        rect(normal.at.0 as f32, normal.at.1 as f32, normal.width * window.scale, normal.height * window.scale)
+        rect(normal.position.0 as f32, normal.position.1 as f32, normal.width * window.scale, normal.height * window.scale)
     }
 
     /// Disables each window while a dialog opened after it is open (Windows withholds keyboard
@@ -1832,7 +1871,7 @@ impl State {
     /// The person wants the first window closed, or the system is logging off: the app hears it
     /// in a run. Says its answer: nothing against it, or why the window stays open.
     fn ask_first(&mut self) -> Result<(), String> {
-        self.ui.ask_to_close();
+        self.ui.request_close();
         self.run();
         self.ui.take_closing().unwrap_or(Ok(()))
     }
@@ -1853,7 +1892,7 @@ impl State {
         let mut told = false;
         for at in 0..self.windows.len() {
             let has = self.windows[at].hwnd == on;
-            told |= self.in_window(at, |ui, _| ui.window_focused != has && ui.event(Event::Focus(has))) == Some(true);
+            told |= self.in_window(at, |ui, _| ui.window_focused != has && ui.event(Event::Focused(has))) == Some(true);
         }
         told
     }
@@ -1879,7 +1918,7 @@ impl State {
     fn covered(&mut self, at: usize, l: isize) -> bool {
         let (hwnd, mut place) = (self.windows[at].hwnd, POINT { x: (l & 0xffff) as i16 as i32, y: (l >> 16 & 0xffff) as i16 as i32 });
         // SAFETY: plain queries about a live window and the screen.
-        self.in_window(at, |ui, _| ui.carrying_out()) == Some(true) && unsafe { ClientToScreen(hwnd, &mut place) != 0 && WindowFromPoint(place) != hwnd }
+        self.in_window(at, |ui, _| ui.drag_leaves_window()) == Some(true) && unsafe { ClientToScreen(hwnd, &mut place) != 0 && WindowFromPoint(place) != hwnd }
     }
 
     /// Takes in what a drag over window `at` does, which Windows reports between the window's
@@ -1895,7 +1934,7 @@ impl State {
             self.run();
         }
         let at = self.windows.iter().position(|window| window.hwnd == hwnd);
-        at.is_none_or(|at| self.in_window(at, |ui, _| ui.drop_taken()) == Some(true))
+        at.is_none_or(|at| self.in_window(at, |ui, _| ui.take_drop_accepted()) == Some(true))
     }
 
     /// Paints what Windows says needs it in window `at`: each rectangle of the update region by
@@ -1907,10 +1946,16 @@ impl State {
         let mut ps = PAINTSTRUCT { hdc: 0, erase: 0, paint: RECT::default(), restore: 0, update: 0, reserved: [0; 32] };
         // SAFETY: the pair of calls every paint is.
         let dc = unsafe { BeginPaint(hwnd, &mut ps) };
+        #[cfg(feature = "gpu")]
+        let dc = if self.windows[at].shown.is_some() { 0 } else { dc };
         let parts = stale.parts.get(..stale.header[2] as usize).filter(|parts| !parts.is_empty()).unwrap_or(std::slice::from_ref(&ps.paint));
         parts.iter().for_each(|part| self.draw(at, dc, *part));
+        #[cfg(feature = "gpu")]
+        self.present(at, parts);
         // SAFETY: ends the paint begun above.
         unsafe { EndPaint(hwnd, &ps) };
+        #[cfg(feature = "gpu")]
+        self.uncloak(at);
     }
 
     /// Draws `area` of window `at` a strip at a time, copying each to the window.
@@ -1928,6 +1973,12 @@ impl State {
             let mut canvas = Canvas::new(block, width as usize, high as usize, (0, top), s);
             canvas.clip(part);
             self.in_window(at, |ui, _| ui.paint(&mut canvas));
+            #[cfg(feature = "gpu")]
+            if dc == 0 {
+                self.upload(at, area, top, high);
+                top += high;
+                continue;
+            }
             // SAFETY: copies the strip to the window (`SRCCOPY`); both are alive.
             unsafe { BitBlt(dc, area.left, top, area.right - area.left, high, from, area.left, 0, 0x00CC_0020) };
             top += high;
@@ -1945,16 +1996,18 @@ impl State {
             return None;
         }
         (self.windows[at].wide, self.windows[at].high) = (area.right, area.bottom);
+        #[cfg(feature = "gpu")]
+        self.fit_shown(at);
         self.in_window(at, |ui, window| {
             let size = Size { w: area.right as f32 / window.scale, h: area.bottom as f32 / window.scale };
             // Its place and size while neither maximized nor fullscreen: what an app keeps to
             // reopen the window another day.
-            if !zoomed && window.over_all.is_none() {
-                window.normal = Placed { at: (corner.x, corner.y), width: size.w, height: size.h, maximized: false };
+            if !zoomed && window.before_fullscreen.is_none() {
+                window.normal = WindowPlacement { position: (corner.x, corner.y), width: size.w, height: size.h, maximized: false };
             }
             let news = (ui.size(), ui.scale()) != (size, window.scale);
             ui.resize(size, window.scale);
-            ui.set_placed(Placed { maximized: zoomed, ..window.normal }) | news
+            ui.set_window_placement(WindowPlacement { maximized: zoomed, ..window.normal }) | news
         })
     }
 
@@ -1963,16 +2016,16 @@ impl State {
     /// is a resize edge (10 to 17: left, right, top, the top corners, bottom, the bottom
     /// corners), the move strip (2, `HTCAPTION`, with all a caption does), or client (1). A
     /// maximized window has no resize edges.
-    fn grip(&mut self, at: usize, l: isize) -> Option<isize> {
+    fn hit_test(&mut self, at: usize, l: isize) -> Option<isize> {
         let (hwnd, scale, edges) = (self.windows[at].hwnd, self.windows[at].scale, self.windows[at].edges);
         // SAFETY: plain queries about a live window; they make Windows send nothing back.
         let (of_frame, sized) = unsafe { (DefWindowProcW(hwnd, WM_NCHITTEST, 0, l), edges && IsZoomed(hwnd) == 0) };
         let place = pointer_at(hwnd, POINT { x: (l & 0xffff) as i16 as i32, y: (l >> 16 & 0xffff) as i16 as i32 }, scale);
         let (Some(Event::Move(place)), 1) = (place, of_frame) else { return Some(of_frame) };
-        Some(match self.in_window(at, |ui, _| ui.grip_at(place, sized))? {
-            Grip::Inside => 1,
-            Grip::Strip => 2,
-            Grip::Edge(across, down) => [13, 12, 14, 10, 1, 11, 16, 15, 17][(down * 3 + across + 4) as usize],
+        Some(match self.in_window(at, |ui, _| ui.hit_test(place, sized))? {
+            HitTest::Client => 1,
+            HitTest::TitleBar => 2,
+            HitTest::Edge(across, down) => [13, 12, 14, 10, 1, 11, 16, 15, 17][(down * 3 + across + 4) as usize],
         })
     }
 
@@ -1989,12 +2042,12 @@ impl State {
     fn back(&mut self, at: usize) -> bool {
         // SAFETY: a plain query about a live window.
         let hidden = unsafe { IsIconic(self.windows[at].hwnd) } != 0 || self.windows[at].withdrawn;
-        self.in_window(at, |ui, window| (ui.window_hidden() != hidden && ui.event(Event::Hidden(hidden))) | ui.full_screen_now(window.over_all.is_some())) == Some(true)
+        self.in_window(at, |ui, window| (ui.window_minimized() != hidden && ui.event(Event::Minimized(hidden))) | ui.full_screen_now(window.before_fullscreen.is_some())) == Some(true)
     }
     /// A system setting changed: if it concerns how windows look and move, or a work area
     /// (`what` is `SPI_SETWORKAREA`, 0x2F), the interface is told and runs for the app to hear.
     fn settings_changed(&mut self, what: usize) {
-        if self.ui.set_wishes(crate::wishes::of_windows()) | (what == 0x2F && self.ui.set_screens(screens())) {
+        if self.ui.set_preferences(crate::preferences::of_windows()) | (what == 0x2F && self.ui.set_screens(screens())) {
             self.run();
         }
     }
@@ -2002,6 +2055,155 @@ impl State {
     fn moved(&mut self, at: usize) {
         if self.fit(at) == Some(true) {
             self.run();
+        }
+    }
+}
+
+/// "The GPU device came": posted by the thread that makes it (`show_by_gpu`).
+#[cfg(feature = "gpu")]
+const WM_GPU: u32 = 0x8010;
+
+/// The GPU paths (`gpu_windows`): the device, what shows each window, uploads, presents, and a
+/// lost device.
+#[cfg(feature = "gpu")]
+impl State {
+    /// Has the GPU show the windows where the user's choice or the app's asks for it and a
+    /// device works; never a see-through window. The device is made on a thread of its own (a
+    /// GPU's driver takes a few hundred milliseconds to load) while the CPU shows the windows;
+    /// `gpu_came` takes it. The first window is cloaked until its first paint if `cloak`.
+    fn show_by_gpu(&mut self, asked: crate::platform::Renderer, transparent: bool, cloak: bool) {
+        let asked = asked.chosen(std::env::var("TAUT_RENDERER").ok().as_deref());
+        if asked == crate::platform::Renderer::Cpu || transparent {
+            return;
+        }
+        if cloak {
+            self.cloak(0);
+        }
+        let hwnd = self.windows[0].hwnd;
+        #[cfg(test)]
+        let faked = crate::gpu_windows::tests::faked();
+        self.coming = Some(std::thread::spawn(move || {
+            #[cfg(test)]
+            crate::gpu_windows::tests::fake(faked);
+            let device = crate::gpu_windows::Device::gpu(asked, asked == crate::platform::Renderer::Auto);
+            // SAFETY: posts to the first window by handle; to one gone by then, it fails.
+            unsafe { PostMessageW(hwnd, WM_GPU, 0, 0) };
+            device
+        }));
+        // Tests have it at once, so every window test runs on the GPU path; unless one asks.
+        #[cfg(test)]
+        if !faked.later {
+            self.gpu_came();
+        }
+    }
+
+    /// The device came, or none could be made: every window but a see-through one gets a swap
+    /// chain on it and is drawn and presented whole, at once.
+    fn gpu_came(&mut self) {
+        let Some(coming) = self.coming.take() else { return };
+        self.device = coming.join().ok().flatten();
+        #[cfg(test)]
+        crate::gpu_windows::tests::came();
+        for at in 0..self.windows.len() {
+            if self.windows[at].transparent.is_none() {
+                self.give_shown(at, false);
+                self.draw_whole(at);
+            }
+        }
+        if self.windows.iter().all(|window| window.shown.is_none()) {
+            self.device = None;
+        }
+    }
+
+    /// Has the device show window `at`, if there is one and it can; a new window is then cloaked
+    /// until its first paint if `cloak`. Its interface hears what shows it.
+    fn give_shown(&mut self, at: usize, cloak: bool) {
+        let (hwnd, size) = (self.windows[at].hwnd, [self.windows[at].wide, self.windows[at].high]);
+        let shown = self.device.as_ref().and_then(|device| crate::gpu_windows::Shown::new(device, hwnd, size));
+        let renderer = match (&shown, &self.device) {
+            (Some(_), Some(device)) => device.renderer(),
+            _ => crate::platform::Renderer::Cpu,
+        };
+        if cloak && shown.is_some() {
+            self.cloak(at);
+        }
+        self.windows[at].shown = shown;
+        self.in_window(at, |ui, _| ui.renderer = renderer);
+    }
+
+    /// Draws all of window `at` into its texture and presents it, now.
+    fn draw_whole(&mut self, at: usize) {
+        let (window, widest) = (&self.windows[at], self.windows.iter().map(|window| window.wide).max().unwrap_or(0));
+        let all = RECT { left: 0, top: 0, right: window.wide, bottom: window.high };
+        if window.shown.is_some() {
+            self.strip.fit(widest);
+            self.draw(at, 0, all);
+            self.present(at, &[all]);
+            self.uncloak(at);
+        }
+    }
+
+    /// Hides window `at` until its first paint (DWM's cloak, 13): never a frame of nothing. (Not
+    /// a window opening minimized: cloaked, it would have no task bar button.)
+    fn cloak(&mut self, at: usize) {
+        let window = &mut self.windows[at];
+        // SAFETY: the window is alive; the number outlives the call.
+        window.cloaked = unsafe { DwmSetWindowAttribute(window.hwnd, 13, (&1i32 as *const i32).cast(), 4) } >= 0;
+    }
+
+    /// Shows window `at` once painted, if cloaked.
+    fn uncloak(&mut self, at: usize) {
+        let window = &mut self.windows[at];
+        if std::mem::take(&mut window.cloaked) {
+            // SAFETY: the window is alive; the number outlives the call.
+            unsafe { DwmSetWindowAttribute(window.hwnd, 13, (&0i32 as *const i32).cast(), 4) };
+        }
+    }
+
+    /// Gives window `at`'s swap chain and texture its new size, and has all of it drawn again. A
+    /// failure is a lost device.
+    fn fit_shown(&mut self, at: usize) {
+        let (Some(device), window) = (&self.device, &mut self.windows[at]) else { return };
+        let Some(shown) = &mut window.shown else { return };
+        match shown.fit(device, [window.wide, window.high]) {
+            // SAFETY: the window is alive.
+            Some(true) => _ = unsafe { InvalidateRect(window.hwnd, std::ptr::null(), 0) },
+            Some(false) => {}
+            None => self.lost(),
+        }
+    }
+
+    /// Puts `high` rows of the strip, drawn for `area` from row `top`, into what shows window
+    /// `at`.
+    fn upload(&mut self, at: usize, area: RECT, top: i32, high: i32) {
+        let (Some(device), Some(shown)) = (&self.device, &mut self.windows[at].shown) else { return };
+        let (pixels, width) = (self.strip.pixels.get(), self.strip.width.get());
+        let first = pixels.wrapping_add(area.left.clamp(0, width) as usize);
+        // SAFETY: the strip holds `width` by at least `high` pixels, and the area lies within
+        // it: it is no wider than its window, which is no wider than the strip.
+        unsafe { shown.upload(device, [area.left, top], [area.right - area.left, high], first, width as usize) };
+    }
+
+    /// Presents window `at`, `parts` of it drawn anew. A lost device is made again.
+    fn present(&mut self, at: usize, parts: &[RECT]) {
+        let (Some(device), window) = (&self.device, &mut self.windows[at]) else { return };
+        let Some(shown) = &mut window.shown else { return };
+        if !shown.present(device, parts) && device.removed() {
+            self.lost();
+        }
+    }
+
+    /// The device is lost. Every window it showed is shown by a new one (a GPU, the same path
+    /// first, if the old one was and one works, else WARP) and drawn again, whole; with no
+    /// device, GDI is left. Each one's interface hears what shows it now.
+    fn lost(&mut self) {
+        let Some(old) = self.device.take() else { return };
+        let had: Vec<usize> = (0..self.windows.len()).filter(|at| self.windows[*at].shown.take().is_some()).collect();
+        self.device = crate::gpu_windows::Device::again(old);
+        for at in had {
+            self.give_shown(at, false);
+            // SAFETY: the window is alive.
+            unsafe { InvalidateRect(self.windows[at].hwnd, std::ptr::null(), 0) };
         }
     }
 }
@@ -2059,7 +2261,7 @@ const TEXT: FORMATETC = FORMATETC { format: 13, ..FILES };
 const COPY: u32 = 1;
 
 /// What a drag over a window brings that its app takes: files, text, or nothing (also while it
-/// is a drag out of this same window, which its source handles: see `ole`).
+/// is a drag out of this same window, which its source handles: see `ole_drag`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Brings {
     Nothing,
@@ -2070,7 +2272,7 @@ enum Brings {
 impl Brings {
     /// That it is over the window, or no longer is, as the interface hears it.
     fn over(self, on: bool) -> Event {
-        if self == Brings::Text { Event::CarryText(on) } else { Event::Carry(on) }
+        if self == Brings::Text { Event::TextHovered(on) } else { Event::FilesHovered(on) }
     }
     /// What was dropped, as the interface hears it, from its `HGLOBAL`.
     ///
@@ -2080,7 +2282,7 @@ impl Brings {
         // SAFETY: as the caller promises.
         match self {
             Brings::Text => Event::TextDropped(unsafe { dropped_text(memory) }),
-            _ => Event::Files(unsafe { dropped_files(memory) }.1),
+            _ => Event::FilesDropped(unsafe { dropped_files(memory) }.1),
         }
     }
 }
@@ -2184,7 +2386,7 @@ impl DropTarget {
         let has = |form: &FORMATETC| unsafe { ((*(*data).table).query_get_data)(data, form) == 0 };
         let [files, text] = self.takes();
         match () {
-            _ if crate::ole::is_going(data.cast(), self.hwnd) => Brings::Nothing,
+            _ if crate::ole_drag::is_going(data.cast(), self.hwnd) => Brings::Nothing,
             _ if files && has(&FILES) => Brings::Files,
             _ if text && has(&TEXT) => Brings::Text,
             _ => Brings::Nothing,
@@ -2296,7 +2498,7 @@ pub(crate) fn carried_over(hwnd: HANDLE, at: Option<POINT>) {
 /// What came of a drag out of window `hwnd`: its interface hears what the other program did
 /// with it, that the button came up (which Windows kept meanwhile), and where the pointer is if
 /// it was dropped on the window itself: there it drops as any drag inside the window.
-fn came_back(hwnd: HANDLE, outcome: crate::ole::Outcome) {
+fn came_back(hwnd: HANDLE, outcome: crate::ole_drag::Outcome) {
     let nested = ANSWERING.replace(true);
     // SAFETY: as in `DropTarget::tell`.
     if let Some((state, at)) = if nested { None } else { unsafe { state_of(hwnd) } } {
@@ -2308,16 +2510,16 @@ fn came_back(hwnd: HANDLE, outcome: crate::ole::Outcome) {
         if unsafe { GetCapture() } == hwnd {
             unsafe { ReleaseCapture() };
         }
-        state.in_window(at, |ui, _| ui.set_taken(outcome.taken));
+        state.in_window(at, |ui, _| ui.set_drop_effect(outcome.taken));
         state.carried(at, [Some(place), Some(Event::Release(Button::Left))]);
     }
     ANSWERING.set(nested);
 }
 
-/// Where the app hands something out of a window ([`Ui::hand_out`]): from then on it goes to
-/// Windows through OLE (see `ole::Outward`).
+/// Where the app hands something out of a window ([`Ui::drag_out`]): from then on it goes to
+/// Windows through OLE (see `ole_drag::Outward`).
 pub(crate) fn hands_out() {
-    OUTWARD.set(Some(crate::ole::OUTWARD));
+    OUTWARD.set(Some(crate::ole_drag::OUTWARD));
 }
 
 /// Hands Windows what the person just dragged out of a window, if anything: between two
@@ -2381,15 +2583,17 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
     match msg {
         // A see-through window is shown from its picture, drawn after each run: nothing to
         // paint, and Windows is left to validate.
-        WM_PAINT if state.windows[at].clear.is_none() => state.paint(at),
+        WM_PAINT if state.windows[at].transparent.is_none() => state.paint(at),
         WM_ERASEBKGND => return Some(1),
-        WM_NCHITTEST if state.windows[at].grips => return state.grip(at, l),
+        #[cfg(feature = "gpu")]
+        WM_GPU => state.gpu_came(),
+        WM_NCHITTEST if state.windows[at].asks_hit_test => return state.hit_test(at, l),
         WM_SIZE => state.resized(at),
         WM_MOVE => state.moved(at),
         WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED if at == 0 => state.settings_changed(w),
         WM_DISPLAYCHANGE if at == 0 => state.screens_changed(),
         WM_ANSWERED => {
-            state.in_window(at, |ui, _| ui.file_answered(ANSWER.take()));
+            state.in_window(at, |ui, _| ui.file_dialog_answered(ANSWER.take()));
             state.run();
         }
         WM_WAKE | WM_TIMER => state.run(),
@@ -2397,7 +2601,7 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
         // keeps its windows' tree, built each run.
         WM_GETOBJECT => {
             return uia::give(hwnd, w, l, state.ui.listening, || {
-                state.ui.listen(true);
+                state.ui.set_screen_reader(true);
                 state.run();
             });
         }
@@ -2409,7 +2613,7 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
         // Finger and pen pointer messages are the interface's alone: left to Windows, they
         // would arrive again as mouse messages. (Without the feature `touch`, that is what they
         // are.)
-        WM_POINTERUPDATE..=WM_POINTERCAPTURECHANGED if cfg!(feature = "touch") && contacts::taken(msg, w) => {
+        WM_POINTERUPDATE..=WM_POINTERCAPTURECHANGED if cfg!(feature = "touch") && touch_windows::taken(msg, w) => {
             state.input(at, msg, w, l);
             return Some(0);
         }
@@ -2428,7 +2632,7 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
         WM_SYSCHAR if w != ' ' as usize && state.in_window(at, |ui, _| ui.takes_alt()) == Some(true) => return Some(0),
         WM_SYSCOMMAND if w & 0xFFF0 == SC_KEYMENU && l == 0 && state.in_window(at, |ui, _| ui.takes_alt()) == Some(true) => return Some(0),
         WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION => {
-            state.in_window(at, |ui, window| window.follow_cursor(ui.typing_at()));
+            state.in_window(at, |ui, window| window.follow_cursor(ui.ime_area()));
             return None; // Windows shows the composition
         }
         WM_DROPFILES => {
@@ -2438,24 +2642,14 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
             unsafe { DragFinish(w as HANDLE) };
         }
         WM_SETCURSOR if (l & 0xffff) == 1 => {
-            let shape = match state.in_window(at, |ui, _| ui.cursor()).unwrap_or(Cursor::Arrow) {
-                Cursor::Arrow => 32512,
-                Cursor::Hand => 32649,
-                Cursor::Text => 32513,
-                Cursor::ResizeX => 32644,
-                Cursor::ResizeY => 32645,
-                Cursor::ResizeDown => 32642,
-                Cursor::ResizeUp => 32643,
-                Cursor::Move => 32646,
-                Cursor::No => 32648,
-            };
+            let shape = system_cursor(state.in_window(at, |ui, _| ui.cursor()).unwrap_or(Cursor::Arrow));
             // SAFETY: the system's own cursors, by number.
             unsafe { SetCursor(LoadCursorW(0, std::ptr::without_provenance(shape))) };
             return Some(1);
         }
         WM_GETMINMAXINFO => {
             let window = &state.windows[at];
-            let frame = framed(window.min.0, window.min.1, (window.scale * 96.0).round() as u32, styles_of(hwnd));
+            let frame = framed(window.min_size.0, window.min_size.1, (window.scale * 96.0).round() as u32, styles_of(hwnd));
             // SAFETY: `l` points at the `MINMAXINFO` Windows wants filled in.
             unsafe { (*(l as *mut MINMAXINFO)).min_track = POINT { x: frame.right - frame.left, y: frame.bottom - frame.top } };
         }
@@ -2481,7 +2675,7 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
         // A second window's close button: the app is told, and closes the window by no longer
         // describing it. (The first window is Windows' to close, which destroys it.)
         WM_CLOSE if at > 0 => {
-            state.in_window(at, |ui, _| ui.ask_to_close());
+            state.in_window(at, |ui, _| ui.request_close());
             state.run();
         }
         // The first window's close button (or the task bar's, or Alt+F4): the app is asked, and
@@ -2508,37 +2702,59 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
         // A second window destroyed by anything else is closed for the app all the same.
         // (Windows is destroying it already: asking again does nothing.)
         WM_DESTROY if at > 0 => {
-            state.in_window(at, |ui, _| ui.ask_to_close());
+            state.in_window(at, |ui, _| ui.request_close());
             state.windows.remove(at).destroy();
             state.run();
         }
-        // The first window is gone, and the program's other windows go with it.
-        WM_DESTROY => {
-            // The program's icons leave the tray with it.
-            if let Some(desktop) = DESKTOP.get() {
-                (desktop.ended)();
-            }
-            // Not while a drag out of the window is in progress: OLE still drives it.
-            let ole = state.ole == Some(true) && !crate::ole::carrying();
-            state.windows.drain(1..).for_each(Open::destroy);
-            uia::gone(hwnd);
-            // A `Waker` wakes no window from now on: the handle may soon be another's.
-            _ = WINDOW.compare_exchange(hwnd, 0, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
-            // SAFETY: Windows releases the window's drop target, if any, which frees it; and
-            // OLE is uninitialized if it was initialized for that. The state was made with
-            // `Box::into_raw` in `open`; no window finds it any more, and nothing uses it after
-            // this.
-            unsafe {
-                RevokeDragDrop(hwnd);
-                SetWindowLongPtrW(hwnd, -21, 0);
-                drop(Box::from_raw(state as *mut State));
-                ole.then(|| OleUninitialize());
-                PostQuitMessage(0);
-            }
-        }
+        // SAFETY: nothing uses the state after this.
+        WM_DESTROY => unsafe { first_destroyed(hwnd, state) },
         _ => return None,
     }
     Some(0)
+}
+
+/// The system's own cursor of each shape, by number (`IDC_*`).
+fn system_cursor(cursor: Cursor) -> usize {
+    match cursor {
+        Cursor::Arrow => 32512,
+        Cursor::Hand => 32649,
+        Cursor::Text => 32513,
+        Cursor::ResizeX => 32644,
+        Cursor::ResizeY => 32645,
+        Cursor::ResizeDown => 32642,
+        Cursor::ResizeUp => 32643,
+        Cursor::Move => 32646,
+        Cursor::No => 32648,
+    }
+}
+
+/// The first window is gone, and the program's other windows go with it: the state is freed
+/// and the message loop ends.
+///
+/// # Safety
+/// `state` is the one `open` stored on `hwnd`, and nothing uses it after this.
+unsafe fn first_destroyed(hwnd: HANDLE, state: &mut State) {
+    // The program's icons leave the tray with it.
+    if let Some(desktop) = DESKTOP.get() {
+        (desktop.ended)();
+    }
+    // Not while a drag out of the window is in progress: OLE still drives it.
+    let ole = state.ole == Some(true) && !crate::ole_drag::carrying();
+    state.windows.drain(1..).for_each(Open::destroy);
+    uia::gone(hwnd);
+    // A `Waker` wakes no window from now on: the handle may soon be another's.
+    _ = WINDOW.compare_exchange(hwnd, 0, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: Windows releases the window's drop target, if any, which frees it; and OLE is
+    // uninitialized if it was initialized for that. The state was made with `Box::into_raw` in
+    // `open`; no window finds it any more, and nothing uses it after this, as the caller
+    // promises.
+    unsafe {
+        RevokeDragDrop(hwnd);
+        SetWindowLongPtrW(hwnd, -21, 0);
+        drop(Box::from_raw(state as *mut State));
+        ole.then(|| OleUninitialize());
+        PostQuitMessage(0);
+    }
 }
 
 /// Opens the window and runs the app in it, and in the second windows it describes, until the
@@ -2618,10 +2834,11 @@ pub(crate) fn open(window: Window, app: Box<dyn FnMut(&mut Ui)>) -> HANDLE {
         // nearest), or centred on the screen it names; else where Windows puts it. At that
         // screen's scale.
         let (found, size) = (screens(), Size { w: window.width, h: window.height });
-        let opening = Opening { least: Size { w: window.min_width, h: window.min_height }, at: window.at, screen: window.screen, kind: WindowKind::Plain, bare: window.bare };
-        let asked = window.at.map(|(x, y)| Spot::At(x, y)).or(window.screen.map(Spot::Middle)).unwrap_or_default();
-        let looks = (!window.bare && !window.clear).then(|| styles(WindowKind::Plain, false, false));
-        let Some(first) = Open::make(window.title, size, opening, window.clear, place_on(&found, asked, size, looks), 0, 0) else { return 0 };
+        let opening =
+            WindowOpening { min_size: Size { w: window.min_width, h: window.min_height }, position: window.position, screen: window.screen, kind: WindowKind::Plain, frameless: window.frameless };
+        let asked = window.position.map(|(x, y)| Spot::At(x, y)).or(window.screen.map(Spot::Middle)).unwrap_or_default();
+        let looks = (!window.frameless && !window.transparent).then(|| styles(WindowKind::Plain, false, false));
+        let Some(first) = Open::make(window.title, size, opening, window.transparent, place_on(&found, asked, size, looks), 0, 0) else { return 0 };
         let hwnd = first.hwnd;
         // The program's icons, if any, are every window's: the one fitting the large size (-14,
         // `GCLP_HICON`: the Alt+Tab list), and the small (-34, `GCLP_HICONSM`: window frame and
@@ -2634,7 +2851,7 @@ pub(crate) fn open(window: Window, app: Box<dyn FnMut(&mut Ui)>) -> HANDLE {
         // GDI writes letters straight into the strip with no alpha: a see-through window draws
         // all its text as a surface does, which keeps alpha (where Windows has a DC to give
         // it).
-        let clear = if window.clear { SystemText::new() } else { None };
+        let clear = if window.transparent { SystemText::new() } else { None };
         let text: Box<dyn TextSystem> = match clear {
             Some(text) => Box::new(text),
             None => Box::new(GdiText { strip: strip.clone(), fonts: Fonts::new(strip.dc) }),
@@ -2642,17 +2859,21 @@ pub(crate) fn open(window: Window, app: Box<dyn FnMut(&mut Ui)>) -> HANDLE {
         let mut ui = Ui::new(text, Box::new(SystemClipboard));
         // A see-through window opens on a page of no colour: what is behind shows wherever its
         // app draws nothing.
-        if window.clear {
+        if window.transparent {
             ui.theme.bg = Color::NONE;
         }
         // `run`'s loop shows the system file dialog: a window run by it can ask for one.
-        ui.set_system_files(true);
-        ui.set_wishes(crate::wishes::of_windows());
+        ui.set_native_file_dialog(true);
+        ui.set_preferences(crate::preferences::of_windows());
         ui.set_screens(found);
-        let mut state = Box::new(State { ui, app, strip, windows: vec![first], start: Instant::now(), timer: false, ole: None });
+        #[rustfmt::skip]
+        let mut state = Box::new(State { ui, app, strip, windows: vec![first], start: Instant::now(), timer: false, ole: None, #[cfg(feature = "gpu")] device: None, #[cfg(feature = "gpu")] coming: None });
         // The interface knows its window's size before the window shows: one starting minimized
         // has no size to tell until restored.
         state.fit(0);
+        // Shown by the GPU if asked for, once a device works.
+        #[cfg(feature = "gpu")]
+        state.show_by_gpu(window.renderer, window.transparent, !window.minimized);
         SetWindowLongPtrW(hwnd, -21, Box::into_raw(state) as isize);
         WINDOW.store(hwnd, std::sync::atomic::Ordering::Relaxed);
         hwnd
@@ -2715,13 +2936,13 @@ pub(crate) const fn named(a: u32, b: u16, c: u16, d: [u8; 8]) -> [u32; 4] {
 thread_local! {
     /// The windows whose apps asked for the system file dialog, with each request; and the
     /// answer on its way to the window that asked.
-    static ASKED: RefCell<Vec<(HANDLE, FileAsk)>> = const { RefCell::new(Vec::new()) };
+    static ASKED: RefCell<Vec<(HANDLE, FileDialogRequest)>> = const { RefCell::new(Vec::new()) };
     static ANSWER: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     /// What a window just dragged out of itself, until handed to Windows.
-    static OUTGOING: Cell<Option<(HANDLE, *mut crate::ole::Carried, crate::ole::Outward)>> = const { Cell::new(None) };
+    static OUTGOING: Cell<Option<(HANDLE, *mut crate::ole_drag::Carried, crate::ole_drag::Outward)>> = const { Cell::new(None) };
     /// How a drag out is handed to Windows: set once an app first hands something out
     /// (`hands_out`), so a program that never does is built without it.
-    static OUTWARD: Cell<Option<crate::ole::Outward>> = const { Cell::new(None) };
+    static OUTWARD: Cell<Option<crate::ole_drag::Outward>> = const { Cell::new(None) };
     /// How windows whose apps asked for the system file dialog are shown it: set once an app
     /// first asks (`hand_file_dialog`), so a program that never asks is built without it.
     static DIALOG: Cell<Option<fn()>> = const { Cell::new(None) };
@@ -2752,7 +2973,7 @@ fn answer_asked() {
 /// vtable index: `Show` (3), `SetFileTypes` (4), `SetOptions`/`GetOptions` (9, 10), `SetFolder`
 /// (12), `SetFileName` (15), `SetTitle` (17), `GetResult` (20), `SetDefaultExtension` (22). On
 /// a shell item: `GetDisplayName` (5).
-fn pick_file(owner: HANDLE, ask: &FileAsk) -> Option<PathBuf> {
+fn pick_file(owner: HANDLE, ask: &FileDialogRequest) -> Option<PathBuf> {
     const TO_OPEN: [u32; 4] = named(0xDC1C_5A9C, 0xE88A, 0x4DDE, [0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7]);
     const TO_SAVE: [u32; 4] = named(0xC0B4_E2F3, 0xBA21, 0x4773, [0x8D, 0xBA, 0x33, 0x5E, 0xC9, 0x46, 0xEB, 0x8B]);
     const A_DIALOG: [u32; 4] = named(0x42F8_5136, 0xDB7E, 0x439C, [0x85, 0xF1, 0xE4, 0x07, 0x5D, 0x13, 0x5F, 0xC8]);
@@ -2970,8 +3191,8 @@ impl Clipboard for SystemClipboard {
 }
 
 /// How a window takes drops of files and text: how it starts accepting them, and what a
-/// `WM_DROPFILES` says. Set by the first call asking about drops ([`Ui::files_over`],
-/// [`Ui::files_dropped`], [`Ui::text_over`], [`Ui::text_dropped`], through
+/// `WM_DROPFILES` says. Set by the first call asking about drops ([`Ui::files_hovered`],
+/// [`Ui::files_dropped`], [`Ui::text_hovered`], [`Ui::text_dropped`], through
 /// `platform::hand_drops`); reached no other way, so a program that never asks is built without
 /// it.
 #[derive(Clone, Copy)]
@@ -2994,15 +3215,15 @@ thread_local! {
     static PICTURES_AND_FILES: Cell<Option<PicturesAndFiles<SystemClipboard>>> = const { Cell::new(None) };
 }
 
-/// What the windows do for an app's desktop requests, all in `shell`: after a run, pass on what
-/// the app said (and learn what the first window should do); and when the first window goes,
-/// remove the program's tray icons. Set by the first call asking for a tray icon, system
+/// What the windows do for an app's desktop requests, all in `windows_shell`: after a run, pass
+/// on what the app said (and learn what the first window should do); and when the first window
+/// goes, remove the program's tray icons. Set by the first call asking for a tray icon, system
 /// notification, global hotkey, hidden window or single instance (through
 /// `platform::hand_desktop`); reached no other way, so a program that never asks is built
 /// without it.
 #[derive(Clone, Copy)]
 struct Desktop {
-    after: fn() -> crate::shell::Asked,
+    after: fn() -> crate::windows_shell::Asked,
     ended: fn(),
 }
 
@@ -3014,7 +3235,7 @@ thread_local! {
 
 /// Hands the windows their desktop integration, on this thread (see `Desktop`).
 pub(crate) fn hand_desktop() {
-    DESKTOP.set(Some(Desktop { after: crate::shell::after, ended: crate::shell::ended }));
+    DESKTOP.set(Some(Desktop { after: crate::windows_shell::after, ended: crate::windows_shell::ended }));
 }
 
 /// Hands the clipboard its picture and file code, on this thread (see `PicturesAndFiles`).
@@ -3032,7 +3253,7 @@ impl SystemClipboard {
     }
     /// Puts a picture on the clipboard as PNG and as a DIB.
     fn put_picture(&mut self, width: usize, pixels: &[u32]) {
-        let Some(png) = crate::png::encode_clear(width, pixels) else { return };
+        let Some(png) = crate::png::encode_rgba(width, pixels) else { return };
         put(&[(as_png(), png), (8, to_block(width, pixels))]);
     }
     /// The files on the clipboard: what was copied in a file manager.
@@ -3070,7 +3291,7 @@ impl Waker {
 pub(crate) mod tests {
     use super::*;
     use crate::geom::Point;
-    use crate::{Handed, Icon, Length, Second, Taken};
+    use crate::{DragData, DropEffect, Icon, Length, SecondWindow};
     use std::cell::RefCell;
 
     #[link(name = "kernel32")]
@@ -3139,7 +3360,7 @@ pub(crate) mod tests {
             if let Some(files) = ui.files_dropped(&target) {
                 seen.got = files;
             }
-            (seen.over, seen.pointer, seen.target, seen.typed) = (ui.files_over(), ui.pointer(), target.rect, typed.rect);
+            (seen.over, seen.pointer, seen.target, seen.typed) = (ui.files_hovered(), ui.pointer(), target.rect, typed.rect);
             ui.close();
         };
         let hwnd = open(Window::default(), Box::new(app));
@@ -3339,19 +3560,22 @@ pub(crate) mod tests {
         }
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no window is shown on it");
         // As `run` opens a window whose app asks for it maximized (3).
-        let asked = Window { at: Some((120, 90)), width: 400.0, height: 240.0, maximized: true, ..Window::default() };
+        let asked = Window { position: Some((120, 90)), width: 400.0, height: 240.0, maximized: true, ..Window::default() };
         let hwnd = open(asked, Box::new(|ui: &mut Ui| _ = ui.label("One")));
         unsafe { ShowWindow(hwnd, 3) };
         pump();
         // It is maximized, and its interface is told so with the place and size it restores to:
         // those its app asked for.
-        let (placed, filled) = (state(hwnd).ui.placed().expect("the window was told where it is"), state(hwnd).ui.size());
-        assert_eq!(placed, Placed { at: (120, 90), width: 400.0, height: 240.0, maximized: true });
+        let (placed, filled) = (state(hwnd).ui.window_placement().expect("the window was told where it is"), state(hwnd).ui.size());
+        assert_eq!(placed, WindowPlacement { position: (120, 90), width: 400.0, height: 240.0, maximized: true });
         assert!(filled.w > 400.0 && filled.h > 240.0, "{filled:?} is no more than it asked for");
         // Restored (9), it is where and as big as it should be, and says so.
         unsafe { ShowWindow(hwnd, 9) };
         pump();
-        assert_eq!((state(hwnd).ui.placed(), state(hwnd).ui.size(), corner_of(hwnd)), (Some(Placed { maximized: false, ..placed }), Size { w: 400.0, h: 240.0 }, POINT { x: 120, y: 90 }));
+        assert_eq!(
+            (state(hwnd).ui.window_placement(), state(hwnd).ui.size(), corner_of(hwnd)),
+            (Some(WindowPlacement { maximized: false, ..placed }), Size { w: 400.0, h: 240.0 }, POINT { x: 120, y: 90 })
+        );
         unsafe { DestroyWindow(hwnd) };
     }
 
@@ -3400,7 +3624,7 @@ pub(crate) mod tests {
         // Its title bar is dark while its theme's background is.
         let dark = || state(hwnd).windows[0].dark;
         unsafe { window_proc(hwnd, WM_SIZE, 0, 0) };
-        assert!(dark() && !state(hwnd).ui.window_hidden());
+        assert!(dark() && !state(hwnd).ui.window_minimized());
         light.set(true);
         unsafe { window_proc(hwnd, WM_WAKE, 0, 0) };
         assert!(!dark());
@@ -3409,7 +3633,7 @@ pub(crate) mod tests {
         assert!(dark());
         // What the person asked the system for is what the interface says, known before its
         // first run. A setting that changes none of it runs nothing.
-        assert_eq!(state(hwnd).ui.wished.wishes, crate::wishes::of_windows());
+        assert_eq!(state(hwnd).ui.preferences.current, crate::preferences::of_windows());
         let before = runs.get();
         for message in [WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_DWMCOLORIZATIONCOLORCHANGED] {
             unsafe { window_proc(hwnd, message, 0, 0) };
@@ -3420,8 +3644,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_window_follows_the_person_when_they_change_how_things_are_to_look() {
-        use crate::wishes::tests::PRETENDED;
-        use crate::{Color, Contrast, Theme, Wishes};
+        use crate::preferences::tests::PRETENDED;
+        use crate::{Color, ContrastColors, Preferences, Theme};
         // Windows is made to report what the test wants, on this thread only: none of the
         // user's settings is read or changed, and the window is never shown.
         let runs = Rc::new(Cell::new(0));
@@ -3431,7 +3655,7 @@ pub(crate) mod tests {
             ui.theme = ui.system_theme();
             ui.switch(&mut true, "On");
         };
-        PRETENDED.set(Some(Wishes::default()));
+        PRETENDED.set(Some(Preferences::default()));
         let hwnd = open(Window::default(), Box::new(describe));
         unsafe { window_proc(hwnd, WM_SIZE, 0, 0) };
         assert!(!state(hwnd).windows[0].dark && state(hwnd).ui.theme == Theme::light());
@@ -3439,25 +3663,25 @@ pub(crate) mod tests {
         // Each of the three messages by which Windows reports a setting change is heard: the
         // interface runs once and the app's theme follows. (Aquatic, a Windows contrast theme,
         // has a dark background: so the frame is dark.)
-        let aquatic = Contrast {
-            ground: Color::rgb(0x202020),
+        let aquatic = ContrastColors {
+            background: Color::rgb(0x202020),
             text: Color::WHITE,
             link: Color::rgb(0x75e9fc),
-            off: Color::rgb(0xa6a6a6),
-            picked: Color::rgb(0x8ee3f0),
-            on_picked: Color::rgb(0x263b50),
+            disabled: Color::rgb(0xa6a6a6),
+            selected: Color::rgb(0x8ee3f0),
+            selected_text: Color::rgb(0x263b50),
             button: Color::rgb(0x202020),
             button_text: Color::WHITE,
         };
         let changes = [
-            (WM_SETTINGCHANGE, Wishes { dark: true, text: 1.5, ..Wishes::default() }),
-            (WM_DWMCOLORIZATIONCOLORCHANGED, Wishes { dark: true, accent: Some(Color::rgb(0xe3008c)), ..Wishes::default() }),
-            (WM_SYSCOLORCHANGE, Wishes { contrast: Some(aquatic), still: true, ..Wishes::default() }),
+            (WM_SETTINGCHANGE, Preferences { dark: true, text_scale: 1.5, ..Preferences::default() }),
+            (WM_DWMCOLORIZATIONCOLORCHANGED, Preferences { dark: true, accent: Some(Color::rgb(0xe3008c)), ..Preferences::default() }),
+            (WM_SYSCOLORCHANGE, Preferences { high_contrast: Some(aquatic), reduced_motion: true, ..Preferences::default() }),
         ];
         for (nth, (message, wishes)) in changes.into_iter().enumerate() {
             PRETENDED.set(Some(wishes));
             unsafe { window_proc(hwnd, message, 0, 0) };
-            assert_eq!((runs.get(), state(hwnd).ui.wished.wishes, state(hwnd).ui.theme), (before + nth + 1, wishes, Theme::following(&wishes)), "{message:x}");
+            assert_eq!((runs.get(), state(hwnd).ui.preferences.current, state(hwnd).ui.theme), (before + nth + 1, wishes, Theme::following(&wishes)), "{message:x}");
             assert!(state(hwnd).windows[0].dark, "{message:x}");
         }
         // Nothing moves by itself now: the switch is at its end and asks for no run.
@@ -3487,19 +3711,19 @@ pub(crate) mod tests {
         let describe = move |ui: &mut Ui| {
             ran.set(ran.get() + 1);
             if app.take() {
-                ui.come_forward();
+                ui.bring_to_front();
             }
             asked.take().into_iter().for_each(|on| ui.set_on_top(on));
             ui.label("One");
         };
         // As `run` opens a window whose app asks for it minimized, maximized when restored.
-        let hwnd = open(Window { at: Some((120, 90)), width: 400.0, height: 240.0, maximized: true, minimized: true, ..Window::default() }, Box::new(describe));
+        let hwnd = open(Window { position: Some((120, 90)), width: 400.0, height: 240.0, maximized: true, minimized: true, ..Window::default() }, Box::new(describe));
         unsafe { show_minimized(hwnd, true) };
         pump();
         // It is minimized, and its interface knows, as it knows the window's size though
         // nothing shows.
         let ui = || &state(hwnd).ui;
-        assert!(unsafe { IsIconic(hwnd) } != 0 && ui().window_hidden() && runs.get() > 0);
+        assert!(unsafe { IsIconic(hwnd) } != 0 && ui().window_minimized() && runs.get() > 0);
         assert_eq!(ui().size(), Size { w: 400.0, h: 240.0 });
         // Its app asks it to come forward: it is restored, maximized, in front, and its
         // interface hears all of that.
@@ -3508,8 +3732,8 @@ pub(crate) mod tests {
         pump();
         // A desktop not on screen has no foreground window: that it has focus is what can be
         // checked here.
-        assert!(unsafe { IsIconic(hwnd) } == 0 && !ui().window_hidden() && unsafe { GetFocus() } == hwnd && ui().window_active());
-        assert!(ui().placed().is_some_and(|placed| placed.maximized) && ui().size().w > 400.0);
+        assert!(unsafe { IsIconic(hwnd) } == 0 && !ui().window_minimized() && unsafe { GetFocus() } == hwnd && ui().window_focused());
+        assert!(ui().window_placement().is_some_and(|placed| placed.maximized) && ui().size().w > 400.0);
         // Asked to stay above other programs' windows, it is topmost (style -20 bit 8,
         // `WS_EX_TOPMOST`) until asked not to be.
         let over = || unsafe { GetWindowLongPtrW(hwnd, -20) } & 8 != 0;
@@ -3559,7 +3783,7 @@ pub(crate) mod tests {
                 std::process::exit(3);
             })
         };
-        let ask = |saving: bool, name: &str, title: &'static str| FileAsk { saving, folders: false, folder: folder.clone(), name: name.into(), endings: vec![".txt".into()], title };
+        let ask = |saving: bool, name: &str, title: &'static str| FileDialogRequest { saving, folders: false, folder: folder.clone(), name: name.into(), endings: vec![".txt".into()], title };
         // An existing file is picked; a cancelled dialog answers nothing; and a name to save
         // under gets the app's default extension.
         let pressed = person("Pick one", 1);
@@ -3573,12 +3797,12 @@ pub(crate) mod tests {
         pressed.join().unwrap();
         // Asked for a folder, it answers with the one it shows.
         let pressed = person("In here", 1);
-        assert_eq!(pick_file(0, &FileAsk { folders: true, endings: Vec::new(), ..ask(false, "", "In here") }), Some(folder.clone()));
+        assert_eq!(pick_file(0, &FileDialogRequest { folders: true, endings: Vec::new(), ..ask(false, "", "In here") }), Some(folder.clone()));
         pressed.join().unwrap();
 
         // An app asking for the system dialog: its window shows it between two messages, and
         // the app's own file dialog, which never showed, hands it the answer.
-        let got = Rc::new(RefCell::new((crate::Files::of_the_system(), None::<PathBuf>, 0)));
+        let got = Rc::new(RefCell::new((crate::FileDialog::native(), None::<PathBuf>, 0)));
         let (app, start) = (got.clone(), folder.clone());
         let describe = move |ui: &mut Ui| {
             let mut app = app.borrow_mut();
@@ -3596,7 +3820,7 @@ pub(crate) mod tests {
         assert!(DIALOG.get().is_none(), "the dialog was handed over before anything asked for it");
         let hwnd = open(Window::default(), Box::new(describe));
         unsafe { window_proc(hwnd, WM_SIZE, 0, 0) };
-        assert!(got.borrow().0.shown && got.borrow().1.is_none() && state(hwnd).ui.said().is_empty());
+        assert!(got.borrow().0.shown && got.borrow().1.is_none() && state(hwnd).ui.visible_access_nodes().is_empty());
         let pressed = person("Open a file", 1);
         DIALOG.get().expect("the app's asking handed the dialog over")();
         pressed.join().unwrap();
@@ -3736,7 +3960,7 @@ pub(crate) mod tests {
             unsafe { messages.events(msg, w, l, 1.0, |event| said.push(event)) };
         }
         // Other modifiers held right now are the system's to say: only Alt is checked.
-        let alt: Vec<Option<bool>> = said.iter().map(|event| if let Event::Held(held) = event { Some(held.alt) } else { None }).collect();
+        let alt: Vec<Option<bool>> = said.iter().map(|event| if let Event::ModifiersChanged(held) = event { Some(held.alt) } else { None }).collect();
         assert_eq!(alt, [Some(true), None, Some(false)]);
         assert!(matches!(said[1], Event::Key(Key::Menu, _)));
     }
@@ -3755,9 +3979,9 @@ pub(crate) mod tests {
         assert!(zooms.len() == 2 && (zooms[0] - 1.25).abs() < 1e-5 && (zooms[1] - 0.64).abs() < 1e-5, "{zooms:?}");
         // Shift coming up is reported as the modifiers held now, not as a key. Other modifiers
         // are the system's to say.
-        let ups: Vec<&Event> = said.iter().filter(|event| matches!(event, Event::KeyUp(_) | Event::Held(_))).collect();
+        let ups: Vec<&Event> = said.iter().filter(|event| matches!(event, Event::KeyUp(_) | Event::ModifiersChanged(_))).collect();
         assert_eq!(ups[..2], [&Event::KeyUp(Key::Char('=')), &Event::KeyUp(Key::Char('-'))]);
-        assert!(ups.len() == 3 && matches!(ups[2], Event::Held(Mods { shift: false, .. })), "{ups:?}");
+        assert!(ups.len() == 3 && matches!(ups[2], Event::ModifiersChanged(Mods { shift: false, .. })), "{ups:?}");
     }
 
     #[test]
@@ -3773,7 +3997,7 @@ pub(crate) mod tests {
         // then the message is nothing.
         assert_eq!(read(drop), []);
         hand_drops();
-        let said = [Event::Move(pt(15.0, 20.0)), Event::Files(paths(&names))];
+        let said = [Event::Move(pt(15.0, 20.0)), Event::FilesDropped(paths(&names))];
         assert_eq!(read(drop), said);
         assert_eq!(read(drop), said, "reading a drop does not use it up");
         let on_frame = in_memory(&block((30, 40), true, true, &names));
@@ -3958,7 +4182,7 @@ pub(crate) mod tests {
         let app = typed.clone();
         let describe = move |ui: &mut Ui| {
             let mut app = app.borrow_mut();
-            ui.secret_box(&mut app.0, "Password");
+            ui.password_box(&mut app.0, "Password");
             ui.text_box(&mut app.1, "Name");
         };
         let hwnd = open(Window::default(), Box::new(describe));
@@ -3973,10 +4197,10 @@ pub(crate) mod tests {
         // Tab: focus on the password box, and the window has no input context. Typed characters
         // still arrive, one by one.
         unsafe { (window_proc(hwnd, WM_KEYDOWN, 9, 0), window_proc(hwnd, WM_CHAR, 'p' as usize, 0)) };
-        assert!(state(hwnd).ui.typing_hidden() && !types_through() && typed.borrow().0 == "p");
+        assert!(state(hwnd).ui.password_focused() && !types_through() && typed.borrow().0 == "p");
         // Tab again: on to the name, where input methods are welcome again.
         unsafe { (window_proc(hwnd, WM_KEYDOWN, 9, 0), window_proc(hwnd, WM_CHAR, 'n' as usize, 0)) };
-        assert!(!state(hwnd).ui.typing_hidden() && types_through() && *typed.borrow() == ("p".to_string(), "n".to_string()));
+        assert!(!state(hwnd).ui.password_focused() && types_through() && *typed.borrow() == ("p".to_string(), "n".to_string()));
         unsafe { DestroyWindow(hwnd) };
     }
 
@@ -3998,7 +4222,7 @@ pub(crate) mod tests {
             ImmReleaseContext(hwnd, context);
             (text.style, (text.at.x, text.at.y), list_told.then_some((list.style, (list.at.x, list.at.y), list.area)))
         };
-        let cursor = || state(hwnd).ui.typing_at();
+        let cursor = || state(hwnd).ui.ime_area();
         let scale = kept(hwnd).scale;
         // An input method composing while there is no text cursor: nothing is told.
         unsafe { window_proc(hwnd, WM_IME_STARTCOMPOSITION, 0, 0) };
@@ -4080,8 +4304,8 @@ pub(crate) mod tests {
     struct Two {
         /// A second window with a check box and a text box; and a smaller one holding a line of
         /// text, closed at first.
-        prefs: Second,
-        log: Second,
+        prefs: SecondWindow,
+        log: SecondWindow,
         /// How often the first window's button was pressed, and the second window's box
         /// contents.
         pressed: u32,
@@ -4105,7 +4329,7 @@ pub(crate) mod tests {
 
     impl Two {
         fn new() -> Rc<RefCell<Two>> {
-            let (prefs, log) = (Second::new(200.0, 120.0), Second { open: false, ..Second::new(150.0, 90.0) });
+            let (prefs, log) = (SecondWindow::new(200.0, 120.0), SecondWindow { open: false, ..SecondWindow::new(150.0, 90.0) });
             Rc::new(RefCell::new(Two {
                 prefs,
                 log,
@@ -4133,7 +4357,7 @@ pub(crate) mod tests {
             let mut app = app.borrow_mut();
             let app = &mut *app;
             app.pressed += ui.button("In the first window").clicked as u32;
-            _ = app.asks_first && ui.files_over();
+            _ = app.asks_first && ui.files_hovered();
             if ui.window(&mut app.prefs, "Preferences") {
                 app.tick = ui.checkbox(&mut app.dark, "Dark").rect;
                 let typed = ui.text_box(&mut app.text, "Type here");
@@ -4238,7 +4462,7 @@ pub(crate) mod tests {
     /// from the top, and the row length. (A picture can come out empty though the window drew
     /// all of itself: the first one of a just-shown window, and any one under load. So pictures
     /// are taken until two in a row agree, ten at most.)
-    fn picture(hwnd: HANDLE) -> (Vec<u32>, usize) {
+    pub(crate) fn picture(hwnd: HANDLE) -> (Vec<u32>, usize) {
         let mut last: Option<(Vec<u32>, usize)> = None;
         for _ in 0..10 {
             let sheet = Sheet::new(hwnd);
@@ -4289,6 +4513,22 @@ pub(crate) mod tests {
     fn keys_up() {
         // SAFETY: the keyboard state is 256 bytes, one per key.
         unsafe { SetKeyboardState(&[0; 256]) };
+    }
+
+    /// Whether this test program carries the GPU path: the name of the function that makes
+    /// Direct3D devices is in its file. (The name is made here at run time, so the test is not
+    /// what carries it.)
+    pub(crate) fn carries_device_making() -> bool {
+        let mut name = *b"D3D11CreateDevicf";
+        name[16] = std::hint::black_box(name[16]) - 1;
+        let program = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        program.windows(name.len()).any(|bytes| bytes == name)
+    }
+
+    #[test]
+    #[cfg(not(feature = "gpu"))]
+    fn without_the_feature_the_gpu_path_is_not_compiled_in() {
+        assert!(!carries_device_making());
     }
 
     pub(crate) fn pump() -> bool {
@@ -4387,6 +4627,9 @@ pub(crate) mod tests {
             windows
         };
         let taken = |which: u32| unsafe { GetGuiResources(GetCurrentProcess(), which) };
+        // On the CPU: no device is made meanwhile (`gpu_windows` has the GPU's own test).
+        #[cfg(feature = "gpu")]
+        crate::gpu_windows::tests::fake(crate::gpu_windows::tests::Faked { no_gpu: true, ..Default::default() });
         // Three windows, each asked to paint, which creates the strip (nothing is drawn: they
         // are not shown). The app closes one; the other goes with the first.
         let round = || {
@@ -4487,7 +4730,7 @@ pub(crate) mod tests {
         // Pictures in four sizes: Windows uses the smallest big enough, for both sizes.
         let pictures = [16usize, 32, 48, 64].map(|side| (side, vec![0xff40_5060u32; side * side]));
         let icons = pictures.each_ref().map(|(side, pixels)| (*side, pixels.as_slice()));
-        let hwnd = open(Window { at: Some((300, 200)), width: 400.0, height: 240.0, icons: &icons, ..Window::default() }, Box::new(|ui: &mut Ui| _ = ui.label("One")));
+        let hwnd = open(Window { position: Some((300, 200)), width: 400.0, height: 240.0, icons: &icons, ..Window::default() }, Box::new(|ui: &mut Ui| _ = ui.label("One")));
         let fitting = |which: i32| [16, 32, 48, 64].into_iter().find(|side| *side >= unsafe { GetSystemMetrics(which) }).unwrap_or(64);
         assert_eq!([icon_shown(hwnd, -14), icon_shown(hwnd, -34)], [fitting(11), fitting(49)]);
         unsafe { DestroyWindow(hwnd) };
@@ -4496,32 +4739,32 @@ pub(crate) mod tests {
     #[test]
     fn a_window_opens_where_its_app_says_and_its_app_is_told_where_it_is() {
         // A window has a screen place whether or not it shows.
-        let first = open(Window { at: Some((300, 200)), width: 400.0, height: 240.0, ..Window::default() }, Box::new(|ui: &mut Ui| _ = ui.label("One")));
+        let first = open(Window { position: Some((300, 200)), width: 400.0, height: 240.0, ..Window::default() }, Box::new(|ui: &mut Ui| _ = ui.label("One")));
         unsafe { window_proc(first, WM_SIZE, 0, 0) };
-        let placed = || state(first).ui.placed().expect("the window was told where it is");
-        assert_eq!((corner_of(first), placed()), (POINT { x: 300, y: 200 }, Placed { at: (300, 200), width: 400.0, height: 240.0, maximized: false }));
+        let placed = || state(first).ui.window_placement().expect("the window was told where it is");
+        assert_eq!((corner_of(first), placed()), (POINT { x: 300, y: 200 }, WindowPlacement { position: (300, 200), width: 400.0, height: 240.0, maximized: false }));
         // Moved, as the user would, nothing else changing; its interface is told.
         unsafe { SetWindowPos(first, 0, 520, 360, 0, 0, 0x0015) };
-        assert_eq!(placed().at, (520, 360));
+        assert_eq!(placed().position, (520, 360));
         // A maximized window (only set in its style here: it is not shown) is told so, with its
         // restore place and size.
         unsafe { (SetWindowLongPtrW(first, -16, GetWindowLongPtrW(first, -16) | 0x0100_0000), window_proc(first, WM_MOVE, 0, 0)) };
-        assert_eq!(placed(), Placed { at: (520, 360), width: 400.0, height: 240.0, maximized: true });
+        assert_eq!(placed(), WindowPlacement { position: (520, 360), width: 400.0, height: 240.0, maximized: true });
         unsafe { DestroyWindow(first) };
         // A place on no screen is left to the system.
-        let lost = open(Window { at: Some((-30000, -30000)), ..Window::default() }, Box::new(|ui: &mut Ui| _ = ui.label("One")));
+        let lost = open(Window { position: Some((-30000, -30000)), ..Window::default() }, Box::new(|ui: &mut Ui| _ = ui.label("One")));
         assert!(corner_of(lost).x > -30000 && corner_of(lost).y > -30000);
         unsafe { DestroyWindow(lost) };
 
         // A second window: where its app says, no smaller than it says. Its app hears where it
         // is and where it moves.
         let app = Two::new();
-        app.borrow_mut().prefs = Second::new(200.0, 120.0).at(640, 480).least(120.0, 60.0);
+        app.borrow_mut().prefs = SecondWindow::new(200.0, 120.0).position(640, 480).min_size(120.0, 60.0);
         let first = two(&app, None);
         let second = windows(first)[1];
-        assert_eq!((corner_of(second), kept(second).min, app.borrow().prefs.at), (POINT { x: 640, y: 480 }, (120.0, 60.0), Some((640, 480))));
+        assert_eq!((corner_of(second), kept(second).min_size, app.borrow().prefs.position), (POINT { x: 640, y: 480 }, (120.0, 60.0), Some((640, 480))));
         unsafe { SetWindowPos(second, 0, 700, 500, 0, 0, 0x0015) };
-        assert_eq!((corner_of(second), app.borrow().prefs.at), (POINT { x: 700, y: 500 }, Some((700, 500))));
+        assert_eq!((corner_of(second), app.borrow().prefs.position), (POINT { x: 700, y: 500 }, Some((700, 500))));
         // One with no place given opens a step from the first, and its app hears where.
         let log = windows(first).len();
         app.borrow_mut().log.open = true;
@@ -4529,7 +4772,7 @@ pub(crate) mod tests {
         // The run telling the app is one the first window posts for itself.
         pump();
         let third = windows(first)[log];
-        assert_eq!(app.borrow().log.at.map(|(x, y)| POINT { x, y }), Some(corner_of(third)));
+        assert_eq!(app.borrow().log.position.map(|(x, y)| POINT { x, y }), Some(corner_of(third)));
         unsafe { DestroyWindow(first) };
     }
 
@@ -4631,7 +4874,7 @@ pub(crate) mod tests {
         assert!(state(first).timer, "its cursor blinks by the one timer, which is the first window's");
         // An input method composing there is told the cursor's place in that window; the first
         // window tells no place.
-        let cursor = state(first).in_window(1, |ui, _| ui.typing_at()).unwrap().expect("the text box has the keyboard");
+        let cursor = state(first).in_window(1, |ui, _| ui.ime_area()).unwrap().expect("the text box has the keyboard");
         let spot = cursor_pixels(cursor, kept(second).scale);
         assert!(app.borrow().typed.contains(pt(cursor.x, cursor.y)));
         let mut told = COMPOSITIONFORM { style: 0, at: POINT::default(), area: RECT::default() };
@@ -4642,7 +4885,7 @@ pub(crate) mod tests {
             ImmGetCompositionWindow(context, &mut told);
             ImmReleaseContext(second, context);
         }
-        assert_eq!((told.style, told.at, kept(second).typing, kept(first).typing), (2, POINT { x: spot.left, y: spot.top }, spot, RECT::default()));
+        assert_eq!((told.style, told.at, kept(second).ime_spot, kept(first).ime_spot), (2, POINT { x: spot.left, y: spot.top }, spot, RECT::default()));
         unsafe { DestroyWindow(first) };
     }
 
@@ -4817,7 +5060,7 @@ pub(crate) mod tests {
             for name in ["All notes", "Open all", "Save all", "Send all"] {
                 let state = ui.press(ui.next_id());
                 let edge = if state.hovered { t.text_faint } else { t.line_strong };
-                ui.row().h(Length::Px(28.0)).pad((10.0, 0.0)).gap(6.0).fill(t.raise).border(edge, 1.0).radius(6.0).sense().focusable().open();
+                ui.row().h(Length::Px(28.0)).pad((10.0, 0.0)).gap(6.0).fill(t.raised).border(edge, 1.0).radius(6.0).sense().focusable().open();
                 ui.el().icon(MARK, 16.0, t.text_dim).show();
                 ui.el().text(name, t.font, t.text).show();
                 ui.close();
@@ -4831,7 +5074,7 @@ pub(crate) mod tests {
                 ui.row().w(Length::Grow(1.0)).h(Length::Px(30.0)).pad((8.0, 0.0)).gap(8.0).fill(fill).sense().focusable().open();
                 ui.el().icon(MARK, 16.0, t.text_dim).show();
                 ui.el().text(&format!("Note number {row}"), t.font.bold(), t.text).show();
-                ui.el().text("C:\\Notes\\with a long path to it", t.small, t.text_faint).show();
+                ui.el().text("C:\\Notes\\with a long path to it", t.small_font, t.text_faint).show();
                 ui.spacer();
                 if state.hovered {
                     ui.el().icon(PLUS, 13.0, t.text_dim).show();
@@ -4951,7 +5194,7 @@ pub(crate) mod tests {
     /// The names of the things a window's interface reports.
     fn told(hwnd: HANDLE) -> Vec<String> {
         let (state, at) = unsafe { state_of(hwnd) }.unwrap();
-        state.in_window(at, |ui, _| ui.said().iter().map(|said| said.name.clone()).collect()).unwrap()
+        state.in_window(at, |ui, _| ui.visible_access_nodes().iter().map(|said| said.name.clone()).collect()).unwrap()
     }
 
     #[test]
@@ -5021,7 +5264,7 @@ pub(crate) mod tests {
         };
         let hwnd = open(Window::default(), Box::new(describe));
         unsafe { (window_proc(hwnd, WM_SIZE, 0, 0), window_proc(hwnd, WM_SIZE, 0, 0), window_proc(hwnd, WM_GETOBJECT, 0, ROOT)) };
-        let shown = |name: &str| state(hwnd).ui.told().iter().find(|said| said.name == name).map(|said| said.shown);
+        let shown = |name: &str| state(hwnd).ui.access_nodes().iter().find(|said| said.name == name).map(|said| said.visible);
         assert_eq!((shown("Row 0"), shown("Row 30")), (Some(true), Some(false)));
         assert_eq!(uia::tests::act(hwnd, "Row 30", 10017, None, None), 0);
         assert_eq!((shown("Row 0"), shown("Row 30")), (Some(false), Some(true)));
@@ -5034,7 +5277,7 @@ pub(crate) mod tests {
         let hwnd = form(&app);
         unsafe { window_proc(hwnd, WM_GETOBJECT, 0, ROOT) };
         assert_eq!(uia::tests::act(hwnd, "Your name", TO_TYPE, Some("Ada Lovelace"), None), 0);
-        let caret = || state(hwnd).ui.said().iter().find(|said| said.name == "Your name").and_then(|said| said.caret);
+        let caret = || state(hwnd).ui.visible_access_nodes().iter().find(|said| said.name == "Your name").and_then(|said| said.caret);
         assert_eq!((app.borrow().name.clone(), caret()), ("Ada Lovelace".to_string(), Some([12, 12])));
         // Fifth to ninth letter: the box has it before the call returns, and the next typing
         // replaces it.
@@ -5083,7 +5326,7 @@ pub(crate) mod tests {
         // The interface reports the result: what was collapsed is there now, and focus is on
         // what was used last.
         assert_eq!(told(hwnd), ["Sound", "Loud", "", "Your name", "Save", "More", "Under the fold", "One", "Two"]);
-        assert!(state(hwnd).ui.said()[2].focused);
+        assert!(state(hwnd).ui.visible_access_nodes()[2].focused);
         // Mid-message, the window is not asked anything: "not now", and nothing is done.
         ANSWERING.set(true);
         assert_eq!((act("Save", TO_PRESS), app.borrow().saved), (0x8004_0200_u32 as i32, 1));
@@ -5267,13 +5510,13 @@ RadioButton [Two] picked: True";
             app.button = ui.button("Close").rect;
             ui.close();
             if !app.no_strip {
-                ui.window_strip(&strip);
+                ui.set_title_bar(&strip);
             }
             if std::mem::take(&mut app.minimize) {
                 ui.minimize();
             }
             if std::mem::take(&mut app.forward) {
-                ui.come_forward();
+                ui.bring_to_front();
             }
             app.fill.take().into_iter().for_each(|on| ui.set_maximized(on));
             app.over_all.take().into_iter().for_each(|on| ui.set_full_screen(on));
@@ -5306,7 +5549,7 @@ RadioButton [Two] picked: True";
     fn a_window_with_no_frame_is_all_inside_and_says_what_lies_at_each_place() {
         // Never shown: none of this needs it.
         let app = Rc::new(RefCell::new(Kinds::default()));
-        let hwnd = of_a_kind(Window { width: 300.0, height: 200.0, bare: true, ..Window::default() }, &app);
+        let hwnd = of_a_kind(Window { width: 300.0, height: 200.0, frameless: true, ..Window::default() }, &app);
         // All of it is client, as big as its app asked, at its screen's scale. Its style is
         // still a resizable framed one, so Windows resizes and snaps it.
         let (scale, all) = (kept(hwnd).scale, outside(hwnd));
@@ -5345,7 +5588,7 @@ RadioButton [Two] picked: True";
         // Windows' own, as always.
         app.borrow_mut().no_strip = true;
         unsafe { window_proc(hwnd, WM_WAKE, 0, 0) };
-        assert!(!kept(hwnd).grips && lies_at(hwnd, on_strip) == 1);
+        assert!(!kept(hwnd).asks_hit_test && lies_at(hwnd, on_strip) == 1);
         unsafe { DestroyWindow(hwnd) };
     }
 
@@ -5370,7 +5613,7 @@ RadioButton [Two] picked: True";
     /// and interface against each other at each step.
     fn stands_as_asked(bare: bool) {
         let app = Rc::new(RefCell::new(Kinds::default()));
-        let hwnd = of_a_kind(Window { at: Some((120, 90)), width: 400.0, height: 240.0, bare, ..Window::default() }, &app);
+        let hwnd = of_a_kind(Window { position: Some((120, 90)), width: 400.0, height: 240.0, frameless: bare, ..Window::default() }, &app);
         unsafe { ShowWindow(hwnd, 1) };
         pump();
         let ui = || &state(hwnd).ui;
@@ -5385,20 +5628,20 @@ RadioButton [Two] picked: True";
         let stands = || (app.borrow().fills, app.borrow().whole, ui().maximized(), ui().full_screen());
         let mut screen = MONITORINFO { size: size_of::<MONITORINFO>() as u32, all: RECT::default(), work: RECT::default(), flags: 0 };
         assert!(unsafe { GetMonitorInfoW(MonitorFromWindow(hwnd, 2), &mut screen) } != 0);
-        let (there, small, within, on_strip) = (Placed { at: (120, 90), width: 400.0, height: 240.0, maximized: false }, outside(hwnd), inside_on_screen(hwnd), pt(200.0, 15.0));
-        assert_eq!((ui().placed(), stands(), bare, lies_at(hwnd, on_strip)), (Some(there), (false, false, false, false), within == small, 2));
+        let (there, small, within, on_strip) = (WindowPlacement { position: (120, 90), width: 400.0, height: 240.0, maximized: false }, outside(hwnd), inside_on_screen(hwnd), pt(200.0, 15.0));
+        assert_eq!((ui().window_placement(), stands(), bare, lies_at(hwnd, on_strip)), (Some(there), (false, false, false, false), within == small, 2));
 
         // Minimized by its app, it is, and its interface knows; it comes back as it was.
         asks(&|app| app.minimize = true);
-        assert!(iconic() && ui().window_hidden());
+        assert!(iconic() && ui().window_minimized());
         asks(&|app| app.forward = true);
-        assert!(!iconic() && !ui().window_hidden() && outside(hwnd) == small);
+        assert!(!iconic() && !ui().window_minimized() && outside(hwnd) == small);
 
         // Asked to maximize, it does, and says so with its restore place. A frameless window is
         // then placed so its missing frame lies past the screen's edges: its client is the work
         // area, with no resize edges.
         asks(&|app| app.fill = Some(true));
-        assert_eq!((zoomed(), stands(), ui().placed()), (true, (true, false, true, false), Some(Placed { maximized: true, ..there })));
+        assert_eq!((zoomed(), stands(), ui().window_placement()), (true, (true, false, true, false), Some(WindowPlacement { maximized: true, ..there })));
         let filled = (outside(hwnd), inside_on_screen(hwnd));
         assert!(!bare || (filled.1 == screen.work && filled.0.left < screen.work.left && filled.0.bottom > screen.work.bottom), "{filled:?} on {:?}", screen.work);
         assert_eq!([lies_at(hwnd, pt(1.0, 1.0)), lies_at(hwnd, on_strip)], [2, 2]);
@@ -5407,49 +5650,49 @@ RadioButton [Two] picked: True";
         // what the system title bar does.
         unsafe { window_proc(hwnd, 0x00A3, 2, 0) };
         pump();
-        assert_eq!((zoomed(), stands(), ui().placed(), outside(hwnd)), (false, (false, false, false, false), Some(there), small));
+        assert_eq!((zoomed(), stands(), ui().window_placement(), outside(hwnd)), (false, (false, false, false, false), Some(there), small));
         unsafe { window_proc(hwnd, 0x00A3, 2, 0) };
         pump();
         assert_eq!((zoomed(), stands(), outside(hwnd)), (true, (true, false, true, false), filled.0));
         asks(&|app| app.fill = Some(false));
-        assert_eq!((zoomed(), stands(), ui().placed(), outside(hwnd)), (false, (false, false, false, false), Some(there), small));
+        assert_eq!((zoomed(), stands(), ui().window_placement(), outside(hwnd)), (false, (false, false, false, false), Some(there), small));
 
         // Asked to go fullscreen, it does, frameless, its client the screen. Its place still
         // says where it restores to; nothing of it can be grabbed; asked to maximize meanwhile,
         // it stays as is.
         asks(&|app| app.over_all = Some(true));
         assert_eq!((outside(hwnd), inside_on_screen(hwnd), frame_of(hwnd)), (screen.all, screen.all, 0));
-        assert_eq!((stands(), ui().placed(), [lies_at(hwnd, on_strip), lies_at(hwnd, pt(0.0, 0.0))]), ((false, true, false, true), Some(there), [1, 1]));
+        assert_eq!((stands(), ui().window_placement(), [lies_at(hwnd, on_strip), lies_at(hwnd, pt(0.0, 0.0))]), ((false, true, false, true), Some(there), [1, 1]));
         asks(&|app| app.fill = Some(true));
         assert_eq!((zoomed(), outside(hwnd)), (false, screen.all));
         // And back: where it was, as big, framed or not as before.
         asks(&|app| app.over_all = Some(false));
         assert_eq!((outside(hwnd), inside_on_screen(hwnd), frame_of(hwnd)), (small, within, WS_OVERLAPPEDWINDOW));
-        assert_eq!((stands(), ui().placed(), lies_at(hwnd, on_strip)), ((false, false, false, false), Some(there), 2));
+        assert_eq!((stands(), ui().window_placement(), lies_at(hwnd, on_strip)), ((false, false, false, false), Some(there), 2));
 
         // From maximized it goes fullscreen, says it restores to maximized, and does.
         asks(&|app| app.fill = Some(true));
         asks(&|app| app.over_all = Some(true));
-        assert_eq!((outside(hwnd), inside_on_screen(hwnd), stands(), ui().placed()), (screen.all, screen.all, (true, true, true, true), Some(Placed { maximized: true, ..there })));
+        assert_eq!((outside(hwnd), inside_on_screen(hwnd), stands(), ui().window_placement()), (screen.all, screen.all, (true, true, true, true), Some(WindowPlacement { maximized: true, ..there })));
         asks(&|app| app.over_all = Some(false));
         assert_eq!((zoomed(), outside(hwnd), inside_on_screen(hwnd), stands()), (true, filled.0, filled.1, (true, false, true, false)));
         // Minimized while fullscreen and asked to leave fullscreen, it stays minimized, and
         // comes back as before: maximized.
         asks(&|app| app.over_all = Some(true));
         asks(&|app| app.minimize = true);
-        assert!(iconic() && ui().window_hidden() && ui().full_screen());
+        assert!(iconic() && ui().window_minimized() && ui().full_screen());
         asks(&|app| app.over_all = Some(false));
         assert!(iconic() && !ui().full_screen());
         asks(&|app| app.forward = true);
         assert_eq!((iconic(), zoomed(), outside(hwnd), frame_of(hwnd)), (false, true, filled.0, WS_OVERLAPPEDWINDOW));
         asks(&|app| app.fill = Some(false));
-        assert_eq!((outside(hwnd), ui().placed()), (small, Some(there)));
+        assert_eq!((outside(hwnd), ui().window_placement()), (small, Some(there)));
         unsafe { DestroyWindow(hwnd) };
     }
 
     /// A see-through window's picture, rows from the top.
     fn pictured(hwnd: HANDLE) -> (Vec<u32>, usize) {
-        let clear = kept(hwnd).clear.as_ref().expect("a see-through window");
+        let clear = kept(hwnd).transparent.as_ref().expect("a see-through window");
         let [wide, high] = clear.size.map(|side| side as usize);
         (unsafe { std::slice::from_raw_parts(clear.pixels, wide * high) }.to_vec(), wide)
     }
@@ -5465,11 +5708,11 @@ RadioButton [Two] picked: True";
         let describe = move |ui: &mut Ui| {
             let mut on = ticked.get();
             ui.el().size(40.0, 40.0).fill(Color::rgb(0xff0000)).show();
-            ui.el().size(40.0, 40.0).fill(Color::rgb(0x0000ff).alpha(0.5)).show();
+            ui.el().size(40.0, 40.0).fill(Color::rgb(0x0000ff).with_alpha(0.5)).show();
             ui.label("Written");
             ui.checkbox(&mut on, "Ticked");
         };
-        let hwnd = open(Window { width: 200.0, height: 160.0, clear: true, ..asked }, Box::new(describe));
+        let hwnd = open(Window { width: 200.0, height: 160.0, transparent: true, ..asked }, Box::new(describe));
         unsafe { (window_proc(hwnd, WM_SIZE, 0, 0), window_proc(hwnd, WM_SIZE, 0, 0)) };
         hwnd
     }
@@ -5507,7 +5750,7 @@ RadioButton [Two] picked: True";
         assert!(ticked_pixels != pixels && ticked_pixels == afresh(hwnd));
         // Windows takes the picture when handed it.
         let whole = RECT { left: 0, top: 0, right: all.right - all.left, bottom: all.bottom - all.top };
-        assert!(kept(hwnd).clear.as_ref().is_some_and(|clear| clear.show(hwnd, whole)));
+        assert!(kept(hwnd).transparent.as_ref().is_some_and(|clear| clear.show(hwnd, whole)));
         // A window of another size has a picture of that size, drawn afresh.
         unsafe { SetWindowPos(hwnd, 0, 0, 0, whole.right + 30, whole.bottom + 20, 0x0016) };
         pump();
@@ -5516,8 +5759,8 @@ RadioButton [Two] picked: True";
         assert!(larger == afresh(hwnd));
         unsafe { DestroyWindow(hwnd) };
 
-        // One also bare is resized by its edges, as a bare window is.
-        let hwnd = see_through(Window { bare: true, ..Window::default() }, &ticked);
+        // One also bare is resized by its edges, as a frameless window is.
+        let hwnd = see_through(Window { frameless: true, ..Window::default() }, &ticked);
         assert_eq!((frame_of(hwnd), lies_at(hwnd, pt(0.0, 80.0)), inside_on_screen(hwnd)), (WS_OVERLAPPEDWINDOW, 10, outside(hwnd)));
         unsafe { DestroyWindow(hwnd) };
     }
@@ -5525,16 +5768,16 @@ RadioButton [Two] picked: True";
     #[test]
     fn a_second_window_has_no_frame_where_its_app_asks_for_that() {
         // Never shown, like the other second windows of these tests.
-        let kept_by_app = Rc::new(RefCell::new((Second::new(200.0, 120.0), false)));
+        let kept_by_app = Rc::new(RefCell::new((SecondWindow::new(200.0, 120.0), false)));
         let app = kept_by_app.clone();
         let describe = move |ui: &mut Ui| {
             let (tools, close) = &mut *app.borrow_mut();
             ui.label("The first window");
-            if ui.bare_window(tools, "Tools") {
+            if ui.frameless_window(tools, "Tools") {
                 let strip = ui.row().h(Length::Px(24.0)).sense().open();
                 ui.label("Tools");
                 ui.close();
-                ui.window_strip(&strip);
+                ui.set_title_bar(&strip);
                 if *close {
                     ui.quit();
                 }
@@ -5549,7 +5792,7 @@ RadioButton [Two] picked: True";
         let scale = kept(second).scale;
         assert_eq!((inside(second), inside_on_screen(second)), (((200.0 * scale) as i32, (120.0 * scale) as i32), outside(second)));
         assert_eq!([lies_at(second, pt(100.0, 12.0)), lies_at(second, pt(100.0, 60.0)), lies_at(second, pt(199.0, 60.0)), lies_at(second, pt(199.0, 119.0))], [2, 1, 11, 17]);
-        assert!(inside_on_screen(first) != outside(first) && !kept(first).grips);
+        assert!(inside_on_screen(first) != outside(first) && !kept(first).asks_hit_test);
         // Its app closes it from inside, as its close button would.
         kept_by_app.borrow_mut().1 = true;
         unsafe { window_proc(first, WM_WAKE, 0, 0) };
@@ -5572,8 +5815,8 @@ RadioButton [Two] picked: True";
         }
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no window is shown on it");
         // As `run` shows a see-through window, here over a plain window of another kind.
-        let under = of_a_kind(Window { at: Some((100, 100)), width: 500.0, height: 400.0, ..Window::default() }, &Rc::new(RefCell::new(Kinds::default())));
-        let hwnd = see_through(Window { at: Some((200, 200)), ..Window::default() }, &Rc::new(Cell::new(false)));
+        let under = of_a_kind(Window { position: Some((100, 100)), width: 500.0, height: 400.0, ..Window::default() }, &Rc::new(RefCell::new(Kinds::default())));
+        let hwnd = see_through(Window { position: Some((200, 200)), ..Window::default() }, &Rc::new(Cell::new(false)));
         unsafe { (ShowWindow(under, 1), ShowWindow(hwnd, 1)) };
         pump();
         // It opened where its app said and is shown: Windows has its picture.
@@ -5603,7 +5846,7 @@ RadioButton [Two] picked: True";
     /// heard.
     #[derive(Default)]
     struct Owned {
-        windows: Vec<(Second, &'static str)>,
+        windows: Vec<(SecondWindow, &'static str)>,
         unsaved: bool,
         /// The windows that heard the user ask them to close, and how many runs there were.
         asked: Vec<&'static str>,
@@ -5619,11 +5862,11 @@ RadioButton [Two] picked: True";
             let app = &mut *app;
             app.runs += 1;
             let mut hear = |ui: &mut Ui, name: &'static str| {
-                if ui.close_asked() && !app.asked.contains(&name) {
+                if ui.close_requested() && !app.asked.contains(&name) {
                     app.asked.push(name);
                 }
                 if app.unsaved {
-                    ui.keep_open("There are unsaved changes");
+                    ui.cancel_close("There are unsaved changes");
                 }
             };
             hear(ui, "first");
@@ -5646,7 +5889,7 @@ RadioButton [Two] picked: True";
         let monitor = unsafe { MonitorFromPoint(POINT { x: x as i32, y: y as i32 }, 2) };
         let mut info = MONITORINFO { size: size_of::<MONITORINFO>() as u32, all: RECT::default(), work: RECT::default(), flags: 0 };
         unsafe { GetMonitorInfoW(monitor, &mut info) };
-        *found.iter().find(|screen| screen.all.x as i32 == info.all.left && screen.all.y as i32 == info.all.top).expect("the screen is in the list")
+        *found.iter().find(|screen| screen.rect.x as i32 == info.all.left && screen.rect.y as i32 == info.all.top).expect("the screen is in the list")
     }
 
     #[test]
@@ -5655,11 +5898,11 @@ RadioButton [Two] picked: True";
         eprintln!("{found:#?}");
         // As many as Windows counts (`SM_CMONITORS`, 80), each with its work area inside it, at
         // its own scale; the main one, at the origin, first.
-        assert_eq!((found.len(), found[0].all.x, found[0].all.y), (unsafe { GetSystemMetrics(80) } as usize, 0.0, 0.0));
+        assert_eq!((found.len(), found[0].rect.x, found[0].rect.y), (unsafe { GetSystemMetrics(80) } as usize, 0.0, 0.0));
         for screen in &found {
-            let (monitor, mut dpi) = (unsafe { MonitorFromPoint(POINT { x: (screen.all.x + 1.0) as i32, y: (screen.all.y + 1.0) as i32 }, 0) }, [0u32; 2]);
+            let (monitor, mut dpi) = (unsafe { MonitorFromPoint(POINT { x: (screen.rect.x + 1.0) as i32, y: (screen.rect.y + 1.0) as i32 }, 0) }, [0u32; 2]);
             unsafe { GetDpiForMonitor(monitor, 0, &mut dpi[0], &mut dpi[1]) };
-            assert!(screen.all.intersect(screen.work) == screen.work && !screen.work.is_empty(), "{screen:?}");
+            assert!(screen.rect.intersect(screen.work_area) == screen.work_area && !screen.work_area.is_empty(), "{screen:?}");
             assert_eq!(screen.scale, dpi[0] as f32 / 96.0);
         }
         // A window has them from the start and hears them again when Windows says the screens
@@ -5685,7 +5928,7 @@ RadioButton [Two] picked: True";
         for (nth, screen) in screens().into_iter().enumerate() {
             let app = Rc::new(RefCell::new(Owned::default()));
             let first = owned(Window { screen: Some(nth), width: 400.0, height: 240.0, ..Window::default() }, &app);
-            let (area, work) = (outside(first), screen.work);
+            let (area, work) = (outside(first), screen.work_area);
             let off = |from: i32, to: i32, start: f32, long: f32| ((from + to) as f32 / 2.0 - (start + long / 2.0)).abs();
             assert!(off(area.left, area.right, work.x, work.w) <= 1.0 && off(area.top, area.bottom, work.y, work.h) <= 1.0, "{area:?} is not in the middle of {work:?}");
             assert_eq!((kept(first).scale, state(first).ui.screen(), state(first).ui.size()), (screen.scale, Some(nth), Size { w: 400.0, h: 240.0 }));
@@ -5702,19 +5945,19 @@ RadioButton [Two] picked: True";
         let found = screens();
         // On each screen near its top left: just there, at that screen's scale.
         for (nth, screen) in found.iter().enumerate() {
-            let at = ((screen.work.x + 40.0) as i32, (screen.work.y + 30.0) as i32);
-            let first = owned(Window { at: Some(at), width: 400.0, height: 240.0, ..Window::default() }, &Rc::new(RefCell::new(Owned::default())));
+            let at = ((screen.work_area.x + 40.0) as i32, (screen.work_area.y + 30.0) as i32);
+            let first = owned(Window { position: Some(at), width: 400.0, height: 240.0, ..Window::default() }, &Rc::new(RefCell::new(Owned::default())));
             assert_eq!((corner_of(first), kept(first).scale, state(first).ui.screen()), (POINT { x: at.0, y: at.1 }, screen.scale, Some(nth)));
             unsafe { DestroyWindow(first) };
         }
         // Far right of and below every screen (a screen was removed): moved onto the nearest,
         // wholly in its work area.
-        let right = found.iter().map(|screen| screen.all.right()).fold(f32::MIN, f32::max);
-        let bottom = found.iter().map(|screen| screen.all.bottom()).fold(f32::MIN, f32::max);
+        let right = found.iter().map(|screen| screen.rect.right()).fold(f32::MIN, f32::max);
+        let bottom = found.iter().map(|screen| screen.rect.bottom()).fold(f32::MIN, f32::max);
         for at in [(right as i32 + 5000, 200), (300, bottom as i32 + 5000)] {
-            let first = owned(Window { at: Some(at), ..Window::default() }, &Rc::new(RefCell::new(Owned::default())));
+            let first = owned(Window { position: Some(at), ..Window::default() }, &Rc::new(RefCell::new(Owned::default())));
             let (area, nth) = (outside(first), crate::screens::nearest(&found, rect(at.0 as f32, at.1 as f32, 160.0, 30.0)).unwrap());
-            let work = found[nth].work;
+            let work = found[nth].work_area;
             assert!(area.left >= work.x as i32 && area.top >= work.y as i32 && area.right <= work.right() as i32 && area.bottom <= work.bottom() as i32, "{area:?} is not in {work:?}");
             assert_eq!((state(first).ui.screen(), kept(first).scale), (Some(nth), found[nth].scale));
             assert_eq!(screen_at(&found, (area.left + 50) as f32, (area.top + 50) as f32), found[nth]);
@@ -5726,12 +5969,12 @@ RadioButton [Two] picked: True";
     fn second_windows_of_each_kind_stand_to_the_first_as_people_expect() {
         let app = Rc::new(RefCell::new(Owned::default()));
         app.borrow_mut().windows = vec![
-            (Second::new(300.0, 200.0), "Plain"),
-            (Second::new(160.0, 300.0).tool(), "Tools"),
-            (Second::new(200.0, 100.0).on_top(), "Clock"),
-            (Second { open: false, ..Second::new(320.0, 140.0).dialog() }, "Save?"),
+            (SecondWindow::new(300.0, 200.0), "Plain"),
+            (SecondWindow::new(160.0, 300.0).tool(), "Tools"),
+            (SecondWindow::new(200.0, 100.0).on_top(), "Clock"),
+            (SecondWindow { open: false, ..SecondWindow::new(320.0, 140.0).dialog() }, "Save?"),
         ];
-        let first = owned(Window { at: Some((200, 150)), width: 700.0, height: 500.0, ..Window::default() }, &app);
+        let first = owned(Window { position: Some((200, 150)), width: 700.0, height: 500.0, ..Window::default() }, &app);
         let [_, plain, tools, clock] = windows(first)[..] else { panic!("{} windows", windows(first).len()) };
         let owner = |hwnd: HANDLE| unsafe { GetWindow(hwnd, 4) };
         let (style, more) = (|hwnd: HANDLE| unsafe { GetWindowLongPtrW(hwnd, -16) } as u32, |hwnd: HANDLE| unsafe { GetWindowLongPtrW(hwnd, -20) } as u32);
@@ -5774,7 +6017,7 @@ RadioButton [Two] picked: True";
     #[test]
     fn the_app_is_asked_before_a_window_closes_and_before_the_system_logs_off() {
         let app = Rc::new(RefCell::new(Owned::default()));
-        app.borrow_mut().windows = vec![(Second::new(300.0, 200.0), "Notes")];
+        app.borrow_mut().windows = vec![(SecondWindow::new(300.0, 200.0), "Notes")];
         let first = owned(Window::default(), &app);
         let notes = windows(first)[1];
         // With unsaved changes the app refuses, to the second window's close button and the
@@ -5801,8 +6044,8 @@ RadioButton [Two] picked: True";
     #[test]
     fn a_window_moved_onto_a_screen_of_another_scale_keeps_its_size_in_units() {
         let app = Rc::new(RefCell::new(Owned::default()));
-        app.borrow_mut().windows = vec![(Second::new(300.0, 200.0).tool(), "Tools")];
-        let first = owned(Window { width: 400.0, height: 240.0, bare: true, ..Window::default() }, &app);
+        app.borrow_mut().windows = vec![(SecondWindow::new(300.0, 200.0).tool(), "Tools")];
+        let first = owned(Window { width: 400.0, height: 240.0, frameless: true, ..Window::default() }, &app);
         for (at, hwnd) in windows(first).into_iter().enumerate() {
             for dpi in [144usize, 192, 120, 96] {
                 let units = state(first).in_window(at, |ui, _| ui.size()).unwrap();
@@ -5841,7 +6084,7 @@ RadioButton [Two] picked: True";
         };
         let titles = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
         let app = Rc::new(RefCell::new(Owned::default()));
-        app.borrow_mut().windows = titles.iter().map(|title| (Second { open: false, ..Second::new(400.0, 300.0) }, *title)).collect();
+        app.borrow_mut().windows = titles.iter().map(|title| (SecondWindow { open: false, ..SecondWindow::new(400.0, 300.0) }, *title)).collect();
         let first = owned(Window::default(), &app);
         // A run of the app: whatever is open is described.
         let timed = |rounds: u32| {
@@ -5881,7 +6124,7 @@ RadioButton [Two] picked: True";
         let app = move |ui: &mut Ui| {
             let mut seen = described.borrow_mut();
             let on = ui.button("Let text go here");
-            seen.0 = ui.text_over();
+            seen.0 = ui.text_hovered();
             seen.1 = seen.1.take().or(ui.text_dropped(&on));
             seen.2 = on.rect;
         };
@@ -5925,14 +6168,14 @@ RadioButton [Two] picked: True";
     /// box taking files and text.
     #[derive(Default)]
     struct Out {
-        what: Option<Handed<'static>>,
+        what: Option<DragData<'static>>,
         from: Rect,
         on: Rect,
         /// What became of what was dragged out; what was dropped on the box, as a number.
-        taken: Vec<Taken>,
+        taken: Vec<DropEffect>,
         dropped: Option<u64>,
         /// The second window, its box, and the files and text dropped on it.
-        takes: Second,
+        takes: SecondWindow,
         took: Rect,
         files: Vec<PathBuf>,
         text: Option<String>,
@@ -5947,15 +6190,15 @@ RadioButton [Two] picked: True";
             let app = &mut *app;
             ui.column().pad(10.0).gap(10.0).open();
             let from = ui.button("Carry me");
-            if ui.carried(&from, 7) {
+            if ui.drag_source(&from, 7) {
                 ui.label("seven");
                 ui.close();
             }
-            app.taken.extend(app.what.and_then(|what| ui.hand_out(&from, what)));
+            app.taken.extend(app.what.and_then(|what| ui.drag_out(&from, what)));
             let on = ui.button("Let go here");
             app.dropped = app.dropped.or(ui.dropped(&on));
             // So the first window has a drop target of its own too.
-            _ = ui.files_over();
+            _ = ui.files_hovered();
             (app.from, app.on) = (from.rect, on.rect);
             ui.close();
             if ui.window(&mut app.takes, "Takes") {
@@ -5966,7 +6209,7 @@ RadioButton [Two] picked: True";
                 ui.close();
             }
         };
-        let hwnd = open(Window { at: corner, width: 300.0, height: 200.0, ..Window::default() }, Box::new(describe));
+        let hwnd = open(Window { position: corner, width: 300.0, height: 200.0, ..Window::default() }, Box::new(describe));
         unsafe { (window_proc(hwnd, WM_SIZE, 0, 0), window_proc(hwnd, WM_SIZE, 0, 0)) };
         hwnd
     }
@@ -6001,14 +6244,14 @@ RadioButton [Two] picked: True";
 
     /// `DoDragDrop` to a file manager that reads the files, moves them itself, and reports so
     /// as Explorer does: no effect as Windows sees it, a move as the user sees it.
-    unsafe fn moved_by_a_file_manager(data: *mut crate::ole::Carried, source: *mut crate::ole::Source, allowed: u32, effect: *mut u32) -> i32 {
+    unsafe fn moved_by_a_file_manager(data: *mut crate::ole_drag::Carried, source: *mut crate::ole_drag::Source, allowed: u32, effect: *mut u32) -> i32 {
         let (data, mut handed) = (data.cast::<IDataObject>(), STGMEDIUM { medium: 0, memory: 0, owner: std::ptr::null_mut() });
         unsafe {
             assert_eq!((((*(*data).table).query_get_data)(data, &FILES), ((*(*data).table).get_data)(data, &FILES, &mut handed)), (0, 0));
             SAW.with_borrow_mut(|saw| saw.extend(dropped_files(handed.memory).1.iter().map(|file| file.display().to_string())));
             ReleaseStgMedium(&mut handed);
             // The user drags it along, and drops.
-            assert_eq!((crate::ole::go_on(source, false, 1), crate::ole::go_on(source, false, 0), allowed), (0, LET_GO, 7));
+            assert_eq!((crate::ole_drag::go_on(source, false, 1), crate::ole_drag::go_on(source, false, 0), allowed), (0, LET_GO, 7));
             let set_data: unsafe extern "system" fn(*mut IDataObject, *const FORMATETC, *mut STGMEDIUM, i32) -> i32 = function(data, 7);
             let said = FORMATETC { format: RegisterClipboardFormatW(wide("Logical Performed DropEffect").as_ptr()) as u16, ..FILES };
             let mut moved = STGMEDIUM { medium: 1, memory: in_memory(&2u32.to_le_bytes()), owner: std::ptr::null_mut() };
@@ -6019,14 +6262,14 @@ RadioButton [Two] picked: True";
     }
 
     /// `DoDragDrop` until the user cancels with Escape.
-    unsafe fn given_up(_: *mut crate::ole::Carried, source: *mut crate::ole::Source, _: u32, _: *mut u32) -> i32 {
-        assert_eq!(crate::ole::go_on(source, true, 1), GIVEN_UP);
+    unsafe fn given_up(_: *mut crate::ole_drag::Carried, source: *mut crate::ole_drag::Source, _: u32, _: *mut u32) -> i32 {
+        assert_eq!(crate::ole_drag::go_on(source, true, 1), GIVEN_UP);
         GIVEN_UP
     }
 
     /// `DoDragDrop` over a window of this program (`OVER`), whose drop target hears it as
     /// Windows reports, then dropping there. (It sees what the drop target says it may do.)
-    unsafe fn let_go_over_a_window(data: *mut crate::ole::Carried, source: *mut crate::ole::Source, allowed: u32, effect: *mut u32) -> i32 {
+    unsafe fn let_go_over_a_window(data: *mut crate::ole_drag::Carried, source: *mut crate::ole_drag::Source, allowed: u32, effect: *mut u32) -> i32 {
         let ((hwnd, at), data) = (OVER.get(), data.cast::<IDataObject>());
         unsafe {
             let target = GetPropW(hwnd, wide("OleDropTargetInterface").as_ptr()) as *mut DropTarget;
@@ -6034,7 +6277,7 @@ RadioButton [Two] picked: True";
             (calls.enter)(target, data, 1, at, &mut may);
             (calls.over)(target, 1, at, &mut may);
             SAW.with_borrow_mut(|saw| saw.push(format!("may: {may}")));
-            assert_eq!(crate::ole::go_on(source, false, 0), LET_GO);
+            assert_eq!(crate::ole_drag::go_on(source, false, 0), LET_GO);
             // Where nothing may be done, Windows only says it left.
             *effect = 0;
             if may == 0 {
@@ -6051,73 +6294,73 @@ RadioButton [Two] picked: True";
     #[test]
     fn files_carried_out_of_a_window_go_to_windows_between_messages_and_its_app_hears_they_were_moved() {
         let paths: &'static [PathBuf] = Box::leak(Box::new([PathBuf::from("C:\\a\\one.txt"), PathBuf::from("D:\\zwei drei\\für.png")]));
-        let app = Rc::new(RefCell::new(Out { what: Some(Handed::Files(paths)), ..Out::default() }));
+        let app = Rc::new(RefCell::new(Out { what: Some(DragData::Files(paths)), ..Out::default() }));
         let hwnd = carrier(&app, None);
         // Dragged out of the window, it waits until the message that took it there is handled.
         // (This window is never shown: whatever the pointer is over, it is not this one.)
         take_out(hwnd, &app, pt(320.0, 50.0));
         assert_eq!(OUTGOING.get().map(|(from, ..)| from), Some(hwnd));
-        assert!(!state(hwnd).ui.carrying_out(), "it is out already");
-        let was = crate::ole::CARRY.replace(moved_by_a_file_manager);
+        assert!(!state(hwnd).ui.drag_leaves_window(), "it is out already");
+        let was = crate::ole_drag::CARRY.replace(moved_by_a_file_manager);
         carry_out_asked();
-        crate::ole::CARRY.set(was);
+        crate::ole_drag::CARRY.set(was);
         assert!(OUTGOING.get().is_none());
         assert_eq!(SAW.take(), ["C:\\a\\one.txt", "D:\\zwei drei\\für.png"]);
         // The app heard once that they were moved; nothing was dropped in the window; the
         // button is up for it; and the window releases capture.
-        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![Taken::Moved], None));
+        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![DropEffect::Moved], None));
         unsafe { window_proc(hwnd, WM_WAKE, 0, 0) };
-        assert_eq!(app.borrow().taken, [Taken::Moved]);
-        assert!(state(hwnd).ui.carrying().is_none() && !state(hwnd).ui.wants_pointer() && unsafe { GetCapture() } != hwnd);
+        assert_eq!(app.borrow().taken, [DropEffect::Moved]);
+        assert!(state(hwnd).ui.drag_payload().is_none() && !state(hwnd).ui.wants_pointer() && unsafe { GetCapture() } != hwnd);
         unsafe { DestroyWindow(hwnd) };
     }
 
     #[test]
     fn what_is_given_up_with_escape_is_let_go_nowhere() {
-        let app = Rc::new(RefCell::new(Out { what: Some(Handed::Text("words")), ..Out::default() }));
+        let app = Rc::new(RefCell::new(Out { what: Some(DragData::Text("words")), ..Out::default() }));
         let hwnd = carrier(&app, None);
         take_out(hwnd, &app, pt(150.0, 250.0));
-        let was = crate::ole::CARRY.replace(given_up);
+        let was = crate::ole_drag::CARRY.replace(given_up);
         carry_out_asked();
-        crate::ole::CARRY.set(was);
+        crate::ole_drag::CARRY.set(was);
         assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![], None));
-        assert!(state(hwnd).ui.carrying().is_none() && unsafe { GetCapture() } != hwnd);
+        assert!(state(hwnd).ui.drag_payload().is_none() && unsafe { GetCapture() } != hwnd);
         // In the library's own tests Windows drags nothing: a drag out is dropped at once, as
         // cancelled.
         take_out(hwnd, &app, pt(150.0, 250.0));
         carry_out_asked();
-        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped, state(hwnd).ui.carrying()), (vec![], None, None));
+        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped, state(hwnd).ui.drag_payload()), (vec![], None, None));
         unsafe { DestroyWindow(hwnd) };
     }
 
     #[test]
     fn what_one_window_carries_out_another_window_of_the_program_takes() {
-        let app = Rc::new(RefCell::new(Out { what: Some(Handed::Text("über alles")), takes: Second::new(200.0, 120.0), ..Out::default() }));
+        let app = Rc::new(RefCell::new(Out { what: Some(DragData::Text("über alles")), takes: SecondWindow::new(200.0, 120.0), ..Out::default() }));
         let first = carrier(&app, None);
         let [_, second] = windows(first)[..] else { panic!("{} windows", windows(first).len()) };
         assert!(state(first).ole == Some(true) && kept(second).files, "the second window takes files and text");
         take_out(first, &app, pt(320.0, 50.0));
         OVER.set((second, on_screen(second, middle(app.borrow().took))));
-        let was = crate::ole::CARRY.replace(let_go_over_a_window);
+        let was = crate::ole_drag::CARRY.replace(let_go_over_a_window);
         carry_out_asked();
-        assert_eq!((SAW.take(), app.borrow().text.clone(), app.borrow().taken.clone()), (vec!["may: 1".to_string()], Some("über alles".into()), vec![Taken::Copied]));
+        assert_eq!((SAW.take(), app.borrow().text.clone(), app.borrow().taken.clone()), (vec!["may: 1".to_string()], Some("über alles".into()), vec![DropEffect::Copied]));
         // Over its source window, its drop target leaves it alone: there it is that window's
         // own (see the private-desktop test), not text from elsewhere.
         app.borrow_mut().taken.clear();
         take_out(first, &app, pt(320.0, 50.0));
         OVER.set((first, on_screen(first, middle(app.borrow().on))));
         carry_out_asked();
-        crate::ole::CARRY.set(was);
+        crate::ole_drag::CARRY.set(was);
         assert_eq!((SAW.take(), app.borrow().taken.clone(), app.borrow().dropped), (vec!["may: 0".to_string()], vec![], None));
         // Files from the second window to the first, the same way.
         let paths: &'static [PathBuf] = Box::leak(Box::new([PathBuf::from("C:\\a\\one.txt")]));
-        app.borrow_mut().what = Some(Handed::Files(paths));
+        app.borrow_mut().what = Some(DragData::Files(paths));
         take_out(first, &app, pt(320.0, 50.0));
         OVER.set((second, on_screen(second, middle(app.borrow().took))));
-        let was = crate::ole::CARRY.replace(let_go_over_a_window);
+        let was = crate::ole_drag::CARRY.replace(let_go_over_a_window);
         carry_out_asked();
-        crate::ole::CARRY.set(was);
-        assert_eq!((SAW.take(), app.borrow().files.clone(), app.borrow().taken.clone()), (vec!["may: 1".to_string()], paths.to_vec(), vec![Taken::Copied]));
+        crate::ole_drag::CARRY.set(was);
+        assert_eq!((SAW.take(), app.borrow().files.clone(), app.borrow().taken.clone()), (vec!["may: 1".to_string()], paths.to_vec(), vec![DropEffect::Copied]));
         unsafe { DestroyWindow(first) };
     }
 
@@ -6129,15 +6372,15 @@ RadioButton [Two] picked: True";
 
     /// `DoDragDrop` out of window `OVER` and back over it at the screen point, dropping there.
     /// (It sees the cursor, and where the window's interface heard the pointer was.)
-    unsafe fn home_again(_: *mut crate::ole::Carried, source: *mut crate::ole::Source, _: u32, effect: *mut u32) -> i32 {
+    unsafe fn home_again(_: *mut crate::ole_drag::Carried, source: *mut crate::ole_drag::Source, _: u32, effect: *mut u32) -> i32 {
         let (hwnd, at) = OVER.get();
         let off = POINT { x: at.x, y: at.y + 2000 };
         unsafe {
             for place in [off, at] {
                 let looks = (*source).looks_at(place);
-                SAW.with_borrow_mut(|saw| saw.push(format!("{looks:x} {:?} {:?}", state(hwnd).ui.pointer(), state(hwnd).ui.carrying())));
+                SAW.with_borrow_mut(|saw| saw.push(format!("{looks:x} {:?} {:?}", state(hwnd).ui.pointer(), state(hwnd).ui.drag_payload())));
             }
-            assert_eq!(crate::ole::go_on(source, false, 0), LET_GO);
+            assert_eq!(crate::ole_drag::go_on(source, false, 0), LET_GO);
             *effect = 0;
         }
         LET_GO
@@ -6150,7 +6393,7 @@ RadioButton [Two] picked: True";
             return;
         }
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no window is shown on it");
-        let app = Rc::new(RefCell::new(Out { what: Some(Handed::Text("words")), takes: Second::new(200.0, 120.0).at(300, 150), ..Out::default() }));
+        let app = Rc::new(RefCell::new(Out { what: Some(DragData::Text("words")), takes: SecondWindow::new(200.0, 120.0).position(300, 150), ..Out::default() }));
         let first = carrier(&app, Some((100, 100)));
         let [_, second] = windows(first)[..] else { panic!("{} windows", windows(first).len()) };
         unsafe { (ShowWindow(first, 1), ShowWindow(second, 1)) };
@@ -6164,7 +6407,7 @@ RadioButton [Two] picked: True";
         assert_eq!(unsafe { (WindowFromPoint(POINT { x: 320, y: 200 }), WindowFromPoint(on_screen(first, beside))) }, (second, first));
         // Dragged inside the window, it is the window's; nothing goes out.
         take_out(first, &app, beside);
-        assert!(OUTGOING.get().is_none() && state(first).ui.carrying() == Some(7) && state(first).ui.carrying_out());
+        assert!(OUTGOING.get().is_none() && state(first).ui.drag_payload() == Some(7) && state(first).ui.drag_leaves_window());
         // Over the window lying on it, it goes out.
         unsafe { window_proc(first, WM_MOUSEMOVE, 1, place(first, covered)) };
         assert_eq!(OUTGOING.get().map(|(from, ..)| from), Some(first));
@@ -6172,13 +6415,13 @@ RadioButton [Two] picked: True";
         // interface hears where the pointer is, and has the number dropped there.
         let on = on_screen(first, middle(app.borrow().on));
         OVER.set((first, on));
-        let was = crate::ole::CARRY.replace(home_again);
+        let was = crate::ole_drag::CARRY.replace(home_again);
         carry_out_asked();
-        crate::ole::CARRY.set(was);
+        crate::ole_drag::CARRY.set(was);
         let at = middle(app.borrow().on);
         assert_eq!(SAW.take(), ["40102 None Some(7)".to_string(), format!("0 Some({at:?}) Some(7)")]);
         assert_eq!((app.borrow().dropped, app.borrow().taken.clone()), (Some(7), vec![]));
-        assert!(state(first).ui.carrying().is_none() && unsafe { GetCapture() } != first);
+        assert!(state(first).ui.drag_payload().is_none() && unsafe { GetCapture() } != first);
         unsafe { DestroyWindow(first) };
     }
 
@@ -6186,12 +6429,12 @@ RadioButton [Two] picked: True";
     fn a_see_through_window_with_no_picture_draws_nothing() {
         // A picture Windows could not make, or has not made yet, has no pixels to draw into.
         let mut ui = Ui::new(crate::platform::system_text(), Box::new(crate::platform::LocalClipboard::default()));
-        let mut clear = Clear::new();
+        let mut clear = SeeThrough::new();
         clear.draw(&mut ui, rect(0.0, 0.0, 10.0, 10.0), 1.0);
         assert!(clear.pixels.is_null());
         // A window of no size has none either, and runs as usual.
         let app = |ui: &mut Ui| _ = ui.el().size(10.0, 10.0).fill(Color::BLACK).show();
-        let hwnd = open(Window { clear: true, width: 0.0, height: 0.0, ..Default::default() }, Box::new(app));
+        let hwnd = open(Window { transparent: true, width: 0.0, height: 0.0, ..Default::default() }, Box::new(app));
         assert!(hwnd != 0 && unsafe { IsWindowVisible(hwnd) } == 0);
         unsafe { (window_proc(hwnd, WM_WAKE, 0, 0), window_proc(hwnd, WM_WAKE, 0, 0)) };
         unsafe { DestroyWindow(hwnd) };

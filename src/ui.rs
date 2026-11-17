@@ -17,26 +17,26 @@
 //! run only records boxes. If the record asks for the same layout as the run before, nothing is
 //! laid out again, and only what looks different is redrawn. The little that must outlive a run
 //! (a list's scroll, a text box's cursor) is kept here under its box's id.
+use crate::accessibility::{AccessNode, Note};
 use crate::canvas::{Canvas, halve};
 use crate::color::Color;
-use crate::date::{Calendar, Shown};
-use crate::edit::Edit;
+use crate::color_picker::Picking;
+use crate::date::{CalendarWords, Shown};
 use crate::event::{Button, Cursor, Event, Key, Mods};
-use crate::files::FileAsk;
+use crate::file_dialog::FileDialogRequest;
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::id::{ById, Id, fold, hash, stir};
 use crate::layout::{Align, Content, Flow, Frame, NONE, Spec, Tree};
 use crate::locale::Locale;
 use crate::paint::{Mask, Painter, bar, bar_id};
-use crate::picker::Picking;
-use crate::platform::{Clipboard, Placed};
-use crate::second::Kept;
-use crate::shelf::Shelf;
-use crate::survey::Survey;
+use crate::platform::{Clipboard, Renderer, WindowPlacement};
+use crate::second_window::Kept;
+use crate::slots::Slots;
 use crate::table::Track;
 use crate::text::{Font, Line, TextSystem};
+use crate::text_edit::Edit;
 use crate::theme::Theme;
-use crate::told::{Note, Said};
+use crate::visible_boxes::VisibleBoxes;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -152,7 +152,7 @@ pub struct Response {
     /// The pointer is over it or over something lying on or in it: a button in a row, for the
     /// row. Not while something of another layer lies between: a menu, a dialog, a notice.
     /// (What a row uses to show its buttons under the pointer.)
-    pub over: bool,
+    pub contains_pointer: bool,
     /// The left button went down on it and is still down.
     pub pressed: bool,
     /// It was clicked: the left button went down and came up on it.
@@ -305,17 +305,17 @@ pub(crate) struct Rover {
     pub group: u64,
     pub id: Id,
     pub stop: bool,
-    pub picks: bool,
+    pub selects: bool,
 }
 
-/// What is kept for a box scrolled vertically by a bar: whether it keeps the bar's track free;
-/// how many times in a row that flipped; and the size the box must leave before it flips again
-/// (see `Ui::strip`).
+/// The scroll bar gutter of a box scrolled vertically by a bar: whether the bar's track is
+/// kept free; how many times in a row that flipped; and the size the box must leave before it
+/// flips again (see `Ui::update_gutter`).
 #[derive(Clone, Copy, Default, PartialEq)]
-pub(crate) struct Strip {
-    pub kept: bool,
-    turns: u8,
-    held: [f32; 2],
+pub(crate) struct Gutter {
+    pub reserved: bool,
+    flips: u8,
+    pinned: [f32; 2],
 }
 
 /// What a part read of the last layout: the room box `within` has, and how far down in it box
@@ -383,8 +383,8 @@ fn away(here: Rect, there: Rect, axis: usize, forward: bool) -> Option<f32> {
     (near >= (from + to) / 2.0 && far > to).then(|| (near - to).max(0.0) + 2.0 * (left - high).max(low - right).max(0.0))
 }
 
-/// A number animating from one value to another.
-struct Glide {
+/// A number animating from one value to another (`Ui::animate`).
+struct Tween {
     from: f32,
     to: f32,
     since: Duration,
@@ -402,7 +402,7 @@ enum Paged {
     Last,
 }
 
-impl Glide {
+impl Tween {
     /// Where it is at `now`, the transition taking `over`: fast, easing to a stop.
     fn at(&self, now: Duration, over: Duration) -> f32 {
         let left = 1.0 - (now.saturating_sub(self.since).as_secs_f32() / over.as_secs_f32().max(1e-6)).min(1.0);
@@ -430,9 +430,9 @@ pub struct Ui {
     /// close. Translate them for other languages.
     pub code_words: [&'static str; 11],
     /// The names of icon-only buttons on tool bars, docks and panels.
-    pub frame_words: crate::menus::FrameWords,
+    pub frame_words: crate::popups::FrameWords,
     /// What menus, tool bars, popovers, panels and docks keep between runs.
-    pub(crate) frame: crate::menus::Framing,
+    pub(crate) frame: crate::popups::Framing,
     /// A number box's rejection notes: not a number, below the least (followed by it), above
     /// the most.
     pub number_words: [&'static str; 3],
@@ -442,7 +442,7 @@ pub struct Ui {
     /// The labels web- and phone-style parts use (a breadcrumb's "More", a tag's "Remove",
     /// pagination buttons), and the names of a range slider's knobs: English until an app sets
     /// its own.
-    pub part_words: crate::familiar::PartWords,
+    pub widget_words: crate::web_widgets::WidgetWords,
     /// The open dropdown list being filtered by typing, if any.
     pub(crate) narrowed: crate::combo::Narrowed,
     /// The chart being read out, and which of its points.
@@ -463,7 +463,7 @@ pub struct Ui {
     pub(crate) layout_key: u64,
     laid_out_key: u64,
     pub(crate) offsets_key: u64,
-    surveyed_key: u64,
+    visible_boxes_key: u64,
     /// How much of the last run's text this run has said so far, and whether identically: while
     /// it does, nothing is written, only compared.
     pub(crate) text_said: usize,
@@ -482,7 +482,7 @@ pub struct Ui {
     pub(crate) join_next: bool,
     pub(crate) cells_next: bool,
     /// The page and what lies over it, in description order; their indices in stacking order,
-    /// lowest first; and a number standing for that order as of the last hit-test survey.
+    /// lowest first; and a number standing for that order as the visible boxes were last found.
     pub(crate) layers: Vec<Layer>,
     stack: Vec<u32>,
     stacked: u64,
@@ -504,19 +504,19 @@ pub struct Ui {
     /// handed over.
     pub(crate) shapes: Vec<crate::pen::Inked>,
     pub(crate) shapes_used: usize,
-    pub(crate) pictures: Shelf<Stored>,
+    pub(crate) pictures: Slots<Stored>,
     /// The drawings the app handed over.
-    pub(crate) drawings: Shelf<crate::svg::Kept>,
+    pub(crate) drawings: Slots<crate::svg::Kept>,
     /// The animations the app handed over.
-    pub(crate) films: Shelf<crate::film::Reel>,
+    pub(crate) animations: Slots<crate::animation::Reel>,
     /// How those are shown, once the app handed one over.
     pub(crate) shows: crate::paint::Shows,
     /// The meshes the app handed over, and this run's scenes.
     pub(crate) scenes: crate::scene::Scenes,
-    /// This run's boards, and what each keeps between runs.
-    pub(crate) boards: crate::board::Boards,
+    /// This run's pan-and-zoom areas, and what each keeps between runs.
+    pub(crate) pan_zoom_views: crate::pan_zoom::PanZoomViews,
     /// What rich text and documents keep between runs, once there are any.
-    pub(crate) writings: crate::rich::Writings,
+    pub(crate) writings: crate::rich_text::Writings,
     /// Whether what is being described is enabled; disabled, it is paler and takes no input.
     pub(crate) enabled: bool,
     /// For a drag: where the pointer grabbed it, and the dragged value then.
@@ -530,21 +530,24 @@ pub struct Ui {
     /// The window's own state: minimized; and the user's system preferences for how windows
     /// look and move.
     hidden: bool,
-    pub(crate) wished: crate::wishes::Wished,
-    /// The window's further state and the app's requests: its move strip, minimize, maximize,
-    /// fullscreen.
-    pub(crate) stand: crate::bare::Stand,
-    /// Whether a screen reader listens; what parts said this run about their boxes, with their
-    /// names (concatenated in one text); and what screen readers were told as of the last run,
-    /// and what of it shows, once asked.
+    pub(crate) preferences: crate::preferences::SystemPreferences,
+    /// The window's further state and the app's requests: its title bar box, minimize,
+    /// maximize, fullscreen.
+    pub(crate) window_state: crate::frameless::WindowState,
+    /// Whether a screen reader listens; the notes parts gave this run about their boxes, with
+    /// their names (in one text); and the accessibility tree as of the last run, and its
+    /// visible nodes once asked.
     pub(crate) listening: bool,
+    /// What shows the window: the GPU or the CPU.
+    #[cfg(feature = "gpu")]
+    pub(crate) renderer: Renderer,
     pub(crate) notes: Vec<Note>,
     pub(crate) noted: String,
-    pub(crate) told: Vec<Said>,
-    pub(crate) said: std::cell::OnceCell<Vec<Said>>,
+    pub(crate) access_nodes: Vec<AccessNode>,
+    pub(crate) visible_access_nodes: std::cell::OnceCell<Vec<AccessNode>>,
     /// The long-list rows described this run while a screen reader listens: each row's box, and
     /// its position and count, from 1.
-    pub(crate) rows_told: Vec<(u32, [u32; 2])>,
+    pub(crate) access_rows: Vec<(u32, [u32; 2])>,
     /// The second windows, each its own interface. While one is described: the first window's
     /// interface (they swap places), which window this is, and whether the user asked to close it.
     pub(crate) seconds: Vec<Kept>,
@@ -561,7 +564,7 @@ pub struct Ui {
     pub(crate) now: Duration,
     pub(crate) wake: Option<Duration>,
     /// Hit-testing, visibility and scrolling, as of the last time anything moved.
-    pub(crate) survey: Survey,
+    pub(crate) visible_boxes: VisibleBoxes,
     /// The focusable boxes in description order, which is Tab order: each one's layer, id and
     /// index. Then the same as of the last fully described run, which keys use; and for each of
     /// that run's layers, whether focus can enter it.
@@ -607,7 +610,7 @@ pub struct Ui {
     pub(crate) dialog_escape: Option<Id>,
     pub(crate) escaped: Option<Id>,
     /// The box focus reached with Shift+arrow: a selectable part takes that as a Shift-click
-    /// ([`press_to_pick`](Ui::press_to_pick)).
+    /// ([`press_to_select`](Ui::press_to_select)).
     stretched_to: Id,
     /// The roving-tabindex boxes as described (as of the last run, between runs); and the one
     /// the arrows just moved to in a group where arrows select, which selects itself on finding
@@ -620,8 +623,8 @@ pub struct Ui {
     /// The menu bar's buttons as described: id and place each.
     pub(crate) bar: Vec<(Id, Rect)>,
     pub(crate) scrolls: ById<[f32; 2]>,
-    pub(crate) strips: ById<Strip>,
-    glides: ById<Glide>,
+    pub(crate) gutters: ById<Gutter>,
+    tweens: ById<Tween>,
     /// The text being edited.
     pub(crate) edit: Edit,
     /// For the one non-text box being typed into: which box, and the typed text. And a scratch
@@ -629,7 +632,7 @@ pub struct Ui {
     pub(crate) entry: (Id, String),
     pub(crate) scratch: String,
     /// What the pointer drags from one box to another, and from which.
-    pub(crate) carry: Option<(Id, u64)>,
+    pub(crate) dragging: Option<(Id, u64)>,
     /// What fingers and a pen are doing.
     pub(crate) touch: crate::touch::Touching,
     /// Dropped files: whether some are being dragged over the window, and those just dropped
@@ -639,9 +642,9 @@ pub struct Ui {
     pub(crate) files: Vec<std::path::PathBuf>,
     pub(crate) takes_files: Cell<bool>,
     /// What else crosses the window's edge: drags out to other programs, and text dragged in.
-    pub(crate) crossing: crate::carry::Crossing,
+    pub(crate) crossing: crate::drag_drop::Crossing,
     /// The text cursor's place in the window, while editing.
-    typing_at: Option<Rect>,
+    ime_area: Option<Rect>,
     /// The open colour picker.
     pub(crate) picking: Picking,
     /// For a dock: each tab place's rectangle and the splitters between places (kept between
@@ -649,10 +652,10 @@ pub struct Ui {
     /// whether the last panel described is held by its title.
     pub(crate) docks: Vec<(usize, Rect)>,
     pub(crate) dock_bars: Vec<(usize, Rect, f32)>,
-    pub(crate) carried_panel: String,
+    pub(crate) dragged_panel: String,
     pub(crate) panel_held: bool,
     /// The words calendars and clocks are written in.
-    pub calendar: Calendar,
+    pub calendar_words: CalendarWords,
     /// The open calendar: whose, the month shown, and a range's first picked day.
     pub(crate) calendar_open: Shown,
     /// Each visible box's look this run, and what the last run left on screen: to find what to
@@ -666,10 +669,10 @@ pub struct Ui {
     pub(crate) around: Rect,
     /// The window's screen place, once its system said; and the user's screens as last reported
     /// (one list for every window).
-    pub(crate) place: Option<Placed>,
+    pub(crate) place: Option<WindowPlacement>,
     pub(crate) screens: Vec<crate::screens::Screen>,
     /// The app refused to close the window this run, and why.
-    pub(crate) kept_open: Option<String>,
+    pub(crate) close_cancelled: Option<String>,
     /// Where a screen reader asked a slider to go, until the slider has it.
     pub(crate) reader_sets: Option<(Id, f32)>,
     /// What the app announced to screen readers this run.
@@ -679,15 +682,15 @@ pub struct Ui {
     /// What the app asked of scroll boxes and the next text box, until done; and what is kept
     /// of long lists with rows of varying height. (Boxed: so what every run touches keeps its
     /// layout.)
-    pub(crate) asks: Box<crate::scrolled::Asks>,
+    pub(crate) asks: Box<crate::scroll::Asks>,
     /// The system file dialog: whether the host can show it; the request until taken; whether
     /// it is up; and its answer (a file or none) until a file dialog takes it.
     pub(crate) system_files: bool,
-    pub(crate) file_ask: Option<FileAsk>,
+    pub(crate) file_ask: Option<FileDialogRequest>,
     pub(crate) file_asked: bool,
     pub(crate) file_answer: Option<Option<std::path::PathBuf>>,
-    /// The hit-test survey was redone this run: something moved.
-    pub(crate) resurveyed: bool,
+    /// The visible boxes were found afresh this run: something moved.
+    pub(crate) boxes_moved: bool,
     /// Something changed during the run that the boxes recorded so far do not show yet.
     pub(crate) again: bool,
     cursor: Cursor,
@@ -705,7 +708,7 @@ pub struct Ui {
 impl std::fmt::Debug for Ui {
     /// The window's size and scale, the box count of the last description, the focused box, how
     /// many second windows, and whether a screen reader listens: not the boxes themselves (see
-    /// [`Ui::told`] for those).
+    /// [`Ui::access_nodes`] for those).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (boxes, windows) = (self.tree.specs.len(), self.seconds.len());
         f.debug_struct("Ui")
@@ -735,7 +738,7 @@ impl Ui {
             code_words: ["Find", "Replace with", "Match case", "Whole word", "Replace", "Replace all", "Go to line", "of", "Next", "Previous", "Close"],
             number_words: ["Not a number", "At least", "At most"],
             locale: None,
-            part_words: Default::default(),
+            widget_words: Default::default(),
             narrowed: Default::default(),
             chart_read: None,
             grids: Default::default(),
@@ -746,7 +749,7 @@ impl Ui {
             layout_key: 0,
             laid_out_key: 0,
             offsets_key: 0,
-            surveyed_key: 0,
+            visible_boxes_key: 0,
             text_said: 0,
             same_text: false,
             ahead: Cell::new((NONE, 0, 0)),
@@ -768,12 +771,12 @@ impl Ui {
             blends: Vec::new(),
             shapes: Vec::new(),
             shapes_used: 0,
-            pictures: Shelf::default(),
-            drawings: Shelf::default(),
-            films: Shelf::default(),
+            pictures: Slots::default(),
+            drawings: Slots::default(),
+            animations: Slots::default(),
             shows: Default::default(),
             scenes: Default::default(),
-            boards: Default::default(),
+            pan_zoom_views: Default::default(),
             writings: Default::default(),
             enabled: true,
             caught: (Point { x: 0.0, y: 0.0 }, [0.0; 4]),
@@ -782,16 +785,16 @@ impl Ui {
             on_top: None,
             forward: false,
             hidden: false,
-            wished: Default::default(),
-            stand: Default::default(),
-            text: crate::order::ordered(crate::emoji::in_colour(text)),
+            preferences: Default::default(),
+            window_state: Default::default(),
+            text: crate::bidi::ordered(crate::emoji::in_colour(text)),
             clipboard,
             scale: 1.0,
             size: Size::default(),
             input: Input::default(),
             now: Duration::ZERO,
             wake: None,
-            survey: Survey::default(),
+            visible_boxes: VisibleBoxes::default(),
             reachable: Vec::new(),
             reached: Vec::new(),
             keyed: Vec::new(),
@@ -821,31 +824,33 @@ impl Ui {
             popups: Vec::new(),
             bar: Vec::new(),
             scrolls: ById::default(),
-            strips: ById::default(),
-            glides: ById::default(),
+            gutters: ById::default(),
+            tweens: ById::default(),
             edit: Edit::default(),
             entry: (0, String::new()),
             scratch: String::new(),
-            carry: None,
+            dragging: None,
             touch: Default::default(),
             files_over: false,
             takes_files: Cell::new(false),
             files: Vec::new(),
             crossing: Default::default(),
-            typing_at: None,
+            ime_area: None,
             picking: Picking::default(),
             docks: Vec::new(),
             dock_bars: Vec::new(),
-            carried_panel: String::new(),
+            dragged_panel: String::new(),
             panel_held: false,
-            calendar: Calendar::default(),
+            calendar_words: CalendarWords::default(),
             calendar_open: Shown::default(),
             listening: false,
+            #[cfg(feature = "gpu")]
+            renderer: Renderer::Cpu,
             notes: Vec::new(),
             noted: String::new(),
-            told: Vec::new(),
-            said: Default::default(),
-            rows_told: Vec::new(),
+            access_nodes: Vec::new(),
+            visible_access_nodes: Default::default(),
+            access_rows: Vec::new(),
             seconds: Vec::new(),
             first: None,
             kept_at: 0,
@@ -857,7 +862,7 @@ impl Ui {
             around: Rect::EMPTY,
             place: None,
             screens: Vec::new(),
-            kept_open: None,
+            close_cancelled: None,
             reader_sets: None,
             announced: Vec::new(),
             edit_room: [0.0; 2],
@@ -866,7 +871,7 @@ impl Ui {
             file_ask: None,
             file_asked: false,
             file_answer: None,
-            resurveyed: true,
+            boxes_moved: true,
             again: false,
             cursor: Cursor::Arrow,
             masks: HashMap::new(),
@@ -895,19 +900,29 @@ impl Ui {
     }
     /// For the window code: the window's screen place now. Says whether that is news (then the
     /// interface should run, for the app to hear).
-    pub fn set_placed(&mut self, place: Placed) -> bool {
+    pub fn set_window_placement(&mut self, place: WindowPlacement) -> bool {
         self.place.replace(place) != Some(place)
     }
     /// This window's place and size as the user left it: for an app to keep when it closes and
-    /// reopen its window with ([`Window::placed`](crate::Window::placed)). Nothing where the
-    /// system has not said.
-    pub fn placed(&self) -> Option<Placed> {
+    /// reopen its window with ([`Window::with_placement`](crate::Window::with_placement)).
+    /// Nothing where the system has not said.
+    pub fn window_placement(&self) -> Option<WindowPlacement> {
         self.place
     }
     /// Pixels per unit in this window.
     #[doc(alias("dpi"))]
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+    /// What shows this window's pixels: [`Renderer::Cpu`] or the GPU path, as
+    /// [`Renderer::Direct3D11`], never `Auto` or `Gpu`. The CPU until the GPU's device is made,
+    /// after a lost one that can't be made again, and in a [`Surface`](crate::Surface). The
+    /// pixels are the same either way.
+    pub fn renderer(&self) -> Renderer {
+        #[cfg(feature = "gpu")]
+        return self.renderer;
+        #[cfg(not(feature = "gpu"))]
+        Renderer::Cpu
     }
     /// The cursor shape now, as the boxes under the pointer asked.
     pub fn cursor(&self) -> Cursor {
@@ -926,19 +941,19 @@ impl Ui {
         self.on_top.take()
     }
     /// Whether the app asked to come to the front, once.
-    pub fn take_forward(&mut self) -> bool {
+    pub fn take_bring_to_front(&mut self) -> bool {
         std::mem::take(&mut self.forward)
     }
 
     /// The text cursor's place while editing, if any: where the system's CJK input method
     /// window belongs.
-    pub fn typing_at(&self) -> Option<Rect> {
-        self.typing_at
+    pub fn ime_area(&self) -> Option<Rect> {
+        self.ime_area
     }
     /// Whether typed text must not be seen (a password). A window keeps input methods out
     /// meanwhile: they would show it in their own window and offer it again later.
-    pub fn typing_hidden(&self) -> bool {
-        self.typing_at.is_some() && self.edit.secret
+    pub fn password_focused(&self) -> bool {
+        self.ime_area.is_some() && self.edit.secret
     }
 
     /// For a program sharing the pointer with the interface (a game under an overlay, another
@@ -959,8 +974,8 @@ impl Ui {
             };
             self.tree.specs.get(at as usize).is_some_and(shows)
         };
-        let over = |pointer: Point| self.survey.seen.iter().any(|seen| !seen.leaving && seen.area.contains(pointer) && filled(seen.at));
-        self.active != 0 || self.hot != 0 || self.carry.is_some() || self.input.pointer.is_some_and(over)
+        let over = |pointer: Point| self.visible_boxes.boxes.iter().any(|seen| !seen.leaving && seen.area.contains(pointer) && filled(seen.at));
+        self.active != 0 || self.hot != 0 || self.dragging.is_some() || self.input.pointer.is_some_and(over)
     }
     /// The same for the keyboard: the interface's while one of its boxes has focus, and while a
     /// menu or dialog (which keep it) is open.
@@ -984,7 +999,7 @@ impl Ui {
     /// moving over nothing new changes nothing).
     pub fn event(&mut self, event: Event) -> bool {
         // Alt released with nothing done meanwhile focuses the menu bar.
-        self.frame.alone &= matches!(event, Event::Move(_) | Event::Leave | Event::Held(_) | Event::KeyUp(_));
+        self.frame.alone &= matches!(event, Event::Move(_) | Event::Leave | Event::ModifiersChanged(_) | Event::KeyUp(_));
         match event {
             // While something is held, the box under the pointer is found after the run: the
             // held thing may move with the pointer. (And under an open menu-bar menu the
@@ -1016,16 +1031,16 @@ impl Ui {
             }
             Event::Text(text) => self.input.strokes.push(Stroke::Text(text)),
             // Key releases while another window has focus are not reported.
-            Event::Focus(on) => {
+            Event::Focused(on) => {
                 self.window_focused = on;
                 self.input.held.retain(|_| on);
             }
-            Event::Hidden(hidden) => self.hidden = hidden,
-            Event::Carry(over) => self.files_over = over,
-            Event::Files(files) => (self.files, self.files_over) = (files, false),
-            Event::CarryText(over) => self.crossing.text_over = over,
+            Event::Minimized(hidden) => self.hidden = hidden,
+            Event::FilesHovered(over) => self.files_over = over,
+            Event::FilesDropped(files) => (self.files, self.files_over) = (files, false),
+            Event::TextHovered(over) => self.crossing.text_over = over,
             Event::TextDropped(text) => (self.crossing.text, self.crossing.text_over) = (Some(text), false),
-            Event::Held(held) => return self.hold(held),
+            Event::ModifiersChanged(held) => return self.hold(held),
             Event::Zoom(by) => return self.zoomed(by),
             Event::Touch(touch) => return self.touched(touch),
             Event::Stylus(stylus) => return self.stylus_near(stylus),
@@ -1050,7 +1065,7 @@ impl Ui {
         input.last_press = (self.now, at);
         // Focus goes to the pressed box, or leaves the focused one. (A scroll bar is not a box:
         // dragging one moves nothing else.)
-        if self.hot == 0 || self.survey.rects.contains_key(&self.hot) {
+        if self.hot == 0 || self.visible_boxes.rects.contains_key(&self.hot) {
             (self.focus, self.focus_shown) = (if self.stops().any(|(id, _)| id == self.hot) { self.hot } else { 0 }, false);
         }
     }
@@ -1059,9 +1074,9 @@ impl Ui {
     /// pointer move over nothing new costs, which must not depend on what a build decides.)
     #[inline(always)]
     pub(crate) fn find_hot(&mut self) -> bool {
-        let at = self.input.pointer.and_then(|p| self.survey.hits.iter().rposition(|(_, r)| r.contains(p)));
-        let hot = at.map_or(0, |at| self.survey.hits[at].0);
-        self.hot_layer = at.and_then(|at| self.survey.layers.iter().rev().find(|(first, _)| *first <= at)).map_or(0, |(_, id)| *id);
+        let at = self.input.pointer.and_then(|p| self.visible_boxes.hits.iter().rposition(|(_, r)| r.contains(p)));
+        let hot = at.map_or(0, |at| self.visible_boxes.hits[at].0);
+        self.hot_layer = at.and_then(|at| self.visible_boxes.layers.iter().rev().find(|(first, _)| *first <= at)).map_or(0, |(_, id)| *id);
         let changed = std::mem::replace(&mut self.hot, hot) != hot;
         if changed {
             self.rested = Some(self.now);
@@ -1079,12 +1094,12 @@ impl Ui {
     pub fn run(&mut self, build: &mut dyn FnMut(&mut Ui)) -> Rect {
         // What the last run ended with is what is on screen now.
         std::mem::swap(&mut self.marks, &mut self.shown);
-        self.resurveyed = false;
+        self.boxes_moved = false;
         self.announced.clear();
         self.start_windows();
-        if self.rooms.len() + self.strips.len() > 4096 {
+        if self.rooms.len() + self.gutters.len() > 4096 {
             self.rooms.clear(); // kept small: forgetting only costs one more run
-            self.strips.clear();
+            self.gutters.clear();
         }
         // A click can change what the app shows, and the run that sees it recorded some boxes
         // before knowing. So such a run is done once more, and only the last pass counts.
@@ -1113,8 +1128,8 @@ impl Ui {
             self.wake = Some(self.now);
         }
         // What screen readers are told, while one listens, once the window has settled: in this
-        // window and its second windows. (See `told::HEARS`.)
-        if let Some(hear) = crate::told::HEARS.get().filter(|_| self.listening).copied() {
+        // window and its second windows. (See `accessibility::UPDATE_ACCESS_NODES`.)
+        if let Some(hear) = crate::accessibility::UPDATE_ACCESS_NODES.get().filter(|_| self.listening).copied() {
             hear(self);
             self.each_window(hear);
         }
@@ -1122,7 +1137,7 @@ impl Ui {
         // asked for.
         self.select_all &= !settled;
         (self.stretched_to, self.arrowed) = (0, 0);
-        self.glides.retain(|_, glide| std::mem::take(&mut glide.asked));
+        self.tweens.retain(|_, tween| std::mem::take(&mut tween.asked));
         // Requests for a box never described in the run are dropped.
         self.asks.settled();
         self.find_changes();
@@ -1150,7 +1165,7 @@ impl Ui {
         self.icons.clear();
         self.blends.clear();
         self.notes.clear();
-        self.rows_told.clear();
+        self.access_rows.clear();
         self.noted.clear();
         self.reachable.clear();
         self.rovers.clear();
@@ -1164,7 +1179,7 @@ impl Ui {
         self.asks.begin();
         (self.shapes_used, self.enabled, self.join_next, self.cells_next, self.pointer_shown, self.moves_wanted, self.hiding) = (0, true, false, false, false, false, None);
         self.input.held_asked = false;
-        (self.again, self.cursor, self.wake, self.stand.strip, self.takes_tab) = (false, Cursor::Arrow, None, 0, 0);
+        (self.again, self.cursor, self.wake, self.window_state.title_bar, self.takes_tab) = (false, Cursor::Arrow, None, 0, 0);
         // A screen reader's selection request goes into the text box once it has focus: now, or
         // after the one run that moves focus there.
         match self.reader_selects.take() {
@@ -1176,7 +1191,7 @@ impl Ui {
         // The page scrolls vertically where its content is taller than the window (see
         // `Tree::scrolls`): scrolled as far as it was, keeping its scroll bar's track free
         // while it has one.
-        let (offset, strip) = (self.scrolls.get(&PAGE_ID).copied().unwrap_or_default(), self.strips.get(&PAGE_ID).is_some_and(|strip| strip.kept));
+        let (offset, strip) = (self.scrolls.get(&PAGE_ID).copied().unwrap_or_default(), self.gutters.get(&PAGE_ID).is_some_and(|gutter| gutter.reserved));
         self.offsets_key = (offset[0].to_bits() as u64) << 32 | offset[1].to_bits() as u64;
         let frame = Frame { across: Align::Spread, strip, ..Default::default() };
         self.root(Spec { id: PAGE_ID, fill: self.theme.bg, frame, offset, ..Default::default() }, Anchor::Middle, false);
@@ -1225,7 +1240,7 @@ impl Ui {
         let kind = match self.tree.specs[open.at as usize].frame.flow {
             Flow::Row => "row",
             Flow::Column => "column",
-            Flow::Layers => "box of layers",
+            Flow::Stack => "box of layers",
             Flow::Grid(_) => "grid",
             Flow::Wrap => "wrapping row",
         };
@@ -1239,8 +1254,8 @@ impl Ui {
         if self.open.len() != 1 {
             self.never_closed();
         }
-        // A board's content is seen at the board's zoom: see `board`.
-        if let Some(settle) = self.boards.settle {
+        // A pan-and-zoom area's content is seen at its zoom: see `pan_zoom`.
+        if let Some(settle) = self.pan_zoom_views.settle {
             settle(self);
         }
         // And what rich text and documents keep is dropped where not described.
@@ -1253,37 +1268,7 @@ impl Ui {
             page.fill = self.theme.bg;
         }
         self.walk_bar();
-        let boxes = self.tree.specs.len();
-        for open in self.open.drain(..) {
-            self.tree.specs[open.at as usize].end = boxes as u32;
-        }
-        // Text the last run said and this one did not is dropped.
-        let said_all = self.text_said == self.tree.strings.len();
-        self.tree.strings.truncate(self.text_said);
-        let same = self.same_text && said_all && self.layout_key == self.laid_out_key;
-        #[cfg(debug_assertions)]
-        assert!(!same || self.frames_unchanged(), "the number that stands for the layout missed a change");
-        // The resize flag is cleared either way: a layout done for what was said covers it too,
-        // and is not repeated next run.
-        let relaid = std::mem::take(&mut self.stale) | !same;
-        let scrolled = std::mem::replace(&mut self.surveyed_key, self.offsets_key) != self.offsets_key;
-        self.laid_out_key = self.layout_key;
-        if relaid {
-            let roots = self.layers.iter().map(|layer| layer.root);
-            self.tree.layout(roots, [self.size.w, self.size.h], self.text.as_mut(), self.scale);
-            self.measure();
-            if let Some(measured) = self.asks.measured {
-                measured(self);
-            }
-        }
-        // Only when something moved does the pointer have new places to reach.
-        let restacked = self.stack_layers();
-        if self.place_layers() || relaid || scrolled || restacked {
-            self.resurveyed = true;
-            let Ui { survey, tree, layers, stack, .. } = self;
-            // A layer keeping the pointer to itself that is no popup is a dialog.
-            survey.take(tree, stack.iter().map(|at| &layers[*at as usize]).map(|layer| (layer.root, layer.blocks, layer.blocks && layer.depth == 0, layer.height)));
-        }
+        self.lay_out_boxes();
         self.reach_keyboard();
         self.mark();
         self.place_cursor();
@@ -1299,7 +1284,50 @@ impl Ui {
         if let Some(dialog) = self.dialog_escape.take().filter(|_| self.key(Key::Escape, Mods::NONE)) {
             (self.escaped, self.again) = (Some(dialog), true);
         }
-        // What happened once has now been seen once.
+        self.forget_handled_input();
+        self.touch_settled();
+    }
+
+    /// Closes the open boxes, lays them out where what they ask of layout changed, and finds
+    /// the visible boxes afresh where anything moved.
+    fn lay_out_boxes(&mut self) {
+        let boxes = self.tree.specs.len();
+        for open in self.open.drain(..) {
+            self.tree.specs[open.at as usize].end = boxes as u32;
+        }
+        // Text the last run said and this one did not is dropped.
+        let said_all = self.text_said == self.tree.strings.len();
+        self.tree.strings.truncate(self.text_said);
+        let same = self.same_text && said_all && self.layout_key == self.laid_out_key;
+        #[cfg(debug_assertions)]
+        assert!(!same || self.frames_unchanged(), "the number that stands for the layout missed a change");
+        // The resize flag is cleared either way: a layout done for what was said covers it too,
+        // and is not repeated next run.
+        let relaid = std::mem::take(&mut self.stale) | !same;
+        let scrolled = std::mem::replace(&mut self.visible_boxes_key, self.offsets_key) != self.offsets_key;
+        self.laid_out_key = self.layout_key;
+        if relaid {
+            let roots = self.layers.iter().map(|layer| layer.root);
+            self.tree.layout(roots, [self.size.w, self.size.h], self.text.as_mut(), self.scale);
+            self.measure();
+            if let Some(measured) = self.asks.measured {
+                measured(self);
+            }
+        }
+        // Only when something moved does the pointer have new places to reach.
+        let restacked = self.stack_layers();
+        if self.place_layers() || relaid || scrolled || restacked {
+            self.boxes_moved = true;
+            let Ui { visible_boxes, tree, layers, stack, .. } = self;
+            // A layer keeping the pointer to itself that is no popup is a dialog.
+            visible_boxes.take(tree, stack.iter().map(|at| &layers[*at as usize]).map(|layer| (layer.root, layer.blocks, layer.blocks && layer.depth == 0, layer.height)));
+        }
+    }
+
+    /// What happened once has now been seen once: presses, releases, the wheel, keys, dropped
+    /// files. What was dragged and dropped over nothing is put down: the app hears in one more
+    /// pass.
+    fn forget_handled_input(&mut self) {
         let input = &mut self.input;
         (input.pressed, input.released, input.wheel, input.moved) = ([false; 3], [false; 3], [0.0; 2], false);
         input.strokes.clear();
@@ -1307,11 +1335,8 @@ impl Ui {
         self.files.clear();
         self.crossing.settle(input.down[0]);
         if !input.down[0] {
-            // What was dragged and dropped over nothing is put down: the app hears in one more
-            // pass.
-            (self.active, self.again) = (0, self.again || self.carry.take().is_some());
+            (self.active, self.again) = (0, self.again || self.dragging.take().is_some());
         }
-        self.touch_settled();
     }
 
     /// Whether every box asks of layout what it asked last run, compared box by box: the slow,
@@ -1358,7 +1383,7 @@ impl Ui {
                 around = self.tree.specs[around as usize].frame.parent;
             }
             let shows = if around == NONE { self.size.h } else { f32::INFINITY };
-            let now = [self.tree.room(within, 0), (self.tree.places[within as usize].dim[1] - frame.pad.vertical()).min(shows), top - pad];
+            let now = [self.tree.available(within, 0), (self.tree.places[within as usize].dim[1] - frame.pad.vertical()).min(shows), top - pad];
             if now != read {
                 self.rooms.insert(id, now);
                 self.again = true;
@@ -1367,8 +1392,8 @@ impl Ui {
     }
 
     /// Orders the layers lowest first: the page, the panels back to front, then the rest in
-    /// description order. Says whether that differs from the order the last hit-test survey
-    /// used.
+    /// description order. Says whether that differs from the order the visible boxes were last
+    /// found in.
     fn stack_layers(&mut self) -> bool {
         let Ui { layers, stack, tree, floats, .. } = self;
         floats.retain(|id| layers.iter().any(|layer| tree.specs[layer.root as usize].id == *id));
@@ -1509,7 +1534,7 @@ impl Ui {
             return;
         }
         // (An arrow alone; with Control, which moves without selecting in a multi-select list;
-        // or with Shift, which selects on the way: see `press_to_pick`.)
+        // or with Shift, which selects on the way: see `press_to_select`.)
         let arrows = [Key::Left, Key::Right, Key::Up, Key::Down].map(|key| [Mods::NONE, Mods::CTRL, Mods::SHIFT].map(|mods| (key, mods)));
         let Some((arrow, mods)) = arrows.into_iter().flatten().find(|(key, mods)| self.key(*key, *mods)) else { return };
         let (axis, forward, here) = (matches!(arrow, Key::Up | Key::Down) as usize, matches!(arrow, Key::Right | Key::Down), self.tree.rect_of(from));
@@ -1550,11 +1575,11 @@ impl Ui {
         let group: Vec<Id> = self.rovers.iter().filter(|other| other.group == rover.group).map(|other| other.id).collect();
         let (count, here) = (group.len() as i64, group.iter().position(|id| *id == rover.id).unwrap_or(0) as i64);
         let ways = [(Key::Right, 1), (Key::Left, -1), (Key::Down, 1), (Key::Up, -1), (Key::Home, -here), (Key::End, count - 1 - here)];
-        let taken = |way: &usize| if rover.picks { *way < 4 } else { *way != 2 && *way != 3 };
+        let taken = |way: &usize| if rover.selects { *way < 4 } else { *way != 2 && *way != 3 };
         let Some(by) = (0..ways.len()).filter(taken).find(|way| self.key(ways[*way].0, Mods::NONE)).map(|way| ways[way].1) else { return false };
         let to = group[(here + by).rem_euclid(count) as usize];
         (self.focus, self.focus_shown, self.reveal, self.again) = (to, true, true, true);
-        self.arrowed = if rover.picks { to } else { 0 };
+        self.arrowed = if rover.selects { to } else { 0 };
         true
     }
 
@@ -1573,12 +1598,12 @@ impl Ui {
         let pair = |a: u32, b: u32| (a as u64) << 32 | b as u64;
         // How text is written, as one number: size, colour, face, wrapping and alignment.
         let written = |font: Font, color: Color, wrap: bool, side: Align| {
-            pair(font.size.to_bits(), color.0) ^ ((wrap as u64) << 8 | (side as u64) << 16 | (font.rule as u64) << 20) << 40 ^ (font.face.number() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            pair(font.size.to_bits(), color.0) ^ ((wrap as u64) << 8 | (side as u64) << 16 | (font.decoration as u64) << 20) << 40 ^ (font.face.number() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
         };
-        let Ui { tree, survey, marks, icons, shapes, pictures, scenes, blends, .. } = self;
+        let Ui { tree, visible_boxes, marks, icons, shapes, pictures, scenes, blends, .. } = self;
         // A gradient's stops, as one number.
         let blend = |from: u32, to: u32| blends[from as usize..to as usize].iter().fold(1, |all, (at, color)| fold(all, pair(at.to_bits(), color.0)));
-        for seen in survey.seen.iter().filter(|seen| !seen.leaving) {
+        for seen in visible_boxes.boxes.iter().filter(|seen| !seen.leaving) {
             let spec = &tree.specs[seen.at as usize];
             let (ringed, scrolls) = (ring != 0 && spec.id == ring, tree.has_bar(seen.at, 0) || tree.has_bar(seen.at, 1));
             // (A box that draws nothing keeps its place in the list, so that while nothing
@@ -1612,7 +1637,7 @@ impl Ui {
     /// Where the text cursor is: kept for the editing box, and scrolled into view when it just
     /// moved.
     fn place_cursor(&mut self) {
-        self.typing_at = None;
+        self.ime_area = None;
         let Some(at) = self.typed_in else { return };
         let (spec, place) = (&self.tree.specs[at as usize], &self.tree.places[at as usize]);
         let (Some([_, cursor]), Content::Text { start, end, font, wrap, side, .. }) = (spec.select, spec.content) else { return };
@@ -1625,7 +1650,7 @@ impl Ui {
         // (A line runs the way its paragraph does; a right-to-left one starts at the right, as
         // `Painter::words` draws it.)
         let paragraph = self.tree.strings[start..line.start].rfind('\n').map_or(start, |at| start + at + 1);
-        let leftward = crate::order::leftward(&self.tree.strings[paragraph..end as usize]);
+        let leftward = crate::bidi::leftward(&self.tree.strings[paragraph..end as usize]);
         let (text, after) = (&self.tree.strings[line.start..line.end], self.edit.after);
         let x = crate::text::marks(self.text.as_mut(), text, line.start, line.width, font, self.scale, leftward, [0; 2], Some(cursor), after, &mut Vec::new()).unwrap_or(0.0);
         let inside = self.tree.rect_of(at).inset(spec.frame.pad);
@@ -1635,7 +1660,7 @@ impl Ui {
         let spot = rect(inside.x + x, inside.y + row as f32 * place.line_height, 1.0, place.line_height);
         // The cursor is marked by itself, so its blinking redraws only it.
         self.marks.push((hash((at, spec.caret, spot.x.to_bits(), spot.y.to_bits())), spot.grow(1.0)));
-        self.typing_at = Some(spot);
+        self.ime_area = Some(spot);
         if std::mem::take(&mut self.edit.reveal) {
             self.show(at, spot);
         }
@@ -1649,7 +1674,7 @@ impl Ui {
         // larger (a cell partly under frozen columns): the rest shows when its container
         // scrolls back that far.
         let before = |spec: &Spec| (-spec.frame.pad.left).max(0.0);
-        let kept_in_view = |spec: &Spec| matches!(spec.frame.kept, 1 | 2);
+        let kept_in_view = |spec: &Spec| matches!(spec.frame.pinned, 1 | 2);
         let (mut up, mut cut, mut kept) = (self.tree.specs[at as usize].frame.parent, before(&self.tree.specs[at as usize]), kept_in_view(&self.tree.specs[at as usize]));
         let mut heading = true;
         while let Some(spec) = self.tree.specs.get(up as usize) {
@@ -1684,28 +1709,28 @@ impl Ui {
         // asked for the key (least of all a text box). They scroll what the wheel would;
         // without the pointer over a scroll box, the first one.
         let [up, down, home, end] = [Key::PageUp, Key::PageDown, Key::Home, Key::End].map(|key| self.key(key, Mods::NONE) as i32 as f32);
-        let in_reach = &self.survey.scrollers[self.survey.covered.min(self.survey.scrollers.len())..];
-        let under = |axis: usize| in_reach.iter().rev().find(|s| pointer.is_some_and(|p| s.seen.contains(p)) && self.tree.overflows(s.at, axis)).map(|s| s.at);
+        let in_reach = &self.visible_boxes.scrollers[self.visible_boxes.covered.min(self.visible_boxes.scrollers.len())..];
+        let under = |axis: usize| in_reach.iter().rev().find(|s| pointer.is_some_and(|p| s.visible.contains(p)) && self.tree.overflows(s.at, axis)).map(|s| s.at);
         let wheeled = [under(0), under(1)];
         let keyed = wheeled[1].or(in_reach.iter().find(|s| self.tree.overflows(s.at, 1)).map(|s| s.at)).filter(|_| up + down + home + end > 0.0);
         let paged = |room: f32| (down - up) * (room - 40.0).max(20.0) + (end - home) * f32::MAX / 2.0;
         for i in 0..self.scrollers.len() {
             let at = self.scrollers[i];
             let (id, was) = (self.tree.specs[at as usize].id, self.tree.specs[at as usize].offset);
-            let lies = self.survey.scrollers.iter().find(|s| s.at == at).map(|s| s.rect);
+            let lies = self.visible_boxes.scrollers.iter().find(|s| s.at == at).map(|s| s.rect);
             let mut offset = self.scrolls.get(&id).copied().unwrap_or(was);
-            // (Where the app asked it to go, if it did: see `scrolled`.)
-            let asked = if self.asks.wishes.is_empty() { None } else { self.asks.take_wish(id) };
+            // (Where the app asked it to go, if it did: see `scroll_state`.)
+            let asked = if self.asks.scroll_requests.is_empty() { None } else { self.asks.take_scroll_request(id) };
             for axis in 0..2 {
                 let held = lies.and_then(|r| bar(&self.tree, at, r, axis)).zip(pointer).and_then(|(bar, p)| self.drag_bar(at, axis, bar, p));
-                let by_key = if axis == 1 && keyed == Some(at) { paged(self.tree.room(at, 1)) } else { 0.0 };
+                let by_key = if axis == 1 && keyed == Some(at) { paged(self.tree.available(at, 1)) } else { 0.0 };
                 let by_person = by_key + if wheeled[axis] == Some(at) { wheel[axis] } else { 0.0 };
                 let to = held.or(asked.and_then(|asked| asked.to(axis, by_person))).unwrap_or(offset[axis] + by_person);
                 // (`0.0 - shift`, not `-shift`: with no shift that would be -0.0, a different
                 // number, and a box scrolled back to its start would never be seen to settle.)
                 offset[axis] = to.min(self.tree.scroll_end(at, axis)).max(0.0 - self.tree.shift(at, axis));
             }
-            self.again |= offset != was || self.strip(at);
+            self.again |= offset != was || self.update_gutter(at);
             if let Some(ended) = self.asks.ended {
                 ended(self, at, id, offset[1]);
             }
@@ -1728,20 +1753,20 @@ impl Ui {
     /// (Content that grows taller when narrower could lose the bar by making room for it and
     /// regain it by taking the room: a box that flips twice in a row keeps the track free until
     /// its size changes.)
-    fn strip(&mut self, at: u32) -> bool {
+    fn update_gutter(&mut self, at: u32) -> bool {
         let (spec, dim) = (&self.tree.specs[at as usize], self.tree.places[at as usize].dim);
-        let (id, kept, wanted) = (spec.id, spec.frame.strip, self.tree.has_bar(at, 1));
-        let mut strip = self.strips.get(&id).copied().unwrap_or_default();
-        let turns = kept != wanted && !(kept && strip.held == dim);
-        strip = match turns {
-            true => Strip { kept: wanted, turns: strip.turns.saturating_add(1), held: if wanted && strip.turns > 0 { dim } else { strip.held } },
-            false => Strip { turns: 0, ..strip },
+        let (id, reserved, wanted) = (spec.id, spec.frame.strip, self.tree.has_bar(at, 1));
+        let mut gutter = self.gutters.get(&id).copied().unwrap_or_default();
+        let flips = reserved != wanted && !(reserved && gutter.pinned == dim);
+        gutter = match flips {
+            true => Gutter { reserved: wanted, flips: gutter.flips.saturating_add(1), pinned: if wanted && gutter.flips > 0 { dim } else { gutter.pinned } },
+            false => Gutter { flips: 0, ..gutter },
         };
-        match strip == Strip::default() {
-            true => self.strips.remove(&id),
-            false => self.strips.insert(id, strip),
+        match gutter == Gutter::default() {
+            true => self.gutters.remove(&id),
+            false => self.gutters.insert(id, gutter),
         };
-        turns
+        flips
     }
 
     /// The bar scrolling box `at` along `axis` (its track, the bar's start and length), with
@@ -1776,7 +1801,7 @@ impl Ui {
         note(waiting);
         // Nothing moved since the last run: the visible boxes match one for one, and a box
         // whose look changed is redrawn.
-        let same = !self.resurveyed && marks.len() == shown.len();
+        let same = !self.boxes_moved && marks.len() == shown.len();
         let differ = marks.iter().zip(shown.iter()).filter(|((look, _), (before, _))| same && look != before);
         differ.for_each(|((_, area), (_, was))| [*area, *was].into_iter().for_each(&mut note));
         if !same {
@@ -1812,7 +1837,7 @@ impl Ui {
             shapes: &self.shapes,
             pictures: &mut self.pictures,
             drawings: &mut self.drawings,
-            films: &mut self.films,
+            animations: &mut self.animations,
             shows: self.shows,
             scenes: &mut self.scenes,
             blends: &self.blends,
@@ -1827,7 +1852,7 @@ impl Ui {
             spelling: &self.asks.spelling,
             under: &mut self.under,
         };
-        painter.draw(&self.survey.seen, canvas);
+        painter.draw(&self.visible_boxes.boxes, canvas);
     }
 }
 
@@ -1842,7 +1867,7 @@ impl Ui {
 
     /// What the user is doing with the box of this id.
     pub fn interact(&mut self, id: Id) -> Response {
-        let rect = self.survey.rects.get(&id).copied().unwrap_or(Rect::EMPTY);
+        let rect = self.visible_boxes.rects.get(&id).copied().unwrap_or(Rect::EMPTY);
         self.asked = Response { id, rect, ..Default::default() };
         if !self.enabled {
             return self.asked;
@@ -1859,7 +1884,7 @@ impl Ui {
         // (Over it: the pointer lies in it, and the box under the pointer is of the layer being
         // described, not one over it.)
         let over = self.input.pointer.is_some_and(|at| rect.contains(at)) && self.hot_layer == self.layer_id();
-        self.asked = Response { id, rect, hovered, over, pressed, clicked, right_clicked, double_clicked, focused: self.focus == id, changed: false };
+        self.asked = Response { id, rect, hovered, contains_pointer: over, pressed, clicked, right_clicked, double_clicked, focused: self.focus == id, changed: false };
         self.asked
     }
     /// The same, for something pressed to act: Enter or Space click it too while it has focus.
@@ -1879,8 +1904,8 @@ impl Ui {
     }
     /// The same, for a selectable part: a list or table row. Shift plus an arrow that brings
     /// focus onto it presses it as a Shift-click would, selecting the rows on the way (as
-    /// [`Picks::click`](crate::Picks::click) does with [`ui.mods()`](Ui::mods)).
-    pub fn press_to_pick(&mut self, id: Id) -> Response {
+    /// [`Selection::click`](crate::Selection::click) does with [`ui.mods()`](Ui::mods)).
+    pub fn press_to_select(&mut self, id: Id) -> Response {
         let mut response = self.press(id);
         if id != 0 && self.stretched_to == id {
             (response.clicked, self.input.mods, self.stretched_to, self.again) = (true, Mods::SHIFT, 0, true);
@@ -1923,21 +1948,21 @@ impl Ui {
     /// size or position should be, and use what comes back. `id` names the number. While it
     /// moves the interface keeps running. One not asked for in a run is forgotten, and starts
     /// where told when asked again. (With reduced motion, it is there at once.)
-    #[doc(alias("animation", "animate"))]
-    pub fn glide(&mut self, id: Id, target: f32, over: Duration) -> f32 {
+    #[doc(alias("animation"))]
+    pub fn animate(&mut self, id: Id, target: f32, over: Duration) -> f32 {
         // (A NaN or infinite target, or reduced motion: it is there at once, and any transition
         // is forgotten.)
-        if !target.is_finite() || self.wished.wishes.still {
-            self.glides.remove(&id);
+        if !target.is_finite() || self.preferences.current.reduced_motion {
+            self.tweens.remove(&id);
             return target;
         }
         let now = self.now;
-        let glide = self.glides.entry(id).or_insert(Glide { from: target, to: target, since: now, asked: true });
-        if glide.to != target {
-            *glide = Glide { from: glide.at(now, over), to: target, since: now, asked: true };
+        let tween = self.tweens.entry(id).or_insert(Tween { from: target, to: target, since: now, asked: true });
+        if tween.to != target {
+            *tween = Tween { from: tween.at(now, over), to: target, since: now, asked: true };
         }
-        glide.asked = true;
-        let value = glide.at(now, over);
+        tween.asked = true;
+        let value = tween.at(now, over);
         if value != target {
             self.wake_after(FRAME);
         }
@@ -1947,7 +1972,7 @@ impl Ui {
     /// While the pointer holds box `of`: how far it moved since grabbing, and `now` as it was
     /// then. Dragged things are placed from those, so they stay under the pointer whatever is
     /// laid out again meanwhile.
-    pub fn held(&mut self, of: &Response, now: [f32; 4]) -> Option<(Point, [f32; 4])> {
+    pub fn drag_delta(&mut self, of: &Response, now: [f32; 4]) -> Option<(Point, [f32; 4])> {
         // (A finger landing on what is held drags it rather than scrolling.)
         self.touch.dragged.push(of.id);
         let at = self.input.pointer.filter(|_| of.pressed)?;
@@ -1964,7 +1989,7 @@ impl Ui {
     }
     /// Where the box of this id was at the last layout: its visible part.
     pub(crate) fn seen(&self, id: Id) -> Rect {
-        self.survey.rects.get(&id).copied().unwrap_or(Rect::EMPTY)
+        self.visible_boxes.rects.get(&id).copied().unwrap_or(Rect::EMPTY)
     }
 
     /// How many popups deep the box being described lies: 0 on the page.
@@ -1989,7 +2014,7 @@ impl Ui {
     /// [`ui.keys("F2")`](Ui::keys). So a menu row is `"Save\tCtrl+S"` and the shortcut
     /// elsewhere asks for `"Ctrl+S"`. (Words naming no key are never pressed.)
     pub fn keys(&mut self, written: &str) -> bool {
-        crate::event::keys(written).is_some_and(|(key, mods)| self.key(key, mods))
+        crate::event::parse_keys(written).is_some_and(|(key, mods)| self.key(key, mods))
     }
     /// Text typed since the last run that no text box took. (If any is taken, the window is
     /// described once more, as for a key.)
@@ -2015,7 +2040,7 @@ impl Ui {
     }
     /// Whether focus came by key (Tab, an arrow), not by a press: only then is the focus ring
     /// shown.
-    pub fn focus_shows(&self) -> bool {
+    pub fn focus_visible(&self) -> bool {
         self.focus_shown
     }
     /// Moves focus to the next focusable box, or the previous: what Tab does.
@@ -2113,19 +2138,19 @@ impl Ui {
         read_picture(file).map(|(width, pixels)| self.add_picture(width, pixels))
     }
     /// Takes an animation in from a GIF, APNG or animated WebP file's bytes, to show with
-    /// `film`: it plays from now on wherever shown, costing nothing elsewhere. Kept compressed
-    /// until [`drop_film`](Self::drop_film) or the window closes. (A still file is a one-frame
-    /// film.) Nothing if none of these, or damaged from the first frame.
+    /// `animation`: it plays from now on wherever shown, costing nothing elsewhere. Kept
+    /// compressed until [`drop_animation`](Self::drop_animation) or the window closes. (A still
+    /// file is a one-frame film.) Nothing if none of these, or damaged from the first frame.
     #[doc(alias("gif", "animation"))]
-    pub fn add_film(&mut self, file: &[u8]) -> Option<crate::film::Film> {
-        let mut reel = crate::film::Reel::read(file, usize::MAX)?;
+    pub fn add_animation(&mut self, file: &[u8]) -> Option<crate::animation::Animation> {
+        let mut reel = crate::animation::Reel::read(file, usize::MAX)?;
         reel.since = self.now;
-        self.shows.film = Some(crate::film::Reel::shown);
-        Some(crate::film::Film(self.films.put(reel)))
+        self.shows.animation = Some(crate::animation::Reel::shown);
+        Some(crate::animation::Animation(self.animations.put(reel)))
     }
     /// Drops an animation: where it still shows, nothing does.
-    pub fn drop_film(&mut self, film: crate::film::Film) {
-        self.again |= self.films.take(film.0).is_some();
+    pub fn drop_animation(&mut self, film: crate::animation::Animation) {
+        self.again |= self.animations.take(film.0).is_some();
     }
     /// Takes a drawing in from SVG text (`include_str!`, or read from disk), to show with
     /// `drawing` at any size, sharp at any scale. Kept until
@@ -2146,8 +2171,8 @@ impl Ui {
     }
     /// An animation's size in pixels: its canvas, which every frame is laid on. Nothing for a
     /// dropped one.
-    pub fn film_size(&self, film: crate::film::Film) -> Option<(usize, usize)> {
-        self.films.get(film.0).map(|reel| (reel.size()[0], reel.size()[1]))
+    pub fn animation_size(&self, film: crate::animation::Animation) -> Option<(usize, usize)> {
+        self.animations.get(film.0).map(|reel| (reel.size()[0], reel.size()[1]))
     }
     /// A drawing's own size in units: its file's width and height, else its view box. Nothing
     /// for a dropped one.
@@ -2193,17 +2218,17 @@ impl Ui {
         self.text.measure(text, font, self.scale, None)
     }
     /// Writes all text with `text` from now on instead of the system's: with
-    /// [`OwnFonts`](crate::OwnFonts), the app's own font files. Right-to-left text is reordered
+    /// [`AppFonts`](crate::AppFonts), the app's own font files. Right-to-left text is reordered
     /// as for the system's text. (Once is enough: everything is laid out and drawn afresh.)
-    pub fn set_text(&mut self, text: Box<dyn TextSystem>) {
-        self.text = crate::order::ordered(text);
+    pub fn set_text_system(&mut self, text: Box<dyn TextSystem>) {
+        self.text = crate::bidi::ordered(text);
         self.write_afresh();
         self.each_window(Ui::write_afresh);
     }
     /// Writes text in this language from now on: the localized glyph forms fonts have for it (a
     /// Serbian б, a Japanese form of a Chinese character), where text is shaped (right-to-left
     /// text, Indic and Southeast Asian scripts, and the app's own fonts where it asked:
-    /// [`OwnFonts::language`](crate::OwnFonts::language)). Starts as
+    /// [`AppFonts::language`](crate::AppFonts::language)). Starts as
     /// [`Language::of_the_system()`](crate::Language::of_the_system).
     pub fn set_language(&mut self, language: crate::scripts::Language) {
         self.text.set_language(language);
@@ -2212,27 +2237,30 @@ impl Ui {
     }
     /// Writes all text with the app's own font files from now on. Characters they lack (another
     /// script, emoji) still come from the system's text, in a window. (Once is enough, as for
-    /// [`set_text`](Self::set_text).)
-    pub fn set_fonts(&mut self, fonts: crate::font::OwnFonts) {
-        let before = std::mem::replace(&mut self.text, Box::new(crate::text::BuiltInFont));
-        self.set_text(Box::new(fonts.or(before)));
+    /// [`set_text_system`](Self::set_text_system).)
+    pub fn set_fonts(&mut self, fonts: crate::font_file::AppFonts) {
+        self.wrap_text_system(|before| Box::new(fonts.fallback(before)));
     }
     /// Draws emoji with the app's own font instead of the system's: the same on every system,
     /// with or without the feature `emoji`. What it lacks is drawn as before. (Once is enough,
-    /// as for [`set_text`](Self::set_text); call it after that.)
-    pub fn set_emoji(&mut self, font: crate::font::FontFile) {
-        let before = std::mem::replace(&mut self.text, Box::new(crate::text::BuiltInFont));
-        self.set_text(Box::new(crate::emoji::Emoji::around(before).with(font)));
+    /// as for [`set_text_system`](Self::set_text_system); call it after that.)
+    pub fn set_emoji(&mut self, font: crate::font_file::FontFile) {
+        self.wrap_text_system(|before| Box::new(crate::emoji::Emoji::around(before).with(font)));
     }
     /// Draws emoji in every format fonts have: also `COLR` version 1 (gradients, transforms,
     /// compositing) and SVG glyphs, besides flat colour layers and bitmaps. On Windows 11 the
     /// system's emoji then look as Windows draws them, in colour, with or without the feature
     /// `emoji`. That code is only in a program that calls this (or
     /// [`set_emoji`](Self::set_emoji), whose font is drawn so anyway). (Once is enough, as for
-    /// [`set_text`](Self::set_text); call it before [`set_emoji`](Self::set_emoji).)
+    /// [`set_text_system`](Self::set_text_system); call it before
+    /// [`set_emoji`](Self::set_emoji).)
     pub fn emoji_in_full(&mut self) {
+        self.wrap_text_system(|before| Box::new(crate::emoji::Emoji::around(before).in_full()));
+    }
+    /// Writes all text from now on with what `wrap` makes of the text system in use.
+    fn wrap_text_system(&mut self, wrap: impl FnOnce(Box<dyn TextSystem>) -> Box<dyn TextSystem>) {
         let before = std::mem::replace(&mut self.text, Box::new(crate::text::BuiltInFont));
-        self.set_text(Box::new(crate::emoji::Emoji::around(before).in_full()));
+        self.set_text_system(wrap(before));
     }
     /// Forgets all text sizes and drawing: everything is written again.
     fn write_afresh(&mut self) {
@@ -2258,15 +2286,15 @@ impl Ui {
     }
     /// Asks the window to come to the front with focus, restored if minimized: what an app does
     /// when started a second time and told so in its first instance.
-    pub fn come_forward(&mut self) {
+    pub fn bring_to_front(&mut self) {
         self.forward = true;
     }
     /// Whether this window has keyboard focus.
-    pub fn window_active(&self) -> bool {
+    pub fn window_focused(&self) -> bool {
         self.window_focused
     }
     /// Whether this window is minimized. (Work done only to show something can wait.)
-    pub fn window_hidden(&self) -> bool {
+    pub fn window_minimized(&self) -> bool {
         self.hidden
     }
 }
@@ -2331,7 +2359,7 @@ impl Ui {
     pub(crate) fn layer(&mut self, id: Id, anchor: Anchor, blocks: bool, fill: Color) -> Response {
         let response = if blocks { self.interact(id) } else { Response { id, ..Default::default() } };
         let align = if matches!(anchor, Anchor::Middle) { Align::Center } else { Align::Start };
-        let frame = Frame { flow: Flow::Layers, along: align, across: align, senses: blocks, ..Default::default() };
+        let frame = Frame { flow: Flow::Stack, along: align, across: align, senses: blocks, ..Default::default() };
         self.root(Spec { id, fill, frame, ..Default::default() }, anchor, blocks);
         self.join_next = true;
         response

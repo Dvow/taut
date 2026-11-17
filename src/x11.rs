@@ -13,30 +13,30 @@
 //! a place kept one day is where the window opens the next.
 //!
 //! A frameless window asks the window manager for no decorations; its app's move strip and
-//! edges are handled here (layout in `bare`): a press hands the window to the window manager to
-//! move or resize (`_NET_WM_MOVERESIZE`), and with no manager, or one that refuses, the window
-//! moves and resizes itself by the pointer. A see-through window uses a 32-bit ARGB visual, so
-//! a compositing manager shows what is behind through its alpha.
+//! edges are handled here (layout in `frameless`): a press hands the window to the window
+//! manager to move or resize (`_NET_WM_MOVERESIZE`), and with no manager, or one that refuses,
+//! the window moves and resizes itself by the pointer. A see-through window uses a 32-bit ARGB
+//! visual, so a compositing manager shows what is behind through its alpha.
 //!
 //! Nothing is linked at build time: X11, Fontconfig, FreeType (and Xrandr where present) are
 //! opened by name when the window is, so the program builds without their headers and starts on
 //! any desktop that has them.
 use crate::atspi::{Bus, Message, Readers};
-use crate::bare::Grip;
 use crate::canvas::Canvas;
-use crate::carry::{Handed, Taken};
 use crate::color::Color;
+use crate::drag_drop::{DragData, DropEffect};
 use crate::event::{Button, Cursor, Event, Key, Mods};
-use crate::files::FileAsk;
+use crate::file_dialog::FileDialogRequest;
+use crate::frameless::HitTest;
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::id::Id;
-use crate::platform::{Clipboard, PicturesAndFiles, Placed, Window};
+use crate::platform::{Clipboard, PicturesAndFiles, Window, WindowPlacement};
 use crate::portal::Portal;
+use crate::preferences::{Preferences, of_x_settings};
 use crate::screens::{Screen, Spot, spot};
-use crate::second::{Opening, WindowKind};
+use crate::second_window::{WindowKind, WindowOpening};
 use crate::text::{Face, Font, Metrics, TextSystem};
 use crate::ui::Ui;
-use crate::wishes::{Wishes, of_x_settings};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, OsString, c_char, c_int, c_long, c_short, c_uchar, c_uint, c_ulong, c_ushort, c_void};
@@ -282,20 +282,20 @@ struct FontSet {
 }
 
 /// Fontconfig's name for a face: the desktop's choice for "sans" and "monospace", or the family
-/// an app named, in its style (see `fonts`).
+/// an app named, in its style (see `system_fonts`).
 fn name_of(face: Face) -> String {
     match face {
         Face::Regular => "sans".into(),
         Face::Bold => "sans:bold".into(),
         Face::Mono => "monospace".into(),
         Face::Italic => "sans:italic".into(),
-        Face::Named(_) => crate::fonts::pattern(face),
+        Face::Named(_) => crate::system_fonts::pattern(face),
     }
 }
 
 /// The scalable fonts Fontconfig knows, each by its family's first name and its style: all, or
 /// one family's (named as Fontconfig reads it).
-pub(crate) fn listed(family: Option<&str>) -> Vec<(String, crate::fonts::Style)> {
+pub(crate) fn listed(family: Option<&str>) -> Vec<(String, crate::system_fonts::Style)> {
     Catalog::open().map(|catalog| catalog.listed(family.unwrap_or_default())).unwrap_or_default()
 }
 
@@ -402,7 +402,7 @@ impl Catalog {
     }
 
     /// The scalable fonts matching a pattern, each by family and style.
-    fn listed(&self, family: &str) -> Vec<(String, crate::fonts::Style)> {
+    fn listed(&self, family: &str) -> Vec<(String, crate::system_fonts::Style)> {
         let (wanted, mut list) = (CString::new(format!("{family}:scalable=true")).unwrap_or_default(), Vec::new());
         // SAFETY: Fontconfig's documented listing calls; what it hands out is read and copied
         // before it is destroyed.
@@ -425,7 +425,7 @@ impl Catalog {
     ///
     /// # Safety
     /// `font` is a font Fontconfig handed out and has not destroyed.
-    unsafe fn style_of(&self, font: *mut c_void) -> Option<(String, crate::fonts::Style)> {
+    unsafe fn style_of(&self, font: *mut c_void) -> Option<(String, crate::system_fonts::Style)> {
         let (mut family, mut weight, mut slant) = (null(), 80, 0);
         // SAFETY: Fontconfig fills these in; the name it hands out ends in a zero and is
         // copied.
@@ -435,7 +435,7 @@ impl Catalog {
             }
             (self.fc.FcPatternGetInteger)(font, c"weight".as_ptr(), 0, &mut weight);
             (self.fc.FcPatternGetInteger)(font, c"slant".as_ptr(), 0, &mut slant);
-            let style = crate::fonts::Style { weight: crate::fonts::weight_of(weight), italic: slant != 0 };
+            let style = crate::system_fonts::Style { weight: crate::system_fonts::weight_of(weight), italic: slant != 0 };
             Some((CStr::from_ptr(family.cast()).to_string_lossy().into_owned(), style))
         }
     }
@@ -697,7 +697,7 @@ impl TextSystem for SystemText {
         let (ascent, descent) = ((size.ascender as f32 / 64.0).ceil() / scale, (-size.descender as f32 / 64.0).ceil() / scale);
         // Cap height and x-height: how far "H" and "x" reach above the baseline.
         let [cap, small] = ['H', 'x'].map(|letter| self.glyph((which, at, px), letter).top.max(0) as f32 / scale);
-        Metrics { ascent, descent, cap, small }
+        Metrics { ascent, descent, cap_height: cap, x_height: small }
     }
 
     fn measure(&mut self, text: &str, font: Font, scale: f32, mut stops: Option<&mut Vec<f32>>) -> f32 {
@@ -985,9 +985,9 @@ fn shrugs(handler: Handler) -> bool {
     handler.is_some_and(|handler| std::ptr::fn_addr_eq(handler, shrug as unsafe extern "C" fn(Display, *mut c_void) -> c_int))
 }
 
-/// How many boards are open, and the error handler before the first set `shrug`: restored when
-/// the last closes. (A host program may have its own.)
-static BOARDS: std::sync::Mutex<(usize, Handler)> = std::sync::Mutex::new((0, None));
+/// How many connections are open, and the error handler before the first set `shrug`: restored
+/// when the last closes. (A host program may have its own.)
+static CONNECTIONS: std::sync::Mutex<(usize, Handler)> = std::sync::Mutex::new((0, None));
 
 /// The most bytes taken of what another program hands over.
 pub(crate) const MOST: usize = 1 << 26;
@@ -1004,8 +1004,8 @@ struct Going {
     left: usize,
 }
 
-/// What `Board::heard` waits for: an event of one type about one window, and for property news,
-/// that this property was written.
+/// What `Connection::heard` waits for: an event of one type about one window, and for property
+/// news, that this property was written.
 #[repr(C)]
 struct Awaited {
     kind: c_int,
@@ -1036,7 +1036,7 @@ type Kinds = Vec<(Atom, Rc<[u8]>)>;
 /// The X clipboard: whoever copied last owns the selection and hands it to any program asking,
 /// in the type asked, as long as it runs. (Drag and drop hands over data the same way, so it is
 /// read through this too.)
-struct Board {
+struct Connection {
     x: Xlib,
     display: Display,
     /// The window owning what is copied here, which asks for what is pasted.
@@ -1065,6 +1065,10 @@ struct Board {
     /// program takes touch. (Dropped after the display closes, as RandR is.)
     #[cfg(feature = "touch")]
     inputs: Option<RefCell<crate::xinput::Inputs>>,
+    /// The windows ask the GPU to show them (feature `gpu`): X is to fill no background under
+    /// them.
+    #[cfg(feature = "gpu")]
+    unfilled: bool,
 }
 
 /// The program's icons as `_NET_WM_ICON` holds them: each as width, height, then its pixels,
@@ -1078,7 +1082,7 @@ fn pictured(icons: &[(usize, &[u32])]) -> Vec<c_ulong> {
     numbers
 }
 
-impl Board {
+impl Connection {
     /// The clipboard `selection`, for a window.
     ///
     /// # Safety
@@ -1088,13 +1092,13 @@ impl Board {
     unsafe fn new(x: Xlib, display: Display, window: XWindow, selection: &CStr) -> Self {
         // SAFETY: every name ends in a zero, and `shrug` is X's error handler.
         let atom = |name: &CStr| unsafe { (x.XInternAtom)(display, name.as_ptr(), 0) };
-        let mut boards = BOARDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conns = CONNECTIONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = unsafe { (x.XSetErrorHandler)(Some(shrug)) };
-        boards.1 = if shrugs(before) { boards.1 } else { before };
-        boards.0 += 1;
+        conns.1 = if shrugs(before) { conns.1 } else { before };
+        conns.0 += 1;
         let (selection, utf8, targets, mailbox) = (atom(selection), atom(c"UTF8_STRING"), atom(c"TARGETS"), atom(c"TAUT_CLIPBOARD"));
         let (held, dnd, carried) = (RefCell::new(Vec::new()), atom(c"XdndSelection"), RefCell::new((0, Vec::new())));
-        Board {
+        Connection {
             x,
             display,
             window,
@@ -1107,9 +1111,33 @@ impl Board {
             carried,
             going: RefCell::new(Vec::new()),
             icons: Vec::new(),
+            #[cfg(feature = "gpu")]
+            unfilled: false,
             randr: None,
             #[cfg(feature = "touch")]
             inputs: None,
+        }
+    }
+
+    /// Gives new window `id` its title, its frame or none, maximized or not, the program's
+    /// class and its icons, before it is mapped.
+    fn set_window_properties(&self, id: XWindow, title: &str, frameless: bool, maximized: bool) {
+        self.name(id, title);
+        if frameless {
+            let frame = self.atom(c"_MOTIF_WM_HINTS");
+            self.leave(id, frame, frame, &[2 as c_long, 0, 0, 0, 0]);
+        }
+        if maximized {
+            self.leave(id, self.atom(c"_NET_WM_STATE"), 4, &[self.atom(FILLING[0]), self.atom(FILLING[1])]);
+        }
+        // `WM_CLASS`, for task bars and docks grouping a program's windows: the program's name
+        // twice (instance and class), each zero-terminated. (Type STRING, 31.)
+        let program = std::env::current_exe().ok().and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned())).unwrap_or_default();
+        self.leave(id, self.atom(c"WM_CLASS"), 31, format!("{program}\0{program}\0").as_bytes());
+        // The program's icons, if any: task bars and window lists show the one that fits. (Type
+        // CARDINAL, 6.)
+        if !self.icons.is_empty() {
+            self.leave(id, self.atom(c"_NET_WM_ICON"), 6, &self.icons);
         }
     }
 
@@ -1179,16 +1207,16 @@ impl Board {
     /// What something dragged out of a window is to X programs, in each type with its bytes:
     /// files as a URI list; text in UTF-8 under both names; a picture as PNG; a link as a
     /// one-entry URI list and as text.
-    fn kinds_of(&self, what: Handed) -> Kinds {
+    fn kinds_of(&self, what: DragData) -> Kinds {
         let text = |text: &str| {
             let bytes: Rc<[u8]> = text.as_bytes().into();
             [(self.atom(TEXT), bytes.clone()), (self.utf8, bytes)]
         };
         match what {
-            Handed::Files(files) => vec![(self.atom(FILES), lists_of(files)[0].clone().into())],
-            Handed::Text(words) => text(words).to_vec(),
-            Handed::Picture(width, pixels) => crate::png::encode_clear(width, pixels).map(|png| (self.atom(PICTURE), png.into())).into_iter().collect(),
-            Handed::Link(address) => [vec![(self.atom(FILES), format!("{address}\r\n").into_bytes().into())], text(address).to_vec()].concat(),
+            DragData::Files(files) => vec![(self.atom(FILES), lists_of(files)[0].clone().into())],
+            DragData::Text(words) => text(words).to_vec(),
+            DragData::Picture(width, pixels) => crate::png::encode_rgba(width, pixels).map(|png| (self.atom(PICTURE), png.into())).into_iter().collect(),
+            DragData::Link(address) => [vec![(self.atom(FILES), format!("{address}\r\n").into_bytes().into())], text(address).to_vec()].concat(),
         }
     }
 
@@ -1329,7 +1357,7 @@ impl Board {
     /// What those settings, as they stand on that window now, say the person asked for: what
     /// windows go by where the portal says nothing. (Nothing asked for where there is no such
     /// window.)
-    fn desk(&self, settings: XWindow) -> Wishes {
+    fn desk(&self, settings: XWindow) -> Preferences {
         let kept = (settings != 0).then(|| self.property(settings, self.atom(c"_XSETTINGS_SETTINGS"), false)).flatten();
         kept.and_then(|(_, _, bytes)| of_x_settings(&bytes)).unwrap_or_default()
     }
@@ -1429,19 +1457,19 @@ impl Board {
     }
 }
 
-impl Drop for Board {
+impl Drop for Connection {
     fn drop(&mut self) {
         // SAFETY: the display was opened for this (see `new`) and nothing uses it after. X
         // frees what was made on it: windows and selections. (Errors meanwhile still go to
         // `shrug`.)
         unsafe { (self.x.XCloseDisplay)(self.display) };
-        // The last board to close restores the error handler from before the first, unless
+        // The last connection to close restores the error handler from before the first, unless
         // something set its own since, which then stays.
-        let mut boards = BOARDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        boards.0 -= 1;
-        if boards.0 == 0 {
+        let mut conns = CONNECTIONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        conns.0 -= 1;
+        if conns.0 == 0 {
             // SAFETY: what is restored is what X returned when it was replaced.
-            let now = unsafe { (self.x.XSetErrorHandler)(boards.1) };
+            let now = unsafe { (self.x.XSetErrorHandler)(conns.1) };
             if !shrugs(now) {
                 unsafe { (self.x.XSetErrorHandler)(now) };
             }
@@ -1449,7 +1477,7 @@ impl Drop for Board {
     }
 }
 
-struct SystemClipboard(Rc<Board>);
+struct SystemClipboard(Rc<Connection>);
 
 impl Clipboard for SystemClipboard {
     fn get(&mut self) -> Option<String> {
@@ -1499,7 +1527,7 @@ impl SystemClipboard {
     }
     /// Puts a picture on the clipboard as PNG.
     fn put_picture(&mut self, width: usize, pixels: &[u32]) {
-        let Some(png) = crate::png::encode_clear(width, pixels) else { return };
+        let Some(png) = crate::png::encode_rgba(width, pixels) else { return };
         self.0.set(vec![(self.0.atom(PICTURE), png.into())]);
     }
     /// The files as a URI list; or, from a file manager offering nothing else, its own list
@@ -1619,8 +1647,8 @@ fn root(x: &Xlib, display: Display) -> XWindow {
 /// The person's screens as X has them now, main one first, all at `scale` (X desktops have one
 /// scale): each RandR monitor where RandR exists, else the whole display as one; each with its
 /// work area (`work_on`).
-fn screens(board: &Board, scale: f32) -> Vec<Screen> {
-    let (x, display, randr, mut count) = (&board.x, board.display, board.randr.as_ref(), 0);
+fn screens(conn: &Connection, scale: f32) -> Vec<Screen> {
+    let (x, display, randr, mut count) = (&conn.x, conn.display, conn.randr.as_ref(), 0);
     // SAFETY: RandR returns `count` monitors, read and then freed.
     let monitors = randr.map_or(null_mut(), |randr| unsafe { (randr.XRRGetMonitors)(display, root(x, display), 1, &mut count) });
     let each = |nth: usize| unsafe { &*monitors.add(nth) };
@@ -1635,18 +1663,18 @@ fn screens(board: &Board, scale: f32) -> Vec<Screen> {
     if let Some(main) = found.iter().position(|(main, _)| *main) {
         found[..=main].rotate_right(1);
     }
-    let work = work_areas(board);
-    found.into_iter().map(|(_, all)| Screen { all, work: work_on(&work, all), scale }).collect()
+    let work = work_areas(conn);
+    found.into_iter().map(|(_, all)| Screen { rect: all, work_area: work_on(&work, all), scale }).collect()
 }
 
 /// The desktop's work areas, as the window manager states them: one per monitor
 /// (`_GTK_WORKAREAS_D<n>` for the current desktop, where given), else one for all
 /// (`_NET_WORKAREA`, four numbers per desktop). None with no window manager.
-fn work_areas(board: &Board) -> Vec<Rect> {
-    let top = root(&board.x, board.display);
-    let desktop = board.numbers(top, c"_NET_CURRENT_DESKTOP").first().map_or(0, |nth| *nth as usize);
+fn work_areas(conn: &Connection) -> Vec<Rect> {
+    let top = root(&conn.x, conn.display);
+    let desktop = conn.numbers(top, c"_NET_CURRENT_DESKTOP").first().map_or(0, |nth| *nth as usize);
     let named = CString::new(format!("_GTK_WORKAREAS_D{desktop}")).unwrap_or_default();
-    let (each, all) = (board.numbers(top, &named), board.numbers(top, c"_NET_WORKAREA"));
+    let (each, all) = (conn.numbers(top, &named), conn.numbers(top, c"_NET_WORKAREA"));
     let areas = if each.is_empty() { all.get(desktop * 4..desktop * 4 + 4).unwrap_or_default() } else { &each };
     areas.as_chunks::<4>().0.iter().map(|area| rect(area[0] as f32, area[1] as f32, area[2] as f32, area[3] as f32)).collect()
 }
@@ -1662,7 +1690,7 @@ fn work_on(areas: &[Rect], all: Rect) -> Rect {
 /// tool window or dialog is transient for the first (`WM_TRANSIENT_FOR`, type WINDOW 33), kept
 /// over it and minimized with it; and by EWMH type (ATOM 4), a tool window is "utility" (off
 /// the task bar), a dialog "modal", and one over all others "above".
-fn tell_kind(board: &Board, id: XWindow, first: XWindow, kind: WindowKind) {
+fn tell_kind(conn: &Connection, id: XWindow, first: XWindow, kind: WindowKind) {
     let (named, states): (&CStr, &[&CStr]) = match kind {
         WindowKind::Plain => return,
         WindowKind::Tool => (c"_NET_WM_WINDOW_TYPE_UTILITY", &[c"_NET_WM_STATE_SKIP_TASKBAR"]),
@@ -1670,10 +1698,10 @@ fn tell_kind(board: &Board, id: XWindow, first: XWindow, kind: WindowKind) {
         WindowKind::OnTop => (c"_NET_WM_WINDOW_TYPE_NORMAL", &[c"_NET_WM_STATE_ABOVE"]),
     };
     if kind != WindowKind::OnTop {
-        board.leave(id, board.atom(c"WM_TRANSIENT_FOR"), 33, &[first]);
+        conn.leave(id, conn.atom(c"WM_TRANSIENT_FOR"), 33, &[first]);
     }
-    board.leave(id, board.atom(c"_NET_WM_WINDOW_TYPE"), 4, &[board.atom(named)]);
-    board.leave(id, board.atom(c"_NET_WM_STATE"), 4, &states.iter().map(|name| board.atom(name)).collect::<Vec<_>>());
+    conn.leave(id, conn.atom(c"_NET_WM_WINDOW_TYPE"), 4, &[conn.atom(named)]);
+    conn.leave(id, conn.atom(c"_NET_WM_STATE"), 4, &states.iter().map(|name| conn.atom(name)).collect::<Vec<_>>());
 }
 
 /// The screen's size in pixels: all monitors as one area.
@@ -1687,14 +1715,14 @@ fn screen_size(x: &Xlib, display: Display) -> [c_uint; 2] {
 /// A window's kind, fixed when X created it.
 struct Kind {
     /// No window-manager frame; the person resizes it by its own edges.
-    bare: bool,
+    frameless: bool,
     edges: bool,
     /// See-through; and, where the screen supports it, its 32-bit visual and a graphics context
     /// for it.
-    clear: bool,
+    transparent: bool,
     deep: Option<(*mut c_void, *mut c_void)>,
     /// The least size, in pixels.
-    least: [c_int; 2],
+    min_size: [c_int; 2],
 }
 
 /// Has X create an unmapped top-level window `size` pixels big, at least `least`, with its
@@ -1726,7 +1754,7 @@ unsafe fn new_window(x: &Xlib, display: Display, size: [c_int; 2], least: [c_int
         let id = (x.XCreateWindow)(display, among, left, top, wide, high, 0, depth, 1, found.visual, said, &mut with);
         (x.XSetWMNormalHints)(display, id, &mut hints);
         let deep = deep.then(|| (found.visual, (x.XCreateGC)(display, id, 0, null_mut())));
-        (id, Kind { bare: edges || clear, edges, clear, deep, least })
+        (id, Kind { frameless: edges || clear, edges, transparent: clear, deep, min_size: least })
     }
 }
 
@@ -1742,8 +1770,8 @@ struct Shown {
     size: [c_int; 2],
     /// Its place and size while not maximized: as last seen and when; and what it restores to
     /// from maximized.
-    seen: (Placed, Instant),
-    normal: Placed,
+    seen: (WindowPlacement, Instant),
+    normal: WindowPlacement,
     /// Whether it is maximized now; and whether minimized.
     filling: bool,
     iconic: bool,
@@ -1756,7 +1784,7 @@ struct Shown {
     /// Something of it is the window's, not the interface's, as of the last run: a resize edge
     /// or a move strip; and which of them the pointer is over.
     grips: bool,
-    over: Grip,
+    over: HitTest,
     /// While it moves or resizes itself by the pointer: the held edges (none for its strip),
     /// where on screen the grab started, and where the window lay then.
     held: Option<([i8; 2], [c_int; 2], [c_int; 4])>,
@@ -1785,6 +1813,9 @@ struct Shown {
     /// What must be redrawn: the part uncovered, and the places the last run changed.
     uncovered: Rect,
     changed: Vec<Rect>,
+    /// How it is shown: by X, or through the GPU (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    way: crate::gpu_x11::Way,
 }
 
 /// A window's input context from an input method, with on-the-spot preedit left to the method
@@ -1810,26 +1841,11 @@ impl Shown {
     /// 0.
     ///
     /// # Safety
-    /// `id` is a window of the board's display, `size` pixels big; `method` is that display's
-    /// input method, or null.
-    unsafe fn new(board: &Board, method: *mut c_void, (id, kind): (XWindow, Kind), known: Option<Id>, title: &str, size: [c_int; 2], opens: Placed) -> Self {
-        let (x, display, mut close, frame) = (&board.x, board.display, board.atom(c"WM_DELETE_WINDOW"), board.atom(c"_MOTIF_WM_HINTS"));
-        board.name(id, title);
-        if kind.bare {
-            board.leave(id, frame, frame, &[2 as c_long, 0, 0, 0, 0]);
-        }
-        if opens.maximized {
-            board.leave(id, board.atom(c"_NET_WM_STATE"), 4, &[board.atom(FILLING[0]), board.atom(FILLING[1])]);
-        }
-        // `WM_CLASS`, for task bars and docks grouping a program's windows: the program's name
-        // twice (instance and class), each zero-terminated. (Type STRING, 31.)
-        let program = std::env::current_exe().ok().and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned())).unwrap_or_default();
-        board.leave(id, board.atom(c"WM_CLASS"), 31, format!("{program}\0{program}\0").as_bytes());
-        // The program's icons, if any: task bars and window lists show the one that fits. (Type
-        // CARDINAL, 6.)
-        if !board.icons.is_empty() {
-            board.leave(id, board.atom(c"_NET_WM_ICON"), 6, &board.icons);
-        }
+    /// `id` is a window of the connection's display, `size` pixels big; `method` is that
+    /// display's input method, or null.
+    unsafe fn new(conn: &Connection, method: *mut c_void, (id, kind): (XWindow, Kind), known: Option<Id>, title: &str, size: [c_int; 2], opens: WindowPlacement) -> Self {
+        let (x, display, mut close) = (&conn.x, conn.display, conn.atom(c"WM_DELETE_WINDOW"));
+        conn.set_window_properties(id, title, kind.frameless, opens.maximized);
         // SAFETY: Xlib's documented calls; every pointer outlives its call.
         let typing = unsafe {
             // Keys, buttons, enter, leave, motion, exposure, structure, focus, property
@@ -1838,7 +1854,7 @@ impl Shown {
             // A program taking touch gets the pointer through XInput 2, with fingers and
             // pinches: see `Host::extended`.
             #[cfg(feature = "touch")]
-            board.inputs.iter().for_each(|inputs| inputs.borrow().select(id));
+            conn.inputs.iter().for_each(|inputs| inputs.borrow().select(id));
             (x.XSetWMProtocols)(display, id, &mut close, 1);
             // Each window has its own input context: preedit and the method's candidate window
             // are kept apart per window. (It has focus, as its interface assumes, until X says
@@ -1847,10 +1863,14 @@ impl Shown {
             if !typing.is_null() {
                 (x.XSetICFocus)(typing);
             }
+            #[cfg(feature = "gpu")]
+            if conn.unfilled && !kind.transparent {
+                crate::gpu_x11::unfilled(display, id);
+            }
             (x.XMapWindow)(display, id);
             typing
         };
-        let (normal, carried) = (Placed { maximized: false, ..opens }, (0, Point::default(), 0));
+        let (normal, carried) = (WindowPlacement { maximized: false, ..opens }, (0, Point::default(), 0));
         Shown {
             id,
             known,
@@ -1864,7 +1884,7 @@ impl Shown {
             whole: false,
             back: [0; 4],
             grips: false,
-            over: Grip::Inside,
+            over: HitTest::Client,
             held: None,
             pressed: None,
             frame: [0; 2],
@@ -1878,6 +1898,8 @@ impl Shown {
             withdrawn: false,
             uncovered: Rect::EMPTY,
             changed: Vec::new(),
+            #[cfg(feature = "gpu")]
+            way: crate::gpu_x11::Way::Unasked,
         }
     }
 
@@ -1888,55 +1910,55 @@ impl Shown {
     /// likes.)
     ///
     /// # Safety
-    /// `first` is a window of the board's display, and `method` that display's input method, or
-    /// null.
-    unsafe fn second(board: &Board, method: *mut c_void, first: XWindow, known: Id, title: &str, scale: f32, (size, at, opening): (Size, Option<(i32, i32)>, Opening)) -> Self {
-        let (hints, least) = (board.atom(c"WM_HINTS"), opening.least);
+    /// `first` is a window of the connection's display, and `method` that display's input
+    /// method, or null.
+    unsafe fn second(conn: &Connection, method: *mut c_void, first: XWindow, known: Id, title: &str, scale: f32, (size, at, opening): (Size, Option<(i32, i32)>, WindowOpening)) -> Self {
+        let (hints, least) = (conn.atom(c"WM_HINTS"), opening.min_size);
         let (big, small) = (pixels(size.w, size.h, scale), pixels(least.w, least.h, scale));
-        // SAFETY: the display is open while the board lives.
-        let (id, kind) = unsafe { new_window(&board.x, board.display, big, small, at, [opening.bare, false]) };
-        tell_kind(board, id, first, opening.kind);
+        // SAFETY: the display is open while the connection lives.
+        let (id, kind) = unsafe { new_window(&conn.x, conn.display, big, small, at, [opening.frameless, false]) };
+        tell_kind(conn, id, first, opening.kind);
         // Of `WM_HINTS`' nine numbers this sets the last, flagged in the first: the window
         // group leader.
         for member in [first, id] {
-            board.leave(member, hints, hints, &[1 << 6, 0, 0, 0, 0, 0, 0, 0, first as c_long]);
+            conn.leave(member, hints, hints, &[1 << 6, 0, 0, 0, 0, 0, 0, 0, first as c_long]);
         }
-        let opens = Placed { at: at.unwrap_or_default(), width: size.w, height: size.h, maximized: false };
-        // SAFETY: the window was just created, this big, on the board's display.
-        unsafe { Shown::new(board, method, (id, kind), Some(known), title, big, opens) }
+        let opens = WindowPlacement { position: at.unwrap_or_default(), width: size.w, height: size.h, maximized: false };
+        // SAFETY: the window was just created, this big, on the connection's display.
+        unsafe { Shown::new(conn, method, (id, kind), Some(known), title, big, opens) }
     }
 
     /// Makes the window fullscreen by itself, above all others, or restores it: on a display
     /// with no window manager to do it. (Its current place is what it restores to.)
-    fn lie_over(&mut self, board: &Board, on: bool) {
+    fn lie_over(&mut self, conn: &Connection, on: bool) {
         if on == self.whole {
             return;
         }
-        let ([left, top], [wide, high]) = (board.place(self.id), screen_size(&board.x, board.display));
+        let ([left, top], [wide, high]) = (conn.place(self.id), screen_size(&conn.x, conn.display));
         let to = if on { [0, 0, wide as c_int, high as c_int] } else { self.back };
         (self.back, self.whole, self.moved) = ([left, top, self.size[0], self.size[1]], on, true);
         self.normal = if on { self.seen.0 } else { self.normal };
-        // SAFETY: the window is alive, on the board's display.
+        // SAFETY: the window is alive, on the connection's display.
         unsafe {
-            (board.x.XMoveResizeWindow)(board.display, self.id, to[0], to[1], to[2] as c_uint, to[3] as c_uint);
-            (board.x.XRaiseWindow)(board.display, self.id);
+            (conn.x.XMoveResizeWindow)(conn.display, self.id, to[0], to[1], to[2] as c_uint, to[3] as c_uint);
+            (conn.x.XRaiseWindow)(conn.display, self.id);
         }
     }
 
     /// Closes the window: its input context, then the window and everything X kept for it
     /// (properties, cursor, selections).
-    fn close(self, board: &Board) {
+    fn close(self, conn: &Connection) {
         // SAFETY: both were created in `new`, and neither is used after this.
         unsafe {
             if !self.typing.is_null() {
-                (board.x.XDestroyIC)(self.typing);
+                (conn.x.XDestroyIC)(self.typing);
             }
-            (board.x.XDestroyWindow)(board.display, self.id);
+            (conn.x.XDestroyWindow)(conn.display, self.id);
         }
     }
 
     /// X says part of the window was uncovered: it must be redrawn.
-    fn bare(&mut self, part: ExposeEvent, scale: f32) {
+    fn exposed(&mut self, part: ExposeEvent, scale: f32) {
         self.uncovered = self.uncovered.union(rect(part.x as f32 / scale, part.y as f32 / scale, part.width as f32 / scale, part.height as f32 / scale));
     }
 
@@ -1969,7 +1991,7 @@ impl Shown {
     }
 
     /// Changes the pointer's shape over the window when the interface asks.
-    fn point(&mut self, board: &Board, cursor: Cursor) {
+    fn point(&mut self, conn: &Connection, cursor: Cursor) {
         if std::mem::replace(&mut self.cursor, cursor) == cursor {
             return;
         }
@@ -1987,9 +2009,9 @@ impl Shown {
         // SAFETY: one of X's font cursors by number. The window keeps it; the program frees its
         // own reference at once, or X would keep one per change.
         unsafe {
-            let pointer = (board.x.XCreateFontCursor)(board.display, shape);
-            (board.x.XDefineCursor)(board.display, self.id, pointer);
-            (board.x.XFreeCursor)(board.display, pointer);
+            let pointer = (conn.x.XCreateFontCursor)(conn.display, shape);
+            (conn.x.XDefineCursor)(conn.display, self.id, pointer);
+            (conn.x.XFreeCursor)(conn.display, pointer);
         }
     }
 }
@@ -2011,9 +2033,15 @@ impl Session {
     }
 }
 
+/// All of a window `size` pixels big, in units.
+#[cfg(feature = "gpu")]
+fn whole(size: [c_int; 2], scale: f32) -> Rect {
+    rect(0.0, 0.0, size[0] as f32 / scale, size[1] as f32 / scale)
+}
+
 /// A program's windows on an X display, and everything keeping them shown.
 struct Host<App> {
-    board: Rc<Board>,
+    conn: Rc<Connection>,
     app: App,
     /// The first window's interface, which holds the second windows' interfaces: it runs
     /// whichever window something happened in.
@@ -2044,7 +2072,7 @@ struct Host<App> {
     /// The XSETTINGS manager's window (0 if none runs), and what its settings say the person
     /// asked for.
     settings: XWindow,
-    desk: Wishes,
+    desk: Preferences,
     /// RandR's event base for monitor changes (-1 where there is none).
     monitors_changed: c_int,
     /// What is being dragged out of a window, if anything; the pointer's last place on screen,
@@ -2053,6 +2081,12 @@ struct Host<App> {
     out: Option<Out>,
     last: ([c_int; 2], c_ulong, c_uint),
     finishing: Vec<(XWindow, XWindow)>,
+    /// The GPU the windows are shown through (feature `gpu`), where one is asked for and
+    /// works; and what to ask of it: nothing once X is to show them.
+    #[cfg(feature = "gpu")]
+    gpu: Option<crate::gpu_x11::Gpu>,
+    #[cfg(feature = "gpu")]
+    asks: Option<crate::gpu_x11::Asked>,
 }
 
 /// Something dragged from a window to whatever lies under the pointer, by XDND, as its source
@@ -2108,63 +2142,69 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             let (size, least) = (pixels(window.width, window.height, scale), pixels(window.min_width, window.min_height, scale));
             // What is copied in any window is the first window's to hand out: it lives as long
             // as the program. (Created below.)
-            let mut board = Board::new(x, display, 0, c"CLIPBOARD");
+            let mut conn = Connection::new(x, display, 0, c"CLIPBOARD");
+            #[cfg(feature = "gpu")]
+            let asks = crate::gpu_x11::asked(window.renderer);
+            #[cfg(feature = "gpu")]
+            {
+                conn.unfilled = asks.is_some();
+            }
             // Monitors and their changes: RandR's screen, output and CRTC change events (1 | 2
             // | 4); and the root window's `StructureNotify` (1 << 17), reconfigured when they
             // change, and `PropertyChange` (1 << 22), where work areas are given.
             let (mut news, mut failed) = (-1, 0);
-            board.randr = Xrandr::open().filter(|randr| (randr.XRRQueryExtension)(display, &mut news, &mut failed) != 0);
-            board.randr.iter().for_each(|randr| (randr.XRRSelectInput)(display, root(&board.x, display), 1 | 2 | 4));
-            (board.x.XSelectInput)(display, root(&board.x, display), 1 << 17 | 1 << 22);
+            conn.randr = Xrandr::open().filter(|randr| (randr.XRRQueryExtension)(display, &mut news, &mut failed) != 0);
+            conn.randr.iter().for_each(|randr| (randr.XRRSelectInput)(display, root(&conn.x, display), 1 | 2 | 4));
+            (conn.x.XSelectInput)(display, root(&conn.x, display), 1 << 17 | 1 << 22);
             // In a program taking touch, the pointer, fingers, pens and touchpad pinches
             // through XInput 2, with the atoms of a pen's axes (pressure, tilt).
             #[cfg(feature = "touch")]
             {
-                let labels = [c"Abs Pressure", c"Abs Tilt X", c"Abs Tilt Y"].map(|name| board.atom(name));
-                board.inputs = crate::xinput::Inputs::open(display, root(&board.x, display), labels).map(RefCell::new);
+                let labels = [c"Abs Pressure", c"Abs Tilt X", c"Abs Tilt Y"].map(|name| conn.atom(name));
+                conn.inputs = crate::xinput::Inputs::open(display, root(&conn.x, display), labels).map(RefCell::new);
             }
             // Where it goes: where its app says (on the screen with that place, else moved onto
             // the nearest), or centred on the screen it names; else where the window manager
             // puts it.
-            let found = screens(&board, scale);
-            let asked = window.at.map(|(x, y)| Spot::At(x, y)).or(window.screen.map(Spot::Middle)).unwrap_or_default();
+            let found = screens(&conn, scale);
+            let asked = window.position.map(|(x, y)| Spot::At(x, y)).or(window.screen.map(Spot::Middle)).unwrap_or_default();
             let at = spot(&found, asked, |_| size.map(|side| side as f32)).map(|(_, at)| (at.x as i32, at.y as i32));
-            let (id, kind) = new_window(&board.x, display, size, least, at, [window.bare, window.clear]);
-            (board.window, board.icons) = (id, pictured(window.icons));
-            let board = Rc::new(board);
-            let x = &board.x;
+            let (id, kind) = new_window(&conn.x, display, size, least, at, [window.frameless, window.transparent]);
+            (conn.window, conn.icons) = (id, pictured(window.icons));
+            let conn = Rc::new(conn);
+            let x = &conn.x;
             // Only a window manager maximizes a window: with none, the window opens at its size
             // and is not reported maximized.
-            let opens = Placed { at: at.unwrap_or_default(), width: window.width, height: window.height, maximized: window.maximized && board.managed() };
+            let opens = WindowPlacement { position: at.unwrap_or_default(), width: window.width, height: window.height, maximized: window.maximized && conn.managed() };
             // A window opening minimized says so before mapping: `WM_HINTS`' third number is
             // the initial state (3: iconic), flagged in the first.
             if window.minimized {
-                board.leave(id, board.atom(c"WM_HINTS"), board.atom(c"WM_HINTS"), &[2 as c_long, 0, 3, 0, 0, 0, 0, 0, 0]);
+                conn.leave(id, conn.atom(c"WM_HINTS"), conn.atom(c"WM_HINTS"), &[2 as c_long, 0, 3, 0, 0, 0, 0, 0, 0]);
             }
             // The root window's `PropertyChange` (1 << 22) reports changes to XSETTINGS.
-            let settings = board.settings();
+            let settings = conn.settings();
             if settings != 0 {
                 (x.XSelectInput)(display, settings, 1 << 22);
             }
-            let desk = board.desk(settings);
+            let desk = conn.desk(settings);
             let method = open_method(x, display, c"");
-            let (windows, start) = (vec![Shown::new(&board, method, (id, kind), None, window.title, size, opens)], Instant::now());
+            let (windows, start) = (vec![Shown::new(&conn, method, (id, kind), None, window.title, size, opens)], Instant::now());
             let screen = ((x.XDefaultVisual)(display, number), (x.XDefaultDepth)(display, number), (x.XDefaultGC)(display, number));
             let [wake, _] = pipe_ends();
             // The interface is made last, with nothing left to ask, so it is made in place and
             // not moved there piece by piece.
-            let mut ui = Ui::new(Box::new(text), Box::new(SystemClipboard(board.clone())));
+            let mut ui = Ui::new(Box::new(text), Box::new(SystemClipboard(conn.clone())));
             // A see-through window opens on a page of no colour: what is behind shows wherever
             // its app draws nothing.
-            if window.clear {
+            if window.transparent {
                 ui.theme.bg = Color::NONE;
             }
             ui.set_screens(found);
             // What the session bus said by the first turn is taken in before the interface
             // first runs, so `heard` starts true.
-            let monitors_changed = if board.randr.is_some() { news } else { -1 };
+            let monitors_changed = if conn.randr.is_some() { news } else { -1 };
             Some(Host {
-                board,
+                conn,
                 app,
                 ui,
                 scale,
@@ -2185,6 +2225,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
                 out: None,
                 last: ([0; 2], 0, 0),
                 finishing: Vec::new(),
+                #[cfg(feature = "gpu")]
+                gpu: None,
+                #[cfg(feature = "gpu")]
+                asks,
             })
         }
     }
@@ -2202,7 +2246,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         }
         // Everything queued is taken in before the interface runs once for all of it.
         // SAFETY: the display is open while the host lives.
-        while unsafe { (self.board.x.XPending)(self.board.display) } > 0 {
+        while unsafe { (self.conn.x.XPending)(self.conn.display) } > 0 {
             self.take();
         }
         self.out_waited();
@@ -2217,16 +2261,24 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         if let Some(drops) = DROPS.get() {
             (drops.ran)(self.taking());
         }
+        #[cfg(feature = "gpu")]
+        self.mend();
         (0..self.windows.len()).for_each(|at| self.draw(at));
+        // A device lost while drawing: the windows are drawn again, whole, through a new one or
+        // by X.
+        #[cfg(feature = "gpu")]
+        if self.mend() {
+            (0..self.windows.len()).for_each(|at| self.draw(at));
+        }
     }
 
     /// Takes in one X event.
     fn take(&mut self) {
-        let (board, scale) = (self.board.clone(), self.scale);
+        let (conn, scale) = (self.conn.clone(), self.scale);
         // SAFETY: X fills the event in. Its fields are plain numbers, so reading any variant is
         // harmless; its type says which means something.
         let mut event: XEvent = unsafe { zeroed() };
-        let composing = unsafe { (board.x.XNextEvent)(board.display, &mut event) + (board.x.XFilterEvent)(&mut event, 0) } != 0;
+        let composing = unsafe { (conn.x.XNextEvent)(conn.display, &mut event) + (conn.x.XFilterEvent)(&mut event, 0) } != 0;
         #[cfg(feature = "touch")]
         if self.extended(&mut event) {
             return;
@@ -2247,7 +2299,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             (6 | 7, Some(at)) => self.pointer(at, input),
             (8, Some(at)) => self.left(at),
             (9 | 10, Some(at)) => self.focus(at, kind == 9),
-            (12, Some(at)) => self.windows[at].bare(expose, scale),
+            (12, Some(at)) => self.windows[at].exposed(expose, scale),
             // Mapped (19) or reparented into a frame by the window manager (21): only now is it
             // where it stays.
             (19 | 21, Some(at)) => self.windows[at].moved = true,
@@ -2259,17 +2311,17 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             // The XSETTINGS changed: the theme may have.
             (28, None) if news.window == self.settings => self.settings_changed(),
             // The work areas are given on the root window, per desktop.
-            (28, None) if news.window == root(&board.x, board.display) && [c"_NET_WORKAREA", c"_NET_CURRENT_DESKTOP"].map(|name| board.atom(name)).contains(&news.atom) => self.screens_changed(),
+            (28, None) if news.window == root(&conn.x, conn.display) && [c"_NET_WORKAREA", c"_NET_CURRENT_DESKTOP"].map(|name| conn.atom(name)).contains(&news.atom) => self.screens_changed(),
             // RandR reports the screen and its outputs; and the root window is reconfigured
             // when its monitors change.
             (kind, _) if (self.monitors_changed..self.monitors_changed + 2).contains(&kind) => self.screens_changed(),
-            (22, None) if news.window == root(&board.x, board.display) => self.screens_changed(),
+            (22, None) if news.window == root(&conn.x, conn.display) => self.screens_changed(),
             // X also reports on a window a copy goes to in pieces: it took a piece, or is gone.
-            (17 | 28, _) => board.hand_on(news, kind == 17),
-            (29, _) => board.lost(news.atom),
-            (30, _) => unsafe { board.answer(event.request) },
+            (17 | 28, _) => conn.hand_on(news, kind == 17),
+            (29, _) => conn.lost(news.atom),
+            (30, _) => unsafe { conn.answer(event.request) },
             // A global hotkey: X delivers it on the root window.
-            (2, None) => self.rerun |= DESKTOP.get().is_some_and(|desktop| (desktop.pressed)(&board, &input)),
+            (2, None) => self.rerun |= DESKTOP.get().is_some_and(|desktop| (desktop.pressed)(&conn, &input)),
             _ => {}
         }
     }
@@ -2281,10 +2333,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// there is to the event.
     #[cfg(feature = "touch")]
     fn extended(&mut self, event: &mut XEvent) -> bool {
-        let board = self.board.clone();
+        let conn = self.conn.clone();
         // SAFETY: every event starts with its type; a type-35 one has a cookie's layout and was
         // delivered on this display.
-        let heard = match (unsafe { event.kind }, &board.inputs) {
+        let heard = match (unsafe { event.kind }, &conn.inputs) {
             (35, Some(inputs)) => unsafe { inputs.borrow_mut().read(&mut event.cookie, self.scale) },
             _ => return false,
         };
@@ -2292,14 +2344,14 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             crate::xinput::Heard::Nothing => return true,
             crate::xinput::Heard::Said(window, said) => (window, Some(said), true),
             crate::xinput::Heard::Pointer(news, p) => {
-                event.input = InputEvent::of(p, board.display);
+                event.input = InputEvent::of(p, conn.display);
                 (p.window, news, false)
             }
         };
         let Some(at) = self.windows.iter().position(|shown| shown.id == window) else { return taken };
         match said {
             Some(said) if !self.blocked(at) => self.hear(at, said),
-            Some(Event::Touch(crate::touch::Touch { phase: crate::touch::Phase::Down, .. })) => self.kept_from(at, true),
+            Some(Event::Touch(crate::touch::Touch { phase: crate::touch::TouchPhase::Down, .. })) => self.kept_from(at, true),
             _ => {}
         }
         taken
@@ -2318,21 +2370,21 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// (`_NET_FRAME_EXTENTS`) or the window state change where the window is for its interface;
     /// a state that says minimized ("hidden"), or no longer does, is passed to the interface.
     fn noted(&mut self, at: usize, name: Atom) {
-        let (board, shown) = (&self.board, &mut self.windows[at]);
+        let (conn, shown) = (&self.conn, &mut self.windows[at]);
         let mut iconic = shown.iconic;
-        if name == board.atom(c"_NET_FRAME_EXTENTS") {
-            let frame = board.numbers(shown.id, c"_NET_FRAME_EXTENTS");
+        if name == conn.atom(c"_NET_FRAME_EXTENTS") {
+            let frame = conn.numbers(shown.id, c"_NET_FRAME_EXTENTS");
             shown.frame = [0, 2].map(|side| frame.get(side).map_or(0, |wide| *wide as c_int));
-        } else if name == board.atom(c"_NET_WM_STATE") {
-            let state = board.numbers(shown.id, c"_NET_WM_STATE");
-            [shown.filling, shown.whole] = stands(&state, [FILLING[0], FILLING[1], WHOLE].map(|name| board.atom(name)));
-            iconic = state.contains(&board.atom(c"_NET_WM_STATE_HIDDEN"));
+        } else if name == conn.atom(c"_NET_WM_STATE") {
+            let state = conn.numbers(shown.id, c"_NET_WM_STATE");
+            [shown.filling, shown.whole] = stands(&state, [FILLING[0], FILLING[1], WHOLE].map(|name| conn.atom(name)));
+            iconic = state.contains(&conn.atom(c"_NET_WM_STATE_HIDDEN"));
         } else {
             return;
         }
         shown.moved = true;
         if std::mem::replace(&mut shown.iconic, iconic) != iconic {
-            self.hear(at, Event::Hidden(iconic));
+            self.hear(at, Event::Minimized(iconic));
         }
     }
 
@@ -2342,12 +2394,12 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// the place and size it restores to. If any of that is news, the interface runs for the
     /// app to hear.
     fn place(&mut self, at: usize) {
-        let (board, scale, shown) = (&self.board, self.scale, &mut self.windows[at]);
+        let (conn, scale, shown) = (&self.conn, self.scale, &mut self.windows[at]);
         if !std::mem::take(&mut shown.moved) {
             return;
         }
-        let ([x, y], [left, up], (seen, since)) = (board.place(shown.id), shown.frame, shown.seen);
-        let here = Placed { at: (x.saturating_sub(left), y.saturating_sub(up)), width: shown.size[0] as f32 / scale, height: shown.size[1] as f32 / scale, maximized: false };
+        let ([x, y], [left, up], (seen, since)) = (conn.place(shown.id), shown.frame, shown.seen);
+        let here = WindowPlacement { position: (x.saturating_sub(left), y.saturating_sub(up)), width: shown.size[0] as f32 / scale, height: shown.size[1] as f32 / scale, maximized: false };
         // Where it was last seen while not maximized is what it restores to, once it has stayed
         // there a while (see `SETTLED`); and what was seen just before it was maximized is
         // forgotten.
@@ -2357,8 +2409,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         // Seen again where it was, it has stood there since it was first seen there.
         let (away, whole, stood) = (shown.filling || shown.whole, shown.whole, if here == seen { since } else { Instant::now() });
         shown.seen = if away { (shown.normal, since) } else { (here, stood) };
-        let now = if away { Placed { maximized: shown.filling, ..shown.normal } } else { here };
-        self.rerun |= self.windows[at].with(&mut self.ui, |ui| ui.set_placed(now) | ui.full_screen_now(whole)) == Some(true);
+        let now = if away { WindowPlacement { maximized: shown.filling, ..shown.normal } } else { here };
+        self.rerun |= self.windows[at].with(&mut self.ui, |ui| ui.set_window_placement(now) | ui.full_screen_now(whole)) == Some(true);
     }
 
     /// Passes what the person did in a window to its interface, noting whether it must run.
@@ -2368,13 +2420,13 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// What of a window the pointer grabs at a place: the interface is asked if the window has
     /// parts of its own to grab. (No edge resizes a maximized window.)
-    fn grip(&mut self, at: usize, place: Point) -> Grip {
+    fn grip(&mut self, at: usize, place: Point) -> HitTest {
         let shown = &self.windows[at];
         let sized = shown.kind.edges && !shown.filling;
         if !shown.grips {
-            return Grip::Inside;
+            return HitTest::Client;
         }
-        shown.with(&mut self.ui, |ui| ui.grip_at(place, sized)).unwrap_or_default()
+        shown.with(&mut self.ui, |ui| ui.hit_test(place, sized)).unwrap_or_default()
     }
 
     /// The pointer is somewhere in a window. A window moving or resizing itself follows it.
@@ -2390,7 +2442,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         // While what the pointer drags is outside the window, or leaves as soon as the pointer
         // does, the pointer over something else has left it.
         let away = OUTWARD.get().is_some_and(|outward| (outward.moved)(self.outgoing(), at, [e.x_root, e.y_root], e.time));
-        self.hear(at, if grip == Grip::Inside && !away { Event::Move(place) } else { Event::Leave });
+        self.hear(at, if grip == HitTest::Client && !away { Event::Move(place) } else { Event::Leave });
         if std::mem::replace(&mut self.windows[at].over, grip) != grip {
             self.shape(at);
         }
@@ -2400,11 +2452,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// pen left with it: X says nothing more of it.)
     fn left(&mut self, at: usize) {
         #[cfg(feature = "touch")]
-        if let Some(gone) = self.board.inputs.as_ref().and_then(|inputs| inputs.borrow_mut().pen_gone()) {
+        if let Some(gone) = self.conn.inputs.as_ref().and_then(|inputs| inputs.borrow_mut().pen_gone()) {
             self.hear(at, gone);
         }
         self.hear(at, Event::Leave);
-        if std::mem::take(&mut self.windows[at].over) != Grip::Inside {
+        if std::mem::take(&mut self.windows[at].over) != HitTest::Client {
             self.shape(at);
         }
     }
@@ -2413,8 +2465,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// asked for.
     fn shape(&mut self, at: usize) {
         let asked = self.windows[at].with(&mut self.ui, |ui| ui.cursor()).unwrap_or_default();
-        let (board, shown) = (&self.board, &mut self.windows[at]);
-        shown.point(board, shown.over.cursor().unwrap_or(asked));
+        let (conn, shown) = (&self.conn, &mut self.windows[at]);
+        shown.point(conn, shown.over.cursor().unwrap_or(asked));
     }
 
     /// The left button went down in a window. On its strip or a resize edge it grabs the
@@ -2431,28 +2483,28 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// size.)
     fn take_hold(&mut self, at: usize, e: InputEvent) -> bool {
         let grip = self.grip(at, pt(e.x as f32 / self.scale, e.y as f32 / self.scale));
-        let (board, shown) = (self.board.clone(), &mut self.windows[at]);
+        let (conn, shown) = (self.conn.clone(), &mut self.windows[at]);
         let [across, down] = match grip {
-            Grip::Inside => return false,
-            Grip::Strip => [0, 0],
-            Grip::Edge(across, down) => [across, down],
+            HitTest::Client => return false,
+            HitTest::TitleBar => [0, 0],
+            HitTest::Edge(across, down) => [across, down],
         };
-        let (before, [wide, high]) = (shown.pressed.replace((e.time, [e.x_root, e.y_root])), FILLING.map(|name| board.atom(name) as c_long));
-        let again = grip == Grip::Strip && before.is_some_and(|(then, [x, y])| e.time.wrapping_sub(then) < DOUBLE_PRESS && (e.x_root - x).abs() < 4 && (e.y_root - y).abs() < 4);
-        if again && (shown.kind.edges || !shown.kind.clear) {
-            board.ask(shown.id, c"_NET_WM_STATE", [!shown.filling as c_long, wide, high, 1, 0]);
+        let (before, [wide, high]) = (shown.pressed.replace((e.time, [e.x_root, e.y_root])), FILLING.map(|name| conn.atom(name) as c_long));
+        let again = grip == HitTest::TitleBar && before.is_some_and(|(then, [x, y])| e.time.wrapping_sub(then) < DOUBLE_PRESS && (e.x_root - x).abs() < 4 && (e.y_root - y).abs() < 4);
+        if again && (shown.kind.edges || !shown.kind.transparent) {
+            conn.ask(shown.id, c"_NET_WM_STATE", [!shown.filling as c_long, wide, high, 1, 0]);
         }
         if again {
             shown.pressed = None;
             return true;
         }
-        if board.offers(c"_NET_WM_MOVERESIZE") {
+        if conn.offers(c"_NET_WM_MOVERESIZE") {
             let way = [0, 1, 2, 7, 8, 3, 6, 5, 4][(down * 3 + across + 4) as usize];
             // SAFETY: the display is open. (0: `CurrentTime`.)
-            unsafe { (board.x.XUngrabPointer)(board.display, 0) };
-            board.ask(shown.id, c"_NET_WM_MOVERESIZE", [e.x_root as c_long, e.y_root as c_long, way, 1, 1]);
+            unsafe { (conn.x.XUngrabPointer)(conn.display, 0) };
+            conn.ask(shown.id, c"_NET_WM_MOVERESIZE", [e.x_root as c_long, e.y_root as c_long, way, 1, 1]);
         } else {
-            let [left, top] = board.place(shown.id);
+            let [left, top] = conn.place(shown.id);
             shown.held = Some(([across, down], [e.x_root, e.y_root], [left, top, shown.size[0], shown.size[1]]));
         }
         true
@@ -2461,11 +2513,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// The pointer moved while a window is held and follows it itself: the window is moved
     /// there.
     fn drag(&mut self, at: usize, e: InputEvent) {
-        let (board, shown) = (&self.board, &self.windows[at]);
+        let (conn, shown) = (&self.conn, &self.windows[at]);
         let Some((edges, from, was)) = shown.held else { return };
-        let [left, top, wide, high] = dragged(edges, was, [e.x_root - from[0], e.y_root - from[1]], shown.kind.least);
+        let [left, top, wide, high] = dragged(edges, was, [e.x_root - from[0], e.y_root - from[1]], shown.kind.min_size);
         // SAFETY: the window is the host's own, on its display.
-        unsafe { (board.x.XMoveResizeWindow)(board.display, shown.id, left, top, wide as c_uint, high as c_uint) };
+        unsafe { (conn.x.XMoveResizeWindow)(conn.display, shown.id, left, top, wide as c_uint, high as c_uint) };
     }
 
     /// A mouse button went down or up where the pointer is. (The wheel comes as buttons 4 to 7;
@@ -2505,7 +2557,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// nowhere.)
     fn key(&mut self, at: usize, event: &mut XEvent) {
         // SAFETY: X reads the event it delivered.
-        let (mods, name) = unsafe { (held(event.input.state), (self.board.x.XLookupKeysym)(event, 0)) };
+        let (mods, name) = unsafe { (held(event.input.state), (self.conn.x.XLookupKeysym)(event, 0)) };
         if key(name) == Some(Key::Escape) && self.out.as_ref().is_some_and(|out| out.from == self.windows[at].id && out.let_go.is_none()) {
             self.give_up_out();
             self.hear(at, Event::Leave);
@@ -2520,7 +2572,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             len = self.typed(at, event, &mut room);
         }
         if let Some(held) = held_after(name, event_state(event), true) {
-            self.hear(at, Event::Held(held));
+            self.hear(at, Event::ModifiersChanged(held));
         }
         if let Some(key) = key(name) {
             self.hear(at, Event::Key(key, mods));
@@ -2534,9 +2586,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// A key came up in a window: for modifiers, what is held now; for any other, which it was.
     fn key_up(&mut self, at: usize, event: &mut XEvent) {
         // SAFETY: X reads the event it delivered.
-        let name = unsafe { (self.board.x.XLookupKeysym)(event, 0) };
+        let name = unsafe { (self.conn.x.XLookupKeysym)(event, 0) };
         if let Some(held) = held_after(name, event_state(event), false) {
-            self.hear(at, Event::Held(held));
+            self.hear(at, Event::ModifiersChanged(held));
         }
         if let Some(key) = key(name) {
             self.hear(at, Event::KeyUp(key));
@@ -2551,14 +2603,14 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             return 0;
         }
         // SAFETY: X reads the event it delivered and writes no more than the room given.
-        unsafe { (self.board.x.Xutf8LookupString)(typing, event, room.as_mut_ptr().cast(), room.len() as c_int, &mut sym, &mut status).max(0) as usize }
+        unsafe { (self.conn.x.Xutf8LookupString)(typing, event, room.as_mut_ptr().cast(), room.len() as c_int, &mut sym, &mut status).max(0) as usize }
     }
 
     /// A window gained or lost focus: its interface is told, and so is its input context, as X
     /// requires. (An input method shows its own windows by it.)
     fn focus(&mut self, at: usize, on: bool) {
-        self.hear(at, Event::Focus(on));
-        let (x, typing) = (&self.board.x, self.windows[at].typing);
+        self.hear(at, Event::Focused(on));
+        let (x, typing) = (&self.conn.x, self.windows[at].typing);
         if typing.is_null() {
             return;
         }
@@ -2572,13 +2624,13 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// XDND messages from a program dragging something here (enter, position, leave, drop),
     /// which a window hears once its app asked about drops (see `Drops`).
     fn told(&mut self, at: usize, told: ClientEvent) {
-        let board = self.board.clone();
+        let conn = self.conn.clone();
         // The first number says what to do, or which window it comes from.
-        let (named, from) = (|name: &CStr| told.message == board.atom(name), told.data[0] as XWindow);
+        let (named, from) = (|name: &CStr| told.message == conn.atom(name), told.data[0] as XWindow);
         if told.format != 32 || from == 0 {
             return;
         }
-        if named(c"WM_PROTOCOLS") && from == board.atom(c"WM_DELETE_WINDOW") {
+        if named(c"WM_PROTOCOLS") && from == conn.atom(c"WM_DELETE_WINDOW") {
             self.closed(at);
         } else if let Some(outward) = OUTWARD.get().filter(|_| named(c"XdndStatus") || named(c"XdndFinished")) {
             self.rerun |= (outward.told)(self.outgoing(), from, named(c"XdndFinished"), told.data);
@@ -2589,7 +2641,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// What taking in drops works with (see `Taking`).
     fn taking(&mut self) -> Taking<'_> {
-        Taking { board: &self.board, ui: &mut self.ui, windows: &mut self.windows, scale: self.scale, finishing: &mut self.finishing, rerun: false }
+        Taking { conn: &self.conn, ui: &mut self.ui, windows: &mut self.windows, scale: self.scale, finishing: &mut self.finishing, rerun: false }
     }
 
     /// The person closed a window. Its app hears in the next run, due now: after it the first
@@ -2597,10 +2649,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// stops describing it, unless it says no.
     fn closed(&mut self, at: usize) {
         let Some(known) = self.windows[at].known else {
-            self.ui.ask_to_close();
+            self.ui.request_close();
             return self.rerun = true;
         };
-        self.rerun |= self.ui.in_window(known, Ui::ask_to_close).is_some();
+        self.rerun |= self.ui.in_window(known, Ui::request_close).is_some();
     }
 
     /// Whether window `at` takes neither keys nor pointer now: a dialog opened after it is
@@ -2614,35 +2666,35 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// is none).
     fn kept_from(&mut self, at: usize, press: bool) {
         self.hear(at, Event::Leave);
-        let opens = |shown: &&Shown| shown.known.and_then(|known| self.ui.window_opens(known));
+        let opens = |shown: &&Shown| shown.known.and_then(|known| self.ui.window_opening(known));
         let dialog = self.windows.iter().rev().find(|shown| opens(shown).is_some_and(|opening| opening.kind == WindowKind::Dialog));
         let Some(dialog) = dialog.map(|shown| shown.id).filter(|_| press) else { return };
-        self.board.ask(dialog, c"_NET_ACTIVE_WINDOW", [1, 0, 0, 0, 0]);
+        self.conn.ask(dialog, c"_NET_ACTIVE_WINDOW", [1, 0, 0, 0, 0]);
         // SAFETY: the window is the host's own, on its display.
-        unsafe { (self.board.x.XRaiseWindow)(self.board.display, dialog) };
+        unsafe { (self.conn.x.XRaiseWindow)(self.conn.display, dialog) };
     }
 
     /// The monitors or a work area changed: the interface is told, and runs for the app to hear
     /// if that is news.
     fn screens_changed(&mut self) {
-        self.rerun |= self.ui.set_screens(screens(&self.board, self.scale));
+        self.rerun |= self.ui.set_screens(screens(&self.conn, self.scale));
     }
 
     /// Where a new second window's frame corner goes, its client being `size`: at its place or
     /// centred on a screen if the app says; a dialog centred on the first window. Nothing where
     /// the window manager places it. (A frame's width is unknown until the window manager adds
     /// it: the first window's is assumed.)
-    fn place_for(&self, size: Size, opening: Opening) -> Option<(i32, i32)> {
+    fn place_for(&self, size: Size, opening: WindowOpening) -> Option<(i32, i32)> {
         let (first, scale) = (&self.windows[0], self.scale);
-        let ([left, top], [x, y]) = (first.frame, self.board.place(first.id));
+        let ([left, top], [x, y]) = (first.frame, self.conn.place(first.id));
         let over = rect((x - left) as f32, (y - top) as f32, (first.size[0] + 2 * left) as f32, (first.size[1] + top + left) as f32);
-        let asked = match (opening.at, opening.screen, opening.kind) {
+        let asked = match (opening.position, opening.screen, opening.kind) {
             (Some((x, y)), ..) => Spot::At(x, y),
             (None, Some(nth), _) => Spot::Middle(nth),
             (None, None, WindowKind::Dialog) => Spot::Over(over),
             _ => return None,
         };
-        let [left, top] = if opening.bare { [0, 0] } else { first.frame };
+        let [left, top] = if opening.frameless { [0, 0] } else { first.frame };
         let big = [size.w * scale + (2 * left) as f32, size.h * scale + (top + left) as f32];
         spot(self.ui.screens(), asked, |_| big).map(|(_, at)| (at.x as i32, at.y as i32))
     }
@@ -2651,7 +2703,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// What dragging out of the windows works with (see `Outgoing`).
     fn outgoing(&mut self) -> Outgoing<'_> {
-        Outgoing { board: &self.board, ui: &mut self.ui, windows: &mut self.windows, out: &mut self.out, last: self.last, rerun: false }
+        Outgoing { conn: &self.conn, ui: &mut self.ui, windows: &mut self.windows, out: &mut self.out, last: self.last, rerun: false }
     }
 
     /// Cancels what is being dragged out of a window, if anything.
@@ -2683,7 +2735,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         (self.rerun, self.done) = (false, self.done || closes || self.ui.quitting());
         // What the app asked of the desktop beyond its windows, once it asked any.
         if let Some(desktop) = DESKTOP.get() {
-            self.rerun |= (desktop.stood)(&self.board, &mut self.windows[0], &mut self.ui, &mut self.session);
+            self.rerun |= (desktop.stood)(&self.conn, &mut self.windows[0], &mut self.ui, &mut self.session);
         }
         self.keep_up();
         (0..self.windows.len()).for_each(|at| self.follow(at));
@@ -2715,7 +2767,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// XSETTINGS changed: what they say the person asked for is read again, and the windows
     /// told what follows.
     fn settings_changed(&mut self) {
-        self.desk = self.board.desk(self.settings);
+        self.desk = self.conn.desk(self.settings);
         self.heed();
     }
 
@@ -2725,11 +2777,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// news.
     fn heed(&mut self) {
         let portal = &mut self.session.portal;
-        self.rerun |= self.ui.set_wishes(portal.wishes(self.desk));
-        self.ui.set_system_files(portal.files);
+        self.rerun |= self.ui.set_preferences(portal.preferences(self.desk));
+        self.ui.set_native_file_dialog(portal.files);
         for (known, file) in std::mem::take(&mut portal.answers) {
             let shown = self.windows.iter().find(|shown| shown.known.unwrap_or(0) == known);
-            self.rerun |= shown.and_then(|shown| shown.with(&mut self.ui, |ui| ui.file_answered(file))).is_some();
+            self.rerun |= shown.and_then(|shown| shown.with(&mut self.ui, |ui| ui.file_dialog_answered(file))).is_some();
         }
     }
 
@@ -2737,7 +2789,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// window. The answer comes over the bus once the person gives one; meanwhile the window
     /// works and draws as usual. (If the portal vanished since the interface last heard of it,
     /// the request is answered at once.)
-    fn ask_files(&mut self, at: usize, ask: FileAsk) {
+    fn ask_files(&mut self, at: usize, ask: FileDialogRequest) {
         let (shown, Session { bus, portal, .. }) = (&self.windows[at], &mut self.session);
         portal.ask_for_files(bus.as_mut(), &format!("x11:{:x}", shown.id), shown.known.unwrap_or(0), &ask);
         self.heed();
@@ -2759,8 +2811,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// are done to that window's interface; and when one starts or stops listening, the
     /// interfaces start or stop keeping its tree.
     fn hear_readers(&mut self) {
-        let (board, readers) = (self.board.clone(), &mut self.session.readers);
-        let place = |known: Id| self.windows.iter().find(|shown| shown.known.unwrap_or(0) == known).map_or([0; 2], |shown| board.place(shown.id));
+        let (conn, readers) = (self.conn.clone(), &mut self.session.readers);
+        let place = |known: Id| self.windows.iter().find(|shown| shown.known.unwrap_or(0) == known).map_or([0; 2], |shown| conn.place(shown.id));
         for deed in readers.turn(&place) {
             let shown = self.windows.iter().find(|shown| shown.known.unwrap_or(0) == deed.window);
             shown.and_then(|shown| shown.with(&mut self.ui, |ui| readers.act(ui, deed)));
@@ -2769,7 +2821,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let listening = readers.listening();
         if listening != self.ui.listening {
             for shown in &self.windows {
-                shown.with(&mut self.ui, |ui| ui.listen(listening));
+                shown.with(&mut self.ui, |ui| ui.set_screen_reader(listening));
             }
             self.rerun = true;
         }
@@ -2783,16 +2835,18 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         for at in (1..self.windows.len()).rev() {
             if !self.ui.windows().any(|(known, ..)| self.windows[at].known == Some(known)) {
                 portal.forget(bus.as_mut(), self.windows[at].known.unwrap_or(0));
-                self.windows.remove(at).close(&self.board);
+                #[cfg(feature = "gpu")]
+                crate::gpu_x11::unshow(&mut self.gpu, &mut self.windows[at].way);
+                self.windows.remove(at).close(&self.conn);
             }
         }
         for (known, title, size) in self.ui.windows() {
             if self.windows.iter().all(|shown| shown.known != Some(known)) {
-                let opening = self.ui.window_opens(known).unwrap_or_default();
+                let opening = self.ui.window_opening(known).unwrap_or_default();
                 let at = self.place_for(size, opening);
                 // SAFETY: the first window and the input method are the display's, and live as
                 // long as the host.
-                let opened = unsafe { Shown::second(&self.board, self.method, first, known, title, scale, (size, at, opening)) };
+                let opened = unsafe { Shown::second(&self.conn, self.method, first, known, title, scale, (size, at, opening)) };
                 self.windows.push(opened);
             }
         }
@@ -2808,37 +2862,37 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let asks = |ui: &mut Ui| {
             changed.extend(ui.changes());
             ui.changed();
-            let stand = (ui.stand.strip != 0, ui.take_minimize(), ui.take_maximized(), ui.take_full_screen());
-            (ui.take_title(), ui.cursor(), ui.typing_at(), ui.typing_hidden(), ui.window_focused, ui.take_on_top(), ui.take_forward(), ui.take_file_ask(), stand)
+            let window_state = (ui.window_state.title_bar != 0, ui.take_minimize(), ui.take_maximized(), ui.take_full_screen());
+            (ui.take_title(), ui.cursor(), ui.ime_area(), ui.password_focused(), ui.window_focused, ui.take_on_top(), ui.take_bring_to_front(), ui.take_file_dialog_request(), window_state)
         };
         let asked = self.windows[at].with(&mut self.ui, asks);
         self.windows[at].changed = changed;
-        let Some((title, cursor, typing_at, hidden, focused, top, forward, files, (strip, minimize, fill, whole))) = asked else { return };
+        let Some((title, cursor, ime_area, hidden, focused, top, forward, files, (title_bar, minimize, fill, whole))) = asked else { return };
         files.into_iter().for_each(|ask| self.ask_files(at, ask));
         self.hide_typing(at, hidden, focused);
-        self.stand(at, minimize, fill, whole);
+        self.apply_state(at, minimize, fill, whole);
         // On a resize edge the pointer keeps the edge's shape; over another window, a drag out
         // of this one has its own shape.
         let cursor = self.windows[at].over.cursor().or(self.out.as_ref().and_then(|out| out.cursor(self.windows[at].id))).unwrap_or(cursor);
-        let (board, shown) = (&self.board, &mut self.windows[at]);
-        shown.follow_typing(&board.x, typing_at, self.scale);
-        shown.grips = shown.kind.edges || strip;
-        shown.point(board, cursor);
+        let (conn, shown) = (&self.conn, &mut self.windows[at]);
+        shown.follow_typing(&conn.x, ime_area, self.scale);
+        shown.grips = shown.kind.edges || title_bar;
+        shown.point(conn, cursor);
         if let Some(title) = title {
-            board.name(shown.id, &title);
+            conn.name(shown.id, &title);
             shown.title = title;
         }
         // Both are the window manager's to do, asked with source 1 (a normal application): add
         // or remove "above" (1, 0); and activate the window, which also restores it from
         // minimized.
         if let Some(on) = top {
-            board.ask(shown.id, c"_NET_WM_STATE", [on as c_long, board.atom(c"_NET_WM_STATE_ABOVE") as c_long, 0, 1, 0]);
+            conn.ask(shown.id, c"_NET_WM_STATE", [on as c_long, conn.atom(c"_NET_WM_STATE_ABOVE") as c_long, 0, 1, 0]);
         }
         if forward {
             // SAFETY: the window is the host's own, on its display. (Mapped again, an iconic
             // window is iconic no more.)
-            unsafe { (board.x.XMapWindow)(board.display, shown.id) };
-            board.ask(shown.id, c"_NET_ACTIVE_WINDOW", [1, 0, 0, 0, 0]);
+            unsafe { (conn.x.XMapWindow)(conn.display, shown.id) };
+            conn.ask(shown.id, c"_NET_ACTIVE_WINDOW", [1, 0, 0, 0, 0]);
         }
     }
 
@@ -2846,22 +2900,22 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// add or remove the two maximized states (not asked of a fullscreen window); the same for
     /// fullscreen; and iconify (`WM_CHANGE_STATE` 3). With no window manager, fullscreen is the
     /// window's own to do and the rest nobody's.
-    fn stand(&mut self, at: usize, minimize: bool, fill: Option<bool>, whole: Option<bool>) {
+    fn apply_state(&mut self, at: usize, minimize: bool, fill: Option<bool>, whole: Option<bool>) {
         if !minimize && fill.is_none() && whole.is_none() {
             return;
         }
-        let (board, shown) = (self.board.clone(), &mut self.windows[at]);
-        let [wide, high, all] = [FILLING[0], FILLING[1], WHOLE].map(|name| board.atom(name) as c_long);
+        let (conn, shown) = (self.conn.clone(), &mut self.windows[at]);
+        let [wide, high, all] = [FILLING[0], FILLING[1], WHOLE].map(|name| conn.atom(name) as c_long);
         if let Some(on) = fill.filter(|_| !shown.whole) {
-            board.ask(shown.id, c"_NET_WM_STATE", [on as c_long, wide, high, 1, 0]);
+            conn.ask(shown.id, c"_NET_WM_STATE", [on as c_long, wide, high, 1, 0]);
         }
         match whole {
-            Some(on) if board.managed() => board.ask(shown.id, c"_NET_WM_STATE", [on as c_long, all, 0, 1, 0]),
-            Some(on) => shown.lie_over(&board, on),
+            Some(on) if conn.managed() => conn.ask(shown.id, c"_NET_WM_STATE", [on as c_long, all, 0, 1, 0]),
+            Some(on) => shown.lie_over(&conn, on),
             None => {}
         }
         if minimize {
-            board.ask(shown.id, c"WM_CHANGE_STATE", [3, 0, 0, 0, 0]);
+            conn.ask(shown.id, c"WM_CHANGE_STATE", [3, 0, 0, 0, 0]);
         }
     }
 
@@ -2876,7 +2930,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             return;
         }
         let method = if hidden { self.plain() } else { self.method };
-        let (x, shown) = (&self.board.x, &mut self.windows[at]);
+        let (x, shown) = (&self.conn.x, &mut self.windows[at]);
         // SAFETY: the method is the display's, or null; the window is alive. The destroyed
         // context was made for this window and is not used again.
         unsafe {
@@ -2897,7 +2951,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// The null input method, opened when first asked: Xlib's locale modifiers are set to it
     /// for the open, then back to the person's. (Null where Xlib has none.)
     fn plain(&mut self) -> *mut c_void {
-        let (x, display) = (&self.board.x, self.board.display);
+        let (x, display) = (&self.conn.x, self.conn.display);
         if self.plain.is_null() {
             // SAFETY: Xlib's documented calls on an open display; the names end in zeros.
             unsafe { self.plain = open_method(x, display, c"@im=none") };
@@ -2917,7 +2971,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// the strip all of it is drawn through, used as wide as the window and as tall as keeps it
     /// near a quarter of a megabyte.
     fn draw(&mut self, at: usize) {
-        let (board, shown) = (self.board.clone(), &mut self.windows[at]);
+        #[cfg(feature = "gpu")]
+        self.fit(at);
+        let (conn, shown) = (self.conn.clone(), &mut self.windows[at]);
         let (width, bare, mut changed) = (shown.size[0], std::mem::replace(&mut shown.uncovered, Rect::EMPTY), std::mem::take(&mut shown.changed));
         if bare.is_empty() && changed.is_empty() {
             return;
@@ -2929,35 +2985,122 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         // SAFETY: X's description of the strip as rows of this window's width. The strip holds
         // that many rows and stays put until the description is freed below.
         let (way, depth, _) = self.draws_with(at);
-        let image = unsafe { (board.x.XCreateImage)(board.display, way, depth as c_uint, 2, 0, self.strip.as_mut_ptr().cast(), width as c_uint, rows as c_uint, 32, 0) };
+        let image = unsafe { (conn.x.XCreateImage)(conn.display, way, depth as c_uint, 2, 0, self.strip.as_mut_ptr().cast(), width as c_uint, rows as c_uint, 32, 0) };
         let within = |place: &Rect| place.x >= bare.x && place.y >= bare.y && place.right() <= bare.right() && place.bottom() <= bare.bottom();
         let apart = changed.drain(..).filter(|place| !within(place));
         std::iter::once(bare).chain(apart).for_each(|area| self.put(at, image, rows, area));
         // The list of places is kept empty for its capacity: the next run fills it again.
         self.windows[at].changed = changed;
         // SAFETY: only X's description is freed: the strip is the host's.
-        unsafe { (board.x.XFree)(image) };
+        unsafe { (conn.x.XFree)(image) };
+        #[cfg(feature = "gpu")]
+        self.show(at);
     }
 
     /// Draws one area of a window a strip at a time and has X put each on screen: `image`
     /// describes the strip as `rows` rows of the window's width. (A see-through window is drawn
     /// on a clear background: the strip is cleared first.)
     fn put(&mut self, at: usize, image: *mut c_void, rows: c_int, area: Rect) {
-        let (board, scale, shown) = (self.board.clone(), self.scale, &self.windows[at]);
-        let (id, [width, height], clear, context) = (shown.id, shown.size, shown.kind.clear, self.draws_with(at).2);
+        let (conn, scale, shown) = (self.conn.clone(), self.scale, &self.windows[at]);
+        let (id, [width, height], clear, context) = (shown.id, shown.size, shown.kind.transparent, self.draws_with(at).2);
         let (left, right) = (((area.x * scale).floor() as c_int).max(0), ((area.right() * scale).ceil() as c_int).min(width));
         let (mut top, bottom) = (((area.y * scale).floor() as c_int).max(0), ((area.bottom() * scale).ceil() as c_int).min(height));
         while top < bottom && left < right {
             let high = rows.min(bottom - top);
             let mut canvas = Canvas::new(&mut self.strip[..(width * high) as usize], width as usize, high as usize, (0, top), scale);
-            canvas.clip(area.on_pixels(scale));
+            canvas.clip(area.snap_to_pixels(scale));
             if clear {
                 canvas.erase();
             }
             self.windows[at].with(&mut self.ui, |ui| ui.paint(&mut canvas));
+            #[cfg(feature = "gpu")]
+            if self.texture(at, [left, top, right, top + high]) {
+                top += high;
+                continue;
+            }
             // SAFETY: the image describes the strip, which holds at least `high` rows.
-            unsafe { (board.x.XPutImage)(board.display, id, context, image, left, 0, left, top, (right - left) as c_uint, high as c_uint) };
+            unsafe { (conn.x.XPutImage)(conn.display, id, context, image, left, 0, left, top, (right - left) as c_uint, high as c_uint) };
             top += high;
+        }
+    }
+
+    /// Puts a painted strip of a window into its texture, where the GPU shows the window
+    /// (`place`: left, top, right, bottom in pixels). Says whether it did; if not, X is to put
+    /// it.
+    #[cfg(feature = "gpu")]
+    fn texture(&mut self, at: usize, place: [c_int; 4]) -> bool {
+        let (Some(gpu), shown) = (self.gpu.as_mut(), &mut self.windows[at]) else { return false };
+        let crate::gpu_x11::Way::Gpu(shows) = &mut shown.way else { return false };
+        gpu.put(shows, &self.strip, shown.size[0], place);
+        true
+    }
+
+    /// Shows what was put into a window's texture, where the GPU shows the window.
+    #[cfg(feature = "gpu")]
+    fn show(&mut self, at: usize) {
+        if let (Some(gpu), crate::gpu_x11::Way::Gpu(shows)) = (self.gpu.as_mut(), &mut self.windows[at].way) {
+            gpu.show(shows);
+        }
+    }
+
+    /// Gives a window's texture the window's size, where the GPU shows the window; all of it is
+    /// then drawn. A window too big for the device goes to X.
+    #[cfg(feature = "gpu")]
+    fn fit(&mut self, at: usize) {
+        let (Some(gpu), shown) = (self.gpu.as_mut(), &mut self.windows[at]) else { return };
+        let crate::gpu_x11::Way::Gpu(shows) = &mut shown.way else { return };
+        if shows.size() == shown.size {
+            return;
+        }
+        shown.uncovered = whole(shown.size, self.scale);
+        if !gpu.fit(shows, shown.size) {
+            crate::gpu_x11::unshow(&mut self.gpu, &mut shown.way);
+        }
+    }
+
+    /// Brings the GPU in line with the windows (feature `gpu`): opens it when first asked for;
+    /// when lost, lets it go and opens it again, or leaves the windows to X for good; and shows
+    /// each window not yet asked through it. Says whether a lost device was let go.
+    #[cfg(feature = "gpu")]
+    fn mend(&mut self) -> bool {
+        let lost = self.gpu.as_ref().is_some_and(crate::gpu_x11::Gpu::lost);
+        if lost {
+            self.let_go();
+        }
+        if self.gpu.is_none() && self.asks.is_some() {
+            self.open_gpu();
+        }
+        (0..self.windows.len()).for_each(|at| self.ask_gpu(at));
+        self.ui.renderer = self.gpu.as_ref().map_or(crate::platform::Renderer::Cpu, crate::gpu_x11::Gpu::renderer);
+        lost
+    }
+
+    /// Opens the GPU on a window it may show (one not see-through), for all of them: the first
+    /// renderer asked for that works. Where none does, X shows them for good.
+    #[cfg(feature = "gpu")]
+    fn open_gpu(&mut self) {
+        let (Some(asks), scale) = (self.asks, self.scale) else { return };
+        let Some(shown) = self.windows.iter_mut().find(|shown| !shown.kind.transparent && matches!(shown.way, crate::gpu_x11::Way::Unasked)) else { return };
+        // SAFETY: the display is open, and the window alive, of the screen's own visual.
+        let Some((gpu, shows)) = (unsafe { crate::gpu_x11::Gpu::open(self.conn.display, self.screen.0, shown.id, shown.size, asks) }) else {
+            self.asks = None;
+            return;
+        };
+        (shown.way, shown.uncovered, self.gpu) = (crate::gpu_x11::Way::Gpu(shows), whole(shown.size, scale), Some(gpu));
+    }
+
+    /// Shows a window not yet asked through the GPU, where there is one and the window is not
+    /// see-through (it is then drawn whole); else by X.
+    #[cfg(feature = "gpu")]
+    fn ask_gpu(&mut self, at: usize) {
+        let (scale, shown) = (self.scale, &mut self.windows[at]);
+        if !matches!(shown.way, crate::gpu_x11::Way::Unasked) {
+            return;
+        }
+        let made = self.gpu.as_mut().filter(|_| !shown.kind.transparent).and_then(|gpu| gpu.window(shown.id, shown.size));
+        shown.way = made.map_or(crate::gpu_x11::Way::X, crate::gpu_x11::Way::Gpu);
+        if matches!(shown.way, crate::gpu_x11::Way::Gpu(_)) {
+            shown.uncovered = whole(shown.size, scale);
         }
     }
 
@@ -2965,7 +3108,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// reader has messages, or the time comes that the interface asked to be woken at, or a
     /// silent portal is given up on. (Not at all when a run is due.)
     fn sleep(&mut self) {
-        let (x, display) = (&self.board.x, self.board.display);
+        let (x, display) = (&self.conn.x, self.conn.display);
         let buses = [self.session.bus.as_ref().map_or((-1, 0), Bus::waits), self.session.readers.waits()];
         let [session, desk] = buses.map(|(fd, events)| PollFd { fd, events, revents: 0 });
         let mut waiting = [PollFd { fd: -1, events: 1, revents: 0 }, PollFd { fd: self.wake, events: 1, revents: 0 }, session, desk];
@@ -2997,9 +3140,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
 /// How the windows take drops of files and text from other programs, by XDND version 5: a
 /// window announces `XdndAware` once its app asked about drops, and from then on receives them.
-/// Set by the first call asking about drops ([`Ui::files_over`], [`Ui::files_dropped`],
-/// [`Ui::text_over`], [`Ui::text_dropped`], through `platform::hand_drops`); reached no other
-/// way, so a program that never asks is built without it, and none of its windows accepts
+/// Set by the first call asking about drops ([`Ui::files_hovered`], [`Ui::files_dropped`],
+/// [`Ui::text_hovered`], [`Ui::text_dropped`], through `platform::hand_drops`); reached no
+/// other way, so a program that never asks is built without it, and none of its windows accepts
 /// drops.
 #[derive(Clone, Copy)]
 struct Drops {
@@ -3014,12 +3157,12 @@ pub(crate) fn hand_drops() {
     DROPS.set(Some(Drops { told: |taking, at, told| taking.told(at, told), ran: |taking| taking.ran() }));
 }
 
-/// What taking in drops works with: the board, the first window's interface (lending out the
-/// others'), the windows, the scale, and the windows something was just dropped on with its
+/// What taking in drops works with: the connection, the first window's interface (lending out
+/// the others'), the windows, the scale, and the windows something was just dropped on with its
 /// source window, which learn whether it was taken once the interface ran. And whether an
 /// interface must run.
 struct Taking<'a> {
-    board: &'a Board,
+    conn: &'a Connection,
     ui: &'a mut Ui,
     windows: &'a mut [Shown],
     scale: f32,
@@ -3031,8 +3174,8 @@ impl Taking<'_> {
     /// An XDND message to window `at` from a drag source: enter, position, leave or drop. Says
     /// whether an interface must run.
     fn told(mut self, at: usize, told: &ClientEvent) -> bool {
-        let board = self.board;
-        let (named, from) = (|name: &CStr| told.message == board.atom(name), told.data[0] as XWindow);
+        let conn = self.conn;
+        let (named, from) = (|name: &CStr| told.message == conn.atom(name), told.data[0] as XWindow);
         if named(c"XdndEnter") {
             let kind = self.offered(at, told);
             self.carry(at, if kind != 0 { from } else { 0 }, kind);
@@ -3051,18 +3194,18 @@ impl Taking<'_> {
     /// (then keeps doing so while open); and each source whose drop landed on one of the
     /// windows hears whether a box there took it, now that the interface has run.
     fn ran(self) {
-        let board = self.board;
+        let conn = self.conn;
         for shown in self.windows.iter_mut().filter(|shown| !shown.takes) {
             shown.takes = shown.with(self.ui, |ui| ui.takes_files.get() || ui.crossing.takes_text.get()) == Some(true);
             if shown.takes {
-                board.leave(shown.id, board.atom(c"XdndAware"), 4, &[5 as Atom]);
+                conn.leave(shown.id, conn.atom(c"XdndAware"), 4, &[5 as Atom]);
             }
         }
-        let copies = board.atom(c"XdndActionCopy") as c_long;
+        let copies = conn.atom(c"XdndActionCopy") as c_long;
         for (id, from) in std::mem::take(self.finishing) {
             let shown = self.windows.iter().find(|shown| shown.id == id);
-            let taken = shown.and_then(|shown| shown.with(self.ui, Ui::drop_taken)) == Some(true);
-            board.tell(from, from, c"XdndFinished", [id as c_long, taken as c_long, if taken { copies } else { 0 }, 0, 0]);
+            let taken = shown.and_then(|shown| shown.with(self.ui, Ui::take_drop_accepted)) == Some(true);
+            conn.tell(from, from, c"XdndFinished", [id as c_long, taken as c_long, if taken { copies } else { 0 }, 0, 0]);
         }
     }
 
@@ -3076,20 +3219,20 @@ impl Taking<'_> {
     /// for nothing.) `XdndEnter` lists up to three types; a source offering more keeps the list
     /// on its own window and says so (lowest bit of the second number).
     fn offered(&mut self, at: usize, told: &ClientEvent) -> Atom {
-        let board = self.board;
-        let kinds = if told.data[1] & 1 == 0 { told.data[2..].iter().map(|kind| *kind as Atom).collect() } else { board.numbers(told.data[0] as XWindow, c"XdndTypeList") };
+        let conn = self.conn;
+        let kinds = if told.data[1] & 1 == 0 { told.data[2..].iter().map(|kind| *kind as Atom).collect() } else { conn.numbers(told.data[0] as XWindow, c"XdndTypeList") };
         let [files, text] = self.windows[at].with(self.ui, |ui| [ui.takes_files.get(), ui.crossing.takes_text.get()]).unwrap_or_default();
         let wanted = [(files, FILES), (text, TEXT), (text, c"UTF8_STRING")].into_iter().filter(|(takes, _)| *takes);
-        wanted.map(|(_, kind)| board.atom(kind)).find(|kind| kinds.contains(kind)).unwrap_or(0)
+        wanted.map(|(_, kind)| conn.atom(kind)).find(|kind| kinds.contains(kind)).unwrap_or(0)
     }
 
     /// Notes which window drags something over a window and as what (0 for none), and tells its
     /// interface when it comes and goes.
     fn carry(&mut self, at: usize, from: XWindow, kind: Atom) {
-        let (was, text) = (self.windows[at].carried, kind != self.board.atom(FILES));
+        let (was, text) = (self.windows[at].carried, kind != self.conn.atom(FILES));
         if (from != 0) != (was.0 != 0) {
-            let text = if from != 0 { text } else { was.2 != self.board.atom(FILES) };
-            self.hear(at, if text { Event::CarryText(from != 0) } else { Event::Carry(from != 0) });
+            let text = if from != 0 { text } else { was.2 != self.conn.atom(FILES) };
+            self.hear(at, if text { Event::TextHovered(from != 0) } else { Event::FilesHovered(from != 0) });
         }
         self.windows[at].carried = (from, was.1, kind);
     }
@@ -3098,8 +3241,8 @@ impl Taking<'_> {
     /// interface hears where on the window that is; and the source hears whether it may be
     /// dropped here. It may, as a copy.
     fn carried_to(&mut self, at: usize, from: XWindow, place: c_long) {
-        let board = self.board;
-        let (x, display, id) = (&board.x, board.display, self.windows[at].id);
+        let conn = self.conn;
+        let (x, display, id) = (&conn.x, conn.display, self.windows[at].id);
         let (takes, mut on, mut child) = (from == self.windows[at].carried.0, [0; 2], 0);
         if takes {
             // SAFETY: X fills in where on this window the screen position is.
@@ -3107,10 +3250,10 @@ impl Taking<'_> {
             self.windows[at].carried.1 = pt(on[0] as f32 / self.scale, on[1] as f32 / self.scale);
             self.hear(at, Event::Move(self.windows[at].carried.1));
         }
-        let copies = if takes { board.atom(c"XdndActionCopy") } else { 0 };
+        let copies = if takes { conn.atom(c"XdndActionCopy") } else { 0 };
         // No rectangle is given in which the reply would stay the same: every move is to be
         // reported.
-        board.tell(from, from, c"XdndStatus", [id as c_long, takes as c_long * 3, 0, 0, copies as c_long]);
+        conn.tell(from, from, c"XdndStatus", [id as c_long, takes as c_long * 3, 0, 0, copies as c_long]);
     }
 
     /// The drag was dropped over a window. If the window takes it, the source is asked for it
@@ -3118,15 +3261,15 @@ impl Taking<'_> {
     /// interface gets it where it was dropped. The source hears whether a box of the window
     /// took it once the interface has run.
     fn let_go(&mut self, at: usize, from: XWindow, time: c_ulong) {
-        let (board, (carried, _, kind), id) = (self.board, self.windows[at].carried, self.windows[at].id);
-        let got = (from == carried && from != 0).then(|| board.carried_as(kind).or_else(|| board.read(id, board.dnd, kind, time))).flatten();
+        let (conn, (carried, _, kind), id) = (self.conn, self.windows[at].carried, self.windows[at].id);
+        let got = (from == carried && from != 0).then(|| conn.carried_as(kind).or_else(|| conn.read(id, conn.dnd, kind, time))).flatten();
         if from == carried {
             self.carry(at, 0, kind);
         }
-        let Some(got) = got.filter(|got| !got.is_empty()) else { return board.tell(from, from, c"XdndFinished", [id as c_long, 0, 0, 0, 0]) };
+        let Some(got) = got.filter(|got| !got.is_empty()) else { return conn.tell(from, from, c"XdndFinished", [id as c_long, 0, 0, 0, 0]) };
         self.hear(at, Event::Move(self.windows[at].carried.1));
-        let files = kind == board.atom(FILES);
-        self.hear(at, if files { Event::Files(files_in(&got)) } else { Event::TextDropped(String::from_utf8_lossy(&got).into_owned()) });
+        let files = kind == conn.atom(FILES);
+        self.hear(at, if files { Event::FilesDropped(files_in(&got)) } else { Event::TextDropped(String::from_utf8_lossy(&got).into_owned()) });
         self.finishing.push((id, from));
     }
 }
@@ -3134,7 +3277,7 @@ impl Taking<'_> {
 // ---- dragging out of a window (XDND, as the source) ----
 
 /// How the windows drag things out to other programs by XDND. Set by the first call handing
-/// something out ([`Ui::hand_out`], through `platform::hands_out`); reached no other way, so a
+/// something out ([`Ui::drag_out`], through `platform::hands_out`); reached no other way, so a
 /// program that never does is built without it (including a PNG writer).
 #[derive(Clone, Copy)]
 struct Outward {
@@ -3176,11 +3319,11 @@ pub(crate) fn hands_out() {
     }));
 }
 
-/// What dragging out works with: the board, the first window's interface (lending out the
+/// What dragging out works with: the connection, the first window's interface (lending out the
 /// others'), the windows, the current drag if any, and the pointer's last screen position, time
 /// and modifiers. And whether an interface must run.
 struct Outgoing<'a> {
-    board: &'a Board,
+    conn: &'a Connection,
     ui: &'a mut Ui,
     windows: &'a mut [Shown],
     out: &'a mut Option<Out>,
@@ -3203,17 +3346,17 @@ impl Outgoing<'_> {
     /// there are more than three, and grabs the keyboard while dragging, so Escape cancels it
     /// wherever the pointer is. Then the window under the pointer hears of it.
     fn carry_out(&mut self, at: usize) {
-        let board = self.board;
-        let Some(kinds) = self.windows[at].with(self.ui, |ui| ui.going_out().map(|what| board.kinds_of(what))).flatten() else { return };
+        let conn = self.conn;
+        let Some(kinds) = self.windows[at].with(self.ui, |ui| ui.take_drag_out().map(|what| conn.kinds_of(what))).flatten() else { return };
         self.give_up_out();
         let (from, ([x, y], time, state)) = (self.windows[at].id, self.last);
         let names: Vec<Atom> = kinds.iter().map(|(kind, _)| *kind).collect();
-        board.carry_out(kinds, from, time);
+        conn.carry_out(kinds, from, time);
         if names.len() > 3 {
-            board.leave(from, board.atom(c"XdndTypeList"), 4, &names);
+            conn.leave(from, conn.atom(c"XdndTypeList"), 4, &names);
         }
         // SAFETY: the window is the host's own, on its display. (`GrabModeAsync` for both.)
-        unsafe { (board.x.XGrabKeyboard)(board.display, from, 0, 1, 1, time) };
+        unsafe { (conn.x.XGrabKeyboard)(conn.display, from, 0, 1, 1, time) };
         *self.out = Some(Out { from, kinds: names, over: 0, to: 0, version: 0, home: true, takes: None, asked: false, next: None, let_go: None, dropped: false, until: None, moves: state & 1 != 0 });
         self.out_at(at, [x, y], time);
     }
@@ -3227,7 +3370,7 @@ impl Outgoing<'_> {
         let id = self.windows[at].id;
         let going = self.out.as_ref().is_some_and(|out| out.from == id && out.let_go.is_none());
         if !going {
-            return self.windows[at].with(self.ui, |ui| ui.carrying_out()) == Some(true) && self.aware_at(root).0 != id;
+            return self.windows[at].with(self.ui, |ui| ui.drag_leaves_window()) == Some(true) && self.aware_at(root).0 != id;
         }
         let (under, to, version) = self.aware_at(root);
         let Some(out) = self.out.as_mut() else { return false };
@@ -3237,11 +3380,11 @@ impl Outgoing<'_> {
             let (was, from, kinds, more) = ((out.to, out.over), out.from, out.kinds.clone(), out.kinds.len() > 3);
             (out.over, out.to, out.version, out.takes, out.asked, out.next) = (over, to, version, None, false, None);
             if was.1 != 0 {
-                self.board.tell(was.0, was.1, c"XdndLeave", [from as c_long, 0, 0, 0, 0]);
+                self.conn.tell(was.0, was.1, c"XdndLeave", [from as c_long, 0, 0, 0, 0]);
             }
             let first = |at: usize| kinds.get(at).map_or(0, |kind| *kind as c_long);
             if over != 0 {
-                self.board.tell(to, over, c"XdndEnter", [from as c_long, version << 24 | more as c_long, first(0), first(1), first(2)]);
+                self.conn.tell(to, over, c"XdndEnter", [from as c_long, version << 24 | more as c_long, first(0), first(1), first(2)]);
             }
         }
         self.shape_out(at);
@@ -3256,18 +3399,18 @@ impl Outgoing<'_> {
     /// messages go to (itself or a proxy, which also says so), and the protocol version both
     /// speak. (0s where there is none, or it speaks a version older than 3.)
     fn aware_at(&self, [x, y]: [c_int; 2]) -> (XWindow, XWindow, c_long) {
-        let (board, mut under) = (self.board, root(&self.board.x, self.board.display));
+        let (conn, mut under) = (self.conn, root(&self.conn.x, self.conn.display));
         for _ in 0..8 {
             let (mut on, mut child) = ([0; 2], 0);
             // SAFETY: X fills in which child of this window contains the screen position.
-            let found = unsafe { (board.x.XTranslateCoordinates)(board.display, root(&board.x, board.display), under, x, y, &mut on[0], &mut on[1], &mut child) };
+            let found = unsafe { (conn.x.XTranslateCoordinates)(conn.display, root(&conn.x, conn.display), under, x, y, &mut on[0], &mut on[1], &mut child) };
             if found == 0 || child == 0 {
                 break;
             }
             under = child;
-            let proxy = board.numbers(under, c"XdndProxy").first().map(|proxy| *proxy as XWindow);
-            let to = proxy.filter(|proxy| board.numbers(*proxy, c"XdndProxy").first() == Some(&(*proxy as c_ulong))).unwrap_or(under);
-            if let Some(version) = board.numbers(to, c"XdndAware").first() {
+            let proxy = conn.numbers(under, c"XdndProxy").first().map(|proxy| *proxy as XWindow);
+            let to = proxy.filter(|proxy| conn.numbers(*proxy, c"XdndProxy").first() == Some(&(*proxy as c_ulong))).unwrap_or(under);
+            if let Some(version) = conn.numbers(to, c"XdndAware").first() {
                 return if *version >= 3 { (under, to, (*version).min(5) as c_long) } else { (0, 0, 0) };
             }
         }
@@ -3277,14 +3420,14 @@ impl Outgoing<'_> {
     /// Sends the target an `XdndPosition` with the pointer's place and the action asked (copy,
     /// or move with Shift): now, or once it answered the last one, which is waited for.
     fn position(&mut self, [x, y]: [c_int; 2], time: c_ulong) {
-        let board = self.board;
+        let conn = self.conn;
         let Some(out) = self.out.as_mut() else { return };
         if std::mem::replace(&mut out.asked, true) {
             return out.next = Some(([x, y], time));
         }
-        let asked = board.atom(if out.moves { c"XdndActionMove" } else { c"XdndActionCopy" }) as c_long;
+        let asked = conn.atom(if out.moves { c"XdndActionMove" } else { c"XdndActionCopy" }) as c_long;
         let (to, over, from) = (out.to, out.over, out.from as c_long);
-        board.tell(to, over, c"XdndPosition", [from, 0, (x as c_long) << 16 | (y as c_long & 0xffff), time as c_long, asked]);
+        conn.tell(to, over, c"XdndPosition", [from, 0, (x as c_long) << 16 | (y as c_long & 0xffff), time as c_long, asked]);
     }
 
     /// The target answered (`from` names it): whether it accepts and what it would do. It gets
@@ -3312,7 +3455,7 @@ impl Outgoing<'_> {
         let Some(out) = self.out.as_mut().filter(|out| out.from == self.windows[at].id && out.let_go.is_none()) else { return };
         // The keyboard is released: what the person types next goes wherever they type.
         // SAFETY: the display is open. (0: `CurrentTime`.)
-        unsafe { (self.board.x.XUngrabKeyboard)(self.board.display, 0) };
+        unsafe { (self.conn.x.XUngrabKeyboard)(self.conn.display, 0) };
         if out.over == 0 {
             return self.end_out(None);
         }
@@ -3329,11 +3472,11 @@ impl Outgoing<'_> {
         let Some(out) = self.out.as_mut() else { return };
         let (to, over, from) = (out.to, out.over, out.from as c_long);
         if out.takes.is_none() {
-            self.board.tell(to, over, c"XdndLeave", [from, 0, 0, 0, 0]);
+            self.conn.tell(to, over, c"XdndLeave", [from, 0, 0, 0, 0]);
             return self.end_out(None);
         }
         (out.dropped, out.until) = (true, Some(Instant::now() + Duration::from_secs(10)));
-        self.board.tell(to, over, c"XdndDrop", [from, 0, time as c_long, 0, 0]);
+        self.conn.tell(to, over, c"XdndDrop", [from, 0, time as c_long, 0, 0]);
     }
 
     /// The drop target says it is done (`from` names it): whether it took it and what it did.
@@ -3341,8 +3484,8 @@ impl Outgoing<'_> {
     fn finished(&mut self, from: XWindow, data: [c_long; 5]) {
         let Some(out) = self.out.as_ref().filter(|out| out.dropped && out.over == from) else { return };
         let (took, did) = if out.version >= 5 { (data[1] & 1 != 0, data[2] as Atom) } else { (true, out.takes.unwrap_or(0)) };
-        let moved = did == self.board.atom(c"XdndActionMove");
-        self.end_out(took.then_some(if moved { Taken::Moved } else { Taken::Copied }))
+        let moved = did == self.conn.atom(c"XdndActionMove");
+        self.end_out(took.then_some(if moved { DropEffect::Moved } else { DropEffect::Copied }))
     }
 
     /// Cancels the drag out, if any: the window it is over gets `XdndLeave`, unless the drop
@@ -3350,41 +3493,61 @@ impl Outgoing<'_> {
     fn give_up_out(&mut self) {
         let Some(out) = self.out.as_ref() else { return };
         if out.over != 0 && !out.dropped {
-            self.board.tell(out.to, out.over, c"XdndLeave", [out.from as c_long, 0, 0, 0, 0]);
+            self.conn.tell(out.to, out.over, c"XdndLeave", [out.from as c_long, 0, 0, 0, 0]);
         }
         self.end_out(None)
     }
 
     /// The drag out is over: the keyboard is released, the selection dropped, and the source
     /// window hears what became of it.
-    fn end_out(&mut self, taken: Option<Taken>) {
+    fn end_out(&mut self, taken: Option<DropEffect>) {
         let Some(out) = self.out.take() else { return };
-        let board = self.board;
+        let conn = self.conn;
         // SAFETY: the display is open. (0: `CurrentTime`.)
-        unsafe { (board.x.XUngrabKeyboard)(board.display, 0) };
-        board.carry_out(Vec::new(), 0, 0);
+        unsafe { (conn.x.XUngrabKeyboard)(conn.display, 0) };
+        conn.carry_out(Vec::new(), 0, 0);
         let Some(at) = self.windows.iter().position(|shown| shown.id == out.from) else { return };
-        self.rerun |= self.windows[at].with(self.ui, |ui| ui.set_taken(taken)).is_some();
+        self.rerun |= self.windows[at].with(self.ui, |ui| ui.set_drop_effect(taken)).is_some();
     }
 
     /// Gives the pointer its shape while something is dragged out of window `at`, where it has
     /// one (see `Out::cursor`). (While the button is held, X shows the cursor of the window the
     /// button went down in wherever the pointer is.)
     fn shape_out(&mut self, at: usize) {
-        let (board, shown) = (self.board, &mut self.windows[at]);
+        let (conn, shown) = (self.conn, &mut self.windows[at]);
         let Some(cursor) = self.out.as_ref().and_then(|out| out.cursor(shown.id)) else { return };
-        shown.point(board, cursor);
+        shown.point(conn, cursor);
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<App> Host<App> {
+    /// Lets go of the GPU, each window's surface first. Each window is to be asked again, and
+    /// drawn whole.
+    #[cfg(feature = "gpu")]
+    fn let_go(&mut self) {
+        let Some(mut gpu) = self.gpu.take() else { return };
+        for shown in &mut self.windows {
+            if let crate::gpu_x11::Way::Gpu(shows) = std::mem::replace(&mut shown.way, crate::gpu_x11::Way::Unasked) {
+                gpu.forget(shows);
+            }
+            shown.uncovered = whole(shown.size, self.scale);
+        }
+        self.ui.renderer = crate::platform::Renderer::Cpu;
     }
 }
 
 impl<App> Drop for Host<App> {
     fn drop(&mut self) {
-        // Every window goes, with its input context. (The display closes when the board ends,
-        // once the interface has dropped it too.)
-        self.windows.drain(..).for_each(|shown| shown.close(&self.board));
+        // The GPU goes first, while the windows and the display are there.
+        #[cfg(feature = "gpu")]
+        self.let_go();
+        // Every window goes, with its input context. (The display closes when the connection
+        // ends, once the interface has dropped it too.)
+        self.windows.drain(..).for_each(|shown| shown.close(&self.conn));
         // SAFETY: the input methods were opened in `open` and `plain`, and nothing made from
         // either is left.
-        [self.method, self.plain].into_iter().filter(|method| !method.is_null()).for_each(|method| _ = unsafe { (self.board.x.XCloseIM)(method) });
+        [self.method, self.plain].into_iter().filter(|method| !method.is_null()).for_each(|method| _ = unsafe { (self.conn.x.XCloseIM)(method) });
     }
 }
 
@@ -3399,8 +3562,8 @@ impl<App> Drop for Host<App> {
 #[derive(Clone, Copy)]
 pub(crate) struct Desktop {
     pub(crate) heard: fn(&mut Bus, &Message) -> bool,
-    stood: fn(&Board, &mut Shown, &mut Ui, &mut Session) -> bool,
-    pressed: fn(&Board, &InputEvent) -> bool,
+    stood: fn(&Connection, &mut Shown, &mut Ui, &mut Session) -> bool,
+    pressed: fn(&Connection, &InputEvent) -> bool,
 }
 
 thread_local! {
@@ -3453,23 +3616,23 @@ unsafe extern "C" fn refused(_: Display, error: *mut c_void) -> c_int {
 /// withdrawn (the window manager removes it from the screen and its lists), or mapped and
 /// raised: for a later start of the program, with that start's timestamp, or where its app
 /// asked it back. Says whether its interface must run.
-fn stood(board: &Board, first: &mut Shown, ui: &mut Ui, session: &mut Session) -> bool {
+fn stood(conn: &Connection, first: &mut Shown, ui: &mut Ui, session: &mut Session) -> bool {
     let asked = crate::freedesktop::ran(session.bus.as_mut(), false, "");
-    let Some((mut news, withdraw)) = GRABS.with(|grabs| grabs.get_or_init(Grabs::open).as_ref().map(|grabs| (grab(board, grabs), grabs.XWithdrawWindow))) else { return false };
+    let Some((mut news, withdraw)) = GRABS.with(|grabs| grabs.get_or_init(Grabs::open).as_ref().map(|grabs| (grab(conn, grabs), grabs.XWithdrawWindow))) else { return false };
     if asked.hide && !first.withdrawn {
         // SAFETY: the window is the host's own, on its display and screen.
-        unsafe { withdraw(board.display, first.id, (board.x.XDefaultScreen)(board.display)) };
+        unsafe { withdraw(conn.display, first.id, (conn.x.XDefaultScreen)(conn.display)) };
         first.withdrawn = true;
-        news |= ui.event(Event::Hidden(true));
+        news |= ui.event(Event::Minimized(true));
     }
-    let back = first.withdrawn && ui.take_forward();
+    let back = first.withdrawn && ui.take_bring_to_front();
     if asked.forward || back {
         // A start's timestamp is in its startup id, after "_TIME".
         let time = asked.token.rsplit_once("_TIME").and_then(|(_, time)| time.parse::<c_long>().ok()).unwrap_or(0);
         // SAFETY: as above.
-        unsafe { (board.x.XMapWindow)(board.display, first.id) };
-        board.ask(first.id, c"_NET_ACTIVE_WINDOW", [1, time, 0, 0, 0]);
-        news |= std::mem::take(&mut first.withdrawn) && ui.event(Event::Hidden(false));
+        unsafe { (conn.x.XMapWindow)(conn.display, first.id) };
+        conn.ask(first.id, c"_NET_ACTIVE_WINDOW", [1, time, 0, 0, 0]);
+        news |= std::mem::take(&mut first.withdrawn) && ui.event(Event::Minimized(false));
     }
     news
 }
@@ -3477,19 +3640,19 @@ fn stood(board: &Board, first: &mut Shown, ui: &mut Ui, session: &mut Session) -
 /// Grabs on the root window the global hotkeys the app wants and lacks, and releases those it
 /// no longer wants. A key the keyboard lacks, or another program grabbed, is refused. Says
 /// whether one was.
-fn grab(board: &Board, grabs: &Grabs) -> bool {
-    let (display, root) = (board.display, root(&board.x, board.display));
+fn grab(conn: &Connection, grabs: &Grabs) -> bool {
+    let (display, root) = (conn.display, root(&conn.x, conn.display));
     // SAFETY: plain queries about the display's keyboard.
     let code = |keysym: u32| unsafe { (grabs.XKeysymToKeycode)(display, keysym as c_ulong) } as c_int;
     crate::hotkeys::HOTKEYS.with_borrow_mut(|hotkeys| {
         // SAFETY: keys are ungrabbed on the display's root, as they were grabbed.
         let let_go = |held: c_uint, code: c_int| LOCKS.iter().for_each(|lock| _ = unsafe { (grabs.XUngrabKey)(display, code, held | lock, root) });
-        hotkeys.settle(|wanted| _ = (wanted.stand == crate::hotkeys::Stand::Held).then(|| let_go(x_held(wanted.combo.held), code(wanted.combo.key.keysym().0))));
+        hotkeys.settle(|wanted| _ = (wanted.state == crate::hotkeys::Registration::Registered).then(|| let_go(x_held(wanted.combo.modifiers), code(wanted.combo.key.keysym().0))));
         let mut refused_any = false;
-        for wanted in hotkeys.keys.iter_mut().filter(|wanted| wanted.stand == crate::hotkeys::Stand::New) {
-            let (held, code) = (x_held(wanted.combo.held), code(wanted.combo.key.keysym().0));
-            let had = code != 0 && !switches_console(wanted.combo) && grabbed(board, grabs, held, code);
-            wanted.stand = if had { crate::hotkeys::Stand::Held } else { crate::hotkeys::Stand::Taken };
+        for wanted in hotkeys.keys.iter_mut().filter(|wanted| wanted.state == crate::hotkeys::Registration::New) {
+            let (held, code) = (x_held(wanted.combo.modifiers), code(wanted.combo.key.keysym().0));
+            let had = code != 0 && !switches_console(wanted.combo) && grabbed(conn, grabs, held, code);
+            wanted.state = if had { crate::hotkeys::Registration::Registered } else { crate::hotkeys::Registration::Refused };
             refused_any |= !had;
         }
         refused_any
@@ -3500,15 +3663,15 @@ fn grab(board: &Board, grabs: &Grabs) -> bool {
 /// in every X keymap and never reach a program, grabbed or not.
 fn switches_console(combo: crate::hotkeys::Combo) -> bool {
     use crate::hotkeys::{ALT, CTRL, SHIFT};
-    matches!(combo.key, crate::hotkeys::Named::F(1..=12)) && combo.held & (CTRL | ALT | SHIFT) == CTRL | ALT
+    matches!(combo.key, crate::hotkeys::Named::F(1..=12)) && combo.modifiers & (CTRL | ALT | SHIFT) == CTRL | ALT
 }
 
 /// Grabs one key with its modifiers, delivered to this program whatever has focus: once per
 /// lock combination. Whether X refused it is known once X answered all of that: errors
 /// meanwhile are noted, not shrugged off. Says whether the program has it (a refused one is
 /// released again).
-fn grabbed(board: &Board, grabs: &Grabs, held: c_uint, code: c_int) -> bool {
-    let (x, display, root) = (&board.x, board.display, root(&board.x, board.display));
+fn grabbed(conn: &Connection, grabs: &Grabs, held: c_uint, code: c_int) -> bool {
+    let (x, display, root) = (&conn.x, conn.display, root(&conn.x, conn.display));
     REFUSED.store(false, std::sync::atomic::Ordering::Relaxed);
     // SAFETY: the display is open; X's error handler is restored once X answered (`XSync`).
     // Grabbed with `GrabModeAsync` for both (1, 1).
@@ -3527,13 +3690,13 @@ fn grabbed(board: &Board, grabs: &Grabs, held: c_uint, code: c_int) -> bool {
 
 /// X delivered a key pressed on the root window: if it is one of the program's global hotkeys,
 /// the next run hears of it. (Lock keys do not count.)
-fn pressed(board: &Board, key: &InputEvent) -> bool {
+fn pressed(conn: &Connection, key: &InputEvent) -> bool {
     let Some(Some(grabs)) = GRABS.with(|grabs| grabs.get().map(|grabs| grabs.as_ref().map(|grabs| grabs.XKeysymToKeycode))) else { return false };
     let held = key.state & x_held(0x0f);
     crate::hotkeys::HOTKEYS.with_borrow_mut(|hotkeys| {
         // SAFETY: a plain query about the display's keyboard.
-        let same = |wanted: &crate::hotkeys::Wanted| x_held(wanted.combo.held) == held && unsafe { grabs(board.display, wanted.combo.key.keysym().0 as c_ulong) } as c_uint == key.detail;
-        let number = hotkeys.keys.iter().filter(|wanted| wanted.stand == crate::hotkeys::Stand::Held).find(|wanted| same(wanted)).map(|wanted| wanted.number);
+        let same = |wanted: &crate::hotkeys::Wanted| x_held(wanted.combo.modifiers) == held && unsafe { grabs(conn.display, wanted.combo.key.keysym().0 as c_ulong) } as c_uint == key.detail;
+        let number = hotkeys.keys.iter().filter(|wanted| wanted.state == crate::hotkeys::Registration::Registered).find(|wanted| same(wanted)).map(|wanted| wanted.number);
         number.is_some_and(|number| hotkeys.pressed(number))
     })
 }
@@ -3627,8 +3790,8 @@ impl Waker {
 pub(crate) mod tests {
     use super::*;
     use crate::portal::tests::{Ends, OwnBus, StandIn};
-    use crate::wishes::tests::{Kept, settings_of};
-    use crate::{Files, Second, Theme};
+    use crate::preferences::tests::{Kept, settings_of};
+    use crate::{FileDialog, SecondWindow, Theme};
     use std::io::Write;
     use std::process::{Command, Stdio};
     use std::sync::Arc;
@@ -3636,7 +3799,7 @@ pub(crate) mod tests {
 
     /// An unmapped window with the clipboard `selection`; nothing where there is no display to
     /// test on.
-    fn board(selection: &CStr) -> Option<Board> {
+    fn conn(selection: &CStr) -> Option<Connection> {
         // SAFETY: the window is made on a display that stays open for the rest of the test, and
         // selects property changes.
         unsafe {
@@ -3647,7 +3810,7 @@ pub(crate) mod tests {
             }
             let (id, _) = new_window(&x, display, [1, 1], [1, 1], None, [false; 2]);
             (x.XSelectInput)(display, id, 1 << 22);
-            Some(Board::new(x, display, id, selection))
+            Some(Connection::new(x, display, id, selection))
         }
     }
 
@@ -3655,20 +3818,20 @@ pub(crate) mod tests {
     /// first request for one.
     fn clipboard(selection: &CStr) -> Option<SystemClipboard> {
         hand_pictures_and_files();
-        Some(SystemClipboard(Rc::new(board(selection)?)))
+        Some(SystemClipboard(Rc::new(conn(selection)?)))
     }
 
-    /// Does for a board what a window's loop does: waits for the next X event and serves
+    /// Does for a connection what a window's loop does: waits for the next X event and serves
     /// selection requests and `INCR` progress.
-    fn serve(board: &Board) {
-        // SAFETY: the events are read from the board's own display.
+    fn serve(conn: &Connection) {
+        // SAFETY: the events are read from the connection's own display.
         unsafe {
             let mut event: XEvent = zeroed();
-            (board.x.XNextEvent)(board.display, &mut event);
+            (conn.x.XNextEvent)(conn.display, &mut event);
             match event.kind {
-                17 | 28 => board.hand_on(event.property, event.kind == 17),
-                29 => board.lost(event.property.atom),
-                30 => board.answer(event.request),
+                17 | 28 => conn.hand_on(event.property, event.kind == 17),
+                29 => conn.lost(event.property.atom),
+                30 => conn.answer(event.request),
                 _ => {}
             }
         }
@@ -3711,11 +3874,11 @@ pub(crate) mod tests {
         copied
     }
 
-    /// The types a board's clipboard owner offers, by name.
-    fn kinds_offered(reader: &Board) -> Vec<String> {
+    /// The types a connection's clipboard owner offers, by name.
+    fn kinds_offered(reader: &Connection) -> Vec<String> {
         let asked = Instant::now();
-        // SAFETY: the display is open, the window the board's own; the names X returns end in
-        // zeros and are copied before they are freed.
+        // SAFETY: the display is open, the window the connection's own; the names X returns end
+        // in zeros and are copied before they are freed.
         unsafe {
             (reader.x.XConvertSelection)(reader.display, reader.selection, reader.targets, reader.mailbox, reader.window, 0);
             (reader.x.XFlush)(reader.display);
@@ -3779,7 +3942,7 @@ pub(crate) mod tests {
         let Some(mut reader) = clipboard(c"TAUT_TEST_OTHER") else { return eprintln!("no display: not tested") };
         let (tell, on_its_way) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let owner = board(c"TAUT_TEST_OTHER").unwrap();
+            let owner = conn(c"TAUT_TEST_OTHER").unwrap();
             let text: Rc<[u8]> = long_text().into_bytes().into();
             owner.set(vec![(owner.utf8, text.clone())]);
             owner.property(owner.window, owner.mailbox, false);
@@ -3894,7 +4057,7 @@ pub(crate) mod tests {
         theirs.wait().unwrap();
         let asked = Instant::now();
         loop {
-            // SAFETY: the display is the board's own.
+            // SAFETY: the display is the connection's own.
             while unsafe { (ours.0.x.XPending)(ours.0.display) } > 0 {
                 serve(&ours.0);
             }
@@ -3906,15 +4069,15 @@ pub(crate) mod tests {
         }
     }
 
-    /// What xclip pastes from an X selection as one type while a board owns it; and whether any
-    /// of it went in pieces.
-    fn pasted_by_xclip(ours: &Board, selection: &str, kind: &str) -> (Vec<u8>, bool) {
+    /// What xclip pastes from an X selection as one type while a connection owns it; and
+    /// whether any of it went in pieces.
+    fn pasted_by_xclip(ours: &Connection, selection: &str, kind: &str) -> (Vec<u8>, bool) {
         let paste = Command::new("xclip").args(["-selection", selection, "-t", kind, "-o"]).stdout(Stdio::piped()).spawn().expect("xclip");
         let (done, pasted) = std::sync::mpsc::channel();
         std::thread::spawn(move || done.send(paste.wait_with_output().unwrap().stdout));
         let mut in_pieces = false;
         loop {
-            // SAFETY: the display is the board's own.
+            // SAFETY: the display is the connection's own.
             while unsafe { (ours.x.XPending)(ours.display) } > 0 {
                 serve(ours);
                 in_pieces |= !ours.going.borrow().is_empty();
@@ -3942,7 +4105,7 @@ pub(crate) mod tests {
         ours.set_picture(2, &picture);
         let (png, _) = pasted_by_xclip(&ours.0, "clipboard", "image/png");
         assert_eq!((crate::png::decode(&png), pasted_by_xclip(&ours.0, "clipboard", "TARGETS").0), (Some((2, picture)), b"TARGETS\nimage/png\n".to_vec()));
-        assert!(copied_by_xclip(&mut ours, "clipboard", "image/png", &crate::png::encode_clear(2, &theirs).unwrap(), |ours| ours.picture() == Some((2, theirs.clone()))));
+        assert!(copied_by_xclip(&mut ours, "clipboard", "image/png", &crate::png::encode_rgba(2, &theirs).unwrap(), |ours| ours.picture() == Some((2, theirs.clone()))));
         assert_eq!((ours.get(), ours.files()), (None, vec![]), "xclip has a picture, and nothing else");
 
         // Files both ways, in both list formats.
@@ -3968,7 +4131,7 @@ pub(crate) mod tests {
         let mut ours = clipboard(c"PRIMARY").expect("a display");
         let text = long_text();
         assert!(copied_by_xclip(&mut ours, "primary", "UTF8_STRING", text.as_bytes(), |ours| ours.get().is_some_and(|pasted| pasted == text)), "what was pasted is what xclip copied");
-        let png = crate::png::encode_clear(400, &noise(400)).unwrap();
+        let png = crate::png::encode_rgba(400, &noise(400)).unwrap();
         assert!(png.len() > ours.0.piece(), "{} bytes go in one piece", png.len());
         assert!(copied_by_xclip(&mut ours, "primary", "image/png", &png, |ours| ours.picture() == Some((400, noise(400)))), "the picture xclip copied is the one pasted");
     }
@@ -4128,7 +4291,7 @@ pub(crate) mod tests {
 
     /// The two-window test app's state, and what it noted in its last run.
     struct Two {
-        prefs: Second,
+        prefs: SecondWindow,
         dark: bool,
         pressed: u32,
         typed: [String; 2],
@@ -4192,7 +4355,7 @@ pub(crate) mod tests {
 
     /// These tests' two windows and their app's state.
     fn two_windows() -> Option<TwoWindows> {
-        let prefs = Second::new(200.0, 120.0);
+        let prefs = SecondWindow::new(200.0, 120.0);
         let app = Rc::new(RefCell::new(Two { prefs, dark: false, pressed: 0, typed: Default::default(), dropped: Default::default(), rename: None, at: [Rect::EMPTY; 4] }));
         let described = app.clone();
         let (alone, host) = host(Window { title: "taut test", width: 320.0, height: 200.0, ..Default::default() }, move |ui| two(&mut described.borrow_mut(), ui))?;
@@ -4201,11 +4364,11 @@ pub(crate) mod tests {
 
     /// Has X deliver an event to a window as if it happened there, and the host take a turn.
     fn send<App: FnMut(&mut Ui)>(host: &mut Host<App>, to: XWindow, mut event: XEvent) {
-        let board = host.board.clone();
+        let conn = host.conn.clone();
         // SAFETY: the event has an X event layout, and the display is the host's.
-        unsafe { (board.x.XSendEvent)(board.display, to, 0, 0, &mut event) };
+        unsafe { (conn.x.XSendEvent)(conn.display, to, 0, 0, &mut event) };
         // X has delivered it by the time it answers a later query.
-        board.property(to, board.mailbox, false);
+        conn.property(to, conn.mailbox, false);
         host.turn();
     }
 
@@ -4240,16 +4403,16 @@ pub(crate) mod tests {
     }
 
     /// A window's size in pixels; nothing if X has no such window.
-    fn size_at_x(board: &Board, window: XWindow) -> Option<[c_uint; 2]> {
+    fn size_at_x(conn: &Connection, window: XWindow) -> Option<[c_uint; 2]> {
         let (mut parent, mut place, mut size, mut rest) = (0, [0; 2], [0; 2], [0; 2]);
         // SAFETY: X fills these in, or reports to `shrug` that the window does not exist.
-        let there = unsafe { (board.x.XGetGeometry)(board.display, window, &mut parent, &mut place[0], &mut place[1], &mut size[0], &mut size[1], &mut rest[0], &mut rest[1]) };
+        let there = unsafe { (conn.x.XGetGeometry)(conn.display, window, &mut parent, &mut place[0], &mut place[1], &mut size[0], &mut size[1], &mut rest[0], &mut rest[1]) };
         (there != 0).then_some(size)
     }
 
     /// The text in a window property.
-    fn text_at_x(board: &Board, window: XWindow, name: &CStr) -> Option<String> {
-        board.property(window, board.atom(name), false).map(|(_, _, bytes)| String::from_utf8_lossy(&bytes).into_owned())
+    fn text_at_x(conn: &Connection, window: XWindow, name: &CStr) -> Option<String> {
+        conn.property(window, conn.atom(name), false).map(|(_, _, bytes)| String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// The program's icons are on its window for task bars and window lists: each width,
@@ -4261,7 +4424,7 @@ pub(crate) mod tests {
         let asked = Window { title: "taut pictured", width: 320.0, height: 200.0, icons: &icons, ..Default::default() };
         let Some((_alone, host)) = host(asked, |ui: &mut Ui| _ = ui.label("One")) else { return eprintln!("no display: not tested") };
         // X keeps 32 bits of each number and returns them as C longs.
-        let kept: Vec<u32> = host.board.numbers(host.windows[0].id, c"_NET_WM_ICON").into_iter().map(|number| number as u32).collect();
+        let kept: Vec<u32> = host.conn.numbers(host.windows[0].id, c"_NET_WM_ICON").into_iter().map(|number| number as u32).collect();
         assert_eq!(kept, [2, 2, 0xff10_2030, 0xff10_2030, 0xff10_2030, 0xff10_2030, 3, 2, 0x8040_5060, 0x8040_5060, 0x8040_5060, 0x8040_5060, 0x8040_5060, 0x8040_5060]);
     }
 
@@ -4270,20 +4433,20 @@ pub(crate) mod tests {
     #[test]
     fn a_second_window_is_opened_with_its_title_and_size() {
         let Some((_alone, host, _app)) = two_windows() else { return eprintln!("no display: not tested") };
-        let (board, scale) = (host.board.clone(), host.scale);
+        let (conn, scale) = (host.conn.clone(), host.scale);
         let [first, second] = [host.windows[0].id, host.windows[1].id];
         assert_eq!((host.windows.len(), host.windows[1].known), (2, host.ui.windows().next().map(|(known, ..)| known)));
-        assert_eq!((text_at_x(&board, first, c"_NET_WM_NAME").as_deref(), text_at_x(&board, second, c"_NET_WM_NAME").as_deref()), (Some("taut test"), Some("Preferences")));
-        assert_eq!(text_at_x(&board, second, c"WM_NAME").as_deref(), Some("Preferences"), "and under the old kind of name");
+        assert_eq!((text_at_x(&conn, first, c"_NET_WM_NAME").as_deref(), text_at_x(&conn, second, c"_NET_WM_NAME").as_deref()), (Some("taut test"), Some("Preferences")));
+        assert_eq!(text_at_x(&conn, second, c"WM_NAME").as_deref(), Some("Preferences"), "and under the old kind of name");
         // Both carry `WM_CLASS`, as task bars want.
         let program = std::env::current_exe().unwrap().file_stem().unwrap().to_string_lossy().into_owned();
-        assert_eq!([first, second].map(|window| text_at_x(&board, window, c"WM_CLASS")), [(); 2].map(|_| Some(format!("{program}\0{program}\0"))));
-        assert_eq!(size_at_x(&board, first), Some([(320.0 * scale) as c_uint, (200.0 * scale) as c_uint]));
-        assert_eq!(size_at_x(&board, second), Some([(200.0 * scale) as c_uint, (120.0 * scale) as c_uint]));
+        assert_eq!([first, second].map(|window| text_at_x(&conn, window, c"WM_CLASS")), [(); 2].map(|_| Some(format!("{program}\0{program}\0"))));
+        assert_eq!(size_at_x(&conn, first), Some([(320.0 * scale) as c_uint, (200.0 * scale) as c_uint]));
+        assert_eq!(size_at_x(&conn, second), Some([(200.0 * scale) as c_uint, (120.0 * scale) as c_uint]));
         // It accepts drops, takes `WM_DELETE_WINDOW`, and shares the first's window group.
-        assert_eq!(board.numbers(second, c"XdndAware"), [5]);
-        assert_eq!(board.numbers(second, c"WM_PROTOCOLS"), [board.atom(c"WM_DELETE_WINDOW")]);
-        assert_eq!([first, second].map(|window| board.numbers(window, c"WM_HINTS")), [[1 << 6, 0, 0, 0, 0, 0, 0, 0, first]; 2]);
+        assert_eq!(conn.numbers(second, c"XdndAware"), [5]);
+        assert_eq!(conn.numbers(second, c"WM_PROTOCOLS"), [conn.atom(c"WM_DELETE_WINDOW")]);
+        assert_eq!([first, second].map(|window| conn.numbers(window, c"WM_HINTS")), [[1 << 6, 0, 0, 0, 0, 0, 0, 0, first]; 2]);
     }
 
     /// Pointer input in the second window goes to its interface, not the first's, and the
@@ -4316,11 +4479,11 @@ pub(crate) mod tests {
     #[test]
     fn a_second_window_the_person_closes_is_closed_by_the_app() {
         let Some((_alone, mut host, app)) = two_windows() else { return eprintln!("no display: not tested") };
-        let (board, [first, second]) = (host.board.clone(), [host.windows[0].id, host.windows[1].id]);
-        let closing = |window| message(window, board.atom(c"WM_PROTOCOLS"), [board.atom(c"WM_DELETE_WINDOW") as c_long, 0, 0, 0, 0]);
+        let (conn, [first, second]) = (host.conn.clone(), [host.windows[0].id, host.windows[1].id]);
+        let closing = |window| message(window, conn.atom(c"WM_PROTOCOLS"), [conn.atom(c"WM_DELETE_WINDOW") as c_long, 0, 0, 0, 0]);
         send(&mut host, second, closing(second));
         assert_eq!((app.borrow().prefs.open, host.windows.len(), host.ui.windows().count(), host.done), (false, 1, 0, false));
-        assert_eq!((size_at_x(&board, second), size_at_x(&board, first).is_some()), (None, true), "X has the first window, and no second one");
+        assert_eq!((size_at_x(&conn, second), size_at_x(&conn, first).is_some()), (None, true), "X has the first window, and no second one");
         send(&mut host, first, closing(first));
         assert!(host.done);
     }
@@ -4331,32 +4494,32 @@ pub(crate) mod tests {
     #[test]
     fn a_second_window_follows_what_the_app_describes() {
         let Some((_alone, mut host, app)) = two_windows() else { return eprintln!("no display: not tested") };
-        let (board, scale, second) = (host.board.clone(), host.scale, host.windows[1].id);
+        let (conn, scale, second) = (host.conn.clone(), host.scale, host.windows[1].id);
         for open in [false, true, false] {
-            (app.borrow_mut().prefs, host.rerun) = (Second { open, ..Second::new(0.0, 0.0) }, true);
+            (app.borrow_mut().prefs, host.rerun) = (SecondWindow { open, ..SecondWindow::new(0.0, 0.0) }, true);
             host.turn();
             let (shown, asked) = (host.windows.get(1).map_or(second, |shown| shown.id), host.windows.get(1).map(|shown| shown.size));
-            assert_eq!((host.windows.len(), size_at_x(&board, shown).is_some(), asked), (1 + open as usize, open, open.then_some([1, 1])));
+            assert_eq!((host.windows.len(), size_at_x(&conn, shown).is_some(), asked), (1 + open as usize, open, open.then_some([1, 1])));
         }
-        (app.borrow_mut().prefs, host.rerun) = (Second::new(200.0, 120.0), true);
+        (app.borrow_mut().prefs, host.rerun) = (SecondWindow::new(200.0, 120.0), true);
         host.turn();
         let again = host.windows[1].id;
-        assert_eq!((host.windows.len(), size_at_x(&board, again)), (2, Some([(200.0 * scale) as c_uint, (120.0 * scale) as c_uint])));
+        assert_eq!((host.windows.len(), size_at_x(&conn, again)), (2, Some([(200.0 * scale) as c_uint, (120.0 * scale) as c_uint])));
 
         // X is asked to resize, as a window manager does when the person drags an edge; the app
         // is told once X confirms.
         let (asking, asked) = (Asking::open().unwrap(), Instant::now());
         // SAFETY: the window is the host's own, on its display.
-        unsafe { (asking.XResizeWindow)(board.display, again, (300.0 * scale) as c_uint, (150.0 * scale) as c_uint) };
+        unsafe { (asking.XResizeWindow)(conn.display, again, (300.0 * scale) as c_uint, (150.0 * scale) as c_uint) };
         while app.borrow().prefs.width.round() != 300.0 && asked.elapsed() < Duration::from_secs(2) {
-            board.property(again, board.mailbox, false);
+            conn.property(again, conn.mailbox, false);
             host.turn();
         }
         assert_eq!((app.borrow().prefs.width.round(), app.borrow().prefs.height.round()), (300.0, 150.0));
         (app.borrow_mut().rename, host.rerun) = (Some("Renamed"), true);
         host.turn();
-        assert_eq!([c"_NET_WM_NAME", c"WM_NAME"].map(|name| text_at_x(&board, again, name)), [Some("Renamed".into()), Some("Renamed".into())]);
-        assert_eq!(text_at_x(&board, host.windows[0].id, c"_NET_WM_NAME").as_deref(), Some("taut test"), "the first window keeps its own");
+        assert_eq!([c"_NET_WM_NAME", c"WM_NAME"].map(|name| text_at_x(&conn, again, name)), [Some("Renamed".into()), Some("Renamed".into())]);
+        assert_eq!(text_at_x(&conn, host.windows[0].id, c"_NET_WM_NAME").as_deref(), Some("taut test"), "the first window keeps its own");
     }
 
     /// When the windows close, nothing of them stays with X: seen from another connection, both
@@ -4364,9 +4527,9 @@ pub(crate) mod tests {
     #[test]
     fn nothing_is_left_at_x_when_the_windows_are_gone() {
         let Some((_alone, host, _app)) = two_windows() else { return eprintln!("no display: not tested") };
-        let (watcher, windows) = (board(c"TAUT_TEST_WINDOWS").unwrap(), [host.windows[0].id, host.windows[1].id]);
+        let (watcher, windows) = (conn(c"TAUT_TEST_WINDOWS").unwrap(), [host.windows[0].id, host.windows[1].id]);
         // X has created them by the time it answers a later query.
-        host.board.property(windows[0], host.board.mailbox, false);
+        host.conn.property(windows[0], host.conn.mailbox, false);
         assert!(windows.iter().all(|window| size_at_x(&watcher, *window).is_some()));
         drop(host);
         assert_eq!(windows.map(|window| size_at_x(&watcher, window)), [None, None]);
@@ -4380,13 +4543,13 @@ pub(crate) mod tests {
     #[ignore]
     fn each_window_is_typed_into_by_itself() {
         let (_alone, mut host, app) = two_windows().expect("a display");
-        if host.board.managed() {
+        if host.conn.managed() {
             return eprintln!("a window manager is there, and hands the keyboard from window to window itself: not tested");
         }
-        let (board, scale, at, [first, second]) = (host.board.clone(), host.scale, app.borrow().at, [host.windows[0].id, host.windows[1].id]);
+        let (conn, scale, at, [first, second]) = (host.conn.clone(), host.scale, app.borrow().at, [host.windows[0].id, host.windows[1].id]);
         let asking = Asking::open().unwrap();
         // SAFETY: the display is the host's own.
-        let key = |letter: char| unsafe { (asking.XKeysymToKeycode)(board.display, letter as c_ulong) } as c_uint;
+        let key = |letter: char| unsafe { (asking.XKeysymToKeycode)(conn.display, letter as c_ulong) } as c_uint;
         click(&mut host, second, middle(at[3], scale));
         "two".chars().for_each(|letter| send(&mut host, second, input(second, 2, [0, 0], key(letter))));
         assert_eq!(app.borrow().typed, ["", "two"]);
@@ -4408,7 +4571,7 @@ pub(crate) mod tests {
     fn files_carried_elsewhere(list: &'static str) -> (XWindow, std::sync::mpsc::Receiver<(Atom, [c_long; 5])>) {
         let (tell, heard) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let source = board(c"XdndSelection").unwrap();
+            let source = conn(c"XdndSelection").unwrap();
             source.set(vec![(source.atom(FILES), list.as_bytes().into())]);
             source.property(source.window, source.mailbox, false);
             tell.send((source.window, [0; 5])).unwrap();
@@ -4457,17 +4620,17 @@ pub(crate) mod tests {
         // A window manager places windows in its own time: the check box's screen position is
         // asked after that.
         settle(&mut host);
-        let (board, second) = (host.board.clone(), host.windows[1].id);
+        let (conn, second) = (host.conn.clone(), host.windows[1].id);
         let (from, heard) = files_carried_elsewhere("file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n");
-        let (named, wait) = (|name: &CStr| board.atom(name), Duration::from_secs(2));
+        let (named, wait) = (|name: &CStr| conn.atom(name), Duration::from_secs(2));
         // The second window's check box on screen.
         let (at, mut place, mut child) = (middle(app.borrow().at[2], host.scale), [0; 2], 0);
         // SAFETY: X fills in where on screen the window point is.
-        unsafe { (board.x.XTranslateCoordinates)(board.display, second, root(&board.x, board.display), at[0], at[1], &mut place[0], &mut place[1], &mut child) };
+        unsafe { (conn.x.XTranslateCoordinates)(conn.display, second, root(&conn.x, conn.display), at[0], at[1], &mut place[0], &mut place[1], &mut child) };
         send(&mut host, second, message(second, named(c"XdndEnter"), [from as c_long, 5 << 24, named(FILES) as c_long, 0, 0]));
         send(&mut host, second, message(second, named(c"XdndPosition"), [from as c_long, 0, (place[0] << 16 | place[1]) as c_long, 0, named(c"XdndActionCopy") as c_long]));
         assert_eq!(heard.recv_timeout(wait), Ok((named(c"XdndStatus"), [second as c_long, 3, 0, 0, named(c"XdndActionCopy") as c_long])), "they may be let go here");
-        assert_eq!((host.ui.in_window(host.windows[1].known.unwrap(), |window| window.files_over()), host.ui.files_over()), (Some(true), false));
+        assert_eq!((host.ui.in_window(host.windows[1].known.unwrap(), |window| window.files_hovered()), host.ui.files_hovered()), (Some(true), false));
         send(&mut host, second, message(second, named(c"XdndDrop"), [from as c_long, 0, 0, 0, 0]));
         assert_eq!(heard.recv_timeout(wait), Ok((0, [second as c_long, 0, 0, 0, 0])), "the list was asked for by the window they were let go on");
         assert_eq!(heard.recv_timeout(wait), Ok((named(c"XdndFinished"), [second as c_long, 1, named(c"XdndActionCopy") as c_long, 0, 0])), "and they were taken");
@@ -4492,10 +4655,10 @@ pub(crate) mod tests {
         })
         .expect("a display");
         settle(&mut host);
-        let (board, id) = (host.board.clone(), host.windows[0].id);
-        let (named, wait) = (|name: &CStr| board.atom(name), Duration::from_secs(2));
+        let (conn, id) = (host.conn.clone(), host.windows[0].id);
+        let (named, wait) = (|name: &CStr| conn.atom(name), Duration::from_secs(2));
         assert!(DROPS.get().is_none() && OUTWARD.get().is_none(), "no way of taking or carrying out has been handed over");
-        assert_eq!(board.numbers(id, c"XdndAware"), [], "it says nothing while its app has not asked");
+        assert_eq!(conn.numbers(id, c"XdndAware"), [], "it says nothing while its app has not asked");
         let (from, heard) = files_carried_elsewhere("file:///tmp/one.txt\r\n");
         let at = spot(&host, 0, got.borrow().1);
         let carried = || {
@@ -4511,7 +4674,7 @@ pub(crate) mod tests {
         asks.set(true);
         host.rerun = true;
         host.turn();
-        assert_eq!(board.numbers(id, c"XdndAware"), [5], "it says so once its app asks");
+        assert_eq!(conn.numbers(id, c"XdndAware"), [5], "it says so once its app asks");
         carried().into_iter().for_each(|event| send(&mut host, id, event));
         assert_eq!(heard.recv_timeout(wait), Ok((named(c"XdndStatus"), [id as c_long, 3, 0, 0, named(c"XdndActionCopy") as c_long])), "they may be let go here");
         assert!(host.ui.files_over);
@@ -4524,10 +4687,10 @@ pub(crate) mod tests {
     /// Has a host take in X events until something holds, or two seconds pass. Says whether it
     /// came to hold. (A window manager acts in its own time.)
     fn wait<App: FnMut(&mut Ui)>(host: &mut Host<App>, so: impl Fn(&Host<App>) -> bool) -> bool {
-        let (board, asked) = (host.board.clone(), Instant::now());
+        let (conn, asked) = (host.conn.clone(), Instant::now());
         while !so(host) && asked.elapsed() < Duration::from_secs(2) {
             // X has done what it was asked by the time it answers a later query.
-            board.property(board.window, board.mailbox, false);
+            conn.property(conn.window, conn.mailbox, false);
             host.turn();
         }
         so(host)
@@ -4535,21 +4698,21 @@ pub(crate) mod tests {
 
     /// Has a host take in whatever X still has to say, for 200 ms.
     fn settle<App: FnMut(&mut Ui)>(host: &mut Host<App>) {
-        let (board, asked) = (host.board.clone(), Instant::now());
+        let (conn, asked) = (host.conn.clone(), Instant::now());
         while asked.elapsed() < Duration::from_millis(200) {
-            board.property(board.window, board.mailbox, false);
+            conn.property(conn.window, conn.mailbox, false);
             host.turn();
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 
     /// Each pixel of a window as on screen now, in rows.
-    fn on_screen(board: &Board, window: XWindow, [width, height]: [c_int; 2]) -> Vec<Vec<c_ulong>> {
+    fn on_screen(conn: &Connection, window: XWindow, [width, height]: [c_int; 2]) -> Vec<Vec<c_ulong>> {
         let asking = Asking::open().unwrap();
         // SAFETY: X returns an image of the window this size (all planes, `ZPixmap` 2), read
         // pixel by pixel through X's own function.
         unsafe {
-            let picture = (asking.XGetImage)(board.display, window, 0, 0, width as c_uint, height as c_uint, !0, 2);
+            let picture = (asking.XGetImage)(conn.display, window, 0, 0, width as c_uint, height as c_uint, !0, 2);
             assert!(!picture.is_null() && ((*picture).width, (*picture).height) == (width, height), "X has no picture of the window");
             (0..height).map(|y| (0..width).map(|x| (asking.XGetPixel)(picture, x, y)).collect()).collect()
         }
@@ -4572,53 +4735,68 @@ pub(crate) mod tests {
             at[1] = ui.checkbox(&mut ticks[1], "Below").rect;
         };
         let (_alone, mut host) = host(Window { title: "taut places", width: 320.0, height: 200.0, ..Default::default() }, describe).expect("a display");
-        let (board, id, size, scale, asking) = (host.board.clone(), host.windows[0].id, host.windows[0].size, host.scale, Asking::open().unwrap());
+        let (conn, id, size, scale, asking) = (host.conn.clone(), host.windows[0].id, host.windows[0].size, host.scale, Asking::open().unwrap());
         // Whatever X still has to say about the window being mapped is taken in first.
         settle(&mut host);
         // SAFETY: the window is the host's own, on its display.
-        let fill = || unsafe { ((asking.XSetWindowBackground)(board.display, id, MARK), (asking.XClearWindow)(board.display, id)) };
+        let fill = || unsafe { ((asking.XSetWindowBackground)(conn.display, id, MARK), (asking.XClearWindow)(conn.display, id)) };
         // What was put on screen: how many pixels, and the rows of the first and last.
-        let put = |board: &Board| {
-            let rows = on_screen(board, id, size);
+        let put = |conn: &Connection| {
+            let rows = on_screen(conn, id, size);
             let drawn: Vec<usize> = rows.iter().enumerate().filter(|(_, row)| row.iter().any(|pixel| *pixel != MARK)).map(|(y, _)| y).collect();
             (rows.iter().flatten().filter(|pixel| **pixel != MARK).count(), drawn)
         };
+        // (Through the GPU, a driver may put a frame on the screen a moment after it is shown:
+        // what is wanted is waited for, a second at most.)
+        let waited = |wanted: &dyn Fn(usize, &[usize]) -> bool| {
+            let (asked, mut seen) = (Instant::now(), put(&conn));
+            while !wanted(seen.0, &seen.1) && asked.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(10));
+                seen = put(&conn);
+            }
+            seen
+        };
         fill();
-        assert_eq!(put(&board), (0, vec![]), "nothing is put on the screen while nothing changes");
+        assert_eq!(put(&conn), (0, vec![]), "nothing is put on the screen while nothing changes");
         host.turn();
-        assert_eq!(put(&board).0, 0);
+        assert_eq!(put(&conn).0, 0);
 
         // The app checks both boxes itself, at once.
         (kept.borrow_mut().0, host.rerun) = ([true; 2], true);
         host.turn();
-        let (at, (pixels, rows)) = (kept.borrow().1, put(&board));
+        let at = kept.borrow().1;
         let lines = |of: Rect| ((of.y * scale).floor() as usize, (of.bottom() * scale).ceil() as usize);
         let ((above, above_ends), (below, below_ends)) = (lines(at[0]), lines(at[1]));
+        let both = |_: usize, rows: &[usize]| rows.iter().any(|y| (above..above_ends).contains(y)) && rows.iter().any(|y| (below..below_ends).contains(y));
+        let (pixels, rows) = waited(&both);
         assert!(below > above_ends + 100, "the boxes are far apart: {at:?}");
-        assert!(rows.iter().any(|y| (above..above_ends).contains(y)) && rows.iter().any(|y| (below..below_ends).contains(y)), "both places are put on the screen: {rows:?}");
-        assert!(rows.iter().all(|y| (above..above_ends).contains(y) || (below..below_ends).contains(y)), "and nothing between them, or around them: {rows:?} for {at:?}");
-        assert!(pixels <= ((at[0].w + at[1].w) * scale) as usize * rows.len(), "{pixels} pixels");
+        assert!(both(pixels, &rows), "both places are put on the screen: {rows:?}");
+        // (Through the GPU, the driver decides what reaches X: see `through_the_gpu`.)
+        let by_x = host.ui.renderer() == crate::platform::Renderer::Cpu;
+        assert!(!by_x || rows.iter().all(|y| (above..above_ends).contains(y) || (below..below_ends).contains(y)), "and nothing between them, or around them: {rows:?} for {at:?}");
+        assert!(!by_x || pixels <= ((at[0].w + at[1].w) * scale) as usize * rows.len(), "{pixels} pixels");
 
         // What X reports uncovered is redrawn whole, with whatever changed in it meanwhile.
         fill();
         (kept.borrow_mut().0, host.rerun) = ([false; 2], true);
-        host.windows[0].bare(ExposeEvent { kind: 12, serial: 0, sent: 0, display: null_mut(), window: id, x: 0, y: 0, width: size[0], height: size[1] }, scale);
+        host.windows[0].exposed(ExposeEvent { kind: 12, serial: 0, sent: 0, display: null_mut(), window: id, x: 0, y: 0, width: size[0], height: size[1] }, scale);
         host.turn();
-        assert_eq!(put(&board), ((size[0] * size[1]) as usize, (0..size[1] as usize).collect()), "all of the window");
+        let whole: (usize, Vec<usize>) = ((size[0] * size[1]) as usize, (0..size[1] as usize).collect());
+        assert_eq!(waited(&|pixels, rows| pixels == whole.0 && rows == whole.1), whole, "all of the window");
     }
 
     /// A window's frame corner as X and the window manager have it: the window's own corner on
     /// screen, less the frame extents left and top.
-    fn corner_at_x(board: &Board, window: XWindow) -> (i32, i32) {
-        let ([x, y], frame) = (board.place(window), board.numbers(window, c"_NET_FRAME_EXTENTS"));
+    fn corner_at_x(conn: &Connection, window: XWindow) -> (i32, i32) {
+        let ([x, y], frame) = (conn.place(window), conn.numbers(window, c"_NET_FRAME_EXTENTS"));
         (x - frame.first().map_or(0, |left| *left as i32), y - frame.get(2).map_or(0, |up| *up as i32))
     }
 
     /// The placement tests' app state: a second window and a third.
     #[derive(Clone, Copy, Debug)]
     struct Places {
-        prefs: Second,
-        log: Second,
+        prefs: SecondWindow,
+        log: SecondWindow,
     }
 
     /// A first window opened as `window` says, describing the two second windows.
@@ -4649,50 +4827,50 @@ pub(crate) mod tests {
     #[ignore]
     fn a_window_opens_where_its_app_says_and_its_app_is_told_where_it_is() {
         let asking = Asking::open().unwrap();
-        let places = Places { prefs: Second::new(200.0, 120.0).at(540, 280).least(120.0, 60.0), log: Second { open: false, ..Second::new(200.0, 120.0) } };
-        let ((alone, mut host), kept) = placed(Window { title: "taut placed", at: Some((300, 200)), width: 400.0, height: 240.0, ..Default::default() }, places);
-        let (board, scale, first) = (host.board.clone(), host.scale, host.windows[0].id);
-        let there = |at| Placed { at, width: (400.0 * scale).floor() / scale, height: (240.0 * scale).floor() / scale, maximized: false };
-        assert!(wait(&mut host, |host| host.ui.placed() == Some(there((300, 200)))), "the window is told {:?}", host.ui.placed());
-        assert_eq!(corner_at_x(&board, first), (300, 200), "and that is where X has it");
+        let places = Places { prefs: SecondWindow::new(200.0, 120.0).position(540, 280).min_size(120.0, 60.0), log: SecondWindow { open: false, ..SecondWindow::new(200.0, 120.0) } };
+        let ((alone, mut host), kept) = placed(Window { title: "taut placed", position: Some((300, 200)), width: 400.0, height: 240.0, ..Default::default() }, places);
+        let (conn, scale, first) = (host.conn.clone(), host.scale, host.windows[0].id);
+        let there = |at| WindowPlacement { position: at, width: (400.0 * scale).floor() / scale, height: (240.0 * scale).floor() / scale, maximized: false };
+        assert!(wait(&mut host, |host| host.ui.window_placement() == Some(there((300, 200)))), "the window is told {:?}", host.ui.window_placement());
+        assert_eq!(corner_at_x(&conn, first), (300, 200), "and that is where X has it");
         // Moved as the person would (asking the window manager, where there is one); its
         // interface is told.
-        unsafe { (asking.XMoveWindow)(board.display, first, 420, 310) };
-        assert!(wait(&mut host, |host| host.ui.placed() == Some(there((420, 310)))), "moved, the window is told {:?}", host.ui.placed());
-        assert_eq!(corner_at_x(&board, first), (420, 310));
+        unsafe { (asking.XMoveWindow)(conn.display, first, 420, 310) };
+        assert!(wait(&mut host, |host| host.ui.window_placement() == Some(there((420, 310)))), "moved, the window is told {:?}", host.ui.window_placement());
+        assert_eq!(corner_at_x(&conn, first), (420, 310));
 
         // A second window: where its app says, no smaller than it says. Its app hears where it
         // is and where it moves.
         let second = host.windows[1].id;
-        assert!(wait(&mut host, |_| kept.borrow().prefs.at == Some((540, 280)) && corner_at_x(&board, second) == (540, 280)), "the second window is told {:?}", kept.borrow().prefs.at);
-        let asks = board.numbers(second, c"WM_NORMAL_HINTS");
+        assert!(wait(&mut host, |_| kept.borrow().prefs.position == Some((540, 280)) && corner_at_x(&conn, second) == (540, 280)), "the second window is told {:?}", kept.borrow().prefs.position);
+        let asks = conn.numbers(second, c"WM_NORMAL_HINTS");
         assert_eq!((asks[0], asks[5], asks[6]), (1 << 4 | 1, (120.0 * scale) as c_ulong, (60.0 * scale) as c_ulong), "its place is one the person chose, and it has a smallest size");
-        unsafe { (asking.XMoveWindow)(board.display, second, 600, 330) };
-        assert!(wait(&mut host, |_| kept.borrow().prefs.at == Some((600, 330))), "moved, the second window is told {:?}", kept.borrow().prefs.at);
-        assert_eq!(corner_at_x(&board, second), (600, 330));
+        unsafe { (asking.XMoveWindow)(conn.display, second, 600, 330) };
+        assert!(wait(&mut host, |_| kept.borrow().prefs.position == Some((600, 330))), "moved, the second window is told {:?}", kept.borrow().prefs.position);
+        assert_eq!(corner_at_x(&conn, second), (600, 330));
         // One with no place given is placed by the window manager (by X where there is none),
         // and its app hears where.
         (kept.borrow_mut().log.open, host.rerun) = (true, true);
         host.turn();
         let third = host.windows[2].id;
-        assert_eq!(board.numbers(third, c"WM_NORMAL_HINTS")[0], 1 << 4, "it asks for no place");
+        assert_eq!(conn.numbers(third, c"WM_NORMAL_HINTS")[0], 1 << 4, "it asks for no place");
         // A window manager may map a window before placing it.
         settle(&mut host);
-        assert!(wait(&mut host, |_| kept.borrow().log.at == Some(corner_at_x(&board, third))), "the third window is told {:?}", kept.borrow().log.at);
+        assert!(wait(&mut host, |_| kept.borrow().log.position == Some(corner_at_x(&conn, third))), "the third window is told {:?}", kept.borrow().log.position);
 
         // The next day: the app opens its windows with what it kept, and they are where they
         // were.
-        let (first_kept, places) = (host.ui.placed(), *kept.borrow());
+        let (first_kept, places) = (host.ui.window_placement(), *kept.borrow());
         drop((host, alone));
-        let ((_alone, mut host), kept) = placed(Window { title: "taut placed", ..Default::default() }.placed(first_kept), places);
-        let (board, windows) = (host.board.clone(), [0, 1, 2].map(|at| host.windows[at].id));
-        let wanted = [first_kept.map(|place| place.at), places.prefs.at, places.log.at];
-        let told = |host: &Windows| [host.ui.placed().map(|place| place.at), kept.borrow().prefs.at, kept.borrow().log.at];
-        let there = || windows.map(|window| Some(corner_at_x(&board, window)));
+        let ((_alone, mut host), kept) = placed(Window { title: "taut placed", ..Default::default() }.with_placement(first_kept), places);
+        let (conn, windows) = (host.conn.clone(), [0, 1, 2].map(|at| host.windows[at].id));
+        let wanted = [first_kept.map(|place| place.position), places.prefs.position, places.log.position];
+        let told = |host: &Windows| [host.ui.window_placement().map(|place| place.position), kept.borrow().prefs.position, kept.borrow().log.position];
+        let there = || windows.map(|window| Some(corner_at_x(&conn, window)));
         // Again the window manager gets time to place each.
         settle(&mut host);
         assert!(wait(&mut host, |host| told(host) == wanted && there() == wanted), "the next day the windows are told {:?} and are at {:?}, and had kept {wanted:?}", told(&host), there());
-        assert_eq!(host.ui.placed(), first_kept);
+        assert_eq!(host.ui.window_placement(), first_kept);
     }
 
     /// A place on no screen (one was removed) is moved onto the nearest screen, for a first and
@@ -4701,14 +4879,14 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn a_place_on_no_screen_is_moved_onto_the_nearest() {
-        let places = Places { prefs: Second::new(200.0, 120.0).at(20_000, 100), log: Second::new(200.0, 120.0).at(100, -500) };
-        let ((_alone, mut host), kept) = placed(Window { title: "taut lost", at: Some((-30_000, -30_000)), width: 300.0, height: 200.0, ..Default::default() }, places);
-        let (board, windows, work) = (host.board.clone(), [0, 1, 2].map(|at| host.windows[at].id), host.ui.screens()[0].work);
-        assert_eq!(windows.map(|window| board.numbers(window, c"WM_NORMAL_HINTS")[0] & 1), [1; 3], "each asks for the place it was moved to");
+        let places = Places { prefs: SecondWindow::new(200.0, 120.0).position(20_000, 100), log: SecondWindow::new(200.0, 120.0).position(100, -500) };
+        let ((_alone, mut host), kept) = placed(Window { title: "taut lost", position: Some((-30_000, -30_000)), width: 300.0, height: 200.0, ..Default::default() }, places);
+        let (conn, windows, work) = (host.conn.clone(), [0, 1, 2].map(|at| host.windows[at].id), host.ui.screens()[0].work_area);
+        assert_eq!(windows.map(|window| conn.numbers(window, c"WM_NORMAL_HINTS")[0] & 1), [1; 3], "each asks for the place it was moved to");
         // A window manager may map a window before placing it.
         settle(&mut host);
-        let told = |host: &Windows| [host.ui.placed().map(|place| place.at), kept.borrow().prefs.at, kept.borrow().log.at];
-        let there = || windows.map(|window| Some(corner_at_x(&board, window)));
+        let told = |host: &Windows| [host.ui.window_placement().map(|place| place.position), kept.borrow().prefs.position, kept.borrow().log.position];
+        let there = || windows.map(|window| Some(corner_at_x(&conn, window)));
         assert!(wait(&mut host, |host| told(host) == there()), "each is told where it was put: {:?}, and they are at {:?}", told(&host), there());
         let on = |(x, y): (i32, i32)| x as f32 >= work.x && y as f32 >= work.y && (x + 160) as f32 <= work.right() && (y + 30) as f32 <= work.bottom();
         assert!(there().into_iter().flatten().all(on), "{:?} are not all on {work:?}", there());
@@ -4719,12 +4897,12 @@ pub(crate) mod tests {
 
     /// Asks the window manager to change a window's state, as a task bar does: maximize, or
     /// restore.
-    fn ask_to_fill(board: &Board, window: XWindow, fill: bool) {
-        let data = [fill as c_long, board.atom(FILLING[0]) as c_long, board.atom(FILLING[1]) as c_long, 2, 0];
-        let mut event = message(window, board.atom(c"_NET_WM_STATE"), data);
+    fn ask_to_fill(conn: &Connection, window: XWindow, fill: bool) {
+        let data = [fill as c_long, conn.atom(FILLING[0]) as c_long, conn.atom(FILLING[1]) as c_long, 2, 0];
+        let mut event = message(window, conn.atom(c"_NET_WM_STATE"), data);
         // SAFETY: the client message has X's layout and goes to the window manager
         // (`SubstructureRedirectMask | SubstructureNotifyMask`).
-        unsafe { (board.x.XSendEvent)(board.display, root(&board.x, board.display), 0, 1 << 19 | 1 << 20, &mut event) };
+        unsafe { (conn.x.XSendEvent)(conn.display, root(&conn.x, conn.display), 0, 1 << 19 | 1 << 20, &mut event) };
     }
 
     /// A window opening minimized tells its app, comes forward when its app asks, and stays
@@ -4740,22 +4918,22 @@ pub(crate) mod tests {
             let (top, forward) = app.take();
             top.into_iter().for_each(|on| ui.set_on_top(on));
             if forward {
-                ui.come_forward();
+                ui.bring_to_front();
             }
             ui.label("One");
         };
         let (alone, mut host) = host(Window { title: "taut minimized", width: 300.0, height: 200.0, minimized: true, ..Default::default() }, describe).expect("a display");
-        let (board, first) = (host.board.clone(), host.windows[0].id);
-        let state = |name: &CStr| board.numbers(first, c"_NET_WM_STATE").contains(&board.atom(name));
-        assert_eq!(board.numbers(first, c"WM_HINTS").get(..3), Some(&[2, 0, 3][..]), "it said that it starts as an icon");
-        if !board.managed() {
-            assert!(!host.ui.window_hidden());
+        let (conn, first) = (host.conn.clone(), host.windows[0].id);
+        let state = |name: &CStr| conn.numbers(first, c"_NET_WM_STATE").contains(&conn.atom(name));
+        assert_eq!(conn.numbers(first, c"WM_HINTS").get(..3), Some(&[2, 0, 3][..]), "it said that it starts as an icon");
+        if !conn.managed() {
+            assert!(!host.ui.window_minimized());
             return eprintln!("no window manager: a window that opens minimized not tested");
         }
-        assert!(wait(&mut host, |host| host.ui.window_hidden()), "minimized, its interface is told so");
+        assert!(wait(&mut host, |host| host.ui.window_minimized()), "minimized, its interface is told so");
         asks.set((None, true));
         host.rerun = true;
-        assert!(wait(&mut host, |host| !host.ui.window_hidden()), "asked to come forward, it is minimized no longer");
+        assert!(wait(&mut host, |host| !host.ui.window_minimized()), "asked to come forward, it is minimized no longer");
         asks.set((Some(true), false));
         host.rerun = true;
         assert!(wait(&mut host, |_| state(c"_NET_WM_STATE_ABOVE")), "asked to, it stays over the others");
@@ -4772,50 +4950,58 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn a_window_that_fills_its_screen_is_told_the_place_it_goes_back_to() {
-        let none = Places { prefs: Second { open: false, ..Second::new(200.0, 120.0) }, log: Second { open: false, ..Second::new(200.0, 120.0) } };
-        let ((alone, mut host), _) = placed(Window { title: "taut filling", at: Some((200, 150)), width: 400.0, height: 240.0, maximized: true, ..Default::default() }, none);
-        let (board, scale, first) = (host.board.clone(), host.scale, host.windows[0].id);
+        let none = Places { prefs: SecondWindow { open: false, ..SecondWindow::new(200.0, 120.0) }, log: SecondWindow { open: false, ..SecondWindow::new(200.0, 120.0) } };
+        let ((alone, mut host), _) = placed(Window { title: "taut filling", position: Some((200, 150)), width: 400.0, height: 240.0, maximized: true, ..Default::default() }, none);
+        let (conn, scale, first) = (host.conn.clone(), host.scale, host.windows[0].id);
         let small = [(400.0 * scale) as c_int, (240.0 * scale) as c_int];
-        let there = |at, maximized| Placed { at, width: small[0] as f32 / scale, height: small[1] as f32 / scale, maximized };
-        if !board.managed() {
-            assert!(wait(&mut host, |host| host.ui.placed() == Some(there((200, 150), false))), "with no window manager the window is told {:?}", host.ui.placed());
-            assert_eq!((board.numbers(first, c"_NET_WM_STATE"), size_at_x(&board, first)), (vec![], Some(small.map(|side| side as c_uint))));
+        let there = |at, maximized| WindowPlacement { position: at, width: small[0] as f32 / scale, height: small[1] as f32 / scale, maximized };
+        if !conn.managed() {
+            assert!(wait(&mut host, |host| host.ui.window_placement() == Some(there((200, 150), false))), "with no window manager the window is told {:?}", host.ui.window_placement());
+            assert_eq!((conn.numbers(first, c"_NET_WM_STATE"), size_at_x(&conn, first)), (vec![], Some(small.map(|side| side as c_uint))));
             return eprintln!("no window manager: a window that fills its screen not tested");
         }
         // Whether a window that opened maximized is back at its restore place and is told where
         // it is. (A window manager may place it some pixels off: xfwm4 by its frame border.)
         let back = |host: &mut Windows, to: (i32, i32)| {
-            let told = |host: &Windows| host.ui.placed().filter(|place| !place.maximized && place.at == corner_at_x(&host.board, host.windows[0].id));
+            let told = |host: &Windows| host.ui.window_placement().filter(|place| !place.maximized && place.position == corner_at_x(&host.conn, host.windows[0].id));
             wait(host, |host| host.windows[0].size == small && told(host).is_some());
-            let at = told(host).map(|place| place.at);
-            assert!(at.is_some_and(|at| (at.0 - to.0).abs() <= 8 && (at.1 - to.1).abs() <= 8), "back at {to:?}, the window is told {:?}", host.ui.placed());
+            let at = told(host).map(|place| place.position);
+            assert!(at.is_some_and(|at| (at.0 - to.0).abs() <= 8 && (at.1 - to.1).abs() <= 8), "back at {to:?}, the window is told {:?}", host.ui.window_placement());
         };
         // It opens maximized, told the place and size it opened with.
-        assert!(wait(&mut host, |host| host.ui.placed() == Some(there((200, 150), true)) && host.windows[0].size[0] > small[0]), "the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == Some(there((200, 150), true)) && host.windows[0].size[0] > small[0]), "the window is told {:?}", host.ui.window_placement());
         let filled = host.windows[0].size;
         assert!(wait(&mut host, |host| host.ui.size().w == filled[0] as f32 / scale), "its interface is as wide as the screen has room");
         // The person restores it: it goes back, told where it is.
-        ask_to_fill(&board, first, false);
+        ask_to_fill(&conn, first, false);
         back(&mut host, (200, 150));
         // Moved, then maximized again: it is told so, the new place being the one to restore
         // to. And there it goes.
         // SAFETY: the window is the host's own, on its display.
-        unsafe { (Asking::open().unwrap().XMoveWindow)(board.display, first, 260, 180) };
-        assert!(wait(&mut host, |host| host.ui.placed() == Some(there((260, 180), false))), "moved, the window is told {:?}", host.ui.placed());
+        unsafe { (Asking::open().unwrap().XMoveWindow)(conn.display, first, 260, 180) };
+        assert!(wait(&mut host, |host| host.ui.window_placement() == Some(there((260, 180), false))), "moved, the window is told {:?}", host.ui.window_placement());
         // The person lets go, and a moment later maximizes it.
         std::thread::sleep(SETTLED * 2);
         for fill in [true, false, true] {
-            ask_to_fill(&board, first, fill);
+            ask_to_fill(&conn, first, fill);
             let size = if fill { filled } else { small };
-            assert!(wait(&mut host, |host| host.ui.placed() == Some(there((260, 180), fill)) && host.windows[0].size == size), "filling: {fill}, the window is told {:?}", host.ui.placed());
+            assert!(
+                wait(&mut host, |host| host.ui.window_placement() == Some(there((260, 180), fill)) && host.windows[0].size == size),
+                "filling: {fill}, the window is told {:?}",
+                host.ui.window_placement()
+            );
         }
         // The next day it opens maximized, with the same restore place.
-        let kept = host.ui.placed();
+        let kept = host.ui.window_placement();
         drop((host, alone));
-        let ((_alone, mut host), _) = placed(Window { title: "taut filling", ..Default::default() }.placed(kept), none);
-        let (board, first) = (host.board.clone(), host.windows[0].id);
-        assert!(wait(&mut host, |host| host.ui.placed() == kept && host.windows[0].size == filled), "the next day the window is told {:?}, and had kept {kept:?}", host.ui.placed());
-        ask_to_fill(&board, first, false);
+        let ((_alone, mut host), _) = placed(Window { title: "taut filling", ..Default::default() }.with_placement(kept), none);
+        let (conn, first) = (host.conn.clone(), host.windows[0].id);
+        assert!(
+            wait(&mut host, |host| host.ui.window_placement() == kept && host.windows[0].size == filled),
+            "the next day the window is told {:?}, and had kept {kept:?}",
+            host.ui.window_placement()
+        );
+        ask_to_fill(&conn, first, false);
         back(&mut host, (260, 180));
     }
 
@@ -4827,46 +5013,46 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn a_window_seen_on_its_way_to_filling_its_screen_goes_back_to_where_it_stood() {
-        let none = Places { prefs: Second { open: false, ..Second::new(200.0, 120.0) }, log: Second { open: false, ..Second::new(200.0, 120.0) } };
-        let ((_alone, mut host), _) = placed(Window { title: "taut steps", at: Some((200, 150)), width: 400.0, height: 240.0, ..Default::default() }, none);
-        let (board, scale, id, asking) = (host.board.clone(), host.scale, host.windows[0].id, Asking::open().unwrap());
-        if board.managed() {
+        let none = Places { prefs: SecondWindow { open: false, ..SecondWindow::new(200.0, 120.0) }, log: SecondWindow { open: false, ..SecondWindow::new(200.0, 120.0) } };
+        let ((_alone, mut host), _) = placed(Window { title: "taut steps", position: Some((200, 150)), width: 400.0, height: 240.0, ..Default::default() }, none);
+        let (conn, scale, id, asking) = (host.conn.clone(), host.scale, host.windows[0].id, Asking::open().unwrap());
+        if conn.managed() {
             return eprintln!("a window manager is there: its steps not played");
         }
         let small = [(400.0 * scale) as c_int, (240.0 * scale) as c_int];
-        let there = |at, [width, height]: [c_int; 2], maximized| Some(Placed { at, width: width as f32 / scale, height: height as f32 / scale, maximized });
+        let there = |at, [width, height]: [c_int; 2], maximized| Some(WindowPlacement { position: at, width: width as f32 / scale, height: height as f32 / scale, maximized });
         // SAFETY: the window is the host's own, on its display.
-        let lies = |[x, y, width, height]: [c_int; 4]| unsafe { (asking.XMoveResizeWindow)(board.display, id, x, y, width as c_uint, height as c_uint) };
-        let state = |names: &[&CStr]| board.leave(id, board.atom(c"_NET_WM_STATE"), 4, &names.iter().map(|name| board.atom(name)).collect::<Vec<Atom>>());
-        let frame = |left: c_long, up: c_long| board.leave(id, board.atom(c"_NET_FRAME_EXTENTS"), 6, &[left, 7, up, 9]);
-        assert!(wait(&mut host, |host| host.ui.placed() == there((200, 150), small, false)), "the window is told {:?}", host.ui.placed());
+        let lies = |[x, y, width, height]: [c_int; 4]| unsafe { (asking.XMoveResizeWindow)(conn.display, id, x, y, width as c_uint, height as c_uint) };
+        let state = |names: &[&CStr]| conn.leave(id, conn.atom(c"_NET_WM_STATE"), 4, &names.iter().map(|name| conn.atom(name)).collect::<Vec<Atom>>());
+        let frame = |left: c_long, up: c_long| conn.leave(id, conn.atom(c"_NET_FRAME_EXTENTS"), 6, &[left, 7, up, 9]);
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((200, 150), small, false)), "the window is told {:?}", host.ui.window_placement());
         // A frame 6 pixels wide and 30 above: its corner that far from the window's own.
         frame(6, 30);
-        assert!(wait(&mut host, |host| host.ui.placed() == there((194, 120), small, false)), "in a frame, the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((194, 120), small, false)), "in a frame, the window is told {:?}", host.ui.window_placement());
         std::thread::sleep(SETTLED * 2);
 
         // A maximized frame, then a maximized size, and only then the state: each seen as it
         // is, none kept.
         frame(0, 24);
-        assert!(wait(&mut host, |host| host.ui.placed() == there((200, 126), small, false)), "with another frame, the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((200, 126), small, false)), "with another frame, the window is told {:?}", host.ui.window_placement());
         lies([0, 24, 900, 576]);
-        assert!(wait(&mut host, |host| host.ui.placed() == there((0, 0), [900, 576], false)), "at another size, the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((0, 0), [900, 576], false)), "at another size, the window is told {:?}", host.ui.window_placement());
         state(&FILLING);
-        assert!(wait(&mut host, |host| host.ui.placed() == there((194, 120), small, true)), "filling its screen, the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((194, 120), small, true)), "filling its screen, the window is told {:?}", host.ui.window_placement());
         // Back, the state first and the rest after: it is where it was.
         state(&[]);
         frame(6, 30);
         lies([200, 150, small[0], small[1]]);
-        assert!(wait(&mut host, |host| host.ui.placed() == there((194, 120), small, false)), "back, the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((194, 120), small, false)), "back, the window is told {:?}", host.ui.window_placement());
         // Fullscreen at once, the state first this time: nothing seen since stayed long enough
         // to count, and the restore place is the same. (Fullscreen is not maximized.)
         state(&[WHOLE]);
         lies([0, 0, 900, 600]);
         frame(0, 0);
         assert!(
-            wait(&mut host, |host| host.windows[0].size == [900, 600] && host.ui.placed() == there((194, 120), small, false) && host.ui.full_screen()),
+            wait(&mut host, |host| host.windows[0].size == [900, 600] && host.ui.window_placement() == there((194, 120), small, false) && host.ui.full_screen()),
             "over all the screen, the window is told {:?}",
-            host.ui.placed()
+            host.ui.window_placement()
         );
         // Back, moved by the person, it stays a while. Then the maximized state comes first:
         // where it stood is its restore place.
@@ -4874,13 +5060,13 @@ pub(crate) mod tests {
         frame(6, 30);
         lies([300, 200, small[0], small[1]]);
         assert!(wait(&mut host, |host| !host.ui.full_screen()), "back from lying over the screen, the window is told so");
-        assert!(wait(&mut host, |host| host.ui.placed() == there((294, 170), small, false)), "moved, the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((294, 170), small, false)), "moved, the window is told {:?}", host.ui.window_placement());
         std::thread::sleep(SETTLED * 2);
         state(&FILLING);
-        assert!(wait(&mut host, |host| host.ui.placed() == there((294, 170), small, true)), "filling its screen from there, the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((294, 170), small, true)), "filling its screen from there, the window is told {:?}", host.ui.window_placement());
         // Only one of the two maximized states is not maximized: the window is told as it is.
         state(&FILLING[..1]);
-        assert!(wait(&mut host, |host| host.ui.placed() == there((294, 170), small, false)), "as wide as the screen only, the window is told {:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.window_placement() == there((294, 170), small, false)), "as wide as the screen only, the window is told {:?}", host.ui.window_placement());
     }
 
     /// While input must not be seen, the window types through the null input method and every
@@ -4894,12 +5080,12 @@ pub(crate) mod tests {
         let describe = move |ui: &mut Ui| {
             let (typed, at) = &mut *app.borrow_mut();
             let [seen, secret] = typed;
-            *at = [ui.text_box(seen, "").rect, ui.secret_box(secret, "").rect];
+            *at = [ui.text_box(seen, "").rect, ui.password_box(secret, "").rect];
         };
         let (_alone, mut host) = host(Window { title: "taut secret", width: 320.0, height: 200.0, ..Default::default() }, describe).expect("a display");
-        let (board, scale, id, at, asking) = (host.board.clone(), host.scale, host.windows[0].id, kept.borrow().1, Asking::open().unwrap());
+        let (conn, scale, id, at, asking) = (host.conn.clone(), host.scale, host.windows[0].id, kept.borrow().1, Asking::open().unwrap());
         // SAFETY: the display is the host's own.
-        let key = |letter: char| unsafe { (asking.XKeysymToKeycode)(board.display, letter as c_ulong) } as c_uint;
+        let key = |letter: char| unsafe { (asking.XKeysymToKeycode)(conn.display, letter as c_ulong) } as c_uint;
         let typed = |host: &mut Windows, text: &str| text.chars().for_each(|letter| send(host, id, input(id, 2, [0, 0], key(letter))));
         click(&mut host, id, middle(at[0], scale));
         typed(&mut host, "ab");
@@ -4925,10 +5111,10 @@ pub(crate) mod tests {
         presses: u32,
         button: Rect,
         /// The first window's file dialog and its answers; then the second window's.
-        files: Files,
+        files: FileDialog,
         picked: Vec<PathBuf>,
-        second: Second,
-        files_there: Files,
+        second: SecondWindow,
+        files_there: FileDialog,
         picked_there: Vec<PathBuf>,
     }
 
@@ -4954,7 +5140,7 @@ pub(crate) mod tests {
         following_alone(alone(), session)
     }
     fn following_alone(alone: std::sync::MutexGuard<'static, ()>, session: Session) -> Option<Following> {
-        let (second, files) = (Second { open: false, ..Second::new(240.0, 160.0) }, [Files::of_the_system(), Files::of_the_system()]);
+        let (second, files) = (SecondWindow { open: false, ..SecondWindow::new(240.0, 160.0) }, [FileDialog::native(), FileDialog::native()]);
         let [files, files_there] = files;
         let app = Follows { runs: 0, dark: Vec::new(), presses: 0, button: Rect::EMPTY, files, picked: Vec::new(), second, files_there, picked_there: Vec::new() };
         let app = Rc::new(RefCell::new(app));
@@ -5099,15 +5285,15 @@ pub(crate) mod tests {
         stand.how.lock().unwrap().after = Duration::from_secs(2);
         let (_alone, mut host, app) = following(Session::on(Bus::open(&own.address))).expect("a display");
         assert!(hears(&mut host, |host| host.ui.system_files));
-        let (board, scale, id, size) = (host.board.clone(), host.scale, host.windows[0].id, host.windows[0].size);
+        let (conn, scale, id, size) = (host.conn.clone(), host.scale, host.windows[0].id, host.windows[0].size);
         has(&mut host, &app, |app| app.files.pick("/tmp"));
-        let (asked, before, at) = (Instant::now(), on_screen(&board, id, size), middle(app.borrow().button, scale));
+        let (asked, before, at) = (Instant::now(), on_screen(&conn, id, size), middle(app.borrow().button, scale));
         // The button is pressed three times: each is counted, and shows.
         for presses in 1..=3 {
             click(&mut host, id, at);
             assert_eq!(app.borrow().presses, presses);
         }
-        assert_ne!(on_screen(&board, id, size), before, "what the presses changed is on the screen");
+        assert_ne!(on_screen(&conn, id, size), before, "what the presses changed is on the screen");
         assert!(app.borrow().picked.is_empty() && app.borrow().files.shown && asked.elapsed() < Duration::from_secs(2), "all of it while the dialog was up");
         // Then the person picks a file.
         assert!(hears(&mut host, |_| !app.borrow().picked.is_empty()));
@@ -5209,7 +5395,7 @@ pub(crate) mod tests {
     #[test]
     fn a_window_goes_by_the_desktops_theme_where_the_portal_knows_of_no_wish() {
         let alone = alone();
-        let Some(desktop) = board(c"_XSETTINGS_S0") else { return eprintln!("no display: not tested") };
+        let Some(desktop) = conn(c"_XSETTINGS_S0") else { return eprintln!("no display: not tested") };
         // A stand-in XSETTINGS manager: it owns the selection settings are found by and keeps
         // them on its window. (X has them by the time it answers a later query.)
         let theme = |name: &str| {
@@ -5254,9 +5440,9 @@ pub(crate) mod tests {
     /// Each is news, and the interface runs for it.
     #[test]
     fn a_window_follows_high_contrast_less_movement_and_the_colour_picked() {
-        use crate::theme::Contrast;
+        use crate::theme::ContrastColors;
         let alone = alone();
-        let Some(desktop) = board(c"_XSETTINGS_S0") else { return eprintln!("no display: not tested") };
+        let Some(desktop) = conn(c"_XSETTINGS_S0") else { return eprintln!("no display: not tested") };
         let settings = |list: &[(&str, Kept)]| {
             let kept = desktop.atom(c"_XSETTINGS_SETTINGS");
             desktop.leave(desktop.window, kept, kept, &settings_of(true, list));
@@ -5268,11 +5454,11 @@ pub(crate) mod tests {
         // On no bus XSETTINGS is all there is: high contrast in the library's light colours and
         // reduced motion from the first run; then dark high contrast, then neither.
         let (alone, mut host, app) = following_alone(alone, Session::on(None)).expect("a display");
-        assert_eq!(host.ui.wished.wishes, Wishes { contrast: Some(Contrast::LIGHT), still: true, ..Wishes::default() });
+        assert_eq!(host.ui.preferences.current, Preferences { high_contrast: Some(ContrastColors::LIGHT), reduced_motion: true, ..Preferences::default() });
         settings(&[("Net/ThemeName", Kept::Text("HighContrastInverse"))]);
-        assert!(wait(&mut host, |host| host.ui.wished.wishes == Wishes { dark: true, contrast: Some(Contrast::DARK), ..Wishes::default() }));
+        assert!(wait(&mut host, |host| host.ui.preferences.current == Preferences { dark: true, high_contrast: Some(ContrastColors::DARK), ..Preferences::default() }));
         settings(&[("Net/ThemeName", Kept::Text("Adwaita"))]);
-        assert!(wait(&mut host, |host| host.ui.wished.wishes == Wishes::default()));
+        assert!(wait(&mut host, |host| host.ui.preferences.current == Preferences::default()));
         drop((host, app));
 
         // With a portal: the person asks for more contrast, for reduced motion, and picks an
@@ -5281,7 +5467,7 @@ pub(crate) mod tests {
         let stand = StandIn::start(&own.address, false, Ends::Closed);
         let (alone, mut host, app) = following_alone(alone, Session::on(Bus::open(&own.address))).expect("a display");
         heard_out(&mut host);
-        assert_eq!(host.ui.wished.wishes, Wishes::default());
+        assert_eq!(host.ui.preferences.current, Preferences::default());
         let mut runs = app.borrow().runs;
         stand.change("contrast", |how| how.contrast = Some(1));
         assert!(hears(&mut host, |host| host.ui.high_contrast()) && app.borrow().runs > runs);
@@ -5291,7 +5477,7 @@ pub(crate) mod tests {
         runs = app.borrow().runs;
         stand.change("accent-color", |how| how.accent = Some([0.0, 0.5, 1.0]));
         assert!(hears(&mut host, |host| host.ui.system_accent() == Some(Color::rgb(0x0080ff))) && app.borrow().runs > runs);
-        assert_eq!(host.ui.wished.wishes, Wishes { accent: Some(Color::rgb(0x0080ff)), contrast: Some(Contrast::LIGHT), still: true, ..Wishes::default() });
+        assert_eq!(host.ui.preferences.current, Preferences { accent: Some(Color::rgb(0x0080ff)), high_contrast: Some(ContrastColors::LIGHT), reduced_motion: true, ..Preferences::default() });
         // A setting of another group changes: nothing runs.
         (runs, _) = (app.borrow().runs, stand.say_other());
         heard_out(&mut host);
@@ -5325,12 +5511,12 @@ pub(crate) mod tests {
         ui.spacer();
         let button = ui.button("Close");
         ui.close();
-        ui.window_strip(&strip);
+        ui.set_title_bar(&strip);
         if std::mem::take(&mut app.minimize) {
             ui.minimize();
         }
         if std::mem::take(&mut app.forward) {
-            ui.come_forward();
+            ui.bring_to_front();
         }
         app.fill.take().into_iter().for_each(|on| ui.set_maximized(on));
         app.over_all.take().into_iter().for_each(|on| ui.set_full_screen(on));
@@ -5354,8 +5540,8 @@ pub(crate) mod tests {
     }
 
     /// Where X has a window on screen: left, top, width, height.
-    fn lies_at_x(board: &Board, window: XWindow) -> [c_int; 4] {
-        let ([x, y], size) = (board.place(window), size_at_x(board, window).unwrap_or_default());
+    fn lies_at_x(conn: &Connection, window: XWindow) -> [c_int; 4] {
+        let ([x, y], size) = (conn.place(window), size_at_x(conn, window).unwrap_or_default());
         [x, y, size[0] as c_int, size[1] as c_int]
     }
 
@@ -5367,36 +5553,36 @@ pub(crate) mod tests {
     /// window stays clear of the screen's middle, where an unused display has its pointer.)
     #[test]
     fn a_window_with_no_frame_says_so_and_goes_by_the_pointer_itself_where_nobody_moves_it() {
-        let asked = Window { title: "taut bare", at: Some((40, 30)), width: 300.0, height: 200.0, min_width: 150.0, min_height: 90.0, bare: true, ..Default::default() };
+        let asked = Window { title: "taut bare", position: Some((40, 30)), width: 300.0, height: 200.0, min_width: 150.0, min_height: 90.0, frameless: true, ..Default::default() };
         // The pointer-driving library opens before the window so it closes after: X holds it
         // while the window's connection is open.
         let hands = hands();
         let Some(((_alone, mut host), app)) = of_a_kind(asked) else { return eprintln!("no display: not tested") };
-        let (board, scale, id) = (host.board.clone(), host.scale, host.windows[0].id);
+        let (conn, scale, id) = (host.conn.clone(), host.scale, host.windows[0].id);
         // Where the test owns the display's pointer, it is moved to a corner first: what it
         // would report over the window is not what is sent here.
         if let Some(hands) = &hands {
-            unsafe { (hands.XTestFakeMotionEvent)(board.display, -1, 899, 599, 0) };
+            unsafe { (hands.XTestFakeMotionEvent)(conn.display, -1, 899, 599, 0) };
             lets(&mut host, 60);
         }
-        assert_eq!(board.numbers(id, c"_MOTIF_WM_HINTS"), [2, 0, 0, 0, 0], "it asks for no frame");
-        assert!(host.windows[0].kind.edges && host.windows[0].grips && !host.windows[0].kind.clear);
-        if board.managed() {
+        assert_eq!(conn.numbers(id, c"_MOTIF_WM_HINTS"), [2, 0, 0, 0, 0], "it asks for no frame");
+        assert!(host.windows[0].kind.edges && host.windows[0].grips && !host.windows[0].kind.transparent);
+        if conn.managed() {
             return eprintln!("a window manager is there, and moves the window itself: not tested further");
         }
         let px = |unit: f32| (unit * scale) as c_int;
         let ([wide, high], least) = ([px(300.0), px(200.0)], [px(150.0), px(90.0)]);
-        assert!(wait(&mut host, |host| lies_at_x(&host.board, id) == [40, 30, wide, high]), "it lies at {:?}", lies_at_x(&board, id));
+        assert!(wait(&mut host, |host| lies_at_x(&host.conn, id) == [40, 30, wide, high]), "it lies at {:?}", lies_at_x(&conn, id));
         // A pointer event at a place in the window, wherever it lies: button down (4) or up
         // (5), or motion (6), `by` this far from there.
         let does = |host: &mut Windows, kind: c_int, [x, y]: [c_int; 2], by: [c_int; 2], time: c_ulong| {
-            let [left, top, ..] = lies_at_x(&host.board, id);
+            let [left, top, ..] = lies_at_x(&host.conn, id);
             let detail = if kind == 6 { 0 } else { 1 };
             send(host, id, pointing(id, kind, [x + by[0], y + by[1]], [left + x + by[0], top + y + by[1]], time, detail));
         };
         let goes_to = |host: &mut Windows, to: [c_int; 4]| {
-            let there = |host: &Windows| lies_at_x(&host.board, id) == to && host.windows[0].size == [to[2], to[3]] && host.ui.placed().is_some_and(|place| place.at == (to[0], to[1]));
-            assert!(wait(host, there), "the window lies at {:?} and is told {:?}, and was to go to {to:?}", lies_at_x(&host.board, id), host.ui.placed());
+            let there = |host: &Windows| lies_at_x(&host.conn, id) == to && host.windows[0].size == [to[2], to[3]] && host.ui.window_placement().is_some_and(|place| place.position == (to[0], to[1]));
+            assert!(wait(host, there), "the window lies at {:?} and is told {:?}, and was to go to {to:?}", lies_at_x(&host.conn, id), host.ui.window_placement());
         };
 
         // Pressed on its strip and moved: all of it follows, each time from the grab point.
@@ -5412,7 +5598,7 @@ pub(crate) mod tests {
         does(&mut host, 5, on_strip, [0, 0], 1030);
         assert!(host.windows[0].held.is_none());
         does(&mut host, 6, [px(150.0), px(100.0)], [0, 0], 1040);
-        assert!(host.ui.pointer().is_some() && lies_at_x(&board, id) == [30, 35, wide, high]);
+        assert!(host.ui.pointer().is_some() && lies_at_x(&conn, id) == [30, 35, wide, high]);
 
         // By its right edge it gets wider, nothing else; by its bottom right corner wider and
         // taller.
@@ -5440,16 +5626,16 @@ pub(crate) mod tests {
             does(host, 6, at, [0, 0], 6000);
             (host.windows[0].over, host.windows[0].cursor, host.ui.pointer().is_some())
         };
-        assert_eq!(over(&mut host, [1, least[1] / 2]), (Grip::Edge(-1, 0), Cursor::ResizeX, false));
-        assert_eq!(over(&mut host, [least[0] / 2, least[1] / 2 + 20]), (Grip::Inside, Cursor::Arrow, true));
-        assert_eq!(over(&mut host, [least[0] - 2, least[1] - 2]), (Grip::Edge(1, 1), Cursor::ResizeDown, false));
-        assert_eq!(over(&mut host, [least[0] - 2, 1]), (Grip::Edge(1, -1), Cursor::ResizeUp, false));
+        assert_eq!(over(&mut host, [1, least[1] / 2]), (HitTest::Edge(-1, 0), Cursor::ResizeX, false));
+        assert_eq!(over(&mut host, [least[0] / 2, least[1] / 2 + 20]), (HitTest::Client, Cursor::Arrow, true));
+        assert_eq!(over(&mut host, [least[0] - 2, least[1] - 2]), (HitTest::Edge(1, 1), Cursor::ResizeDown, false));
+        assert_eq!(over(&mut host, [least[0] - 2, 1]), (HitTest::Edge(1, -1), Cursor::ResizeUp, false));
         // The interface runs meanwhile, and the pointer keeps the edge's shape.
         host.rerun = true;
         host.turn();
         assert_eq!(host.windows[0].cursor, Cursor::ResizeUp);
         send(&mut host, id, input(id, 8, [0, 0], 0));
-        assert_eq!((host.windows[0].over, host.windows[0].cursor), (Grip::Inside, Cursor::Arrow));
+        assert_eq!((host.windows[0].over, host.windows[0].cursor), (HitTest::Client, Cursor::Arrow));
 
         // The strip's button works as ever. A double press on the strip moves nothing: it asks
         // a window manager, and there is none.
@@ -5469,29 +5655,29 @@ pub(crate) mod tests {
     /// see-through window also asks for no frame and keeps its size.
     #[test]
     fn a_second_window_and_a_see_through_one_ask_for_no_frame() {
-        let kept = Rc::new(RefCell::new(Second::new(200.0, 120.0)));
+        let kept = Rc::new(RefCell::new(SecondWindow::new(200.0, 120.0)));
         let app = kept.clone();
         let describe = move |ui: &mut Ui| {
             ui.label("The first window");
-            if ui.bare_window(&mut app.borrow_mut(), "Tools") {
+            if ui.frameless_window(&mut app.borrow_mut(), "Tools") {
                 let strip = ui.row().h(crate::Length::Px(24.0)).sense().open();
                 ui.label("Tools");
                 ui.close();
-                ui.window_strip(&strip);
+                ui.set_title_bar(&strip);
                 ui.close();
             }
         };
         let Some((alone, host)) = host(Window { title: "taut framed", width: 320.0, height: 200.0, ..Default::default() }, describe) else { return eprintln!("no display: not tested") };
-        let (board, [first, second]) = (host.board.clone(), [host.windows[0].id, host.windows[1].id]);
-        assert_eq!([first, second].map(|window| board.numbers(window, c"_MOTIF_WM_HINTS")), [vec![], vec![2, 0, 0, 0, 0]]);
-        assert!(host.windows[1].kind.edges && host.windows[1].grips && !host.windows[0].kind.bare && !host.windows[0].grips);
+        let (conn, [first, second]) = (host.conn.clone(), [host.windows[0].id, host.windows[1].id]);
+        assert_eq!([first, second].map(|window| conn.numbers(window, c"_MOTIF_WM_HINTS")), [vec![], vec![2, 0, 0, 0, 0]]);
+        assert!(host.windows[1].kind.edges && host.windows[1].grips && !host.windows[0].kind.frameless && !host.windows[0].grips);
         drop((host, alone));
 
-        let Some(((_alone, host), _)) = of_a_kind(Window { title: "taut clear", width: 160.0, height: 100.0, clear: true, ..Default::default() }) else { return };
-        let (board, id, [wide, high]) = (host.board.clone(), host.windows[0].id, host.windows[0].size.map(|side| side as c_ulong));
-        let asks = board.numbers(id, c"WM_NORMAL_HINTS");
-        assert_eq!((board.numbers(id, c"_MOTIF_WM_HINTS"), asks[0], &asks[5..9]), (vec![2, 0, 0, 0, 0], 1 << 4 | 1 << 5, &[wide, high, wide, high][..]));
-        assert!(host.windows[0].kind.clear && !host.windows[0].kind.edges && host.ui.theme.bg == Color::NONE);
+        let Some(((_alone, host), _)) = of_a_kind(Window { title: "taut clear", width: 160.0, height: 100.0, transparent: true, ..Default::default() }) else { return };
+        let (conn, id, [wide, high]) = (host.conn.clone(), host.windows[0].id, host.windows[0].size.map(|side| side as c_ulong));
+        let asks = conn.numbers(id, c"WM_NORMAL_HINTS");
+        assert_eq!((conn.numbers(id, c"_MOTIF_WM_HINTS"), asks[0], &asks[5..9]), (vec![2, 0, 0, 0, 0], 1 << 4 | 1 << 5, &[wide, high, wide, high][..]));
+        assert!(host.windows[0].kind.transparent && !host.windows[0].kind.edges && host.ui.theme.bg == Color::NONE);
     }
 
     library!(Hands, ["libXtst.so.6", "libXtst.so"], {
@@ -5508,9 +5694,9 @@ pub(crate) mod tests {
 
     /// Has a host take in X events for so many ms.
     fn lets<App: FnMut(&mut Ui)>(host: &mut Host<App>, millis: u64) {
-        let (board, asked) = (host.board.clone(), Instant::now());
+        let (conn, asked) = (host.conn.clone(), Instant::now());
         while asked.elapsed() < Duration::from_millis(millis) {
-            board.property(board.window, board.mailbox, false);
+            conn.property(conn.window, conn.mailbox, false);
             host.turn();
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -5526,34 +5712,35 @@ pub(crate) mod tests {
     #[ignore]
     fn a_person_moves_and_sizes_a_window_with_no_frame_and_its_app_has_it_stand_as_asked() {
         let Some(hands) = hands() else { return eprintln!("no display of the tests' own to work the pointer of: not tested") };
-        let asked = Window { title: "taut bare", at: Some((200, 150)), width: 300.0, height: 200.0, min_width: 150.0, min_height: 90.0, bare: true, ..Default::default() };
+        let asked = Window { title: "taut bare", position: Some((200, 150)), width: 300.0, height: 200.0, min_width: 150.0, min_height: 90.0, frameless: true, ..Default::default() };
         let ((_alone, mut host), app) = of_a_kind(asked).expect("a display");
-        let (board, scale, id, screen) = (host.board.clone(), host.scale, host.windows[0].id, screen_size(&host.board.x, host.board.display).map(|side| side as c_int));
+        let (conn, scale, id, screen) = (host.conn.clone(), host.scale, host.windows[0].id, screen_size(&host.conn.x, host.conn.display).map(|side| side as c_int));
         let px = |unit: f32| (unit * scale) as c_int;
-        let ([wide, high], managed) = ([px(300.0), px(200.0)], board.managed());
-        eprintln!("with a window manager: {managed}; it moves and sizes windows when asked: {}", board.offers(c"_NET_WM_MOVERESIZE"));
+        let ([wide, high], managed) = ([px(300.0), px(200.0)], conn.managed());
+        eprintln!("with a window manager: {managed}; it moves and sizes windows when asked: {}", conn.offers(c"_NET_WM_MOVERESIZE"));
         // A window manager maps a window before placing it.
         settle(&mut host);
         assert!(
-            wait(&mut host, |host| lies_at_x(&host.board, id) == [200, 150, wide, high] && host.ui.placed().is_some_and(|place| place.at == (200, 150))),
+            wait(&mut host, |host| lies_at_x(&host.conn, id) == [200, 150, wide, high] && host.ui.window_placement().is_some_and(|place| place.position == (200, 150))),
             "it lies at {:?}, and is told {:?}",
-            lies_at_x(&board, id),
-            host.ui.placed()
+            lies_at_x(&conn, id),
+            host.ui.window_placement()
         );
-        assert_eq!(board.numbers(id, c"_NET_FRAME_EXTENTS").iter().sum::<c_ulong>(), 0, "nothing was put around it");
+        assert_eq!(conn.numbers(id, c"_NET_FRAME_EXTENTS").iter().sum::<c_ulong>(), 0, "nothing was put around it");
         // The pointer goes to a screen position; and its left button goes down or up.
         let goes = |host: &mut Windows, [x, y]: [c_int; 2]| {
-            unsafe { (hands.XTestFakeMotionEvent)(host.board.display, -1, x, y, 0) };
+            unsafe { (hands.XTestFakeMotionEvent)(host.conn.display, -1, x, y, 0) };
             lets(host, 60);
         };
         let button = |host: &mut Windows, down: bool| {
-            unsafe { (hands.XTestFakeButtonEvent)(host.board.display, 1, down as c_int, 0) };
+            unsafe { (hands.XTestFakeButtonEvent)(host.conn.display, 1, down as c_int, 0) };
             lets(host, 60);
         };
         let lies = |host: &mut Windows, to: [c_int; 4], what: &str| {
-            let there =
-                |host: &Windows| lies_at_x(&host.board, id) == to && host.ui.placed().is_some_and(|place| place.at == (to[0], to[1]) && !place.maximized) && host.ui.size().w == to[2] as f32 / scale;
-            assert!(wait(host, there), "{what}: the window lies at {:?} and is told {:?}, and was to lie at {to:?}", lies_at_x(&host.board, id), host.ui.placed());
+            let there = |host: &Windows| {
+                lies_at_x(&host.conn, id) == to && host.ui.window_placement().is_some_and(|place| place.position == (to[0], to[1]) && !place.maximized) && host.ui.size().w == to[2] as f32 / scale
+            };
+            assert!(wait(host, there), "{what}: the window lies at {:?} and is told {:?}, and was to lie at {to:?}", lies_at_x(&host.conn, id), host.ui.window_placement());
         };
 
         // By its strip: pressed there, the pointer moves off, and the window with it.
@@ -5567,7 +5754,7 @@ pub(crate) mod tests {
         lies(&mut host, [260, 190, wide, high], "moved by its strip");
         // By its right edge: wider. By its top left corner: that corner follows.
         goes(&mut host, [260 + wide - 2, 190 + high / 2]);
-        assert_eq!((host.windows[0].over, host.windows[0].cursor), (Grip::Edge(1, 0), Cursor::ResizeX));
+        assert_eq!((host.windows[0].over, host.windows[0].cursor), (HitTest::Edge(1, 0), Cursor::ResizeX));
         button(&mut host, true);
         for by in [8, 30, 50] {
             goes(&mut host, [260 + wide - 2 + by, 190 + high / 2 + 3]);
@@ -5587,18 +5774,18 @@ pub(crate) mod tests {
         // restores; with none, nothing happens. (On the strip where it is now, wherever the
         // window lies.)
         let double = |host: &mut Windows| {
-            let ([left, top, ..], on_strip) = (lies_at_x(&host.board, id), middle(app.borrow().strip, scale));
+            let ([left, top, ..], on_strip) = (lies_at_x(&host.conn, id), middle(app.borrow().strip, scale));
             goes(host, [left + on_strip[0], top + on_strip[1]]);
             [true, false, true, false].into_iter().for_each(|down| button(host, down));
         };
         // The person releases the corner, and a moment later double-presses the strip.
         lets(&mut host, 2 * SETTLED.as_millis() as u64);
         double(&mut host);
-        assert_eq!(wait(&mut host, |host| host.ui.maximized()), managed, "after a double press on its strip, the window is told {:?}", host.ui.placed());
+        assert_eq!(wait(&mut host, |host| host.ui.maximized()), managed, "after a double press on its strip, the window is told {:?}", host.ui.window_placement());
         assert!(
-            !managed || wait(&mut host, |host| host.windows[0].size[0] > wide + 90 && host.ui.placed().is_some_and(|place| place.at == (220, 160))),
+            !managed || wait(&mut host, |host| host.windows[0].size[0] > wide + 90 && host.ui.window_placement().is_some_and(|place| place.position == (220, 160))),
             "filling the screen, it is told {:?}",
-            host.ui.placed()
+            host.ui.window_placement()
         );
         // The next double press is a separate one, not four presses in a row.
         lets(&mut host, 700);
@@ -5613,30 +5800,30 @@ pub(crate) mod tests {
             lets(host, 100);
         };
         asks(&mut host, &|app| app.over_all = Some(true));
-        let over_all = |host: &Windows| host.ui.full_screen() && host.windows[0].size == screen && lies_at_x(&host.board, id) == [0, 0, screen[0], screen[1]];
-        assert!(wait(&mut host, over_all), "over all of the screen, the window lies at {:?}", lies_at_x(&board, id));
+        let over_all = |host: &Windows| host.ui.full_screen() && host.windows[0].size == screen && lies_at_x(&host.conn, id) == [0, 0, screen[0], screen[1]];
+        assert!(wait(&mut host, over_all), "over all of the screen, the window lies at {:?}", lies_at_x(&conn, id));
         assert!(
             wait(&mut host, |host| host.ui.size().w == screen[0] as f32 / scale
-                && host.ui.placed().is_some_and(|place| place.at == (220, 160) && place.width == (wide + 90) as f32 / scale && !place.maximized)),
+                && host.ui.window_placement().is_some_and(|place| place.position == (220, 160) && place.width == (wide + 90) as f32 / scale && !place.maximized)),
             "it is told {:?}",
-            host.ui.placed()
+            host.ui.window_placement()
         );
         // Nothing is grabbed meanwhile: a press on its strip is the interface's.
         goes(&mut host, [on_strip[0], on_strip[1]]);
-        assert_eq!(host.windows[0].over, Grip::Inside);
+        assert_eq!(host.windows[0].over, HitTest::Client);
         asks(&mut host, &|app| app.over_all = Some(false));
         lies(&mut host, [220, 160, wide + 90, high + 30], "back from lying over the screen");
         assert!(!host.ui.full_screen());
 
         // Maximize and restore, minimize and come forward: a window manager's to do.
         asks(&mut host, &|app| app.fill = Some(true));
-        assert_eq!(wait(&mut host, |host| host.ui.maximized() && host.windows[0].size[0] > wide + 90), managed, "asked to fill the screen, the window is told {:?}", host.ui.placed());
+        assert_eq!(wait(&mut host, |host| host.ui.maximized() && host.windows[0].size[0] > wide + 90), managed, "asked to fill the screen, the window is told {:?}", host.ui.window_placement());
         asks(&mut host, &|app| app.fill = Some(false));
         lies(&mut host, [220, 160, wide + 90, high + 30], "back from filling the screen at its app's asking");
         asks(&mut host, &|app| app.minimize = true);
-        assert_eq!(wait(&mut host, |host| host.ui.window_hidden()), managed, "asked to be minimized");
+        assert_eq!(wait(&mut host, |host| host.ui.window_minimized()), managed, "asked to be minimized");
         asks(&mut host, &|app| app.forward = true);
-        assert!(wait(&mut host, |host| !host.ui.window_hidden()));
+        assert!(wait(&mut host, |host| !host.ui.window_minimized()));
         lies(&mut host, [220, 160, wide + 90, high + 30], "back from minimized");
         // The pointer is left in a screen corner, out of the other tests' way.
         goes(&mut host, [screen[0] - 1, screen[1] - 1]);
@@ -5651,7 +5838,7 @@ pub(crate) mod tests {
     #[ignore]
     fn a_see_through_window_hands_x_how_solid_each_pixel_is_and_lets_what_is_behind_it_show() {
         // It waits for the other window tests before it shows its first.
-        let (alone, asking, behind) = (alone(), Asking::open().unwrap(), board(c"TAUT_TEST_BEHIND").expect("a display"));
+        let (alone, asking, behind) = (alone(), Asking::open().unwrap(), conn(c"TAUT_TEST_BEHIND").expect("a display"));
         // The window behind: plain green, large enough to lie under the other.
         // SAFETY: a window of the test's own, on its own connection.
         let green = unsafe {
@@ -5664,19 +5851,20 @@ pub(crate) mod tests {
         std::thread::sleep(Duration::from_millis(500));
         let describe = |ui: &mut Ui| {
             ui.el().size(40.0, 40.0).fill(Color::rgb(0xff0000)).show();
-            ui.el().size(40.0, 40.0).fill(Color::rgb(0x0000ff).alpha(0.5)).show();
+            ui.el().size(40.0, 40.0).fill(Color::rgb(0x0000ff).with_alpha(0.5)).show();
             ui.label("Written");
         };
         let (_alone, mut host) =
-            host_on(alone, Session::on(None), Window { title: "taut clear", at: Some((330, 220)), width: 200.0, height: 160.0, clear: true, ..Default::default() }, describe).expect("a display");
-        let (board, scale, id, size) = (host.board.clone(), host.scale, host.windows[0].id, host.windows[0].size);
+            host_on(alone, Session::on(None), Window { title: "taut clear", position: Some((330, 220)), width: 200.0, height: 160.0, transparent: true, ..Default::default() }, describe)
+                .expect("a display");
+        let (conn, scale, id, size) = (host.conn.clone(), host.scale, host.windows[0].id, host.windows[0].size);
         if host.windows[0].kind.deep.is_none() {
             return eprintln!("the display has no way of showing 32 bits to a pixel: not tested");
         }
         settle(&mut host);
         lets(&mut host, 300);
         // What X has of the window itself: each pixel with its alpha.
-        let (rows, px) = (on_screen(&board, id, size), |unit: f32| (unit * scale) as usize);
+        let (rows, px) = (on_screen(&conn, id, size), |unit: f32| (unit * scale) as usize);
         let at = |x: f32, y: f32| rows[px(y)][px(x)] as u32;
         assert_eq!((at(20.0, 20.0), at(150.0, 20.0), at(150.0, 150.0)), (0xffff_0000, 0, 0));
         let half = at(20.0, 60.0);
@@ -5687,12 +5875,12 @@ pub(crate) mod tests {
             "letters are written with how solid they are, and no colour is more than that"
         );
         // What shows on screen, where a compositing manager runs.
-        let name = CString::new(format!("_NET_WM_CM_S{}", unsafe { (board.x.XDefaultScreen)(board.display) })).unwrap();
-        if unsafe { (board.x.XGetSelectionOwner)(board.display, board.atom(&name)) } == 0 {
+        let name = CString::new(format!("_NET_WM_CM_S{}", unsafe { (conn.x.XDefaultScreen)(conn.display) })).unwrap();
+        if unsafe { (conn.x.XGetSelectionOwner)(conn.display, conn.atom(&name)) } == 0 {
             return eprintln!("no compositing manager: what shows through the window not seen");
         }
-        let [left, top, ..] = lies_at_x(&board, id);
-        let screen = on_screen(&board, root(&board.x, board.display), [900, 600]);
+        let [left, top, ..] = lies_at_x(&conn, id);
+        let screen = on_screen(&conn, root(&conn.x, conn.display), [900, 600]);
         let shows = |x: f32, y: f32| screen[top as usize + px(y)][left as usize + px(x)] as u32 & 0x00ff_ffff;
         let mixed = shows(20.0, 60.0);
         eprintln!(
@@ -5700,7 +5888,7 @@ pub(crate) mod tests {
             shows(20.0, 20.0),
             shows(150.0, 20.0),
             shows(150.0, 150.0),
-            lies_at_x(&board, id),
+            lies_at_x(&conn, id),
             lies_at_x(&behind, green)
         );
         assert_eq!((shows(20.0, 20.0), shows(150.0, 20.0), shows(150.0, 150.0)), (0xff0000, 0x00ff00, 0x00ff00), "solid where it is solid, and the window behind where it is clear");
@@ -5767,15 +5955,15 @@ pub(crate) mod tests {
 
     /// The windows on screen bottom to top: as X has them with no window manager, as the window
     /// manager says otherwise.
-    fn stacking(board: &Board) -> Vec<XWindow> {
-        if board.managed() {
-            return board.numbers(root(&board.x, board.display), c"_NET_CLIENT_LIST_STACKING");
+    fn stacking(conn: &Connection) -> Vec<XWindow> {
+        if conn.managed() {
+            return conn.numbers(root(&conn.x, conn.display), c"_NET_CLIENT_LIST_STACKING");
         }
         let (asking, (mut top, mut parent, mut children, mut count)) = (Stacking::open().unwrap(), (0, 0, null_mut(), 0));
         unsafe {
-            (asking.XQueryTree)(board.display, root(&board.x, board.display), &mut top, &mut parent, &mut children, &mut count);
+            (asking.XQueryTree)(conn.display, root(&conn.x, conn.display), &mut top, &mut parent, &mut children, &mut count);
             let found = std::slice::from_raw_parts(children, count as usize).to_vec();
-            (board.x.XFree)(children.cast());
+            (conn.x.XFree)(children.cast());
             found
         }
     }
@@ -5784,7 +5972,7 @@ pub(crate) mod tests {
     /// heard, how often the first window's button was pressed, and what was typed there.
     #[derive(Default)]
     struct Owned {
-        windows: Vec<(Second, &'static str)>,
+        windows: Vec<(SecondWindow, &'static str)>,
         unsaved: bool,
         asked: Vec<&'static str>,
         pressed: u32,
@@ -5801,11 +5989,11 @@ pub(crate) mod tests {
             let mut app = app.borrow_mut();
             let app = &mut *app;
             let mut hear = |ui: &mut Ui, name: &'static str| {
-                if ui.close_asked() && !app.asked.contains(&name) {
+                if ui.close_requested() && !app.asked.contains(&name) {
                     app.asked.push(name);
                 }
                 if app.unsaved {
-                    ui.keep_open("There are unsaved changes");
+                    ui.cancel_close("There are unsaved changes");
                 }
             };
             hear(ui, "first");
@@ -5825,13 +6013,13 @@ pub(crate) mod tests {
 
     /// Writes CARDINAL (6) numbers on the root window under an atom, as a window manager does;
     /// or deletes them, for none.
-    fn write_on_root(board: &Board, name: &CStr, numbers: &[f32]) {
-        let (top, name) = (root(&board.x, board.display), board.atom(name));
+    fn write_on_root(conn: &Connection, name: &CStr, numbers: &[f32]) {
+        let (top, name) = (root(&conn.x, conn.display), conn.atom(name));
         match numbers {
-            [] => _ = board.property(top, name, true),
-            _ => board.leave(top, name, 6, &numbers.iter().map(|number| *number as c_ulong).collect::<Vec<_>>()),
+            [] => _ = conn.property(top, name, true),
+            _ => conn.leave(top, name, 6, &numbers.iter().map(|number| *number as c_ulong).collect::<Vec<_>>()),
         }
-        unsafe { (board.x.XFlush)(board.display) };
+        unsafe { (conn.x.XFlush)(conn.display) };
     }
 
     /// The screens are RandR's monitors, main one first, at the display's scale, each with its
@@ -5841,31 +6029,31 @@ pub(crate) mod tests {
     #[ignore]
     fn the_screens_are_the_monitors_randr_has_and_a_window_hears_when_they_change() {
         let app = Rc::new(RefCell::new(Owned::default()));
-        let (alone, mut host) = owned(alone(), Window { title: "taut screens", width: 300.0, height: 200.0, at: Some((10, 10)), ..Default::default() }, &app);
-        let (board, scale) = (host.board.clone(), host.scale);
-        let [wide, high] = screen_size(&board.x, board.display).map(|side| side as f32);
+        let (alone, mut host) = owned(alone(), Window { title: "taut screens", width: 300.0, height: 200.0, position: Some((10, 10)), ..Default::default() }, &app);
+        let (conn, scale) = (host.conn.clone(), host.scale);
+        let [wide, high] = screen_size(&conn.x, conn.display).map(|side| side as f32);
         // One output, one monitor: one screen, the whole display.
-        let all = |host: &Windows| host.ui.screens().iter().map(|screen| screen.all).collect::<Vec<_>>();
+        let all = |host: &Windows| host.ui.screens().iter().map(|screen| screen.rect).collect::<Vec<_>>();
         assert_eq!((all(&host), host.ui.screens()[0].scale), (vec![rect(0.0, 0.0, wide, high)], scale));
         // Two monitors: the window hears, main one first, and that it is on that one.
         let desk = desk().expect("RandR");
         assert!(wait(&mut host, |host| host.ui.screens().len() == 2), "the window was not told: {:?}", host.ui.screens());
         assert_eq!((all(&host), host.ui.screen()), (desk.all.to_vec(), Some(0)));
         assert!(host.ui.screens().iter().all(|screen| screen.scale == scale));
-        let works = |host: &Windows| host.ui.screens().iter().map(|screen| screen.work).collect::<Vec<_>>();
+        let works = |host: &Windows| host.ui.screens().iter().map(|screen| screen.work_area).collect::<Vec<_>>();
         // The work area a window manager states (or the test, where none does): one for all
         // monitors, each getting what overlaps it; then one per monitor.
-        if !board.managed() {
+        if !conn.managed() {
             let [left, right] = desk.all;
             assert_eq!(works(&host), desk.all.to_vec());
-            write_on_root(&board, c"_NET_WORKAREA", &[0.0, 30.0, wide, high - 30.0]);
+            write_on_root(&conn, c"_NET_WORKAREA", &[0.0, 30.0, wide, high - 30.0]);
             let cut = [rect(0.0, 30.0, left.w, left.h - 30.0), rect(right.x, 30.0, right.w, right.h - 30.0)];
             assert!(wait(&mut host, |host| works(host) == cut), "{:?}", works(&host));
-            write_on_root(&board, c"_GTK_WORKAREAS_D0", &[0.0, 30.0, left.w, left.h - 30.0, right.x, 0.0, right.w, right.h]);
-            write_on_root(&board, c"_NET_WORKAREA", &[0.0, 30.0, wide, high - 30.0, 0.0, 0.0, wide, high]);
+            write_on_root(&conn, c"_GTK_WORKAREAS_D0", &[0.0, 30.0, left.w, left.h - 30.0, right.x, 0.0, right.w, right.h]);
+            write_on_root(&conn, c"_NET_WORKAREA", &[0.0, 30.0, wide, high - 30.0, 0.0, 0.0, wide, high]);
             assert!(wait(&mut host, |host| works(host) == [cut[0], right]), "{:?}", works(&host));
-            write_on_root(&board, c"_GTK_WORKAREAS_D0", &[]);
-            write_on_root(&board, c"_NET_WORKAREA", &[]);
+            write_on_root(&conn, c"_GTK_WORKAREAS_D0", &[]);
+            write_on_root(&conn, c"_NET_WORKAREA", &[]);
             assert!(wait(&mut host, |host| works(host) == desk.all), "{:?}", works(&host));
         }
         // The monitors go: one screen again.
@@ -5884,15 +6072,18 @@ pub(crate) mod tests {
         let alone = alone();
         let desk = desk().expect("RandR");
         let app = Rc::new(RefCell::new(Owned::default()));
-        app.borrow_mut().windows =
-            vec![(Second::new(200.0, 120.0).on(0), "On the left"), (Second::new(160.0, 100.0).at(20_000, 50), "Lost"), (Second { open: false, ..Second::new(180.0, 90.0).dialog() }, "Save?")];
+        app.borrow_mut().windows = vec![
+            (SecondWindow::new(200.0, 120.0).on_screen(0), "On the left"),
+            (SecondWindow::new(160.0, 100.0).position(20_000, 50), "Lost"),
+            (SecondWindow { open: false, ..SecondWindow::new(180.0, 90.0).dialog() }, "Save?"),
+        ];
         let (_alone, mut host) = owned(alone, Window { title: "taut on the right", screen: Some(1), width: 300.0, height: 200.0, ..Default::default() }, &app);
-        let (board, scale, works) = (host.board.clone(), host.scale, host.ui.screens().iter().map(|screen| screen.work).collect::<Vec<_>>());
+        let (conn, scale, works) = (host.conn.clone(), host.scale, host.ui.screens().iter().map(|screen| screen.work_area).collect::<Vec<_>>());
         settle(&mut host);
         // A window's middle, frame included, and where it lies, as X has it.
         let middle = |window: XWindow| {
-            let ((x, y), [left, right, up, down]) = (corner_at_x(&board, window), [0, 1, 2, 3].map(|side| board.numbers(window, c"_NET_FRAME_EXTENTS").get(side).map_or(0, |wide| *wide as i32)));
-            let size = size_at_x(&board, window).unwrap().map(|side| side as i32);
+            let ((x, y), [left, right, up, down]) = (corner_at_x(&conn, window), [0, 1, 2, 3].map(|side| conn.numbers(window, c"_NET_FRAME_EXTENTS").get(side).map_or(0, |wide| *wide as i32)));
+            let size = size_at_x(&conn, window).unwrap().map(|side| side as i32);
             pt((x + (size[0] + left + right) / 2) as f32, (y + (size[1] + up + down) / 2) as f32)
         };
         let near = |at: Point, to: Point| (at.x - to.x).abs() <= 16.0 && (at.y - to.y).abs() <= 16.0;
@@ -5901,9 +6092,9 @@ pub(crate) mod tests {
         // Without a window manager to the pixel; with one, as near as framing a window it had
         // not yet framed allows.
         assert!(near(middle(first), centre(works[1])) && near(middle(left), centre(works[0])), "{:?} {:?} in {works:?}", middle(first), middle(left));
-        assert!(wait(&mut host, |host| host.ui.screen() == Some(1)), "{:?}", host.ui.placed());
+        assert!(wait(&mut host, |host| host.ui.screen() == Some(1)), "{:?}", host.ui.window_placement());
         // Beyond both right edges: onto the right monitor, at its right edge.
-        let ((x, y), [wide, _]) = (corner_at_x(&board, lost), size_at_x(&board, lost).unwrap());
+        let ((x, y), [wide, _]) = (corner_at_x(&conn, lost), size_at_x(&conn, lost).unwrap());
         assert!(x as f32 >= works[1].x && (x + wide as i32) as f32 <= works[1].right() + 16.0 && (x + wide as i32) as f32 >= works[1].right() - 16.0 && y == 50, "{x} {y} on {works:?}");
         // A dialog: centred on the first window.
         (app.borrow_mut().windows[2].0.open, host.rerun) = (true, true);
@@ -5911,7 +6102,7 @@ pub(crate) mod tests {
         settle(&mut host);
         let dialog = host.windows[3].id;
         assert!(near(middle(dialog), middle(first)), "{:?} over {:?}", middle(dialog), middle(first));
-        assert!((180.0 * scale) as c_uint == size_at_x(&board, dialog).unwrap()[0]);
+        assert!((180.0 * scale) as c_uint == size_at_x(&conn, dialog).unwrap()[0]);
         drop(desk);
     }
 
@@ -5924,37 +6115,41 @@ pub(crate) mod tests {
     #[ignore]
     fn second_windows_of_each_kind_say_to_the_window_manager_what_they_are() {
         let app = Rc::new(RefCell::new(Owned::default()));
-        app.borrow_mut().windows =
-            vec![(Second::new(200.0, 120.0), "Plain"), (Second::new(160.0, 200.0).tool(), "Tools"), (Second::new(140.0, 80.0).on_top(), "Clock"), (Second::new(220.0, 100.0).dialog(), "Save?")];
+        app.borrow_mut().windows = vec![
+            (SecondWindow::new(200.0, 120.0), "Plain"),
+            (SecondWindow::new(160.0, 200.0).tool(), "Tools"),
+            (SecondWindow::new(140.0, 80.0).on_top(), "Clock"),
+            (SecondWindow::new(220.0, 100.0).dialog(), "Save?"),
+        ];
         let (_alone, mut host) = owned(alone(), Window { title: "taut kinds", width: 360.0, height: 240.0, ..Default::default() }, &app);
-        let board = host.board.clone();
+        let conn = host.conn.clone();
         settle(&mut host);
         let [first, plain, tools, clock, dialog] = [0, 1, 2, 3, 4].map(|at| host.windows[at].id);
-        let names = |names: &[&CStr]| names.iter().map(|name| board.atom(name)).collect::<Vec<_>>();
-        let (owner, kind) = (|window| board.numbers(window, c"WM_TRANSIENT_FOR"), |window| board.numbers(window, c"_NET_WM_WINDOW_TYPE"));
-        let has = |window, states: &[&CStr]| names(states).iter().all(|state| board.numbers(window, c"_NET_WM_STATE").contains(state));
+        let names = |names: &[&CStr]| names.iter().map(|name| conn.atom(name)).collect::<Vec<_>>();
+        let (owner, kind) = (|window| conn.numbers(window, c"WM_TRANSIENT_FOR"), |window| conn.numbers(window, c"_NET_WM_WINDOW_TYPE"));
+        let has = |window, states: &[&CStr]| names(states).iter().all(|state| conn.numbers(window, c"_NET_WM_STATE").contains(state));
         assert_eq!([plain, tools, clock, dialog].map(owner), [vec![], vec![first], vec![], vec![first]]);
         assert_eq!([tools, clock, dialog].map(kind), [names(&[c"_NET_WM_WINDOW_TYPE_UTILITY"]), names(&[c"_NET_WM_WINDOW_TYPE_NORMAL"]), names(&[c"_NET_WM_WINDOW_TYPE_DIALOG"])]);
         assert!(
             has(tools, &[c"_NET_WM_STATE_SKIP_TASKBAR"]) && has(clock, &[c"_NET_WM_STATE_ABOVE"]) && has(dialog, &[c"_NET_WM_STATE_MODAL"]),
             "{:?}",
-            [tools, clock, dialog].map(|window| board.numbers(window, c"_NET_WM_STATE"))
+            [tools, clock, dialog].map(|window| conn.numbers(window, c"_NET_WM_STATE"))
         );
-        if !board.managed() {
+        if !conn.managed() {
             return eprintln!("no window manager: what one does with the kinds of window is not seen");
         }
         // A window manager keeps the tool window and dialog above the first, also when the
         // first is activated; and the always-on-top one above all.
-        board.ask(first, c"_NET_ACTIVE_WINDOW", [1, 0, 0, 0, 0]);
+        conn.ask(first, c"_NET_ACTIVE_WINDOW", [1, 0, 0, 0, 0]);
         settle(&mut host);
-        let order = stacking(&board);
+        let order = stacking(&conn);
         let at = |window| order.iter().position(|one| *one == window).unwrap_or_else(|| panic!("{window} is not in {order:?}"));
         assert!(at(tools) > at(first) && at(dialog) > at(first) && at(clock) > at(first) && at(clock) > at(plain), "{order:?}: first {first}, tools {tools}, dialog {dialog}, clock {clock}");
         // Minimized, the first window takes the tool window and dialog with it, not the plain
         // one.
-        board.ask(first, c"WM_CHANGE_STATE", [3, 0, 0, 0, 0]);
-        let hidden = |window| board.numbers(window, c"WM_STATE").first() == Some(&3);
-        assert!(wait(&mut host, |_| hidden(first) && hidden(tools)), "{:?}", [first, tools, dialog, plain].map(|window| board.numbers(window, c"WM_STATE")));
+        conn.ask(first, c"WM_CHANGE_STATE", [3, 0, 0, 0, 0]);
+        let hidden = |window| conn.numbers(window, c"WM_STATE").first() == Some(&3);
+        assert!(wait(&mut host, |_| hidden(first) && hidden(tools)), "{:?}", [first, tools, dialog, plain].map(|window| conn.numbers(window, c"WM_STATE")));
         assert!(!hidden(plain));
     }
 
@@ -5964,9 +6159,9 @@ pub(crate) mod tests {
     #[ignore]
     fn a_dialog_keeps_the_windows_before_it_from_the_keyboard_and_the_pointer() {
         let app = Rc::new(RefCell::new(Owned::default()));
-        app.borrow_mut().windows = vec![(Second { open: false, ..Second::new(220.0, 100.0).dialog() }, "Save?")];
+        app.borrow_mut().windows = vec![(SecondWindow { open: false, ..SecondWindow::new(220.0, 100.0).dialog() }, "Save?")];
         let (_alone, mut host) = owned(alone(), Window { title: "taut asks", width: 320.0, height: 200.0, ..Default::default() }, &app);
-        let (board, scale, first) = (host.board.clone(), host.scale, host.windows[0].id);
+        let (conn, scale, first) = (host.conn.clone(), host.scale, host.windows[0].id);
         let (button, boxed) = (middle(app.borrow().button, scale), middle(app.borrow().boxed, scale));
         click(&mut host, first, button);
         assert_eq!(app.borrow().pressed, 1);
@@ -5977,12 +6172,12 @@ pub(crate) mod tests {
         // window (a window manager already keeping it there is asked to activate it).
         click(&mut host, first, button);
         click(&mut host, first, boxed);
-        let key = unsafe { (Asking::open().unwrap().XKeysymToKeycode)(board.display, 'a' as c_ulong) };
+        let key = unsafe { (Asking::open().unwrap().XKeysymToKeycode)(conn.display, 'a' as c_ulong) };
         send(&mut host, first, input(first, 2, boxed, key as c_uint));
         assert_eq!((app.borrow().pressed, app.borrow().typed.as_str()), (1, ""));
-        let order = stacking(&board);
+        let order = stacking(&conn);
         let at = |window| order.iter().position(|one| *one == window);
-        assert!(board.managed() || at(dialog) > at(first), "{order:?}");
+        assert!(conn.managed() || at(dialog) > at(first), "{order:?}");
         // It is answered and closed: the first window gets the pointer again.
         (app.borrow_mut().windows[0].0.open, host.rerun) = (false, true);
         host.turn();
@@ -5997,17 +6192,17 @@ pub(crate) mod tests {
     #[ignore]
     fn the_app_is_asked_before_a_window_closes_and_can_say_no() {
         let app = Rc::new(RefCell::new(Owned::default()));
-        (app.borrow_mut().windows, app.borrow_mut().unsaved) = (vec![(Second::new(200.0, 120.0), "Notes")], true);
+        (app.borrow_mut().windows, app.borrow_mut().unsaved) = (vec![(SecondWindow::new(200.0, 120.0), "Notes")], true);
         let (_alone, mut host) = owned(alone(), Window { title: "taut closing", width: 320.0, height: 200.0, ..Default::default() }, &app);
-        let (board, [first, notes]) = (host.board.clone(), [0, 1].map(|at| host.windows[at].id));
-        let closing = |window| message(window, board.atom(c"WM_PROTOCOLS"), [board.atom(c"WM_DELETE_WINDOW") as c_long, 0, 0, 0, 0]);
+        let (conn, [first, notes]) = (host.conn.clone(), [0, 1].map(|at| host.windows[at].id));
+        let closing = |window| message(window, conn.atom(c"WM_PROTOCOLS"), [conn.atom(c"WM_DELETE_WINDOW") as c_long, 0, 0, 0, 0]);
         send(&mut host, notes, closing(notes));
         send(&mut host, first, closing(first));
         assert_eq!((app.borrow().asked.clone(), host.windows.len(), host.done), (vec!["Notes", "first"], 2, false));
-        assert!(size_at_x(&board, notes).is_some() && app.borrow().windows[0].0.open);
+        assert!(size_at_x(&conn, notes).is_some() && app.borrow().windows[0].0.open);
         app.borrow_mut().unsaved = false;
         send(&mut host, notes, closing(notes));
-        assert_eq!((host.windows.len(), app.borrow().windows[0].0.open, size_at_x(&board, notes)), (1, false, None));
+        assert_eq!((host.windows.len(), app.borrow().windows[0].0.open, size_at_x(&conn, notes)), (1, false, None));
         send(&mut host, first, closing(first));
         assert!(host.done);
     }
@@ -6017,17 +6212,17 @@ pub(crate) mod tests {
     /// other programs; its second window, while open, a box taking files and text.
     #[derive(Default)]
     struct Carrier {
-        what: Option<Handed<'static>>,
+        what: Option<DragData<'static>>,
         from: Rect,
         on: Rect,
         /// What became of what was dragged out; what was dropped on the box, as a number, files
         /// and text.
-        taken: Vec<Taken>,
+        taken: Vec<DropEffect>,
         dropped: Option<u64>,
         files: Vec<PathBuf>,
         text: Option<String>,
         /// The second window, its box, and what was dropped on it.
-        takes: Second,
+        takes: SecondWindow,
         took: Rect,
         took_text: Option<String>,
     }
@@ -6035,11 +6230,11 @@ pub(crate) mod tests {
     fn carrier(app: &mut Carrier, ui: &mut Ui) {
         ui.column().pad(10.0).gap(10.0).open();
         let from = ui.button("Carry me");
-        if ui.carried(&from, 7) {
+        if ui.drag_source(&from, 7) {
             ui.label("seven");
             ui.close();
         }
-        app.taken.extend(app.what.and_then(|what| ui.hand_out(&from, what)));
+        app.taken.extend(app.what.and_then(|what| ui.drag_out(&from, what)));
         let on = ui.button("Let go here");
         app.dropped = app.dropped.or(ui.dropped(&on));
         app.files.extend(ui.files_dropped(&on).into_iter().flatten());
@@ -6055,16 +6250,16 @@ pub(crate) mod tests {
     }
 
     /// That app's windows, the first with its corner at `at` on screen.
-    fn carrying(what: Option<Handed<'static>>, takes: Second, at: (i32, i32)) -> Option<(Alone, Rc<RefCell<Carrier>>)> {
+    fn carrying(what: Option<DragData<'static>>, takes: SecondWindow, at: (i32, i32)) -> Option<(Alone, Rc<RefCell<Carrier>>)> {
         let app = Rc::new(RefCell::new(Carrier { what, takes, ..Default::default() }));
         let described = app.clone();
-        let window = Window { title: "taut carrying", at: Some(at), width: 300.0, height: 200.0, ..Default::default() };
+        let window = Window { title: "taut carrying", position: Some(at), width: 300.0, height: 200.0, ..Default::default() };
         Some((host(window, move |ui| carrier(&mut described.borrow_mut(), ui))?, app))
     }
 
     /// A window box's middle on screen.
     fn spot(host: &Windows, at: usize, of: Rect) -> [c_int; 2] {
-        let ([x, y], scale) = (host.board.place(host.windows[at].id), host.scale);
+        let ([x, y], scale) = (host.conn.place(host.windows[at].id), host.scale);
         [x + ((of.x + of.w / 2.0) * scale) as c_int, y + ((of.y + of.h / 2.0) * scale) as c_int]
     }
 
@@ -6078,22 +6273,22 @@ pub(crate) mod tests {
     /// The display's pointer goes to a screen position, as a hand moves it; then the host takes
     /// in what follows.
     fn goes(hands: &Hands, host: &mut Windows, [x, y]: [c_int; 2]) {
-        unsafe { (hands.XTestFakeMotionEvent)(host.board.display, -1, x, y, 0) };
+        unsafe { (hands.XTestFakeMotionEvent)(host.conn.display, -1, x, y, 0) };
         lets(host, 50);
     }
     /// The left button goes down or up.
     fn presses(hands: &Hands, host: &mut Windows, down: bool) {
-        unsafe { (hands.XTestFakeButtonEvent)(host.board.display, 1, down as c_int, 0) };
+        unsafe { (hands.XTestFakeButtonEvent)(host.conn.display, 1, down as c_int, 0) };
         lets(host, 50);
     }
 
     /// Sends a window a client message of five numbers under an atom, as another program does.
-    fn say(board: &Board, to: XWindow, name: &CStr, data: [c_long; 5]) {
+    fn say(conn: &Connection, to: XWindow, name: &CStr, data: [c_long; 5]) {
         unsafe {
             let mut event: XEvent = zeroed();
-            event.client = ClientEvent { kind: 33, serial: 0, sent: 1, display: board.display, window: to, message: board.atom(name), format: 32, data };
-            (board.x.XSendEvent)(board.display, to, 0, 0, &mut event);
-            (board.x.XFlush)(board.display);
+            event.client = ClientEvent { kind: 33, serial: 0, sent: 1, display: conn.display, window: to, message: conn.atom(name), format: 32, data };
+            (conn.x.XSendEvent)(conn.display, to, 0, 0, &mut event);
+            (conn.x.XFlush)(conn.display);
         }
     }
 
@@ -6104,12 +6299,12 @@ pub(crate) mod tests {
     fn takes_elsewhere(does: &'static CStr) -> (XWindow, std::sync::mpsc::Receiver<String>) {
         let (tell, heard) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let (board, naming) = (board(c"TAUT_TEST_TARGET").unwrap(), Naming::open().unwrap());
-            let (x, display) = (&board.x, board.display);
+            let (conn, naming) = (conn(c"TAUT_TEST_TARGET").unwrap(), Naming::open().unwrap());
+            let (x, display) = (&conn.x, conn.display);
             let id = unsafe { new_window(x, display, [200, 200], [1, 1], Some((500, 100)), [false; 2]).0 };
-            board.leave(id, board.atom(c"XdndAware"), 4, &[5 as Atom]);
+            conn.leave(id, conn.atom(c"XdndAware"), 4, &[5 as Atom]);
             unsafe { (x.XMapWindow)(display, id) };
-            board.property(id, board.mailbox, false);
+            conn.property(id, conn.mailbox, false);
             tell.send(id.to_string()).unwrap();
             let name = |atom: c_long| unsafe {
                 let name = (naming.XGetAtomName)(display, atom as Atom);
@@ -6134,12 +6329,12 @@ pub(crate) mod tests {
                     }
                     "XdndPosition" => {
                         tell.send(format!("XdndPosition {}", name(data[4]))).ok();
-                        say(&board, from, c"XdndStatus", [id as c_long, 1, 0, 0, board.atom(does) as c_long]);
+                        say(&conn, from, c"XdndStatus", [id as c_long, 1, 0, 0, conn.atom(does) as c_long]);
                     }
                     "XdndDrop" => {
-                        let got = board.read(id, board.atom(c"XdndSelection"), board.atom(FILES), data[2] as c_ulong).unwrap_or_default();
+                        let got = conn.read(id, conn.atom(c"XdndSelection"), conn.atom(FILES), data[2] as c_ulong).unwrap_or_default();
                         tell.send(format!("read {}", String::from_utf8_lossy(&got))).ok();
-                        say(&board, from, c"XdndFinished", [id as c_long, 1, board.atom(does) as c_long, 0, 0]);
+                        say(&conn, from, c"XdndFinished", [id as c_long, 1, conn.atom(does) as c_long, 0, 0]);
                     }
                     _ => _ = tell.send(said).ok(),
                 }
@@ -6168,7 +6363,7 @@ pub(crate) mod tests {
         let Some(hands) = hands() else { return eprintln!("no display of the tests' own to work the pointer of: not tested") };
         let (keys, codes) = (Keys::open().unwrap(), Codes::open().unwrap());
         let paths: &'static [PathBuf] = Box::leak(Box::new([PathBuf::from("/tmp/one.txt"), PathBuf::from("/tmp/two words.png")]));
-        let ((_alone, mut host), app) = carrying(Some(Handed::Files(paths)), Second::default(), (50, 50)).expect("a display");
+        let ((_alone, mut host), app) = carrying(Some(DragData::Files(paths)), SecondWindow::default(), (50, 50)).expect("a display");
         let (target, heard) = takes_elsewhere(c"XdndActionMove");
         settle(&mut host);
         let (from, on) = (spot(&host, 0, app.borrow().from), spot(&host, 0, app.borrow().on));
@@ -6177,12 +6372,12 @@ pub(crate) mod tests {
         goes(&hands, &mut host, from);
         presses(&hands, &mut host, true);
         goes(&hands, &mut host, [from[0] + 10, from[1]]);
-        assert!(host.ui.carrying() == Some(7) && host.ui.carrying_out() && host.out.is_none());
+        assert!(host.ui.drag_payload() == Some(7) && host.ui.drag_leaves_window() && host.out.is_none());
         // Past the window's edge it goes out; over the other program's window, that gets enter
         // and position, asked to copy.
         goes(&hands, &mut host, [420, 150]);
-        assert!(host.out.as_ref().is_some_and(|out| out.from == id && out.over == 0) && !host.ui.carrying_out());
-        assert_eq!(host.board.carried_as(host.board.atom(FILES)).as_deref(), Some(&b"file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n"[..]));
+        assert!(host.out.as_ref().is_some_and(|out| out.from == id && out.over == 0) && !host.ui.drag_leaves_window());
+        assert_eq!(host.conn.carried_as(host.conn.atom(FILES)).as_deref(), Some(&b"file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n"[..]));
         goes(&hands, &mut host, [550, 150]);
         goes(&hands, &mut host, [560, 160]);
         assert_eq!(sent(&heard)[..2], ["XdndEnter 5 text/uri-list", "XdndPosition XdndActionCopy"]);
@@ -6193,8 +6388,8 @@ pub(crate) mod tests {
         assert!(wait(&mut host, |host| host.out.is_none()), "the other program said it was done");
         lets(&mut host, 50);
         assert_eq!(sent(&heard).iter().filter(|said| said.starts_with("read")).collect::<Vec<_>>(), ["read file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n"]);
-        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![Taken::Moved], None));
-        assert!(host.board.carried_as(host.board.atom(FILES)).is_none(), "nothing is carried any more");
+        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![DropEffect::Moved], None));
+        assert!(host.conn.carried_as(host.conn.atom(FILES)).is_none(), "nothing is carried any more");
         // Dragged out again and back over its own window: the other program gets a leave;
         // dropped on the box, it is the number again.
         goes(&hands, &mut host, from);
@@ -6205,7 +6400,7 @@ pub(crate) mod tests {
         goes(&hands, &mut host, on);
         assert!(host.out.as_ref().is_some_and(|out| out.home) && host.ui.pointer().is_some());
         presses(&hands, &mut host, false);
-        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![Taken::Moved], Some(7)));
+        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![DropEffect::Moved], Some(7)));
         assert!(host.out.is_none() && sent(&heard).contains(&"XdndLeave".to_string()));
         // And cancelled with Escape over the other program: it gets a leave, and the app hears
         // nothing was taken. (The button is still down: it comes up after.)
@@ -6215,14 +6410,14 @@ pub(crate) mod tests {
         goes(&hands, &mut host, [from[0] + 10, from[1]]);
         goes(&hands, &mut host, [420, 150]);
         goes(&hands, &mut host, [550, 150]);
-        let escape = unsafe { (codes.XKeysymToKeycode)(host.board.display, 0xff1b) } as c_uint;
-        unsafe { ((keys.XTestFakeKeyEvent)(host.board.display, escape, 1, 0), (keys.XTestFakeKeyEvent)(host.board.display, escape, 0, 0)) };
+        let escape = unsafe { (codes.XKeysymToKeycode)(host.conn.display, 0xff1b) } as c_uint;
+        unsafe { ((keys.XTestFakeKeyEvent)(host.conn.display, escape, 1, 0), (keys.XTestFakeKeyEvent)(host.conn.display, escape, 0, 0)) };
         lets(&mut host, 100);
-        assert!(host.out.is_none() && host.ui.carrying().is_none());
+        assert!(host.out.is_none() && host.ui.drag_payload().is_none());
         assert!(sent(&heard).contains(&"XdndLeave".to_string()));
         presses(&hands, &mut host, false);
-        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![Taken::Moved], None));
-        say(&host.board, target, c"TAUT_STOP", [0; 5]);
+        assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![DropEffect::Moved], None));
+        say(&host.conn, target, c"TAUT_STOP", [0; 5]);
     }
 
     /// Text dragged from another program and dropped on a window reaches the box under it, and
@@ -6231,10 +6426,10 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn text_from_another_program_reaches_the_box_it_is_let_go_on() {
-        let ((_alone, mut host), app) = carrying(None, Second::default(), (50, 50)).expect("a display");
+        let ((_alone, mut host), app) = carrying(None, SecondWindow::default(), (50, 50)).expect("a display");
         settle(&mut host);
-        let (board, id) = (host.board.clone(), host.windows[0].id);
-        let (named, wait) = (|name: &CStr| board.atom(name), Duration::from_secs(2));
+        let (conn, id) = (host.conn.clone(), host.windows[0].id);
+        let (named, wait) = (|name: &CStr| conn.atom(name), Duration::from_secs(2));
         let on = app.borrow().on;
         for (place, taken) in [(on, true), (Rect { y: 180.0, h: 10.0, ..on }, false)] {
             let (from, heard) = files_carried_elsewhere("words, ünïcode 𝄞");
@@ -6242,7 +6437,7 @@ pub(crate) mod tests {
             send(&mut host, id, message(id, named(c"XdndEnter"), [from as c_long, 5 << 24, named(c"UTF8_STRING") as c_long, named(TEXT) as c_long, 0]));
             send(&mut host, id, message(id, named(c"XdndPosition"), [from as c_long, 0, (at[0] << 16 | at[1]) as c_long, 0, named(c"XdndActionCopy") as c_long]));
             assert_eq!(heard.recv_timeout(wait), Ok((named(c"XdndStatus"), [id as c_long, 3, 0, 0, named(c"XdndActionCopy") as c_long])), "it may be let go here");
-            assert!(host.ui.text_over() && !host.ui.files_over());
+            assert!(host.ui.text_hovered() && !host.ui.files_hovered());
             send(&mut host, id, message(id, named(c"XdndDrop"), [from as c_long, 0, 0, 0, 0]));
             assert_eq!(heard.recv_timeout(wait), Ok((0, [id as c_long, 0, 0, 0, 0])), "the text was asked for");
             let finished = [id as c_long, taken as c_long, if taken { named(c"XdndActionCopy") as c_long } else { 0 }, 0, 0];
@@ -6255,7 +6450,7 @@ pub(crate) mod tests {
         let at = spot(&host, 0, app.borrow().on);
         send(&mut host, id, message(id, named(c"XdndPosition"), [from as c_long, 0, (at[0] << 16 | at[1]) as c_long, 0, named(c"XdndActionCopy") as c_long]));
         assert_eq!(heard.recv_timeout(wait), Ok((named(c"XdndStatus"), [id as c_long, 0, 0, 0, 0])));
-        assert!(!host.ui.text_over() && !host.ui.files_over());
+        assert!(!host.ui.text_hovered() && !host.ui.files_hovered());
     }
 
     /// Text dragged from one window of a program to another: they talk XDND through X, as two
@@ -6265,7 +6460,7 @@ pub(crate) mod tests {
     #[ignore = "works the pointer of a display of its own (xvfb-run)"]
     fn what_one_window_carries_out_another_window_of_the_program_takes() {
         let Some(hands) = hands() else { return eprintln!("no display of the tests' own to work the pointer of: not tested") };
-        let ((_alone, mut host), app) = carrying(Some(Handed::Text("über alles")), Second::new(200.0, 120.0).at(500, 100), (50, 50)).expect("a display");
+        let ((_alone, mut host), app) = carrying(Some(DragData::Text("über alles")), SecondWindow::new(200.0, 120.0).position(500, 100), (50, 50)).expect("a display");
         settle(&mut host);
         assert_eq!(host.windows.len(), 2);
         let (from, took) = (spot(&host, 0, app.borrow().from), spot(&host, 1, app.borrow().took));
@@ -6278,7 +6473,7 @@ pub(crate) mod tests {
         presses(&hands, &mut host, false);
         assert!(wait(&mut host, |host| host.out.is_none()));
         lets(&mut host, 50);
-        assert_eq!((app.borrow().took_text.as_deref(), app.borrow().taken.clone()), (Some("über alles"), vec![Taken::Copied]));
+        assert_eq!((app.borrow().took_text.as_deref(), app.borrow().taken.clone()), (Some("über alles"), vec![DropEffect::Copied]));
     }
 
     /// What the program started by the test below does: a window at (500, 100) with a box
@@ -6291,7 +6486,7 @@ pub(crate) mod tests {
             return;
         }
         let paths: &'static [PathBuf] = Box::leak(Box::new([PathBuf::from("/tmp/from the other.txt")]));
-        let ((_alone, mut host), app) = carrying(Some(Handed::Files(paths)), Second::default(), (500, 100)).expect("a display");
+        let ((_alone, mut host), app) = carrying(Some(DragData::Files(paths)), SecondWindow::default(), (500, 100)).expect("a display");
         settle(&mut host);
         let (on, from) = (spot(&host, 0, app.borrow().on), spot(&host, 0, app.borrow().from));
         println!("ready {} {} {} {}", on[0], on[1], from[0], from[1]);
@@ -6316,7 +6511,7 @@ pub(crate) mod tests {
     #[ignore = "works the pointer of a display of its own (xvfb-run)"]
     fn two_programs_carry_to_each_other() {
         let Some(hands) = hands() else { return eprintln!("no display of the tests' own to work the pointer of: not tested") };
-        let ((_alone, mut host), app) = carrying(Some(Handed::Text("from the first program")), Second::default(), (50, 50)).expect("a display");
+        let ((_alone, mut host), app) = carrying(Some(DragData::Text("from the first program")), SecondWindow::default(), (50, 50)).expect("a display");
         let mut other = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "x11::tests::a_program_that_takes_and_hands_out", "--ignored", "--nocapture", "--test-threads=1"])
             .env("TAUT_TEST_OTHER", "1")
@@ -6341,7 +6536,7 @@ pub(crate) mod tests {
         presses(&hands, &mut host, false);
         assert!(wait(&mut host, |host| host.out.is_none()));
         lets(&mut host, 50);
-        assert_eq!(app.borrow().taken, [Taken::Copied]);
+        assert_eq!(app.borrow().taken, [DropEffect::Copied]);
         // The other program's file, dropped on this one's box.
         let on = spot(&host, 0, app.borrow().on);
         goes(&hands, &mut host, [numbers[2], numbers[3]]);
@@ -6444,9 +6639,9 @@ pub(crate) mod tests {
             was
         };
         unsafe { (x.XSetErrorHandler)(Some(own)) };
-        let Some(one) = board(c"TAUT_TEST_ONE") else { return eprintln!("no display: not tested") };
+        let Some(one) = conn(c"TAUT_TEST_ONE") else { return eprintln!("no display: not tested") };
         assert!(shrugs(now()));
-        let two = board(c"TAUT_TEST_TWO").unwrap();
+        let two = conn(c"TAUT_TEST_TWO").unwrap();
         drop(one);
         assert!(shrugs(now()), "one connection is still open");
         drop(two);
@@ -6487,9 +6682,9 @@ pub(crate) mod tests {
     });
 
     /// Whether X shows a window now (mapped, and every ancestor mapped).
-    fn shown_at_x(board: &Board, window: XWindow) -> bool {
+    fn shown_at_x(conn: &Connection, window: XWindow) -> bool {
         let mut standing: Standing = unsafe { zeroed() };
-        unsafe { (Looks::open().unwrap().XGetWindowAttributes)(board.display, window, &mut standing) };
+        unsafe { (Looks::open().unwrap().XGetWindowAttributes)(conn.display, window, &mut standing) };
         standing.shown == 2
     }
 
@@ -6519,9 +6714,9 @@ pub(crate) mod tests {
             hide: bool,
             forward: bool,
             hidden: bool,
-            starts: Vec<crate::Start>,
+            starts: Vec<crate::Relaunch>,
         }
-        let _starts = crate::copies::tests::starts_alone();
+        let _starts = crate::single_instance::tests::starts_alone();
         // Another program has Ctrl+Shift+F11.
         let grabs = Grabs::open().expect("libX11");
         let x = Xlib::open().unwrap();
@@ -6544,16 +6739,16 @@ pub(crate) mod tests {
                 app.pressed += ui.hotkey("Ctrl+Shift+F12") as u32;
                 ui.hotkey("Ctrl+Shift+F11");
                 ui.hotkey("Ctrl+Alt+F12");
-                app.taken = [ui.hotkey_taken("Ctrl+Shift+F11"), ui.hotkey_taken("Ctrl+Alt+F12")];
+                app.taken = [ui.hotkey_refused("Ctrl+Shift+F11"), ui.hotkey_refused("Ctrl+Alt+F12")];
             }
             if std::mem::take(&mut app.hide) {
                 ui.hide_window();
             }
             if std::mem::take(&mut app.forward) {
-                ui.come_forward();
+                ui.bring_to_front();
             }
-            app.hidden = ui.window_hidden();
-            let starts = ui.started_again();
+            app.hidden = ui.window_minimized();
+            let starts = ui.relaunches();
             app.starts.extend(starts);
             ui.label("One");
         }) else {
@@ -6562,10 +6757,10 @@ pub(crate) mod tests {
         lets(&mut host, 100);
         assert_eq!(app.borrow().taken, [true, true], "the key another program has is refused, and so is one that switches to a console");
         let window = host.windows[0].id;
-        assert!(shown_at_x(&host.board, window));
+        assert!(shown_at_x(&host.conn, window));
 
         // The person presses Ctrl+Shift+F12, on none of the program's windows.
-        let ours = host.board.display;
+        let ours = host.conn.display;
         let code = |keysym: c_ulong| unsafe { (codes.XKeysymToKeycode)(ours, keysym) } as c_uint;
         for (keysym, down) in [(0xffe3, 1), (0xffe1, 1), (0xffc9, 1), (0xffc9, 0), (0xffe1, 0), (0xffe3, 0)] {
             unsafe { (keys.XTestFakeKeyEvent)(ours, code(keysym), down, 0) };
@@ -6581,17 +6776,17 @@ pub(crate) mod tests {
             lets(host, 200);
         };
         stand(&mut host, &app, true);
-        assert!(!shown_at_x(&host.board, window) && app.borrow().hidden);
+        assert!(!shown_at_x(&host.conn, window) && app.borrow().hidden);
         stand(&mut host, &app, false);
-        assert!(shown_at_x(&host.board, window) && !app.borrow().hidden);
+        assert!(shown_at_x(&host.conn, window) && !app.borrow().hidden);
 
         // Hidden again, it comes back for a later start of the program, which the app hears.
         stand(&mut host, &app, true);
-        let later = crate::Start { args: vec!["notes.txt".into()], folder: "/home/someone".into() };
-        crate::copies::came(crate::copies::Tokens { wayland: String::new(), x: "launcher-7_TIME1234".into() }, later.clone());
+        let later = crate::Relaunch { args: vec!["notes.txt".into()], working_dir: "/home/someone".into() };
+        crate::single_instance::came(crate::single_instance::Tokens { wayland: String::new(), x: "launcher-7_TIME1234".into() }, later.clone());
         host.rerun = true;
         lets(&mut host, 200);
-        assert!(shown_at_x(&host.board, window) && !app.borrow().hidden);
+        assert!(shown_at_x(&host.conn, window) && !app.borrow().hidden);
         assert_eq!(app.borrow().starts, [later]);
 
         // No longer wanted, the key is released: the other program can grab it now.
@@ -6763,7 +6958,7 @@ pub(crate) mod tests {
         app.rows = (0..30).map(|row| ui.button(&format!("Row {row}")).rect).collect();
         ui.close();
         let map = ui.el().size(200.0, 200.0).fill(Color::rgb(0x224422)).sense().show();
-        app.zoomed *= ui.zoom(&map).map_or(1.0, |zoom| zoom.by);
+        app.zoomed *= ui.zoom(&map).map_or(1.0, |zoom| zoom.factor);
         let paper = ui.el().size(200.0, 200.0).fill(Color::rgb(0xeeeeee)).sense().show();
         if paper.pressed {
             app.strokes.extend(ui.stylus());
@@ -6784,7 +6979,7 @@ pub(crate) mod tests {
         }
         let app = Rc::new(RefCell::new(Drawn { rows: Vec::new(), map: Rect::EMPTY, zoomed: 1.0, paper: Rect::EMPTY, strokes: Vec::new(), button: Rect::EMPTY, clicks: 0 }));
         let described = app.clone();
-        let asked = Window { title: "taut drawn", at: Some((0, 0)), width: 700.0, height: 360.0, ..Default::default() };
+        let asked = Window { title: "taut drawn", position: Some((0, 0)), width: 700.0, height: 360.0, ..Default::default() };
         let (alone, host) = host_on(alone, Session::on(None), asked, move |ui| drawn(&mut described.borrow_mut(), ui))?;
         Some(((alone, host), app, devices.map(Option::unwrap)))
     }
@@ -6792,7 +6987,7 @@ pub(crate) mod tests {
     /// Where on a test device's axes (0 to 65,535 across the screen each way, as X counts) a
     /// place in the first window is: its pixel's middle.
     fn on_axes(host: &Windows, at: Point) -> [(usize, f64); 2] {
-        let ([left, top], [wide, high], scale) = (host.board.place(host.windows[0].id), screen_size(&host.board.x, host.board.display), host.scale);
+        let ([left, top], [wide, high], scale) = (host.conn.place(host.windows[0].id), screen_size(&host.conn.x, host.conn.display), host.scale);
         let axis = |window: f32, corner: c_int, across: c_uint| (f64::from(window * scale) + f64::from(corner) + 0.5) * 65536.0 / f64::from(across);
         [(0, axis(at.x, left, wide)), (1, axis(at.y, top, high))]
     }
@@ -6800,8 +6995,8 @@ pub(crate) mod tests {
     /// The device delivered all it was told, and the window took in what X made of it.
     fn taken(host: &mut Windows, device: &mut Device) {
         device.sync();
-        let board = host.board.clone();
-        board.property(board.window, board.mailbox, false);
+        let conn = host.conn.clone();
+        conn.property(conn.window, conn.mailbox, false);
         host.turn();
     }
 
@@ -6869,7 +7064,7 @@ pub(crate) mod tests {
             taken(&mut host, &mut touch);
         }
         settle(&mut host);
-        assert_eq!((app.borrow().clicks, host.ui.fingers()), (1, true));
+        assert_eq!((app.borrow().clicks, host.ui.is_touch()), (1, true));
     }
 
     /// A real pen drawn on the box with rising pressure: the app hears the pressure every run
@@ -6957,7 +7152,7 @@ pub(crate) mod tests {
             taken(&mut host, &mut mouse);
         }
         settle(&mut host);
-        assert_eq!((app.borrow().clicks, host.ui.fingers(), host.ui.stylus()), (1, false, None));
+        assert_eq!((app.borrow().clicks, host.ui.is_touch(), host.ui.stylus()), (1, false, None));
         to(&mut host, &mut pen, &mut mouse, list);
         for down in [true, false] {
             mouse.button(5, down, &[]);
@@ -6990,7 +7185,7 @@ pub(crate) mod tests {
             taken(&mut host, &mut touch);
         }
         settle(&mut host);
-        assert_eq!((app.borrow().clicks, host.ui.fingers()), (1, false));
+        assert_eq!((app.borrow().clicks, host.ui.is_touch()), (1, false));
         let map = app.borrow().map;
         for (kind, apart) in [(18, 30.0), (19, 60.0), (20, 60.0)] {
             touch.finger(1, kind, &on_axes(&host, beside(map, [-apart, 0.0])));
@@ -7006,4 +7201,432 @@ pub(crate) mod tests {
         taken(&mut host, &mut pen);
         assert_eq!((app.borrow().strokes.len(), host.ui.stylus()), (0, None));
     }
+
+    /// Windows shown through the GPU (feature `gpu`), by OpenGL or Vulkan: the very pixels X
+    /// shows, through every kind of change, a lost device, a missing renderer, and none at all. They read the screen, so they run only
+    /// when asked, on a display of their own.
+    #[cfg(feature = "gpu")]
+    mod through_the_gpu {
+        use super::*;
+        use crate::platform::Renderer;
+
+        /// The scene's state: two check boxes far apart, words, a text box; where the boxes are.
+        #[derive(Default)]
+        struct Scene {
+            ticks: [bool; 2],
+            words: String,
+            typed: String,
+            at: [Rect; 2],
+        }
+
+        fn scene(app: &mut Scene, ui: &mut Ui) {
+            app.at[0] = ui.checkbox(&mut app.ticks[0], "Above").rect;
+            ui.label(&app.words);
+            ui.text_box(&mut app.typed, "Type here");
+            ui.spacer();
+            app.at[1] = ui.checkbox(&mut app.ticks[1], "Below").rect;
+        }
+
+        /// A window of the scene, shown as `renderer` asks.
+        fn opened(renderer: Renderer) -> Option<(Alone, Rc<RefCell<Scene>>)> {
+            let app = Rc::new(RefCell::new(Scene { words: "Words".into(), ..Default::default() }));
+            let described = app.clone();
+            let window = Window { title: "taut gpu", width: 320.0, height: 240.0, renderer, ..Default::default() };
+            Some((host(window, move |ui| scene(&mut described.borrow_mut(), ui))?, app))
+        }
+
+        /// What a window's interface paints, drawn whole: what the window must show.
+        fn painted(host: &mut Windows, at: usize) -> Vec<Vec<c_ulong>> {
+            let ([width, height], scale) = (host.windows[at].size, host.scale);
+            let mut pixels = vec![0; (width * height) as usize];
+            let mut canvas = Canvas::new(&mut pixels, width as usize, height as usize, (0, 0), scale);
+            host.windows[at].with(&mut host.ui, |ui| ui.paint(&mut canvas));
+            pixels.chunks(width as usize).map(|row| row.iter().map(|pixel| (pixel & 0xff_ffff) as c_ulong).collect()).collect()
+        }
+
+        /// What a window shows, and what it must: once they match, or a second has passed.
+        fn shown(host: &mut Windows, at: usize) -> (Vec<Vec<c_ulong>>, Vec<Vec<c_ulong>>) {
+            let (must, conn, asked) = (painted(host, at), host.conn.clone(), Instant::now());
+            let (id, size) = (host.windows[at].id, host.windows[at].size);
+            let mut seen = on_screen(&conn, id, size);
+            while seen != must && asked.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(10));
+                seen = on_screen(&conn, id, size);
+            }
+            (seen, must)
+        }
+
+        /// How many pixels differ between two pictures of one size; the first that does, its
+        /// place and both values; and the area around all that do (left, top, right, bottom).
+        type Differ = (usize, Option<(usize, usize, c_ulong, c_ulong)>, Option<[usize; 4]>);
+
+        /// See `Differ`.
+        fn differ(seen: &[Vec<c_ulong>], must: &[Vec<c_ulong>]) -> Differ {
+            let all = seen.iter().zip(must).enumerate().flat_map(|(y, (a, b))| a.iter().zip(b).enumerate().map(move |(x, (a, b))| (x, y, *a, *b)));
+            let different: Vec<_> = all.filter(|(_, _, a, b)| a != b).collect();
+            let around =
+                different.iter().fold(None, |area: Option<[usize; 4]>, (x, y, ..)| Some(area.map_or([*x, *y, *x + 1, *y + 1], |[l, t, r, b]| [l.min(*x), t.min(*y), r.max(x + 1), b.max(y + 1)])));
+            (different.len(), different.first().copied(), around)
+        }
+
+        /// Asserts that a window shows exactly what its interface paints.
+        fn same(host: &mut Windows, at: usize, step: &str) -> Vec<Vec<c_ulong>> {
+            let (seen, must) = shown(host, at);
+            assert_eq!((seen.len(), seen.first().map(Vec::len)), (must.len(), must.first().map(Vec::len)), "{step}: the window's size");
+            assert_eq!(differ(&seen, &must), (0, None, None), "{step}: pixels shown that differ from those painted (x, y, shown, painted)");
+            seen
+        }
+
+        /// The steps the scene goes through: a change by its app, by X, or by the person. Says
+        /// what the step was.
+        fn step(host: &mut Windows, app: &Rc<RefCell<Scene>>, nth: usize) -> &'static str {
+            let (conn, id, scale) = (host.conn.clone(), host.windows[0].id, host.scale);
+            let said = match nth {
+                0 => "opened",
+                1 => {
+                    app.borrow_mut().ticks[0] = true;
+                    "the app ticks the box above"
+                }
+                2 => {
+                    app.borrow_mut().ticks = [false, true];
+                    "the app changes both boxes, far apart"
+                }
+                3 => {
+                    app.borrow_mut().words = "Other words, and longer ones".into();
+                    "the words change"
+                }
+                4 => {
+                    let size = host.windows[0].size;
+                    host.windows[0].exposed(ExposeEvent { kind: 12, serial: 0, sent: 0, display: null_mut(), window: id, x: 0, y: 0, width: size[0], height: size[1] }, scale);
+                    "X has it drawn whole"
+                }
+                5 => {
+                    let at = app.borrow().at[0];
+                    click(host, id, middle(at, scale));
+                    "the person clicks the box above"
+                }
+                6 => {
+                    let asking = Asking::open().unwrap();
+                    // SAFETY: the window is the host's own, on its display.
+                    unsafe { (asking.XResizeWindow)(conn.display, id, 400, 300) };
+                    assert!(wait(host, |host| host.windows[0].size == [400, 300]), "X resized the window");
+                    "resized"
+                }
+                _ => {
+                    app.borrow_mut().typed = "typed".into();
+                    "text in the box"
+                }
+            };
+            host.rerun = true;
+            host.turn();
+            said
+        }
+
+        /// Whether `TAUT_RENDERER` overrides what a window asks for.
+        fn overridden() -> bool {
+            std::env::var_os("TAUT_RENDERER").is_some()
+        }
+
+        /// The renderers a window can be shown through here.
+        const GPUS: [Renderer; 2] = [Renderer::OpenGL, Renderer::Vulkan];
+
+        /// A window of the scene shown through `renderer`, settled; nothing (said) where that
+        /// renderer is missing.
+        fn through(renderer: Renderer) -> Option<(Alone, Rc<RefCell<Scene>>)> {
+            let ((alone, mut host), app) = opened(renderer).expect("a display");
+            settle(&mut host);
+            let by = host.gpu.as_ref().map(crate::gpu_x11::Gpu::renderer);
+            if by != Some(renderer) {
+                eprintln!("{renderer:?} missing (shown by {by:?}): not tested");
+                return None;
+            }
+            eprintln!("{renderer:?}: shown through {}", host.gpu.as_ref().unwrap().name());
+            Some(((alone, host), app))
+        }
+
+        /// Two small changes far apart go into the GPU's pixels, and are drawn and named to the
+        /// driver, as two places, nothing between. (A driver presenting by damage, as DRI3 does,
+        /// puts only those on the screen; Mesa's software one under Xvfb puts the area around
+        /// them.)
+        #[test]
+        #[ignore]
+        fn two_changes_far_apart_are_named_as_two_places() {
+            for renderer in GPUS {
+                let Some(((_alone, mut host), app)) = through(renderer) else { continue };
+                app.borrow_mut().ticks = [true; 2];
+                host.rerun = true;
+                host.turn();
+                let crate::gpu_x11::Way::Gpu(shows) = &host.windows[0].way else { panic!("{renderer:?}: shown by X") };
+                let (at, scale) = (app.borrow().at, host.scale);
+                let rows = |of: Rect| (of.y * scale).floor() as c_int..(of.bottom() * scale).ceil() as c_int;
+                let named: Vec<[c_int; 4]> = crate::gpu_x11::Gpu::named(shows).to_vec();
+                assert_eq!(named.len(), 2, "{renderer:?}: two places: {named:?} for {at:?}");
+                let within = |place: &[c_int; 4], of: Rect| rows(of).contains(&place[1]) && rows(of).contains(&(place[3] - 1));
+                assert!(named.iter().any(|place| within(place, at[0])) && named.iter().any(|place| within(place, at[1])), "{renderer:?}: {named:?} for {at:?}");
+            }
+        }
+
+        /// Through either GPU renderer a window shows what it shows through X, byte for byte, at
+        /// every step: and each is what its interface paints.
+        #[test]
+        #[ignore]
+        fn the_gpu_shows_what_x_shows_byte_for_byte() {
+            let mut pictures: [Vec<Vec<Vec<c_ulong>>>; 3] = Default::default();
+            for (way, renderer) in [Renderer::Cpu, Renderer::OpenGL, Renderer::Vulkan].into_iter().enumerate() {
+                let ((_alone, mut host), app) = opened(renderer).expect("a display");
+                settle(&mut host);
+                if !overridden() {
+                    assert_eq!(host.ui.renderer(), renderer, "shown as asked");
+                }
+                for nth in 0..8 {
+                    let said = step(&mut host, &app, nth);
+                    pictures[way].push(same(&mut host, 0, &format!("{renderer:?}, {said}")));
+                }
+                if let Some(gpu) = &host.gpu {
+                    eprintln!("{renderer:?}: shown through {}", gpu.name());
+                }
+            }
+            for (renderer, shown) in GPUS.iter().zip(&pictures[1..]) {
+                for (nth, (x, gpu)) in pictures[0].iter().zip(shown).enumerate() {
+                    assert_eq!(differ(x, gpu), (0, None, None), "step {nth}: X and {renderer:?} show different pixels");
+                }
+            }
+        }
+
+        /// A lost device is made again, and the window drawn whole through it; lost with none to
+        /// be had, X shows the window from then on.
+        #[test]
+        #[ignore]
+        fn a_lost_device_is_made_again_else_x_shows_the_window() {
+            for renderer in GPUS {
+                let Some(((_alone, mut host), app)) = through(renderer) else { continue };
+                host.gpu.as_mut().unwrap().lose();
+                app.borrow_mut().ticks[0] = true;
+                host.rerun = true;
+                host.turn();
+                assert!(host.gpu.as_ref().is_some_and(|gpu| !gpu.lost()), "{renderer:?}: a new device");
+                assert_eq!(host.ui.renderer(), renderer);
+                same(&mut host, 0, &format!("{renderer:?}, made again"));
+
+                crate::gpu_x11::NO_DEVICE.set(true);
+                host.gpu.as_mut().unwrap().lose();
+                app.borrow_mut().ticks[1] = true;
+                host.rerun = true;
+                host.turn();
+                crate::gpu_x11::NO_DEVICE.set(false);
+                assert!(host.gpu.is_none() && host.asks.is_none(), "{renderer:?}: X shows it for good");
+                assert_eq!(host.ui.renderer(), Renderer::Cpu);
+                same(&mut host, 0, &format!("{renderer:?}, then by X"));
+                for nth in [3, 5] {
+                    let said = step(&mut host, &app, nth);
+                    same(&mut host, 0, said);
+                }
+            }
+        }
+
+        /// A renderer asked for but missing falls back along the order (OpenGL, then Vulkan),
+        /// at the start and after a lost device; Direct3D is missing here. `Ui::renderer` says
+        /// which one shows the window, and it shows what it paints.
+        #[test]
+        #[ignore]
+        fn a_missing_renderer_falls_back_along_the_order() {
+            let (gl, vk) = (Renderer::OpenGL, Renderer::Vulkan);
+            let cases = [(Renderer::Gpu, Some(gl), vk), (Renderer::Vulkan, Some(vk), gl), (Renderer::Direct3D11, None, gl), (Renderer::Direct3D12, Some(gl), vk), (gl, Some(gl), vk)];
+            for (asked, missing, wanted) in cases {
+                crate::gpu_x11::MISSING.set(missing);
+                let ((_alone, mut host), app) = opened(asked).expect("a display");
+                settle(&mut host);
+                crate::gpu_x11::MISSING.set(None);
+                if host.gpu.is_none() || overridden() {
+                    eprintln!("{asked:?} without {missing:?}: no device, not tested");
+                    continue;
+                }
+                assert_eq!(host.ui.renderer(), wanted, "{asked:?} without {missing:?}");
+                same(&mut host, 0, &format!("{asked:?} without {missing:?}"));
+                // Lost, and its own renderer gone: the next one in the order shows the window.
+                let other = if wanted == gl { vk } else { gl };
+                crate::gpu_x11::MISSING.set(Some(wanted));
+                host.gpu.as_mut().unwrap().lose();
+                app.borrow_mut().ticks[0] ^= true;
+                host.rerun = true;
+                host.turn();
+                crate::gpu_x11::MISSING.set(None);
+                assert_eq!(host.ui.renderer(), other, "{asked:?}: after {wanted:?} was lost and gone");
+                same(&mut host, 0, &format!("{asked:?}, after {wanted:?} was lost"));
+            }
+        }
+
+        /// With no driver at all for one renderer, or for both, the next in the order shows the
+        /// windows of an app asking for the GPU, else X, from the start. (Each in a program of
+        /// its own, started without EGL's drivers, Vulkan's, or either.)
+        #[test]
+        #[ignore]
+        fn with_a_driver_missing_the_next_renderer_shows_the_windows() {
+            let name = "x11::tests::through_the_gpu::with_a_driver_missing_the_next_renderer_shows_the_windows";
+            let (none, egl, vulkan) = ("/nonexistent/none.json", "__EGL_VENDOR_LIBRARY_FILENAMES", ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"]);
+            if let Ok(missing) = std::env::var("TAUT_TEST_MISSING") {
+                let ((_alone, mut host), app) = opened(Renderer::Gpu).expect("a display");
+                settle(&mut host);
+                let wanted = match missing.as_str() {
+                    "opengl" => Renderer::Vulkan,
+                    "vulkan" => Renderer::OpenGL,
+                    _ => Renderer::Cpu,
+                };
+                assert_eq!(host.ui.renderer(), wanted, "without {missing}");
+                assert_eq!((host.gpu.is_none(), host.asks.is_none()), (wanted == Renderer::Cpu, wanted == Renderer::Cpu));
+                for nth in 0..3 {
+                    let said = step(&mut host, &app, nth);
+                    same(&mut host, 0, said);
+                }
+                return;
+            }
+            // No other window of this program meanwhile: the child's opens where it does.
+            let _alone = alone();
+            for missing in ["opengl", "vulkan", "both"] {
+                let mut child = Command::new(std::env::current_exe().unwrap());
+                child.args(["--exact", name, "--ignored", "--nocapture"]).env("TAUT_TEST_MISSING", missing).env_remove("TAUT_RENDERER");
+                if missing != "vulkan" {
+                    child.env(egl, none);
+                }
+                if missing != "opengl" {
+                    vulkan.iter().for_each(|variable| _ = child.env(variable, none));
+                }
+                let ran = child.output().unwrap();
+                let said = String::from_utf8_lossy(&ran.stdout);
+                assert!(ran.status.success() && said.contains("1 passed"), "without {missing}: {said}\n{}", String::from_utf8_lossy(&ran.stderr));
+            }
+        }
+
+        /// `Auto` takes the first device in the order that shows frames directly: a hardware
+        /// device, with DRI3 where its driver is Mesa's. (Under Xvfb, none: it has no DRI3, and
+        /// Mesa copies every frame through X.)
+        #[test]
+        #[ignore]
+        fn auto_takes_only_a_device_showing_frames_directly() {
+            let mut direct = Vec::new();
+            for renderer in GPUS {
+                let Some(((alone, host), _)) = through(renderer) else { continue };
+                // SAFETY: the host's display is open.
+                direct.extend(host.gpu.as_ref().filter(|gpu| unsafe { gpu.direct(host.conn.display) }).map(crate::gpu_x11::Gpu::renderer));
+                drop((host, alone));
+            }
+            let ((_alone, host), _) = opened(Renderer::Auto).expect("a display");
+            let wanted = direct.first().copied().unwrap_or(Renderer::Cpu);
+            if !overridden() {
+                assert_eq!((host.ui.renderer(), host.gpu.is_some()), (wanted, wanted != Renderer::Cpu), "direct: {direct:?}");
+            }
+        }
+
+        /// A second window is shown through the GPU too, and shows what it paints; closed, it
+        /// lets go of its surface, and the first goes on.
+        #[test]
+        #[ignore]
+        fn second_windows_are_shown_through_it_too() {
+            for renderer in GPUS {
+                let prefs = SecondWindow::new(200.0, 120.0);
+                let app = Rc::new(RefCell::new(Two { prefs, dark: false, pressed: 0, typed: Default::default(), dropped: Default::default(), rename: None, at: [Rect::EMPTY; 4] }));
+                let described = app.clone();
+                let window = Window { title: "taut test", width: 320.0, height: 200.0, renderer, ..Default::default() };
+                let (_alone, mut host) = host(window, move |ui| two(&mut described.borrow_mut(), ui)).expect("a display");
+                settle(&mut host);
+                if host.gpu.as_ref().map(crate::gpu_x11::Gpu::renderer) != Some(renderer) {
+                    eprintln!("{renderer:?} missing: not tested");
+                    continue;
+                }
+                assert!(host.windows.iter().all(|shown| matches!(shown.way, crate::gpu_x11::Way::Gpu(_))), "{renderer:?}: both through the GPU");
+                same(&mut host, 1, &format!("{renderer:?}, the second window"));
+                (app.borrow_mut().dark, host.rerun) = (true, true);
+                host.turn();
+                same(&mut host, 1, &format!("{renderer:?}, its box ticked"));
+                (app.borrow_mut().prefs.open, host.rerun) = (false, true);
+                host.turn();
+                assert_eq!(host.windows.len(), 1);
+                (app.borrow_mut().typed[0], host.rerun) = ("first".into(), true);
+                host.turn();
+                same(&mut host, 0, &format!("{renderer:?}, the first window, after the second closed"));
+            }
+        }
+
+        /// This program's processor time so far: all its threads (the software device's too).
+        fn processor() -> Duration {
+            unsafe extern "C" {
+                fn clock_gettime(clock: c_int, time: *mut [i64; 2]) -> c_int;
+            }
+            let mut time = [0; 2];
+            // SAFETY: the clock fills in seconds and nanoseconds (`CLOCK_PROCESS_CPUTIME_ID` 2).
+            unsafe { clock_gettime(2, &mut time) };
+            Duration::new(time[0] as u64, time[1] as u32)
+        }
+
+        /// The X server's processor time so far, where `TAUT_XVFB_PID` names it: its user and
+        /// system ticks (100 a second) from `/proc`.
+        fn servers() -> Duration {
+            let stat = std::env::var("TAUT_XVFB_PID").ok().and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()).unwrap_or_default();
+            let fields: Vec<u64> = stat.rsplit(')').next().unwrap_or("").split_whitespace().filter_map(|field| field.parse().ok()).collect();
+            Duration::from_millis(10 * (fields.get(10).unwrap_or(&0) + fields.get(11).unwrap_or(&0)))
+        }
+
+        /// This program's memory in use (resident), in kB.
+        fn resident() -> u64 {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+            let line = status.lines().find(|line| line.starts_with("VmRSS:")).unwrap_or("");
+            line.split_whitespace().nth(1).and_then(|kb| kb.parse().ok()).unwrap_or(0)
+        }
+
+        /// How long a frame takes through each renderer, at the size `TAUT_MEASURE` names (as
+        /// "1200x800", the default), with the gallery: the start to the first frame shown, a
+        /// whole frame, and a small change. Processor time of this program and of the X server,
+        /// and memory. Prints a table row each. (`TAUT_MEASURE_ONLY=cpu|opengl|vulkan` measures one, in a
+        /// program of its own, so neither pays for what the other set up.)
+        #[test]
+        #[ignore]
+        fn how_long_frames_take_through_each_renderer() {
+            let asked = std::env::var("TAUT_MEASURE").unwrap_or("1200x800".into());
+            let [width, height] = [0, 1].map(|side| asked.split('x').nth(side).and_then(|side| side.parse::<f32>().ok()).unwrap_or(800.0));
+            let only = std::env::var("TAUT_MEASURE_ONLY").unwrap_or_default();
+            for renderer in [Renderer::Cpu, Renderer::OpenGL, Renderer::Vulkan].into_iter().filter(|renderer| only.is_empty() || format!("{renderer:?}").eq_ignore_ascii_case(&only)) {
+                let (memory, time, started) = (resident(), processor(), Instant::now());
+                let mut kept = super::super::gallery::app();
+                let window = Window { title: "taut measure", width, height, renderer, ..Default::default() };
+                let (_alone, mut host) = host(window, move |ui| super::super::gallery::describe(&mut kept, ui)).expect("a display");
+                let start = (started.elapsed(), processor() - time);
+                settle(&mut host);
+                let (id, size, scale) = (host.windows[0].id, host.windows[0].size, host.scale);
+                let mut frames = |area: [c_int; 4], count: u32| {
+                    let (time, server, wall) = (processor(), servers(), Instant::now());
+                    for _ in 0..count {
+                        host.windows[0].exposed(ExposeEvent { kind: 12, serial: 0, sent: 0, display: null_mut(), window: id, x: area[0], y: area[1], width: area[2], height: area[3] }, scale);
+                        host.turn();
+                    }
+                    // X has done all it was asked by the time it answers a later query.
+                    host.conn.property(host.conn.window, host.conn.mailbox, false);
+                    [processor() - time, servers() - server, wall.elapsed()].map(|spent| spent.as_secs_f64() * 1000.0 / count as f64)
+                };
+                let whole = frames([0, 0, size[0], size[1]], 30);
+                let small = frames([10, 10, 120, 24], 200);
+                let device = host.gpu.as_ref().map_or("X".into(), crate::gpu_x11::Gpu::name);
+                let grown = resident().saturating_sub(memory) / 1024;
+                let [ms, cpu] = [start.0, start.1].map(|spent| spent.as_secs_f64() * 1000.0);
+                println!(
+                    "| {:?} | {} | {}x{} | start {ms:.0} ms ({cpu:.0} ms CPU) | whole {:.2} + X {:.2} ms ({:.2} ms) | small {:.3} + X {:.3} ms ({:.3} ms) | +{grown} MB |",
+                    host.ui.renderer(),
+                    device,
+                    size[0],
+                    size[1],
+                    whole[0],
+                    whole[1],
+                    whole[2],
+                    small[0],
+                    small[1],
+                    small[2]
+                );
+            }
+        }
+    }
 }
+
+// The gallery example, measured through each renderer by the tests above.
+#[cfg(all(test, feature = "gpu"))]
+#[allow(dead_code, unused_attributes, unused_imports, clippy::all)]
+#[path = "../examples/gallery.rs"]
+mod gallery;

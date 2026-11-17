@@ -8,8 +8,8 @@
 //! (1 for equal luminance, 21 for black on white). Text keeps 7:1 in high contrast; a person's
 //! own colour is lightened or darkened until it reads as text on the background.
 use crate::color::Color;
+use crate::preferences::Preferences;
 use crate::text::Font;
-use crate::wishes::Wishes;
 
 /// The colours and sizes everything is drawn with: a plain value, to change any part of.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,10 +20,10 @@ pub struct Theme {
     /// Panels and cards.
     pub panel: Color,
     /// What rises above a panel: a button, a menu.
-    pub raise: Color,
+    pub raised: Color,
     /// What the pointer is over.
     pub hover: Color,
-    /// What is picked.
+    /// What is selected.
     pub selected: Color,
     /// Lines between things.
     pub line: Color,
@@ -51,12 +51,12 @@ pub struct Theme {
     /// step.)
     pub font: Font,
     /// Smaller text beside it.
-    pub small: Font,
+    pub small_font: Font,
     /// Corner radius.
     pub radius: f32,
     /// The height of a button, a text box and every part holding a line of text: that line in
     /// the normal font, plus padding.
-    pub control: f32,
+    pub control_height: f32,
     /// The usual gap between things.
     pub gap: f32,
 }
@@ -65,46 +65,46 @@ pub struct Theme {
 /// background and its text, links, disabled, selected (or pressed, or active) and its text, and
 /// buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Contrast {
+pub struct ContrastColors {
     /// The window background.
-    pub ground: Color,
+    pub background: Color,
     /// Text on the background, and outlines.
     pub text: Color,
     /// Links.
     pub link: Color,
     /// Disabled parts.
-    pub off: Color,
+    pub disabled: Color,
     /// Selected, pressed or active parts.
-    pub picked: Color,
+    pub selected: Color,
     /// Text on selected parts.
-    pub on_picked: Color,
+    pub selected_text: Color,
     /// Buttons.
     pub button: Color,
     /// Text on buttons.
     pub button_text: Color,
 }
 
-impl Contrast {
+impl ContrastColors {
     /// White on black, selection in cyan and links in yellow, as Windows' oldest and best-known
     /// contrast theme ("High Contrast Black"); disabled in the grey of the newer ones.
-    pub const DARK: Contrast = Contrast {
-        ground: Color::BLACK,
+    pub const DARK: ContrastColors = ContrastColors {
+        background: Color::BLACK,
         text: Color::WHITE,
         link: Color::rgb(0xffff00),
-        off: Color::rgb(0xa6a6a6),
-        picked: Color::rgb(0x1aebff),
-        on_picked: Color::BLACK,
+        disabled: Color::rgb(0xa6a6a6),
+        selected: Color::rgb(0x1aebff),
+        selected_text: Color::BLACK,
         button: Color::BLACK,
         button_text: Color::WHITE,
     };
     /// Black on white, selection in deep purple ("High Contrast White"), disabled in grey.
-    pub const LIGHT: Contrast = Contrast {
-        ground: Color::WHITE,
+    pub const LIGHT: ContrastColors = ContrastColors {
+        background: Color::WHITE,
         text: Color::BLACK,
         link: Color::rgb(0x00009f),
-        off: Color::rgb(0x676767),
-        picked: Color::rgb(0x37006e),
-        on_picked: Color::WHITE,
+        disabled: Color::rgb(0x676767),
+        selected: Color::rgb(0x37006e),
+        selected_text: Color::WHITE,
         button: Color::WHITE,
         button_text: Color::BLACK,
     };
@@ -116,7 +116,7 @@ impl Theme {
         Theme {
             bg: Color::rgb(0x0f1115),
             panel: Color::rgb(0x151821),
-            raise: Color::rgb(0x1b1f2a),
+            raised: Color::rgb(0x1b1f2a),
             hover: Color::rgb(0x1d2130),
             selected: Color::rgb(0x232840),
             line: Color::rgb(0x262b38),
@@ -131,9 +131,9 @@ impl Theme {
             green: Color::rgb(0x5fcf8f),
             blue: Color::rgb(0x5fb2f5),
             font: Font::new(13.0),
-            small: Font::new(11.5),
+            small_font: Font::new(11.5),
             radius: 6.0,
-            control: 28.0,
+            control_height: 28.0,
             gap: 8.0,
         }
     }
@@ -143,7 +143,7 @@ impl Theme {
         Theme {
             bg: Color::rgb(0xf5f6f8),
             panel: Color::rgb(0xffffff),
-            raise: Color::rgb(0xffffff),
+            raised: Color::rgb(0xffffff),
             hover: Color::rgb(0xe6e9f1),
             selected: Color::rgb(0xdfe3fa),
             line: Color::rgb(0xe0e3ea),
@@ -161,36 +161,36 @@ impl Theme {
         }
     }
 
-    /// High contrast in these colours: [`Contrast::DARK`], [`Contrast::LIGHT`], or the person's
-    /// system colours. Text is never dimmed; selected or hovered parts are the background moved
-    /// toward the selection colour, never so far that text on it drops below 7:1; that colour
-    /// is the accent, with its text; lines are strong.
-    pub fn high_contrast(colors: Contrast) -> Self {
-        let Contrast { ground, text, picked, .. } = colors;
+    /// High contrast in these colours: [`ContrastColors::DARK`], [`ContrastColors::LIGHT`], or
+    /// the person's system colours. Text is never dimmed; selected or hovered parts are the
+    /// background moved toward the selection colour, never so far that text on it drops below
+    /// 7:1; that colour is the accent, with its text; lines are strong.
+    pub fn high_contrast(colors: ContrastColors) -> Self {
+        let ContrastColors { background, text, selected: selection, .. } = colors;
         // The four status colours keep their hue, lightened or darkened as this background
         // needs.
-        let usual = if ground.is_dark() { Theme::dark() } else { Theme::light() };
-        let said = |color: Color| readable(color, ground, 4.5);
-        let selected = tinted(ground, picked, text, 0.4);
+        let usual = if background.is_dark() { Theme::dark() } else { Theme::light() };
+        let legible = |color: Color| readable(color, background, 4.5);
+        let selected = tinted(background, selection, text, 0.4);
         Theme {
-            bg: ground,
-            panel: ground,
-            raise: colors.button,
-            hover: ground.toward(selected, 0.5),
+            bg: background,
+            panel: background,
+            raised: colors.button,
+            hover: background.lerp(selected, 0.5),
             selected,
             // A strong line is also an off switch's track, with a knob in the text colour: as
             // far from both as can be.
-            line: readable(text.toward(ground, 0.65), ground, 3.0),
-            line_strong: between(text, ground),
+            line: readable(text.lerp(background, 0.65), background, 3.0),
+            line_strong: between(text, background),
             text,
             text_dim: text,
-            text_faint: colors.off,
-            accent: readable(picked, ground, 3.0),
-            on_accent: colors.on_picked,
-            red: said(usual.red),
-            amber: said(usual.amber),
-            green: said(usual.green),
-            blue: said(usual.blue),
+            text_faint: colors.disabled,
+            accent: readable(selection, background, 3.0),
+            on_accent: colors.selected_text,
+            red: legible(usual.red),
+            amber: legible(usual.amber),
+            green: legible(usual.green),
+            blue: legible(usual.blue),
             ..usual
         }
     }
@@ -202,17 +202,17 @@ impl Theme {
         let accent = readable(color.solid(), self.bg, 4.5);
         let dark = if self.bg.is_dark() { self.bg } else { self.text };
         let on_accent = if contrast(Color::WHITE, accent) >= contrast(dark, accent) { Color::WHITE } else { dark };
-        Theme { accent, on_accent, hover: self.panel.toward(accent, 0.08), selected: self.panel.toward(accent, 0.15), ..self }
+        Theme { accent, on_accent, hover: self.panel.lerp(accent, 0.08), selected: self.panel.lerp(accent, 0.15), ..self }
     }
 
     /// The same, tighter: smaller buttons and boxes, smaller gaps, less rounded corners.
     pub fn dense(self) -> Self {
-        Theme { control: self.control * 6.0 / 7.0, gap: self.gap * 0.5, radius: self.radius * 2.0 / 3.0, ..self }
+        Theme { control_height: self.control_height * 6.0 / 7.0, gap: self.gap * 0.5, radius: self.radius * 2.0 / 3.0, ..self }
     }
 
     /// The same, looser: larger buttons and boxes, larger gaps, rounder corners.
     pub fn roomy(self) -> Self {
-        Theme { control: self.control * 8.0 / 7.0, gap: self.gap * 1.5, radius: self.radius * 4.0 / 3.0, ..self }
+        Theme { control_height: self.control_height * 8.0 / 7.0, gap: self.gap * 1.5, radius: self.radius * 4.0 / 3.0, ..self }
     }
 
     /// The same with text `by` times as large (1: unchanged), and buttons and boxes taller as
@@ -221,24 +221,24 @@ impl Theme {
         let by = if by.is_finite() { by.max(0.5) } else { 1.0 };
         let grown = |font: Font| Font { size: font.size * by, ..font };
         // A line of text is about 1.35 times its font size.
-        let control = self.control + self.font.size * (by - 1.0) * 1.35;
-        Theme { font: grown(self.font), small: grown(self.small), control, ..self }
+        let control = self.control_height + self.font.size * (by - 1.0) * 1.35;
+        Theme { font: grown(self.font), small_font: grown(self.small_font), control_height: control, ..self }
     }
 
     /// The theme following all the person asked their system for: high contrast in their
     /// colours if asked; else dark or light, around their accent if any, with text as large as
     /// asked. (High contrast keeps its own colours: the accent is left out there.)
-    pub fn following(wishes: &Wishes) -> Self {
-        let base = match (wishes.contrast, wishes.dark) {
+    pub fn following(preferences: &Preferences) -> Self {
+        let base = match (preferences.high_contrast, preferences.dark) {
             (Some(colors), _) => Theme::high_contrast(colors),
             (None, true) => Theme::dark(),
             (None, false) => Theme::light(),
         };
-        let base = match (wishes.contrast, wishes.accent) {
+        let base = match (preferences.high_contrast, preferences.accent) {
             (None, Some(color)) => base.accented(color),
             _ => base,
         };
-        if wishes.text == 1.0 { base } else { base.text_scaled(wishes.text) }
+        if preferences.text_scale == 1.0 { base } else { base.text_scaled(preferences.text_scale) }
     }
 }
 
@@ -263,14 +263,14 @@ pub(crate) fn contrast(one: Color, other: Color) -> f32 {
 /// `least` against `ground`, in twentieths of the way to white or black.
 fn readable(color: Color, ground: Color, least: f32) -> Color {
     let end = if ground.is_dark() { Color::WHITE } else { Color::BLACK };
-    (0..=20).map(|step| color.toward(end, step as f32 / 20.0)).find(|color| contrast(*color, ground) >= least).unwrap_or(end)
+    (0..=20).map(|step| color.lerp(end, step as f32 / 20.0)).find(|color| contrast(*color, ground) >= least).unwrap_or(end)
 }
 
 /// The colour between `one` and `other` furthest from both to the eye, in twentieths of the
 /// way.
 fn between(one: Color, other: Color) -> Color {
     let apart = |color: &Color| contrast(*color, one).min(contrast(*color, other));
-    (0..=20).map(|step| one.toward(other, step as f32 / 20.0)).max_by(|a, b| apart(a).total_cmp(&apart(b))).unwrap_or(one)
+    (0..=20).map(|step| one.lerp(other, step as f32 / 20.0)).max_by(|a, b| apart(a).total_cmp(&apart(b))).unwrap_or(one)
 }
 
 /// `ground` moved toward `color` by at most `most` of the way, as far as `text` still reads on
@@ -278,7 +278,7 @@ fn between(one: Color, other: Color) -> Color {
 /// the background, it may lose a quarter of that.)
 fn tinted(ground: Color, color: Color, text: Color, most: f32) -> Color {
     let (steps, least) = ((most * 20.0) as u32, (contrast(text, ground) * 0.75).min(7.0));
-    (0..=steps).rev().map(|step| ground.toward(color, step as f32 / 20.0)).find(|fill| contrast(text, *fill) >= least).unwrap_or(ground)
+    (0..=steps).rev().map(|step| ground.lerp(color, step as f32 / 20.0)).find(|fill| contrast(text, *fill) >= least).unwrap_or(ground)
 }
 
 #[cfg(test)]
@@ -288,17 +288,17 @@ mod tests {
     /// Windows' four contrast themes as Windows 11's theme files
     /// (`C:\Windows\Resources\Ease of Access Themes`) hold them: "Aquatic", "Desert", "Dusk",
     /// "Night sky".
-    pub(crate) const WINDOWS: [(&str, Contrast); 4] = [
+    pub(crate) const WINDOWS: [(&str, ContrastColors); 4] = [
         ("Aquatic", windows([0x202020, 0xffffff, 0x75e9fc, 0xa6a6a6, 0x8ee3f0, 0x263b50, 0x202020, 0xffffff])),
         ("Desert", windows([0xfffaef, 0x3d3d3d, 0x1c5e75, 0x676767, 0x903909, 0xfff5e3, 0xfffaef, 0x202020])),
         ("Dusk", windows([0x2d3236, 0xffffff, 0x70ebde, 0xa6a6a6, 0xa1bfde, 0x212d3b, 0x2d3236, 0xb6f6f0])),
         ("Night sky", windows([0x000000, 0xffffff, 0x8080ff, 0xa6a6a6, 0xd6b4fd, 0x2b2b2b, 0x000000, 0xffee32])),
     ];
 
-    const fn windows([ground, text, link, off, picked, on_picked, button, button_text]: [u32; 8]) -> Contrast {
+    const fn windows([ground, text, link, off, picked, on_picked, button, button_text]: [u32; 8]) -> ContrastColors {
         let [ground, text, link, off] = [Color::rgb(ground), Color::rgb(text), Color::rgb(link), Color::rgb(off)];
         let [picked, on_picked, button, button_text] = [Color::rgb(picked), Color::rgb(on_picked), Color::rgb(button), Color::rgb(button_text)];
-        Contrast { ground, text, link, off, picked, on_picked, button, button_text }
+        ContrastColors { background: ground, text, link, disabled: off, selected: picked, selected_text: on_picked, button, button_text }
     }
 
     /// Accent colours a person may pick: Windows' default first, then colours at every edge of
@@ -310,7 +310,7 @@ mod tests {
     fn readings(t: &Theme, strong: bool) -> Vec<(&'static str, Color, Color, f32)> {
         let text = if strong { 7.0 } else { 4.5 };
         let mut pairs = Vec::new();
-        for (name, fill) in [("ground", t.bg), ("panel", t.panel), ("raise", t.raise), ("hover", t.hover), ("selected", t.selected)] {
+        for (name, fill) in [("ground", t.bg), ("panel", t.panel), ("raise", t.raised), ("hover", t.hover), ("selected", t.selected)] {
             pairs.push((name, t.text, fill, text));
             pairs.push((name, t.text_dim, fill, 4.5));
         }
@@ -319,7 +319,7 @@ mod tests {
         pairs.extend([("accent", t.accent, t.bg, 4.5), ("on accent", t.on_accent, t.accent, 4.5)]);
         // An off switch's knob on its track.
         pairs.push(("switch", t.text, t.line_strong, 3.0));
-        pairs.push(("selected text", t.text, Color(t.accent.alpha(0.35).over(t.bg.0, 255)), 4.5));
+        pairs.push(("selected text", t.text, Color(t.accent.with_alpha(0.35).over(t.bg.0, 255)), 4.5));
         pairs.extend([("red", t.red, t.bg, 3.0), ("amber", t.amber, t.bg, 3.0), ("green", t.green, t.bg, 3.0), ("blue", t.blue, t.bg, 3.0)]);
         if strong {
             pairs.extend([("line", t.line, t.bg, 3.0), ("strong line", t.line_strong, t.bg, 3.0), ("faint", t.text_faint, t.bg, 4.5)]);
@@ -347,14 +347,14 @@ mod tests {
         for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
             assert_eq!(unreadable(&theme, false), Vec::<String>::new(), "{name}");
         }
-        let mut contrasts = vec![("dark", Contrast::DARK), ("light", Contrast::LIGHT)];
+        let mut contrasts = vec![("dark", ContrastColors::DARK), ("light", ContrastColors::LIGHT)];
         contrasts.extend(WINDOWS);
         for (name, colors) in contrasts {
             let theme = Theme::high_contrast(colors);
             assert_eq!(unreadable(&theme, true), Vec::<String>::new(), "high contrast: {name}");
             // The system's own colours are kept where they can be.
-            assert_eq!([theme.bg, theme.text, theme.text_faint, theme.raise, theme.on_accent], [colors.ground, colors.text, colors.off, colors.button, colors.on_picked], "{name}");
-            assert_eq!(theme.accent, colors.picked, "{name}");
+            assert_eq!([theme.bg, theme.text, theme.text_faint, theme.raised, theme.on_accent], [colors.background, colors.text, colors.disabled, colors.button, colors.selected_text], "{name}");
+            assert_eq!(theme.accent, colors.selected, "{name}");
             // Selected can be told from the background, and from merely hovered.
             assert!(contrast(theme.selected, theme.bg) > contrast(theme.hover, theme.bg) && contrast(theme.hover, theme.bg) > 1.1, "{name}");
         }
@@ -372,14 +372,14 @@ mod tests {
         let around = dark.accented(blue);
         // Windows' blue is too dark on the dark background: lightened, hue kept, just enough.
         assert!((around.accent.to_hsv()[0] - blue.to_hsv()[0]).abs() < 0.005);
-        assert_eq!(around.accent, blue.toward(Color::WHITE, 0.1));
-        assert!(contrast(around.accent, dark.bg) >= 4.5 && contrast(blue.toward(Color::WHITE, 0.05), dark.bg) < 4.5);
+        assert_eq!(around.accent, blue.lerp(Color::WHITE, 0.1));
+        assert!(contrast(around.accent, dark.bg) >= 4.5 && contrast(blue.lerp(Color::WHITE, 0.05), dark.bg) < 4.5);
         // On the light background (slightly greyer than white) it is darkened a little; on
         // white it reads as it is.
-        assert_eq!(Theme::light().accented(blue).accent, blue.toward(Color::BLACK, 0.05));
+        assert_eq!(Theme::light().accented(blue).accent, blue.lerp(Color::BLACK, 0.05));
         assert_eq!(Theme { bg: Color::WHITE, ..Theme::light() }.accented(blue).accent, blue);
         // Only what goes with the accent changes; backgrounds and text stay.
-        let same = |t: &Theme| (t.bg, t.panel, t.raise, t.line, t.text, t.text_dim, t.red, t.font, t.control);
+        let same = |t: &Theme| (t.bg, t.panel, t.raised, t.line, t.text, t.text_dim, t.red, t.font, t.control_height);
         assert_eq!(same(&around), same(&dark));
         assert!(around.hover != dark.hover && around.selected != dark.selected && around.selected != around.hover);
         // Around its own accent, a theme is unchanged, within a few levels each.
@@ -399,13 +399,13 @@ mod tests {
     #[test]
     fn spacing_and_text_grow_and_shrink() {
         let t = Theme::dark();
-        assert_eq!((t.dense().control, t.dense().gap, t.dense().radius), (24.0, 4.0, 4.0));
-        assert_eq!((t.roomy().control, t.roomy().gap, t.roomy().radius), (32.0, 12.0, 8.0));
+        assert_eq!((t.dense().control_height, t.dense().gap, t.dense().radius), (24.0, 4.0, 4.0));
+        assert_eq!((t.roomy().control_height, t.roomy().gap, t.roomy().radius), (32.0, 12.0, 8.0));
         assert_eq!((t.dense().font, t.roomy().accent), (t.font, t.accent));
         // Text twice as large: its boxes grow by as much as a line of it does.
         let large = t.text_scaled(2.0);
-        assert_eq!((large.font.size, large.small.size, large.gap, large.radius), (26.0, 23.0, t.gap, t.radius));
-        assert!((large.control - (28.0 + 13.0 * 1.35)).abs() < 1e-4);
+        assert_eq!((large.font.size, large.small_font.size, large.gap, large.radius), (26.0, 23.0, t.gap, t.radius));
+        assert!((large.control_height - (28.0 + 13.0 * 1.35)).abs() < 1e-4);
         assert_eq!(t.text_scaled(1.0), t);
         // Both ways round, the same.
         assert_eq!(t.dense().text_scaled(1.5).font, t.text_scaled(1.5).dense().font);
@@ -416,8 +416,8 @@ mod tests {
 
     #[test]
     fn the_theme_follows_what_the_person_asked_for() {
-        let wished = |change: fn(&mut Wishes)| {
-            let mut wishes = Wishes::default();
+        let wished = |change: fn(&mut Preferences)| {
+            let mut wishes = Preferences::default();
             change(&mut wishes);
             Theme::following(&wishes)
         };
@@ -427,8 +427,8 @@ mod tests {
         assert_eq!(wished(|w| (w.dark, w.accent) = (true, Some(Color::rgb(0xd13438)))), Theme::dark().accented(red));
         // High contrast comes before dark or light, and keeps its own colours.
         let night = WINDOWS[3].1;
-        assert_eq!(wished(|w| (w.dark, w.contrast, w.accent) = (false, Some(WINDOWS[3].1), Some(Color::rgb(0xd13438)))), Theme::high_contrast(night));
+        assert_eq!(wished(|w| (w.dark, w.high_contrast, w.accent) = (false, Some(WINDOWS[3].1), Some(Color::rgb(0xd13438)))), Theme::high_contrast(night));
         // Larger text, with any of them.
-        assert_eq!(wished(|w| (w.text, w.contrast) = (1.5, Some(Contrast::LIGHT))), Theme::high_contrast(Contrast::LIGHT).text_scaled(1.5));
+        assert_eq!(wished(|w| (w.text_scale, w.high_contrast) = (1.5, Some(ContrastColors::LIGHT))), Theme::high_contrast(ContrastColors::LIGHT).text_scaled(1.5));
     }
 }

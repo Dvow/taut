@@ -10,12 +10,12 @@
 //! by ten with Shift, or Page Up/Down), Home/End, the wheel, and typed digits; a full field
 //! moves on to the next. Screen readers get each field as a spin button in a group named by the
 //! whole time.
+use crate::accessibility::Role;
 use crate::color::Color;
 use crate::date::Date;
 use crate::event::{Key, Mods};
 use crate::id::Id;
 use crate::layout::{Align, Length};
-use crate::told::Role;
 use crate::ui::{Response, Stroke, Ui};
 use crate::widgets::DOWN;
 use std::fmt::Write;
@@ -53,7 +53,7 @@ impl Time {
 }
 
 /// Sortable 24-hour form: `14:05:09`. For the user's own format, see
-/// [`ui.written_time(time, seconds)`](Ui::written_time).
+/// [`ui.format_time(time, seconds)`](Ui::format_time).
 impl std::fmt::Display for Time {
     fn fmt(&self, to: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(to, "{:02}:{:02}:{:02}", self.hour, self.minute, self.second)
@@ -70,20 +70,20 @@ const HALF: usize = 3;
 impl Ui {
     /// A time in the window's locale: "14:05", or "2:05 PM" on a 12-hour clock; with seconds if
     /// asked.
-    pub fn written_time(&self, time: Time, seconds: bool) -> String {
+    pub fn format_time(&self, time: Time, seconds: bool) -> String {
         let mut written = String::new();
         self.write_time(&mut written, time, seconds);
         written
     }
     fn write_time(&self, into: &mut String, time: Time, seconds: bool) {
-        let twelve = self.locale_in_use().twelve_hours;
+        let twelve = self.locale_in_use().twelve_hour_clock;
         let hour = if twelve { (time.hour % 12 + 11) % 12 + 1 } else { time.hour };
         let _ = write!(into, "{hour:02}:{:02}", time.minute);
         if seconds {
             let _ = write!(into, ":{:02}", time.second);
         }
         if twelve {
-            let _ = write!(into, " {}", self.calendar.halves[(time.hour / 12).min(1) as usize]);
+            let _ = write!(into, " {}", self.calendar_words.halves[(time.hour / 12).min(1) as usize]);
         }
     }
 
@@ -149,7 +149,7 @@ impl Ui {
         let high = self.line_part();
         self.row().h(Length::Px(high)).pad((4.0, 0.0)).gap(0.0).align(Align::Start, Align::Center).fill(t.panel).border(edge, 1.0).radius(t.radius).sense().open();
         if self.listening {
-            let name = self.written_time(time, seconds);
+            let name = self.format_time(time, seconds);
             self.tell(&state, Role::Group, None, &name);
         }
         state
@@ -157,7 +157,7 @@ impl Ui {
 
     /// The time's fields side by side in the open box; returns the first one's id.
     fn time_parts(&mut self, time: &mut Time, seconds: bool) -> Id {
-        let twelve = self.locale_in_use().twelve_hours;
+        let twelve = self.locale_in_use().twelve_hour_clock;
         let last = if twelve {
             HALF
         } else if seconds {
@@ -194,7 +194,7 @@ impl Ui {
     /// One field: a number from `least` to `most` that wraps, two digits; or the AM/PM word.
     /// Returns its response and new value.
     fn time_part(&mut self, which: usize, value: u8, [least, most]: [u8; 2], last: usize) -> (Response, u8) {
-        let (t, words) = (self.theme, self.calendar);
+        let (t, words) = (self.theme, self.calendar_words);
         let state = self.interact(self.id(which));
         let mut to = value as i32;
         if state.focused {
@@ -221,8 +221,8 @@ impl Ui {
         let high = self.line_part();
         let part = self.el().key(which).h(Length::Px(high - 8.0)).pad((2.0, 0.0)).text(&written, t.font, ink).text_align(Align::Center);
         part.fill(fill).radius(3.0).sense().focusable().show();
-        self.keep_note(&state, Role::Spin, None, words.clock[which], &written);
-        self.tell_stands(&state, Role::Spin, [to as f32, least as f32, most as f32]);
+        self.keep_note(&state, Role::SpinButton, None, words.clock[which], &written);
+        self.retell_as_value(&state, Role::SpinButton, [to as f32, least as f32, most as f32]);
         self.tell_step(1.0);
         self.scratch = written;
         (state, to)
@@ -264,7 +264,7 @@ impl Ui {
     fn time_typed(&mut self, id: Id, which: usize, letter: char, value: i32, [least, most]: [u8; 2], last: bool) -> (i32, bool) {
         let lower = letter.to_lowercase().next();
         if which == HALF {
-            let picked = self.calendar.halves.iter().position(|word| word.chars().next().and_then(|first| first.to_lowercase().next()) == lower);
+            let picked = self.calendar_words.halves.iter().position(|word| word.chars().next().and_then(|first| first.to_lowercase().next()) == lower);
             return (picked.map_or(value, |half| half as i32), false);
         }
         let Some(digit) = letter.to_digit(10) else { return (value, false) };

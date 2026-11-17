@@ -68,7 +68,7 @@ impl Shot {
 
 /// Where the thing called `name` is in the window, as a screen reader is told.
 fn find(ui: &Ui, name: &str) -> Rect {
-    let found = ui.said().iter().find(|said| said.name == name);
+    let found = ui.visible_access_nodes().iter().find(|node| node.name == name);
     found.unwrap_or_else(|| panic!("nothing called {name:?} is in the window")).rect
 }
 
@@ -107,7 +107,7 @@ fn take(ui: &mut Ui, describe: &mut dyn FnMut(&mut Ui), screen: &mut Surface, st
 fn shoot(folder: &Path, mut shot: Shot) {
     let mut ui = Ui::new(taut::platform::system_text(), Box::new(LocalClipboard::default()));
     ui.resize(Size { w: shot.size[0], h: shot.size[1] }, shot.scale);
-    ui.listen(true);
+    ui.set_screen_reader(true);
     ui.run(&mut shot.describe);
     ui.run(&mut shot.describe);
     let mut screen = Surface::draw(&mut ui, 64);
@@ -120,13 +120,13 @@ fn shoot(folder: &Path, mut shot: Shot) {
     let rest = ui.run(&mut shot.describe);
     screen.redraw(&mut ui, rest);
     if shot.marked {
-        mark(&mut screen, changed.on_pixels(shot.scale));
+        mark(&mut screen, changed.snap_to_pixels(shot.scale));
     }
     if shot.over_a_game {
         lay_over_a_game(&mut screen);
     }
     let file = folder.join(format!("{}.png", shot.name));
-    std::fs::write(&file, screen.png()).expect("the picture could not be written");
+    std::fs::write(&file, screen.to_png()).expect("the picture could not be written");
     println!("{} ({} by {})", file.display(), screen.width, screen.height);
 }
 
@@ -277,9 +277,9 @@ mod three_sizes {
     fn describe(ui: &mut Ui) {
         let t = ui.theme;
         ui.row().pad(12.0).gap(8.0).open();
-        ui.el().text("Fit", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
-        ui.el().w(Length::Px(120.0)).text("Px(120.0)", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
-        ui.el().w(Length::Grow(1.0)).text("Grow(1.0)", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
+        ui.el().text("Fit", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
+        ui.el().w(Length::Px(120.0)).text("Px(120.0)", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
+        ui.el().w(Length::Grow(1.0)).text("Grow(1.0)", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
         ui.close();
     }
 
@@ -297,8 +297,8 @@ mod sharing {
         let t = ui.theme;
         ui.column().pad(12.0).gap(8.0).open();
         ui.row().gap(8.0).open();
-        ui.el().w(Length::Grow(1.0)).text("Grow(1.0)", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
-        ui.el().w(Length::Grow(2.0)).text("Grow(2.0)", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
+        ui.el().w(Length::Grow(1.0)).text("Grow(1.0)", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
+        ui.el().w(Length::Grow(2.0)).text("Grow(2.0)", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
         ui.close();
         ui.row().gap(8.0).open();
         ui.button("Back");
@@ -346,10 +346,10 @@ mod placed {
         let t = ui.theme;
         ui.column().pad(12.0).gap(8.0).open();
         ui.button("Stretched across, as a column has its boxes");
-        ui.el().place(Align::End).text("At the end", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
+        ui.el().place(Align::End).text("At the end", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
         ui.row().h(Length::Px(56.0)).gap(8.0).fill(t.panel).border(t.line, 1.0).open();
         ui.button("In the middle of the height");
-        ui.el().place(Align::Start).text("At the top", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
+        ui.el().place(Align::Start).text("At the top", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
         ui.close();
         ui.close();
     }
@@ -396,7 +396,7 @@ mod wrapping {
         let t = ui.theme;
         ui.wrapping_row().pad(12.0).gap(6.0).open();
         for tag in ["layout", "drawing", "text", "tables", "menus", "docks", "scenes", "screen readers", "fonts", "pictures"] {
-            ui.el().text(tag, t.small, t.text_dim).pad((8.0, 3.0)).fill(t.raise).border(t.line, 1.0).radius(10.0).show();
+            ui.el().text(tag, t.small_font, t.text_dim).pad((8.0, 3.0)).fill(t.raised).border(t.line, 1.0).radius(10.0).show();
         }
         ui.close();
     }
@@ -414,8 +414,8 @@ mod giving_way {
     fn file(ui: &mut Ui, name: &str, folder: &str) {
         let t = ui.theme;
         ui.row().gap(8.0).pad((10.0, 6.0)).fill(t.panel).radius(6.0).open();
-        ui.el().text(name, t.font, t.text).gives_way(1).show();
-        ui.el().text(folder, t.small, t.text_dim).gives_way(2).show();
+        ui.el().text(name, t.font, t.text).shrink(1).show();
+        ui.el().text(folder, t.small_font, t.text_dim).shrink(2).show();
         ui.spacer();
         ui.button("Open");
         ui.close();
@@ -444,7 +444,7 @@ mod scrolling {
     fn describe(ui: &mut Ui) {
         let t = ui.theme;
         ui.column().h(Length::Px(160.0)).scroll().pad(12.0).gap(4.0).open();
-        ui.el().text("Kept at the top", t.font.bold(), t.text).pad((0.0, 4.0)).fill(t.bg).kept().show();
+        ui.el().text("Kept at the top", t.font.bold(), t.text).pad((0.0, 4.0)).fill(t.bg).frozen().show();
         for row in 1..=30 {
             ui.row().pad((10.0, 6.0)).fill(t.panel).radius(4.0).open();
             ui.label(&format!("Row {row}"));
@@ -467,13 +467,13 @@ mod layered {
     fn describe(ui: &mut Ui) {
         let t = ui.theme;
         ui.row().pad(16.0).open();
-        ui.el().flow(Flow::Layers).size(220.0, 90.0).open();
+        ui.el().flow(Flow::Stack).size(220.0, 90.0).open();
         ui.column().grow().pad(12.0).gap(4.0).fill(t.panel).border(t.line, 1.0).radius(8.0).open();
         ui.text("Inbox", t.font.bold(), t.text);
         ui.note("Everything that came today");
         ui.close();
-        ui.el().place((Align::End, Align::Start)).at(6.0, -6.0).text("12", t.small, t.on_accent).pad((7.0, 2.0)).fill(t.red).radius(9.0).show();
-        ui.el().place(Align::End).h(Length::Px(4.0)).w(Length::Px(60.0)).at(-12.0, -12.0).fill(t.accent).radius(2.0).show();
+        ui.el().place((Align::End, Align::Start)).offset(6.0, -6.0).text("12", t.small_font, t.on_accent).pad((7.0, 2.0)).fill(t.red).radius(9.0).show();
+        ui.el().place(Align::End).h(Length::Px(4.0)).w(Length::Px(60.0)).offset(-12.0, -12.0).fill(t.accent).radius(2.0).show();
         ui.close();
         ui.close();
     }
@@ -501,10 +501,10 @@ mod chips {
         let (fill, ink) = match (*on, state.hovered) {
             (true, _) => (t.accent, t.on_accent),
             (false, true) => (t.hover, t.text),
-            (false, false) => (t.raise, t.text_dim),
+            (false, false) => (t.raised, t.text_dim),
         };
         ui.el().text(name, t.font, ink).pad((12.0, 5.0)).fill(fill).border(t.line, 1.0).radius(14.0).sense().focusable().show();
-        ui.tell(&state, Role::Tick, Some(*on), "");
+        ui.tell(&state, Role::CheckBox, Some(*on), "");
         state
     }
 
@@ -570,7 +570,7 @@ mod todo {
     //! together with where the window was.
     //!   cargo run -p taut --example todo
     use std::path::PathBuf;
-    use taut::{Align, Icon, Key, Mods, Placed, Theme, Ui, Window};
+    use taut::{Align, Icon, Key, Mods, Theme, Ui, Window, WindowPlacement};
 
     const PEN: Icon = Icon::line("M3.5 12.5 4 10 10.5 3.5 12.5 5.5 6 12zM9 5l2 2");
     const CROSS: Icon = Icon::line("M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5");
@@ -597,14 +597,14 @@ mod todo {
         /// The number the next new task is known by.
         next: u64,
         /// Where the window is, as it last said.
-        placed: Option<Placed>,
+        placed: Option<WindowPlacement>,
         /// The file the list is kept in.
         file: PathBuf,
     }
 
     fn describe(app: &mut App, ui: &mut Ui) {
         ui.theme = if ui.system_dark() { Theme::dark() } else { Theme::light() };
-        app.placed = ui.placed().or(app.placed);
+        app.placed = ui.window_placement().or(app.placed);
         let mut changed = adding(app, ui);
         showing(app, ui);
         changed |= list(app, ui);
@@ -736,7 +736,7 @@ mod todo {
     fn main() {
         let mut app = App::load(file());
         let window = Window { title: "To do", width: 400.0, height: 480.0, min_width: 280.0, min_height: 220.0, ..Default::default() };
-        taut::run(window.placed(app.placed), move |ui| describe(&mut app, ui));
+        taut::run(window.with_placement(app.placed), move |ui| describe(&mut app, ui));
     }
 
     // The picture of it:
@@ -754,7 +754,8 @@ mod todo {
         vec![
             super::Shot::new("04-the-app", [400.0, 480.0], move |ui| describe(&mut first, ui)).steps(&[Type("Water the plants")]),
             super::Shot::new("04-to-do", [400.0, 480.0], move |ui| describe(&mut second, ui)).steps(&[Click("To do")]),
-            super::Shot::new("04-renaming", [400.0, 480.0], move |ui| (ui.set_wishes(taut::Wishes { dark: true, ..Default::default() }), describe(&mut third, ui)).1).steps(&[Click("Rename")]),
+            super::Shot::new("04-renaming", [400.0, 480.0], move |ui| (ui.set_preferences(taut::Preferences { dark: true, ..Default::default() }), describe(&mut third, ui)).1)
+                .steps(&[Click("Rename")]),
         ]
     }
 }
@@ -762,7 +763,7 @@ mod todo {
 // docs/05-larger-parts.md
 mod a_table {
     use std::cmp::Ordering;
-    use taut::{Align, Column, Picks, Table, Ui};
+    use taut::{Align, Column, Selection, Table, Ui};
 
     const COLUMNS: [Column; 3] = [Column::new("Name"), Column::new("Size").px(90.0).align(Align::End), Column::new("Kind").px(80.0)];
 
@@ -775,18 +776,18 @@ mod a_table {
     struct App {
         files: Vec<File>,
         table: Table,
-        picks: Picks,
+        selection: Selection,
     }
 
     fn describe(app: &mut App, ui: &mut Ui) {
         if ui.table(&mut app.table, &COLUMNS).changed {
             let by = app.table.sort.clone();
             app.files.sort_by(|a, b| order(a, b, &by));
-            app.picks.clear();
+            app.selection.clear();
         }
         for row in ui.rows(app.files.len(), 24.0) {
-            if ui.pick_row(row, app.picks.has(row)).clicked {
-                app.picks.click(row, ui.mods());
+            if ui.selectable_row(row, app.selection.contains(row)).clicked {
+                app.selection.click(row, ui.mods());
             }
             let file = &app.files[row];
             ui.label(&file.name);
@@ -820,7 +821,7 @@ mod a_table {
     pub(super) fn shot() -> super::Shot {
         let kinds = ["text", "picture", "sound", "folder"];
         let files = (0..500u64).map(|n| File { name: format!("file {n:03}"), size: n * 7919 % 4096 + 1, kind: kinds[n as usize * 5 % 4] }).collect();
-        let mut app = App { files, table: Table::default(), picks: Picks::default() };
+        let mut app = App { files, table: Table::default(), selection: Selection::default() };
         super::Shot::new("05-a-table", [420.0, 220.0], move |ui| describe(&mut app, ui)).steps(&[Click("Size"), Click("Size"), ClickAt(200.0, 116.0)])
     }
 }
@@ -851,7 +852,7 @@ mod a_tree {
 
     struct Folders {
         open: [bool; 3],
-        picked: usize,
+        selected: usize,
     }
 
     fn describe(app: &mut Folders, ui: &mut Ui) {
@@ -876,14 +877,14 @@ mod a_tree {
     }
 
     fn leaf(app: &mut Folders, ui: &mut Ui, number: usize, name: &str) {
-        if ui.selectable(app.picked == number, name).clicked {
-            app.picked = number;
+        if ui.selectable(app.selected == number, name).clicked {
+            app.selected = number;
         }
     }
 
     // The picture of it:
     pub(super) fn shot() -> super::Shot {
-        let mut app = Folders { open: [true, true, false], picked: 1 };
+        let mut app = Folders { open: [true, true, false], selected: 1 };
         super::Shot::new("05-a-tree", [300.0, 210.0], move |ui| describe(&mut app, ui))
     }
 }
@@ -894,25 +895,25 @@ mod menus {
 
     struct Editor {
         wrap: bool,
-        said: String,
+        status: String,
     }
 
     fn describe(app: &mut Editor, ui: &mut Ui) {
         ui.menu_bar();
         if ui.menu_button("File") {
             if ui.menu_item("New\tCtrl+N").clicked {
-                app.said = "A new file".into();
+                app.status = "A new file".into();
             }
             if ui.submenu("Open again") {
                 for name in ["notes.txt", "plan.md"] {
                     if ui.menu_item(name).clicked {
-                        app.said = format!("Opened {name}");
+                        app.status = format!("Opened {name}");
                     }
                 }
                 ui.close();
             }
             ui.separator();
-            ui.menu_check(&mut app.wrap, "Wrap long lines");
+            ui.menu_checkbox(&mut app.wrap, "Wrap long lines");
             ui.separator();
             if ui.menu_item("Quit\tCtrl+Q").clicked {
                 ui.quit();
@@ -926,20 +927,20 @@ mod menus {
         ui.close();
         // The keys the menu shows are the app's to ask for.
         if ui.keys("Ctrl+N") {
-            app.said = "A new file".into();
+            app.status = "A new file".into();
         }
         if ui.keys("Ctrl+Q") {
             ui.quit();
         }
         ui.column().pad(12.0).open();
-        ui.label(&app.said);
+        ui.label(&app.status);
         ui.close();
     }
 
     // The picture of it:
     use super::Step::{Click, Hover};
     pub(super) fn shot() -> super::Shot {
-        let mut app = Editor { wrap: true, said: "Nothing yet".into() };
+        let mut app = Editor { wrap: true, status: "Nothing yet".into() };
         super::Shot::new("05-menus", [420.0, 220.0], move |ui| describe(&mut app, ui)).steps(&[Click("File"), Hover("Open again")])
     }
 }
@@ -983,7 +984,7 @@ mod a_chart {
         let rows = [Series::bars("Sold", &sold), Series::line("Brought back", &back).color(t.red)];
         let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
         ui.column().pad(12.0).open();
-        ui.chart(&Chart::of(&rows).names(&days), 420.0, 200.0);
+        ui.chart(&Chart::of(&rows).categories(&days), 420.0, 200.0);
         ui.close();
     }
 
@@ -1031,23 +1032,23 @@ mod a_palette {
 
     struct App {
         finding: bool,
-        said: String,
+        status: String,
     }
 
     fn describe(app: &mut App, ui: &mut Ui) {
         app.finding |= ui.keys("Ctrl+K");
-        if let Some(command) = ui.palette(&mut app.finding, &COMMANDS) {
-            app.said = format!("Picked: {}", COMMANDS[command].split('\t').next().unwrap_or(""));
+        if let Some(command) = ui.command_palette(&mut app.finding, &COMMANDS) {
+            app.status = format!("Picked: {}", COMMANDS[command].split('\t').next().unwrap_or(""));
         }
         ui.column().pad(12.0).open();
-        ui.label(&app.said);
+        ui.label(&app.status);
         ui.close();
     }
 
     // The picture of it:
     use super::Step::Type;
     pub(super) fn shot() -> super::Shot {
-        let mut app = App { finding: true, said: "Ctrl+K finds a command".into() };
+        let mut app = App { finding: true, status: "Ctrl+K finds a command".into() };
         super::Shot::new("05-a-palette", [460.0, 260.0], move |ui| describe(&mut app, ui)).steps(&[Type("sa")])
     }
 }
@@ -1082,7 +1083,7 @@ mod kinds_of_text {
         ui.note("A note: smaller and quieter");
         ui.text("Bold, in the colour that stands out", t.font.bold(), t.accent);
         ui.text("Letters of one width, for code: let x = 1;", t.font.mono(), t.text);
-        ui.text("Struck through: no longer so", t.font.struck(), t.text_dim);
+        ui.text("Struck through: no longer so", t.font.strikethrough(), t.text_dim);
         ui.text("Larger", Font::new(20.0), t.text);
         ui.paragraph("A paragraph breaks into as many lines as the width it is given needs, between its words.");
         ui.el().w(Length::Px(220.0)).clip().text("Text that is too long for its box ends in dots", t.font, t.text).show();
@@ -1187,15 +1188,15 @@ mod drawing {
         }
         area.line_to(wide, high).close();
         ui.column().pad(12.0).gap(12.0).open();
-        ui.el().flow(Flow::Layers).size(wide, high).fill(t.panel).radius(6.0).clip().open();
-        ui.el().size(wide, high).shape(&area, t.accent.alpha(0.25)).show();
+        ui.el().flow(Flow::Stack).size(wide, high).fill(t.panel).radius(6.0).clip().open();
+        ui.el().size(wide, high).shape(&area, t.accent.with_alpha(0.25)).show();
         ui.el().size(wide, high).outline(&line, 2.0, t.accent).show();
         ui.close();
         // Fills that go from colour to colour, and icons drawn from SVG path data.
         ui.row().gap(12.0).open();
         ui.el().size(90.0, 36.0).radius(8.0).gradient_across(t.accent, t.green).show();
         ui.el().size(90.0, 36.0).radius(8.0).gradient_along(60.0, &[(0.0, t.red), (0.5, t.amber), (1.0, t.green)]).show();
-        ui.el().size(36.0, 36.0).radius(18.0).gradient_around(&[(0.0, t.text), (0.6, t.accent), (1.0, t.accent.alpha(0.0))]).show();
+        ui.el().size(36.0, 36.0).radius(18.0).gradient_around(&[(0.0, t.text), (0.6, t.accent), (1.0, t.accent.with_alpha(0.0))]).show();
         ui.icon(STAR);
         ui.el().icon(STAR, 32.0, t.amber).show();
         ui.close();
@@ -1210,7 +1211,7 @@ mod drawing {
 
 // docs/06-text-and-pictures.md
 mod a_scene {
-    use taut::{Mesh, Ui, View};
+    use taut::{Camera, Mesh, Ui};
 
     /// A body with four sides and a square floor: five points, and four triangles, each
     /// said by the numbers of its three corners.
@@ -1222,7 +1223,7 @@ mod a_scene {
     fn describe(body: &mut Option<Mesh>, ui: &mut Ui) {
         let t = ui.theme;
         let pyramid = *body.get_or_insert_with(|| pyramid(ui));
-        let view = View::look([13.0, 9.0, 17.0], [0.0, 2.0, 0.0]);
+        let view = Camera::look_at([13.0, 9.0, 17.0], [0.0, 2.0, 0.0]);
         ui.row().pad(12.0).open();
         ui.el().size(300.0, 160.0).fill(t.panel).radius(6.0).scene(&view, &[pyramid.filled(t.accent).outlined(t.text)]).show();
         ui.close();
@@ -1284,7 +1285,7 @@ mod an_overlay {
 
     fn describe(settings: &mut Settings, ui: &mut Ui) {
         let t = ui.theme;
-        ui.column().w(Length::Px(220.0)).at(16.0, 16.0).pad(14.0).gap(10.0).fill(t.panel.alpha(0.92)).border(t.line_strong, 1.0).radius(10.0).shadow(12.0).open();
+        ui.column().w(Length::Px(220.0)).offset(16.0, 16.0).pad(14.0).gap(10.0).fill(t.panel.with_alpha(0.92)).border(t.line_strong, 1.0).radius(10.0).shadow(12.0).open();
         ui.text("Overlay", t.font.bold(), t.text);
         ui.switch(&mut settings.names, "Show names");
         ui.slider(&mut settings.range, 0.0..=100.0);

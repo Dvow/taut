@@ -42,7 +42,7 @@ mod reader {
         fn kill(process: c_int, signal: c_int) -> c_int;
     }
 
-    /// A thing a screen reader is told of: a program, a window, or something in a window. It
+    /// A thing a screen reader hears of: a program, a window, or something in a window. It
     /// is libatspi's, which keeps one for each thing there is; and none is handed back before
     /// the walk is over, so two that are the same thing are the same pointer. (Nothing: a
     /// pointer to nothing, which libatspi takes for a thing as well.)
@@ -381,9 +381,9 @@ mod reader {
     }
 
     /// Which of the things that are wanted, by kind and name, are not among those told.
-    fn missing(wanted: &[(c_int, &str)], told: &[(c_int, String)]) -> Vec<(c_int, String)> {
-        let is_told = |role: c_int, name: &str| told.iter().any(|(told_role, told_name)| *told_role == role && told_name == name);
-        let mut missing: Vec<(c_int, String)> = wanted.iter().filter(|(role, name)| !is_told(*role, name)).map(|(role, name)| (*role, name.to_string())).collect();
+    fn missing(wanted: &[(c_int, &str)], nodes: &[(c_int, String)]) -> Vec<(c_int, String)> {
+        let is_given = |role: c_int, name: &str| nodes.iter().any(|(given_role, given_name)| *given_role == role && given_name == name);
+        let mut missing: Vec<(c_int, String)> = wanted.iter().filter(|(role, name)| !is_given(*role, name)).map(|(role, name)| (*role, name.to_string())).collect();
         missing.sort();
         missing
     }
@@ -411,9 +411,9 @@ mod reader {
 
     /// How much memory a process has in use, and how much of that is its own alone.
     fn memory(process: u32) -> String {
-        let told = fs::read_to_string(format!("/proc/{process}/smaps_rollup")).unwrap_or_default();
+        let smaps = fs::read_to_string(format!("/proc/{process}/smaps_rollup")).unwrap_or_default();
         let megabytes = |kind: &str| {
-            let line = told.lines().find(|line| line.split(':').next() == Some(kind));
+            let line = smaps.lines().find(|line| line.split(':').next() == Some(kind));
             line.and_then(|line| line.split_whitespace().nth(1)).and_then(|kilobytes| kilobytes.parse::<f64>().ok()).unwrap_or(0.0) / 1024.0
         };
         format!("{:.2} MB in use, {:.2} MB of its own", megabytes("Rss"), megabytes("Private_Dirty"))
@@ -422,8 +422,8 @@ mod reader {
     /// What the system says of a process after its name: how it stands, who started it, and
     /// further on what it has used. (The name stands in brackets and may hold anything.)
     fn after_its_name(process: u32) -> Vec<String> {
-        let told = fs::read_to_string(format!("/proc/{process}/stat")).unwrap_or_default();
-        told.rsplit_once(')').map_or("", |(_, after)| after).split_whitespace().map(str::to_string).collect()
+        let stat = fs::read_to_string(format!("/proc/{process}/stat")).unwrap_or_default();
+        stat.rsplit_once(')').map_or("", |(_, after)| after).split_whitespace().map(str::to_string).collect()
     }
 
     /// Milliseconds of processor a process has used so far, in itself and in the system.
@@ -565,10 +565,10 @@ mod reader {
                 return Ok(answer);
             }
             // SAFETY: what went wrong is glib's record of it, whose words end in a zero.
-            let said = unsafe { CStr::from_ptr((*problem).message) }.to_string_lossy().into_owned();
+            let message = unsafe { CStr::from_ptr((*problem).message) }.to_string_lossy().into_owned();
             // SAFETY: the record is the caller's, and is given back now that its words are read.
             unsafe { (self.glib.g_error_free)(problem) };
-            Err(Gone(format!("{}: {said}", function.to_string_lossy())))
+            Err(Gone(format!("{}: {message}", function.to_string_lossy())))
         }
 
         /// Asks libatspi something about a thing; what it could not get an answer for is an
@@ -658,7 +658,7 @@ mod reader {
         }
 
         /// A thing and everything in it, each by its kind and what it is called.
-        fn told(&self, thing: Thing) -> Result<Vec<(c_int, String)>, Gone> {
+        fn role_names(&self, thing: Thing) -> Result<Vec<(c_int, String)>, Gone> {
             self.below(thing)?.into_iter().map(|(thing, _)| Ok((self.role(thing)?, self.name(thing)?))).collect()
         }
 
@@ -823,19 +823,19 @@ mod reader {
         /// Whether news of a kind has come since the list was last emptied (about one thing,
         /// or about any where none is named; with one number, or with any).
         fn heard(&self, kind: &str, of: Thing, number: Option<c_int>) -> bool {
-            self.news.borrow().iter().any(|told| told.kind.starts_with(kind) && (of.is_none() || told.of == of) && number.is_none_or(|number| told.number == number))
+            self.news.borrow().iter().any(|event| event.kind.starts_with(kind) && (of.is_none() || event.of == of) && number.is_none_or(|number| event.number == number))
         }
 
         /// The thing the first news of a kind, with one number, is about (or none).
         fn first_heard_of(&self, kind: &str, number: c_int) -> Thing {
-            self.news.borrow().iter().find(|told| told.kind.starts_with(kind) && told.number == number).map_or(Thing::NONE, |told| told.of)
+            self.news.borrow().iter().find(|event| event.kind.starts_with(kind) && event.number == number).map_or(Thing::NONE, |event| event.of)
         }
     }
 
     /// The things of the demo the walk comes back to: the desktop it is on, the program, its
     /// window, and in the window a button, the tick box, and the text that counts the presses.
     #[derive(Clone, Copy)]
-    struct Seen {
+    struct Landmarks {
         desktop: Thing,
         app: Thing,
         frame: Thing,
@@ -901,7 +901,7 @@ mod reader {
 
     /// The window of the demo, and all that is in it, is told of as it is. Gives back the
     /// things of it the walk comes back to.
-    fn the_window_is_told(reader: &Reader, desktop: Thing, app: Thing) -> Result<Seen, Gone> {
+    fn the_window_is_told(reader: &Reader, desktop: Thing, app: Thing) -> Result<Landmarks, Gone> {
         let atspi = &reader.atspi;
         let frame = reader.children(app)?.first().copied().unwrap_or(Thing::NONE);
         let (role, name, place) = (reader.role(frame)?, reader.name(frame)?, reader.extents(frame, 1)?);
@@ -929,7 +929,7 @@ mod reader {
         let back = reader.ask_of(&reader.atspi.atspi_component_scroll_to, first, 6)? != 0 && reader.wait(5.0, || Ok(reader.is(first, &[SHOWING])));
         check("  and back", back, "");
         check("every thing is in what it says it is in, at the place it says", each_is_where_it_says(reader, &tree)?, "");
-        let not_told = missing(&SHOWN, &reader.told(frame)?);
+        let not_told = missing(&SHOWN, &reader.role_names(frame)?);
         check("what the window shows is told: buttons, tabs, a tick box, text boxes, the rows of the list", not_told.is_empty(), &format!("missing {}", listed_pairs(&not_told)));
         let (count_one, tick, count) = (reader.find(frame, BUTTON, "Count one")?, reader.find(frame, CHECK_BOX, TICK_BOX)?, reader.find(frame, LABEL, COUNTED)?);
         let (ways, way) = (&atspi.atspi_action_get_n_actions, &atspi.atspi_action_get_action_name);
@@ -947,15 +947,15 @@ mod reader {
         // pressed, and of the other whether it holds an amount.
         let nothing_to_press = unsafe { (atspi.atspi_accessible_get_action_iface.call)(count).is_null() && (atspi.atspi_accessible_get_value_iface.call)(count_one).is_null() };
         check("a text has nothing to press", nothing_to_press, "");
-        Ok(Seen { desktop, app, frame, count_one, tick, count })
+        Ok(Landmarks { desktop, app, frame, count_one, tick, count })
     }
 
     // ---- working it ----
 
     /// A button and a tick box are pressed for the screen reader, and what that changed is
     /// told of.
-    fn buttons_are_pressed(reader: &Reader, seen: &Seen) -> Result<(), Gone> {
-        let Seen { frame, count_one, tick, count, .. } = *seen;
+    fn buttons_are_pressed(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
+        let Landmarks { frame, count_one, tick, count, .. } = *landmarks;
         reader.forget_news();
         check("a button is pressed for the screen reader", reader.press(count_one)?, "");
         let renamed = reader.wait(5.0, || Ok(reader.heard("object:property-change:accessible-name", count, None)));
@@ -963,8 +963,8 @@ mod reader {
 
         reader.forget_news();
         reader.press(reader.find(frame, BUTTON, "Start over")?)?;
-        let said = reader.wait(5.0, || Ok(reader.heard("object:announcement", frame, None)));
-        check("what the app has said about something it did is said", said && reader.name(count)? == COUNTED, &quoted(&reader.name(count)?));
+        let announced = reader.wait(5.0, || Ok(reader.heard("object:announcement", frame, None)));
+        check("what the app has said about something it did is said", announced && reader.name(count)? == COUNTED, &quoted(&reader.name(count)?));
         reader.press(count_one)?;
         reader.wait(5.0, || Ok(reader.name(count)? == "Gallery: 60 items, 1 presses counted"));
 
@@ -981,8 +981,8 @@ mod reader {
 
     /// Another page: what was on the first one goes, what is on this one comes. Its slider is
     /// moved for the screen reader.
-    fn another_page_is_picked(reader: &Reader, seen: &Seen) -> Result<(), Gone> {
-        let (atspi, frame) = (&reader.atspi, seen.frame);
+    fn another_page_is_picked(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
+        let (atspi, frame) = (&reader.atspi, landmarks.frame);
         reader.forget_news();
         reader.press(reader.find(frame, PAGE_TAB, "Parts")?)?;
         let came = reader.wait(5.0, || reader.has(frame, SLIDER, "A slider"));
@@ -990,26 +990,26 @@ mod reader {
         check("another page is picked: its things come, and the news of that", came && news_of_it() && !reader.has(frame, ENTRY, "Notes")?, "");
         check("  the tab says it is the one picked now", reader.is(reader.find(frame, PAGE_TAB, "Parts")?, &[SELECTED]) && !reader.is(reader.find(frame, PAGE_TAB, "List")?, &[SELECTED]), "");
         let slider = reader.find(frame, SLIDER, "A slider")?;
-        let stands = || reader.ask(&atspi.atspi_value_get_current_value, slider);
-        let (low, high, stood) = (reader.ask(&atspi.atspi_value_get_minimum_value, slider)?, reader.ask(&atspi.atspi_value_get_maximum_value, slider)?, stands()?);
-        check("a slider says where it stands, and between what", (low, high) == (50.0, 100.0) && low <= stood && stood <= high, &format!("{low:?} {stood:?} {high:?}"));
+        let current_value = || reader.ask(&atspi.atspi_value_get_current_value, slider);
+        let (low, high, value) = (reader.ask(&atspi.atspi_value_get_minimum_value, slider)?, reader.ask(&atspi.atspi_value_get_maximum_value, slider)?, current_value()?);
+        check("a slider says where it stands, and between what", (low, high) == (50.0, 100.0) && low <= value && value <= high, &format!("{low:?} {value:?} {high:?}"));
         // (The keyboard moves this slider a twentieth of its way at a step, which is 2.5 here: the
         // screen reader's wish is met as near as those steps come, and no further than its ends.)
         for to in [80.0, 61.0, 500.0, 50.0, 71.0] {
             reader.forget_news();
-            let stood = stands()?;
+            let value = current_value()?;
             reader.set_value(slider, to)?;
-            let reachable = (-20..=20).map(|steps| (stood + 2.5 * steps as f64).max(low).min(high));
-            let nearest = reachable.min_by(|one, other| (one - to).abs().total_cmp(&(other - to).abs())).unwrap_or(stood);
-            let is_there = || Ok((stands()? - nearest).abs() < 0.01);
+            let reachable = (-20..=20).map(|steps| (value + 2.5 * steps as f64).max(low).min(high));
+            let nearest = reachable.min_by(|one, other| (one - to).abs().total_cmp(&(other - to).abs())).unwrap_or(value);
+            let is_there = || Ok((current_value()? - nearest).abs() < 0.01);
             let there = reader.wait(8.0, is_there);
             reader.pump(0.3);
             let stays = is_there()?;
             let moved = there && stays && reader.heard("object:property-change:accessible-value", slider, None);
-            check(&format!("  it is moved to {} for the screen reader, as near as its steps come ({})", short(to), short(nearest)), moved, &format!("{:?}", stands()?));
+            check(&format!("  it is moved to {} for the screen reader, as near as its steps come ({})", short(to), short(nearest)), moved, &format!("{:?}", current_value()?));
         }
         let bar = reader.find(frame, PROGRESS_BAR, "")?;
-        let as_far = || Ok::<bool, Gone>((reader.ask(&atspi.atspi_value_get_current_value, bar)? - (stands()? - 50.0) / 50.0).abs() < 0.001);
+        let as_far = || Ok::<bool, Gone>((reader.ask(&atspi.atspi_value_get_current_value, bar)? - (current_value()? - 50.0) / 50.0).abs() < 0.001);
         check("how far something has come is told as an amount too", !bar.is_none() && as_far()?, "");
         Ok(())
     }
@@ -1018,15 +1018,19 @@ mod reader {
     /// table of all its rows and its columns, a cell at a row in view and a column, where
     /// the cell says it is, under the heading of its column. A row out of view has no cells
     /// to be had.
-    fn a_table(reader: &Reader, seen: &Seen) -> Result<(), Gone> {
-        let (atspi, frame) = (&reader.atspi, seen.frame);
+    fn a_table(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
+        let (atspi, frame) = (&reader.atspi, landmarks.frame);
         reader.press(reader.find(frame, PAGE_TAB, "Table")?)?;
         let find = |role: c_int| Ok::<Thing, Gone>(reader.below(frame)?.into_iter().map(|(thing, _)| thing).find(|thing| reader.role(*thing).is_ok_and(|kind| kind == role)).unwrap_or(Thing::NONE));
         check("the page with the table is picked, and the table is told as one", reader.wait(5.0, || Ok(!find(TABLE)?.is_none())), "");
         let table = find(TABLE)?;
-        let (rows, columns, picked) =
+        let (rows, columns, selected) =
             (reader.ask(&atspi.atspi_table_get_n_rows, table)?, reader.ask(&atspi.atspi_table_get_n_columns, table)?, reader.ask(&atspi.atspi_table_get_n_selected_rows, table)?);
-        check("  libatspi reads it as a table: all its rows, its columns, which rows are picked", (rows, columns, picked) == (5000, 4, 0), &format!("{rows} rows, {columns} columns, {picked} picked"));
+        check(
+            "  libatspi reads it as a table: all its rows, its columns, which rows are picked",
+            (rows, columns, selected) == (5000, 4, 0),
+            &format!("{rows} rows, {columns} columns, {selected} picked"),
+        );
         let heading = reader.ask_of(&atspi.atspi_table_get_column_header, table, 1)?;
         check("  the heading over a column", !heading.is_none() && reader.name(heading)? == "Size", "");
         let at = |row: c_int, column: c_int| {
@@ -1054,11 +1058,11 @@ mod reader {
     }
 
     /// The page of panels, the first of which holds a long tree of files: libatspi reads it
-    /// as a tree in which many can be picked, and its items with how deep each is and which
-    /// of how many (as Orca reads them); it opens one by its second action, picks one by the
-    /// tree's own way of picking, and closes the first again.
-    fn a_tree(reader: &Reader, seen: &Seen) -> Result<(), Gone> {
-        let (atspi, frame) = (&reader.atspi, seen.frame);
+    /// as a tree in which many can be selected, and its items with how deep each is and which
+    /// of how many (as Orca reads them); it opens one by its second action, selects one by the
+    /// tree's own way of selecting, and closes the first again.
+    fn a_tree(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
+        let (atspi, frame) = (&reader.atspi, landmarks.frame);
         reader.press(reader.find(frame, PAGE_TAB, "Dock")?)?;
         let find = |role: c_int| Ok::<Thing, Gone>(reader.below(frame)?.into_iter().map(|(thing, _)| thing).find(|thing| reader.role(*thing).is_ok_and(|kind| kind == role)).unwrap_or(Thing::NONE));
         check("the page of panels is picked, and the tree in it is told as one", reader.wait(5.0, || Ok(!find(TREE)?.is_none())), "");
@@ -1078,11 +1082,11 @@ mod reader {
         let at = reader.ask(&atspi.atspi_accessible_get_index_in_parent, inner)?;
         reader.forget_news();
         let asked = reader.ask_of(&atspi.atspi_selection_select_child, tree, at)? != 0;
-        let picked = reader.wait(5.0, || Ok(reader.ask_of(&atspi.atspi_selection_is_child_selected, tree, at)? != 0 && reader.is(inner, &[SELECTED])));
+        let selected = reader.wait(5.0, || Ok(reader.ask_of(&atspi.atspi_selection_is_child_selected, tree, at)? != 0 && reader.is(inner, &[SELECTED])));
         let count = reader.ask(&atspi.atspi_selection_get_n_selected_children, tree)?;
         check(
             "  the tree picks an item for the screen reader, and says it is the one picked",
-            asked && picked && count == 1 && reader.heard("object:state-changed:selected", inner, Some(1)),
+            asked && selected && count == 1 && reader.heard("object:state-changed:selected", inner, Some(1)),
             &count.to_string(),
         );
         let way = reader.words(reader.ask_of(&atspi.atspi_action_get_action_name, first, 1)?);
@@ -1093,8 +1097,8 @@ mod reader {
     }
 
     /// Back to the list, and text into the box that filters it.
-    fn text_is_put_in(reader: &Reader, seen: &Seen) -> Result<(), Gone> {
-        let (atspi, frame) = (&reader.atspi, seen.frame);
+    fn text_is_put_in(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
+        let (atspi, frame) = (&reader.atspi, landmarks.frame);
         reader.press(reader.find(frame, PAGE_TAB, "List")?)?;
         check("the first page is picked again", reader.wait(5.0, || Ok(reader.has(frame, ENTRY, "Filter items")? && reader.has(frame, LABEL, "item 2")?)), "");
         let filter = reader.find(frame, ENTRY, "Filter items")?;
@@ -1175,7 +1179,7 @@ mod reader {
 
     /// Tab is pressed, and the news says where the keyboard went; then the screen reader
     /// sends the keyboard to a thing itself.
-    fn the_keyboard(reader: &Reader, seen: &Seen, keys: &Keys) -> Result<(), Gone> {
+    fn the_keyboard(reader: &Reader, landmarks: &Landmarks, keys: &Keys) -> Result<(), Gone> {
         // (With no window manager on this display, the keyboard is with the window the pointer is over.)
         keys.point(450, 400);
         reader.pump(0.3);
@@ -1194,7 +1198,7 @@ mod reader {
         reader.forget_news();
         // (The tick box is looked for again: the walk has been to other pages and back since it
         // was first found, and coming back made it another object.)
-        let (tick, last) = (reader.find(seen.frame, CHECK_BOX, TICK_BOX)?, on.last().copied().unwrap_or(Thing::NONE));
+        let (tick, last) = (reader.find(landmarks.frame, CHECK_BOX, TICK_BOX)?, on.last().copied().unwrap_or(Thing::NONE));
         let went = || reader.wait(5.0, || Ok(reader.heard("object:state-changed:focused", tick, Some(1)) && reader.is(tick, &[FOCUSED])));
         check("the screen reader sends the keyboard to a thing itself", reader.ask(&reader.atspi.atspi_component_grab_focus, tick)? != 0 && went() && !reader.is(last, &[FOCUSED]), "");
         Ok(())
@@ -1203,15 +1207,15 @@ mod reader {
     // ---- a menu ----
 
     /// A menu is opened: its rows are told of, and Escape puts it away.
-    fn a_menu(reader: &Reader, seen: &Seen, keys: &Keys) -> Result<(), Gone> {
-        let frame = seen.frame;
+    fn a_menu(reader: &Reader, landmarks: &Landmarks, keys: &Keys) -> Result<(), Gone> {
+        let frame = landmarks.frame;
         reader.press(reader.find(frame, BUTTON, "File")?)?;
         let came = reader.wait(5.0, || reader.has(frame, MENU_ITEM, "Rename this window…"));
         let rename = reader.find(frame, MENU_ITEM, "Rename this window…")?;
         let keys_of_it = || Ok::<String, Gone>(reader.words(reader.ask_of(&reader.atspi.atspi_action_get_key_binding, rename, 0)?));
         let written = if rename.is_none() { "None".to_string() } else { quoted(&keys_of_it()?) };
         check("a row of a menu is called by its name, and the keys that do the same are told apart from it", came && keys_of_it()? == ";;F2", &written);
-        check("  what is under the menu is told of as before", reader.find(frame, BUTTON, "Count one")? == seen.count_one, "");
+        check("  what is under the menu is told of as before", reader.find(frame, BUTTON, "Count one")? == landmarks.count_one, "");
         keys.key(ESCAPE);
         check("  and Escape puts the menu away", reader.wait(5.0, || Ok(!reader.has(frame, MENU_ITEM, "Rename this window…")?)), "");
         Ok(())
@@ -1220,8 +1224,8 @@ mod reader {
     // ---- a second window ----
 
     /// A second window is opened from a menu, used, and closed by its own button.
-    fn a_second_window(reader: &Reader, seen: &Seen, keys: &Keys) -> Result<(), Gone> {
-        let Seen { app, frame, count_one, .. } = *seen;
+    fn a_second_window(reader: &Reader, landmarks: &Landmarks, keys: &Keys) -> Result<(), Gone> {
+        let Landmarks { app, frame, count_one, .. } = *landmarks;
         let row = || reader.find(frame, CHECK_MENU_ITEM, "A second window");
         reader.forget_news();
         reader.press(reader.find(frame, BUTTON, "View")?)?;
@@ -1232,8 +1236,8 @@ mod reader {
         let news_of_it = || reader.heard("object:children-changed:add", app, None) && reader.heard("window:create", Thing::NONE, None);
         check("a second window is opened from it: it comes as another frame of the program", opened && news_of_it(), "");
         let second = reader.children(app)?.get(1).copied().unwrap_or(Thing::NONE);
-        let (titled, told) = ((reader.role(second)?, reader.name(second)?.as_str()) == (FRAME, "taut gallery: a second window"), reader.told(second)?);
-        check("  with its own title, and its own things", titled && missing(&SHOWN_IN_THE_SECOND, &told).is_empty(), &listed_pairs(&told));
+        let (titled, nodes) = ((reader.role(second)?, reader.name(second)?.as_str()) == (FRAME, "taut gallery: a second window"), reader.role_names(second)?);
+        check("  with its own title, and its own things", titled && missing(&SHOWN_IN_THE_SECOND, &nodes).is_empty(), &listed_pairs(&nodes));
         check("  the menu is gone from the first window", row()?.is_none(), "");
         reader.press(reader.find(frame, BUTTON, "View")?)?;
         check("  opened again, its row for that window is ticked", reader.wait(5.0, || Ok(!row()?.is_none())) && reader.is(row()?, &[CHECKED]), "");
@@ -1255,8 +1259,8 @@ mod reader {
 
     /// Nobody listens any more: the demo leaves the accessibility bus. Then someone listens
     /// again, and it is back.
-    fn nobody_listens_and_then_someone_again(reader: &Reader, seen: &Seen, demo: u32) -> Result<(), Gone> {
-        let desktop = seen.desktop;
+    fn nobody_listens_and_then_someone_again(reader: &Reader, landmarks: &Landmarks, demo: u32) -> Result<(), Gone> {
+        let desktop = landmarks.desktop;
         println!("     with someone listening: {}", memory(demo));
         listening(false);
         check("nobody listens any more: the demo leaves the accessibility bus", reader.wait(5.0, || Ok(sockets(demo) == 2 && reader.apps(desktop)?.is_empty())), &format!("{} sockets", sockets(demo)));
@@ -1308,17 +1312,17 @@ mod reader {
         check("nobody listens: the demo is not among the programs of the desktop", reader.apps(desktop)?.is_empty(), &reader.programs(desktop)?);
         reader.listen()?;
         let app = someone_listens(reader, desktop, started)?;
-        let seen = the_window_is_told(reader, desktop, app)?;
-        buttons_are_pressed(reader, &seen)?;
-        another_page_is_picked(reader, &seen)?;
-        a_table(reader, &seen)?;
-        a_tree(reader, &seen)?;
-        text_is_put_in(reader, &seen)?;
+        let landmarks = the_window_is_told(reader, desktop, app)?;
+        buttons_are_pressed(reader, &landmarks)?;
+        another_page_is_picked(reader, &landmarks)?;
+        a_table(reader, &landmarks)?;
+        a_tree(reader, &landmarks)?;
+        text_is_put_in(reader, &landmarks)?;
         let keys = open_keys();
-        the_keyboard(reader, &seen, &keys)?;
-        a_menu(reader, &seen, &keys)?;
-        a_second_window(reader, &seen, &keys)?;
-        nobody_listens_and_then_someone_again(reader, &seen, started.demo.id())?;
+        the_keyboard(reader, &landmarks, &keys)?;
+        a_menu(reader, &landmarks, &keys)?;
+        a_second_window(reader, &landmarks, &keys)?;
+        nobody_listens_and_then_someone_again(reader, &landmarks, started.demo.id())?;
         the_buses_die(started, &keys);
         Ok(())
     }

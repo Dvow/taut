@@ -1,13 +1,15 @@
-//! taut under a program's own renderer: the Direct3D 11 and OpenGL layers, and the examples
-//! using them and Vulkan, checked against the surface they show. A gallery frame, rendered over
-//! a known image, is read back and compared with the surface composited over that image by
-//! hand; a change updates the texture where it changed and nowhere else; the interface lies at
-//! the program's viewport and inside it; the state a layer sets for drawing is restored as the
-//! program had it; and errors come back as values, in the system's own words.
+//! taut under a program's own renderer: the Direct3D 9, 11 and 12, OpenGL and Vulkan layers,
+//! and the examples using them, checked against the surface they show. A gallery frame,
+//! rendered over a known image, is read back and compared with the surface composited over that
+//! image by hand; a change updates the texture where it changed and nowhere else; the interface
+//! lies at the program's viewport and inside it; the state a layer sets for drawing is restored
+//! as the program had it; and errors come back as values, in the system's own words.
 //!
-//! Nothing is drawn on screen. Direct3D 11 renders on Windows' software rasterizer (WARP);
-//! OpenGL through the example's own WGL on a never-shown window, and on Linux through EGL with
-//! no display (Mesa's llvmpipe). A test needing an X display says so, and runs on its own:
+//! Nothing is drawn on screen. Direct3D 11 and 12 render on Windows' software rasterizer
+//! (WARP); Direct3D 9Ex on the graphics card, in a program of its own started on a desktop of
+//! its own; OpenGL through the example's own WGL on a never-shown window, and on Linux through
+//! EGL with no display (Mesa's llvmpipe); Vulkan on the system's first device (lavapipe in the
+//! tests on Linux). A test needing an X display says so, and runs on its own:
 //! `xvfb-run cargo test --test renderers -- --ignored`. With `TAUT_PICTURES` naming a folder,
 //! each renderer's gallery frame is saved there.
 use std::ffi::c_void;
@@ -143,6 +145,27 @@ fn a_surface_says_where_it_changed_in_pixels() {
         assert_eq!(surface.update(&mut gallery.ui), [[0, 0, 640, 400]], "all of it, at a new size");
         assert!(surface.pixels == Surface::draw(&mut gallery.ui, 64).pixels);
     }
+}
+
+/// What any other renderer is handed: each place as an upload, its bytes read straight from
+/// the surface, row by row the surface's width apart; a place reaching outside is cut to the
+/// surface, and an empty one has no bytes.
+#[test]
+fn a_surface_hands_out_each_place_as_texture_uploads_take_it() {
+    let surface = Surface { width: 7, height: 5, pixels: (0..35).map(|at| 0x0101_0101 * at).collect() };
+    let up = surface.upload([2, 1, 5, 4]);
+    assert_eq!((up.x, up.y, up.width, up.height, up.bytes_per_row), (2, 1, 3, 3, 28));
+    assert_eq!(up.bytes.len(), 28 * 2 + 3 * 4, "up to the last pixel of the last row, no further");
+    for (row, y) in (1..4).enumerate() {
+        for (column, x) in (2..5).enumerate() {
+            let at = row * 28 + column * 4;
+            assert_eq!(u32::from_le_bytes(up.bytes[at..at + 4].try_into().unwrap()), surface.pixels[y * 7 + x], "pixel {x}, {y}: bytes B, G, R, A");
+        }
+    }
+    let cut = surface.upload([5, 3, 9, 8]);
+    assert_eq!((cut.x, cut.y, cut.width, cut.height, cut.bytes.len()), (5, 3, 2, 2, 28 + 8));
+    assert!(surface.upload([3, 3, 3, 4]).bytes.is_empty() && surface.upload([9, 9, 12, 12]).bytes.is_empty());
+    assert_eq!(format!("{up:?}"), "Upload { x: 2, y: 1, width: 3, height: 3, bytes: 68, bytes_per_row: 28 }");
 }
 
 /// What the checks below ask of a renderer: its layer, and a way to look at it.
@@ -521,8 +544,8 @@ mod direct3d_11 {
         let (device, context) = device(5, Some(0x9100));
         let failed = unsafe { Layer::new(device, context) }.expect_err("a device of level 9.1 takes no shaders of model 4");
         println!("{failed}");
-        assert_eq!((failed.doing, failed.code as u32), ("making the vertex shader", 0x8007_0057));
-        assert!(!failed.said.is_empty() && failed.to_string().contains(&failed.said), "Windows' words are said");
+        assert_eq!((failed.operation, failed.code as u32), ("making the vertex shader", 0x8007_0057));
+        assert!(!failed.message.is_empty() && failed.to_string().contains(&failed.message), "Windows' words are said");
         unsafe { [context, device].into_iter().for_each(|object| release(object)) };
     }
 
@@ -638,9 +661,9 @@ mod direct3d_11 {
                     }
                 }
             }
-            for (way, said) in ["UpdateSubresource", "staging + copy", "dynamic, whole"].iter().enumerate() {
+            for (way, method) in ["UpdateSubresource", "staging + copy", "dynamic, whole"].iter().enumerate() {
                 let [[small_called, small_done], [whole_called, whole_done]] = best[way];
-                println!("{name}, {said}: small {small_called:.0} us to call, {small_done:.0} until done; whole {whole_called:.0} to call, {whole_done:.0} until done");
+                println!("{name}, {method}: small {small_called:.0} us to call, {small_done:.0} until done; whole {whole_called:.0} to call, {whole_done:.0} until done");
             }
             unsafe { [query, layered, staging, dynamic, context, device].into_iter().for_each(|object| release(object)) };
         }
@@ -720,8 +743,8 @@ mod open_gl {
     /// Which OpenGL this is, as it says.
     fn renderer(checks: &Checks) -> String {
         // SAFETY: OpenGL hands back a text that ends in a zero (0x1F01: who draws, 0x1F02: the version).
-        let said = |what| unsafe { CStr::from_ptr((checks.glGetString)(what)).to_string_lossy().into_owned() };
-        format!("{}, {}", said(0x1F01), said(0x1F02))
+        let string = |what| unsafe { CStr::from_ptr((checks.glGetString)(what)).to_string_lossy().into_owned() };
+        format!("{}, {}", string(0x1F01), string(0x1F02))
     }
 
     /// The layer, in a context of this thread's.
@@ -729,15 +752,15 @@ mod open_gl {
         checks: Checks,
         layer: Layer,
         /// What the context needs kept for as long as it is used.
-        _kept: Keep,
+        _keep_alive: Keep,
     }
 
     impl<Keep> OpenGl<Keep> {
-        fn new((find, kept): (Find, Keep)) -> OpenGl<Keep> {
+        fn new((find, keep_alive): (Find, Keep)) -> OpenGl<Keep> {
             let checks = Checks::load(&mut |name| find(name));
             println!("OpenGL: {}", renderer(&checks));
             let layer = unsafe { Layer::new(&mut |name| find(name)) }.unwrap_or_else(|failed| panic!("{failed}"));
-            OpenGl { checks, layer, _kept: kept }
+            OpenGl { checks, layer, _keep_alive: keep_alive }
         }
     }
 
@@ -916,7 +939,7 @@ mod open_gl {
     /// does not have, and an interface wider than its textures.
     #[test]
     fn opengl_says_what_went_wrong() {
-        let (find, _kept) = context();
+        let (find, _keep_alive) = context();
         let failed = unsafe { Layer::new(&mut |name| if name == c"glBlendFuncSeparate" { std::ptr::null() } else { find(name) }) }.expect_err("no layer without a function");
         assert_eq!(failed.to_string(), "finding OpenGL's functions failed: this OpenGL has no glBlendFuncSeparate");
         let mut layer = unsafe { Layer::new(&mut |name| find(name)) }.unwrap();
@@ -925,8 +948,8 @@ mod open_gl {
         unsafe { (checks.glGetIntegerv)(0x0D33, &mut most) };
         let failed = unsafe { layer.draw(&mut nothing(most as usize + 1, 2)) }.expect_err("an interface wider than OpenGL's textures is not drawn");
         println!("{failed}");
-        assert_eq!(failed.doing, "making the texture");
-        assert!(failed.said.contains(&most.to_string()), "what OpenGL can make is said");
+        assert_eq!(failed.operation, "making the texture");
+        assert!(failed.message.contains(&most.to_string()), "what OpenGL can make is said");
         unsafe { layer.delete() };
     }
 }
@@ -1020,7 +1043,7 @@ mod on_x11 {
         // (Each button says first where the pointer is; and the window may be told it has the
         // keyboard.)
         assert_eq!(heard.first(), Some(&Event::Move(pt(30.0, 40.0))));
-        heard.retain(|event| !matches!(event, Event::Focus(_) | Event::Move(_)));
+        heard.retain(|event| !matches!(event, Event::Focused(_) | Event::Move(_)));
         let wanted = [
             Event::Press(Button::Left, Mods::NONE),
             Event::Release(Button::Left),
@@ -1033,81 +1056,993 @@ mod on_x11 {
     }
 }
 
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "../examples/d3d12.rs"]
+mod d3d12;
+
+#[cfg(windows)]
+mod direct3d_12 {
+    use super::d3d12::direct3d::{ALLOCATOR, Com, DEVICE, FENCE, HEAP, LIST, QUEUE, RESOURCE, check, function, named, release, transition};
+    use super::*;
+    use std::ptr::{null, null_mut};
+    use taut::layer_d3d12::Layer;
+
+    #[link(name = "d3d12")]
+    unsafe extern "system" {
+        fn D3D12CreateDevice(adapter: Com, level: u32, interface: *const [u32; 4], device: *mut Com) -> i32;
+    }
+    #[link(name = "dxgi")]
+    unsafe extern "system" {
+        fn CreateDXGIFactory2(flags: u32, interface: *const [u32; 4], factory: *mut Com) -> i32;
+    }
+    const FACTORY: [u32; 4] = named(0x1BC6_EA02, 0xEF36, 0x464F, [0xBF, 0x0C, 0x21, 0xCA, 0x39, 0xE5, 0x16, 0x8A]);
+    const ADAPTER: [u32; 4] = named(0x2411_E7E1, 0x12AC, 0x4CCF, [0xBD, 0x14, 0x97, 0x98, 0xE8, 0x53, 0x4D, 0xC0]);
+    const DEVICE_5: [u32; 4] = named(0x8B4F_173B, 0x2FEA, 0x4B80, [0x8F, 0x58, 0x43, 0x07, 0x19, 0x1A, 0xB9, 0x5D]);
+    // Resource states.
+    const RENDER_TARGET: u32 = 0x4;
+    const PIXEL_SHADER_RESOURCE: u32 = 0x80;
+    const COPY_DEST: u32 = 0x400;
+    const COPY_SOURCE: u32 = 0x800;
+    const GENERIC_READ: u32 = 0xAC3;
+    /// Rows of a texture in a buffer are a multiple of this many bytes apart.
+    const PITCH: usize = 256;
+
+    /// Direct3D 12 makes one device per adapter in a program: a test that removes it (or makes
+    /// one) would take it from a test running beside it. So they take turns.
+    fn one_device() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[repr(C)]
+    struct Description {
+        dimension: u32,
+        alignment: u64,
+        width: u64,
+        height: u32,
+        depth: u16,
+        levels: u16,
+        format: u32,
+        samples: [u32; 2],
+        layout: u32,
+        flags: u32,
+    }
+
+    #[repr(C)]
+    struct CopyPlace {
+        resource: Com,
+        kind: u32,
+        offset: u64,
+        footprint: [u32; 5],
+    }
+
+    /// A device of Direct3D 12 on Windows' own software renderer (WARP), which needs no
+    /// graphics card and no window; its queue; and a command list of the test's own.
+    pub struct Gpu {
+        pub device: Com,
+        pub queue: Com,
+        allocator: Com,
+        list: Com,
+        fence: Com,
+        fenced: u64,
+    }
+
+    impl Gpu {
+        fn warp() -> Gpu {
+            let (mut factory, mut adapter, mut device, mut queue) = (null_mut(), null_mut(), null_mut(), null_mut());
+            unsafe {
+                check(CreateDXGIFactory2(0, &FACTORY, &mut factory), "making a DXGI factory");
+                check(function::<unsafe extern "system" fn(Com, *const [u32; 4], *mut Com) -> i32>(factory, 27)(factory, &ADAPTER, &mut adapter), "finding WARP");
+                check(D3D12CreateDevice(adapter, 0xB000, &DEVICE, &mut device), "making a device");
+                check(function::<unsafe extern "system" fn(Com, *const [u32; 4], *const [u32; 4], *mut Com) -> i32>(device, 8)(device, &[0; 4], &QUEUE, &mut queue), "making a queue");
+                [adapter, factory].into_iter().for_each(|object| release(object));
+            }
+            Gpu::on(device, queue)
+        }
+
+        /// The test's own commands on the device and queue (whose references it takes over).
+        fn on(device: Com, queue: Com) -> Gpu {
+            let mut gpu = Gpu { device, queue, allocator: null_mut(), list: null_mut(), fence: null_mut(), fenced: 0 };
+            unsafe {
+                check(function::<unsafe extern "system" fn(Com, u32, *const [u32; 4], *mut Com) -> i32>(device, 9)(device, 0, &ALLOCATOR, &mut gpu.allocator), "making an allocator");
+                check(
+                    function::<unsafe extern "system" fn(Com, u32, u32, Com, Com, *const [u32; 4], *mut Com) -> i32>(device, 12)(device, 0, 0, gpu.allocator, null_mut(), &LIST, &mut gpu.list),
+                    "making a list",
+                );
+                check(function::<unsafe extern "system" fn(Com) -> i32>(gpu.list, 9)(gpu.list), "closing the list");
+                check(function::<unsafe extern "system" fn(Com, u64, u32, *const [u32; 4], *mut Com) -> i32>(device, 36)(device, 0, 0, &FENCE, &mut gpu.fence), "making a fence");
+            }
+            gpu
+        }
+
+        /// Records with `record`, runs it, and waits until it is done.
+        fn run(&mut self, record: &mut dyn FnMut(Com)) {
+            let list = self.list;
+            self.fenced += 1;
+            unsafe {
+                check(function::<unsafe extern "system" fn(Com) -> i32>(self.allocator, 8)(self.allocator), "resetting the allocator");
+                check(function::<unsafe extern "system" fn(Com, Com, Com) -> i32>(list, 10)(list, self.allocator, null_mut()), "resetting the list");
+                record(list);
+                check(function::<unsafe extern "system" fn(Com) -> i32>(list, 9)(list), "closing the list");
+                function::<unsafe extern "system" fn(Com, u32, *const Com)>(self.queue, 10)(self.queue, 1, &list);
+                function::<unsafe extern "system" fn(Com, Com, u64) -> i32>(self.queue, 14)(self.queue, self.fence, self.fenced);
+                function::<unsafe extern "system" fn(Com, u64, isize) -> i32>(self.fence, 9)(self.fence, self.fenced, 0);
+            }
+        }
+
+        /// A committed resource in heap `heap` (1: the device's, 2: written by the processor,
+        /// 3: read by it).
+        fn resource(&self, heap: u32, description: &Description, state: u32) -> Com {
+            let (properties, mut made) = ([heap, 0, 0, 0, 0], null_mut());
+            type Make = unsafe extern "system" fn(Com, *const [u32; 5], u32, *const Description, u32, *const c_void, *const [u32; 4], *mut Com) -> i32;
+            check(unsafe { function::<Make>(self.device, 27)(self.device, &properties, 0, description, state, null(), &RESOURCE, &mut made) }, "making a resource");
+            made
+        }
+
+        /// A texture of B8G8R8A8_UNORM, drawn into if `target`.
+        fn texture(&self, width: usize, height: usize, target: bool, state: u32) -> Com {
+            let description = Description { dimension: 3, alignment: 0, width: width as u64, height: height as u32, depth: 1, levels: 1, format: 87, samples: [1, 0], layout: 0, flags: target as u32 };
+            self.resource(1, &description, state)
+        }
+
+        /// A buffer of `size` bytes in heap `heap`.
+        fn buffer(&self, heap: u32, size: usize) -> Com {
+            let description = Description { dimension: 1, alignment: 0, width: size as u64, height: 1, depth: 1, levels: 1, format: 0, samples: [1, 0], layout: 1, flags: 0 };
+            self.resource(heap, &description, if heap == 2 { GENERIC_READ } else { COPY_DEST })
+        }
+
+        /// Copies between a texture `width` by `height` and a buffer laid out with rows `PITCH`
+        /// apart (to the texture if `to_texture`), the texture in `state` before and after.
+        fn copy(&mut self, texture: Com, state: u32, buffer: Com, [width, height]: [usize; 2], to_texture: bool) {
+            let pitch = (width * 4).div_ceil(PITCH) * PITCH;
+            let footprint = [87, width as u32, height as u32, 1, pitch as u32];
+            let (whole, laid) = (CopyPlace { resource: texture, kind: 0, offset: 0, footprint: [0; 5] }, CopyPlace { resource: buffer, kind: 1, offset: 0, footprint });
+            let (copying, [to, from]) = if to_texture { (COPY_DEST, [&whole, &laid]) } else { (COPY_SOURCE, [&laid, &whole]) };
+            type CopyRegion = unsafe extern "system" fn(Com, *const CopyPlace, u32, u32, u32, *const CopyPlace, *const c_void);
+            self.run(&mut |list| unsafe {
+                let barriers = function::<unsafe extern "system" fn(Com, u32, *const super::d3d12::direct3d::Barrier)>(list, 26);
+                barriers(list, 1, &transition(texture, state, copying));
+                function::<CopyRegion>(list, 16)(list, to, 0, 0, 0, from, null());
+                barriers(list, 1, &transition(texture, copying, state));
+            });
+        }
+
+        /// Puts `pixels` into all of a texture `width` wide that is in `state`.
+        fn put(&mut self, texture: Com, state: u32, pixels: &[u32], width: usize) {
+            let (height, pitch) = (pixels.len() / width, (width * 4).div_ceil(PITCH) * PITCH);
+            let buffer = self.buffer(2, pitch * height);
+            let mut there: *mut u8 = null_mut();
+            unsafe {
+                check(function::<unsafe extern "system" fn(Com, u32, *const c_void, *mut *mut u8) -> i32>(buffer, 8)(buffer, 0, null(), &mut there), "mapping");
+                for (y, row) in pixels.chunks(width).enumerate() {
+                    std::ptr::copy_nonoverlapping(row.as_ptr().cast::<u8>(), there.add(y * pitch), width * 4);
+                }
+            }
+            self.copy(texture, state, buffer, [width, height], true);
+            unsafe { release(buffer) };
+        }
+
+        /// The pixels of a texture `width` by `height` that is in `state`.
+        fn read(&mut self, texture: Com, state: u32, width: usize, height: usize) -> Vec<u32> {
+            let pitch = (width * 4).div_ceil(PITCH) * PITCH;
+            let buffer = self.buffer(3, pitch * height);
+            self.copy(texture, state, buffer, [width, height], false);
+            let (mut there, mut pixels): (*mut u8, _) = (null_mut(), vec![0u32; width * height]);
+            unsafe {
+                check(function::<unsafe extern "system" fn(Com, u32, *const [usize; 2], *mut *mut u8) -> i32>(buffer, 8)(buffer, 0, &[0, pitch * height], &mut there), "mapping");
+                for (y, row) in pixels.chunks_mut(width).enumerate() {
+                    std::ptr::copy_nonoverlapping(there.add(y * pitch), row.as_mut_ptr().cast::<u8>(), width * 4);
+                }
+                release(buffer);
+            }
+            pixels
+        }
+    }
+
+    impl Drop for Gpu {
+        fn drop(&mut self) {
+            unsafe { [self.fence, self.list, self.allocator, self.queue, self.device].into_iter().for_each(|object| release(object)) };
+        }
+    }
+
+    /// The layer, on WARP.
+    struct Direct3D {
+        layer: Option<Layer>,
+        gpu: Gpu,
+    }
+
+    impl Direct3D {
+        fn new() -> Direct3D {
+            let gpu = Gpu::warp();
+            let layer = unsafe { Layer::new(gpu.device, gpu.queue, 87) }.unwrap_or_else(|failed| panic!("{failed}"));
+            Direct3D { layer: Some(layer), gpu }
+        }
+
+        fn layer(&mut self) -> &mut Layer {
+            self.layer.as_mut().unwrap()
+        }
+    }
+
+    impl Renderer for Direct3D {
+        fn update(&mut self, ui: &mut Ui) {
+            self.layer().update(ui).unwrap_or_else(|failed| panic!("{failed}"));
+        }
+        fn drawn(&mut self, ui: &mut Ui, under: &[u32], [width, height]: [usize; 2], area: [i32; 4]) -> Vec<u32> {
+            let target = self.gpu.texture(width, height, true, RENDER_TARGET);
+            self.gpu.put(target, RENDER_TARGET, under, width);
+            let (mut heap, mut view) = (null_mut(), 0usize);
+            let layer = self.layer.as_mut().unwrap();
+            unsafe {
+                check(
+                    function::<unsafe extern "system" fn(Com, *const [u32; 4], *const [u32; 4], *mut Com) -> i32>(self.gpu.device, 14)(self.gpu.device, &[2, 1, 0, 0], &HEAP, &mut heap),
+                    "making a view's heap",
+                );
+                function::<unsafe extern "system" fn(Com, *mut usize) -> *mut usize>(heap, 9)(heap, &mut view);
+                function::<unsafe extern "system" fn(Com, Com, *const c_void, usize)>(self.gpu.device, 20)(self.gpu.device, target, null(), view);
+            }
+            self.gpu.run(&mut |list| unsafe {
+                function::<unsafe extern "system" fn(Com, u32, *const usize, i32, *const usize)>(list, 46)(list, 1, &view, 0, null());
+                layer.draw(ui, list, area).unwrap_or_else(|failed| panic!("{failed}"));
+            });
+            let got = self.gpu.read(target, RENDER_TARGET, width, height);
+            unsafe { [heap, target].into_iter().for_each(|object| release(object)) };
+            got
+        }
+        fn fill(&mut self, pixels: &[u32]) {
+            let (texture, width) = (self.layer().texture(), self.layer().surface().width);
+            self.gpu.put(texture, PIXEL_SHADER_RESOURCE, pixels, width);
+        }
+        fn texture(&mut self) -> Vec<u32> {
+            let (texture, width, height) = (self.layer().texture(), self.layer().surface().width, self.layer().surface().height);
+            self.gpu.read(texture, PIXEL_SHADER_RESOURCE, width, height)
+        }
+        fn surface(&self) -> &Surface {
+            self.layer.as_ref().unwrap().surface()
+        }
+    }
+
+    #[test]
+    fn direct3d_12_shows_the_surface_over_what_was_drawn() {
+        let _one = one_device();
+        shows_the_surface_over_what_was_drawn(&mut Direct3D::new(), "Direct3D 12");
+    }
+
+    #[test]
+    fn direct3d_12_is_given_only_the_places_that_changed() {
+        let _one = one_device();
+        is_given_only_the_places_that_changed(&mut Direct3D::new(), "Direct3D 12");
+    }
+
+    #[test]
+    fn direct3d_12_lies_at_the_programs_viewport() {
+        let _one = one_device();
+        lies_at_the_programs_viewport(&mut Direct3D::new(), "Direct3D 12");
+    }
+
+    /// The device is removed (as `ID3D12Device5::RemoveDevice` makes it be, which is how a
+    /// driver's update or a crash looks): the layer says so in Windows' words, and lets go of
+    /// everything without waiting for ever. A layer on a new device then draws as before.
+    #[test]
+    fn direct3d_12_survives_a_removed_device() {
+        let _one = one_device();
+        let mut direct3d = Direct3D::new();
+        let mut gallery = Gallery::new(480, 320, 1.0);
+        let under = under(480, 320);
+        let got = drawn_whole(&mut direct3d, &mut gallery.ui, &under);
+        assert!(off(&got, &Surface::draw(&mut gallery.ui, 64), &under).0 <= TOLERANCE);
+        unsafe {
+            let mut removable = null_mut();
+            check(function::<unsafe extern "system" fn(Com, *const [u32; 4], *mut Com) -> i32>(direct3d.gpu.device, 0)(direct3d.gpu.device, &DEVICE_5, &mut removable), "asking for ID3D12Device5");
+            function::<unsafe extern "system" fn(Com)>(removable, 58)(removable);
+            release(removable);
+        }
+        gallery.ui.event(Event::Key(Key::Tab, Mods::NONE));
+        gallery.run();
+        let failed = direct3d.layer().update(&mut gallery.ui).expect_err("a removed device draws nothing");
+        println!("{failed}");
+        assert_eq!(failed.operation, "drawing");
+        assert_eq!(failed.code as u32 & 0xFFFF_0000, 0x887A_0000, "a DXGI error: {failed}");
+        assert!(!failed.message.is_empty());
+        let started = std::time::Instant::now();
+        drop(direct3d.layer.take());
+        assert!(started.elapsed().as_secs() < 5, "letting go took {:?}", started.elapsed());
+        // (Direct3D 12 makes one device per adapter: the removed one is let go of first.)
+        drop(direct3d);
+        let mut again = Direct3D::new();
+        let got = drawn_whole(&mut again, &mut gallery.ui, &under);
+        assert!(off(&got, &Surface::draw(&mut gallery.ui, 64), &under).0 <= TOLERANCE, "a new layer on a new device");
+    }
+
+    /// What goes wrong comes back as a value, with Windows' own words: render targets of a
+    /// depth format (D32_FLOAT, 40), which no render target has.
+    #[test]
+    fn direct3d_12_says_what_went_wrong() {
+        let _one = one_device();
+        let gpu = Gpu::warp();
+        let failed = unsafe { Layer::new(gpu.device, gpu.queue, 40) }.expect_err("no pipeline draws into targets of a depth format");
+        println!("{failed}");
+        assert_eq!((failed.operation, failed.code as u32), ("making the pipeline state", 0x8007_0057));
+        assert!(!failed.message.is_empty() && failed.to_string().contains(&failed.message), "Windows' words are said");
+    }
+
+    #[test]
+    fn the_direct3d_12_example_draws_into_its_window_at_any_size() {
+        let _one = one_device();
+        let window = super::direct3d_11::unseen_window();
+        let mut device = d3d12::direct3d::Device::new(window, true);
+        let mut layer = unsafe { Layer::new(device.device, device.queue, 87) }.unwrap();
+        for (width, height) in [(320, 200), (480, 300)] {
+            device.resize(width as u32, height as u32);
+            let mut gallery = Gallery::new(width, height, 1.0);
+            device.begin([51.0 / 255.0, 102.0 / 255.0, 153.0 / 255.0, 1.0]);
+            unsafe { layer.draw(&mut gallery.ui, device.list, [0, 0, width as i32, height as i32]) }.unwrap();
+            device.finish();
+            let buffer = device.buffers[device.current()];
+            unsafe { function::<unsafe extern "system" fn(Com) -> u32>(buffer, 1)(buffer) };
+            let mut reader = Gpu::on(device.device, device.queue);
+            unsafe { [device.device, device.queue].into_iter().for_each(|object| _ = function::<unsafe extern "system" fn(Com) -> u32>(object, 1)(object)) };
+            let got = reader.read(buffer, 0, width, height);
+            drop(reader);
+            unsafe { release(buffer) };
+            let (most, pixels) = off(&got, layer.surface(), &vec![0xff33_6699; width * height]);
+            println!("the example's own device, {width} by {height}: {pixels} pixels off, by {most} at most");
+            assert!(most <= TOLERANCE);
+            device.show();
+        }
+        drop((layer, device));
+        super::direct3d_11::close(window);
+    }
+}
+
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "../examples/d3d9.rs"]
+mod d3d9;
+
+/// Direct3D 9 has no software device: these draw on the graphics card. Each runs in a program of
+/// its own, started on a desktop of its own (Direct3D 9 needs a window, which is never shown
+/// there either), and ends within two minutes.
+#[cfg(windows)]
+mod direct3d_9 {
+    use super::d3d9::direct3d::{Com, D3DPRESENT_PARAMETERS, Device, check, function, release};
+    use super::*;
+    use std::ptr::{null, null_mut};
+    use taut::layer_d3d9::Layer;
+
+    /// Said to a program that a test started on a desktop of its own: where to say it passed.
+    const ALONE: &str = "TAUT_RENDERERS_ALONE";
+
+    #[repr(C)]
+    struct Start {
+        size: u32,
+        reserved: *const u16,
+        desktop: *const u16,
+        title: *const u16,
+        numbers: [u32; 8],
+        show: [u16; 2],
+        more: *const u8,
+        handles: [isize; 3],
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn CreateDesktopW(name: *const u16, device: *const u16, mode: *const c_void, flags: u32, access: u32, security: *const c_void) -> isize;
+        fn CloseDesktop(desktop: isize) -> i32;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateProcessW(app: *const u16, line: *mut u16, process: usize, thread: usize, inherit: i32, flags: u32, env: usize, dir: usize, start: *const Start, made: *mut [isize; 3]) -> i32;
+        fn WaitForSingleObject(handle: isize, ms: u32) -> u32;
+        fn TerminateProcess(handle: isize, code: u32) -> i32;
+        fn GetExitCodeProcess(handle: isize, code: *mut u32) -> i32;
+        fn CloseHandle(handle: isize) -> i32;
+        fn SetHandleInformation(handle: isize, mask: u32, flags: u32) -> i32;
+    }
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain([0]).collect()
+    }
+
+    /// Runs the ignored test `name` in this test program started anew on a desktop of its own,
+    /// its output kept in a file; and fails as it fails.
+    fn on_a_desktop_of_its_own(name: &str) {
+        let folder = std::env::temp_dir();
+        let (log, passed) = (folder.join(format!("taut-{}-{name}.txt", std::process::id())), folder.join(format!("taut-{}-{name}.passed", std::process::id())));
+        _ = std::fs::remove_file(&passed);
+        let output = std::fs::File::create(&log).unwrap();
+        let handle = std::os::windows::io::AsRawHandle::as_raw_handle(&output) as isize;
+        let program = std::env::current_exe().unwrap();
+        let mut line = wide(&format!("\"{}\" --exact direct3d_9::{name} --ignored --nocapture --test-threads=1", program.display()));
+        let desktop = format!("taut renderers {} {name}", std::process::id());
+        let place = wide(&format!("WinSta0\\{desktop}"));
+        // (0x100: the output handles below are the child's.)
+        let start = Start {
+            size: size_of::<Start>() as u32,
+            reserved: null(),
+            desktop: place.as_ptr(),
+            title: null(),
+            numbers: [0, 0, 0, 0, 0, 0, 0, 0x100],
+            show: [0; 2],
+            more: null(),
+            handles: [0, handle, handle],
+        };
+        let mut made = [0isize; 3];
+        // SAFETY: plain calls with whole records. The child is waited for two minutes at most,
+        // then ended; every handle is closed.
+        let code = unsafe {
+            SetHandleInformation(handle, 1, 1);
+            let desk = CreateDesktopW(wide(&desktop).as_ptr(), null(), null(), 0, 0x1000_0000, null());
+            assert!(desk != 0, "a desktop of its own could not be made");
+            let environment = std::env::vars().map(|(key, value)| format!("{key}={value}\0")).chain([format!("{ALONE}={}\0\0", passed.display())]).collect::<String>();
+            let environment: Vec<u16> = environment.encode_utf16().collect();
+            // (0x400: the environment is in UTF-16; 0x0800_0000: no console.)
+            assert!(CreateProcessW(null(), line.as_mut_ptr(), 0, 0, 1, 0x400 | 0x0800_0000, environment.as_ptr() as usize, 0, &start, &mut made) != 0, "the test could not be started");
+            let timed_out = WaitForSingleObject(made[0], 120_000) != 0;
+            let mut code = 1;
+            if timed_out {
+                TerminateProcess(made[0], 1);
+            }
+            GetExitCodeProcess(made[0], &mut code);
+            [made[0], made[1]].into_iter().for_each(|handle| _ = CloseHandle(handle));
+            CloseDesktop(desk);
+            if timed_out { 258 } else { code }
+        };
+        drop(output);
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        println!("{text}");
+        assert!(code == 0 && passed.exists(), "{name} ended with {code}");
+        _ = std::fs::remove_file(log);
+        _ = std::fs::remove_file(passed);
+    }
+
+    /// Whether this program was started by `on_a_desktop_of_its_own`; the test runs only then.
+    fn alone() -> bool {
+        std::env::var_os(ALONE).is_some()
+    }
+
+    /// Marks this program's test passed, for the program that started it.
+    fn passed() {
+        std::fs::write(std::env::var_os(ALONE).unwrap(), "passed").unwrap();
+    }
+
+    /// `D3DVIEWPORT9`.
+    #[repr(C)]
+    #[derive(Debug, PartialEq, Default)]
+    struct Viewport {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        near: f32,
+        far: f32,
+    }
+
+    /// `D3DLOCKED_RECT`.
+    #[repr(C)]
+    struct Locked {
+        pitch: i32,
+        bits: *mut u8,
+    }
+
+    /// A surface of A8R8G8B8 (21) in system memory (2) (device 36).
+    fn in_memory(device: Com, width: usize, height: usize) -> Com {
+        let mut made = null_mut();
+        check(
+            unsafe { function::<unsafe extern "system" fn(Com, u32, u32, u32, u32, *mut Com, *mut isize) -> i32>(device, 36)(device, width as u32, height as u32, 21, 2, &mut made, null_mut()) },
+            "making a surface",
+        );
+        made
+    }
+
+    /// Writes `pixels` into a surface in memory `width` wide, or reads them from it (surface 13
+    /// locks, 14 unlocks).
+    fn rows(surface: Com, pixels: &mut [u32], width: usize, write: bool) {
+        let mut locked = Locked { pitch: 0, bits: null_mut() };
+        unsafe {
+            check(function::<unsafe extern "system" fn(Com, *mut Locked, *const c_void, u32) -> i32>(surface, 13)(surface, &mut locked, null(), 0), "locking");
+            for (y, row) in pixels.chunks_mut(width).enumerate() {
+                let there = locked.bits.add(y * locked.pitch as usize);
+                match write {
+                    true => std::ptr::copy_nonoverlapping(row.as_ptr().cast::<u8>(), there, width * 4),
+                    false => std::ptr::copy_nonoverlapping(there, row.as_mut_ptr().cast::<u8>(), width * 4),
+                }
+            }
+            function::<unsafe extern "system" fn(Com) -> i32>(surface, 14)(surface);
+        }
+    }
+
+    /// Puts `pixels` into all of `surface`, which is in the device's memory (device 30:
+    /// UpdateSurface).
+    fn put(device: Com, surface: Com, pixels: &[u32], width: usize) {
+        let copy = in_memory(device, width, pixels.len() / width);
+        rows(copy, &mut pixels.to_vec(), width, true);
+        check(unsafe { function::<unsafe extern "system" fn(Com, Com, *const c_void, Com, *const c_void) -> i32>(device, 30)(device, copy, null(), surface, null()) }, "putting pixels");
+        unsafe { release(copy) };
+    }
+
+    /// The pixels of a render target (device 32: GetRenderTargetData).
+    fn read(device: Com, target: Com, width: usize, height: usize) -> Vec<u32> {
+        let (copy, mut pixels) = (in_memory(device, width, height), vec![0u32; width * height]);
+        check(unsafe { function::<unsafe extern "system" fn(Com, Com, Com) -> i32>(device, 32)(device, target, copy) }, "reading a render target");
+        rows(copy, &mut pixels, width, false);
+        unsafe { release(copy) };
+        pixels
+    }
+
+    /// A render target of A8R8G8B8 (device 28), holding `under`.
+    fn target(device: Com, under: &[u32], width: usize) -> Com {
+        let mut made = null_mut();
+        check(
+            unsafe {
+                function::<unsafe extern "system" fn(Com, u32, u32, u32, u32, u32, i32, *mut Com, *mut isize) -> i32>(device, 28)(
+                    device,
+                    width as u32,
+                    (under.len() / width) as u32,
+                    21,
+                    0,
+                    0,
+                    0,
+                    &mut made,
+                    null_mut(),
+                )
+            },
+            "making a render target",
+        );
+        put(device, made, under, width);
+        made
+    }
+
+    /// Draws with `draw` into `target`, in a scene, with the viewport `[x, y, width, height]`;
+    /// the program's render target put back after (device 38 gets it, 37 sets it, 47 sets the
+    /// viewport, 41 and 42 begin and end the scene).
+    fn into(device: Com, target: Com, [x, y, width, height]: [i32; 4], draw: &mut dyn FnMut()) {
+        let (mut was, viewport) = (null_mut(), Viewport { x: x as u32, y: y as u32, width: width as u32, height: height as u32, near: 0.0, far: 1.0 });
+        unsafe {
+            function::<unsafe extern "system" fn(Com, u32, *mut Com) -> i32>(device, 38)(device, 0, &mut was);
+            check(function::<unsafe extern "system" fn(Com, u32, Com) -> i32>(device, 37)(device, 0, target), "setting the render target");
+            check(function::<unsafe extern "system" fn(Com, *const Viewport) -> i32>(device, 47)(device, &viewport), "setting the viewport");
+            check(function::<unsafe extern "system" fn(Com) -> i32>(device, 41)(device), "beginning the scene");
+            draw();
+            check(function::<unsafe extern "system" fn(Com) -> i32>(device, 42)(device), "ending the scene");
+            function::<unsafe extern "system" fn(Com, u32, Com) -> i32>(device, 37)(device, 0, was);
+            release(was);
+        }
+    }
+
+    /// The layer on a device of the graphics card, of the 9Ex kind or the first, showing in a
+    /// window that is never shown.
+    struct Direct3D {
+        layer: Layer,
+        device: Device,
+        window: isize,
+    }
+
+    impl Direct3D {
+        fn new(ex: bool) -> Direct3D {
+            let window = super::direct3d_11::unseen_window();
+            let device = Device::new(window, ex);
+            let layer = unsafe { Layer::new(device.device) }.unwrap_or_else(|failed| panic!("{failed}"));
+            Direct3D { layer, device, window }
+        }
+    }
+
+    impl Drop for Direct3D {
+        fn drop(&mut self) {
+            super::direct3d_11::close(self.window);
+        }
+    }
+
+    impl Renderer for Direct3D {
+        fn update(&mut self, ui: &mut Ui) {
+            self.layer.update(ui).unwrap_or_else(|failed| panic!("{failed}"));
+        }
+        fn drawn(&mut self, ui: &mut Ui, under: &[u32], [width, height]: [usize; 2], viewport: [i32; 4]) -> Vec<u32> {
+            let (device, layer) = (self.device.device, &mut self.layer);
+            let target = target(device, under, width);
+            into(device, target, viewport, &mut || layer.draw(ui).unwrap_or_else(|failed| panic!("{failed}")));
+            let got = read(device, target, width, height);
+            unsafe { release(target) };
+            got
+        }
+        fn fill(&mut self, pixels: &[u32]) {
+            let (device, texture, mut level) = (self.device.device, self.layer.texture(), null_mut());
+            unsafe { check(function::<unsafe extern "system" fn(Com, u32, *mut Com) -> i32>(texture, 18)(texture, 0, &mut level), "finding the texture's surface") };
+            put(device, level, pixels, self.layer.surface().width);
+            unsafe { release(level) };
+        }
+        /// The texture, drawn as it is (no blending) into a render target of its size, and read.
+        fn texture(&mut self) -> Vec<u32> {
+            let (device, texture) = (self.device.device, self.layer.texture());
+            let (width, height) = (self.layer.surface().width, self.layer.surface().height);
+            let target = target(device, &vec![0; width * height], width);
+            let (right, bottom) = (width as f32 - 0.5, height as f32 - 0.5);
+            let corners: [[f32; 6]; 4] = [[-0.5, -0.5, 0.0, 1.0, 0.0, 0.0], [right, -0.5, 0.0, 1.0, 1.0, 0.0], [-0.5, bottom, 0.0, 1.0, 0.0, 1.0], [right, bottom, 0.0, 1.0, 1.0, 1.0]];
+            into(device, target, [0, 0, width as i32, height as i32], &mut || unsafe {
+                function::<unsafe extern "system" fn(Com, u32) -> i32>(device, 89)(device, 0x104);
+                function::<unsafe extern "system" fn(Com, u32, Com) -> i32>(device, 65)(device, 0, texture);
+                for (state, to) in [(7, 0), (22, 1), (27, 0), (28, 0), (137, 0), (174, 0)] {
+                    function::<unsafe extern "system" fn(Com, u32, u32) -> i32>(device, 57)(device, state, to);
+                }
+                for (state, to) in [(1, 2), (2, 2), (4, 2), (5, 2)] {
+                    function::<unsafe extern "system" fn(Com, u32, u32, u32) -> i32>(device, 67)(device, 0, state, to);
+                }
+                for (state, to) in [(5, 1), (6, 1), (7, 0)] {
+                    function::<unsafe extern "system" fn(Com, u32, u32, u32) -> i32>(device, 69)(device, 0, state, to);
+                }
+                function::<unsafe extern "system" fn(Com, u32, u32, *const c_void, u32) -> i32>(device, 83)(device, 5, 2, corners.as_ptr().cast(), 24);
+                function::<unsafe extern "system" fn(Com, u32, Com) -> i32>(device, 65)(device, 0, null_mut());
+            });
+            let got = read(device, target, width, height);
+            unsafe { release(target) };
+            got
+        }
+        fn surface(&self) -> &Surface {
+            self.layer.surface()
+        }
+    }
+
+    #[test]
+    fn direct3d_9_shows_the_surface_over_what_was_drawn() {
+        on_a_desktop_of_its_own("shows_the_surface_over_what_was_drawn_alone");
+    }
+
+    #[test]
+    #[ignore = "run by the test above, on a desktop of its own"]
+    fn shows_the_surface_over_what_was_drawn_alone() {
+        if alone() {
+            shows_the_surface_over_what_was_drawn(&mut Direct3D::new(true), "Direct3D 9Ex");
+            passed();
+        }
+    }
+
+    #[test]
+    fn direct3d_9_is_given_only_the_places_that_changed() {
+        on_a_desktop_of_its_own("is_given_only_the_places_that_changed_alone");
+    }
+
+    #[test]
+    #[ignore = "run by the test above, on a desktop of its own"]
+    fn is_given_only_the_places_that_changed_alone() {
+        if alone() {
+            is_given_only_the_places_that_changed(&mut Direct3D::new(true), "Direct3D 9Ex");
+            passed();
+        }
+    }
+
+    #[test]
+    fn direct3d_9_lies_at_the_programs_viewport() {
+        on_a_desktop_of_its_own("lies_at_the_programs_viewport_alone");
+    }
+
+    #[test]
+    #[ignore = "run by the test above, on a desktop of its own"]
+    fn lies_at_the_programs_viewport_alone() {
+        if alone() {
+            lies_at_the_programs_viewport(&mut Direct3D::new(true), "Direct3D 9Ex");
+            passed();
+        }
+    }
+
+    /// Every state the layer sets, as the device says it now: render states, texture stage
+    /// states and sampler states the layer sets, the texture of stage 0, the vertex format and
+    /// declaration, both shaders, stream 0, the scissor rectangle and the viewport.
+    fn state(device: Com) -> Vec<u64> {
+        let mut numbers = Vec::new();
+        let mut number = |value: u64| numbers.push(value);
+        unsafe {
+            for state in [7, 8, 14, 15, 19, 20, 22, 26, 27, 28, 29, 52, 128, 136, 137, 152, 168, 171, 174, 194, 206] {
+                let mut value = 0u32;
+                function::<unsafe extern "system" fn(Com, u32, *mut u32) -> i32>(device, 58)(device, state, &mut value);
+                number(value as u64);
+            }
+            for (stage, state) in [(0, 1), (0, 2), (0, 4), (0, 5), (0, 11), (0, 24), (1, 1), (1, 4)] {
+                let mut value = 0u32;
+                function::<unsafe extern "system" fn(Com, u32, u32, *mut u32) -> i32>(device, 66)(device, stage, state, &mut value);
+                number(value as u64);
+            }
+            for state in [1, 2, 5, 6, 7, 11] {
+                let mut value = 0u32;
+                function::<unsafe extern "system" fn(Com, u32, u32, *mut u32) -> i32>(device, 68)(device, 0, state, &mut value);
+                number(value as u64);
+            }
+            // Objects: the texture (64), the vertex declaration (88), the vertex and pixel
+            // shaders (93, 108); and stream 0 (101: GetStreamSource), each let go of once read.
+            for at in [64usize, 88, 93, 108] {
+                let mut object = null_mut();
+                match at {
+                    64 => function::<unsafe extern "system" fn(Com, u32, *mut Com) -> i32>(device, at)(device, 0, &mut object),
+                    _ => function::<unsafe extern "system" fn(Com, *mut Com) -> i32>(device, at)(device, &mut object),
+                };
+                number(object as u64);
+                release(object);
+            }
+            let (mut stream, mut offset, mut stride) = (null_mut(), 0u32, 0u32);
+            function::<unsafe extern "system" fn(Com, u32, *mut Com, *mut u32, *mut u32) -> i32>(device, 101)(device, 0, &mut stream, &mut offset, &mut stride);
+            [stream as u64, offset as u64, stride as u64].into_iter().for_each(&mut number);
+            release(stream);
+            let (mut format, mut scissor, mut viewport) = (0u32, [0i32; 4], Viewport::default());
+            function::<unsafe extern "system" fn(Com, *mut u32) -> i32>(device, 90)(device, &mut format);
+            function::<unsafe extern "system" fn(Com, *mut [i32; 4]) -> i32>(device, 76)(device, &mut scissor);
+            function::<unsafe extern "system" fn(Com, *mut Viewport) -> i32>(device, 48)(device, &mut viewport);
+            number(format as u64);
+            scissor.into_iter().for_each(|edge| number(edge as u64));
+            [viewport.x, viewport.y, viewport.width, viewport.height, viewport.near.to_bits(), viewport.far.to_bits()].into_iter().for_each(|value| number(value as u64));
+        }
+        numbers
+    }
+
+    #[test]
+    fn direct3d_9_puts_back_what_it_sets() {
+        on_a_desktop_of_its_own("puts_back_what_it_sets_alone");
+    }
+
+    /// The program has set everything the layer sets, its own way: after the layer is drawn,
+    /// the device says the same of each as it said before.
+    #[test]
+    #[ignore = "run by the test above, on a desktop of its own"]
+    fn puts_back_what_it_sets_alone() {
+        if !alone() {
+            return;
+        }
+        let mut direct3d = Direct3D::new(true);
+        let device = direct3d.device.device;
+        let mut gallery = Gallery::new(320, 230, 1.0);
+        let (texture, mut buffer) = (null_mut::<c_void>(), null_mut());
+        let _ = texture;
+        unsafe {
+            // Render states, each to something else than the layer sets.
+            for (state, to) in [
+                (7, 1),
+                (8, 2),
+                (14, 1),
+                (15, 1),
+                (19, 5),
+                (20, 2),
+                (22, 3),
+                (26, 1),
+                (27, 0),
+                (28, 1),
+                (29, 1),
+                (52, 1),
+                (128, 1),
+                (136, 0),
+                (137, 1),
+                (152, 1),
+                (168, 0x7),
+                (171, 2),
+                (174, 0),
+                (194, 1),
+                (206, 1),
+            ] {
+                function::<unsafe extern "system" fn(Com, u32, u32) -> i32>(device, 57)(device, state, to);
+            }
+            for (stage, state, to) in [(0, 1, 4), (0, 2, 1), (0, 4, 4), (0, 5, 1), (0, 11, 1), (0, 24, 2), (1, 1, 2), (1, 4, 2)] {
+                function::<unsafe extern "system" fn(Com, u32, u32, u32) -> i32>(device, 67)(device, stage, state, to);
+            }
+            for (state, to) in [(1, 1), (2, 2), (5, 2), (6, 2), (7, 2), (11, 1)] {
+                function::<unsafe extern "system" fn(Com, u32, u32, u32) -> i32>(device, 69)(device, 0, state, to);
+            }
+            // A vertex buffer of its own in stream 0 (device 26: CreateVertexBuffer; 100:
+            // SetStreamSource), a vertex format of its own, and a scissor rectangle.
+            check(function::<unsafe extern "system" fn(Com, u32, u32, u32, u32, *mut Com, *mut isize) -> i32>(device, 26)(device, 96, 0, 0x102, 0, &mut buffer, null_mut()), "making a vertex buffer");
+            function::<unsafe extern "system" fn(Com, u32, Com, u32, u32) -> i32>(device, 100)(device, 0, buffer, 0, 24);
+            function::<unsafe extern "system" fn(Com, u32) -> i32>(device, 89)(device, 0x102);
+            function::<unsafe extern "system" fn(Com, *const [i32; 4]) -> i32>(device, 75)(device, &[3, 4, 50, 60]);
+        }
+        let under = under(400, 300);
+        let target = target(device, &under, 400);
+        let mut before = Vec::new();
+        let layer = &mut direct3d.layer;
+        let mut got = Vec::new();
+        into(device, target, [12, 8, 350, 260], &mut || {
+            before = state(device);
+            layer.draw(&mut gallery.ui).unwrap();
+            assert_eq!(state(device), before, "the device is as the program had it");
+        });
+        got.extend(read(device, target, 400, 300));
+        unsafe { [target, buffer].into_iter().for_each(|object| release(object)) };
+        assert!(got.iter().zip(&under).filter(|(got, under)| got != under).count() > 10_000, "the layer drew, though the program's states would have hidden it");
+        passed();
+    }
+
+    #[test]
+    fn direct3d_9_takes_a_reset_and_a_resize() {
+        on_a_desktop_of_its_own("takes_a_reset_and_a_resize_alone");
+    }
+
+    /// The device is reset, as after it was lost, with the layer's texture let go of first
+    /// (`before_reset`, which a device of the first kind needs) and without (9Ex keeps it): the
+    /// layer draws as before. The same at a new size. (A device of the first kind is not made
+    /// on a desktop of its own: it says D3DERR_INVALIDCALL there.)
+    #[test]
+    #[ignore = "run by the test above, on a desktop of its own"]
+    fn takes_a_reset_and_a_resize_alone() {
+        if !alone() {
+            return;
+        }
+        for let_go in [true, false] {
+            let mut direct3d = Direct3D::new(true);
+            let mut gallery = Gallery::new(320, 200, 1.0);
+            let under = under(320, 200);
+            let got = drawn_whole(&mut direct3d, &mut gallery.ui, &under);
+            assert!(off(&got, &Surface::draw(&mut gallery.ui, 64), &under).0 <= TOLERANCE);
+            let params: D3DPRESENT_PARAMETERS = direct3d.device.shown;
+            if let_go {
+                direct3d.layer.before_reset();
+                assert!(direct3d.layer.texture().is_null());
+            }
+            check(direct3d.device.resize(params.width, params.height), "resetting");
+            let got = drawn_whole(&mut direct3d, &mut gallery.ui, &under);
+            let (most, _) = off(&got, &Surface::draw(&mut gallery.ui, 64), &under);
+            println!("let go first: {let_go}; after a reset, off by {most} at most");
+            assert!(most <= TOLERANCE, "after a reset");
+            gallery.ui.resize(Size { w: 480.0, h: 300.0 }, 1.0);
+            gallery.run();
+            if let_go {
+                direct3d.layer.before_reset();
+            }
+            check(direct3d.device.resize(480, 300), "resizing");
+            let under = super::under(480, 300);
+            let got = drawn_whole(&mut direct3d, &mut gallery.ui, &under);
+            assert!(off(&got, &Surface::draw(&mut gallery.ui, 64), &under).0 <= TOLERANCE, "at a new size");
+        }
+        passed();
+    }
+
+    #[test]
+    fn direct3d_9_says_what_went_wrong() {
+        on_a_desktop_of_its_own("says_what_went_wrong_alone");
+    }
+
+    /// What goes wrong comes back as a value: an interface wider than the graphics card's
+    /// textures.
+    #[test]
+    #[ignore = "run by the test above, on a desktop of its own"]
+    fn says_what_went_wrong_alone() {
+        if !alone() {
+            return;
+        }
+        let mut direct3d = Direct3D::new(true);
+        let failed = direct3d.layer.update(&mut nothing(100_000, 2)).expect_err("no texture is that wide");
+        println!("{failed}");
+        assert_eq!((failed.operation, failed.code as u32), ("making the texture", 0x8876_086C));
+        let mut gallery = Gallery::new(320, 200, 1.0);
+        let under = under(320, 200);
+        let got = drawn_whole(&mut direct3d, &mut gallery.ui, &under);
+        assert!(off(&got, &Surface::draw(&mut gallery.ui, 64), &under).0 <= TOLERANCE, "it draws again after");
+        passed();
+    }
+
+    #[test]
+    fn the_direct3d_9_example_draws_into_its_window_at_any_size() {
+        on_a_desktop_of_its_own("the_example_draws_into_its_window_at_any_size_alone");
+    }
+
+    #[test]
+    #[ignore = "run by the test above, on a desktop of its own"]
+    fn the_example_draws_into_its_window_at_any_size_alone() {
+        if !alone() {
+            return;
+        }
+        let window = super::direct3d_11::unseen_window();
+        let mut device = Device::new(window, true);
+        let mut layer = unsafe { Layer::new(device.device) }.unwrap();
+        for (width, height) in [(320, 200), (480, 300)] {
+            check(device.resize(width as u32, height as u32), "resizing");
+            let mut gallery = Gallery::new(width, height, 1.0);
+            device.begin(0xff33_6699);
+            layer.draw(&mut gallery.ui).unwrap();
+            let mut buffer = null_mut();
+            // (Device 18: GetBackBuffer.)
+            unsafe { check(function::<unsafe extern "system" fn(Com, u32, u32, u32, *mut Com) -> i32>(device.device, 18)(device.device, 0, 0, 0, &mut buffer), "finding the back buffer") };
+            let got = read(device.device, buffer, width, height);
+            unsafe { release(buffer) };
+            let (most, pixels) = off(&got, layer.surface(), &vec![0xff33_6699; width * height]);
+            println!("the example's own device, {width} by {height}: {pixels} pixels off, by {most} at most");
+            assert!(most <= TOLERANCE);
+            device.show();
+        }
+        drop((layer, device));
+        super::direct3d_11::close(window);
+        passed();
+    }
+}
+
 #[allow(dead_code)]
 #[path = "../examples/vulkan.rs"]
 mod vulkan;
 
 mod on_vulkan {
-    use super::vulkan::{Device, Layer, Target};
+    use super::vulkan::{Device, Object, Target, VkBufferImageCopy, VkMemoryBarrier, barrier};
     use super::*;
+    use std::ptr::null;
+    use taut::layer_vulkan::Layer;
 
-    /// The example's layer and its own device and target, on the first device the system has.
+    /// The layer, on the first device the system has, with the example's device and targets.
     struct Vulkan {
-        device: Device,
-        target: Option<Target>,
         layer: Option<Layer>,
-        surface: Surface,
+        /// The target whose render pass the layer was made for (any target's is like it).
+        first: Option<Target>,
+        device: Device,
     }
 
     impl Vulkan {
         /// Nothing, where the system has no Vulkan (no loader, or no device that draws).
         fn new() -> Option<Vulkan> {
             let device = Device::new()?;
-            let target = Target::new(&device, 1, 1);
-            let layer = Layer::new(&device.vk, &device.gpu, target.render_pass, 1, 1);
-            Some(Vulkan { device, target: Some(target), layer: Some(layer), surface: Surface::default() })
+            let first = Target::new(&device, 1, 1);
+            let layer = unsafe { Layer::new(&device.handles(first.render_pass)) }.unwrap_or_else(|failed| panic!("{failed}"));
+            Some(Vulkan { layer: Some(layer), first: Some(first), device })
         }
 
-        /// The places written to the layer's buffer are copied to its image, and nothing else:
-        /// each copy also spoils the buffer outside the places, before it is recorded, so that
-        /// had more been copied, the image would show it.
-        fn copy(&mut self, places: &[[usize; 4]], pixels: &[u32]) {
-            let (layer, width) = (self.layer.as_mut().unwrap(), self.surface.width);
-            let given = Surface { width, height: self.surface.height, pixels: pixels.to_vec() };
-            places.iter().for_each(|place| layer.update(&given, *place));
-            let outside = |at: &usize| !places.iter().any(|[left, top, right, bottom]| (*left..*right).contains(&(at % width)) && (*top..*bottom).contains(&(at / width)));
-            (0..pixels.len()).filter(outside).for_each(|at| unsafe { *layer.written.add(at) = 0x5a5a_5a5a });
-            self.device.begin();
-            layer.record(&self.device.vk, self.device.commands);
-            self.device.submit();
+        fn layer(&mut self) -> &mut Layer {
+            self.layer.as_mut().unwrap()
+        }
+
+        /// A buffer of the layer's size, the layer's image copied to it (`to_image` false) or
+        /// from it, with `before` done to the buffer first and `after` after.
+        fn through_buffer(&mut self, to_image: bool, before: &dyn Fn(*mut u32), after: &mut dyn FnMut(*mut u32)) {
+            let (device, image) = (&self.device, self.layer.as_ref().unwrap().image());
+            let surface = self.layer.as_ref().unwrap().surface();
+            let (width, height) = (surface.width, surface.height);
+            let (buffer, memory, there) = device.buffer(width * height * 4, 0x1 | 0x2);
+            let (program, commands) = (&device.program, device.commands);
+            let whole = VkBufferImageCopy { row_length: width as u32, layers: [0x1, 0, 0, 1], extent: [width as u32, height as u32, 1], ..Default::default() };
+            // The image is laid out for shaders (5); for a copy to it (7) or from it (6), and back.
+            let layout = if to_image { 7 } else { 6 };
+            let (away, back) = (barrier(image, 5, layout, 0x20, 0x1000 | 0x800), barrier(image, layout, 5, 0x1000, 0x20));
+            before(there);
+            unsafe {
+                device.begin();
+                (program.vkCmdPipelineBarrier)(commands, 0x80, 0x1000, 0, 0, null(), 0, null(), 1, &away);
+                match to_image {
+                    true => (program.vkCmdCopyBufferToImage)(commands, buffer, image, 7, 1, &whole),
+                    false => (program.vkCmdCopyImageToBuffer)(commands, image, 6, buffer, 1, &whole),
+                }
+                (program.vkCmdPipelineBarrier)(commands, 0x1000, 0x80, 0, 0, null(), 0, null(), 1, &back);
+                // What was copied is made visible to the processor (transfer writes to host reads).
+                let by_hand = VkMemoryBarrier { kind: 46, source_access: 0x1000, destination_access: 0x2000, ..Default::default() };
+                (program.vkCmdPipelineBarrier)(commands, 0x1000, 0x4000, 0, 1, &by_hand, 0, null(), 0, null());
+                device.submit();
+            }
+            after(there);
+            unsafe {
+                (program.vkDestroyBuffer)(device.device, buffer, null());
+                (program.vkFreeMemory)(device.device, memory, null());
+            }
         }
     }
 
     impl Renderer for Vulkan {
         fn update(&mut self, ui: &mut Ui) {
-            let size = (self.surface.width, self.surface.height);
-            let places = self.surface.update(ui);
-            if (self.surface.width, self.surface.height) != size {
-                let (width, height) = (self.surface.width, self.surface.height);
-                self.target.take().unwrap().destroy(&self.device);
-                self.target = Some(Target::new(&self.device, width, height));
-                self.layer.as_mut().unwrap().resize(&self.device.vk, &self.device.gpu, width, height);
-            }
-            let pixels = self.surface.pixels.clone();
-            self.copy(&places, &pixels);
+            unsafe { self.layer().update(ui) }.unwrap_or_else(|failed| panic!("{failed}"));
         }
-        fn drawn(&mut self, ui: &mut Ui, under: &[u32], size: [usize; 2], viewport: [i32; 4]) -> Vec<u32> {
-            self.update(ui);
-            assert_eq!(([self.surface.width, self.surface.height], viewport), (size, [0, 0, size[0] as i32, size[1] as i32]), "the Vulkan example draws over all of its target");
-            self.target.as_ref().unwrap().frame(&self.device, self.layer.as_mut().unwrap(), under)
+        fn drawn(&mut self, ui: &mut Ui, under: &[u32], [width, height]: [usize; 2], area: [i32; 4]) -> Vec<u32> {
+            let target = Target::new(&self.device, width, height);
+            let layer = self.layer.as_mut().unwrap();
+            let got = target.frame(&self.device, under, &mut |commands: Object| unsafe { layer.draw(ui, commands, area) }.unwrap_or_else(|failed| panic!("{failed}")));
+            target.destroy(&self.device);
+            got
         }
         fn fill(&mut self, pixels: &[u32]) {
-            self.copy(&[[0, 0, self.surface.width, self.surface.height]], pixels);
+            let pixels = pixels.to_vec();
+            self.through_buffer(true, &|there| unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), there, pixels.len()) }, &mut |_| {});
         }
         fn texture(&mut self) -> Vec<u32> {
-            // Over nothing at all, each pixel is what the image holds.
-            let nothing = vec![0; self.surface.pixels.len()];
-            self.target.as_ref().unwrap().frame(&self.device, self.layer.as_mut().unwrap(), &nothing)
+            let mut got = vec![0u32; self.layer.as_ref().unwrap().surface().pixels.len()];
+            self.through_buffer(false, &|_| {}, &mut |there| unsafe { std::ptr::copy_nonoverlapping(there, got.as_mut_ptr(), got.len()) });
+            got
         }
         fn surface(&self) -> &Surface {
-            &self.surface
+            self.layer.as_ref().unwrap().surface()
         }
     }
 
     impl Drop for Vulkan {
         fn drop(&mut self) {
-            self.layer.take().unwrap().destroy(&self.device.vk, self.device.gpu.device);
-            self.target.take().unwrap().destroy(&self.device);
+            self.device.wait();
+            unsafe { self.layer.take().unwrap().delete() };
+            self.first.take().unwrap().destroy(&self.device);
         }
     }
 
@@ -1121,5 +2056,35 @@ mod on_vulkan {
     fn vulkan_is_given_only_the_places_that_changed() {
         let Some(mut vulkan) = Vulkan::new() else { return println!("no Vulkan on this system: nothing to check") };
         is_given_only_the_places_that_changed(&mut vulkan, "Vulkan");
+    }
+
+    #[test]
+    fn vulkan_lies_at_the_programs_viewport() {
+        let Some(mut vulkan) = Vulkan::new() else { return println!("no Vulkan on this system: nothing to check") };
+        lies_at_the_programs_viewport(&mut vulkan, "Vulkan");
+    }
+
+    /// Frames drawn one after another, each changing the interface, with the layer's copies
+    /// and the program's frames on one queue: every frame shows the interface as it was when
+    /// that frame was drawn, never one copy behind or ahead. And a layer made again on the
+    /// same device, as after a device was lost and made again, draws as the first did.
+    #[test]
+    fn vulkan_shows_each_frame_as_it_was_and_is_made_again() {
+        let Some(mut vulkan) = Vulkan::new() else { return println!("no Vulkan on this system: nothing to check") };
+        let mut gallery = Gallery::new(640, 400, 1.0);
+        let under = under(640, 400);
+        for step in 0..6 {
+            gallery.ui.event(Event::Key(Key::Tab, Mods::NONE));
+            gallery.run();
+            let got = vulkan.drawn(&mut gallery.ui, &under, [640, 400], [0, 0, 640, 400]);
+            let (most, _) = off(&got, &Surface::draw(&mut gallery.ui, 64), &under);
+            assert!(most <= TOLERANCE, "step {step}: off by {most}");
+        }
+        vulkan.device.wait();
+        unsafe { vulkan.layer.take().unwrap().delete() };
+        vulkan.layer = Some(unsafe { Layer::new(&vulkan.device.handles(vulkan.first.as_ref().unwrap().render_pass)) }.unwrap());
+        let got = drawn_whole(&mut vulkan, &mut gallery.ui, &under);
+        let (most, _) = off(&got, &Surface::draw(&mut gallery.ui, 64), &under);
+        assert!(most <= TOLERANCE, "made again: off by {most}");
     }
 }

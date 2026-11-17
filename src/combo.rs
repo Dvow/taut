@@ -4,20 +4,20 @@
 //! // One of many: the menu has a filter box.
 //! if ui.combo(&mut app.country, &COUNTRIES).changed { .. }
 //! // Free text, with suggestions listed while typing.
-//! if ui.suggest(&mut app.city, "City", &CITIES).changed { .. }
+//! if ui.autocomplete(&mut app.city, "City", &CITIES).changed { .. }
 //! // A command palette over the window, with each command's shortcut.
 //! if ui.key(Key::Char('k'), Mods::CTRL) { app.finding = true; }
-//! if let Some(command) = ui.palette(&mut app.finding, &["Open a file\tCtrl+O", "Save\tCtrl+S"]) { .. }
+//! if let Some(command) = ui.command_palette(&mut app.finding, &["Open a file\tCtrl+O", "Save\tCtrl+S"]) { .. }
 //! ```
 //!
 //! An option stays if it holds every typed word, case-insensitive; prefix matches first. Arrows
 //! move the highlight, Enter picks. Only visible rows cost anything, even with thousands.
+use crate::accessibility::Role;
 use crate::color::Color;
 use crate::event::{Key, Mods};
 use crate::id::{Id, hash};
 use crate::layout::Length;
-use crate::menus::Row;
-use crate::told::Role;
+use crate::popups::Row;
 use crate::ui::{Anchor, Response, Ui};
 use crate::widgets::{Before, DOWN};
 
@@ -33,7 +33,7 @@ const PALETTE: Id = 0xc0aa_a4d5_c0aa_a4d5;
 pub(crate) struct Narrowed {
     /// The box these options belong to; 0 while none is open.
     of: Id,
-    /// The filter typed into a `combo`'s menu. (A `suggest` uses its own text.)
+    /// The filter typed into a `combo`'s menu. (An `autocomplete` uses its own text.)
     typed: String,
     /// Indices of the options left: prefix matches, then others that match. Also the filter and
     /// options it was computed for, as one hash.
@@ -127,7 +127,7 @@ impl Ui {
     /// after a tab is the shortcut, shown at the row's end ("Save\tCtrl+S"); the app handles it
     /// with [`key`](Ui::key). Commands are written like menu rows ("&Save\tCtrl+S"), so both
     /// can share them: the `&` is not shown.
-    pub fn palette(&mut self, open: &mut bool, commands: &[&str]) -> Option<usize> {
+    pub fn command_palette(&mut self, open: &mut bool, commands: &[&str]) -> Option<usize> {
         let (t, of) = (self.theme, self.next_id() ^ PALETTE);
         if !*open {
             // Closed by the app, it opens afresh next time.
@@ -135,7 +135,7 @@ impl Ui {
             return None;
         }
         let away = self.key(Key::Escape, Mods::NONE);
-        let beside = self.layer(of, Anchor::Middle, true, Color::BLACK.alpha(0.4));
+        let beside = self.layer(of, Anchor::Middle, true, Color::BLACK.with_alpha(0.4));
         let whole = self.column().pad(8.0).min(260.0, 0.0).max(460.0, f32::INFINITY).fill(t.panel).border(t.line_strong, 1.0).radius(10.0).shadow(24.0).sense().open();
         self.tell(&whole, Role::Dialog, None, "");
         let picked = self.narrowing(of, commands, 0, true);
@@ -149,9 +149,9 @@ impl Ui {
         picked
     }
 
-    /// Shared by `combo` and `palette`: a focused filter box, with the matching options under
-    /// it and one highlighted (at first `chosen`). Arrows and Enter go to the list before the
-    /// box. Returns the option picked by key or click. `commands` are written as menu rows.
+    /// Shared by `combo` and `command_palette`: a focused filter box, with the matching options
+    /// under it and one highlighted (at first `chosen`). Arrows and Enter go to the list before
+    /// the box. Returns the option picked by key or click. `commands` are written as menu rows.
     fn narrowing(&mut self, of: Id, options: &[&str], chosen: usize, commands: bool) -> Option<usize> {
         let step = self.key(Key::Down, Mods::NONE) as isize - self.key(Key::Up, Mods::NONE) as isize;
         let enter = self.key(Key::Enter, Mods::NONE);
@@ -179,7 +179,7 @@ impl Ui {
     /// match (as in [`combo`](Ui::combo)). One picked by pointer, or arrows and Enter, becomes
     /// the text, and `changed` is set, as for typing. Any other text is allowed: Enter picks
     /// only a highlighted option, and Escape closes the list.
-    pub fn suggest(&mut self, text: &mut String, hint: &str, options: &[&str]) -> Response {
+    pub fn autocomplete(&mut self, text: &mut String, hint: &str, options: &[&str]) -> Response {
         let id = self.next_id();
         // While focused, the arrows go to the list; with an option highlighted, Enter and
         // Escape too. The box never gets them.
@@ -237,7 +237,7 @@ impl Ui {
     /// highlight when it moved (`reveal`). Returns the clicked option. `commands` are written
     /// as menu rows.
     fn options_left(&mut self, options: &[&str], reveal: bool, commands: bool) -> Option<usize> {
-        let (row, count, lit) = (self.theme.control, self.narrowed.left.len(), self.narrowed.lit);
+        let (row, count, lit) = (self.theme.control_height, self.narrowed.left.len(), self.narrowed.lit);
         // Only as many whole rows as fit below the text box.
         let room = ((self.popup_most()[1] - row - 12.0) / row).floor().max(1.0) as usize;
         let (id, high) = (self.id("options"), count.min(SHOWN).min(room) as f32 * row);
@@ -251,7 +251,7 @@ impl Ui {
             let option = self.narrowed.left[nth] as usize;
             // The highlighted one is reported as selected: Enter takes it.
             let state = self.menu_row(options[option], Row { lit: lit == Some(nth), on: Some(lit == Some(nth)), letters: commands, ..Row::PLAIN });
-            self.tell_place(nth + 1, count);
+            self.tell_position(nth + 1, count);
             pressed = pressed.or(state.clicked.then_some(option));
         }
         self.close(); // the rows

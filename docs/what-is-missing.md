@@ -17,23 +17,23 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Wayland pens and touchpad pinch tested only against a simulated compositor; tablet pads, pen
   distance and pen wheels not read.
 - Without a window manager, Linux windows can't maximize, minimize, stay on top or come forward.
-  `ui.placed()` reports the frame's corner.
+  `ui.window_placement()` reports the frame's corner.
 - Linux dark mode comes from the portal, else from the X theme name; if the app starts the
   portal, the first frames precede its answer.
 
 ## Layout and parts
 
-- Sticky headings stick to the nearest vertical scroll box. `kept` and `sticky` together in one
+- Sticky headings stick to the nearest vertical scroll box. `frozen` and `sticky` together in one
   box are unsupported. The page scrolls vertically only. `.opacity` re-blends what's under it on
   each redraw. Stripes only in grids and columns.
-- Built-in words are English until set (`ui.calendar`, `files.words`, `ui.edit_words`,
-  `ui.search_word`, `ui.number_words`, `ui.part_words`).
+- Built-in words are English until set (`ui.calendar_words`, `files.words`, `ui.edit_words`,
+  `ui.search_word`, `ui.number_words`, `ui.widget_words`).
 - Locale: month and day names and AM/PM are the app's; fixed digit counts (2-digit day and
   month, 4-digit year), `:` in times, digits 0–9 grouped by three; changes while running ignored.
 - Linux screen readers can't set number or time fields by value (typing and stepping work).
 - Recent colours are not saved. Tables don't accept paste. Windows time axes use today's UTC
   offset. Uneven-height lists estimate unseen rows. Second windows don't show the first's meshes.
-  Board text under 4 units isn't drawn.
+  Pan-zoom text under 4 units isn't drawn.
 - Node graphs: one wire per input; no grid snap, frames, reroutes, undo, raise on pick or
   auto-pan; readers hear wires only through ports.
 - Spelling: one language per box; no repeated-word check; code box unchecked; readers get errors
@@ -41,8 +41,26 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Renderers
 
-Layers for Direct3D 11 and OpenGL 3.3. Vulkan and wgpu by hand (chapter 9). None for Direct3D 9
-or 12, or Metal.
+- Layers for Direct3D 9, 11 and 12, OpenGL 3.3 and Vulkan; others through `Surface::upload`
+  (chapter 9). None for Metal.
+- Layers draw into single-sample targets; Vulkan only in a render pass (not dynamic rendering).
+  Direct3D 12 and Vulkan leave their state set after `draw`.
+- Lost devices: plain Direct3D 9's `Reset` is untested (it makes no device on a desktop of its
+  own; 9Ex was tested); Vulkan's loss can't be simulated.
+- `gpu`: the GPU only shows what the CPU drew. Nothing is drawn on the GPU (shapes, text,
+  blur); no HDR or Metal. See-through windows stay on the CPU.
+- `gpu` on Windows: the first frames are the CPU's until the device is made (0.3–0.9 s here). A
+  window the GPU showed can't go back to GDI: a GPU lost for good leaves it to Direct3D 11's
+  software device (WARP). Direct3D 12's device loss is tested for real (`RemoveDevice`), the
+  others' simulated. OpenGL swaps whole frames (WGL has no partial swap); Vulkan names changed
+  rectangles only with `VK_KHR_incremental_present`. OpenGL's window can't be pictured on a
+  private desktop, so its tests compare the back buffer only. Smooth live resizing and tearing
+  were not judged by eye.
+- `gpu` on Linux: X11 only. Wayland windows use shared memory; a GPU path needs dmabufs and a
+  GPU render node, not testable here. Vulkan tested on lavapipe and dozen (WSL); its device loss
+  is simulated. `Auto` takes only
+  a hardware device that shows frames directly (DRI3 with Mesa). Measured only under Xvfb, where
+  every frame goes through X and the GPU path costs more than the CPU's.
 
 ## Documents (Markdown)
 
@@ -54,10 +72,10 @@ or 12, or Metal.
 
 ## File dialog
 
-- The library's own unless `Files::of_the_system()`: Windows, or a Linux portal (v3+).
+- The library's own unless `FileDialog::native()`: Windows, or a Linux portal (v3+).
 - Linux: no extension added to typed names. A portal silent for 5 s falls back to the library's.
-- Windows `of_the_system()` without a taut window (renderer, DLL) answers nothing;
-  `Files { system: true, ..Default::default() }` falls back anywhere.
+- Windows `FileDialog::native()` without a taut window (renderer, DLL) answers nothing;
+  `FileDialog { native: true, ..Default::default() }` falls back anywhere.
 
 ## Text and fonts
 

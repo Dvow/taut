@@ -31,6 +31,6 @@ fn a_chart_whose_side_is_upside_down_is_laid_out() {
     let back = [33.0, 1.0, 2.0];
     let rows = [Series::line("Back", &back)];
     settle(&mut ui, |ui: &mut Ui| {
-        ui.chart(&Chart::of(&rows).up(33.0, 3.0), 200.0, 99.0);
+        ui.chart(&Chart::of(&rows).y_range(33.0, 3.0), 200.0, 99.0);
     });
 }

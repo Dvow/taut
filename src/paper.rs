@@ -4,7 +4,7 @@
 //! window: a unit is 1/96 inch, so what is 400 units wide on a 100% screen is as wide on paper.
 //!
 //! Text is kept as a font file's glyphs with the text each stands for, so a viewer can search
-//! and copy it. It is shaped as the library shapes text (`shape.rs`): kerned, with ligatures,
+//! and copy it. It is shaped as the library shapes text (`shaping.rs`): kerned, with ligatures,
 //! and with `right-to-left` reordered and joined. Its fonts are the app's where given
 //! ([`Paper::font`]), else the system's: the face's font, and for characters it lacks, the font
 //! the system would use. A run of one script is shaped by the font's features for that script
@@ -12,17 +12,17 @@
 //! (`draw`): that is what prints where the system takes pixels, and what tests compare a
 //! renderer's output against.
 //!
-//! Paginated documents are `pages.rs`'s; and a window's content can go on a page as an image
-//! ([`Paper::interface`]).
+//! Paginated documents are `markdown_pages.rs`'s; and a window's content can go on a page as an
+//! image ([`Paper::interface`]).
 use crate::canvas::Canvas;
 use crate::color::Color;
-use crate::font::FontFile;
+use crate::font_file::FontFile;
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::path::Path;
-use crate::pen::{Full, Ink, Inked, Pen, fully};
+use crate::pen::{Full, Inked, Paint, Pen, fully};
 use crate::scripts::Language;
-use crate::shape::{LONGEST, Laid, Plan, Script};
-use crate::text::{Face, Font, Metrics, Rule, cluster};
+use crate::shaping::{LONGEST, Laid, Plan, Script};
+use crate::text::{Decoration, Face, Font, Metrics, cluster};
 use crate::ui::{Icon, Ui};
 
 /// Pixels per unit where a page, or part of one, is rasterized: 300 per inch, the resolution
@@ -43,7 +43,7 @@ const LOOKS: usize = 64;
 /// let mut wave = Path::new();
 /// wave.move_to(72.0, 160.0).quad_to(160.0, 100.0, 248.0, 160.0);
 /// paper.outline(&wave, 2.0, Color::rgb(0x2b6cb0));
-/// let file = paper.pdf();
+/// let file = paper.to_pdf();
 /// assert!(file.starts_with(b"%PDF-"));
 /// ```
 #[derive(Default)]
@@ -76,7 +76,7 @@ pub struct Paper {
     unpack: Option<Unpack>,
     /// Kept only to reuse memory: shaped glyphs, and a bidirectional line's order.
     laid: Vec<Laid>,
-    order: crate::order::Order,
+    order: crate::bidi::Order,
 }
 
 /// Decodes a JPEG file into its width and pixels.
@@ -106,23 +106,23 @@ pub(crate) enum Mark {
 }
 
 /// A shape and how it is drawn: its stroke pen (none for a fill), with the dashes stored
-/// separately, and its ink.
+/// separately, and its paint.
 pub(crate) struct Drawn {
     pub path: Path,
     pub pen: Option<Pen<'static>>,
     pub dashes: Vec<f32>,
-    pub ink: Kept,
+    pub paint: PagePaint,
     /// Its draw function where the canvas cannot draw it alone (see `pen::fully`).
     pub full: Option<Full>,
 }
 
-/// An ink as a page keeps it: one colour, or a linear gradient at so many degrees from up, or
-/// radial (see [`Ink`]).
+/// A paint as a page keeps it: one colour, or a linear gradient at so many degrees from up, or
+/// radial (see [`Paint`]).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Kept {
+pub(crate) enum PagePaint {
     Color(Color),
-    Along(f32, Vec<(f32, Color)>),
-    Around(Vec<(f32, Color)>),
+    Linear(f32, Vec<(f32, Color)>),
+    Radial(Vec<(f32, Color)>),
 }
 
 /// Glyphs of one font on a page: the font (its index among the paper's files), size and colour;
@@ -197,7 +197,7 @@ impl Paper {
     }
     /// Directs marks from now on to page `page` (from 0) instead: to add page numbers once all
     /// are laid out. (Past the last page, to that.)
-    pub fn turn_to(&mut self, page: usize) {
+    pub fn set_page(&mut self, page: usize) {
         self.on = page.min(self.pages.len().saturating_sub(1));
     }
     /// The page count.
@@ -246,31 +246,31 @@ impl Paper {
     pub fn gradient(&mut self, r: Rect, radius: f32, colors: &[(f32, Color)], turn: Option<f32>) {
         let mut path = Path::new();
         path.rounded_rect(r.x, r.y, r.w, r.h, radius);
-        self.shape(&path, turn.map_or(Ink::Around(colors), |turn| Ink::Along(turn, colors)));
+        self.shape(&path, turn.map_or(Paint::Radial(colors), |turn| Paint::Linear(turn, colors)));
     }
     /// A shape, filled by the nonzero rule.
-    pub fn shape<'a>(&mut self, path: &Path, ink: impl Into<Ink<'a>>) {
+    pub fn shape<'a>(&mut self, path: &Path, ink: impl Into<Paint<'a>>) {
         let ink = ink.into();
         self.drawn(path, None, ink, fully(None, &ink));
     }
     /// A shape's stroke with a pen (a plain number is a pen that wide, with round caps and
     /// joins).
-    pub fn outline<'a, 'b>(&mut self, path: &Path, pen: impl Into<Pen<'a>>, ink: impl Into<Ink<'b>>) {
+    pub fn outline<'a, 'b>(&mut self, path: &Path, pen: impl Into<Pen<'a>>, ink: impl Into<Paint<'b>>) {
         let (pen, ink) = (pen.into(), ink.into());
         self.drawn(path, Some(pen), ink, fully(Some(&pen), &ink));
     }
-    /// Stores a shape with its pen and ink: with the draw function for what the canvas cannot
+    /// Stores a shape with its pen and paint: with the draw function for what the canvas cannot
     /// draw alone, which only a call asking for such a shape hands over.
-    fn drawn(&mut self, path: &Path, pen: Option<Pen>, ink: Ink, full: Option<Full>) {
-        let ink = match ink {
-            Ink::Color(color) if color.is_none() => return,
-            Ink::Color(color) => Kept::Color(color),
-            Ink::Along(turn, stops) => Kept::Along(turn, stops.to_vec()),
-            Ink::Around(stops) => Kept::Around(stops.to_vec()),
+    fn drawn(&mut self, path: &Path, pen: Option<Pen>, paint: Paint, full: Option<Full>) {
+        let paint = match paint {
+            Paint::Color(color) if color.is_none() => return,
+            Paint::Color(color) => PagePaint::Color(color),
+            Paint::Linear(turn, stops) => PagePaint::Linear(turn, stops.to_vec()),
+            Paint::Radial(stops) => PagePaint::Radial(stops.to_vec()),
         };
-        let kept = pen.map(|pen| Pen { width: pen.width, cap: pen.cap, join: pen.join, dashes: &[], offset: pen.offset });
+        let plain_pen = pen.map(|pen| Pen { width: pen.width, cap: pen.cap, join: pen.join, dashes: &[], offset: pen.offset });
         let dashes = pen.map_or(Vec::new(), |pen| pen.dashes.to_vec());
-        self.put(Mark::Shape(Box::new(Drawn { path: path.clone(), pen: kept, dashes, ink, full })));
+        self.put(Mark::Shape(Box::new(Drawn { path: path.clone(), pen: plain_pen, dashes, paint, full })));
     }
 
     // ---- pictures, links and clipping ----
@@ -312,7 +312,7 @@ impl Paper {
     }
     /// Supplies the picture a document names `name` (see [`Paper::markdown`]), as `picture`
     /// takes one.
-    pub fn name_picture(&mut self, name: &str, width: usize, pixels: &[u32]) {
+    pub fn set_picture(&mut self, name: &str, width: usize, pixels: &[u32]) {
         if let Some(at) = self.keep_picture(width, pixels) {
             self.named.retain(|(known, _)| known != name);
             self.named.push((name.to_string(), at));
@@ -340,7 +340,7 @@ impl Paper {
     pub fn icon(&mut self, icon: Icon, r: Rect, color: Color) {
         let by = r.w.min(r.h) / icon.view.max(1e-3);
         let mut path = Path::svg(icon.path);
-        path.transform(crate::geom::Transform::new().scale(by, by).move_by(r.x, r.y));
+        path.transform(crate::geom::Transform::new().scale(by, by).translate(r.x, r.y));
         match icon.stroke > 0.0 {
             true => self.outline(&path, icon.stroke * by, color),
             false => self.shape(&path, color),
@@ -391,7 +391,7 @@ impl Paper {
         for run in self.runs(text, font.face) {
             pen += self.write(&text[run.bytes.clone()], &run, font.size, [pen, line], color);
         }
-        if font.rule != Rule::None && pen > x {
+        if font.decoration != Decoration::None && pen > x {
             let top = line - self.metrics(font).ascent;
             self.rule(rect(x, top, pen - x, 0.0), font, color);
         }
@@ -404,7 +404,7 @@ impl Paper {
     /// A font's vertical metrics, by the font file it uses.
     pub fn metrics(&mut self, font: Font) -> Metrics {
         let main = self.file_for(font.face, '\0');
-        main.map_or(Metrics { ascent: font.size * 0.9, descent: font.size * 0.25, cap: font.size * 0.7, small: font.size * 0.5 }, |at| self.files[at as usize].metrics(font.size))
+        main.map_or(Metrics { ascent: font.size * 0.9, descent: font.size * 0.25, cap_height: font.size * 0.7, x_height: font.size * 0.5 }, |at| self.files[at as usize].metrics(font.size))
     }
     /// Text wrapped to `r`'s width, from its top: at newlines, else spaces. Lines are 1.5 times
     /// the font size, as a document paragraph's are. Returns their total height.
@@ -425,8 +425,8 @@ impl Paper {
     fn rule(&mut self, line: Rect, font: Font, color: Color) {
         let m = self.metrics(font);
         let thick = (font.size / 14.0).max(0.5);
-        let small = if m.small > 0.0 { m.small } else { font.size / 2.0 };
-        let down = if font.rule == Rule::Under { m.ascent + thick } else { m.ascent - (small + thick) / 2.0 };
+        let small = if m.x_height > 0.0 { m.x_height } else { font.size / 2.0 };
+        let down = if font.decoration == Decoration::Underline { m.ascent + thick } else { m.ascent - (small + thick) / 2.0 };
         self.rect(rect(line.x, line.y + down, line.w, thick), color);
     }
 
@@ -503,7 +503,7 @@ impl Paper {
     /// one font.
     fn runs(&mut self, text: &str, face: Face) -> Vec<Run> {
         let mut stretches = Vec::new();
-        match crate::order::plain(text) {
+        match crate::bidi::plain(text) {
             true => stretches.push((0..text.len(), 0)),
             false => {
                 self.order.of(text, None);
@@ -577,7 +577,7 @@ impl Paper {
         if self.found.len() >= LOOKS {
             return None;
         }
-        let found = crate::fonts::file_for(face, if letter == '\0' { 'a' } else { letter });
+        let found = crate::system_fonts::file_for(face, if letter == '\0' { 'a' } else { letter });
         let same = |kept: &FontFile, file: &FontFile| kept.start == file.start && kept.varied.is_none() && kept.bytes().0 == file.bytes().0;
         let at = found.map(|file| match self.files.iter().position(|kept| same(kept, &file)) {
             Some(at) => at as u32,
@@ -629,7 +629,7 @@ impl Paper {
 
     /// All of page `page` as an image, `scale` pixels per unit, on white: each pixel
     /// `0xAARRGGBB`. Drawn a strip at a time.
-    pub fn picture_of(&self, page: usize, scale: f32) -> (usize, Vec<u32>) {
+    pub fn render_page(&self, page: usize, scale: f32) -> (usize, Vec<u32>) {
         let size = self.size(page);
         let (width, height) = ((size.w * scale).round().max(1.0) as usize, (size.h * scale).round().max(1.0) as usize);
         let mut pixels = vec![0xffff_ffff; width * height];
@@ -646,13 +646,13 @@ impl Drawn {
     /// Draws it on a canvas in page units, as a window draws an app shape.
     fn draw(&self, canvas: &mut Canvas) {
         let pen = self.pen.map(|pen| Pen { dashes: &self.dashes, ..pen });
-        let ink = match &self.ink {
-            Kept::Color(color) => Ink::Color(*color),
-            Kept::Along(turn, stops) => Ink::Along(*turn, stops),
-            Kept::Around(stops) => Ink::Around(stops),
+        let paint = match &self.paint {
+            PagePaint::Color(color) => Paint::Color(*color),
+            PagePaint::Linear(turn, stops) => Paint::Linear(*turn, stops),
+            PagePaint::Radial(stops) => Paint::Radial(stops),
         };
         let mut inked = Inked::default();
-        inked.set(&self.path, pen, ink, self.full);
+        inked.set(&self.path, pen, paint, self.full);
         inked.draw(canvas, pt(0.0, 0.0));
     }
 }
@@ -688,7 +688,7 @@ pub(crate) fn passed(file: &[u8]) -> Option<Picture> {
             0xC0..=0xC2 => frame = Some(body),
             0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return None,
             0xDA | 0xD9 => break,
-            0xE1 => turn = crate::upright::turn(body).unwrap_or(turn),
+            0xE1 => turn = crate::exif_orientation::turn(body).unwrap_or(turn),
             0xEE => adobe |= body.starts_with(b"Adobe"),
             _ => {}
         }
@@ -780,7 +780,7 @@ mod tests {
         paper.rect(rect(0.0, 0.0, 40.0, 20.0), Color::rgb(0x112233));
         paper.unclip();
         paper.rect(rect(30.0, 0.0, 10.0, 20.0), Color::rgb(0x445566));
-        let (width, pixels) = paper.picture_of(0, 1.0);
+        let (width, pixels) = paper.render_page(0, 1.0);
         assert_eq!((width, pixels.len()), (40, 800));
         let at = |x: usize, y: usize| pixels[y * 40 + x] & 0xff_ffff;
         assert_eq!([at(5, 5), at(25, 5), at(35, 5)], [0x112233, 0xff_ffff, 0x445566]);
@@ -800,11 +800,11 @@ mod tests {
         let mut paper = Paper::new();
         paper.page(Size { w: f32::INFINITY, h: 1e30 });
         paper.rect(rect(10.0, 10.0, 100.0, 100.0), Color::BLACK);
-        let sides = media_box(&paper.pdf());
+        let sides = media_box(&paper.to_pdf());
         assert!(sides[2] >= 3.0 && sides[3] >= 3.0 && sides[2] <= 14_400.0 && sides[3] <= 14_400.0, "{sides:?}");
         assert!(paper.size(0).w.is_finite() && paper.size(0).h.is_finite(), "{:?}", paper.size(0));
         // Drawn small, as printing draws a page larger than the paper.
-        let (width, pixels) = paper.picture_of(0, 0.01);
+        let (width, pixels) = paper.render_page(0, 0.01);
         assert!(width > 0 && pixels.len() < 1 << 24, "{width} wide, {} pixels", pixels.len());
     }
 
@@ -817,7 +817,7 @@ mod tests {
         paper.picture(1, &[0xff11_2233], rect(-1e30, -1e30, 2e30, 2e30));
         paper.unclip();
         paper.picture(1, &[0xff44_5566], rect(f32::NAN, 0.0, 1e38, 10.0));
-        let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| paper.picture_of(0, 1.0)));
+        let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| paper.render_page(0, 1.0)));
         let (_, pixels) = drawn.expect("the page is drawn");
         assert_eq!(pixels[20 * 40 + 20] & 0xff_ffff, 0x11_2233, "the picture over all of it shows");
     }

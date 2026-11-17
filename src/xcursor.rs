@@ -6,7 +6,7 @@
 //! and `XCURSOR_SIZE`; a missing shape is looked for in the themes it inherits, as the desktop
 //! does. A file is read when its shape is first shown, and only the wanted size is kept.
 use crate::event::Cursor;
-use crate::wire::{Arg, Interface, Shared, Wire};
+use crate::wayland_wire::{Arg, Interface, Shared, Wire};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
@@ -61,7 +61,7 @@ fn places() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let data = std::env::var_os("XDG_DATA_HOME").map_or(home.join(".local/share"), PathBuf::from);
     match std::env::var_os("XCURSOR_PATH") {
-        Some(said) => std::env::split_paths(&said).collect(),
+        Some(paths) => std::env::split_paths(&paths).collect(),
         None => vec![data.join("icons"), home.join(".icons"), "/usr/share/icons".into(), "/usr/share/pixmaps".into()],
     }
 }
@@ -78,8 +78,8 @@ pub(crate) fn file_of(theme: &str, cursor: Cursor, places: &[PathBuf]) -> Option
         if found.is_some() {
             return found;
         }
-        let said = places.iter().find_map(|place| std::fs::read_to_string(place.join(&theme).join("index.theme")).ok()).unwrap_or_default();
-        let builds_on = said.lines().find_map(|line| line.trim().strip_prefix("Inherits")?.trim_start().strip_prefix('=')).unwrap_or_default();
+        let index = places.iter().find_map(|place| std::fs::read_to_string(place.join(&theme).join("index.theme")).ok()).unwrap_or_default();
+        let builds_on = index.lines().find_map(|line| line.trim().strip_prefix("Inherits")?.trim_start().strip_prefix('=')).unwrap_or_default();
         for other in builds_on.split([',', ';']).map(str::trim).filter(|other| !other.is_empty()) {
             if !themes.iter().any(|known| known == other) && themes.len() < 16 {
                 themes.push(other.into());

@@ -41,11 +41,11 @@ What carries over, what differs, and the usual calls side by side (egui 0.37, De
 | A tick box | `ui.checkbox(&mut on, "Loud")` | `ImGui::Checkbox("Loud", &on)` | `ui.checkbox(&mut on, "Loud")` |
 | Radio buttons | `ui.radio_value(&mut size, Size::S, "Small")` | `ImGui::RadioButton("Small", &size, 0)` | `ui.radio(&mut size, Size::S, "Small")` |
 | A slider | `ui.add(egui::Slider::new(&mut v, 0.0..=1.0))` | `ImGui::SliderFloat("v", &v, 0.0f, 1.0f)` | `ui.slider(&mut v, 0.0..=1.0)` |
-| A number that is dragged | `ui.add(egui::DragValue::new(&mut v).speed(0.1))` | `ImGui::DragFloat("v", &v, 0.1f)` | `ui.drag(&mut v, 0.1)` |
+| A number that is dragged | `ui.add(egui::DragValue::new(&mut v).speed(0.1))` | `ImGui::DragFloat("v", &v, 0.1f)` | `ui.drag_value(&mut v, 0.1)` |
 | A number typed, with steps | `egui::DragValue` (typed into on a click) | `ImGui::InputFloat("v", &v, 1.0f)` | `ui.number(&mut v, 1.0)` |
 | A text box with a hint | `ui.add(egui::TextEdit::singleline(&mut s).hint_text("Name"))` | `ImGui::InputTextWithHint("##s", "Name", buf, size)` | `ui.text_box(&mut s, "Name")` |
 | Several lines | `ui.text_edit_multiline(&mut s)` | `ImGui::InputTextMultiline("##s", buf, size)` | `ui.text_area(&mut s, "", (3, 8))` |
-| A password | `egui::TextEdit::singleline(&mut s).password(true)` | `ImGuiInputTextFlags_Password` | `ui.secret_box(&mut s, "Password")` |
+| A password | `egui::TextEdit::singleline(&mut s).password(true)` | `ImGuiInputTextFlags_Password` | `ui.password_box(&mut s, "Password")` |
 | How far along | `ui.add(egui::ProgressBar::new(0.5))` | `ImGui::ProgressBar(0.5f)` | `ui.progress(0.5)` |
 | A drop-down choice | `egui::ComboBox::from_label("x").selected_text(..).show_ui(ui, \|ui\| ..)` | `ImGui::Combo("x", &i, items, count)` | `ui.select(&mut i, &items)` |
 | A row that is picked | `ui.selectable_label(picked, "Inbox")` | `ImGui::Selectable("Inbox", picked)` | `ui.selectable(picked, "Inbox")` |
@@ -68,7 +68,7 @@ What carries over, what differs, and the usual calls side by side (egui 0.37, De
 | Docked panels | the egui_dock crate | the docking branch: `DockSpace` | `ui.dock(&mut dock)` and `ui.docked(&mut dock, name)` |
 | A table | `egui_extras::TableBuilder` | `ImGui::BeginTable`, `TableSetupColumn`, `TableHeadersRow` | `ui.table(&mut table, &columns)` and `ui.rows(..)` |
 | A chart | the egui_plot crate | ImPlot; `ImGui::PlotLines` | `ui.chart(..)`; `ui.plot_lines(..)` |
-| A colour picker | `ui.color_edit_button_srgba(&mut c)` | `ImGui::ColorEdit4("c", col)` | `ui.color(&mut c)` |
+| A colour picker | `ui.color_edit_button_srgba(&mut c)` | `ImGui::ColorEdit4("c", col)` | `ui.color_picker(&mut c)` |
 | Parts switched off | `ui.add_enabled(false, ..)` | `ImGui::BeginDisabled()` .. `EndDisabled()` | `ui.set_enabled(false)` .. `ui.set_enabled(true)` |
 | Telling items of a list apart | `ui.push_id(id, \|ui\| ..)` | `ImGui::PushID(id)` .. `PopID()` | `ui.row().key(id).open()` |
 | A key | `ui.input(\|i\| i.key_pressed(egui::Key::Enter))` | `ImGui::IsKeyPressed(ImGuiKey_Enter)` | `ui.key(Key::Enter, Mods::NONE)`, `ui.keys("Ctrl+S")` |
@@ -77,12 +77,12 @@ What carries over, what differs, and the usual calls side by side (egui 0.37, De
 | A picture | `ui.image(..)` | `ImGui::Image(texture, size)` | `ui.picture(picture)` |
 | A drawing of the app's own | `ui.painter().line_segment(..)` | `ImGui::GetWindowDrawList()->AddLine(..)` | `ui.el().size(w, h).outline(&path, 2.0, color).show()` |
 | Run again later | `ctx.request_repaint_after(duration)` | (it runs every frame) | `ui.wake_after(duration)` |
-| A number that slides | `ctx.animate_value_with_time(id, target, time)` | by hand | `ui.glide(id, target, duration)` |
+| A number that slides | `ctx.animate_value_with_time(id, target, time)` | by hand | `ui.animate(id, target, duration)` |
 | Run again, from another thread | `ctx.request_repaint()` on a clone of the context | (it runs every frame) | `taut::Waker.wake()` |
 | A button with a picture and words | `egui::Button::image_and_text(img, "Open")` | `ImGui::ImageButton` (no words) | `ui.button_with_picture(picture, "Open")`, `ui.button_with_icon(icon, "Save")` |
 | A slider that shows its value | `Slider::new(..).suffix("°")` | `SliderFloat` with a format | `ui.slider_with_value(&mut v, 0.0..=100.0, "°")` |
 | How far along, with its percentage | `ProgressBar::new(0.5).show_percentage()` | `ImGui::ProgressBar(0.5f)` | `ui.progress_with_percent(0.5)` |
-| A number dragged within a range | `DragValue::new(&mut v).range(0..=10)` | `ImGui::DragInt("v", &v, 0.1f, 0, 10)` | `ui.drag_in(&mut v, 0..=10, 0.1)` |
+| A number dragged within a range | `DragValue::new(&mut v).range(0..=10)` | `ImGui::DragInt("v", &v, 0.1f, 0, 10)` | `ui.drag_value_in(&mut v, 0..=10, 0.1)` |
 | A drop-down of the app's own values | `ComboBox` with `selectable_value` | by index | `ui.select_value(&mut v, &[(V::A, "A"), (V::B, "B")])` |
 | A grid with stripes | `Grid::new(..).striped(true)` | `ImGuiTableFlags_RowBg` | `ui.grid(2).stripes(color).open()` |
 | A group drawn see-through | `ui.multiply_opacity(0.5)` | `PushStyleVar(ImGuiStyleVar_Alpha, 0.5f)` | `ui.row().opacity(0.5).open()` |

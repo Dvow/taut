@@ -611,7 +611,7 @@ fn inside(px: i32, py: i32, x0: f32, y0: f32, x1: f32, y1: f32, radius: f32) -> 
 pub(crate) fn color_at(colors: &[(f32, Color)], along: f32) -> Color {
     let after = colors.partition_point(|color| color.0 <= along);
     match (after.checked_sub(1).map(|before| colors[before]), colors.get(after)) {
-        (Some(before), Some(after)) => before.1.toward(after.1, (along - before.0) / (after.0 - before.0)),
+        (Some(before), Some(after)) => before.1.lerp(after.1, (along - before.0) / (after.0 - before.0)),
         (Some(only), None) | (None, Some(&only)) => only.1,
         (None, None) => Color::NONE,
     }
@@ -833,7 +833,7 @@ mod tests {
         // is 2 lower. Just under the box the page is darkest, with no pale seam between box and
         // shadow; further down it fades, and beyond its reach it is white.
         let mut px = vec![0xffff_ffffu32; 48 * 48];
-        Canvas::new(&mut px, 48, 48, (0, 0), 1.0).shadow(rect(10.0, 10.0, 20.0, 20.0), 6.0, 8.0, Color::BLACK.alpha(0.4));
+        Canvas::new(&mut px, 48, 48, (0, 0), 1.0).shadow(rect(10.0, 10.0, 20.0, 20.0), 6.0, 8.0, Color::BLACK.with_alpha(0.4));
         let grey = |y: usize| px[y * 48 + 20] & 255;
         assert!(grey(30) == grey(31) && grey(31) < grey(34) && grey(34) < grey(38), "{:?}", [30, 31, 32, 34, 38, 44].map(grey));
         assert_eq!((grey(44), grey(20)), (255, 255), "white past its reach, and under the box (which covers that)");

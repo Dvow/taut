@@ -57,9 +57,9 @@ use taut::{Length, Ui};
 fn describe(ui: &mut Ui) {
     let t = ui.theme;
     ui.row().pad(12.0).gap(8.0).open();
-    ui.el().text("Fit", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
-    ui.el().w(Length::Px(120.0)).text("Px(120.0)", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
-    ui.el().w(Length::Grow(1.0)).text("Grow(1.0)", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
+    ui.el().text("Fit", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
+    ui.el().w(Length::Px(120.0)).text("Px(120.0)", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
+    ui.el().w(Length::Grow(1.0)).text("Grow(1.0)", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
     ui.close();
 }
 ```
@@ -85,8 +85,8 @@ fn describe(ui: &mut Ui) {
     let t = ui.theme;
     ui.column().pad(12.0).gap(8.0).open();
     ui.row().gap(8.0).open();
-    ui.el().w(Length::Grow(1.0)).text("Grow(1.0)", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
-    ui.el().w(Length::Grow(2.0)).text("Grow(2.0)", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
+    ui.el().w(Length::Grow(1.0)).text("Grow(1.0)", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
+    ui.el().w(Length::Grow(2.0)).text("Grow(2.0)", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
     ui.close();
     ui.row().gap(8.0).open();
     ui.button("Back");
@@ -142,10 +142,10 @@ fn describe(ui: &mut Ui) {
     let t = ui.theme;
     ui.column().pad(12.0).gap(8.0).open();
     ui.button("Stretched across, as a column has its boxes");
-    ui.el().place(Align::End).text("At the end", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
+    ui.el().place(Align::End).text("At the end", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
     ui.row().h(Length::Px(56.0)).gap(8.0).fill(t.panel).border(t.line, 1.0).open();
     ui.button("In the middle of the height");
-    ui.el().place(Align::Start).text("At the top", t.font, t.text).pad(8.0).fill(t.raise).border(t.line_strong, 1.0).show();
+    ui.el().place(Align::Start).text("At the top", t.font, t.text).pad(8.0).fill(t.raised).border(t.line_strong, 1.0).show();
     ui.close();
     ui.close();
 }
@@ -153,7 +153,7 @@ fn describe(ui: &mut Ui) {
 
 ![A wide button; a box at the right end; and in a row, a button in the middle of the height beside a box at the top](pictures/02-placed.png)
 
-`.at(x, y)` offsets a box without moving its siblings; in layers it places a box anywhere.
+`.offset(x, y)` offsets a box without moving its siblings; in layers it places a box anywhere.
 
 ## Grids
 
@@ -201,7 +201,7 @@ fn describe(ui: &mut Ui) {
     let t = ui.theme;
     ui.wrapping_row().pad(12.0).gap(6.0).open();
     for tag in ["layout", "drawing", "text", "tables", "menus", "docks", "scenes", "screen readers", "fonts", "pictures"] {
-        ui.el().text(tag, t.small, t.text_dim).pad((8.0, 3.0)).fill(t.raise).border(t.line, 1.0).radius(10.0).show();
+        ui.el().text(tag, t.small_font, t.text_dim).pad((8.0, 3.0)).fill(t.raised).border(t.line, 1.0).radius(10.0).show();
     }
     ui.close();
 }
@@ -222,8 +222,8 @@ use taut::{Length, Ui};
 fn file(ui: &mut Ui, name: &str, folder: &str) {
     let t = ui.theme;
     ui.row().gap(8.0).pad((10.0, 6.0)).fill(t.panel).radius(6.0).open();
-    ui.el().text(name, t.font, t.text).gives_way(1).show();
-    ui.el().text(folder, t.small, t.text_dim).gives_way(2).show();
+    ui.el().text(name, t.font, t.text).shrink(1).show();
+    ui.el().text(folder, t.small_font, t.text_dim).shrink(2).show();
     ui.spacer();
     ui.button("Open");
     ui.close();
@@ -256,7 +256,7 @@ use taut::{Length, Ui};
 fn describe(ui: &mut Ui) {
     let t = ui.theme;
     ui.column().h(Length::Px(160.0)).scroll().pad(12.0).gap(4.0).open();
-    ui.el().text("Kept at the top", t.font.bold(), t.text).pad((0.0, 4.0)).fill(t.bg).kept().show();
+    ui.el().text("Kept at the top", t.font.bold(), t.text).pad((0.0, 4.0)).fill(t.bg).frozen().show();
     for row in 1..=30 {
         ui.row().pad((10.0, 6.0)).fill(t.panel).radius(4.0).open();
         ui.label(&format!("Row {row}"));
@@ -276,7 +276,7 @@ fn describe(ui: &mut Ui) {
 
 ## Layers
 
-`.flow(Flow::Layers)` stacks children; place each with `.place(..)` and `.at(x, y)`. Later boxes
+`.flow(Flow::Stack)` stacks children; place each with `.place(..)` and `.offset(x, y)`. Later boxes
 lie on top.
 
 ```rust
@@ -285,13 +285,13 @@ use taut::{Align, Flow, Length, Ui};
 fn describe(ui: &mut Ui) {
     let t = ui.theme;
     ui.row().pad(16.0).open();
-    ui.el().flow(Flow::Layers).size(220.0, 90.0).open();
+    ui.el().flow(Flow::Stack).size(220.0, 90.0).open();
     ui.column().grow().pad(12.0).gap(4.0).fill(t.panel).border(t.line, 1.0).radius(8.0).open();
     ui.text("Inbox", t.font.bold(), t.text);
     ui.note("Everything that came today");
     ui.close();
-    ui.el().place((Align::End, Align::Start)).at(6.0, -6.0).text("12", t.small, t.on_accent).pad((7.0, 2.0)).fill(t.red).radius(9.0).show();
-    ui.el().place(Align::End).h(Length::Px(4.0)).w(Length::Px(60.0)).at(-12.0, -12.0).fill(t.accent).radius(2.0).show();
+    ui.el().place((Align::End, Align::Start)).offset(6.0, -6.0).text("12", t.small_font, t.on_accent).pad((7.0, 2.0)).fill(t.red).radius(9.0).show();
+    ui.el().place(Align::End).h(Length::Px(4.0)).w(Length::Px(60.0)).offset(-12.0, -12.0).fill(t.accent).radius(2.0).show();
     ui.close();
     ui.close();
 }
@@ -308,7 +308,7 @@ fn describe(ui: &mut Ui) {
 | `.text(text, font, color)`, `.wrap()`, `.text_align(..)` | text |
 | `.icon(..)`, `.picture(..)`, `.drawing(..)`, `.shape(..)`, `.outline(..)` | pictures and shapes (chapter 6) |
 
-Theme colours (`t.panel`, `t.raise`, `t.line`, `t.text_dim`) match the ready-made parts in dark
+Theme colours (`t.panel`, `t.raised`, `t.line`, `t.text_dim`) match the ready-made parts in dark
 and light.
 
 ## How layout works
@@ -321,7 +321,7 @@ re-lay out.
 ## Summary
 
 - `row`, `column`, `grid`, `wrapping_row` lay out; `Fit`, `Px`, `Grow` size.
-- `pad`, `gap`, `align`, `place` position; `spacer` pushes apart; `gives_way` shrinks.
-- `scroll` holds more than fits; `Flow::Layers` stacks.
+- `pad`, `gap`, `align`, `place` position; `spacer` pushes apart; `shrink` gives way when room runs short.
+- `scroll` holds more than fits; `Flow::Stack` stacks.
 
 Next: [parts and state](03-parts-and-state.md).

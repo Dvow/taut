@@ -278,7 +278,7 @@ fn drive_name(root: &Path) -> String {
     let (letter, path, mut label) = (root.to_string_lossy().trim_end_matches('\\').to_string(), wide(root), [0u16; 261]);
     // SAFETY: the root ends in a zero, and the name buffer is as long as said; nothing else is
     // asked.
-    let named = crate::listing::quietly(|| unsafe {
+    let named = crate::folder_listing::quietly(|| unsafe {
         matches!(GetDriveTypeW(path.as_ptr()), 2 | 3 | 6)
             && GetVolumeInformationW(path.as_ptr(), label.as_mut_ptr(), 261, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0) != 0
     });

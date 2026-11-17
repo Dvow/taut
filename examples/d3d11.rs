@@ -287,7 +287,7 @@ pub mod direct3d {
 
     fn describe(app: &mut App, ui: &mut Ui) {
         let t = ui.theme;
-        ui.column().w(Length::Px(260.0)).at(16.0, 16.0).pad(14.0).gap(10.0).fill(t.panel.alpha(0.9)).border(t.line_strong, 1.0).radius(10.0).shadow(12.0).open();
+        ui.column().w(Length::Px(260.0)).offset(16.0, 16.0).pad(14.0).gap(10.0).fill(t.panel.with_alpha(0.9)).border(t.line_strong, 1.0).radius(10.0).shadow(12.0).open();
         ui.text("Over Direct3D 11", t.font.bold(), t.text);
         ui.switch(&mut app.still, "Hold the colour still");
         ui.slider(&mut app.speed, 0.0..=4.0);

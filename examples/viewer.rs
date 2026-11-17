@@ -7,7 +7,7 @@
 //! it at its own size.
 #![windows_subsystem = "windows"]
 use std::path::{Path, PathBuf};
-use taut::{Align, Color, Drawing, Film, Flow, Icon, Key, Length, Mods, Picture, Role, Ui, Window};
+use taut::{Align, Animation, Color, Drawing, Flow, Icon, Key, Length, Mods, Picture, Role, Ui, Window};
 
 const SMALLER: Icon = Icon::line("M3.5 8h9");
 const LARGER: Icon = Icon::line("M8 3.5v9M3.5 8h9");
@@ -21,7 +21,7 @@ const ZOOMS: (f32, f32) = (0.05, 32.0);
 #[derive(Clone, Copy)]
 enum Shown {
     Still(Picture),
-    Moving(Film),
+    Moving(Animation),
     Drawn(Drawing),
 }
 
@@ -41,7 +41,8 @@ pub struct Viewer {
     /// run, which is where pictures are kept.
     files: Vec<PathBuf>,
     shots: Vec<Shot>,
-    picked: usize,
+    /// The picture shown.
+    current: usize,
     /// How large the picture is shown (1: a pixel of it to a unit), or none while it fits
     /// the window; and how far it has been moved from the middle.
     zoom: Option<f32>,
@@ -57,12 +58,12 @@ impl Viewer {
         let known = |path: &PathBuf| path.extension().and_then(|ending| ending.to_str()).is_some_and(|ending| ENDINGS.contains(&ending.to_lowercase().as_str()));
         let mut files: Vec<PathBuf> = std::fs::read_dir(&folder).into_iter().flatten().flatten().map(|entry| entry.path()).filter(known).collect();
         files.sort();
-        Viewer { folder, files, shots: Vec::new(), picked: 0, zoom: None, moved: (0.0, 0.0), fitted: 1.0 }
+        Viewer { folder, files, shots: Vec::new(), current: 0, zoom: None, moved: (0.0, 0.0), fitted: 1.0 }
     }
 
     /// Goes to another picture, fitted to the window.
-    fn pick(&mut self, picked: usize) {
-        (self.picked, self.zoom, self.moved) = (picked.min(self.shots.len().saturating_sub(1)), None, (0.0, 0.0));
+    fn go_to(&mut self, index: usize) {
+        (self.current, self.zoom, self.moved) = (index.min(self.shots.len().saturating_sub(1)), None, (0.0, 0.0));
     }
 }
 
@@ -82,23 +83,23 @@ fn read(path: &Path, ui: &mut Ui) -> Option<Shot> {
         _ => "SVG",
     };
     let shown = match kind {
-        "GIF" => Shown::Moving(ui.add_film(&bytes)?),
+        "GIF" => Shown::Moving(ui.add_animation(&bytes)?),
         "SVG" => Shown::Drawn(ui.add_drawing(std::str::from_utf8(&bytes).ok()?)?),
         _ => Shown::Still(ui.add_picture_file(&bytes)?),
     };
     let size = match shown {
         Shown::Still(picture) => ui.picture_size(picture).map(|(wide, high)| [wide as f32, high as f32]),
-        Shown::Moving(film) => ui.film_size(film).map(|(wide, high)| [wide as f32, high as f32]),
+        Shown::Moving(animation) => ui.animation_size(animation).map(|(wide, high)| [wide as f32, high as f32]),
         Shown::Drawn(drawing) => ui.drawing_size(drawing),
     }?;
     Some(Shot { name, kind, size: (size[0], size[1]), shown })
 }
 
 /// A box that shows a picture, at the size it is said to have.
-fn holding(ui: &mut Ui, shown: Shown, color: taut::Color) -> taut::El<'_> {
+fn picture_box(ui: &mut Ui, shown: Shown, color: taut::Color) -> taut::El<'_> {
     match shown {
         Shown::Still(picture) => ui.el().picture(picture),
-        Shown::Moving(film) => ui.el().film(film),
+        Shown::Moving(animation) => ui.el().animation(animation),
         Shown::Drawn(drawing) => ui.el().drawing(drawing, color),
     }
 }
@@ -112,25 +113,25 @@ pub fn describe(app: &mut Viewer, ui: &mut Ui) {
     ui.column().grow().open();
     bar(app, ui);
 
-    // The picture that is picked, in the middle of the room, as large as it is zoomed to, and
+    // The picture that is selected, in the middle of the room, as large as it is zoomed to, and
     // moved by as much as it has been dragged. While it fits, it is as large as fits (the
     // room it has is this run's, as it comes out of layout). The wheel and two fingers zoom.
-    let view = ui.el().flow(Flow::Layers).grow().clip().fill(Color::BLACK.toward(t.bg, 0.6)).sense().open();
-    let room = ui.room();
-    if let Some((size, shown)) = app.shots.get(app.picked).map(|shot| (shot.size, shot.shown)) {
+    let view = ui.el().flow(Flow::Stack).grow().clip().fill(Color::BLACK.lerp(t.bg, 0.6)).sense().open();
+    let room = ui.available_size();
+    if let Some((size, shown)) = app.shots.get(app.current).map(|shot| (shot.size, shot.shown)) {
         app.fitted = (room.w / size.0).min(room.h / size.1).min(1.0);
-        if let Some([_, down]) = ui.wheel(&view) {
+        if let Some([_, down]) = ui.wheel_delta(&view) {
             zoom_by(app, if down < 0.0 { STEP } else { 1.0 / STEP });
         }
         if let Some(zoom) = ui.zoom(&view) {
-            zoom_by(app, zoom.by);
+            zoom_by(app, zoom.factor);
         }
         let zoom = app.zoom.unwrap_or(app.fitted);
         let (wide, high) = (size.0 * zoom, size.1 * zoom);
-        if let Some((gone, caught)) = ui.held(&view, [app.moved.0, app.moved.1, 0.0, 0.0]) {
+        if let Some((gone, caught)) = ui.drag_delta(&view, [app.moved.0, app.moved.1, 0.0, 0.0]) {
             app.moved = (caught[0] + gone.x, caught[1] + gone.y);
         }
-        holding(ui, shown, t.text).place(Align::Center).at(app.moved.0, app.moved.1).size(wide, high).show();
+        picture_box(ui, shown, t.text).place(Align::Center).offset(app.moved.0, app.moved.1).size(wide, high).show();
     } else {
         ui.row().place(Align::Center).open();
         ui.text(&format!("There are no pictures in {}", app.folder.display()), t.font, t.text_faint);
@@ -145,7 +146,7 @@ pub fn describe(app: &mut Viewer, ui: &mut Ui) {
 fn bar(app: &mut Viewer, ui: &mut Ui) {
     let t = ui.theme;
     ui.row().pad((10.0, 6.0)).gap(8.0).fill(t.panel).align(Align::Start, Align::Center).open();
-    if let Some(shot) = app.shots.get(app.picked) {
+    if let Some(shot) = app.shots.get(app.current) {
         ui.text(&shot.name, t.font.bold(), t.text);
         ui.note(&format!("{}, {} by {}", shot.kind, shot.size.0, shot.size.1));
     }
@@ -159,7 +160,7 @@ fn bar(app: &mut Viewer, ui: &mut Ui) {
         zoom_by(app, STEP);
     }
     if ui.button("Fit").clicked {
-        app.pick(app.picked);
+        app.go_to(app.current);
     }
     if ui.button("1:1").clicked {
         app.zoom = Some(1.0);
@@ -175,23 +176,23 @@ fn zoom_by(app: &mut Viewer, by: f32) {
     app.moved = (app.moved.0 * by, app.moved.1 * by);
 }
 
-/// The strip of small pictures along the bottom. A click on one picks it.
+/// The strip of small pictures along the bottom. A click on one selects it.
 fn strip(app: &mut Viewer, ui: &mut Ui) {
     let t = ui.theme;
     ui.row().h(Length::Px(92.0)).pad(8.0).gap(6.0).fill(t.panel).scroll_x().open();
     let mut clicked = None;
     for (number, shot) in app.shots.iter().enumerate() {
-        let picked = number == app.picked;
-        let edge = if picked { t.accent } else { t.line };
-        let small = ui.el().key(&shot.name).size(72.0, 72.0).flow(Flow::Layers).border(edge, 2.0).radius(4.0).sense().focusable().open();
-        holding(ui, shot.shown, t.text).place(Align::Center).size(64.0, 64.0).keep_shape().show();
+        let selected = number == app.current;
+        let edge = if selected { t.accent } else { t.line };
+        let small = ui.el().key(&shot.name).size(72.0, 72.0).flow(Flow::Stack).border(edge, 2.0).radius(4.0).sense().focusable().open();
+        picture_box(ui, shot.shown, t.text).place(Align::Center).size(64.0, 64.0).keep_aspect().show();
         ui.close();
-        ui.tell(&small, Role::Row, Some(picked), &shot.name);
+        ui.tell(&small, Role::Row, Some(selected), &shot.name);
         clicked = clicked.or(small.clicked.then_some(number));
     }
     ui.close();
     if let Some(number) = clicked {
-        app.pick(number);
+        app.go_to(number);
     }
 }
 
@@ -199,14 +200,14 @@ fn strip(app: &mut Viewer, ui: &mut Ui) {
 fn keys(app: &mut Viewer, ui: &mut Ui) {
     let last = app.shots.len().saturating_sub(1);
     let to = match () {
-        _ if ui.key(Key::Right, Mods::NONE) => Some((app.picked + 1).min(last)),
-        _ if ui.key(Key::Left, Mods::NONE) => Some(app.picked.saturating_sub(1)),
+        _ if ui.key(Key::Right, Mods::NONE) => Some((app.current + 1).min(last)),
+        _ if ui.key(Key::Left, Mods::NONE) => Some(app.current.saturating_sub(1)),
         _ if ui.key(Key::Home, Mods::NONE) => Some(0),
         _ if ui.key(Key::End, Mods::NONE) => Some(last),
         _ => None,
     };
     if let Some(to) = to {
-        app.pick(to);
+        app.go_to(to);
     }
     if ui.keys("Ctrl+Up") {
         zoom_by(app, STEP);
@@ -215,7 +216,7 @@ fn keys(app: &mut Viewer, ui: &mut Ui) {
         zoom_by(app, 1.0 / STEP);
     }
     if ui.keys("F") {
-        app.pick(app.picked);
+        app.go_to(app.current);
     }
     if ui.keys("1") {
         app.zoom = Some(1.0);
@@ -267,12 +268,12 @@ mod tests {
 
         // Picked from the strip, and by the keys.
         trial.press(Role::Row, "c-logo.svg");
-        assert_eq!(trial.app.picked, 2);
+        assert_eq!(trial.app.current, 2);
         trial.key("Right");
         trial.key("Right");
         assert!(trial.has(Role::Text, "e-bmp.bmp") && trial.find(Role::Row, "e-bmp.bmp").on == Some(true));
         trial.key("End");
-        assert_eq!(trial.app.picked, 6);
+        assert_eq!(trial.app.current, 6);
         trial.key("Home");
 
         // Zoomed in by a step from where it fits, then shown at its own size; dragged about;
@@ -281,7 +282,7 @@ mod tests {
         trial.press(Role::Button, "Larger");
         assert_eq!(trial.app.zoom, Some(fitted * STEP));
         // The wheel zooms too, over the picture: in, and out again.
-        let middle = trial.spot(Role::Text, "a-inks.jpg");
+        let middle = trial.center_of(Role::Text, "a-inks.jpg");
         let over = taut::geom::pt(middle.x + 200.0, 200.0);
         trial.wheel(over, 0.0, -48.0);
         assert_eq!(trial.app.zoom, Some(fitted * STEP * STEP));
@@ -289,7 +290,7 @@ mod tests {
         assert_eq!(trial.app.zoom, Some(fitted * STEP));
         trial.key("1");
         assert!(trial.has(Role::Text, "100%"));
-        let middle = trial.spot(Role::Text, "a-inks.jpg");
+        let middle = trial.center_of(Role::Text, "a-inks.jpg");
         let at = taut::geom::pt(middle.x + 200.0, 200.0);
         trial.drag(at, taut::geom::pt(at.x - 60.0, at.y + 30.0));
         assert_eq!(trial.app.moved, (-60.0, 30.0));

@@ -32,20 +32,20 @@ use std::ptr::null;
 
 /// An OpenGL error.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Failed {
+pub struct Error {
     /// What the layer was doing, as "compiling the vertex shader".
-    pub doing: &'static str,
+    pub operation: &'static str,
     /// What OpenGL said: its compiler log, or its version and limits.
-    pub said: String,
+    pub message: String,
 }
 
-impl std::fmt::Display for Failed {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} failed: {}", self.doing, self.said)
+        write!(f, "{} failed: {}", self.operation, self.message)
     }
 }
 
-impl std::error::Error for Failed {}
+impl std::error::Error for Error {}
 
 /// Declares the OpenGL functions the layer calls, loaded by name.
 macro_rules! functions {
@@ -57,7 +57,7 @@ macro_rules! functions {
         }
         impl Gl {
             /// Each function, loaded through `find`; or the name of the first missing one.
-            fn load(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Result<Gl, Failed> {
+            fn load(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Result<Gl, Error> {
                 // SAFETY: each function is declared as OpenGL declares it.
                 Ok(Gl { $($name: unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn($($arg),*) $(-> $out)?>(found(find, concat!(stringify!($name), "\0"))?) },)* })
             }
@@ -106,7 +106,7 @@ functions! {
 
 /// The function `name` (NUL-terminated) as `find` returns it; on Windows the OpenGL 1.1 ones
 /// from opengl32.dll, for which the driver returns nothing (or 1, 2, 3 or -1).
-fn found(find: &mut dyn FnMut(&CStr) -> *const c_void, name: &'static str) -> Result<*const c_void, Failed> {
+fn found(find: &mut dyn FnMut(&CStr) -> *const c_void, name: &'static str) -> Result<*const c_void, Error> {
     let name = CStr::from_bytes_with_nul(name.as_bytes()).unwrap_or_default();
     #[allow(unused_mut)]
     let mut found = find(name);
@@ -117,7 +117,7 @@ fn found(find: &mut dyn FnMut(&CStr) -> *const c_void, name: &'static str) -> Re
         found = unsafe { GetProcAddress(GetModuleHandleW(library.as_ptr()), name.as_ptr().cast()) } as *const c_void;
     }
     match found.is_null() {
-        true => Err(Failed { doing: "finding OpenGL's functions", said: format!("this OpenGL has no {}", name.to_string_lossy()) }),
+        true => Err(Error { operation: "finding OpenGL's functions", message: format!("this OpenGL has no {}", name.to_string_lossy()) }),
         false => Ok(found),
     }
 }
@@ -208,7 +208,7 @@ impl Layer {
     ///
     /// # Safety
     /// A context is current on this thread, and `find` returns its functions.
-    pub unsafe fn new(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Result<Layer, Failed> {
+    pub unsafe fn new(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Result<Layer, Error> {
         let gl = Gl::load(find)?;
         // 0x821B, 0x821C: GL_MAJOR_VERSION, GL_MINOR_VERSION; 0x0D33: GL_MAX_TEXTURE_SIZE.
         let [major, minor, most] = read(&gl, [0x821B, 0x821C, 0x0D33]);
@@ -219,7 +219,7 @@ impl Layer {
                 true => "this OpenGL does not say its version".to_string(),
                 false => format!("version 3.3 or newer is needed, and this is {}", unsafe { CStr::from_ptr(version) }.to_string_lossy()),
             };
-            return Err(Failed { doing: "making the layer", said });
+            return Err(Error { operation: "making the layer", message: said });
         }
         let program = linked(&gl)?;
         let mut layer = Layer { gl, program, corners: 0, texture: 0, most: most.max(0) as usize, surface: Surface::default() };
@@ -243,14 +243,14 @@ impl Layer {
     ///
     /// # Safety
     /// The layer's context is current on this thread.
-    pub unsafe fn update(&mut self, ui: &mut Ui) -> Result<(), Failed> {
+    pub unsafe fn update(&mut self, ui: &mut Ui) -> Result<(), Error> {
         let size = (self.surface.width, self.surface.height);
         let changed = self.surface.update(ui);
         let (width, height, gl) = (self.surface.width, self.surface.height, &self.gl);
         if (width, height) != size && width.max(height) > self.most {
             let said = format!("the interface is {width} by {height} pixels, and this OpenGL makes textures of {} at most", self.most);
             self.surface = Surface::default(); // redrawn whole, and retried, next time
-            return Err(Failed { doing: "making the texture", said });
+            return Err(Error { operation: "making the texture", message: said });
         }
         // The pixel unpack state that is changed, saved to restore.
         let kept = read(gl, [0x8069, 0x88EF, UNPACK_ROW_LENGTH, UNPACK_SKIP_PIXELS, UNPACK_SKIP_ROWS, UNPACK_ALIGNMENT]);
@@ -283,7 +283,7 @@ impl Layer {
     ///
     /// # Safety
     /// The layer's context is current on this thread.
-    pub unsafe fn draw(&mut self, ui: &mut Ui) -> Result<(), Failed> {
+    pub unsafe fn draw(&mut self, ui: &mut Ui) -> Result<(), Error> {
         // SAFETY: as the caller promises.
         unsafe { self.update(ui) }?;
         if self.surface.pixels.is_empty() {
@@ -348,7 +348,7 @@ fn read<const N: usize>(gl: &Gl, names: [u32; N]) -> [i32; N] {
 }
 
 /// The shaders, compiled and linked; or the compiler's log.
-fn linked(gl: &Gl) -> Result<u32, Failed> {
+fn linked(gl: &Gl) -> Result<u32, Error> {
     let corners = compiled(gl, VERTEX_SHADER, CORNERS, "compiling the vertex shader")?;
     let pixels = compiled(gl, FRAGMENT_SHADER, PIXELS, "compiling the fragment shader");
     let mut done = 0;
@@ -366,12 +366,12 @@ fn linked(gl: &Gl) -> Result<u32, Failed> {
         }
         let said = log(gl.glGetProgramiv, gl.glGetProgramInfoLog, program);
         (gl.glDeleteProgram)(program);
-        Err(Failed { doing: "linking the shaders", said })
+        Err(Error { operation: "linking the shaders", message: said })
     }
 }
 
 /// One shader, compiled; or the compiler's log.
-fn compiled(gl: &Gl, kind: u32, source: &CStr, doing: &'static str) -> Result<u32, Failed> {
+fn compiled(gl: &Gl, kind: u32, source: &CStr, doing: &'static str) -> Result<u32, Error> {
     let mut done = 0;
     // SAFETY: the source is NUL-terminated; the shader is created here.
     unsafe {
@@ -384,7 +384,7 @@ fn compiled(gl: &Gl, kind: u32, source: &CStr, doing: &'static str) -> Result<u3
         }
         let said = log(gl.glGetShaderiv, gl.glGetShaderInfoLog, shader);
         (gl.glDeleteShader)(shader);
-        Err(Failed { doing, said })
+        Err(Error { operation: doing, message: said })
     }
 }
 

@@ -196,7 +196,7 @@ static COUNTING: held::Counting = held::Counting;
 /// three hundred pieces of text, each naming a family of its own, as many fonts read.
 #[test]
 fn letters_no_font_has_cost_no_more_than_the_file_could_write_out() {
-    taut::svg::read_text();
+    taut::svg::enable_text();
     let letters: String = (0xE000u32..0xE000 + 300).filter_map(char::from_u32).collect();
     let most = held::most(|| drop(taut::svg::decode(&format!(r#"<svg viewBox="0 0 100 100"><text y="50">{letters}</text></svg>"#), 16, 16)));
     assert!(most < 32 << 20, "300 letters no font has took {most} bytes");

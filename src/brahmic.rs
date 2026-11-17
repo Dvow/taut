@@ -11,7 +11,7 @@
 //! post-base forms. So, as HarfBuzz does: characters are normalized, each gets its category
 //! (consonant, pre-base vowel sign, virama…) from HarfBuzz's tables, text is split into
 //! syllables by the script's grammar, and between the stages of the font's features (run by
-//! `shape.rs`) each syllable is reordered into drawing order and its glyphs masked for their
+//! `shaping.rs`) each syllable is reordered into drawing order and its glyphs masked for their
 //! features. Text forming no syllable (a lone vowel sign) is shown on a dotted circle, as a
 //! typist expects.
 //!
@@ -26,8 +26,8 @@
 //! script-less text.
 //!
 //! Not done: Mongolian's vertical forms.
-use crate::font::{Asked, Bytes, FontFile, lookups};
-use crate::shape::{ALL, DENOMINATOR, FRACTION, Laid, NUMERATOR, Plan, Step, Zeroing, chosen, merged, unicode};
+use crate::font_file::{Asked, Bytes, FontFile, lookups};
+use crate::shaping::{ALL, DENOMINATOR, FRACTION, Laid, NUMERATOR, Plan, Step, Zeroing, chosen, merged, unicode};
 
 // ---- the scripts ----
 
@@ -675,7 +675,7 @@ const PSTF: u32 = 2048;
 const INIT: u32 = 4096;
 const CFAR: u32 = 8192;
 /// Universal Shaping Engine joining forms: isolated, initial, medial, final (counted as
-/// Arabic's are in `shape.rs`).
+/// Arabic's are in `shaping.rs`).
 const ISOL: u32 = 2;
 const FINA: u32 = 4;
 const MEDI: u32 = 8;
@@ -899,7 +899,7 @@ const MOVES: &[Feature] =
 const FIRST: [Feature; 4] = [(b"rvrn", ALL, 0), (b"frac", FRACTION, 0), (b"numr", NUMERATOR, 0), (b"dnom", DENOMINATOR, 0)];
 /// The right-to-left direction features (instead of `ltra` and `ltrm`): the second only on a
 /// bracket the font has no mirrored glyph for.
-const LEFTWARD: [Feature; 2] = [(b"rtla", ALL, 0), (b"rtlm", crate::shape::MIRROR, 0)];
+const LEFTWARD: [Feature; 2] = [(b"rtla", ALL, 0), (b"rtlm", crate::shaping::MIRROR, 0)];
 
 /// The lookups some features list for a script, language and table, as steps.
 fn steps(table: Bytes, asked: Asked, features: &[Feature]) -> Vec<Step> {
@@ -912,51 +912,89 @@ fn steps(table: Bytes, asked: Asked, features: &[Feature]) -> Vec<Step> {
     merged(steps)
 }
 
+/// Whether a font's chosen script tag is script-less: `DFLT` or `latn`.
+fn plain_tag(tag: Option<[u8; 4]>) -> bool {
+    matches!(&tag, Some(name) if name == b"DFLT" || name == b"latn")
+}
+
+impl Way {
+    /// The model for script `n` in a font that chose script tag `tag`.
+    fn of(n: u8, tag: Option<[u8; 4]>) -> Way {
+        match WAYS[n as usize].0 {
+            _ if plain_tag(tag) => Way::Plain,
+            'I' if tag.is_some_and(|name| name[3] == b'3') => Way::Universal,
+            'I' => Way::Indic,
+            'K' => Way::Khmer,
+            'M' if tag.is_some_and(|name| &name == b"mymr") => Way::Plain,
+            'M' => Way::Myanmar,
+            'T' => Way::Thai,
+            _ => Way::Universal,
+        }
+    }
+
+    /// Its shaper's stages.
+    fn stages(self) -> &'static [(&'static [Feature], Pause)] {
+        match self {
+            Way::Indic => INDIC_STAGES,
+            Way::Khmer => KHMER_STAGES,
+            Way::Myanmar => MYANMAR_STAGES,
+            Way::Universal => UNIVERSAL_STAGES,
+            Way::Plain | Way::Thai => PLAIN_STAGES,
+        }
+    }
+
+    /// Its syllable automaton.
+    fn machine(self) -> Machine {
+        match self {
+            Way::Indic => Machine::of(INDIC_GRAMMAR, NONE[0]),
+            Way::Khmer => Machine::of(KHMER_GRAMMAR, NONE[1]),
+            Way::Myanmar => Machine::of(MYANMAR_GRAMMAR, NONE[2]),
+            Way::Universal => Machine::of(UNIVERSAL_GRAMMAR, NONE[3]),
+            Way::Plain | Way::Thai => Machine::default(),
+        }
+    }
+
+    /// When marks' advances are zeroed.
+    fn zeroing(self) -> Zeroing {
+        match self {
+            Way::Indic | Way::Khmer => Zeroing::Never,
+            Way::Myanmar | Way::Universal => Zeroing::Early,
+            Way::Plain | Way::Thai => Zeroing::Late,
+        }
+    }
+
+    /// The masks of the glyph-specific features the font has (`has`).
+    fn feature_masks(self, has: impl Fn(&[u8; 4]) -> bool) -> u32 {
+        let init = if self == Way::Universal { INIT_FORM } else { INIT };
+        let masks = [(b"rphf", RPHF), (b"pref", PREF), (b"blwf", BLWF), (b"abvf", ABVF), (b"half", HALF), (b"pstf", PSTF), (b"init", init), (b"cfar", CFAR)];
+        let forms = [(b"isol", ISOL), (b"medi", MEDI), (b"fina", FINA)].into_iter().filter(|_| self == Way::Universal);
+        masks.into_iter().chain(forms).filter(|(name, _)| has(name)).fold(0, |all, (_, mask)| all | mask)
+    }
+}
+
 /// The plan for script `n` of these, for a font and language. (A right-to-left one in a
-/// script-less font is shaped as `shape.rs` shapes such text.)
+/// script-less font is shaped as `shaping.rs` shapes such text.)
 pub(crate) fn plan(font: &FontFile, n: u8, language: crate::scripts::Language) -> Plan {
     let (gsub, gpos) = (font.table(b"GSUB"), font.table(b"GPOS"));
     let languages: &[[u8; 4]] = &language.systems().copied().collect::<Vec<_>>();
     let names = names(n);
-    let picked = chosen(gsub, &names);
-    let plain = matches!(&picked, Some(name) if name == b"DFLT" || name == b"latn");
+    let tag = chosen(gsub, &names);
     let (leftward, joins) = (WAYS[n as usize].1 & 1 != 0, WAYS[n as usize].1 & 2 != 0);
-    if plain && leftward {
-        return Plan::of(font, crate::shape::Script::Plain(n + 1), true, language);
+    if plain_tag(tag) && leftward {
+        return Plan::of(font, crate::shaping::Script::Plain(n + 1), true, language);
     }
-    let way = match WAYS[n as usize].0 {
-        _ if plain => Way::Plain,
-        'I' if picked.is_some_and(|name| name[3] == b'3') => Way::Universal,
-        'I' => Way::Indic,
-        'K' => Way::Khmer,
-        'M' if picked.is_some_and(|name| &name == b"mymr") => Way::Plain,
-        'M' => Way::Myanmar,
-        'T' => Way::Thai,
-        _ => Way::Universal,
-    };
-    let stages = match way {
-        Way::Indic => INDIC_STAGES,
-        Way::Khmer => KHMER_STAGES,
-        Way::Myanmar => MYANMAR_STAGES,
-        Way::Universal => UNIVERSAL_STAGES,
-        Way::Plain | Way::Thai => PLAIN_STAGES,
-    };
+    let way = Way::of(n, tag);
     let asked: Asked = (&names, languages, font.place());
     let has = |name: &[u8; 4]| lookups(gsub, asked, &[name]).is_some() || lookups(gpos, asked, &[name]).is_some();
-    let init = if way == Way::Universal { INIT_FORM } else { INIT };
-    let masks = [(b"rphf", RPHF), (b"pref", PREF), (b"blwf", BLWF), (b"abvf", ABVF), (b"half", HALF), (b"pstf", PSTF), (b"init", init), (b"cfar", CFAR)];
-    let forms = [(b"isol", ISOL), (b"medi", MEDI), (b"fina", FINA)].into_iter().filter(|_| way == Way::Universal);
-    let masks: Vec<(&[u8; 4], u32)> = masks.into_iter().chain(forms).collect();
-    let masks = masks.iter().filter(|(name, _)| has(name)).fold(0, |all, (_, mask)| all | mask);
-    let old = way == Way::Indic && picked.is_none_or(|name| name[3] != b'2');
+    let old = way == Way::Indic && tag.is_none_or(|name| name[3] != b'2');
     let lookups_of = |name: &[u8; 4]| lookups(gsub, asked, &[name]).unwrap_or_default();
     let syllabic = Syllabic {
         way: Some(way),
         script: n,
         leftward,
         joins: joins && way == Way::Universal,
-        pauses: stages.iter().map(|(_, pause)| *pause).collect(),
-        masks,
+        pauses: way.stages().iter().map(|(_, pause)| *pause).collect(),
+        masks: way.feature_masks(has),
         config: CONFIGS.get(n as usize).copied().filter(|_| way == Way::Indic).unwrap_or_default(),
         old,
         would: [b"rphf", b"pref", b"blwf", b"pstf", b"vatu"].map(lookups_of),
@@ -964,30 +1002,19 @@ pub(crate) fn plan(font: &FontFile, n: u8, language: crate::scripts::Language) -
         // old-style one, and Malayalam either way, may look around.
         zero_context: !old && n != 8,
         unlisted: way == Way::Thai && chosen(gsub, &names[..1]).is_none(),
-        machine: match way {
-            Way::Indic => Machine::of(INDIC_GRAMMAR, NONE[0]),
-            Way::Khmer => Machine::of(KHMER_GRAMMAR, NONE[1]),
-            Way::Myanmar => Machine::of(MYANMAR_GRAMMAR, NONE[2]),
-            Way::Universal => Machine::of(UNIVERSAL_GRAMMAR, NONE[3]),
-            Way::Plain | Way::Thai => Machine::default(),
-        },
-    };
-    let zeroing = match way {
-        Way::Indic | Way::Khmer => Zeroing::Never,
-        Way::Myanmar | Way::Universal => Zeroing::Early,
-        Way::Plain | Way::Thai => Zeroing::Late,
+        machine: way.machine(),
     };
     // Each shaper's first stage has the direction features and those every script gets.
     let first = |features: &[Feature]| [if leftward { &LEFTWARD[..] } else { features }, &FIRST].concat();
     let stage = |(at, (features, _)): (usize, &(&[Feature], Pause))| steps(gsub, asked, &if at == 0 { first(features) } else { features.to_vec() });
     let moves = [MOVES, &FIRST[1..]].concat();
     Plan {
-        swaps: stages.iter().enumerate().map(stage).collect(),
+        swaps: way.stages().iter().enumerate().map(stage).collect(),
         moves: steps(gpos, asked, &moves),
         kerned: lookups(gpos, asked, &[b"kern"]).is_some(),
         leftward,
         joins: false,
-        zeroing,
+        zeroing: way.zeroing(),
         syllabic: Some(Box::new(syllabic)),
         ..Plan::default()
     }
@@ -999,8 +1026,8 @@ pub(crate) fn plan(font: &FontFile, n: u8, language: crate::scripts::Language) -
 /// inserted where a sequence would read as another letter, Thai sara am decomposed, characters
 /// normalized as the font has them; each with its category and syllable position.
 pub(crate) fn characters(font: &FontFile, plan: &Syllabic, text: &str, glyphs: &mut Vec<Laid>) {
-    let mut letters: Vec<(char, u32)> = text.chars().zip(0..).take(crate::shape::LONGEST).collect();
-    let variants = crate::shape::variants(font, &mut letters);
+    let mut letters: Vec<(char, u32)> = text.chars().zip(0..).take(crate::shaping::LONGEST).collect();
+    let variants = crate::shaping::variants(font, &mut letters);
     let way = plan.way.unwrap_or(Way::Plain);
     if matches!(way, Way::Indic | Way::Universal) && font.glyph('\u{25cc}') != 0 {
         letters = circled(letters);
@@ -1016,13 +1043,13 @@ pub(crate) fn characters(font: &FontFile, plan: &Syllabic, text: &str, glyphs: &
     // fraction digits are marked.
     let mut forms = vec![ALL; letters.len()];
     if plan.joins {
-        crate::shape::joined(letters.iter().map(|(letter, _)| *letter), &mut forms);
+        crate::shaping::joined(letters.iter().map(|(letter, _)| *letter), &mut forms);
     }
-    crate::shape::fractions(letters.iter().map(|(letter, _)| *letter), plan.leftward, &mut forms);
+    crate::shaping::fractions(letters.iter().map(|(letter, _)| *letter), plan.leftward, &mut forms);
     for (n, (letter, from)) in letters.into_iter().enumerate() {
-        let mirror = if plan.leftward { crate::order::mirrored(letter) } else { None };
+        let mirror = if plan.leftward { crate::bidi::mirrored(letter) } else { None };
         let shown = mirror.filter(|mirror| font.glyph(*mirror) != 0).unwrap_or(letter);
-        let mirrors = if mirror.is_some() && shown == letter { crate::shape::MIRROR } else { 0 };
+        let mirrors = if mirror.is_some() && shown == letter { crate::shaping::MIRROR } else { 0 };
         let glyph = variants.iter().find(|(at, _)| *at == from).map_or_else(|| font.glyph(shown), |(_, glyph)| *glyph);
         let (category, position) = match way {
             Way::Indic | Way::Khmer | Way::Myanmar => indic(letter),
@@ -1032,14 +1059,14 @@ pub(crate) fn characters(font: &FontFile, plan: &Syllabic, text: &str, glyphs: &
         let unicode = unicode(letter);
         // What a font without a `GDEF` class takes a glyph for, as in HarfBuzz: a mark if its
         // character is nonspacing, and not default-ignorable.
-        let props = if marked(letter) == 1 && unicode & 1 == 0 { crate::shape::MARK } else { crate::shape::BASE };
+        let props = if marked(letter) == 1 && unicode & 1 == 0 { crate::shaping::MARK } else { crate::shaping::BASE };
         let mut laid = Laid::default();
         (laid.glyph, laid.from, laid.mask, laid.unicode, laid.props) = (glyph, from, forms[n] | mirrors | ALL, unicode, props);
         (laid.letter, laid.category, laid.position) = (letter, category, position);
         glyphs.push(laid);
     }
     let letters: Vec<char> = glyphs.iter().map(|laid| laid.letter).collect();
-    crate::shape::unhidden(&letters, glyphs, class_of);
+    crate::shaping::unhidden(&letters, glyphs, class_of);
 }
 
 /// Character pairs that would read as another letter, separated by a dotted circle (HarfBuzz's
@@ -1306,10 +1333,10 @@ pub(crate) fn pause(font: &FontFile, plan: &Syllabic, stage: usize, glyphs: &mut
         Pause::Final => each_syllable(glyphs, |glyphs, start, end| finally(font, plan, glyphs, start, end)),
         Pause::Khmer => khmer(font, plan, glyphs),
         Pause::Myanmar => myanmar(font, glyphs),
-        Pause::Forget => glyphs.iter_mut().for_each(|laid| laid.props &= !crate::shape::SUBSTITUTED),
+        Pause::Forget => glyphs.iter_mut().for_each(|laid| laid.props &= !crate::shaping::SUBSTITUTED),
         Pause::Reph => {
             each_syllable(glyphs, |glyphs, start, end| reph_recorded(plan, &mut glyphs[start..end]));
-            glyphs.iter_mut().for_each(|laid| laid.props &= !crate::shape::SUBSTITUTED);
+            glyphs.iter_mut().for_each(|laid| laid.props &= !crate::shaping::SUBSTITUTED);
         }
         Pause::Prebase => each_syllable(glyphs, |glyphs, start, end| prebase_recorded(&mut glyphs[start..end])),
         Pause::Universal => {
@@ -1409,7 +1436,7 @@ fn dotted_circles(font: &FontFile, glyphs: &mut Vec<Laid>, broken: u8, category:
 
 /// Whether a glyph is of one of some categories (a bit each); never one that ligated.
 fn one_of(laid: &Laid, categories: u64) -> bool {
-    laid.props & crate::shape::LIGATED == 0 && laid.category < 64 && categories & (1 << laid.category) != 0
+    laid.props & crate::shaping::LIGATED == 0 && laid.category < 64 && categories & (1 << laid.category) != 0
 }
 
 /// A bitmask of categories.
@@ -1446,7 +1473,7 @@ impl Syllabic {
     /// below with ra) would substitute these glyphs.
     fn would(&self, font: &FontFile, feature: usize, glyphs: &[u16]) -> bool {
         let table = font.table(b"GSUB");
-        self.would[feature].iter().any(|lookup| crate::shape::would_apply(table, *lookup, glyphs, self.zero_context))
+        self.would[feature].iter().any(|lookup| crate::shaping::would_apply(table, *lookup, glyphs, self.zero_context))
     }
     /// Whether the font has a glyph-specific feature.
     fn has(&self, mask: u32) -> bool {
@@ -1665,7 +1692,7 @@ fn masked(font: &FontFile, plan: &Syllabic, syllable: &mut [Laid], base: usize) 
         }
     }
     for n in 1..end {
-        if syllable[n].category != NON_JOINER || syllable[n].props & crate::shape::LIGATED != 0 {
+        if syllable[n].category != NON_JOINER || syllable[n].props & crate::shaping::LIGATED != 0 {
             continue;
         }
         let mut m = n;
@@ -1685,9 +1712,9 @@ fn masked(font: &FontFile, plan: &Syllabic, syllable: &mut [Laid], base: usize) 
 fn finally(font: &FontFile, plan: &Syllabic, glyphs: &mut [Laid], start: usize, end: usize) {
     let virama = font.glyph(plan.config.virama);
     for laid in glyphs[start..end].iter_mut().filter(|laid| virama != 0 && laid.glyph == virama) {
-        if laid.props & crate::shape::LIGATED != 0 && laid.props & crate::shape::MULTIPLIED != 0 {
+        if laid.props & crate::shaping::LIGATED != 0 && laid.props & crate::shaping::MULTIPLIED != 0 {
             laid.category = VIRAMA;
-            laid.props &= !(crate::shape::LIGATED | crate::shape::MULTIPLIED);
+            laid.props &= !(crate::shaping::LIGATED | crate::shaping::MULTIPLIED);
         }
     }
     let (mut base, try_pref) = final_base(plan, &mut glyphs[start..end]);
@@ -1716,7 +1743,7 @@ fn finally(font: &FontFile, plan: &Syllabic, glyphs: &mut [Laid], start: usize, 
 
 /// Whether a glyph is a ligature and not a multiple substitution's component.
 fn ligated_only(laid: &Laid) -> bool {
-    laid.props & crate::shape::LIGATED != 0 && laid.props & crate::shape::MULTIPLIED == 0
+    laid.props & crate::shaping::LIGATED != 0 && laid.props & crate::shaping::MULTIPLIED == 0
 }
 
 /// Whether a character is a letter, mark, format character or unassigned: what a pre-base matra
@@ -1762,7 +1789,7 @@ fn final_base(plan: &Syllabic, syllable: &mut [Laid]) -> (usize, bool) {
 fn unformed_prebase(plan: &Syllabic, syllable: &mut [Laid], base: usize) -> Option<usize> {
     let end = syllable.len();
     let n = (base + 1..end).find(|n| syllable[*n].mask & plan.mask(PREF) != 0)?;
-    if syllable[n].props & crate::shape::SUBSTITUTED != 0 && ligated_only(&syllable[n]) {
+    if syllable[n].props & crate::shaping::SUBSTITUTED != 0 && ligated_only(&syllable[n]) {
         return None;
     }
     let after = n + syllable[n..].iter().take_while(|laid| virama(laid)).count();
@@ -2037,7 +2064,7 @@ fn universal_masks(plan: &Syllabic, glyphs: &mut [Laid]) {
 
 /// A glyph the font made a reph of (`rphf`) is recorded as a repha.
 fn reph_recorded(plan: &Syllabic, syllable: &mut [Laid]) {
-    let found = syllable.iter_mut().take_while(|laid| laid.mask & plan.mask(RPHF) != 0).find(|laid| laid.props & crate::shape::SUBSTITUTED != 0);
+    let found = syllable.iter_mut().take_while(|laid| laid.mask & plan.mask(RPHF) != 0).find(|laid| laid.props & crate::shaping::SUBSTITUTED != 0);
     if let Some(laid) = found {
         laid.category = U_REPHA;
     }
@@ -2045,7 +2072,7 @@ fn reph_recorded(plan: &Syllabic, syllable: &mut [Laid]) {
 
 /// A glyph the font substituted by `pref` is recorded as a pre-base vowel.
 fn prebase_recorded(syllable: &mut [Laid]) {
-    if let Some(laid) = syllable.iter_mut().find(|laid| laid.props & crate::shape::SUBSTITUTED != 0) {
+    if let Some(laid) = syllable.iter_mut().find(|laid| laid.props & crate::shaping::SUBSTITUTED != 0) {
         laid.category = U_VOWEL_BEFORE;
     }
 }
@@ -2084,7 +2111,7 @@ fn universal_reordered(font: &FontFile, glyphs: &mut Vec<Laid>) {
 
 /// Whether a glyph is a Universal Shaping Engine halant (and didn't ligate).
 fn halant(laid: &Laid) -> bool {
-    matches!(laid.category, U_HALANT | U_HALANT_MODIFIER | U_HALANT_OR_MODIFIER) && laid.props & crate::shape::LIGATED == 0
+    matches!(laid.category, U_HALANT | U_HALANT_MODIFIER | U_HALANT_OR_MODIFIER) && laid.props & crate::shaping::LIGATED == 0
 }
 
 /// The Universal Shaping Engine's reordering of one cluster (see `universal_reordered`).
@@ -2463,8 +2490,8 @@ const MADE_OF: [(u32, u32, u32, bool); 107] = [
 mod tests {
     use super::*;
     use crate::scripts::Language;
-    use crate::shape::Script;
-    use crate::shape::harfbuzz::Shaped;
+    use crate::shaping::Script;
+    use crate::shaping::harfbuzz::Shaped;
 
     /// A character's script, as an index in `WAYS`; `None` if not one of these.
     fn script(letter: char) -> Option<u8> {
@@ -2592,7 +2619,7 @@ mod tests {
         for named in fonts.split(':').filter(|named| !named.is_empty()) {
             let (path, face) = named.split_once('#').map_or((named, 0), |(path, face)| (path, face.parse().expect("a number")));
             let Some(font) = opened(path, face) else { continue };
-            let Some(theirs) = crate::shape::harfbuzz::harfbuzz(std::path::Path::new(path), face, &words) else { return eprintln!("no HarfBuzz on this system: not tested") };
+            let Some(theirs) = crate::shaping::harfbuzz::harfbuzz(std::path::Path::new(path), face, &words) else { return eprintln!("no HarfBuzz on this system: not tested") };
             let kept: Vec<(String, Shaped)> = words.iter().cloned().zip(theirs).filter(|(_, (glyphs, _))| glyphs.iter().all(|(glyph, _)| *glyph != 0)).collect();
             let differ = held(&font, &kept, &mut tally);
             println!("{named}: {} words, {} differ", kept.len(), differ.len());
@@ -2605,7 +2632,7 @@ mod tests {
     /// The system fonts for these scripts a test can rely on: Windows' own.
     fn systems() -> Vec<(char, FontFile)> {
         let letters = ['\u{915}', '\u{995}', '\u{b95}', '\u{d9a}', '\u{e01}', '\u{1780}', '\u{1000}'];
-        letters.into_iter().filter_map(|letter| crate::order::system(crate::text::Face::Regular, letter).map(|font| (letter, font))).collect()
+        letters.into_iter().filter_map(|letter| crate::bidi::system(crate::text::Face::Regular, letter).map(|font| (letter, font))).collect()
     }
 
     #[test]

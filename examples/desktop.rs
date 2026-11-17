@@ -28,7 +28,7 @@ const BAR: f32 = 44.0;
 struct Desk {
     /// The window of each program: where it is, and whether it is open.
     windows: [Panel; 4],
-    picked: usize,
+    selected: usize,
     notes: String,
     light: bool,
     tint: usize,
@@ -41,7 +41,7 @@ struct Desk {
 fn desk() -> Desk {
     let closed = |x: f32, y: f32, wide: f32, high: f32| Panel { open: false, ..Panel::new(x, y, wide, high) };
     let windows = [Panel::new(60.0, 50.0, 300.0, 300.0), closed(420.0, 90.0, 380.0, 280.0), closed(840.0, 60.0, 320.0, 210.0), closed(700.0, 380.0, 300.0, 170.0)];
-    Desk { windows, picked: 1, notes: String::new(), light: false, tint: 0, up: Duration::ZERO, own_pointer: false }
+    Desk { windows, selected: 1, notes: String::new(), light: false, tint: 0, up: Duration::ZERO, own_pointer: false }
 }
 
 /// The whole screen, as it is right now.
@@ -110,9 +110,9 @@ fn tasks(desk: &mut Desk, ui: &mut Ui) {
 
 fn files(desk: &mut Desk, ui: &mut Ui) {
     for (number, (name, _)) in FILES.iter().enumerate() {
-        desk.picked = if ui.selectable(desk.picked == number, name).clicked { number } else { desk.picked };
+        desk.selected = if ui.selectable(desk.selected == number, name).clicked { number } else { desk.selected };
     }
-    let (name, size) = FILES[desk.picked];
+    let (name, size) = FILES[desk.selected];
     ui.note(&format!("{name}: {size}"));
 }
 
@@ -167,13 +167,13 @@ struct Screen {
 
 impl Screen {
     fn new(width: f32, height: f32) -> Screen {
-        // (A machine with no system of its own would bring a font file, `OwnFonts`, or use the
+        // (A machine with no system of its own would bring a font file, `AppFonts`, or use the
         // letters built in.)
         let mut ui = Ui::new(taut::platform::system_text(), Box::new(LocalClipboard::default()));
         ui.resize(Size { w: width, h: height }, 1.0);
         // (What a screen reader would be told is how this session finds its way: where the
         // button called "Start" is, where the window called "Notes".)
-        ui.listen(true);
+        ui.set_screen_reader(true);
         let pixels = Surface::draw(&mut ui, 64);
         let mut screen = Screen { ui, desk: Desk { own_pointer: true, ..desk() }, pixels, mouse: pt(width / 2.0, height / 2.0), clock: Duration::ZERO, steps: Vec::new() };
         screen.does(Event::Move(screen.mouse));
@@ -203,8 +203,8 @@ impl Screen {
 
     /// Where the thing of this kind that is called `name` lies on the screen.
     fn find(&self, role: Role, name: &str) -> Point {
-        let said = self.ui.said().iter().find(|said| said.role == role && said.name == name).unwrap_or_else(|| panic!("nothing on the screen is called {name:?}"));
-        pt(said.rect.x + said.rect.w / 2.0, said.rect.y + said.rect.h / 2.0)
+        let node = self.ui.visible_access_nodes().iter().find(|node| node.role == role && node.name == name).unwrap_or_else(|| panic!("nothing on the screen is called {name:?}"));
+        pt(node.rect.x + node.rect.w / 2.0, node.rect.y + node.rect.h / 2.0)
     }
 
     /// Takes the mouse to a place, in a dozen steps as a hand would.
@@ -231,11 +231,11 @@ impl Screen {
     /// Lets time pass, a sixtieth of a second at a time.
     fn wait(&mut self, time: Duration) {
         for _ in 0..time.as_millis() / 16 {
-            self.does(Event::Focus(true));
+            self.does(Event::Focused(true));
         }
     }
     fn picture(&self, folder: &Path, name: &str) {
-        std::fs::write(folder.join(format!("{name}.png")), self.pixels.png()).unwrap_or_else(|why| panic!("{name}.png could not be written: {why}"));
+        std::fs::write(folder.join(format!("{name}.png")), self.pixels.to_png()).unwrap_or_else(|why| panic!("{name}.png could not be written: {why}"));
     }
 }
 
@@ -264,11 +264,11 @@ fn play(folder: &Path) {
     screen.drag(held, pt(held.x - 150.0, held.y + 60.0));
     // The monitor is opened from the bar, and left to run for a second; then the colours
     // of everything are changed in the settings.
-    let monitor = screen.find(Role::Tick, "Monitor");
+    let monitor = screen.find(Role::CheckBox, "Monitor");
     screen.click(monitor);
     screen.wait(Duration::from_secs(1));
     screen.picture(folder, "4-monitor");
-    let settings = screen.find(Role::Tick, "Settings");
+    let settings = screen.find(Role::CheckBox, "Settings");
     screen.click(settings);
     let light = screen.find(Role::Switch, "Light colours");
     screen.click(light);

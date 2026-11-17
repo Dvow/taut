@@ -15,10 +15,10 @@
 //! open blocks outside in, as far as they continue; may open new ones; and is added to the
 //! last. Then each text block's inlines, with a delimiter stack for emphasis and a bracket
 //! stack for links. Nothing recurses: nesting is kept in lists, as boxes are.
-use crate::code::Rules;
+use crate::code_editor::Syntax;
 use crate::layout::Align;
-use crate::rich::{self, Look, Stretch, THING, Thing, Writing};
-use crate::text::Rule;
+use crate::rich_text::{self, Stretch, THING, TextStyle, Thing, Writing};
+use crate::text::Decoration;
 use crate::ui::Picture;
 use std::collections::HashMap;
 
@@ -1760,7 +1760,7 @@ pub struct Markdown {
     pub(crate) names: Vec<String>,
     pub(crate) given: Vec<Option<Picture>>,
     /// Code syntax rules supplied by the app, by language name.
-    pub(crate) rules: Vec<(String, &'static Rules)>,
+    pub(crate) rules: Vec<(String, &'static Syntax)>,
     /// A unique id for this parse, so its layout can be cached. (Supplying a picture or rules
     /// gives a new one.)
     pub(crate) serial: u64,
@@ -1774,7 +1774,7 @@ fn serial() -> u64 {
 
 impl Markdown {
     /// Parses Markdown text.
-    pub fn read(text: &str) -> Markdown {
+    pub fn parse(text: &str) -> Markdown {
         let markdown = Markdown { writing: Writing::default(), links: Vec::new(), names: Vec::new(), given: Vec::new(), rules: Vec::new(), serial: serial() };
         let mut writer = Writer { markdown, read: read(text) };
         writer.write();
@@ -1795,7 +1795,7 @@ impl Markdown {
     }
     /// Highlights code blocks that name `language` (````
     /// ```toml ````) with `rules`: an app's own language. (Rust, C and C++, Python, JavaScript, TypeScript and JSON are highlighted by their usual names already.)
-    pub fn set_rules(&mut self, language: &str, rules: &'static Rules) {
+    pub fn set_syntax(&mut self, language: &str, rules: &'static Syntax) {
         self.rules.retain(|(known, _)| !known.eq_ignore_ascii_case(language));
         self.rules.push((language.to_string(), rules));
         self.serial = serial();
@@ -1822,29 +1822,29 @@ impl Writer {
             let parent = self.read.blocks[at].parent;
             let parent = if parent == NONE { NONE } else { shown[parent as usize] };
             let (words, pieces) = (self.markdown.writing.words.len() as u32, self.markdown.writing.pieces.len() as u32);
-            self.markdown.writing.blocks.push(rich::Block { kind, parent, end: 0, pieces: [pieces; 2], words: [words; 2] });
+            self.markdown.writing.blocks.push(rich_text::Block { kind, parent, end: 0, pieces: [pieces; 2], words: [words; 2] });
             shown[at] = self.markdown.writing.blocks.len() as u32 - 1;
             self.words(at);
         }
-        rich::finish(&mut self.markdown.writing);
+        rich_text::finish(&mut self.markdown.writing);
     }
 
     /// What a parsed block is shown as; nothing for an empty one.
-    fn kind(&mut self, at: usize) -> Option<rich::Kind> {
+    fn kind(&mut self, at: usize) -> Option<rich_text::Kind> {
         let (kind, ticked) = (self.read.blocks[at].kind, self.read.blocks[at].ticked);
         Some(match kind {
-            Kind::Document => rich::Kind::Page,
-            Kind::Quote => rich::Kind::Quote,
-            Kind::List { numbered, tight, .. } => rich::Kind::List { numbered, tight },
-            Kind::Item { number, .. } => rich::Kind::Item { number, ticked },
-            Kind::Paragraph => rich::Kind::Paragraph,
-            Kind::Heading { level, .. } => rich::Kind::Heading(level),
-            Kind::Code { .. } => rich::Kind::Code(self.language(at)),
-            Kind::Html(_) => rich::Kind::Code(0),
-            Kind::Rule => rich::Kind::Rule,
-            Kind::Table => rich::Kind::Table,
-            Kind::Row { head } => rich::Kind::Row { head },
-            Kind::Cell(side) => rich::Kind::Cell(side),
+            Kind::Document => rich_text::Kind::Page,
+            Kind::Quote => rich_text::Kind::Quote,
+            Kind::List { numbered, tight, .. } => rich_text::Kind::List { numbered, tight },
+            Kind::Item { number, .. } => rich_text::Kind::Item { number, ticked },
+            Kind::Paragraph => rich_text::Kind::Paragraph,
+            Kind::Heading { level, .. } => rich_text::Kind::Heading(level),
+            Kind::Code { .. } => rich_text::Kind::Code(self.language(at)),
+            Kind::Html(_) => rich_text::Kind::Code(0),
+            Kind::Rule => rich_text::Kind::Rule,
+            Kind::Table => rich_text::Kind::Table,
+            Kind::Row { head } => rich_text::Kind::Row { head },
+            Kind::Cell(side) => rich_text::Kind::Cell(side),
             Kind::Gone => return None,
         })
     }
@@ -1864,7 +1864,7 @@ impl Writer {
         match block.kind {
             Kind::Code { .. } | Kind::Html(_) => {
                 let code = tabs_to_spaces(block.content.strip_suffix('\n').unwrap_or(&block.content));
-                self.add(&code, Look { mono: true, ..Look::default() }, Thing::Words);
+                self.add(&code, TextStyle { mono: true, ..TextStyle::default() }, Thing::Words);
             }
             _ if block.inlines != NONE => self.inlines(block.inlines),
             _ => return,
@@ -1878,7 +1878,7 @@ impl Writer {
     }
 
     /// Adds text in a style: merged into the last piece if that has the same style.
-    fn add(&mut self, words: &str, look: Look, thing: Thing) {
+    fn add(&mut self, words: &str, look: TextStyle, thing: Thing) {
         let writing = &mut self.markdown.writing;
         let start = writing.words.len() as u32;
         writing.words.push_str(words);
@@ -1895,7 +1895,7 @@ impl Writer {
     fn inlines(&mut self, root: u32) {
         // The containers of the current inline, innermost last, each with the style it gives
         // its content.
-        let mut open: Vec<(u32, Look)> = vec![(root, Look::default())];
+        let mut open: Vec<(u32, TextStyle)> = vec![(root, TextStyle::default())];
         let mut at = self.read.nodes[root as usize].first;
         while let Some(&(_, look)) = open.last() {
             if at == NONE {
@@ -1913,20 +1913,20 @@ impl Writer {
     }
 
     /// Adds one inline's text; for a container, returns its content's style.
-    fn inline(&mut self, at: u32, look: Look) -> Option<Look> {
+    fn inline(&mut self, at: u32, look: TextStyle) -> Option<TextStyle> {
         let node = &self.read.nodes[at as usize];
         let flat = node.text.replace(['\n', '\r', '\t'], " ");
         match node.kind {
             Span::Text | Span::Html => self.add(&flat, look, Thing::Words),
             Span::Soft => self.add(" ", look, Thing::Words),
             Span::Hard => self.add("\n", look, Thing::Words),
-            Span::Code => self.add(&flat, Look { mono: true, ..look }, Thing::Words),
-            Span::Emphasis => return Some(Look { italic: true, ..look }),
-            Span::Strong => return Some(Look { bold: true, ..look }),
-            Span::Struck => return Some(Look { rule: Rule::Through, ..look }),
+            Span::Code => self.add(&flat, TextStyle { mono: true, ..look }, Thing::Words),
+            Span::Emphasis => return Some(TextStyle { italic: true, ..look }),
+            Span::Strong => return Some(TextStyle { bold: true, ..look }),
+            Span::Struck => return Some(TextStyle { rule: Decoration::Strikethrough, ..look }),
             Span::Link => {
                 self.markdown.links.push((node.text.clone(), node.title.clone()));
-                return Some(Look { link: self.markdown.links.len() as u32, ..look });
+                return Some(TextStyle { link: self.markdown.links.len() as u32, ..look });
             }
             Span::Image => self.picture(at, look),
             Span::Root => {}
@@ -1935,7 +1935,7 @@ impl Writer {
     }
 
     /// An image: by its name, with its alt text standing in.
-    fn picture(&mut self, at: u32, look: Look) {
+    fn picture(&mut self, at: u32, look: TextStyle) {
         let name = self.read.nodes[at as usize].text.clone();
         let number = match self.markdown.names.iter().position(|known| *known == name) {
             Some(number) => number,
@@ -2224,18 +2224,18 @@ mod tests {
     #[test]
     fn what_is_not_read_is_kept_as_the_text_it_is() {
         // HTML is recognized and kept literal; so is an entity only HTML 5 has.
-        let doc = Markdown::read("<b>bold</b> &copy; &HilbertSpace;\n\n<div>\nblock\n</div>\n");
+        let doc = Markdown::parse("<b>bold</b> &copy; &HilbertSpace;\n\n<div>\nblock\n</div>\n");
         assert_eq!(doc.text(), "<b>bold</b> \u{a9} &HilbertSpace;\n<div>\nblock\n</div>\n");
     }
 
     #[test]
     fn a_document_is_its_blocks_and_their_words_in_pieces_of_one_look() {
-        let doc = Markdown::read("## Head\n\nPlain *slanted* `code` [to](u \"t\") ![a cat](cat.png)\n\n- one\n- two\n");
+        let doc = Markdown::parse("## Head\n\nPlain *slanted* `code` [to](u \"t\") ![a cat](cat.png)\n\n- one\n- two\n");
         let writing = &doc.writing;
         assert_eq!(writing.words, "Head\nPlain slanted code to a cat\none\ntwo\n");
-        let kinds: Vec<rich::Kind> = writing.blocks.iter().map(|block| block.kind).collect();
-        let (paragraph, item) = (rich::Kind::Paragraph, rich::Kind::Item { number: 0, ticked: None });
-        assert_eq!(kinds, [rich::Kind::Page, rich::Kind::Heading(2), paragraph, rich::Kind::List { numbered: false, tight: true }, item, paragraph, item, paragraph]);
+        let kinds: Vec<rich_text::Kind> = writing.blocks.iter().map(|block| block.kind).collect();
+        let (paragraph, item) = (rich_text::Kind::Paragraph, rich_text::Kind::Item { number: 0, ticked: None });
+        assert_eq!(kinds, [rich_text::Kind::Page, rich_text::Kind::Heading(2), paragraph, rich_text::Kind::List { numbered: false, tight: true }, item, paragraph, item, paragraph]);
         // Each block ends after its content; a container has all its children's text.
         let ends: Vec<u32> = writing.blocks.iter().map(|block| block.end).collect();
         assert_eq!(ends, [8, 2, 3, 8, 6, 6, 8, 8]);
@@ -2269,7 +2269,7 @@ mod tests {
         // long runs of openers that close nothing.
         let started = std::time::Instant::now();
         for text in ["*a ".repeat(3000), "[".repeat(3000), "> ".repeat(500) + "a", "- ".repeat(300) + "a", "`".repeat(3000), "a**b".repeat(2000), "[a](".repeat(2000)] {
-            let _ = Markdown::read(&text);
+            let _ = Markdown::parse(&text);
         }
         assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
     }

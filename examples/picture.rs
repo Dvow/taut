@@ -38,6 +38,6 @@ fn main() {
     ui.resize(Size { w: 520.0, h: 300.0 }, scale);
     let (mut on, mut level) = (true, 6.0);
     ui.run(&mut |ui| describe(&mut on, &mut level, ui));
-    std::fs::write(&file, Surface::draw(&mut ui, 64).png()).expect("the picture could not be saved");
+    std::fs::write(&file, Surface::draw(&mut ui, 64).to_png()).expect("the picture could not be saved");
     println!("saved {file}");
 }

@@ -62,7 +62,7 @@ describe
 //! together with where the window was.
 //!   cargo run -p taut --example todo
 use std::path::PathBuf;
-use taut::{Align, Icon, Key, Mods, Placed, Theme, Ui, Window};
+use taut::{Align, Icon, Key, Mods, Theme, Ui, Window, WindowPlacement};
 
 const PEN: Icon = Icon::line("M3.5 12.5 4 10 10.5 3.5 12.5 5.5 6 12zM9 5l2 2");
 const CROSS: Icon = Icon::line("M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5");
@@ -89,14 +89,14 @@ struct App {
     /// The number the next new task is known by.
     next: u64,
     /// Where the window is, as it last said.
-    placed: Option<Placed>,
+    placed: Option<WindowPlacement>,
     /// The file the list is kept in.
     file: PathBuf,
 }
 
 fn describe(app: &mut App, ui: &mut Ui) {
     ui.theme = if ui.system_dark() { Theme::dark() } else { Theme::light() };
-    app.placed = ui.placed().or(app.placed);
+    app.placed = ui.window_placement().or(app.placed);
     let mut changed = adding(app, ui);
     showing(app, ui);
     changed |= list(app, ui);
@@ -228,7 +228,7 @@ fn file() -> PathBuf {
 fn main() {
     let mut app = App::load(file());
     let window = Window { title: "To do", width: 400.0, height: 480.0, min_width: 280.0, min_height: 220.0, ..Default::default() };
-    taut::run(window.placed(app.placed), move |ui| describe(&mut app, ui));
+    taut::run(window.with_placement(app.placed), move |ui| describe(&mut app, ui));
 }
 ```
 
@@ -277,7 +277,7 @@ computed each run, so it is always current.
 
 - `ui.system_dark()` picks the theme; when the user changes the setting, `describe` reruns
   (chapter 7).
-- The file is plain text: the window's place (as `Placed` writes it), then a line per task:
+- The file is plain text: the window's place (as `WindowPlacement` writes it), then a line per task:
 
 ```text
 300 200 400 480 0
@@ -288,13 +288,13 @@ x Buy bread
 
 - Saved whenever a part changed the list, and on close: `taut::run` drops the app with the
   window, and `Drop` saves the window's final place.
-- `ui.placed()` reports position and size; `Window { .. }.placed(..)` reopens there (or where the
+- `ui.window_placement()` reports position and size; `Window { .. }.with_placement(..)` reopens there (or where the
   system chooses, if that place is off every screen).
 - The file is in the settings folder (`%APPDATA%`; `$XDG_CONFIG_HOME` or `~/.config`). It is a
-  field of `App`, so a test can pass its own (chapter 8). `taut::kept::folder` and
-  `taut::kept::write` do the same, writing atomically (guide: "Kept between runs").
+  field of `App`, so a test can pass its own (chapter 8). `taut::storage::folder` and
+  `taut::storage::write` do the same, writing atomically (guide: "Kept between runs").
 - A failed save shows a `ui.notice(..)`.
-- `Table`, `Panel`, `Dock` and `Second` save the same way, with `to_string()` and `parse()`; a
+- `Table`, `Panel`, `Dock` and `SecondWindow` save the same way, with `to_string()` and `parse()`; a
   line that doesn't parse is rejected whole.
 - For release on Windows, add `#![windows_subsystem = "windows"]` at the top (chapter 1).
 
@@ -303,6 +303,6 @@ x Buy bread
 - Keep the app's state in one struct; describe the window with one function per section.
 - Key rows by the item's own id.
 - A dialog is open while the state says so; `ui.set_focus` and `ui.select_all` place the cursor.
-- Save plain text; `ui.placed()` and `Window::placed` restore the window.
+- Save plain text; `ui.window_placement()` and `Window::with_placement` restore the window.
 
 Next: [larger parts](05-larger-parts.md).

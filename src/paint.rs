@@ -6,11 +6,11 @@ use crate::id::Id;
 use crate::layout::{Align, BAR, Content, Flow, Tree};
 use crate::path::Path;
 use crate::scene::Scenes;
-use crate::shelf::Shelf;
-use crate::survey::{Fade, Seen};
-use crate::text::{Font, Line, Rule, TextSystem};
+use crate::slots::Slots;
+use crate::text::{Decoration, Font, Line, TextSystem};
 use crate::theme::Theme;
 use crate::ui::{Icon, Stored};
+use crate::visible_boxes::{Fade, VisibleBox};
 use std::collections::HashMap;
 
 /// An icon rasterized once at one size: each pixel's coverage.
@@ -64,7 +64,7 @@ pub(crate) fn bar(tree: &Tree, at: u32, r: Rect, axis: usize) -> Option<(Rect, f
     }
     // In a long list laid out from a row near the visible ones, the rows before count too: as
     // scrolled past, and as more to scroll.
-    let (room, end, offset, left_out) = (tree.room(at, axis), tree.scroll_end(at, axis), tree.specs[at as usize].offset[axis], tree.shift(at, axis));
+    let (room, end, offset, left_out) = (tree.available(at, axis), tree.scroll_end(at, axis), tree.specs[at as usize].offset[axis], tree.shift(at, axis));
     let short = if tree.has_bar(at, 1 - axis) { BAR } else { 0.0 };
     let strip = [rect(r.x, r.bottom() - BAR, r.w - short, BAR), rect(r.right() - BAR, r.y, BAR, r.h - short)][axis];
     let (from, run) = [(strip.x, strip.w), (strip.y, strip.h)][axis];
@@ -72,21 +72,21 @@ pub(crate) fn bar(tree: &Tree, at: u32, r: Rect, axis: usize) -> Option<(Rect, f
     Some((strip, from + (run - long) * (offset + left_out) / (end + left_out), long))
 }
 
-/// How content only some programs show is drawn: pictures, SVG drawings, a film's due frame,
-/// icons, the app's own shapes, shadows, gradients. Each is set when the app first describes or
-/// hands over such a thing ([`El::picture`](crate::El::picture),
-/// [`Ui::add_drawing`](crate::Ui::add_drawing), [`Ui::add_film`](crate::Ui::add_film),
-/// [`El::icon`](crate::El::icon), [`El::shape`](crate::El::shape),
-/// [`El::shadow`](crate::El::shadow), [`El::gradient_along`](crate::El::gradient_along)...),
-/// and not before. Nothing else reaches that code, so a program that shows none is built
-/// without it.
+/// How content only some programs show is drawn: pictures, SVG drawings, an animation's due
+/// frame, icons, the app's own shapes, shadows, gradients. Each is set when the app first
+/// describes or hands over such a thing ([`El::picture`](crate::El::picture),
+/// [`Ui::add_drawing`](crate::Ui::add_drawing),
+/// [`Ui::add_animation`](crate::Ui::add_animation), [`El::icon`](crate::El::icon),
+/// [`El::shape`](crate::El::shape), [`El::shadow`](crate::El::shadow),
+/// [`El::gradient_along`](crate::El::gradient_along)...), and not before. Nothing else reaches
+/// that code, so a program that shows none is built without it.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Shows {
     /// Lays a picture's pixels into a box with its corners, as [`Canvas::rounded_picture`]
-    /// does: a picture, or a film's frame.
+    /// does: a picture, or an animation's frame.
     pub picture: Option<ShowsPicture>,
     pub drawing: Option<fn(&mut crate::svg::Kept, Rect, Color, &mut Canvas)>,
-    pub film: Option<ShowsFilm>,
+    pub animation: Option<ShowsAnimation>,
     /// Rasterizes an icon at a size, as `draw_mask` does.
     pub icon: Option<fn(Icon, usize) -> Mask>,
     /// Draws an app's shape with its top left at a point, as `Inked::draw` does.
@@ -105,9 +105,9 @@ pub(crate) struct Shows {
 type ShowsStripes = fn(&Tree, u32, Rect, Color, &mut Canvas);
 /// Keeps the pixels under a see-through box where it starts, and lets them show through where
 /// it ends.
-type Fades = fn(&mut Painter<'_>, &Seen, &mut Canvas<'_>);
-/// Brings a film to a frame and hands out its pixels.
-type ShowsFilm = for<'r> fn(&'r mut crate::film::Reel, usize) -> (&'r [u32], usize);
+type Fades = fn(&mut Painter<'_>, &VisibleBox, &mut Canvas<'_>);
+/// Brings an animation to a frame and hands out its pixels.
+type ShowsAnimation = for<'r> fn(&'r mut crate::animation::Reel, usize) -> (&'r [u32], usize);
 /// Fills a box with a gradient.
 type ShowsGradient = fn(&mut Canvas, Rect, f32, &[(f32, Color)], Option<f32>);
 /// Draws a box's shadow: its place, corner radius, reach and colour.
@@ -120,9 +120,9 @@ pub(crate) struct Painter<'a> {
     pub tree: &'a Tree,
     pub icons: &'a [Icon],
     pub shapes: &'a [crate::pen::Inked],
-    pub pictures: &'a mut Shelf<Stored>,
-    pub drawings: &'a mut Shelf<crate::svg::Kept>,
-    pub films: &'a mut Shelf<crate::film::Reel>,
+    pub pictures: &'a mut Slots<Stored>,
+    pub drawings: &'a mut Slots<crate::svg::Kept>,
+    pub animations: &'a mut Slots<crate::animation::Reel>,
     /// How content only some programs show is drawn, once described (see `Shows`).
     pub shows: Shows,
     pub scenes: &'a mut Scenes,
@@ -154,7 +154,7 @@ impl Painter<'_> {
     /// Draws the boxes in view in the survey's order, as far as the canvas covers them. Boxes
     /// out of view are not looked at: a window of 100,000 boxes draws as fast as its visible
     /// screenful.
-    pub fn draw(&mut self, seen: &[Seen], canvas: &mut Canvas) {
+    pub fn draw(&mut self, seen: &[VisibleBox], canvas: &mut Canvas) {
         self.clips.clear();
         for step in seen {
             match step.leaving {
@@ -165,9 +165,9 @@ impl Painter<'_> {
     }
 
     /// The box itself, under its content.
-    fn enter(&mut self, step: &Seen, canvas: &mut Canvas) {
+    fn enter(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
         let (spec, r) = (&self.tree.specs[step.at as usize], step.rect);
-        if matches!(spec.frame.kept, 1 | 2) {
+        if matches!(spec.frame.pinned, 1 | 2) {
             self.widen(step.at, canvas);
         }
         if !step.area.intersect(canvas.visible()).is_empty() {
@@ -182,7 +182,7 @@ impl Painter<'_> {
             self.content(step.at, r, canvas);
         }
         if spec.frame.clip {
-            self.clips.push(canvas.clip(self.tree.scrolled(step.at, r)));
+            self.clips.push(canvas.clip(self.tree.scrolled_view(step.at, r)));
         }
     }
 
@@ -190,7 +190,7 @@ impl Painter<'_> {
     /// described one, which hands over what draws it (see `Shows`).
     fn shadow(&self, r: Rect, radius: f32, reach: f32, canvas: &mut Canvas) {
         if let Some(shadow) = self.shows.shadow {
-            shadow(canvas, r, radius, reach, Color::BLACK.alpha(0.4));
+            shadow(canvas, r, radius, reach, Color::BLACK.with_alpha(0.4));
         }
     }
 
@@ -215,7 +215,7 @@ impl Painter<'_> {
     /// What lies over a box's content: its scroll bars and focus ring. (And the clip sticky
     /// headings in it set is released; or, for such a heading, what follows it in its box is
     /// clipped to below it, as the survey has it: see `Lying::pin`.)
-    fn leave(&mut self, step: &Seen, canvas: &mut Canvas) {
+    fn leave(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
         if step.fade != Fade::No {
             return self.shows.fade.map_or((), |fade| fade(self, step, canvas));
         }
@@ -237,7 +237,7 @@ impl Painter<'_> {
             let ring = if spec.fill.solid() == self.theme.accent.solid() { self.theme.on_accent } else { self.theme.accent };
             canvas.border(r, spec.radius, 2.0, ring);
         }
-        if let Some(before) = self.clips.pop_if(|_| matches!(spec.frame.kept, 1 | 2)) {
+        if let Some(before) = self.clips.pop_if(|_| matches!(spec.frame.pinned, 1 | 2)) {
             canvas.restore_clip(before);
         }
         if step.pins {
@@ -247,7 +247,7 @@ impl Painter<'_> {
 
     /// Where a see-through box starts, what is under it is kept; where it ends, that shows
     /// through all drawn of it since (see `Fade`), as through one picture.
-    pub(crate) fn fade(&mut self, step: &Seen, canvas: &mut Canvas) {
+    pub(crate) fn fade(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
         let (kept, parts) = &mut *self.under;
         match step.fade {
             Fade::Starts => parts.push(canvas.keep_under(step.area, kept)),
@@ -273,17 +273,17 @@ impl Painter<'_> {
             Content::Text { .. } => self.words(at, inside, canvas),
             // A picture the app let go draws nothing.
             Content::Picture { picture, keep } => {
-                let to = self.pictures.get(picture).map_or(inside, |stored| kept_shape(inside, [stored.width as f32, (stored.pixels.len() / stored.width.max(1)) as f32], keep));
+                let to = self.pictures.get(picture).map_or(inside, |stored| fit_aspect(inside, [stored.width as f32, (stored.pixels.len() / stored.width.max(1)) as f32], keep));
                 let shown = self.shows.picture.zip(self.pictures.get_mut(picture)).map(|(lay, stored)| (lay, stored.shown(to.w * scale, to.h * scale)));
                 shown.map_or((), |(lay, (pixels, width))| lay(canvas, pixels, width, to, spec.radius))
             }
             Content::Drawing { drawing, color, keep } => {
-                let to = self.drawings.get(drawing).map_or(inside, |kept| kept_shape(inside, kept.size(), keep));
+                let to = self.drawings.get(drawing).map_or(inside, |kept| fit_aspect(inside, kept.size(), keep));
                 self.shows.drawing.zip(self.drawings.get_mut(drawing)).map_or((), |(show, kept)| show(kept, to, color, canvas))
             }
             Content::Film { film, frame, keep } => {
-                let to = self.films.get(film).map_or(inside, |reel| kept_shape(inside, reel.size().map(|side| side as f32), keep));
-                let shown = self.shows.film.zip(self.films.get_mut(film)).map(|(shown, reel)| shown(reel, frame as usize));
+                let to = self.animations.get(film).map_or(inside, |reel| fit_aspect(inside, reel.size().map(|side| side as f32), keep));
+                let shown = self.shows.animation.zip(self.animations.get_mut(film)).map(|(shown, reel)| shown(reel, frame as usize));
                 shown.zip(self.shows.picture).map_or((), |((pixels, width), lay)| lay(canvas, pixels, width, to, spec.radius))
             }
             // A box with a solid fill, square corners and no border gets its scene drawn on
@@ -347,7 +347,7 @@ impl Painter<'_> {
             // A line runs in its paragraph's direction (the paragraph starts after the last
             // line end before it); a right-to-left line starts at the right.
             let paragraph = tree.strings[start as usize..line.start].rfind('\n').map_or(start as usize, |at| start as usize + at + 1);
-            let leftward = crate::order::leftward(&tree.strings[paragraph..end as usize]);
+            let leftward = crate::bidi::leftward(&tree.strings[paragraph..end as usize]);
             let x = inside.x + ((inside.w - line.width).max(0.0) * if leftward { 1.0 - before } else { before }).round();
             // The line's selected part (several pieces where it runs both ways), and where the
             // cursor shows on it.
@@ -355,7 +355,7 @@ impl Painter<'_> {
             let at = marked.filter(|_| spec.caret && cursor_line == Some(i)).map(|(.., at)| at);
             let cursor = marked.and_then(|(from, to, _)| crate::text::marks(self.text, text, line.start, line.width, font, scale, leftward, [from, to], at, self.after, &mut selected));
             for [left, right] in selected {
-                canvas.rect(rect(x + left, y, right - left, place.line_height), self.theme.accent.alpha(0.35));
+                canvas.rect(rect(x + left, y, right - left, place.line_height), self.theme.accent.with_alpha(0.35));
             }
             // Letters are centred in the line's height (see `Metrics::lift`). A cut line keeps
             // its start (at the right for right-to-left) and the dots go at its end.
@@ -366,7 +366,7 @@ impl Painter<'_> {
             if let Some((_, dots)) = ends {
                 self.text.draw(canvas, "…", dots, y - place.lift, font, color);
             }
-            if font.rule != Rule::None {
+            if font.decoration != Decoration::None {
                 self.rule(canvas, rect(x, y - place.lift, cut.map_or(line.width, |_| inside.w), place.line_height), font, color);
             }
             if let Some(at) = cursor {
@@ -388,8 +388,8 @@ impl Painter<'_> {
         let (m, scale) = (self.text.metrics(font, canvas.scale()), canvas.scale());
         let thick = (font.size / 14.0 * scale).round().max(1.0) / scale;
         // A font without an x-height: about half its size.
-        let small = if m.small > 0.0 { m.small } else { font.size / 2.0 };
-        let down = if font.rule == Rule::Under { m.ascent + thick } else { m.ascent - (small + thick) / 2.0 };
+        let small = if m.x_height > 0.0 { m.x_height } else { font.size / 2.0 };
+        let down = if font.decoration == Decoration::Underline { m.ascent + thick } else { m.ascent - (small + thick) / 2.0 };
         canvas.rect(rect(line.x, line.y + down, line.w, thick), color);
     }
 
@@ -413,9 +413,10 @@ impl Painter<'_> {
 }
 
 /// Where in `inside` something `size` large is drawn: all of it; or keeping its aspect
-/// (`keep`), as large as fits, centred. (Something of no size covers all of it, as nothing.)
-fn kept_shape(inside: Rect, [wide, high]: [f32; 2], keep: bool) -> Rect {
-    if !keep || wide <= 0.0 || high <= 0.0 {
+/// (`keep_aspect`), as large as fits, centred. (Something of no size covers all of it, as
+/// nothing.)
+fn fit_aspect(inside: Rect, [wide, high]: [f32; 2], keep_aspect: bool) -> Rect {
+    if !keep_aspect || wide <= 0.0 || high <= 0.0 {
         return inside;
     }
     let by = (inside.w / wide).min(inside.h / high);
@@ -490,7 +491,7 @@ mod tests {
         ui.row().h(Length::Px(40.0)).fill(t.panel).open();
         ui.label(&format!("Bar {}", app.count));
         ui.close();
-        ui.el().flow(Flow::Layers).grow().open();
+        ui.el().flow(Flow::Stack).grow().open();
         ui.column().grow().pad(10.0).open();
         app.open ^= ui.button("Panel").clicked;
         app.wide ^= ui.button("Wider").clicked;
@@ -499,7 +500,7 @@ mod tests {
         if app.open {
             let wide = if app.wide { 250.0 } else { 150.0 };
             ui.el().place((Align::End, Align::Start)).w(Length::Px(wide)).h(Length::Grow(1.0)).shadow(16.0).open();
-            let shown = ui.column().grow().fill(t.raise).sense().open();
+            let shown = ui.column().grow().fill(t.raised).sense().open();
             ui.tell(&shown, Role::Group, None, "Side");
             ui.label(&format!("In it {}", app.count));
             ui.close();

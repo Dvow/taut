@@ -14,7 +14,7 @@ fn describe(ui: &mut Ui) {
     ui.note("A note: smaller and quieter");
     ui.text("Bold, in the colour that stands out", t.font.bold(), t.accent);
     ui.text("Letters of one width, for code: let x = 1;", t.font.mono(), t.text);
-    ui.text("Struck through: no longer so", t.font.struck(), t.text_dim);
+    ui.text("Struck through: no longer so", t.font.strikethrough(), t.text_dim);
     ui.text("Larger", Font::new(20.0), t.text);
     ui.paragraph("A paragraph breaks into as many lines as the width it is given needs, between its words.");
     ui.el().w(Length::Px(220.0)).clip().text("Text that is too long for its box ends in dots", t.font, t.text).show();
@@ -34,11 +34,11 @@ fn describe(ui: &mut Ui) {
 - `ui.label`, `ui.note`: one line in the theme's font or small font. `ui.text(text, font, color)`:
   any font and colour.
 - `Font::new(20.0)` with `.bold()`, `.mono()`, `.underlined()`, `.struck()`. The theme's
-  `t.font` (13) and `t.small` (11.5) are used by every part.
+  `t.font` (13) and `t.small_font` (11.5) are used by every part.
 - `ui.paragraph` wraps, as does `.wrap()` on a box; `.text_align(Align::Center)` centres lines;
   `.clip()` ends overflow in "…".
 - Mixed styles: a `ui.wrapping_row()` of `ui.words(..)` and `ui.link(..)`, wrapping together.
-- `ui.text_width(text, font)`; `ui.label_downward(text)` for vertical CJK text.
+- `ui.text_width(text, font)`; `ui.vertical_label(text)` for vertical CJK text.
 
 **System text:** GDI on Windows (Segoe UI; monospace: Cascadia Mono, Consolas or Courier New),
 FreeType and Fontconfig on Linux, with the user's smoothing settings.
@@ -47,19 +47,19 @@ FreeType and Fontconfig on Linux, with the user's smoothing settings.
 in the first run:
 
 ```rust
-use taut::{FontFile, OwnFonts, Ui};
+use taut::{AppFonts, FontFile, Ui};
 
 /// Has the whole interface written in the app's own font, from files beside the program.
 fn own_fonts(ui: &mut Ui) -> Option<()> {
     let regular = FontFile::read(std::fs::read("fonts/Inter-Regular.ttf").ok()?)?;
     let bold = FontFile::read(std::fs::read("fonts/Inter-Bold.ttf").ok()?)?;
-    ui.set_fonts(OwnFonts::new(regular).bold(bold));
+    ui.set_fonts(AppFonts::new(regular).bold(bold));
     Some(())
 }
 ```
 
 - `ui.set_fonts` falls back to system text for missing letters;
-  `ui.set_text(Box::new(OwnFonts::new(..)))` uses only the files. Embed with `include_bytes!`.
+  `ui.set_text_system(Box::new(AppFonts::new(..)))` uses only the files. Embed with `include_bytes!`.
 - Kerned by the file; small letters snap vertically to whole pixels (`.smooth()` turns it off).
 - Icon fonts: `.shape(&font.outline('\u{e88a}', 16.0), color)`.
 
@@ -157,8 +157,8 @@ fn photo(ui: &mut Ui) -> Option<Picture> {
   `png::decode`, `png::encode`, `jpeg::decode`, `gif::decode`… work on plain pixels.
 - **SVG:** `ui.add_drawing(svg_text)` returns a `Drawing`; `.drawing(drawing, color)` shows it,
   sharp at any size; `color` fills `currentColor`. Text, filters and embedded pictures after
-  `svg::read_text()`, `svg::read_filters()`, `svg::read_pictures()`. No animation.
-- **Animations:** `ui.add_film(bytes)` (GIF, PNG, WebP), `.film(film)`; only its box redraws.
+  `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()`. No animation.
+- **Animations:** `ui.add_animation(bytes)` (GIF, PNG, WebP), `.animation(animation)`; only its box redraws.
 
 ## Shapes
 
@@ -183,15 +183,15 @@ fn describe(ui: &mut Ui) {
     }
     area.line_to(wide, high).close();
     ui.column().pad(12.0).gap(12.0).open();
-    ui.el().flow(Flow::Layers).size(wide, high).fill(t.panel).radius(6.0).clip().open();
-    ui.el().size(wide, high).shape(&area, t.accent.alpha(0.25)).show();
+    ui.el().flow(Flow::Stack).size(wide, high).fill(t.panel).radius(6.0).clip().open();
+    ui.el().size(wide, high).shape(&area, t.accent.with_alpha(0.25)).show();
     ui.el().size(wide, high).outline(&line, 2.0, t.accent).show();
     ui.close();
     // Fills that go from colour to colour, and icons drawn from SVG path data.
     ui.row().gap(12.0).open();
     ui.el().size(90.0, 36.0).radius(8.0).gradient_across(t.accent, t.green).show();
     ui.el().size(90.0, 36.0).radius(8.0).gradient_along(60.0, &[(0.0, t.red), (0.5, t.amber), (1.0, t.green)]).show();
-    ui.el().size(36.0, 36.0).radius(18.0).gradient_around(&[(0.0, t.text), (0.6, t.accent), (1.0, t.accent.alpha(0.0))]).show();
+    ui.el().size(36.0, 36.0).radius(18.0).gradient_around(&[(0.0, t.text), (0.6, t.accent), (1.0, t.accent.with_alpha(0.0))]).show();
     ui.icon(STAR);
     ui.el().icon(STAR, 32.0, t.amber).show();
     ui.close();
@@ -216,7 +216,7 @@ fn describe(ui: &mut Ui) {
 Meshes are handed over once; each run sets the view and how each mesh is drawn:
 
 ```rust
-use taut::{Mesh, Ui, View};
+use taut::{Camera, Mesh, Ui};
 
 /// A body with four sides and a square floor: five points, and four triangles, each
 /// said by the numbers of its three corners.
@@ -228,7 +228,7 @@ fn pyramid(ui: &mut Ui) -> Mesh {
 fn describe(body: &mut Option<Mesh>, ui: &mut Ui) {
     let t = ui.theme;
     let pyramid = *body.get_or_insert_with(|| pyramid(ui));
-    let view = View::look([13.0, 9.0, 17.0], [0.0, 2.0, 0.0]);
+    let view = Camera::look_at([13.0, 9.0, 17.0], [0.0, 2.0, 0.0]);
     ui.row().pad(12.0).open();
     ui.el().size(300.0, 160.0).fill(t.panel).radius(6.0).scene(&view, &[pyramid.filled(t.accent).outlined(t.text)]).show();
     ui.close();
@@ -245,7 +245,7 @@ the guide's "Scenes".
 A `Paper` holds pages of any size, in window units (1/96 inch). Save as PDF or print:
 
 ```rust
-use taut::{Color, Font, Paper, Path, Pen, Printing, Ui};
+use taut::{Color, Font, Paper, Path, Pen, PrintJob, Ui};
 
 fn report() -> Paper {
     let mut paper = Paper::new();
@@ -257,11 +257,11 @@ fn report() -> Paper {
     paper
 }
 
-fn describe(printing: &mut Option<Printing>, ui: &mut Ui) {
+fn describe(printing: &mut Option<PrintJob>, ui: &mut Ui) {
     if ui.button("Save as PDF").clicked {
         // Written on a thread of its own: the window goes on answering meanwhile.
         let paper = report();
-        std::thread::spawn(move || std::fs::write("report.pdf", paper.pdf()));
+        std::thread::spawn(move || std::fs::write("report.pdf", paper.to_pdf()));
     }
     if ui.button("Print").clicked {
         *printing = Some(taut::print(report(), "Report"));
@@ -269,19 +269,19 @@ fn describe(printing: &mut Option<Printing>, ui: &mut Ui) {
 }
 
 // A file a reader opens: its text is real text, which it finds and copies.
-assert!(report().pdf().starts_with(b"%PDF-"));
+assert!(report().to_pdf().starts_with(b"%PDF-"));
 ```
 
 - A `Paper` can be built and written on another thread.
 - Text is shaped as in the window, fonts subset.
 - `paper.markdown(..)` lays out a document; `paper.interface(..)` places a window's content as a
   picture.
-- The print dialog is the system's; `Printing::done` reports the outcome a run or more later.
+- The print dialog is the system's; `PrintJob::outcome` reports the outcome a run or more later.
 
 ## Summary
 
 - Text is the system's unless the app brings fonts; extra scripts and colour emoji are features.
-- Pictures, drawings, films and meshes are handed over once and shown by handle; drop them when
+- Pictures, drawings, animations and meshes are handed over once and shown by handle; drop them when
   done.
 - Any shape is a `Path` in a box; a `Paper` takes the same shapes, text and pictures.
 

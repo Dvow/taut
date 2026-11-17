@@ -20,9 +20,9 @@
 //! and `wayland` windows); nothing else reaches this code, so a program that never asks does
 //! not carry it.
 use crate::atspi::{ANSWER, BUS, BUS_PATH, Bus, CALL, FAILED, Header, Message, NEWS, PROPERTIES, Pack, Unpack};
-use crate::copies;
-use crate::hotkeys::{HOTKEYS, Stand};
-use crate::notices::{NOTICES, Out};
+use crate::hotkeys::{HOTKEYS, Registration};
+use crate::notifications::{NOTICES, Out};
+use crate::single_instance;
 use crate::tray::{self, Did, HINT, PICTURES, ROWS, Row, RowKind, TRAY, Tray};
 use std::cell::RefCell;
 
@@ -103,17 +103,17 @@ fn program() -> String {
 /// bus), and returns what the first window should do. Global shortcuts go through the portal
 /// under Wayland (`wayland`), which shows its dialog over the window it knows as `parent`.
 pub(crate) fn ran(bus: Option<&mut Bus>, wayland: bool, parent: &str) -> Asked {
-    let ((said, changed), hide) = TRAY.with_borrow_mut(|tray| (tray.settle(), std::mem::take(&mut tray.hide)));
+    let ((wanted, changed), hide) = TRAY.with_borrow_mut(|tray| (tray.settle(), std::mem::take(&mut tray.hide)));
     let out = NOTICES.with_borrow_mut(|notices| {
         notices.clicked.clear();
         std::mem::take(&mut notices.out)
     });
-    let later = copies::forward();
+    let later = single_instance::forward();
     let mut token = DESK.with_borrow_mut(|desk| std::mem::take(&mut desk.token));
     match bus {
         Some(bus) => DESK.with_borrow_mut(|desk| {
             desk.listen(bus);
-            desk.tray(bus, said, changed);
+            desk.tray(bus, wanted, changed);
             out.into_iter().for_each(|out| desk.notify(bus, out));
             if wayland {
                 desk.bind(bus, parent);
@@ -135,8 +135,8 @@ pub(crate) fn ran(bus: Option<&mut Bus>, wayland: bool, parent: &str) -> Asked {
 /// Refuses the keys `which` selects: they are taken, and the app hears so.
 fn refuse(keys: &mut [crate::hotkeys::Wanted], which: impl Fn(&crate::hotkeys::Wanted) -> bool) {
     let mut refused = false;
-    for wanted in keys.iter_mut().filter(|wanted| wanted.stand != Stand::Taken && which(wanted)) {
-        (wanted.stand, refused) = (Stand::Taken, true);
+    for wanted in keys.iter_mut().filter(|wanted| wanted.state != Registration::Refused && which(wanted)) {
+        (wanted.state, refused) = (Registration::Refused, true);
     }
     if refused {
         crate::platform::Waker.wake();
@@ -164,8 +164,8 @@ impl Desk {
 
     /// Passes the icon on as the run says: it takes a bus name and registers with the watcher;
     /// or it leaves the bus; or changes are signalled to the host.
-    fn tray(&mut self, bus: &mut Bus, said: bool, changed: u8) {
-        match (said, self.name.is_empty()) {
+    fn tray(&mut self, bus: &mut Bus, wanted: bool, changed: u8) {
+        match (wanted, self.name.is_empty()) {
             (true, true) => {
                 self.names += 1;
                 self.name = format!("{ITEM}-{}-{}", std::process::id(), self.names);
@@ -227,13 +227,13 @@ impl Desk {
         let missing = self.keys.missing;
         let rebind = HOTKEYS.with_borrow_mut(|hotkeys| {
             let mut changed = false;
-            hotkeys.settle(|wanted| changed |= wanted.stand != Stand::Taken);
-            changed |= hotkeys.keys.iter().any(|wanted| wanted.stand == Stand::New);
+            hotkeys.settle(|wanted| changed |= wanted.state != Registration::Refused);
+            changed |= hotkeys.keys.iter().any(|wanted| wanted.state == Registration::New);
             if changed && missing {
                 refuse(&mut hotkeys.keys, |_| true);
             }
             if changed && !missing {
-                hotkeys.keys.iter_mut().for_each(|wanted| wanted.stand = Stand::Asked);
+                hotkeys.keys.iter_mut().for_each(|wanted| wanted.state = Registration::Pending);
             }
             changed && !missing
         });
@@ -260,7 +260,7 @@ impl Desk {
         let mut asks = Pack::default();
         asks.text(session).open(8);
         HOTKEYS.with_borrow(|hotkeys| {
-            for wanted in hotkeys.keys.iter().filter(|wanted| wanted.stand == Stand::Asked) {
+            for wanted in hotkeys.keys.iter().filter(|wanted| wanted.state == Registration::Pending) {
                 let trigger = wanted.combo.trigger();
                 asks.pad(8).text(&wanted.number.to_string()).open(8);
                 asks.pad(8).text("description").kinds("s").text(&trigger);
@@ -287,8 +287,8 @@ impl Desk {
     }
 
     /// A tray watcher appeared or went away: a new one is told of the icon, if there is one.
-    fn listed(&mut self, bus: &mut Bus, mut said: Unpack) -> bool {
-        let (Some(WATCHER), Some(_), Some(now)) = (said.text(), said.text(), said.text()) else { return false };
+    fn listed(&mut self, bus: &mut Bus, mut body: Unpack) -> bool {
+        let (Some(WATCHER), Some(_), Some(now)) = (body.text(), body.text(), body.text()) else { return false };
         if !now.is_empty() && !self.name.is_empty() {
             self.register(bus);
         }
@@ -301,8 +301,8 @@ impl Desk {
     fn answered(&mut self, message: &Message) -> bool {
         if let Some(at) = self.asked.iter().position(|(call, _)| *call == message.answers) {
             let (_, number) = self.asked.remove(at);
-            let mut said = message.body;
-            if let (ANSWER, Some(id)) = (message.kind, said.u32()) {
+            let mut body = message.body;
+            if let (ANSWER, Some(id)) = (message.kind, body.u32()) {
                 self.shown.push((id, number));
             }
             return false;
@@ -310,15 +310,15 @@ impl Desk {
         let Some(which) = self.keys.calls.iter().position(|call| *call == message.answers && *call != 0).filter(|_| message.kind == FAILED) else { return false };
         self.keys.missing |= which == 0;
         self.keys.calls[which] = 0;
-        HOTKEYS.with_borrow_mut(|hotkeys| refuse(&mut hotkeys.keys, |wanted| wanted.stand == Stand::Asked));
+        HOTKEYS.with_borrow_mut(|hotkeys| refuse(&mut hotkeys.keys, |wanted| wanted.state == Registration::Pending));
         false
     }
 
     /// A notification server signal: it was clicked (its action invoked), an activation token,
     /// or it closed.
     fn notified(&mut self, message: &Message) -> bool {
-        let mut said = message.body;
-        let Some(id) = said.u32() else { return false };
+        let mut body = message.body;
+        let Some(id) = body.u32() else { return false };
         let number = self.shown.iter().find(|(shown, _)| *shown == id).map(|(_, number)| *number);
         match (message.member, number) {
             ("ActionInvoked", Some(number)) => {
@@ -326,7 +326,7 @@ impl Desk {
                 true
             }
             ("ActivationToken", Some(_)) => {
-                self.token = token(said.text());
+                self.token = token(body.text());
                 false
             }
             ("NotificationClosed", Some(_)) => {
@@ -339,40 +339,40 @@ impl Desk {
 
     /// The portal says a shortcut was pressed in this program's session, with an activation
     /// token.
-    fn pressed(&mut self, mut said: Unpack) -> bool {
-        let (Some(session), Some(id)) = (said.text(), said.text()) else { return false };
+    fn pressed(&mut self, mut body: Unpack) -> bool {
+        let (Some(session), Some(id)) = (body.text(), body.text()) else { return false };
         let Some(number) = id.parse::<u32>().ok().filter(|_| session == self.keys.session) else { return false };
         // Then the timestamp, and the options: the token.
-        if said.take(8, 8).is_some() {
-            self.token = token(token_in(said));
+        if body.take(8, 8).is_some() {
+            self.token = token(token_in(body));
         }
         HOTKEYS.with_borrow_mut(|hotkeys| hotkeys.pressed(number))
     }
 
     /// The portal replied to a shortcuts request: the session is created (or not), or which
     /// shortcuts it bound.
-    fn responded(&mut self, bus: &mut Bus, path: &str, mut said: Unpack) -> bool {
+    fn responded(&mut self, bus: &mut Bus, path: &str, mut body: Unpack) -> bool {
         let ends = |token: &str| !token.is_empty() && path.strip_suffix(token).is_some_and(|path| path.ends_with('/'));
         let (made, bound) = (ends(&self.keys.made), ends(&self.keys.bound) && !self.keys.session.is_empty());
         if !made && !bound {
             return false;
         }
-        let fine = said.u32() == Some(0);
+        let fine = body.u32() == Some(0);
         if made {
             self.keys.made.clear();
-            match results(said, "session_handle", "s").and_then(|mut value| value.text()).filter(|session| fine && object(session)) {
+            match results(body, "session_handle", "s").and_then(|mut value| value.text()).filter(|session| fine && object(session)) {
                 Some(session) => self.made(bus, session),
-                None => HOTKEYS.with_borrow_mut(|hotkeys| refuse(&mut hotkeys.keys, |wanted| wanted.stand == Stand::Asked)),
+                None => HOTKEYS.with_borrow_mut(|hotkeys| refuse(&mut hotkeys.keys, |wanted| wanted.state == Registration::Pending)),
             }
             return false;
         }
         self.keys.bound.clear();
-        let had = results(said, "shortcuts", "a(sa{sv})").filter(|_| fine).map(bound_ids).unwrap_or_default();
+        let had = results(body, "shortcuts", "a(sa{sv})").filter(|_| fine).map(bound_ids).unwrap_or_default();
         HOTKEYS.with_borrow_mut(|hotkeys| {
-            for wanted in hotkeys.keys.iter_mut().filter(|wanted| wanted.stand == Stand::Asked && had.contains(&wanted.number)) {
-                wanted.stand = Stand::Held;
+            for wanted in hotkeys.keys.iter_mut().filter(|wanted| wanted.state == Registration::Pending && had.contains(&wanted.number)) {
+                wanted.state = Registration::Registered;
             }
-            refuse(&mut hotkeys.keys, |wanted| wanted.stand == Stand::Asked);
+            refuse(&mut hotkeys.keys, |wanted| wanted.state == Registration::Pending);
         });
         true
     }
@@ -470,7 +470,7 @@ fn notify_portal(bus: &mut Bus, out: &Out, picture: Option<(usize, Vec<u32>)>) {
     values.pad(8).text("title").kinds("s").text(&out.title);
     values.pad(8).text("body").kinds("s").text(&out.text);
     values.pad(8).text("default-action").kinds("s").text("default");
-    if let Some(png) = picture.and_then(|(width, pixels)| crate::png::encode_clear(width, &pixels)) {
+    if let Some(png) = picture.and_then(|(width, pixels)| crate::png::encode_rgba(width, &pixels)) {
         values.pad(8).text("icon").kinds("(sv)").pad(8).text("bytes").kinds("ay").open(1).bytes.extend_from_slice(&png);
         values.close();
     }
@@ -479,21 +479,21 @@ fn notify_portal(bus: &mut Bus, out: &Out, picture: Option<(usize, Vec<u32>)>) {
 }
 
 /// The portal says a notification was clicked: by its id, "taut" and a number.
-fn portal_clicked(mut said: Unpack) -> bool {
-    let Some(number) = said.text().and_then(|id| id.strip_prefix("taut")).and_then(|number| number.parse().ok()) else { return false };
+fn portal_clicked(mut body: Unpack) -> bool {
+    let Some(number) = body.text().and_then(|id| id.strip_prefix("taut")).and_then(|number| number.parse().ok()) else { return false };
     NOTICES.with_borrow_mut(|notices| notices.clicked.push(number));
     true
 }
 
 /// From a portal reply's results (`a{sv}`): the named value, if of these types.
-fn results<'a>(mut said: Unpack<'a>, name: &str, kinds: &str) -> Option<Unpack<'a>> {
-    let end = said.list(8)?;
-    while said.at < end {
-        let (key, of) = (said.take(8, 0).and(said.text())?, said.kinds()?);
+fn results<'a>(mut body: Unpack<'a>, name: &str, kinds: &str) -> Option<Unpack<'a>> {
+    let end = body.list(8)?;
+    while body.at < end {
+        let (key, of) = (body.take(8, 0).and(body.text())?, body.kinds()?);
         if (key, of) == (name, kinds) {
-            return Some(said);
+            return Some(body);
         }
-        said.skip(of)?;
+        body.skip(of)?;
     }
     None
 }
@@ -507,13 +507,13 @@ fn object(path: &str) -> bool {
 }
 
 /// The ids of the shortcuts a portal bound, from its list (`a(sa{sv})`).
-fn bound_ids(mut said: Unpack) -> Vec<u32> {
+fn bound_ids(mut body: Unpack) -> Vec<u32> {
     let mut ids = Vec::new();
-    let Some(end) = said.list(8) else { return ids };
-    while said.at < end {
-        let Some(id) = said.take(8, 0).and(said.text()) else { break };
+    let Some(end) = body.list(8) else { return ids };
+    while body.at < end {
+        let Some(id) = body.take(8, 0).and(body.text()) else { break };
         ids.extend(id.parse::<u32>());
-        if said.skip("a{sv}").is_none() {
+        if body.skip("a{sv}").is_none() {
             break;
         }
     }
@@ -521,8 +521,8 @@ fn bound_ids(mut said: Unpack) -> Vec<u32> {
 }
 
 /// The activation token among a shortcut's options (`a{sv}`).
-fn token_in(said: Unpack<'_>) -> Option<&str> {
-    results(said, "activation_token", "s")?.text()
+fn token_in(body: Unpack<'_>) -> Option<&str> {
+    results(body, "activation_token", "s")?.text()
 }
 
 /// The longest activation token kept (desktops give a few dozen bytes).
@@ -531,8 +531,8 @@ pub(crate) const TOKEN: usize = 512;
 /// An activation token another bus client sent: kept as is if no longer than a desktop's, else
 /// dropped. (A far longer one is no desktop's, and under Wayland must not be forwarded: a
 /// compositor disconnects a client sending a message over 4096 bytes.)
-fn token(said: Option<&str>) -> String {
-    said.filter(|token| token.len() <= TOKEN).unwrap_or_default().into()
+fn token(body: Option<&str>) -> String {
+    body.filter(|token| token.len() <= TOKEN).unwrap_or_default().into()
 }
 
 /// A menu label as dbusmenu writes it: the access key marked `_` where the app marked it `&`
@@ -593,13 +593,29 @@ fn layout(values: &mut Pack, rows: &[Row], id: usize) {
     values.close();
 }
 
+/// The properties of the items a panel asks for (`ai` in, `a(ia{sv})` out). Each is returned
+/// once, however often asked: the list is another program's, and may be cut short, or name one
+/// item a million times.
+fn group_properties(values: &mut Pack, rows: &[Row], asked: &mut Unpack) {
+    let (mut wanted, end) = (vec![false; rows.len() + 1], asked.list(4).unwrap_or(0));
+    while let Some(id) = (asked.at < end).then(|| asked.u32()).flatten() {
+        wanted.get_mut(id as usize).into_iter().for_each(|wanted| *wanted = true);
+    }
+    values.open(8);
+    for id in (0..wanted.len()).filter(|id| wanted[*id]) {
+        values.pad(8).u32(id as u32);
+        row_properties(values, id.checked_sub(1).and_then(|at| rows.get(at)));
+    }
+    values.close();
+}
+
 /// The panel calls the menu: its layout (root and items, at which revision), some items'
 /// properties, an item clicked, whether to update before showing (always current), or the
 /// menu's own properties.
 fn menu_asked(bus: &mut Bus, message: &Message, revision: u32) -> bool {
     let (mut asked, mut values) = (message.body, Pack::default());
     let rows = TRAY.with_borrow(|tray| tray.rows.clone());
-    let (kinds, picked) = match (message.interface, message.member) {
+    let (kinds, clicked) = match (message.interface, message.member) {
         (MENU, "GetLayout") => {
             let id = asked.u32().unwrap_or(0) as usize;
             values.u32(revision);
@@ -607,18 +623,7 @@ fn menu_asked(bus: &mut Bus, message: &Message, revision: u32) -> bool {
             ("u(ia{sv}av)", None)
         }
         (MENU, "GetGroupProperties") => {
-            // Each requested item is returned once, however often requested: the list is
-            // another program's, and may be truncated, or name one item a million times.
-            let (mut asked_for, end) = (vec![false; rows.len() + 1], asked.list(4).unwrap_or(0));
-            while let Some(id) = (asked.at < end).then(|| asked.u32()).flatten() {
-                asked_for.get_mut(id as usize).into_iter().for_each(|asked| *asked = true);
-            }
-            values.open(8);
-            for id in (0..asked_for.len()).filter(|id| asked_for[*id]) {
-                values.pad(8).u32(id as u32);
-                row_properties(&mut values, id.checked_sub(1).and_then(|at| rows.get(at)));
-            }
-            values.close();
+            group_properties(&mut values, &rows, &mut asked);
             ("a(ia{sv})", None)
         }
         (MENU, "Event") => {
@@ -654,21 +659,21 @@ fn menu_asked(bus: &mut Bus, message: &Message, revision: u32) -> bool {
         _ => return answer_unknown(bus, message),
     };
     bus.answer(message, Ok(kinds), &values);
-    let Some(at) = picked.and_then(|id| id.checked_sub(1)).filter(|at| rows.get(*at).is_some_and(|row| row.enabled && row.kind != RowKind::Line)) else { return false };
+    let Some(at) = clicked.and_then(|id| id.checked_sub(1)).filter(|at| rows.get(*at).is_some_and(|row| row.enabled && row.kind != RowKind::Line)) else { return false };
     TRAY.with_borrow_mut(|tray| tray.news.push(Did::Picked(at)));
     true
 }
 
 /// The first clicked item among menu events as a panel batches them (`a(isvu)`: item id, event,
 /// data, timestamp).
-fn first_click(mut said: Unpack) -> Option<usize> {
-    let end = said.list(8)?;
-    while said.at < end {
-        let (id, event) = (said.take(8, 0).and(said.u32())?, said.text()?);
+fn first_click(mut body: Unpack) -> Option<usize> {
+    let end = body.list(8)?;
+    while body.at < end {
+        let (id, event) = (body.take(8, 0).and(body.u32())?, body.text()?);
         if event == "clicked" {
             return Some(id as usize);
         }
-        said.skip("vu")?;
+        body.skip("vu")?;
     }
     None
 }
@@ -783,10 +788,10 @@ mod tests {
                 app.heard.push("clicked");
             }
             ui.tray_item("&Show");
-            if ui.tray_check(&mut app.quiet, "Quiet") {
+            if ui.tray_checkbox(&mut app.quiet, "Quiet") {
                 app.heard.push("quiet");
             }
-            ui.tray_line();
+            ui.tray_separator();
             ui.set_enabled(false);
             ui.tray_item("Save_as");
             ui.set_enabled(true);
@@ -956,7 +961,7 @@ mod tests {
                 app.pressed.push(keys);
             }
         }
-        app.taken = keys.iter().copied().filter(|keys| ui.hotkey_taken(keys)).collect();
+        app.taken = keys.iter().copied().filter(|keys| ui.hotkey_refused(keys)).collect();
     }
 
     /// The portal's `Response` to a request, on its request path.

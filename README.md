@@ -1,8 +1,8 @@
 # taut
 
-A GUI library for Rust on Windows and Linux with no dependencies: no crates, no graphics card,
-no web view. One function describes the window from the app's state; the library draws only
-what changed, and nothing while nothing happens.
+A GUI library for Rust on Windows and Linux with no dependencies: no crates, no web view, no
+graphics card needed. One function describes the window from the app's state; the library draws
+only what changed, and nothing while nothing happens.
 
 | Windows 11 | Linux (X11) |
 | --- | --- |
@@ -49,7 +49,11 @@ takes `&mut` to what it changes and returns what the user did.
 - **Systems:** Windows; Linux on X11 or Wayland. Not macOS, iOS, Android or the web yet.
 - **Rust:** 1.88+. **Licence:** MIT or Apache-2.0.
 - **Features** (all off by default): `right-to-left`, `brahmic`, `emoji`, `fallback-fonts`,
-  `touch`, `cff`, `woff2`, `color-profiles` ([costs](docs/costs-and-speed.md#what-it-costs)).
+  `touch`, `cff`, `woff2`, `color-profiles`, `gpu`
+  ([costs](docs/costs-and-speed.md#what-it-costs)).
+- **GPU or CPU:** the CPU draws every pixel; with `gpu`, the GPU shows them, byte for byte the
+  same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11
+  ([costs](docs/costs-and-speed.md#gpu-or-cpu)).
 - **State:** 0.1. Names may change before 1.0 ([changes](CHANGELOG.md),
   [what is missing](docs/what-is-missing.md)).
 
@@ -62,22 +66,36 @@ takes `&mut` to what it changes and returns what the user did.
 | `hello` | the program above |
 | `gallery` | most parts, on nine pages (the pictures above) |
 | `todo` | a to-do list kept in a file (built in chapter 4 of the book) |
-| `files` | a file browser: folder tree, sortable table |
+| `file_browser` | a file browser: folder tree, sortable table |
 | `editor` | a text editor: tabs, find and replace, menus |
 | `settings` | a settings window that follows the system's light or dark |
 | `chat` | a message list that stays at its end |
 | `viewer` | a viewer for PNG, JPEG, GIF, WebP, BMP, ICO and SVG |
 | `dashboard` | tiles, live charts, a table |
-| `nodes` | a node editor on a pan-and-zoom board |
+| `node_editor` | a node editor on a pan-and-zoom area |
 | `report` | a chart and text, saved as PDF or printed |
 | `tray` | a tray icon, notifications, a global hotkey |
 | `desktop` | a whole desktop drawn into a pixel buffer |
 | `picture` | an interface drawn into a PNG, no window |
-| `d3d11`, `opengl`, `vulkan` | the interface over the program's own renderer |
+| `d3d9`, `d3d11`, `d3d12`, `opengl`, `vulkan` | the interface over the program's own renderer |
 | `overlay` | the library in a DLL with a C interface |
 | `bench` | the [timings](docs/costs-and-speed.md#how-fast-it-is) |
 
 `book`, `walk` and `walk_reader` are the library's own tools (book pictures, demo measurements).
+
+## Inside your own renderer
+
+A layer, made once from your device, draws the interface over each frame and uploads only what
+changed ([chapter 9](docs/09-inside-another-program.md)):
+
+| Renderer | Layer | Each frame |
+| --- | --- | --- |
+| Direct3D 9, 9Ex | `layer_d3d9` | `layer.draw(&mut ui)` |
+| Direct3D 11 | `layer_d3d11` | `layer.draw(&mut ui)` |
+| Direct3D 12 | `layer_d3d12` | `layer.draw(&mut ui, list, area)` |
+| OpenGL 3.3+ | `layer_opengl` | `layer.draw(&mut ui)` |
+| Vulkan 1.0+ | `layer_vulkan` | `layer.draw(&mut ui, commands, area)` |
+| wgpu, bgfx, Skia, any other | `Surface::upload` | your `write_texture` of each changed place |
 
 ## Beside other Rust libraries
 
@@ -87,7 +105,7 @@ A label and a button, built for size on Windows, 2026-11-15:
 | --- | --- | --- | --- | --- |
 | Program | 457 KB | 8.3 MB | 5.9 MB | 7.8 MB |
 | Other crates | 0 | 179 | 159 | 245 |
-| Drawn by | CPU | GPU | GPU, or CPU | GPU, or CPU |
+| Drawn by | CPU; shown by Direct3D 11/12, Vulkan, OpenGL or the CPU, same pixels | GPU (wgpu or OpenGL) | GPU (wgpu), or CPU | GPU (OpenGL, Skia), or CPU |
 | Screen readers | own (UI Automation, AT-SPI) | AccessKit | none in 0.14 | AccessKit |
 
 [More libraries, and Dear ImGui part by part](docs/beside-other-libraries.md).

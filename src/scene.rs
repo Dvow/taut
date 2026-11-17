@@ -4,7 +4,7 @@
 //! // once: the body is kept, as a picture is
 //! let hill = ui.add_mesh(points, triangles);
 //! // each time the window is described: where it is looked at from, and what is in view
-//! let view = View::look([0.0, 40.0, -90.0], [0.0, 0.0, 0.0]);
+//! let view = Camera::look_at([0.0, 40.0, -90.0], [0.0, 0.0, 0.0]);
 //! ui.el().grow().scene(&view, &[hill.filled(t.accent).outlined(t.line)]);
 //! ```
 //!
@@ -14,8 +14,8 @@ use crate::canvas::Canvas;
 use crate::color::Color;
 use crate::geom::{Point, Rect, pt};
 use crate::id::{fold, hash};
-use crate::raster::{Matrix, Piece, Target, edges_of, shades_of};
-use crate::shelf::Shelf;
+use crate::scene_raster::{Matrix, Piece, Target, edges_of, shades_of};
+use crate::slots::Slots;
 
 /// A mesh the interface keeps for scenes: points, and triangles between them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +51,7 @@ enum Lens {
 
 /// Where a scene is seen from, and how.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct View {
+pub struct Camera {
     from: [f32; 3],
     at: [f32; 3],
     up: [f32; 3],
@@ -60,45 +60,45 @@ pub struct View {
     light: [f32; 3],
 }
 
-impl View {
+impl Camera {
     /// Seen from `from`, looking at `at`, y up: a 50° vertical field of view, showing
     /// everything between 0.1 and 10,000 units away. Light from above, slightly front and
     /// right.
-    pub fn look(from: [f32; 3], at: [f32; 3]) -> View {
-        View { from, at, up: [0.0, 1.0, 0.0], lens: Lens::Angle((25.0f32).to_radians().tan()), reach: [0.1, 10_000.0], light: [0.35, 0.85, -0.4] }
+    pub fn look_at(from: [f32; 3], at: [f32; 3]) -> Camera {
+        Camera { from, at, up: [0.0, 1.0, 0.0], lens: Lens::Angle((25.0f32).to_radians().tan()), reach: [0.1, 10_000.0], light: [0.35, 0.85, -0.4] }
     }
     /// With another up direction: `[0.0, 0.0, 1.0]` for a z-up world.
-    pub fn up(self, up: [f32; 3]) -> View {
-        View { up, ..self }
+    pub fn up(self, up: [f32; 3]) -> Camera {
+        Camera { up, ..self }
     }
     /// With this vertical field of view, in degrees.
-    pub fn angle(self, degrees: f32) -> View {
-        View { lens: Lens::Angle((degrees.clamp(1.0, 170.0) / 2.0).to_radians().tan()), ..self }
+    pub fn fov(self, degrees: f32) -> Camera {
+        Camera { lens: Lens::Angle((degrees.clamp(1.0, 170.0) / 2.0).to_radians().tan()), ..self }
     }
     /// Orthographic: nothing shrinks with distance, and the view is `high` units tall.
-    pub fn flat(self, high: f32) -> View {
-        View { lens: Lens::Flat(high.max(f32::MIN_POSITIVE)), ..self }
+    pub fn orthographic(self, high: f32) -> Camera {
+        Camera { lens: Lens::Flat(high.max(f32::MIN_POSITIVE)), ..self }
     }
     /// Showing everything between `near` and `far`. (Nearer than `near` is clipped; depth
     /// precision far away depends on `near` being no smaller than needed.)
-    pub fn reach(self, near: f32, far: f32) -> View {
-        View { reach: [near.max(f32::MIN_POSITIVE), far.max(near.max(f32::MIN_POSITIVE) * 1.001)], ..self }
+    pub fn depth_range(self, near: f32, far: f32) -> Camera {
+        Camera { reach: [near.max(f32::MIN_POSITIVE), far.max(near.max(f32::MIN_POSITIVE) * 1.001)], ..self }
     }
     /// With light from that direction: triangles facing it are brightest.
-    pub fn lit_from(self, direction: [f32; 3]) -> View {
-        View { light: direction, ..self }
+    pub fn light_from(self, direction: [f32; 3]) -> Camera {
+        Camera { light: direction, ..self }
     }
     /// A matrix the app has from elsewhere (a game's camera): four rows of four, applied to a
     /// point with a 1 after it; the result is x from -w (left) to w (right), y from -w (bottom)
     /// to w (top), depth from 0 (nearest shown) to w, and w. (Direct3D's convention. Used as
     /// is, whatever the box's aspect.)
-    pub fn whole(rows: [[f32; 4]; 4]) -> View {
-        View { lens: Lens::Whole(rows), ..View::look([0.0; 3], [0.0, 0.0, 1.0]) }
+    pub fn from_matrix(rows: [[f32; 4]; 4]) -> Camera {
+        Camera { lens: Lens::Whole(rows), ..Camera::look_at([0.0; 3], [0.0, 0.0, 1.0]) }
     }
 
     /// Where a scene point shows in a box at `within`, to put a label or mark there. Nothing
     /// for a point behind the eye.
-    pub fn spot(&self, point: [f32; 3], within: Rect) -> Option<Point> {
+    pub fn project(&self, point: [f32; 3], within: Rect) -> Option<Point> {
         let through = |row: [f32; 4]| row[0] * point[0] + row[1] * point[1] + row[2] * point[2] + row[3];
         let [x, y, z, w] = self.table(within.w / within.h.max(f32::MIN_POSITIVE)).map(through);
         (z >= 0.0 && w > 0.0).then(|| pt(within.x + (x / w * 0.5 + 0.5) * within.w, within.y + (0.5 - y / w * 0.5) * within.h))
@@ -155,7 +155,7 @@ fn united(a: [f32; 3]) -> [f32; 3] {
 
 /// A mesh as a scene shows it: where, and in which colours.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Shown {
+pub struct MeshInstance {
     mesh: Mesh,
     /// Its placement: three rows of four, applied to each of its points.
     place: [[f32; 4]; 3],
@@ -169,45 +169,45 @@ impl Mesh {
     /// The mesh with its triangles filled in `color`. (A mesh given a colour per point with
     /// [`Ui::color_mesh`](crate::Ui::color_mesh) is filled in those instead, unless `color` is
     /// fully clear.)
-    pub fn filled(self, color: Color) -> Shown {
-        Shown { mesh: self, place: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], fill: color, edges: Color::NONE, lit: true, one_sided: false }
+    pub fn filled(self, color: Color) -> MeshInstance {
+        MeshInstance { mesh: self, place: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], fill: color, edges: Color::NONE, lit: true, one_sided: false }
     }
     /// The mesh as its triangles' outlines only, in `color`.
-    pub fn outlined(self, color: Color) -> Shown {
+    pub fn outlined(self, color: Color) -> MeshInstance {
         self.filled(Color::NONE).outlined(color)
     }
 }
 
-impl Shown {
+impl MeshInstance {
     /// With its triangles' outlines drawn over it in `color`, one pixel thick.
-    pub fn outlined(self, color: Color) -> Shown {
-        Shown { edges: color, ..self }
+    pub fn outlined(self, color: Color) -> MeshInstance {
+        MeshInstance { edges: color, ..self }
     }
     /// Moved: the centre of the mesh's points goes to `to`.
-    pub fn at(self, to: [f32; 3]) -> Shown {
+    pub fn centered_at(self, to: [f32; 3]) -> MeshInstance {
         let [x, y, z] = self.place;
-        Shown { place: [[x[0], x[1], x[2], to[0]], [y[0], y[1], y[2], to[1]], [z[0], z[1], z[2], to[2]]], ..self }
+        MeshInstance { place: [[x[0], x[1], x[2], to[0]], [y[0], y[1], y[2], to[1]], [z[0], z[1], z[2], to[2]]], ..self }
     }
     /// Placed by the app's own matrix: three rows of four, applied to each point (with a 1
     /// after it). Rotate, scale, move: all of it.
-    pub fn placed(self, rows: [[f32; 4]; 3]) -> Shown {
-        Shown { place: rows, ..self }
+    pub fn transform(self, rows: [[f32; 4]; 3]) -> MeshInstance {
+        MeshInstance { place: rows, ..self }
     }
     /// In its colours as they are, whichever way a triangle faces: no shading.
-    pub fn unlit(self) -> Shown {
-        Shown { lit: false, ..self }
+    pub fn unlit(self) -> MeshInstance {
+        MeshInstance { lit: false, ..self }
     }
     /// One-sided: seen only from the side where a triangle's corners go clockwise. (A closed
     /// mesh's far side is then not drawn: half the work.)
-    pub fn one_sided(self) -> Shown {
-        Shown { one_sided: true, ..self }
+    pub fn one_sided(self) -> MeshInstance {
+        MeshInstance { one_sided: true, ..self }
     }
 }
 
 /// A scene of this run: its view, which of the run's meshes it shows, and a number that changes
 /// when any of that does.
 struct Scene {
-    view: View,
+    view: Camera,
     shown: [usize; 2],
     key: u64,
 }
@@ -226,9 +226,9 @@ type Afresh = fn(&mut Scenes, usize, [usize; 2], u32);
 /// Everything the interface keeps for scenes.
 #[derive(Default)]
 pub(crate) struct Scenes {
-    bodies: Shelf<Body>,
+    bodies: Slots<Body>,
     scenes: Vec<Scene>,
-    shown: Vec<Shown>,
+    shown: Vec<MeshInstance>,
     drawn: Vec<Drawn>,
     /// What redraws a scene's picture. Set by the first mesh taken in and reached no other way,
     /// so a program that never takes one in does not carry the triangle rasterizer (some 40
@@ -275,13 +275,13 @@ impl Scenes {
         self.shown.clear();
     }
     /// A scene the app describes: its index in this run.
-    pub fn note(&mut self, view: &View, shown: &[Shown]) -> u32 {
+    pub fn note(&mut self, view: &Camera, shown: &[MeshInstance]) -> u32 {
         let Scenes { bodies, scenes, shown: all, .. } = self;
         let first = all.len();
         // A mesh the app let go is in no scene.
         all.extend(shown.iter().filter(|shown| bodies.get(shown.mesh.0).is_some()));
-        let version = |shown: &Shown| bodies.get(shown.mesh.0).map_or(0, |body| body.version);
-        let part = |shown: &Shown| hash((shown.mesh.0, version(shown), shown.place.map(|row| row.map(f32::to_bits)), shown.fill.0, shown.edges.0, shown.lit, shown.one_sided));
+        let version = |shown: &MeshInstance| bodies.get(shown.mesh.0).map_or(0, |body| body.version);
+        let part = |shown: &MeshInstance| hash((shown.mesh.0, version(shown), shown.place.map(|row| row.map(f32::to_bits)), shown.fill.0, shown.edges.0, shown.lit, shown.one_sided));
         let key = all[first..].iter().map(part).fold(view.key(), fold);
         scenes.push(Scene { view: *view, shown: [first, all.len()], key });
         scenes.len() as u32 - 1
@@ -324,7 +324,7 @@ impl Scenes {
             let body = self.bodies.get_mut(shown.mesh.0);
             body.into_iter().for_each(|body| body.ready(shown, united(view.light), workers));
         }
-        let piece = |shown: &Shown| self.bodies.get(shown.mesh.0).map(|body| body.piece(shown, &table));
+        let piece = |shown: &MeshInstance| self.bodies.get(shown.mesh.0).map(|body| body.piece(shown, &table));
         let pieces: Vec<Piece> = self.shown[first..end].iter().filter_map(piece).collect();
         let drawn = &mut self.drawn[scene];
         drawn.target.render(size, ground, &pieces, workers);
@@ -340,14 +340,14 @@ impl Scenes {
 impl Body {
     /// The light's direction for a mesh placed so, in the mesh's own axes, as the bits of three
     /// numbers that tell one light from another.
-    fn light(shown: &Shown, light: [f32; 3]) -> [u32; 3] {
+    fn light(shown: &MeshInstance, light: [f32; 3]) -> [u32; 3] {
         let [x, y, z] = shown.place;
         united([x[0] * light[0] + y[0] * light[1] + z[0] * light[2], x[1] * light[0] + y[1] * light[1] + z[1] * light[2], x[2] * light[0] + y[2] * light[1] + z[2] * light[2]]).map(f32::to_bits)
     }
 
     /// Works out what showing it so needs and is missing: its edges for outlines, each
     /// triangle's brightness in that light.
-    fn ready(&mut self, shown: &Shown, light: [f32; 3], workers: usize) {
+    fn ready(&mut self, shown: &MeshInstance, light: [f32; 3], workers: usize) {
         if !shown.edges.is_none() && self.edges.is_none() {
             self.edges = Some(edges_of(&self.triangles));
         }
@@ -358,7 +358,7 @@ impl Body {
     }
 
     /// The mesh as drawn for `shown`, through the scene's matrix.
-    fn piece(&self, shown: &Shown, table: &Matrix) -> Piece<'_> {
+    fn piece(&self, shown: &MeshInstance, table: &Matrix) -> Piece<'_> {
         // The mesh's points go through its placement, then the scene's matrix: both at once, as
         // one matrix.
         let placed = [shown.place[0], shown.place[1], shown.place[2], [0.0, 0.0, 0.0, 1.0]];

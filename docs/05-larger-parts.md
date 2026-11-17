@@ -8,7 +8,7 @@ one line of text when saved.
 
 ```rust
 use std::cmp::Ordering;
-use taut::{Align, Column, Picks, Table, Ui};
+use taut::{Align, Column, Selection, Table, Ui};
 
 const COLUMNS: [Column; 3] = [Column::new("Name"), Column::new("Size").px(90.0).align(Align::End), Column::new("Kind").px(80.0)];
 
@@ -21,18 +21,18 @@ struct File {
 struct App {
     files: Vec<File>,
     table: Table,
-    picks: Picks,
+    selection: Selection,
 }
 
 fn describe(app: &mut App, ui: &mut Ui) {
     if ui.table(&mut app.table, &COLUMNS).changed {
         let by = app.table.sort.clone();
         app.files.sort_by(|a, b| order(a, b, &by));
-        app.picks.clear();
+        app.selection.clear();
     }
     for row in ui.rows(app.files.len(), 24.0) {
-        if ui.pick_row(row, app.picks.has(row)).clicked {
-            app.picks.click(row, ui.mods());
+        if ui.selectable_row(row, app.selection.contains(row)).clicked {
+            app.selection.click(row, ui.mods());
         }
         let file = &app.files[row];
         ui.label(&file.name);
@@ -71,11 +71,11 @@ fn order(a: &File, b: &File, by: &[(usize, bool)]) -> Ordering {
   Shift-click adds a column.
 - **Rows:** `ui.rows(count, height)` yields only visible row numbers; a million rows cost a
   screenful. Each box in a row is the next cell.
-- **Selection:** `ui.pick_row(key, picked)`; `Picks` stores it; `picks.click(row, ui.mods())`
+- **Selection:** `ui.selectable_row(key, selected)`; `Selection` stores it; `selection.click(row, ui.mods())`
   handles Ctrl and Shift. Plain rows: `ui.table_row().open()`.
 - **The user** resizes columns by their edges, drags headings to reorder, right-clicks to hide.
-- **Too wide:** scrolls sideways; `Table { kept: 1, ..Default::default() }` pins the first
-  column; `ui.table_row().kept()` pins a row at the top (before the rows) or bottom (after).
+- **Too wide:** scrolls sideways; `Table { frozen: 1, ..Default::default() }` pins the first
+  column; `ui.table_row().frozen()` pins a row at the top (before the rows) or bottom (after).
 - **Close** the rows, then the table. Screen readers get the table's structure.
 
 ## Long lists
@@ -107,14 +107,14 @@ fn describe(ui: &mut Ui) {
 
 `ui.tree(&mut open, title)` is a folding heading with indented content: while `open`, describe
 the children, then close it. `clicked` reports a press; `changed` any toggle (arrows too).
-`ui.picked_tree(&mut open, title, picked)` adds selection.
+`ui.selectable_tree(&mut open, title, selected)` adds selection.
 
 ```rust
 use taut::{Length, Ui};
 
 struct Folders {
     open: [bool; 3],
-    picked: usize,
+    selected: usize,
 }
 
 fn describe(app: &mut Folders, ui: &mut Ui) {
@@ -139,15 +139,15 @@ fn describe(app: &mut Folders, ui: &mut Ui) {
 }
 
 fn leaf(app: &mut Folders, ui: &mut Ui, number: usize, name: &str) {
-    if ui.selectable(app.picked == number, name).clicked {
-        app.picked = number;
+    if ui.selectable(app.selected == number, name).clicked {
+        app.selected = number;
     }
 }
 ```
 
 ![A tree: Pictures open, in it Holidays open with Beach.jpg and Hills.jpg (picked), Family folded, and Cat.png](pictures/05-a-tree.png)
 
-`open` is the app's, so trees are described by walking app data. For huge trees, `ui.branches`
+`open` is the app's, so trees are described by walking app data. For huge trees, `ui.tree_view`
 fetches children on open and describes only visible rows (guide: "The larger parts").
 
 ## Menus
@@ -157,25 +157,25 @@ use taut::Ui;
 
 struct Editor {
     wrap: bool,
-    said: String,
+    status: String,
 }
 
 fn describe(app: &mut Editor, ui: &mut Ui) {
     ui.menu_bar();
     if ui.menu_button("File") {
         if ui.menu_item("New\tCtrl+N").clicked {
-            app.said = "A new file".into();
+            app.status = "A new file".into();
         }
         if ui.submenu("Open again") {
             for name in ["notes.txt", "plan.md"] {
                 if ui.menu_item(name).clicked {
-                    app.said = format!("Opened {name}");
+                    app.status = format!("Opened {name}");
                 }
             }
             ui.close();
         }
         ui.separator();
-        ui.menu_check(&mut app.wrap, "Wrap long lines");
+        ui.menu_checkbox(&mut app.wrap, "Wrap long lines");
         ui.separator();
         if ui.menu_item("Quit\tCtrl+Q").clicked {
             ui.quit();
@@ -189,13 +189,13 @@ fn describe(app: &mut Editor, ui: &mut Ui) {
     ui.close();
     // The keys the menu shows are the app's to ask for.
     if ui.keys("Ctrl+N") {
-        app.said = "A new file".into();
+        app.status = "A new file".into();
     }
     if ui.keys("Ctrl+Q") {
         ui.quit();
     }
     ui.column().pad(12.0).open();
-    ui.label(&app.said);
+    ui.label(&app.status);
     ui.close();
 }
 ```
@@ -204,7 +204,7 @@ fn describe(app: &mut Editor, ui: &mut Ui) {
 
 - `ui.menu_bar()`, then `ui.menu_button(name)` per menu (open while true). With one open,
   hovering opens the others; Left and Right switch.
-- `ui.menu_item(text)` (closes the menu), `ui.menu_check(&mut on, text)`, `ui.submenu(text)`,
+- `ui.menu_item(text)` (closes the menu), `ui.menu_checkbox(&mut on, text)`, `ui.submenu(text)`,
   `ui.separator()`.
 - Text after a tab is a shortcut, shown and told to readers; handle it with `ui.keys("Ctrl+N")`.
 - Arrows move, Enter picks, Escape closes.
@@ -241,15 +241,15 @@ fn describe(ui: &mut Ui) {
 
 ## Dialogs
 
-`ui.dialog()` is a centred modal box while described (chapter 4); `ui.dialog_up_to(width)` for
+`ui.dialog()` is a centred modal box while described (chapter 4); `ui.dialog_max_width(width)` for
 wider than 520 units. The file dialog returns its answer once:
 
 ```rust
 use std::path::PathBuf;
-use taut::{Files, Ui};
+use taut::{FileDialog, Ui};
 
 struct App {
-    dialog: Files,
+    dialog: FileDialog,
     picture: Option<PathBuf>,
 }
 
@@ -265,13 +265,13 @@ fn describe(app: &mut App, ui: &mut Ui) {
 ```
 
 - `dialog.save(folder, name)`, `dialog.pick_folder(folder)`.
-- `Files::default()`: the library's dialog, the same everywhere; text in `dialog.words`.
-- `Files::of_the_system()`: the system's where available (Windows; a Linux portal), same
+- `FileDialog::default()`: the library's dialog, the same everywhere; text in `dialog.words`.
+- `FileDialog::native()`: the system's where available (Windows; a Linux portal), same
   answers.
 
 ## Command palette and notices
 
-`ui.palette(&mut open, &commands)` filters commands as the user types; the picked index comes
+`ui.command_palette(&mut open, &commands)` filters commands as the user types; the picked index comes
 back and the box closes:
 
 ```rust
@@ -281,16 +281,16 @@ const COMMANDS: [&str; 6] = ["New file\tCtrl+N", "Open a file\tCtrl+O", "Save\tC
 
 struct App {
     finding: bool,
-    said: String,
+    status: String,
 }
 
 fn describe(app: &mut App, ui: &mut Ui) {
     app.finding |= ui.keys("Ctrl+K");
-    if let Some(command) = ui.palette(&mut app.finding, &COMMANDS) {
-        app.said = format!("Picked: {}", COMMANDS[command].split('\t').next().unwrap_or(""));
+    if let Some(command) = ui.command_palette(&mut app.finding, &COMMANDS) {
+        app.status = format!("Picked: {}", COMMANDS[command].split('\t').next().unwrap_or(""));
     }
     ui.column().pad(12.0).open();
-    ui.label(&app.said);
+    ui.label(&app.status);
     ui.close();
 }
 ```
@@ -379,13 +379,13 @@ fn describe(dock: &mut Dock, ui: &mut Ui) {
 
 ## Second windows
 
-A system window, described inline while its `Second` is open:
+A system window, described inline while its `SecondWindow` is open:
 
 ```rust
-use taut::{Second, Ui};
+use taut::{SecondWindow, Ui};
 
 struct App {
-    settings: Second,
+    settings: SecondWindow,
     loud: bool,
 }
 
@@ -406,7 +406,7 @@ fn describe(app: &mut App, ui: &mut Ui) {
 - Both windows share `app`; changes show in both at once.
 - Closed by its button (`settings.open` becomes false), by no longer describing it, or by
   `ui.quit()` inside it.
-- `Second` remembers size and position. `Second::new(w, h)` starts open; `Second::default()`
+- `SecondWindow` remembers size and position. `SecondWindow::new(w, h)` starts open; `SecondWindow::default()`
   closed.
 
 ## Tray and system notifications
@@ -422,15 +422,15 @@ struct App {
 fn describe(app: &mut App, ui: &mut Ui) {
     // The icon, with a hint, and the rows of its menu, which is the system's own.
     if ui.tray(&[(16, &app.icon)], "Notes").clicked {
-        ui.come_forward();
+        ui.bring_to_front();
     }
-    ui.tray_check(&mut app.quiet, "&Quiet");
+    ui.tray_checkbox(&mut app.quiet, "&Quiet");
     if ui.tray_item("&Quit") {
         ui.quit();
     }
     // Closed, the window goes to the tray instead of away.
-    if ui.close_asked() {
-        ui.keep_open("");
+    if ui.close_requested() {
+        ui.cancel_close("");
         ui.hide_window();
     }
     if ui.button("Remind me").clicked && !app.quiet {
@@ -441,7 +441,7 @@ fn describe(app: &mut App, ui: &mut Ui) {
 
 - Icon: one or more sizes of `0xAARRGGBB` pixels. A menu row is true once, the run after it was
   picked.
-- `ui.hide_window()` hides window and task-bar button; `ui.come_forward()` restores.
+- `ui.hide_window()` hides window and task-bar button; `ui.bring_to_front()` restores.
 - Global hotkeys and single instance: guide, "Beyond the window". Unused, none of it is compiled
   in.
 
@@ -457,18 +457,18 @@ fn describe(ui: &mut Ui) {
     let rows = [Series::bars("Sold", &sold), Series::line("Brought back", &back).color(t.red)];
     let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     ui.column().pad(12.0).open();
-    ui.chart(&Chart::of(&rows).names(&days), 420.0, 200.0);
+    ui.chart(&Chart::of(&rows).categories(&days), 420.0, 200.0);
     ui.close();
 }
 ```
 
 ![A bar chart of seven days with a red line over it; the pointer is over Thursday, and a small box beside it reads Sold 22, Brought back 4](pictures/05-a-chart.png)
 
-- `Series::bars`, `line`, `area`, `points`. `names` labels x; `.across(first, last)` sets the x
-  range; `.up(least, most)` fixes y; `.at(&xs)` gives a series its own x; `f32::NAN` is a gap;
+- `Series::bars`, `line`, `area`, `points`. `categories` labels x; `.x_range(first, last)` sets the x
+  range; `.y_range(min, max)` fixes y; `.at(&xs)` gives a series its own x; `f32::NAN` is a gap;
   `.smooth()` curves without overshoot.
 - Hover shows values; with focus, Left and Right step through them for screen readers.
-  `ui.chart_at(&response)` is the hovered index.
+  `ui.chart_cursor(&response)` is the hovered index.
 - `ui.plot_lines` and `ui.plot_bars`: sparklines without axes.
 
 ## Drag and drop
@@ -487,13 +487,13 @@ fn describe(app: &mut App, ui: &mut Ui) {
     for (number, thing) in app.things.iter().enumerate() {
         let row = ui.selectable(false, thing);
         // Pressed and moved a little, the row is carried: what is described here follows the pointer.
-        if ui.carried(&row, number as u64) {
+        if ui.drag_source(&row, number as u64) {
             ui.label(thing);
             ui.close();
         }
     }
     ui.close();
-    let edge = if ui.carrying().is_some() { t.accent } else { t.line };
+    let edge = if ui.drag_payload().is_some() { t.accent } else { t.line };
     let bin = ui.column().size(140.0, 80.0).pad(8.0).fill(t.panel).border(edge, 1.0).radius(6.0).sense().open();
     ui.note("Let go here to throw it away");
     ui.close();
@@ -504,20 +504,20 @@ fn describe(app: &mut App, ui: &mut Ui) {
 }
 ```
 
-The carried value is a number meaningful to the app; `ui.carrying()` reports it during the
+The carried value is a number meaningful to the app; `ui.drag_payload()` reports it during the
 drag; `ui.dropped(&on)` reports a drop on a sensing box. Files from other programs:
-`ui.files_over()`, `ui.files_dropped(&on)`.
+`ui.files_hovered()`, `ui.files_dropped(&on)`.
 
 ## The rest
 
 Every other part is one call (guide, "Every ready-made part"): tabs, segmented choices, radio
 buttons, sliders, numbers, colour, date, suggestions, passwords, progress, splitters, tool bars;
-also boards, node graphs, the code box, the inspector, Markdown, and frameless windows.
+also pan-zoom areas, node graphs, the code box, the inspector, Markdown, and frameless windows.
 
 ## Summary
 
-- A large part is one call with a value the app keeps: `Table`, `Picks`, `Panel`, `Dock`,
-  `Second`, `Files`.
+- A large part is one call with a value the app keeps: `Table`, `Selection`, `Panel`, `Dock`,
+  `SecondWindow`, `FileDialog`.
 - `ui.rows` and `ui.list` describe only visible rows.
 - Menus, dialogs, panels, windows and the tray icon exist while the app's state says so.
 - Menu shortcuts are handled with `ui.keys`, in the same notation.

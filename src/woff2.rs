@@ -1,6 +1,6 @@
-//! WOFF2 web fonts, unpacked into the font file they were, which `font.rs` reads as any other.
-//! Only with the feature `woff2`: unpacking needs Brotli's built-in dictionary, which a program
-//! reading no such font need not carry (see `brotli.rs`).
+//! WOFF2 web fonts, unpacked into the font file they were, which `font_file.rs` reads as any
+//! other. Only with the feature `woff2`: unpacking needs Brotli's built-in dictionary, which a
+//! program reading no such font need not carry (see `brotli.rs`).
 //!
 //! A file starts with a 48-byte header, then its table directory, each table named by an index
 //! (one of 63 common tables) or by its tag, with its length. All tables lie in one Brotli
@@ -10,9 +10,9 @@
 //! reference decoder rebuilds them. A collection lists its tables once, and which each font
 //! has.
 //!
-//! Only the tables `font.rs` reads are kept (as for WOFF), and what a file may ask for is
+//! Only the tables `font_file.rs` reads are kept (as for WOFF), and what a file may ask for is
 //! bounded the same way: unpacked tables, and rebuilt glyphs, never exceed 64 times the file.
-use crate::font::{Bytes, listing, taken};
+use crate::font_file::{Bytes, listing, taken};
 
 /// The tables a file names by index, in index order.
 #[rustfmt::skip]
@@ -581,7 +581,7 @@ fn widths(table: &[u8], listed: usize, lefts: &[i16]) -> Option<Vec<u8>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::font::{FontFile, Placing};
+    use crate::font_file::{FontFile, Placing};
 
     /// Each font's tables in a font file (one or a collection), each with its bytes.
     pub(crate) fn tables_of(file: &[u8]) -> Vec<Vec<([u8; 4], &[u8])>> {
@@ -694,7 +694,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_font_packed_the_newer_way_is_the_font_it_was() {
-        let whole = crate::font::tests::file(&[0, 1, 0, 0], &crate::font::tests::tables());
+        let whole = crate::font_file::tests::file(&[0, 1, 0, 0], &crate::font_file::tests::tables());
         assert_eq!(as_the_twin("test font", &unpacked(&PACKED).expect("the font is unpacked"), &whole), 10);
         // Without the feature `woff2`, such a file is no font to `FontFile::read`.
         if !cfg!(feature = "woff2") {
@@ -717,11 +717,11 @@ pub(crate) mod tests {
     fn a_damaged_font_packed_the_newer_way_never_stops_the_program() {
         // Truncated anywhere, or with a bit of any byte flipped (another bit each byte): every
         // third place, each unpacking the dictionary afresh.
-        (0..PACKED.len()).step_by(3).for_each(|long| crate::font::tests::ask_everything(PACKED[..long].to_vec()));
+        (0..PACKED.len()).step_by(3).for_each(|long| crate::font_file::tests::ask_everything(PACKED[..long].to_vec()));
         for at in (1..PACKED.len()).step_by(3) {
             let mut damaged = PACKED.to_vec();
             damaged[at] ^= 1 << (at % 8);
-            crate::font::tests::ask_everything(damaged);
+            crate::font_file::tests::ask_everything(damaged);
         }
     }
 

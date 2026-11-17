@@ -17,15 +17,16 @@
 //!
 //! Gradients become shadings, which the viewer computes from the stops; where opacity varies
 //! along them, a grey shading supplies it as a soft mask. Pictures are compressed as PNG rows
-//! are ([`png::pack`](crate::png::pack)), with alpha as a separate picture; a JPEG goes in as
-//! is. Links are page rectangles (annotations) to a URL or a place in the pages.
+//! are ([`png::zlib_compress`](crate::png::zlib_compress)), with alpha as a separate picture; a
+//! JPEG goes in as is. Links are page rectangles (annotations) to a URL or a place in the
+//! pages.
 //!
 //! Every number and name is written by this file; nothing from the app goes to the viewer
 //! verbatim except URL text and the title, written as strings that cannot terminate early.
 use crate::color::Color;
-use crate::font::{Bytes, FontFile, listed};
+use crate::font_file::{Bytes, FontFile, listed};
 use crate::geom::{Point, Rect};
-use crate::paper::{Drawn, Kept, Mark, Paper, Picture, Words};
+use crate::paper::{Drawn, Mark, PagePaint, Paper, Picture, Words};
 use crate::path::{Path, Step};
 use crate::pen::{Cap, Join};
 use std::collections::BTreeMap;
@@ -35,7 +36,7 @@ const POINT: f32 = 0.75;
 
 impl Paper {
     /// The pages as a PDF file: its bytes, to save or send to a printer.
-    pub fn pdf(&self) -> Vec<u8> {
+    pub fn to_pdf(&self) -> Vec<u8> {
         write(self)
     }
 }
@@ -58,14 +59,14 @@ impl File {
         self.bytes.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
     }
     /// Writes a stream: its dictionary besides the length, and its bytes, compressed.
-    fn stream(&mut self, number: u32, said: &str, data: &[u8]) {
-        let packed = crate::png::pack(data);
-        self.raw(number, &format!("{said} /Filter /FlateDecode"), &packed);
+    fn stream(&mut self, number: u32, dict: &str, data: &[u8]) {
+        let packed = crate::png::zlib_compress(data);
+        self.raw(number, &format!("{dict} /Filter /FlateDecode"), &packed);
     }
     /// Writes a stream whose bytes are already in final form (compressed already).
-    fn raw(&mut self, number: u32, said: &str, data: &[u8]) {
+    fn raw(&mut self, number: u32, dict: &str, data: &[u8]) {
         self.at[number as usize] = self.bytes.len();
-        self.bytes.extend_from_slice(format!("{number} 0 obj\n<< {said} /Length {} >>\nstream\n", data.len()).as_bytes());
+        self.bytes.extend_from_slice(format!("{number} 0 obj\n<< {dict} /Length {} >>\nstream\n", data.len()).as_bytes());
         self.bytes.extend_from_slice(data);
         self.bytes.extend_from_slice(b"\nendstream\nendobj\n");
     }
@@ -81,8 +82,8 @@ enum Coded {
 /// A gradient on a page: the shape's fill and bounds, for a shape on a page of this height in
 /// units; and once written, its index among the gradients, its shading, the graphics state for
 /// its opacity (where not opaque throughout), and for a stroke, its pattern.
-struct Blend {
-    ink: Kept,
+struct Gradient {
+    paint: PagePaint,
     around: Rect,
     page: f32,
     nth: usize,
@@ -100,70 +101,99 @@ type State = (Option<[u8; 2]>, u32);
 struct Shared {
     coded: Vec<Option<Coded>>,
     states: Vec<State>,
-    blends: BTreeMap<(usize, usize), Blend>,
+    gradients: BTreeMap<(usize, usize), Gradient>,
 }
 
 /// Writes a paper's pages as a PDF file.
 fn write(paper: &Paper) -> Vec<u8> {
     let mut file = File { bytes: b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec(), at: vec![0] };
     let (catalog, tree, info, resources) = (file.number(), file.number(), file.number(), file.number());
-    let mut shared = Shared { coded: Vec::new(), states: Vec::new(), blends: BTreeMap::new() };
-    let mut fonts = String::new();
-    for (at, font) in paper.files.iter().enumerate() {
-        let used = used(paper, at as u32);
-        let coded = (!used.is_empty()).then(|| write_font(&mut file, font, at, &used, &mut fonts));
-        shared.coded.push(coded);
-    }
-    let mut pictures = String::new();
-    for (at, picture) in paper.pictures.iter().enumerate() {
-        let number = write_picture(&mut file, picture);
-        pictures.push_str(&format!("/I{at} {number} 0 R "));
-    }
-    let (mut blends, mut patterns) = (String::new(), String::new());
-    for (page, sheet) in paper.pages.iter().enumerate() {
-        for (place, mark) in sheet.marks.iter().enumerate() {
-            let Mark::Shape(drawn) = mark else { continue };
-            if matches!(drawn.ink, Kept::Color(_)) {
-                continue;
-            }
-            let (around, nth) = (drawn.path.bounds(), shared.blends.len());
-            let mut blend = Blend { ink: drawn.ink.clone(), around, page: sheet.size.h, nth, shading: 0, state: None, pattern: None };
-            write_blend(&mut file, &mut blend, drawn.pen.is_some(), &mut shared.states);
-            blends.push_str(&format!("/S{nth} {} 0 R ", blend.shading));
-            if let Some(pattern) = blend.pattern {
-                patterns.push_str(&format!("/P{nth} {pattern} 0 R "));
-            }
-            shared.blends.insert((page, place), blend);
-        }
-    }
-    // The pages, each with its content and links. (Each has its number first: a link may point
-    // to a later page.)
-    let kids: Vec<u32> = paper.pages.iter().map(|_| file.number()).collect();
-    for (page, sheet) in paper.pages.iter().enumerate() {
-        let contents = file.number();
-        let drawn = content(paper, page, &mut shared);
-        file.stream(contents, "", &drawn);
-        let links = write_links(&mut file, paper, page, &kids);
-        let (w, h) = (sheet.size.w * POINT, sheet.size.h * POINT);
-        let annots = if links.is_empty() { String::new() } else { format!(" /Annots [{links}]") };
-        file.object(kids[page], &format!("<< /Type /Page /Parent {tree} 0 R /MediaBox [0 0 {} {}] /Resources {resources} 0 R /Contents {contents} 0 R{annots} >>", num(w), num(h)));
-    }
-    // (Opacities are known once every page is written.)
-    for at in 0..shared.states.len() {
-        if let (Some([fill, line]), 0) = shared.states[at] {
-            shared.states[at].1 = file.number();
-            file.object(shared.states[at].1, &format!("<< /Type /ExtGState /ca {} /CA {} >>", num(fill as f32 / 255.0), num(line as f32 / 255.0)));
-        }
-    }
-    let states: String = shared.states.iter().enumerate().map(|(at, (_, number))| format!("/G{at} {number} 0 R ")).collect();
-    let resources_said = format!("<< /Font << {fonts}>> /XObject << {pictures}>> /ExtGState << {states}>> /Shading << {blends}>> /Pattern << {patterns}>> >>");
-    file.object(resources, &resources_said);
-    let kids_said: String = kids.iter().map(|kid| format!("{kid} 0 R ")).collect();
-    file.object(tree, &format!("<< /Type /Pages /Kids [{kids_said}] /Count {} >>", kids.len()));
+    let mut shared = Shared { coded: Vec::new(), states: Vec::new(), gradients: BTreeMap::new() };
+    let fonts = write_fonts(&mut file, paper, &mut shared);
+    let pictures = write_pictures(&mut file, paper);
+    let (shadings, patterns) = write_gradients(&mut file, paper, &mut shared);
+    let kids = write_pages(&mut file, paper, &mut shared, [tree, resources]);
+    let states = write_states(&mut file, &mut shared.states);
+    file.object(resources, &format!("<< /Font << {fonts}>> /XObject << {pictures}>> /ExtGState << {states}>> /Shading << {shadings}>> /Pattern << {patterns}>> >>"));
+    let kids_listed: String = kids.iter().map(|kid| format!("{kid} 0 R ")).collect();
+    file.object(tree, &format!("<< /Type /Pages /Kids [{kids_listed}] /Count {} >>", kids.len()));
     file.object(catalog, &format!("<< /Type /Catalog /Pages {tree} 0 R >>"));
     let title = if paper.title.is_empty() { String::new() } else { format!("/Title {} ", text(&paper.title)) };
     file.object(info, &format!("<< {title}/Producer (taut) >>"));
     finish(file, catalog, info)
+}
+
+/// Writes each font the pages use: its encoding goes into `shared`; gives back the resource
+/// entries.
+fn write_fonts(file: &mut File, paper: &Paper, shared: &mut Shared) -> String {
+    let mut fonts = String::new();
+    for (at, font) in paper.files.iter().enumerate() {
+        let used = used(paper, at as u32);
+        let coded = (!used.is_empty()).then(|| write_font(file, font, at, &used, &mut fonts));
+        shared.coded.push(coded);
+    }
+    fonts
+}
+
+/// Writes every picture; gives back the resource entries.
+fn write_pictures(file: &mut File, paper: &Paper) -> String {
+    let mut pictures = String::new();
+    for (at, picture) in paper.pictures.iter().enumerate() {
+        let number = write_picture(file, picture);
+        pictures.push_str(&format!("/I{at} {number} 0 R "));
+    }
+    pictures
+}
+
+/// Writes every shape's gradient, kept in `shared` by its mark; gives back the resource entries
+/// of the shadings and of the patterns (for strokes).
+fn write_gradients(file: &mut File, paper: &Paper, shared: &mut Shared) -> (String, String) {
+    let (mut shadings, mut patterns) = (String::new(), String::new());
+    for (page, sheet) in paper.pages.iter().enumerate() {
+        for (place, mark) in sheet.marks.iter().enumerate() {
+            let Mark::Shape(drawn) = mark else { continue };
+            if matches!(drawn.paint, PagePaint::Color(_)) {
+                continue;
+            }
+            let (around, nth) = (drawn.path.bounds(), shared.gradients.len());
+            let mut gradient = Gradient { paint: drawn.paint.clone(), around, page: sheet.size.h, nth, shading: 0, state: None, pattern: None };
+            write_gradient(file, &mut gradient, drawn.pen.is_some(), &mut shared.states);
+            shadings.push_str(&format!("/S{nth} {} 0 R ", gradient.shading));
+            if let Some(pattern) = gradient.pattern {
+                patterns.push_str(&format!("/P{nth} {pattern} 0 R "));
+            }
+            shared.gradients.insert((page, place), gradient);
+        }
+    }
+    (shadings, patterns)
+}
+
+/// Writes the pages, each with its content and links, under the page tree `tree` with the
+/// shared `resources`; gives back their object numbers. (Each has its number first: a link may
+/// point to a later page.)
+fn write_pages(file: &mut File, paper: &Paper, shared: &mut Shared, [tree, resources]: [u32; 2]) -> Vec<u32> {
+    let kids: Vec<u32> = paper.pages.iter().map(|_| file.number()).collect();
+    for (page, sheet) in paper.pages.iter().enumerate() {
+        let contents = file.number();
+        let drawn = content(paper, page, shared);
+        file.stream(contents, "", &drawn);
+        let links = write_links(file, paper, page, &kids);
+        let (w, h) = (sheet.size.w * POINT, sheet.size.h * POINT);
+        let annots = if links.is_empty() { String::new() } else { format!(" /Annots [{links}]") };
+        file.object(kids[page], &format!("<< /Type /Page /Parent {tree} 0 R /MediaBox [0 0 {} {}] /Resources {resources} 0 R /Contents {contents} 0 R{annots} >>", num(w), num(h)));
+    }
+    kids
+}
+
+/// Writes the opacities, known once every page is written; gives back the resource entries.
+fn write_states(file: &mut File, states: &mut [State]) -> String {
+    for state in states.iter_mut() {
+        if let (Some([fill, line]), 0) = *state {
+            state.1 = file.number();
+            file.object(state.1, &format!("<< /Type /ExtGState /ca {} /CA {} >>", num(fill as f32 / 255.0), num(line as f32 / 255.0)));
+        }
+    }
+    states.iter().enumerate().map(|(at, (_, number))| format!("/G{at} {number} 0 R ")).collect()
 }
 
 /// Writes the cross-reference table and the trailer, which points at it.
@@ -189,7 +219,7 @@ fn content(paper: &Paper, page: usize, shared: &mut Shared) -> Vec<u8> {
     let mut held = 0;
     for (place, mark) in sheet.marks.iter().enumerate() {
         match mark {
-            Mark::Shape(drawn) => shape(&mut out, drawn, shared.blends.get(&(page, place)), &mut shared.states),
+            Mark::Shape(drawn) => shape(&mut out, drawn, shared.gradients.get(&(page, place)), &mut shared.states),
             Mark::Words(words) => write_words(&mut out, words, &paper.files[words.font as usize], shared.coded[words.font as usize].as_ref(), &mut shared.states),
             Mark::Picture(at, r) => placed_picture(&mut out, &paper.pictures[*at as usize], *at, *r),
             Mark::Clip(r) => {
@@ -220,7 +250,7 @@ fn state(states: &mut Vec<State>, solid: [u8; 2]) -> usize {
 }
 
 /// A shape: its path, then filled or stroked; in its colour, or its gradient (a shading).
-fn shape(out: &mut String, drawn: &Drawn, blend: Option<&Blend>, states: &mut Vec<State>) {
+fn shape(out: &mut String, drawn: &Drawn, gradient: Option<&Gradient>, states: &mut Vec<State>) {
     out.push_str("q ");
     if let Some(pen) = drawn.pen {
         let cap = match pen.cap {
@@ -238,28 +268,28 @@ fn shape(out: &mut String, drawn: &Drawn, blend: Option<&Blend>, states: &mut Ve
         let dashes = if dashed { format!("[{}] {} d", dashes.join(" "), num(pen.offset)) } else { "[] 0 d".to_string() };
         out.push_str(&format!("{} w {cap} J {join} j {} M {dashes} ", num(pen.width.max(0.0)), num(limit)));
     }
-    match (&drawn.ink, blend) {
-        (Kept::Color(color), _) => {
+    match (&drawn.paint, gradient) {
+        (PagePaint::Color(color), _) => {
             let solid = state(states, if drawn.pen.is_some() { [255, color.a()] } else { [color.a(), 255] });
             let paint = if drawn.pen.is_some() { "RG" } else { "rg" };
             out.push_str(&format!("/G{solid} gs {} {paint}\n", rgb(*color)));
             path(out, &drawn.path);
             out.push_str(if drawn.pen.is_some() { "S Q\n" } else { "f Q\n" });
         }
-        (_, Some(blend)) => {
-            if let Some(at) = blend.state {
+        (_, Some(gradient)) => {
+            if let Some(at) = gradient.state {
                 out.push_str(&format!("/G{at} gs "));
             }
             // (A stroke is drawn with a shading pattern; a fill is clipped to the shape and the
             // shading painted over that.)
-            let nth = blend.nth;
+            let nth = gradient.nth;
             if drawn.pen.is_some() {
                 out.push_str(&format!("/Pattern CS /P{nth} SCN\n"));
             }
             path(out, &drawn.path);
             match drawn.pen {
                 Some(_) => out.push_str("S Q\n"),
-                None => out.push_str(&format!("W n {} cm /S{nth} sh Q\n", matrix(space(&blend.ink, blend.around)))),
+                None => out.push_str(&format!("W n {} cm /S{nth} sh Q\n", matrix(space(&gradient.paint, gradient.around)))),
             }
         }
         (_, None) => out.push_str("Q\n"),
@@ -376,10 +406,10 @@ fn used(paper: &Paper, font: u32) -> BTreeMap<u16, String> {
             continue;
         }
         for glyph in &words.glyphs {
-            let said = &words.text[glyph.chars[0] as usize..glyph.chars[1] as usize];
+            let glyph_text = &words.text[glyph.chars[0] as usize..glyph.chars[1] as usize];
             let known = used.entry(glyph.id).or_insert_with(String::new);
             if known.is_empty() {
-                known.push_str(said);
+                known.push_str(glyph_text);
             }
         }
     }
@@ -389,10 +419,10 @@ fn used(paper: &Paper, font: u32) -> BTreeMap<u16, String> {
 /// Writes a font's used glyphs: as a subset TrueType font where it is one at its default
 /// position, else as Type 3 fonts; and adds it to the font resources. Returns its encoding.
 fn write_font(file: &mut File, font: &FontFile, at: usize, used: &BTreeMap<u16, String>, fonts: &mut String) -> Coded {
-    if let Some((program, kept)) = cut_down(font, used).filter(|_| font.varied.is_none()) {
-        let number = whole_font(file, font, &program, &kept, used);
+    if let Some((program, new_ids)) = cut_down(font, used).filter(|_| font.varied.is_none()) {
+        let number = whole_font(file, font, &program, &new_ids, used);
         fonts.push_str(&format!("/F{at} {number} 0 R "));
-        return Coded::Whole(kept);
+        return Coded::Whole(new_ids);
     }
     let mut map = BTreeMap::new();
     let glyphs: Vec<u16> = used.keys().copied().collect();
@@ -407,25 +437,25 @@ fn write_font(file: &mut File, font: &FontFile, at: usize, used: &BTreeMap<u16, 
 /// Writes a TrueType font subset to its used glyphs, with its wrappers: the two-byte CID font,
 /// its descendant, its descriptor, glyph widths and ToUnicode. Returns the font's object
 /// number.
-fn whole_font(file: &mut File, font: &FontFile, program: &[u8], kept: &BTreeMap<u16, u16>, used: &BTreeMap<u16, String>) -> u32 {
+fn whole_font(file: &mut File, font: &FontFile, program: &[u8], new_ids: &BTreeMap<u16, u16>, used: &BTreeMap<u16, String>) -> u32 {
     let (top, made, about, data, map) = (file.number(), file.number(), file.number(), file.number(), file.number());
     let units = font.unit(1000.0);
-    let name = format!("{}+{}", tag(kept), postscript_name(font));
+    let name = format!("{}+{}", tag(new_ids), postscript_name(font));
     file.stream(data, &format!("/Length1 {}", program.len()), program);
-    let widths: String = kept.iter().map(|(old, new)| format!("{new} [{}] ", num(width(font, *old)))).collect();
+    let widths: String = new_ids.iter().map(|(old, new)| format!("{new} [{}] ", num(width(font, *old)))).collect();
     let metrics = font.metrics(1000.0);
     let head = font_table(font, b"head");
     let edge = |at: usize| head.i16(at).unwrap_or(0) as f32 * units;
     let bounds = format!("[{} {} {} {}]", num(edge(36)), num(edge(38)), num(edge(40)), num(edge(42)));
-    let said = format!(
+    let dict = format!(
         "<< /Type /FontDescriptor /FontName /{name} /Flags 4 /FontBBox {bounds} /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {data} 0 R >>",
         num(metrics.ascent),
         num(-metrics.descent),
-        num(if metrics.cap > 0.0 { metrics.cap } else { metrics.ascent })
+        num(if metrics.cap_height > 0.0 { metrics.cap_height } else { metrics.ascent })
     );
-    file.object(about, &said);
+    file.object(about, &dict);
     file.object(made, &format!("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {about} 0 R /W [{widths}] /CIDToGIDMap /Identity >>"));
-    let pairs: Vec<(u32, &str)> = kept.iter().map(|(old, new)| (*new as u32, used.get(old).map_or("", String::as_str))).collect();
+    let pairs: Vec<(u32, &str)> = new_ids.iter().map(|(old, new)| (*new as u32, used.get(old).map_or("", String::as_str))).collect();
     file.stream(map, "", to_unicode(&pairs, 2).as_bytes());
     file.object(top, &format!("<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [{made} 0 R] /ToUnicode {map} 0 R >>"));
     top
@@ -471,8 +501,8 @@ fn to_unicode(pairs: &[(u32, &str)], width: usize) -> String {
         "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n",
     );
     out.push_str(&format!("1 begincodespacerange\n<{}> <{}>\nendcodespacerange\n", "00".repeat(width), "FF".repeat(width)));
-    let said: Vec<&(u32, &str)> = pairs.iter().filter(|(_, text)| !text.is_empty()).collect();
-    for hundred in said.chunks(100) {
+    let with_text: Vec<&(u32, &str)> = pairs.iter().filter(|(_, text)| !text.is_empty()).collect();
+    for hundred in with_text.chunks(100) {
         out.push_str(&format!("{} beginbfchar\n", hundred.len()));
         for (code, text) in hundred {
             let units: String = text.encode_utf16().map(|unit| format!("{unit:04X}")).collect();
@@ -485,8 +515,8 @@ fn to_unicode(pairs: &[(u32, &str)], width: usize) -> String {
 }
 
 /// Six capitals distinguishing this subset from others, as subset font names require.
-fn tag(kept: &BTreeMap<u16, u16>) -> String {
-    let mut key = crate::id::hash(kept.keys().copied().collect::<Vec<u16>>());
+fn tag(new_ids: &BTreeMap<u16, u16>) -> String {
+    let mut key = crate::id::hash(new_ids.keys().copied().collect::<Vec<u16>>());
     (0..6)
         .map(|_| {
             let letter = (b'A' + (key % 26) as u8) as char;
@@ -531,37 +561,21 @@ fn cut_down(font: &FontFile, used: &BTreeMap<u16, String>) -> Option<(Vec<u8>, B
     if glyf.0.is_empty() || loca.0.is_empty() || metrics == 0 {
         return None;
     }
-    let place = |glyph: usize| if long { loca.u32(glyph * 4).map(|at| at as usize) } else { loca.u16(glyph * 2).map(|at| at as usize * 2) };
-    let bytes = |glyph: u16| -> Option<&[u8]> {
-        let (from, to) = (place(glyph as usize)?, place(glyph as usize + 1)?);
-        Some(if to > from { glyf.part(from, to - from)?.0 } else { &[] })
-    };
-    // Every used glyph and every component of those, found iteratively: a worklist still to
-    // inspect.
-    let mut kept: BTreeMap<u16, u16> = BTreeMap::new();
-    let mut left: Vec<u16> = std::iter::once(0).chain(used.keys().copied()).filter(|glyph| (*glyph as usize) < count).collect();
-    while let Some(glyph) = left.pop() {
-        if kept.insert(glyph, 0).is_some() {
-            continue;
-        }
-        left.extend(parts(bytes(glyph)?).into_iter().map(|(_, part)| part).filter(|part| (*part as usize) < count && !kept.contains_key(part)));
-    }
-    for (new, number) in kept.values_mut().enumerate() {
-        *number = new as u16;
-    }
+    let outlines = Outlines { glyf, loca, long };
+    let new_ids = glyphs_and_components(&outlines, used, count)?;
     // The glyphs, each four-byte aligned; their offsets; and each one's advance and left side
     // bearing.
     let (mut glyphs, mut starts, mut widths) = (Vec::new(), Vec::new(), Vec::new());
-    for old in kept.keys() {
+    for old in new_ids.keys() {
         starts.extend((glyphs.len() as u32).to_be_bytes());
-        glyphs.extend(plain(bytes(*old)?, &kept));
+        glyphs.extend(plain(outlines.glyph(*old)?, &new_ids));
         glyphs.resize(glyphs.len().next_multiple_of(4), 0);
         let listed = (*old as usize).min(metrics - 1);
         let edge = if (*old as usize) < metrics { hmtx.u16(listed * 4 + 2) } else { hmtx.u16(metrics * 4 + (*old as usize - metrics) * 2) };
         widths.extend([hmtx.u16(listed * 4)?.to_be_bytes(), edge.unwrap_or(0).to_be_bytes()].concat());
     }
     starts.extend((glyphs.len() as u32).to_be_bytes());
-    let n = (kept.len() as u16).to_be_bytes();
+    let n = (new_ids.len() as u16).to_be_bytes();
     let mut head = head.0.to_vec();
     let mut hhea = hhea.0.to_vec();
     let mut maxp = maxp.0.to_vec();
@@ -575,7 +589,43 @@ fn cut_down(font: &FontFile, used: &BTreeMap<u16, String>) -> Option<(Vec<u8>, B
     let none: [u16; 18] = [0, 1, 3, 1, 0, 12, 4, 24, 0, 2, 2, 0, 0, 0xFFFF, 0, 0xFFFF, 1, 0];
     let cmap = none.iter().flat_map(|number| number.to_be_bytes()).collect();
     let tables: Vec<(&[u8; 4], Vec<u8>)> = vec![(b"cmap", cmap), (b"glyf", glyphs), (b"head", head), (b"hhea", hhea), (b"hmtx", widths), (b"loca", starts), (b"maxp", maxp), (b"post", post)];
-    Some((font_file(tables), kept))
+    Some((font_file(tables), new_ids))
+}
+
+/// A TrueType font's glyph outlines: `glyf`, found through `loca` (of long or short offsets).
+struct Outlines<'a> {
+    glyf: Bytes<'a>,
+    loca: Bytes<'a>,
+    long: bool,
+}
+
+impl<'a> Outlines<'a> {
+    /// Where a glyph's bytes start.
+    fn offset(&self, glyph: usize) -> Option<usize> {
+        if self.long { self.loca.u32(glyph * 4).map(|at| at as usize) } else { self.loca.u16(glyph * 2).map(|at| at as usize * 2) }
+    }
+    /// A glyph's bytes (none for an empty glyph).
+    fn glyph(&self, glyph: u16) -> Option<&'a [u8]> {
+        let (from, to) = (self.offset(glyph as usize)?, self.offset(glyph as usize + 1)?);
+        Some(if to > from { self.glyf.part(from, to - from)?.0 } else { &[] })
+    }
+}
+
+/// The notdef glyph, every used glyph and every component of those (below `count`), each with
+/// its new id: renumbered from zero in original order. Nothing if a glyph is damaged.
+fn glyphs_and_components(outlines: &Outlines, used: &BTreeMap<u16, String>, count: usize) -> Option<BTreeMap<u16, u16>> {
+    let mut found: BTreeMap<u16, u16> = BTreeMap::new();
+    let mut left: Vec<u16> = std::iter::once(0).chain(used.keys().copied()).filter(|glyph| (*glyph as usize) < count).collect();
+    while let Some(glyph) = left.pop() {
+        if found.insert(glyph, 0).is_some() {
+            continue;
+        }
+        left.extend(parts(outlines.glyph(glyph)?).into_iter().map(|(_, part)| part).filter(|part| (*part as usize) < count && !found.contains_key(part)));
+    }
+    for (new, number) in found.values_mut().enumerate() {
+        *number = new as u16;
+    }
+    Some(found)
 }
 
 /// A composite glyph's components: where in its bytes each glyph id is, and the id. (None for a
@@ -611,7 +661,7 @@ fn parts(glyph: &[u8]) -> Vec<(usize, u16)> {
 
 /// A glyph as the subset has it: a composite's components renumbered, and hinting instructions
 /// removed.
-fn plain(glyph: &[u8], kept: &BTreeMap<u16, u16>) -> Vec<u8> {
+fn plain(glyph: &[u8], new_ids: &BTreeMap<u16, u16>) -> Vec<u8> {
     let read = Bytes(glyph);
     let Some(contours) = read.i16(0) else { return Vec::new() };
     if contours >= 0 {
@@ -625,7 +675,7 @@ fn plain(glyph: &[u8], kept: &BTreeMap<u16, u16>) -> Vec<u8> {
     let parts = parts(glyph);
     let mut out = glyph.to_vec();
     for (at, part) in &parts {
-        out[*at..*at + 2].copy_from_slice(&kept.get(part).copied().unwrap_or(0).to_be_bytes());
+        out[*at..*at + 2].copy_from_slice(&new_ids.get(part).copied().unwrap_or(0).to_be_bytes());
     }
     // (The last component's flags say whether instructions follow: that flag is cleared and
     // they are dropped.)
@@ -695,11 +745,11 @@ fn write_picture(file: &mut File, picture: &Picture) -> u32 {
                 format!(" /SMask {number} 0 R")
             });
             let colours: Vec<u8> = pixels.iter().flat_map(|pixel| [(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]).collect();
-            let said = format!(
+            let dict = format!(
                 "/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /DecodeParms << /Predictor 12 /Colors 3 /Columns {width} >> /Interpolate true{}",
                 mask.unwrap_or_default()
             );
-            file.stream(number, &said, &upward::<3>(*width, &colours));
+            file.stream(number, &dict, &upward::<3>(*width, &colours));
         }
     }
     number
@@ -723,9 +773,9 @@ fn upward<const N: usize>(width: usize, bytes: &[u8]) -> Vec<u8> {
 /// A gradient shading's space, as a six-number transform to the page's: the shape's bounds for
 /// a linear gradient (its shading gives its ends in page units), or a unit circle round the
 /// box's centre, stretched to the box, for a radial one.
-fn space(ink: &Kept, around: Rect) -> [f32; 6] {
-    match ink {
-        Kept::Around(_) => [around.w / 2.0, 0.0, 0.0, around.h / 2.0, around.x + around.w / 2.0, around.y + around.h / 2.0],
+fn space(paint: &PagePaint, around: Rect) -> [f32; 6] {
+    match paint {
+        PagePaint::Radial(_) => [around.w / 2.0, 0.0, 0.0, around.h / 2.0, around.x + around.w / 2.0, around.y + around.h / 2.0],
         _ => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
     }
 }
@@ -733,45 +783,45 @@ fn space(ink: &Kept, around: Rect) -> [f32; 6] {
 /// Writes a gradient's shading, and the soft mask for its opacity where that varies along it
 /// (or the graphics state for a uniform opacity); and for a stroke, a shading pattern in page
 /// space.
-fn write_blend(file: &mut File, blend: &mut Blend, line: bool, states: &mut Vec<State>) {
-    let stops = match &blend.ink {
-        Kept::Along(_, stops) | Kept::Around(stops) => stops.clone(),
-        Kept::Color(color) => vec![(0.0, *color)],
+fn write_gradient(file: &mut File, gradient: &mut Gradient, line: bool, states: &mut Vec<State>) {
+    let stops = match &gradient.paint {
+        PagePaint::Linear(_, stops) | PagePaint::Radial(stops) => stops.clone(),
+        PagePaint::Color(color) => vec![(0.0, *color)],
     };
-    let geometry = match &blend.ink {
-        Kept::Along(turn, _) => {
-            let (r, (sin, cos)) = (blend.around, turn.to_radians().sin_cos());
+    let geometry = match &gradient.paint {
+        PagePaint::Linear(turn, _) => {
+            let (r, (sin, cos)) = (gradient.around, turn.to_radians().sin_cos());
             let (mid, reach) = (Point { x: r.x + r.w / 2.0, y: r.y + r.h / 2.0 }, (sin.abs() * r.w / 2.0 + cos.abs() * r.h / 2.0).max(1e-3));
             format!("/ShadingType 2 /Coords [{} {} {} {}]", num(mid.x - sin * reach), num(mid.y + cos * reach), num(mid.x + sin * reach), num(mid.y - cos * reach))
         }
         _ => "/ShadingType 3 /Coords [0 0 0 0 0 1]".to_string(),
     };
-    blend.shading = file.number();
+    gradient.shading = file.number();
     let colours = function(&stops, rgb);
-    file.object(blend.shading, &format!("<< {geometry} /ColorSpace /DeviceRGB /Function {colours} /Extend [true true] >>"));
+    file.object(gradient.shading, &format!("<< {geometry} /ColorSpace /DeviceRGB /Function {colours} /Extend [true true] >>"));
     let solids: Vec<u8> = stops.iter().map(|(_, color)| color.a()).collect();
     if solids.iter().all(|solid| *solid == solids[0]) {
         let at = state(states, if line { [255, solids[0]] } else { [solids[0], 255] });
-        blend.state = (solids[0] != 255).then_some(at);
+        gradient.state = (solids[0] != 255).then_some(at);
     } else {
         let (grey, form, mask) = (file.number(), file.number(), file.number());
         let alphas = function(&stops, |color| num(color.a() as f32 / 255.0));
         file.object(grey, &format!("<< {geometry} /ColorSpace /DeviceGray /Function {alphas} /Extend [true true] >>"));
         // (The mask is computed in page units where it is set, as the shape is; what lies
         // outside the shape is not drawn anyway.)
-        let drawn = format!("q {} cm /A sh Q", matrix(space(&blend.ink, blend.around)));
+        let drawn = format!("q {} cm /A sh Q", matrix(space(&gradient.paint, gradient.around)));
         let all = "[-100000 -100000 100000 100000]";
         file.stream(form, &format!("/Type /XObject /Subtype /Form /BBox {all} /Group << /S /Transparency /CS /DeviceGray >> /Resources << /Shading << /A {grey} 0 R >> >>"), drawn.as_bytes());
         file.object(mask, &format!("<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G {form} 0 R >> >>"));
         states.push((None, mask));
-        blend.state = Some(states.len() - 1);
+        gradient.state = Some(states.len() - 1);
     }
     if line {
         let pattern = file.number();
-        let page = [POINT, 0.0, 0.0, -POINT, 0.0, blend.page * POINT];
-        let m = then(space(&blend.ink, blend.around), page);
-        file.object(pattern, &format!("<< /PatternType 2 /Shading {} 0 R /Matrix [{}] >>", blend.shading, matrix(m)));
-        blend.pattern = Some(pattern);
+        let page = [POINT, 0.0, 0.0, -POINT, 0.0, gradient.page * POINT];
+        let m = then(space(&gradient.paint, gradient.around), page);
+        file.object(pattern, &format!("<< /PatternType 2 /Shading {} 0 R /Matrix [{}] >>", gradient.shading, matrix(m)));
+        gradient.pattern = Some(pattern);
     }
 }
 
@@ -854,16 +904,16 @@ fn rgb(color: Color) -> String {
 }
 
 /// A text string a viewer shows (a title): UTF-16BE after its byte order mark, in hex.
-fn text(said: &str) -> String {
-    let units: String = said.encode_utf16().map(|unit| format!("{unit:04X}")).collect();
+fn text(string: &str) -> String {
+    let units: String = string.encode_utf16().map(|unit| format!("{unit:04X}")).collect();
     format!("<FEFF{units}>")
 }
 
 /// A URL as an ASCII string: characters a URL cannot hold verbatim (a space, non-ASCII)
-/// percent-encoded, and string delimiters escaped with ``.
-fn ascii(said: &str) -> String {
+/// percent-encoded, and string delimiters escaped with a backslash.
+fn ascii(string: &str) -> String {
     let mut out = String::from("(");
-    for byte in said.bytes() {
+    for byte in string.bytes() {
         match byte {
             b'(' | b')' | b'\\' => out.push_str(&format!("\\{}", byte as char)),
             0x21..=0x7e => out.push(byte as char),
@@ -878,7 +928,7 @@ fn ascii(said: &str) -> String {
 pub(crate) mod tests {
     use super::*;
     use crate::geom::{Size, rect};
-    use crate::pen::{Ink, Pen};
+    use crate::pen::{Paint, Pen};
     use crate::text::{Face, Font};
 
     /// A system font file with Latin letters, if any.
@@ -896,17 +946,17 @@ pub(crate) mod tests {
         }
         paper.page(Paper::A4);
         paper.rect(rect(40.0, 40.0, 200.0, 100.0), Color::rgb(0x2b6cb0));
-        paper.rounded(rect(260.0, 40.0, 200.0, 100.0), 16.0, Color::rgb(0xe53e3e).alpha(0.5));
+        paper.rounded(rect(260.0, 40.0, 200.0, 100.0), 16.0, Color::rgb(0xe53e3e).with_alpha(0.5));
         paper.border(rect(480.0, 40.0, 200.0, 100.0), 12.0, 4.0, Color::BLACK);
         paper.gradient(rect(40.0, 160.0, 300.0, 80.0), 8.0, &[(0.0, Color::rgb(0xffcc00)), (0.5, Color::rgb(0x00aa88)), (1.0, Color::rgb(0x3355ff))], Some(90.0));
-        paper.gradient(rect(360.0, 160.0, 160.0, 120.0), 0.0, &[(0.0, Color::WHITE), (1.0, Color::rgb(0x330066).alpha(0.2))], None);
+        paper.gradient(rect(360.0, 160.0, 160.0, 120.0), 0.0, &[(0.0, Color::WHITE), (1.0, Color::rgb(0x330066).with_alpha(0.2))], None);
         let mut wave = Path::new();
         wave.move_to(40.0, 330.0).quad_to(140.0, 260.0, 240.0, 330.0).cubic_to(300.0, 380.0, 360.0, 280.0, 420.0, 330.0);
         paper.outline(&wave, Pen::new(6.0).cap(crate::pen::Cap::Flat).join(Join::Mitre(4.0)).dashes(&[18.0, 8.0], 0.0), Color::rgb(0x805ad5));
         let mut star = Path::new();
         star.star(560.0, 330.0, 50.0, 22.0, 5);
-        paper.shape(&star, Ink::Along(180.0, &[(0.0, Color::rgb(0xff0000)), (1.0, Color::rgb(0x0000ff))]));
-        paper.outline(&star, 3.0, Ink::Around(&[(0.0, Color::BLACK), (1.0, Color::rgb(0x00ff00))]));
+        paper.shape(&star, Paint::Linear(180.0, &[(0.0, Color::rgb(0xff0000)), (1.0, Color::rgb(0x0000ff))]));
+        paper.outline(&star, 3.0, Paint::Radial(&[(0.0, Color::BLACK), (1.0, Color::rgb(0x00ff00))]));
         let font = Font::new(28.0);
         paper.text("Hello, PDF: kerning AV To fi", 40.0, 400.0, font, Color::BLACK);
         paper.text("Underlined", 40.0, 450.0, font.underlined(), Color::rgb(0x2b6cb0));
@@ -967,21 +1017,21 @@ pub(crate) mod tests {
         let data = &object[from..from + long];
         assert!(object[from + long..].starts_with(b"\nendstream"), "a stream is as long as it says");
         match said.contains("/FlateDecode") {
-            true => Some(crate::png::unpack(data, 1 << 28).expect("a packed stream unpacks")),
+            true => Some(crate::png::zlib_decompress(data, 1 << 28).expect("a packed stream unpacks")),
             false => Some(data.to_vec()),
         }
     }
 
     #[test]
     fn a_file_is_laid_out_as_readers_find_their_way_in_it() {
-        let file = sample().pdf();
+        let file = sample().to_pdf();
         assert!(file.starts_with(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n") && file.ends_with(b"%%EOF\n"));
         let objects = objects(&file);
         assert!(objects.len() > 20, "{} objects", objects.len());
         let streams = objects.iter().filter(|(_, object)| object.windows(7).any(|seven| seven == b"stream\n")).count();
         assert_eq!(objects.iter().filter_map(|(_, object)| streamed(object)).count(), streams, "every stream is whole");
         // The same pages make the same file, byte for byte.
-        assert_eq!(file, sample().pdf());
+        assert_eq!(file, sample().to_pdf());
         // The title as the viewer shows it, and a link's URL (with its brackets and space
         // written so they cannot terminate the string).
         let text = String::from_utf8_lossy(&file);
@@ -1025,7 +1075,7 @@ pub(crate) mod tests {
         let read: String = words.glyphs.iter().map(|glyph| used[&glyph.id].as_str()).collect();
         assert_eq!(read, written, "the glyphs, read back in order, are the text");
         // And in the file, each glyph's two bytes map to its text.
-        let file = paper.pdf();
+        let file = paper.to_pdf();
         let text = String::from_utf8_lossy(&file);
         assert!(text.contains("/Encoding /Identity-H") && text.contains("/CIDToGIDMap /Identity") && text.contains("/ToUnicode"));
         let maps: Vec<String> =
@@ -1038,10 +1088,10 @@ pub(crate) mod tests {
     fn a_font_set_on_its_axes_is_written_as_drawn_glyphs() {
         let Some(font) = font_at(&["C:/Windows/Fonts/SegUIVar.ttf", "/mnt/c/Windows/Fonts/SegUIVar.ttf"]) else { return eprintln!("no variable font here: not tested") };
         let mut paper = Paper::new();
-        paper.font(Face::Regular, font.at(b"wght", 700.0));
+        paper.font(Face::Regular, font.with_variation(b"wght", 700.0));
         let written: String = (0..300).map(|n| char::from_u32(0x41 + n % 26 + (n / 26 % 2) * 32).unwrap()).chain("\u{e9}\u{e8}\u{ea}\u{eb}".chars()).collect();
         paper.text(&written, 10.0, 10.0, Font::new(16.0), Color::BLACK);
-        let file = paper.pdf();
+        let file = paper.to_pdf();
         let text = String::from_utf8_lossy(&file);
         assert!(text.contains("/Subtype /Type3") && !text.contains("/CIDFontType2"), "a font of drawn glyphs");
         let Some(Mark::Words(words)) = paper.pages[0].marks.first() else { panic!("words were written") };
@@ -1059,7 +1109,7 @@ pub(crate) mod tests {
         // (Twelve-bit and arithmetic-coded: not every viewer decodes those.)
         assert!(paper.jpeg(&deep, rect(0.0, 100.0, 40.0, 33.0)) && paper.jpeg(&arithmetic, rect(0.0, 140.0, 40.0, 33.0)));
         assert!(!paper.jpeg(b"no JPEG", rect(0.0, 0.0, 1.0, 1.0)));
-        let file = paper.pdf();
+        let file = paper.to_pdf();
         let objects = objects(&file);
         let passed: Vec<&Vec<u8>> = objects.iter().map(|(_, object)| object).filter(|object| object.windows(10).any(|ten| ten == b"/DCTDecode")).collect();
         assert_eq!(passed.len(), 2, "two went in as they are");
@@ -1080,7 +1130,7 @@ pub(crate) mod tests {
         }
         paper.picture(8, &clear, rect(0.0, 20.0, 16.0, 16.0));
         assert_eq!(paper.pictures.len(), 2);
-        let file = paper.pdf();
+        let file = paper.to_pdf();
         let images = objects(&file).iter().filter(|(_, object)| object.windows(13).any(|bytes| bytes == b"/Subtype /Ima")).count();
         assert_eq!(images, 3, "two pictures, and how solid the second is");
         assert!(String::from_utf8_lossy(&file).contains("/SMask "));
@@ -1159,13 +1209,13 @@ pub(crate) mod readers {
     /// Each page of a paper as each installed renderer draws it, compared with taut's: per
     /// renderer and page, how far apart.
     pub(crate) fn compared(paper: &Paper, scale: f32) -> Vec<Compared> {
-        let file = paper.pdf();
+        let file = paper.to_pdf();
         let mut found = Vec::new();
         for reader in ["pdftoppm", "gs"] {
             let Some(pages) = drawn_by(reader, &file, scale) else { continue };
             assert_eq!(pages.len(), paper.pages(), "{reader} drew every page");
             for (page, theirs) in pages.iter().enumerate() {
-                let ours = paper.picture_of(page, scale);
+                let ours = paper.render_page(page, scale);
                 found.push((reader, page, apart(theirs, &ours)));
                 eprintln!("{reader}, page {page}: {:?}", found.last().map(|(.., apart)| apart));
             }
@@ -1195,7 +1245,7 @@ pub(crate) mod readers {
         paper.page(crate::geom::Size { w: 960.0, h: 460.0 });
         let mut written = Vec::new();
         // (The last in a variable font at a non-default position: a Type 3 font.)
-        let varied = super::tests::font_at(&["C:/Windows/Fonts/SegUIVar.ttf", "/mnt/c/Windows/Fonts/SegUIVar.ttf"]).map(|font| font.at(b"wght", 700.0));
+        let varied = super::tests::font_at(&["C:/Windows/Fonts/SegUIVar.ttf", "/mnt/c/Windows/Fonts/SegUIVar.ttf"]).map(|font| font.with_variation(b"wght", 700.0));
         let lines = [
             (super::tests::latin(), "Office files: fine Ångström AV Wa To, — 100% “done”"),
             (super::tests::arabic(), "مرحبا بالعالم"),
@@ -1215,7 +1265,7 @@ pub(crate) mod readers {
     #[test]
     fn a_reader_takes_out_the_text_that_was_written() {
         let (paper, written) = scripts();
-        let Some(read) = text_of(&paper.pdf()) else { return eprintln!("no pdftotext here: not read back") };
+        let Some(read) = text_of(&paper.to_pdf()) else { return eprintln!("no pdftotext here: not read back") };
         let lines: Vec<&str> = read.lines().collect();
         // (Arabic is shaped and reordered only with `right-to-left`: without it, an extractor
         // reads its letters in display order.)

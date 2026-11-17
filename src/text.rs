@@ -2,11 +2,11 @@
 //!
 //! Every system already has a good text engine (with its fonts and settings), so each platform
 //! backend hands text to it through the [`TextSystem`] trait here. An app bringing its own
-//! fonts has them read and drawn by the library itself instead (`font.rs`), the same
+//! fonts has them read and drawn by the library itself instead (`font_file.rs`), the same
 //! everywhere. Where there is neither, the small built-in font below draws ASCII, so an
 //! interface can show on anything with pixels. Emoji are drawn by `emoji.rs`, which wraps
-//! whichever of these draws the rest; and `order.rs` wraps all of it, reordering bidirectional
-//! lines and drawing Hebrew and Arabic itself, shaped by `shape.rs`.
+//! whichever of these draws the rest; and `bidi.rs` wraps all of it, reordering bidirectional
+//! lines and drawing Hebrew and Arabic itself, shaped by `shaping.rs`.
 //!
 //! Here too is the grapheme cluster rule: what a user sees as one character, which may be
 //! several `char`s: a letter with following accents, an emoji with all its parts. The cursor
@@ -28,20 +28,20 @@ pub enum Face {
     /// The regular font, italic: emphasis, a title. (Where there is no italic face, regular.)
     Italic,
     /// Any other system font, by family and style ([`Face::named`]), or one of these four in
-    /// another style (`Face::Regular.italic()`): see `fonts`.
-    Named(crate::fonts::Named),
+    /// another style (`Face::Regular.italic()`): see `system_fonts`.
+    Named(crate::system_fonts::Named),
 }
 
 /// A text decoration line, in the text colour.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Rule {
+pub enum Decoration {
     /// None.
     #[default]
     None,
     /// Underline.
-    Under,
+    Underline,
     /// Strikethrough.
-    Through,
+    Strikethrough,
 }
 
 /// A text style: a face, a size, and an optional decoration line.
@@ -52,21 +52,21 @@ pub struct Font {
     /// The font size in units, as CSS `font-size` counts it.
     pub size: f32,
     /// An underline, strikethrough, or none.
-    pub rule: Rule,
+    pub decoration: Decoration,
 }
 
 impl Font {
     /// The regular face at this size, undecorated.
     pub const fn new(size: f32) -> Self {
-        Font { face: Face::Regular, size, rule: Rule::None }
+        Font { face: Face::Regular, size, decoration: Decoration::None }
     }
     /// Underlined: a link.
     pub const fn underlined(self) -> Self {
-        Font { rule: Rule::Under, ..self }
+        Font { decoration: Decoration::Underline, ..self }
     }
     /// Struck through: something removed or no longer valid.
-    pub const fn struck(self) -> Self {
-        Font { rule: Rule::Through, ..self }
+    pub const fn strikethrough(self) -> Self {
+        Font { decoration: Decoration::Strikethrough, ..self }
     }
     /// The same, bold.
     pub const fn bold(self) -> Self {
@@ -91,9 +91,9 @@ pub struct Metrics {
     /// Descent below it.
     pub descent: f32,
     /// Cap height.
-    pub cap: f32,
+    pub cap_height: f32,
     /// x-height.
-    pub small: f32,
+    pub x_height: f32,
 }
 
 impl Metrics {
@@ -109,11 +109,11 @@ impl Metrics {
     /// high; 0 for one without a cap height. (The resulting position is snapped to whole pixels
     /// when drawn.)
     pub fn lift(&self, small: bool) -> f32 {
-        if self.cap <= 0.0 {
+        if self.cap_height <= 0.0 {
             return 0.0;
         }
-        let small = if small && self.small > 0.0 { self.small } else { self.cap };
-        (self.ascent - self.descent) / 2.0 - (self.cap + small) / 4.0
+        let small = if small && self.x_height > 0.0 { self.x_height } else { self.cap_height };
+        (self.ascent - self.descent) / 2.0 - (self.cap_height + small) / 4.0
     }
 }
 
@@ -149,7 +149,7 @@ pub trait TextSystem {
     }
     /// The font file used for a character in a face, where the library reads it (an app font):
     /// right-to-left text is shaped with it. (By default: none.)
-    fn file(&mut self, face: Face, letter: char) -> Option<&crate::font::FontFile> {
+    fn file(&mut self, face: Face, letter: char) -> Option<&crate::font_file::FontFile> {
         let _ = (face, letter);
         None
     }
@@ -177,11 +177,11 @@ pub struct Line {
 /// one before (an accent after its letter, a flag's second half). `stops` are its character
 /// ends, as `measure` gives them for the whole text on one line. (With `brahmic`, text without
 /// spaces between words, Thai, Lao, Khmer and Burmese, also breaks at word boundaries the
-/// system knows, and where it must, between syllables: see `breaks.rs`.)
+/// system knows, and where it must, between syllables: see `line_breaks.rs`.)
 pub fn wrap(text: &str, stops: &[f32], max: f32, lines: &mut Vec<Line>) {
     let x_at = |n: usize| if n == 0 { 0.0 } else { stops[n - 1] };
-    let unspaced = cfg!(feature = "brahmic") && text.chars().any(crate::breaks::unspaced);
-    let chances = if unspaced { crate::breaks::words(text) } else { Vec::new() };
+    let unspaced = cfg!(feature = "brahmic") && text.chars().any(crate::line_breaks::unspaced);
+    let chances = if unspaced { crate::line_breaks::words(text) } else { Vec::new() };
     let letters: Vec<(usize, char)> = if unspaced { text.char_indices().collect() } else { Vec::new() };
     let (mut start, mut start_n) = (0, 0); // line start: in bytes, and in characters
     // The line's last break opportunity: its byte, its index, and whether it is a space
@@ -231,7 +231,7 @@ fn forced(letters: &[(usize, char)], stops: &[f32], start_n: usize, (at, n): (us
     }
     let x_at = |n: usize| if n == 0 { 0.0 } else { stops[n - 1] };
     let chars: Vec<char> = letters.iter().map(|(_, letter)| *letter).collect();
-    let starts = |k: &usize| stops[*k] > x_at(*k) && crate::breaks::between(&chars, *k);
+    let starts = |k: &usize| stops[*k] > x_at(*k) && crate::line_breaks::between(&chars, *k);
     match (start_n + 1..=n).rev().find(starts) {
         Some(k) => (letters[k].0, letters[k].0, k),
         None => (at, at, n),
@@ -555,7 +555,7 @@ const GRAPHEMES: [u32; 1369] = [
 
 /// One grapheme cluster of a line as displayed: its bytes (in the containing text), its left
 /// and right edges, and whether it is right-to-left.
-pub(crate) struct Seen {
+pub(crate) struct ShownCluster {
     pub bytes: std::ops::Range<usize>,
     pub edges: [f32; 2],
     pub leftward: bool,
@@ -564,29 +564,29 @@ pub(crate) struct Seen {
 /// A line's clusters as displayed: from each `char`'s edges (`places`, as
 /// [`TextSystem::places`] returns them), in a right-to-left (`leftward`) paragraph or not.
 /// `start` is the line's offset in its text.
-pub(crate) fn seen(line: &str, start: usize, places: &[[f32; 2]], leftward: bool) -> Vec<Seen> {
-    let mut order = crate::order::Order::default();
+pub(crate) fn shown_clusters(line: &str, start: usize, places: &[[f32; 2]], leftward: bool) -> Vec<ShownCluster> {
+    let mut order = crate::bidi::Order::default();
     order.of(line, Some(leftward));
-    let (mut seen, mut at, mut n) = (Vec::new(), 0, 0);
+    let (mut clusters, mut at, mut n) = (Vec::new(), 0, 0);
     while at < line.len() {
         let next = at + cluster(&line[at..]);
         let count = line[at..next].chars().count();
         let own = places.get(n..n + count).unwrap_or(&[]);
         let edges = own.iter().fold([f32::MAX, f32::MIN], |[left, right], [l, r]| [left.min(*l), right.max(*r)]);
         let edges = if own.is_empty() { [0.0; 2] } else { edges };
-        seen.push(Seen { bytes: start + at..start + next, edges, leftward: order.levels.get(n).is_some_and(|level| level % 2 == 1) });
+        clusters.push(ShownCluster { bytes: start + at..start + next, edges, leftward: order.levels.get(n).is_some_and(|level| level % 2 == 1) });
         (at, n) = (next, n + count);
     }
-    seen
+    clusters
 }
 
 /// Where a cursor at byte `at` shows among a line's clusters: at the near edge of the one after
 /// it (`after`), else the far edge of the one before. Where directions meet on a line those
 /// differ; elsewhere they coincide.
-pub(crate) fn caret(seen: &[Seen], at: usize, after: bool) -> f32 {
-    let near = |one: &Seen| if one.leftward { one.edges[1] } else { one.edges[0] };
-    let far = |one: &Seen| if one.leftward { one.edges[0] } else { one.edges[1] };
-    let (next, before) = (seen.iter().find(|one| one.bytes.start == at), seen.iter().find(|one| one.bytes.end == at));
+pub(crate) fn caret(clusters: &[ShownCluster], at: usize, after: bool) -> f32 {
+    let near = |one: &ShownCluster| if one.leftward { one.edges[1] } else { one.edges[0] };
+    let far = |one: &ShownCluster| if one.leftward { one.edges[0] } else { one.edges[1] };
+    let (next, before) = (clusters.iter().find(|one| one.bytes.start == at), clusters.iter().find(|one| one.bytes.end == at));
     match (next, before) {
         (Some(next), _) if after => near(next),
         (_, Some(before)) => far(before),
@@ -617,11 +617,11 @@ pub(crate) fn marks(
 ) -> Option<f32> {
     marked.clear();
     let end = start + line.len();
-    let picked = from < to && from <= end && to > start;
+    let selected = from < to && from <= end && to > start;
     // Text without right-to-left characters: each character after the previous, as measured.
-    if crate::order::plain(line) && !leftward {
+    if crate::bidi::plain(line) && !leftward {
         let mut width = |to: usize| text.measure(&line[..to.saturating_sub(start).min(line.len())], font, scale, None);
-        if picked {
+        if selected {
             let right = if to > end { wide + 4.0 } else { width(to) };
             marked.push([width(from), right]);
         }
@@ -629,9 +629,9 @@ pub(crate) fn marks(
     }
     let mut places = Vec::new();
     text.places(line, font, scale, leftward, &mut places);
-    let seen = seen(line, start, &places, leftward);
-    if picked {
-        let mut spans: Vec<[f32; 2]> = seen.iter().filter(|one| one.bytes.start >= from && one.bytes.end <= to).map(|one| one.edges).collect();
+    let clusters = shown_clusters(line, start, &places, leftward);
+    if selected {
+        let mut spans: Vec<[f32; 2]> = clusters.iter().filter(|one| one.bytes.start >= from && one.bytes.end <= to).map(|one| one.edges).collect();
         if to > end {
             spans.push(if leftward { [-4.0, 0.0] } else { [wide, wide + 4.0] });
         }
@@ -643,7 +643,7 @@ pub(crate) fn marks(
             }
         }
     }
-    at.map(|at| caret(&seen, at, after))
+    at.map(|at| caret(&clusters, at, after))
 }
 
 // ---- the built-in font ----
@@ -688,7 +688,7 @@ impl TextSystem for BuiltInFont {
         // (Its caps are seven dots in a line of ten: half a dot off centre, which nothing can
         // fix. So it reports no cap height.)
         let dot = Self::dot(font, scale) as f32 / scale;
-        Metrics { ascent: 8.0 * dot, descent: 2.0 * dot, cap: 0.0, small: 0.0 }
+        Metrics { ascent: 8.0 * dot, descent: 2.0 * dot, cap_height: 0.0, x_height: 0.0 }
     }
 
     fn measure(&mut self, text: &str, font: Font, scale: f32, mut stops: Option<&mut Vec<f32>>) -> f32 {
@@ -774,7 +774,7 @@ mod tests {
         // three quarters of a pixel low, and is drawn that much higher. A font whose glyphs sit
         // high is drawn lower; one without an x-height goes by caps alone; and one without a
         // cap height stays put.
-        let lift = |ascent: f32, descent: f32, cap: f32, small: f32| [false, true].map(|with_small| Metrics { ascent, descent, cap, small }.lift(with_small));
+        let lift = |ascent: f32, descent: f32, cap: f32, small: f32| [false, true].map(|with_small| Metrics { ascent, descent, cap_height: cap, x_height: small }.lift(with_small));
         assert_eq!([lift(12.0, 3.0, 9.0, 6.0), lift(14.0, 3.0, 9.0, 7.0), lift(8.0, 6.0, 8.0, 6.0)], [[0.0, 0.75], [1.0, 1.5], [-3.0, -2.5]]);
         assert_eq!([lift(13.0, 3.0, 8.0, 0.0), lift(13.0, 3.0, 0.0, 6.0)], [[1.0, 1.0], [0.0, 0.0]]);
     }
@@ -876,13 +876,13 @@ mod tests {
         let text = "\u{e20}\u{e32}\u{e29}\u{e32}\u{e44}\u{e17}\u{e22}\u{e40}\u{e1b}\u{e47}\u{e19}\u{e20}\u{e32}\u{e29}\u{e32}\u{e17}\u{e35}\u{e48}\u{e2a}\u{e27}\u{e22}\u{e07}\u{e32}\u{e21}";
         let mark = |letter: char| matches!(letter as u32, 0xe31 | 0xe34..=0xe3a | 0xe47..=0xe4e);
         let stops: Vec<f32> = text.chars().scan(0.0, |x, letter| Some((*x += if mark(letter) { 0.0 } else { 10.0 }, *x).1)).collect();
-        let words = crate::breaks::words(text);
+        let words = crate::line_breaks::words(text);
         for max in [35.0, 45.0, 60.0, 80.0] {
             let mut lines = Vec::new();
             wrap(text, &stops, max, &mut lines);
             for line in &lines[1..] {
                 let (letters, n) = (text.chars().collect::<Vec<_>>(), text[..line.start].chars().count());
-                assert!(crate::breaks::between(&letters, n), "{max}: a syllable broken at {n}");
+                assert!(crate::line_breaks::between(&letters, n), "{max}: a syllable broken at {n}");
                 assert!(words.is_empty() || words.contains(&n) || max < 60.0, "{max}: not between words at {n}");
             }
         }

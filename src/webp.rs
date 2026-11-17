@@ -17,10 +17,10 @@
 //! ("ALPH"), a byte per pixel, raw or lossless-packed; if that chunk is damaged, the picture is
 //! shown opaque.
 //!
-//! An animated WebP is read as a film (see `film`), frames composed as libwebp does; as a
-//! picture, its first frame as the film shows it. A picture is turned upright per its `EXIF`
-//! orientation, and colour-managed per its `ICCP` profile (see `profile`). Other metadata is
-//! skipped.
+//! An animated WebP is read as an animation (see `animation`), frames composed as libwebp does;
+//! as a picture, its first frame as the film shows it. A picture is turned upright per its
+//! `EXIF` orientation, and colour-managed per its `ICCP` profile (see `color_profiles`). Other
+//! metadata is skipped.
 use crate::png::{Bits, Codes, codes};
 
 /// The most pixels a file may claim per byte of its size. (A one-colour picture takes almost no
@@ -34,16 +34,16 @@ const MOST: usize = 2048;
 pub fn decode(webp: &[u8]) -> Option<(usize, Vec<u32>)> {
     let chunks = chunks(webp)?;
     let (width, pixels) = match chunks.iter().any(|(name, _)| *name == b"ANMF") {
-        true => film(webp, 1).map(|mut reel| (reel.size[0], reel.shown(0).0.to_vec()))?,
+        true => read_animation(webp, 1).map(|mut reel| (reel.size[0], reel.shown(0).0.to_vec()))?,
         false => {
             let (width, mut pixels) = still(&chunks, webp.len())?;
-            if let Some(change) = crate::profile::Change::of_profile(first(&chunks, b"ICCP")) {
+            if let Some(change) = crate::color_profiles::Change::of_profile(first(&chunks, b"ICCP")) {
                 change.apply(&mut pixels);
             }
             (width, pixels)
         }
     };
-    Some(crate::upright::turned(crate::upright::turn(first(&chunks, b"EXIF")), width, pixels))
+    Some(crate::exif_orientation::turned(crate::exif_orientation::turn(first(&chunks, b"EXIF")), width, pixels))
 }
 
 /// The chunks of a WebP file (or of an animation frame, after its header), each as name and
@@ -105,10 +105,10 @@ pub(crate) fn frame(chunks: &[u8], size: [usize; 2]) -> Option<Vec<u32>> {
 /// An animated WebP gives its canvas size (`VP8X`) and loop count (`ANIM`); then each frame is
 /// an `ANMF` chunk with its offset, duration, dispose and blend flags, and its picture's
 /// chunks.
-pub(crate) fn film(webp: &[u8], most: usize) -> Option<crate::film::Reel> {
-    use crate::film::{After, Frame, Kind, Laid, Reel};
+pub(crate) fn read_animation(webp: &[u8], most: usize) -> Option<crate::animation::Reel> {
+    use crate::animation::{After, Frame, Kind, Laid, Reel};
     let chunks = chunks(webp)?;
-    let change = crate::profile::Change::of_profile(first(&chunks, b"ICCP"));
+    let change = crate::color_profiles::Change::of_profile(first(&chunks, b"ICCP"));
     let three = |bytes: &[u8], at: usize| bytes.get(at..at + 3).map_or(0, |three| u32::from_le_bytes([three[0], three[1], three[2], 0]) as usize);
     let frames: Vec<&[u8]> = chunks.iter().filter(|(name, _)| *name == b"ANMF").map(|(_, chunk)| *chunk).take(most).collect();
     // A still file is its picture: all its chunks become the frame's.
@@ -447,7 +447,7 @@ fn pixels(bits: &mut Bits, [wide, high]: [usize; 2], groups: &[[Code; 5]], (whic
 /// The boolean decoder of lossy data: each bit was stored in as little room as its probability
 /// allows, so it is read with the probability of 0 (out of 256). Bits come from a value the
 /// bytes keep refining, and the width of the range it can still lie in.
-struct Odds<'a> {
+struct BoolDecoder<'a> {
     data: &'a [u8],
     /// The next byte not yet in the value.
     at: usize,
@@ -458,10 +458,10 @@ struct Odds<'a> {
     used: u32,
 }
 
-impl<'a> Odds<'a> {
-    fn of(data: &'a [u8]) -> Odds<'a> {
+impl<'a> BoolDecoder<'a> {
+    fn of(data: &'a [u8]) -> BoolDecoder<'a> {
         let first = |at: usize| data.get(at).copied().unwrap_or(0) as u32;
-        Odds { data, at: 2, number: first(0) << 8 | first(1), wide: 255, used: 0 }
+        BoolDecoder { data, at: 2, number: first(0) << 8 | first(1), wide: 255, used: 0 }
     }
     /// A bit whose probability of 0 is `no` in 256. (Past the end the bytes are zeros, as in
     /// every reader: a truncated file gives grey from there on, and nothing stops.)
@@ -503,11 +503,11 @@ struct Lossy<'a> {
     down: usize,
     planes: [Vec<u8>; 3],
     /// The partitions holding the coefficients: each macroblock row reads from one.
-    parts: Vec<Odds<'a>>,
+    parts: Vec<BoolDecoder<'a>>,
     /// The coefficient probabilities.
     spelling: [u8; 1056],
     /// The probability that a macroblock skips its coefficients, where that is coded per block.
-    bare: Option<u32>,
+    skipped: Option<u32>,
     /// The segment id tree probabilities; none where segments are off.
     kinds: Option<[u32; 3]>,
     /// The dequantization factors per segment: for luma, the Y2 (DC of the sixteen) block, and
@@ -572,9 +572,9 @@ fn lossy(chunk: &[u8], solid: Option<&[u8]>, room: usize) -> Option<(usize, Vec<
     if wide * high == 0 || wide * high > room.saturating_mul(MOST) {
         return None;
     }
-    let (mut said, after) = (Odds::of(chunk.get(10..10 + first)?), &chunk[10 + first..]);
-    let mut lossy = Lossy::told(&mut said, after, [wide.div_ceil(16), high.div_ceil(16)])?;
-    let smoothed = lossy.blocks(&mut said);
+    let (mut header, after) = (BoolDecoder::of(chunk.get(10..10 + first)?), &chunk[10 + first..]);
+    let mut lossy = Lossy::read_header(&mut header, after, [wide.div_ceil(16), high.div_ceil(16)])?;
+    let smoothed = lossy.blocks(&mut header);
     lossy.smooth(&smoothed);
     let mut pixels = lossy.colours([wide, high]);
     // Alpha comes separately, a byte per pixel.
@@ -587,39 +587,39 @@ fn lossy(chunk: &[u8], solid: Option<&[u8]>, room: usize) -> Option<(usize, Vec<
 impl<'a> Lossy<'a> {
     /// Reads the frame header before the blocks: segmentation, loop filter, partitions (in
     /// `after`), quantizers, and coefficient probability updates.
-    fn told(said: &mut Odds, after: &'a [u8], [across, down]: [usize; 2]) -> Option<Lossy<'a>> {
+    fn read_header(header: &mut BoolDecoder, after: &'a [u8], [across, down]: [usize; 2]) -> Option<Lossy<'a>> {
         // (Two bits that change nothing here: the colour space, and whether clamping is
         // required, which this reader always does.)
-        said.bits(2);
+        header.bits(2);
         // Up to four segments, each with its own quantizer and filter level: absolute, or as
         // deltas from the picture's.
-        let (apart, mut kinds, mut fineness, mut smoothing, mut outright) = (said.yes(128), None, [0; 4], [0; 4], false);
+        let (apart, mut kinds, mut fineness, mut smoothing, mut outright) = (header.yes(128), None, [0; 4], [0; 4], false);
         if apart {
-            let (which, values) = (said.yes(128), said.yes(128));
+            let (which, values) = (header.yes(128), header.yes(128));
             if values {
-                outright = said.yes(128);
-                fineness = [(); 4].map(|_| said.maybe(7));
-                smoothing = [(); 4].map(|_| said.maybe(6));
+                outright = header.yes(128);
+                fineness = [(); 4].map(|_| header.maybe(7));
+                smoothing = [(); 4].map(|_| header.maybe(6));
             }
-            kinds = which.then(|| [(); 3].map(|_| if said.yes(128) { said.bits(8) as u32 } else { 255 }));
+            kinds = which.then(|| [(); 3].map(|_| if header.yes(128) { header.bits(8) as u32 } else { 255 }));
         }
-        let (plain, level, sharp) = (said.yes(128), said.bits(6), said.bits(3));
+        let (plain, level, sharp) = (header.yes(128), header.bits(6), header.bits(3));
         // Loop filter deltas for all blocks and for those predicted per 4×4. (The six others
         // are for reference frames, which a still picture lacks.)
-        let more = if said.yes(128) && said.yes(128) { [(); 8].map(|_| said.maybe(6)) } else { [0; 8] };
+        let more = if header.yes(128) && header.yes(128) { [(); 8].map(|_| header.maybe(6)) } else { [0; 8] };
         // The partitions: one, two, four or eight, with all but the last one's length in three
         // bytes before the first.
-        let count = 1usize << said.bits(2);
+        let count = 1usize << header.bits(2);
         let (lengths, mut rest) = after.split_at_checked(3 * (count - 1))?;
         let mut parts = Vec::new();
         for length in lengths.as_chunks::<3>().0 {
             let (part, more) = rest.split_at_checked(u32::from_le_bytes([length[0], length[1], length[2], 0]) as usize)?;
-            parts.push(Odds::of(part));
+            parts.push(BoolDecoder::of(part));
             rest = more;
         }
-        parts.push(Odds::of(rest));
+        parts.push(BoolDecoder::of(rest));
         // The quantizer: a base level, and five deltas for the six factors.
-        let (usual, off) = (said.bits(7), [(); 5].map(|_| said.maybe(4)));
+        let (usual, off) = (header.bits(7), [(); 5].map(|_| header.maybe(4)));
         let step = |table: &[u16; 128], level: i32| table[level.clamp(0, 127) as usize] as i32;
         let steps = [0, 1, 2, 3].map(|kind| {
             let level = if apart { fineness[kind] + if outright { 0 } else { usual } } else { usual };
@@ -636,21 +636,21 @@ impl<'a> Lossy<'a> {
             }
         });
         // (The refresh-entropy bit.) Then the coefficient probability updates.
-        said.bits(1);
+        header.bits(1);
         let mut spelling = USUAL;
         for (likely, changed) in spelling.iter_mut().zip(CHANGED) {
-            if said.yes(changed as u32) {
-                *likely = said.bits(8) as u8;
+            if header.yes(changed as u32) {
+                *likely = header.bits(8) as u8;
             }
         }
-        let bare = said.yes(128).then(|| said.bits(8) as u32);
+        let skipped = header.yes(128).then(|| header.bits(8) as u32);
         let planes = [vec![0; across * down * 256], vec![0; across * down * 64], vec![0; across * down * 64]];
-        Some(Lossy { across, down, planes, parts, spelling, bare, kinds, steps, smooth, nudge: [more[0], more[4]], sharp, plain })
+        Some(Lossy { across, down, planes, parts, spelling, skipped, kinds, steps, smooth, nudge: [more[0], more[4]], sharp, plain })
     }
 
     /// Decodes every macroblock, row by row, into the planes. Returns how each one's edges are
     /// filtered.
-    fn blocks(&mut self, said: &mut Odds) -> Vec<Smoothed> {
+    fn blocks(&mut self, header: &mut BoolDecoder) -> Vec<Smoothed> {
         let (ways_above, full_above) = (vec![0; self.across * 4], vec![[false; 9]; self.across]);
         let mut around = Around { ways_above, ways_left: [0; 4], full_above, full_left: [false; 9] };
         let mut smoothed = Vec::new();
@@ -658,39 +658,39 @@ impl<'a> Lossy<'a> {
             if at % self.across == 0 {
                 (around.ways_left, around.full_left) = ([0; 4], [false; 9]);
             }
-            smoothed.push(self.block(said, [at % self.across, at / self.across], &mut around));
+            smoothed.push(self.block(header, [at % self.across, at / self.across], &mut around));
         }
         smoothed
     }
 
     /// Decodes the macroblock at `x`, `y` (in blocks): its segment, its prediction, and its
     /// coefficients. Puts its pixels into the planes.
-    fn block(&mut self, said: &mut Odds, [x, y]: [usize; 2], around: &mut Around) -> Smoothed {
+    fn block(&mut self, header: &mut BoolDecoder, [x, y]: [usize; 2], around: &mut Around) -> Smoothed {
         let kind = match self.kinds {
-            Some(likely) if said.yes(likely[0]) => 2 + said.yes(likely[2]) as usize,
-            Some(likely) => said.yes(likely[1]) as usize,
+            Some(likely) if header.yes(likely[0]) => 2 + header.yes(likely[2]) as usize,
+            Some(likely) => header.yes(likely[1]) as usize,
             None => 0,
         };
-        let bare = self.bare.is_some_and(|likely| said.yes(likely));
+        let skipped = self.skipped.is_some_and(|likely| header.yes(likely));
         // Luma is predicted whole one way, or per 4×4 subblock each its own way, coded in the
         // context of the modes above and left. (The four whole-block modes count as their 4×4
         // equivalents for that.)
-        let (whole, mut ways) = (said.yes(145), [0u8; 16]);
+        let (whole, mut ways) = (header.yes(145), [0u8; 16]);
         if whole {
-            ways = [if said.yes(156) { 3 - 2 * said.yes(128) as u8 } else { 2 * said.yes(163) as u8 }; 16];
+            ways = [if header.yes(156) { 3 - 2 * header.yes(128) as u8 } else { 2 * header.yes(163) as u8 }; 16];
         }
         for part in (0..16).filter(|_| !whole) {
             let above = if part < 4 { around.ways_above[x * 4 + part] } else { ways[part - 4] };
             let left = if part % 4 == 0 { around.ways_left[part / 4] } else { ways[part - 1] };
-            ways[part] = way(said, &WAYS[(above as usize * 10 + left as usize) * 9..][..9]);
+            ways[part] = way(header, &WAYS[(above as usize * 10 + left as usize) * 9..][..9]);
         }
         around.ways_above[x * 4..x * 4 + 4].copy_from_slice(&ways[12..]);
         around.ways_left = [ways[3], ways[7], ways[11], ways[15]];
-        let colour = if !said.yes(142) {
+        let colour = if !header.yes(142) {
             0
-        } else if !said.yes(114) {
+        } else if !header.yes(114) {
             2
-        } else if said.yes(183) {
+        } else if header.yes(183) {
             1
         } else {
             3
@@ -699,8 +699,8 @@ impl<'a> Lossy<'a> {
         // marked as skipped has none, and counts so for those after; one with none unmarked is
         // not filtered inside.
         let mut numbers = [0i32; 24 * 16];
-        let any = !bare && self.numbers(y & (self.parts.len() - 1), kind, whole, [x, 0], around, &mut numbers);
-        if bare {
+        let any = !skipped && self.numbers(y & (self.parts.len() - 1), kind, whole, [x, 0], around, &mut numbers);
+        if skipped {
             around.full_above[x][..8].fill(false);
             around.full_left[..8].fill(false);
             (around.full_above[x][8], around.full_left[8]) = (around.full_above[x][8] && !whole, around.full_left[8] && !whole);
@@ -735,12 +735,12 @@ impl<'a> Lossy<'a> {
     /// context of whether the blocks above and left were all zero. Says whether any coefficient
     /// is non-zero.
     fn numbers(&mut self, part: usize, kind: usize, whole: bool, [x, _]: [usize; 2], around: &mut Around, numbers: &mut [i32; 384]) -> bool {
-        let (odds, steps, above, left) = (&mut self.parts[part], self.steps[kind], &mut around.full_above[x], &mut around.full_left);
+        let (decoder, steps, above, left) = (&mut self.parts[part], self.steps[kind], &mut around.full_above[x], &mut around.full_left);
         // A whole-predicted block has its sixteen DC values in a Y2 block of their own, first,
         // spread by the inverse WHT.
         if whole {
             let mut averages = [0i32; 16];
-            let last = spelled(odds, &self.spelling, [1, above[8] as usize + left[8] as usize, 0], steps[1], &mut averages);
+            let last = spelled(decoder, &self.spelling, [1, above[8] as usize + left[8] as usize, 0], steps[1], &mut averages);
             (above[8], left[8]) = (last > 0, last > 0);
             spread(&averages).iter().enumerate().for_each(|(block, average)| numbers[block * 16] = *average);
         }
@@ -755,7 +755,7 @@ impl<'a> Lossy<'a> {
             } else {
                 (3, 0)
             };
-            let last = spelled(odds, &self.spelling, [tables, above[column] as usize + left[row] as usize, first], steps[(block >= 16) as usize * 2], &mut numbers[block * 16..][..16]);
+            let last = spelled(decoder, &self.spelling, [tables, above[column] as usize + left[row] as usize, first], steps[(block >= 16) as usize * 2], &mut numbers[block * 16..][..16]);
             (above[column], left[row]) = (last > first, last > first);
         }
         numbers.iter().any(|number| *number != 0)
@@ -903,8 +903,8 @@ impl<'a> Lossy<'a> {
 }
 
 /// Reads a 4×4 intra mode, up to nine bits: `likely` gives each one's probability of 0.
-fn way(said: &mut Odds, likely: &[u8]) -> u8 {
-    let mut no = |question: usize| !said.yes(likely[question] as u32);
+fn way(decoder: &mut BoolDecoder, likely: &[u8]) -> u8 {
+    let mut no = |question: usize| !decoder.yes(likely[question] as u32);
     match () {
         _ if no(0) => 0,
         _ if no(1) => 1,
@@ -929,15 +929,15 @@ fn way(said: &mut Odds, likely: &[u8]) -> u8 {
 /// (`steps`: DC and AC). Probabilities go by block type (`tables`), band, and the previous
 /// coefficient (zero, one, more); for the first, by `around` (how many of the two neighbours
 /// were non-zero). Returns the position after the last non-zero coefficient.
-fn spelled(odds: &mut Odds, spelling: &[u8; 1056], [tables, around, first]: [usize; 3], steps: [i32; 2], numbers: &mut [i32]) -> usize {
+fn spelled(decoder: &mut BoolDecoder, spelling: &[u8; 1056], [tables, around, first]: [usize; 3], steps: [i32; 2], numbers: &mut [i32]) -> usize {
     let likely = |place: usize, before: usize| &spelling[((tables * 8 + STRETCH[place]) * 3 + before) * 11..][..11];
     let (mut place, mut no) = (first, likely(first, around));
     while place < 16 {
         // Is there another non-zero coefficient? And how many zeros before it?
-        if !odds.yes(no[0] as u32) {
+        if !decoder.yes(no[0] as u32) {
             return place;
         }
-        while !odds.yes(no[1] as u32) {
+        while !decoder.yes(no[1] as u32) {
             place += 1;
             if place == 16 {
                 return 16;
@@ -946,25 +946,25 @@ fn spelled(odds: &mut Odds, spelling: &[u8; 1056], [tables, around, first]: [usi
         }
         // One, or more: up to ten directly, beyond that a base plus extra bits.
         let size = match () {
-            _ if !odds.yes(no[2] as u32) => 1,
-            _ if !odds.yes(no[3] as u32) => {
-                let more = odds.yes(no[4] as u32);
-                2 + more as i32 + (more && odds.yes(no[5] as u32)) as i32
+            _ if !decoder.yes(no[2] as u32) => 1,
+            _ if !decoder.yes(no[3] as u32) => {
+                let more = decoder.yes(no[4] as u32);
+                2 + more as i32 + (more && decoder.yes(no[5] as u32)) as i32
             }
-            _ if !odds.yes(no[6] as u32) => {
-                let more = odds.yes(no[7] as u32);
-                let (first, second) = (odds.yes(if more { 165 } else { 159 }) as i32, (more && odds.yes(145)) as i32);
+            _ if !decoder.yes(no[6] as u32) => {
+                let more = decoder.yes(no[7] as u32);
+                let (first, second) = (decoder.yes(if more { 165 } else { 159 }) as i32, (more && decoder.yes(145)) as i32);
                 5 + first + more as i32 * (2 + first + second)
             }
             _ => {
-                let range = 2 * odds.yes(no[8] as u32) as usize;
-                let range = range + odds.yes(no[9 + range / 2] as u32) as usize;
-                LARGE[range].iter().fold(0, |more, likely| 2 * more + odds.yes(*likely as u32) as i32) + 3 + (8 << range)
+                let range = 2 * decoder.yes(no[8] as u32) as usize;
+                let range = range + decoder.yes(no[9 + range / 2] as u32) as usize;
+                LARGE[range].iter().fold(0, |more, likely| 2 * more + decoder.yes(*likely as u32) as i32) + 3 + (8 << range)
             }
         };
         no = likely(place + 1, if size == 1 { 1 } else { 2 });
         // (Kept in sixteen bits, as every reader does: a damaged file's larger value wraps.)
-        numbers[ZIGZAG[place]] = (if odds.yes(128) { -size } else { size } * steps[(place > 0) as usize]) as i16 as i32;
+        numbers[ZIGZAG[place]] = (if decoder.yes(128) { -size } else { size } * steps[(place > 0) as usize]) as i16 as i32;
         place += 1;
     }
     16
@@ -1015,15 +1015,15 @@ fn edge(pixels: &mut [u8], [at, step, along, count]: [usize; 4], [across, beside
 /// green); and filtered horizontally, vertically or by gradient. Nothing if damaged: the
 /// picture is then opaque.
 fn solidity(chunk: &[u8], [wide, high]: [usize; 2]) -> Option<Vec<u8>> {
-    let (said, rest) = chunk.split_first()?;
-    let mut solid: Vec<u8> = match said & 3 {
+    let (header, rest) = chunk.split_first()?;
+    let mut solid: Vec<u8> = match header & 3 {
         0 => rest.get(..wide * high)?.to_vec(),
         1 => picture(&mut Bits::of(rest), [wide, high])?.iter().map(|pixel| (pixel >> 8) as u8).collect(),
         _ => return None,
     };
-    for at in (1..wide * high).filter(|_| said >> 2 & 3 != 0) {
+    for at in (1..wide * high).filter(|_| header >> 2 & 3 != 0) {
         let before = |back: usize| solid[at - back] as i32;
-        solid[at] = solid[at].wrapping_add(match (said >> 2 & 3, at < wide, at % wide == 0) {
+        solid[at] = solid[at].wrapping_add(match (header >> 2 & 3, at < wide, at % wide == 0) {
             (_, true, _) | (1, _, false) => before(1),
             (_, _, true) | (2, ..) => before(wide),
             _ => (before(1) + before(wide) - before(wide + 1)).clamp(0, 255),
@@ -1357,7 +1357,7 @@ mod tests {
         };
         let at = |name: &str| pictures.join(name).to_str().unwrap().to_string();
         for (kind, size) in [("photo", [61, 45]), ("clear", [40, 30]), ("flat", [64, 64]), ("weave", [96, 64]), ("2", [33, 21]), ("4", [33, 21]), ("16", [33, 21]), ("100", [33, 21])] {
-            std::fs::write(work.join(format!("{kind}.png")), png::encode_clear(size[0], &pattern(kind, size)).unwrap()).unwrap();
+            std::fs::write(work.join(format!("{kind}.png")), png::encode_rgba(size[0], &pattern(kind, size)).unwrap()).unwrap();
         }
         run("vips", &["webpsave", "photo.png", &at("exact.webp"), "--lossless", "--effort", "6"]);
         run("vips", &["webpsave", "photo.png", &at("exact-quick.webp"), "--lossless", "--effort", "0"]);
@@ -1399,7 +1399,7 @@ mod tests {
         // vips, read back by it and by this. All equal.
         let mut held = 0;
         for (kind, size) in [("photo", [200, 150]), ("weave", [192, 128]), ("16", [160, 120]), ("clear", [100, 80]), ("flat", [70, 50]), ("2", [17, 250])] {
-            std::fs::write(work.join("large.png"), png::encode_clear(size[0], &pattern(kind, size)).unwrap()).unwrap();
+            std::fs::write(work.join("large.png"), png::encode_rgba(size[0], &pattern(kind, size)).unwrap()).unwrap();
             let fine = ["3", "20", "40", "60", "80", "97"].map(|fine| vec!["--Q", fine]);
             let exact = ["0", "2", "4", "6"].map(|effort| vec!["--lossless", "--effort", effort]);
             for how in fine.iter().chain(&exact).chain(&[vec!["--Q", "50", "--alpha-q", "30"], vec!["--Q", "70", "--preset", "text"], vec!["--near-lossless", "--Q", "60"]]) {
@@ -1440,7 +1440,7 @@ mod tests {
         // A picture chunk as libvpx writes it: the one frame of a film, cut from ffmpeg's
         // container (32 bytes before its frames, 12 before each).
         let by_libvpx = |kind: &str, size: [usize; 2], how: &[&str]| {
-            std::fs::write(work.join("in.png"), png::encode_clear(size[0], &pattern(kind, size)).unwrap()).unwrap();
+            std::fs::write(work.join("in.png"), png::encode_rgba(size[0], &pattern(kind, size)).unwrap()).unwrap();
             run("ffmpeg", &[&["-y", "-loglevel", "error", "-i", "in.png", "-c:v", "libvpx", "-frames:v", "1", "-pix_fmt", "yuv420p"], how, &["-f", "ivf", "out.ivf"]].concat());
             std::fs::read(work.join("out.ivf")).unwrap()[44..].to_vec()
         };
@@ -1501,7 +1501,7 @@ mod tests {
         // from a file of its own), with each filter.
         for size in [[100, 80], [1, 9], [9, 1], [16, 16]] {
             let frame = by_libvpx("clear", size, &fine("12"));
-            std::fs::write(work.join("clear.png"), png::encode_clear(size[0], &pattern("clear", size)).unwrap()).unwrap();
+            std::fs::write(work.join("clear.png"), png::encode_rgba(size[0], &pattern("clear", size)).unwrap()).unwrap();
             run("vips", &["webpsave", "clear.png", "clear.webp", "--Q", "60"]);
             let whole = std::fs::read(work.join("clear.webp")).unwrap();
             let at = whole.windows(4).position(|name| name == b"ALPH").unwrap() + 8;
@@ -1516,8 +1516,8 @@ mod tests {
         std::fs::remove_dir_all(work).unwrap();
     }
 
-    use crate::film::tests::{frames, playable};
-    use crate::film::{After, Laid, Reel};
+    use crate::animation::tests::{frames, playable};
+    use crate::animation::{After, Laid, Reel};
 
     /// A hand-made animation frame: its offset (even), size, duration, flags (1: dispose to
     /// background; 2: no blend), and its picture's chunks.
@@ -1687,14 +1687,14 @@ mod tests {
         };
         let at = |name: &str| pictures.join(name).to_str().unwrap().to_string();
         for step in 0..5 {
-            std::fs::write(work.join(format!("f{step}.png")), png::encode_clear(24, &crate::film::tests::pattern(step)).unwrap()).unwrap();
+            std::fs::write(work.join(format!("f{step}.png")), png::encode_rgba(24, &crate::animation::tests::pattern(step)).unwrap()).unwrap();
         }
         run("ffmpeg", &["-y", "-loglevel", "error", "-framerate", "5", "-i", "f%d.png", "-c:v", "libwebp_anim", "-lossless", "1", "-loop", "0", &at("moving-exact.webp")]);
         run("ffmpeg", &["-y", "-loglevel", "error", "-framerate", "5", "-i", "f%d.png", "-c:v", "libwebp_anim", "-lossless", "0", "-q:v", "60", "-loop", "0", &at("moving-lossy.webp")]);
         // A hand-made frame's picture, as vips writes it: its chunks, without the first.
         let picture = |size: [usize; 2], solid: &dyn Fn(usize) -> u32, how: &[&str]| {
             let pixels: Vec<u32> = (0..size[0] * size[1]).map(|at| solid(at) << 24 | (at as u32 * 37 % 256) << 16 | (at as u32 * 91 % 256) << 8 | (at as u32 * 13 % 256)).collect();
-            std::fs::write(work.join("frame.png"), png::encode_clear(size[0], &pixels).unwrap()).unwrap();
+            std::fs::write(work.join("frame.png"), png::encode_rgba(size[0], &pixels).unwrap()).unwrap();
             run("vips", &[&["webpsave", "frame.png", "frame.webp"], how].concat());
             let file = std::fs::read(work.join("frame.webp")).unwrap();
             let first = if &file[12..16] == b"VP8X" { 30 } else { 12 };
@@ -1719,10 +1719,10 @@ mod tests {
             let (width, frames, shows, plays) = libwebp::frames(&webp);
             // (Its durations are the film's, and the tests'.)
             let reel = Reel::read(&webp, usize::MAX).unwrap();
-            let times = (shows.into_iter().map(crate::film::shows_for).collect::<Vec<u64>>(), Some(plays as u64).filter(|plays| *plays > 0));
+            let times = (shows.into_iter().map(crate::animation::shows_for).collect::<Vec<u64>>(), Some(plays as u64).filter(|plays| *plays > 0));
             assert_eq!((reel.frames.iter().map(|frame| frame.shows).collect::<Vec<u64>>(), reel.plays), times, "{name}: its times");
             println!("{name}: times {times:?}");
-            std::fs::write(at(&format!("{name}.webp.frames.png")), png::encode_clear(width, &frames).unwrap()).unwrap();
+            std::fs::write(at(&format!("{name}.webp.frames.png")), png::encode_rgba(width, &frames).unwrap()).unwrap();
             let count = format!("tile=1x{}", frames.len() / width / Reel::read(&webp, 1).unwrap().size[1]);
             run("ffmpeg", &["-y", "-loglevel", "error", "-i", &at(&format!("{name}.webp")), "-vf", &count, "-frames:v", "1", "-pix_fmt", "rgba", "ffmpeg.png"]);
             run("vips", &["copy", &format!("{}[n=-1]", at(&format!("{name}.webp"))), "vips.png"]);
@@ -1745,7 +1745,7 @@ mod tests {
         let long = u32::from_le_bytes([still[first + 4], still[first + 5], still[first + 6], still[first + 7]]) as usize;
         // (With the padding byte an odd chunk has.)
         let picture = &still[first..first + 8 + long + long % 2];
-        let chunks = [chunk(b"VP8X", &[0x08, 0, 0, 0, 32, 0, 0, 20, 0, 0]), picture.to_vec(), chunk(b"EXIF", &crate::upright::tests::notes(turn, low_first)[6..])].concat();
+        let chunks = [chunk(b"VP8X", &[0x08, 0, 0, 0, 32, 0, 0, 20, 0, 0]), picture.to_vec(), chunk(b"EXIF", &crate::exif_orientation::tests::notes(turn, low_first)[6..])].concat();
         [b"RIFF", &(chunks.len() as u32 + 4).to_le_bytes()[..], b"WEBP", &chunks].concat()
     }
 
@@ -1756,7 +1756,7 @@ mod tests {
         for (turn, low_first) in (1..=8).flat_map(|turn| [(turn, true), (turn, false)]) {
             let (across, shown) = decode(&noted(turn, low_first)).expect("is read with a note in it");
             assert_eq!(across, if turn < 5 { width } else { height }, "turn {turn}: its width");
-            let from = |at: usize| crate::upright::tests::from(turn as usize, [width, height], at % across, at / across);
+            let from = |at: usize| crate::exif_orientation::tests::from(turn as usize, [width, height], at % across, at / across);
             assert!(shown.iter().copied().eq((0..stored.len()).map(from).map(|(x, y)| stored[y * width + x])), "turn {turn}, low end first: {low_first}");
         }
         assert_eq!(decode(&noted(9, false)), Some((width, stored)));

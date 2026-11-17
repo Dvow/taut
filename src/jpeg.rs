@@ -45,11 +45,11 @@ pub fn decode(jpeg: &[u8]) -> Option<(usize, Vec<u32>)> {
             // Hierarchical, or lossless with arithmetic coding.
             0xC5..=0xC8 | 0xCB | 0xCD..=0xCF => return None,
             0xD9 => break,
-            0xDA => rest = read.pass(body, after)?,
+            0xDA => rest = read.scan(body, after)?,
             0xDB => read.dividers(body)?,
             0xDD => read.stretch = u16::from_be_bytes([*body.first()?, *body.get(1)?]) as usize,
             0xE0 => read.bright |= body.starts_with(b"JFIF\0"),
-            0xE1 => read.turn = crate::upright::turn(body).unwrap_or(read.turn),
+            0xE1 => read.turn = crate::exif_orientation::turn(body).unwrap_or(read.turn),
             0xEE => read.adobe = body.strip_prefix(b"Adobe").and_then(|rest| rest.get(6)).copied().or(read.adobe),
             // An ICC profile, in chunks: each gives its sequence number and the chunk count,
             // then its part.
@@ -60,7 +60,7 @@ pub fn decode(jpeg: &[u8]) -> Option<(usize, Vec<u32>)> {
     let (width, mut pixels) = read.picture()?;
     // Chunks in their stated order, wherever they are in the file.
     let pieces = (1..=profile.len() as u8).flat_map(|which| profile.iter().filter(move |(each, _)| *each == which));
-    if let Some(change) = crate::profile::Change::of_profile(&pieces.flat_map(|(_, piece)| piece.iter().copied()).collect::<Vec<u8>>()) {
+    if let Some(change) = crate::color_profiles::Change::of_profile(&pieces.flat_map(|(_, piece)| piece.iter().copied()).collect::<Vec<u8>>()) {
         change.apply(&mut pixels);
     }
     Some((width, pixels))
@@ -223,7 +223,7 @@ impl Jpeg {
     /// One scan. Its header gives its planes and tables, and for progressive images, the
     /// coefficient band and successive approximation bits. The entropy-coded data follows;
     /// returns the file after it.
-    fn pass<'a>(&mut self, head: &[u8], data: &'a [u8]) -> Option<&'a [u8]> {
+    fn scan<'a>(&mut self, head: &[u8], data: &'a [u8]) -> Option<&'a [u8]> {
         let (count, rest) = head.split_first()?;
         let (listed, band) = rest.split_at_checked(2 * *count as usize)?;
         let [first, last, bits] = *band else { return None };
@@ -278,7 +278,7 @@ impl Jpeg {
     }
 
     /// Reads a scan's MCUs, `wide` per row, each with `unit`: the decoder for the image's kind.
-    /// (Each kind gets its own monomorphized loop, none inlined into `pass`: the common one
+    /// (Each kind gets its own monomorphized loop, none inlined into `scan`: the common one
     /// carries nothing of the others, which measured a few percent faster.)
     #[inline(never)]
     fn units<'a>(&mut self, pass: &mut Pass<'a>, slots: &[Slot], (wide, high): (usize, usize), unit: impl Fn(&mut Pass<'a>, usize, usize, &[Slot], &mut Jpeg) -> Option<()>) -> Option<()> {
@@ -342,10 +342,10 @@ impl Jpeg {
             // Unrotated, rows go where they belong.
             colour(if deep { Kind::Colours } else { kind }, &lines, if self.turn == 1 { &mut pixels[y * width..][..width] } else { &mut row });
             if self.turn != 1 {
-                crate::upright::lay_row(self.turn, [width, height], y, &row, &mut pixels);
+                crate::exif_orientation::lay_row(self.turn, [width, height], y, &row, &mut pixels);
             }
         }
-        Some((crate::upright::width(self.turn, [width, height]), pixels))
+        Some((crate::exif_orientation::width(self.turn, [width, height]), pixels))
     }
 
     /// Row `y` of the image from every plane, each at full width.
@@ -356,7 +356,7 @@ impl Jpeg {
     }
 
     /// The same for samples wider than a byte: planes at their own depth, then RGB bytes, with
-    /// `shown` mapping each level. (Out of `picture`, for the reason `units` is out of `pass`.)
+    /// `shown` mapping each level. (Out of `picture`, for the reason `units` is out of `scan`.)
     #[inline(never)]
     fn deep_lines(&self, y: usize, kind: Kind, spreads: &[Vec<Spot>], shown: &[u8], wide_lines: &mut [Vec<u16>; 4], lines: &mut [Vec<u8>; 4]) {
         for ((plane, spots), line) in self.planes.iter().zip(spreads).zip(wide_lines.iter_mut()) {
@@ -1572,7 +1572,7 @@ mod tests {
 
     /// A JPEG with an EXIF orientation inserted after SOI, little- or big-endian.
     fn noted(jpeg: &[u8], turn: u16, low_first: bool) -> Vec<u8> {
-        let notes = crate::upright::tests::notes(turn, low_first);
+        let notes = crate::exif_orientation::tests::notes(turn, low_first);
         let head = [0xFF, 0xE1, 0, notes.len() as u8 + 2];
         [&jpeg[..2], &head, &notes, &jpeg[2..]].concat()
     }
@@ -1584,7 +1584,7 @@ mod tests {
         for (turn, low_first) in (1..=8).flat_map(|turn| [(turn, true), (turn, false)]) {
             let (across, shown) = decode(&noted(PLAIN, turn, low_first)).expect("is read with a note in it");
             assert_eq!((across, shown.len()), (if turn < 5 { width } else { height }, stored.len()), "turn {turn}: its size");
-            let from = |at: usize| crate::upright::tests::from(turn as usize, [width, height], at % across, at / across);
+            let from = |at: usize| crate::exif_orientation::tests::from(turn as usize, [width, height], at % across, at / across);
             let wanted = (0..stored.len()).map(from).map(|(x, y)| stored[y * width + x]);
             assert!(shown.iter().copied().eq(wanted), "turn {turn}, low end first: {low_first}");
         }

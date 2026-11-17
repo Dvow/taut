@@ -27,33 +27,33 @@ use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 
 /// A COM object: a pointer to its vtable pointer.
-type Com = *mut c_void;
+pub(crate) type Com = *mut c_void;
 
 /// A Direct3D error.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Failed {
+pub struct Error {
     /// What the layer was doing, as "making the texture".
-    pub doing: &'static str,
+    pub operation: &'static str,
     /// Direct3D's `HRESULT`.
     pub code: i32,
     /// Windows' message for that code, in the user's language; empty if it has none.
-    pub said: String,
+    pub message: String,
 }
 
-impl std::fmt::Display for Failed {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{} failed with {:#010x}", self.doing, self.code as u32)?;
-        if !self.said.is_empty() {
-            write!(f, ": {}", self.said)?;
+        write!(f, "{} failed with {:#010x}", self.operation, self.code as u32)?;
+        if !self.message.is_empty() {
+            write!(f, ": {}", self.message)?;
         }
         Ok(())
     }
 }
 
-impl std::error::Error for Failed {}
+impl std::error::Error for Error {}
 
 /// `Err` with what was being done if `code` is a failure.
-fn check(code: i32, doing: &'static str) -> Result<(), Failed> {
+pub(crate) fn check(code: i32, doing: &'static str) -> Result<(), Error> {
     if code >= 0 {
         return Ok(());
     }
@@ -61,7 +61,7 @@ fn check(code: i32, doing: &'static str) -> Result<(), Failed> {
     // SAFETY: the buffer is as long as stated; system messages take no inserts (0x1000:
     // FORMAT_MESSAGE_FROM_SYSTEM, 0x200: FORMAT_MESSAGE_IGNORE_INSERTS).
     let length = unsafe { FormatMessageW(0x1000 | 0x200, null(), code as u32, 0, said.as_mut_ptr(), said.len() as u32, null()) };
-    Err(Failed { doing, code, said: String::from_utf16_lossy(&said[..length as usize]).trim_end().to_string() })
+    Err(Error { operation: doing, code, message: String::from_utf16_lossy(&said[..length as usize]).trim_end().to_string() })
 }
 
 #[link(name = "kernel32")]
@@ -73,7 +73,7 @@ unsafe extern "system" {
 ///
 /// # Safety
 /// The object is alive, and its entry `at` has type `F`.
-unsafe fn function<F: Copy>(object: Com, at: usize) -> F {
+pub(crate) unsafe fn function<F: Copy>(object: Com, at: usize) -> F {
     // SAFETY: as the caller promises; a function pointer is one pointer-sized value.
     unsafe { std::mem::transmute_copy(&*(*(object as *const *const usize)).add(at)) }
 }
@@ -82,7 +82,7 @@ unsafe fn function<F: Copy>(object: Com, at: usize) -> F {
 ///
 /// # Safety
 /// This holds one reference to the object, and it is not used afterwards.
-unsafe fn release(object: Com) {
+pub(crate) unsafe fn release(object: Com) {
     if !object.is_null() {
         // SAFETY: as the caller promises.
         unsafe { function::<unsafe extern "system" fn(Com) -> u32>(object, 2)(object) };
@@ -90,7 +90,7 @@ unsafe fn release(object: Com) {
 }
 
 // Direct3D constants, as d3d11.h has them.
-const B8G8R8A8_UNORM: u32 = 87;
+pub(crate) const B8G8R8A8_UNORM: u32 = 87;
 const BIND_SHADER_RESOURCE: u32 = 0x8;
 const TRIANGLE_STRIP: u32 = 5;
 /// Most viewports, and scissor rects, a context holds.
@@ -110,35 +110,35 @@ struct Viewport {
 }
 
 #[repr(C)]
-struct TextureDescription {
-    width: u32,
-    height: u32,
-    mip_levels: u32,
-    array_size: u32,
-    format: u32,
-    sample_count: u32,
-    sample_quality: u32,
-    usage: u32,
-    bind_flags: u32,
-    cpu_access_flags: u32,
-    misc_flags: u32,
+pub(crate) struct TextureDescription {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) mip_levels: u32,
+    pub(crate) array_size: u32,
+    pub(crate) format: u32,
+    pub(crate) sample_count: u32,
+    pub(crate) sample_quality: u32,
+    pub(crate) usage: u32,
+    pub(crate) bind_flags: u32,
+    pub(crate) cpu_access_flags: u32,
+    pub(crate) misc_flags: u32,
 }
 
 #[repr(C)]
-struct Pixels {
-    first: *const c_void,
-    row_pitch: u32,
-    slice_pitch: u32,
+pub(crate) struct Pixels {
+    pub(crate) first: *const c_void,
+    pub(crate) row_pitch: u32,
+    pub(crate) slice_pitch: u32,
 }
 
 #[repr(C)]
-struct Box3 {
-    left: u32,
-    top: u32,
-    front: u32,
-    right: u32,
-    bottom: u32,
-    back: u32,
+pub(crate) struct Box3 {
+    pub(crate) left: u32,
+    pub(crate) top: u32,
+    pub(crate) front: u32,
+    pub(crate) right: u32,
+    pub(crate) bottom: u32,
+    pub(crate) back: u32,
 }
 
 #[repr(C)]
@@ -269,7 +269,7 @@ impl Layer {
     ///
     /// # Safety
     /// `device` and `context` are alive, and of those types.
-    pub unsafe fn new(device: *mut c_void, context: *mut c_void) -> Result<Layer, Failed> {
+    pub unsafe fn new(device: *mut c_void, context: *mut c_void) -> Result<Layer, Error> {
         // SAFETY: as the caller promises (vtable entry 1 of every COM object is AddRef).
         unsafe { [device, context].into_iter().for_each(|object| _ = function::<unsafe extern "system" fn(Com) -> u32>(object, 1)(object)) };
         let surface = Surface::default();
@@ -309,7 +309,7 @@ impl Layer {
 
     /// Updates the texture after a run: redraws what changed and uploads only that. (The first
     /// time, and after a resize, a new texture is made and all of it uploaded.)
-    pub fn update(&mut self, ui: &mut Ui) -> Result<(), Failed> {
+    pub fn update(&mut self, ui: &mut Ui) -> Result<(), Error> {
         let size = (self.surface.width, self.surface.height);
         let changed = self.surface.update(ui);
         if (self.surface.width, self.surface.height) != size || self.view.is_null() {
@@ -329,7 +329,7 @@ impl Layer {
 
     /// A texture of the surface's size, holding all of it, and its view; none while the UI has
     /// no size.
-    fn make_texture(&mut self) -> Result<(), Failed> {
+    fn make_texture(&mut self) -> Result<(), Error> {
         // SAFETY: the old texture and view are held here, and released.
         unsafe { [std::mem::replace(&mut self.view, null_mut()), std::mem::replace(&mut self.texture, null_mut())].into_iter().for_each(|object| release(object)) };
         if self.surface.pixels.is_empty() {
@@ -363,7 +363,7 @@ impl Layer {
     /// Updates the texture (`update`) and draws it over the bound render target: at the
     /// viewport's top left, pixel for pixel, clipped to the viewport. Everything it sets on the
     /// context is restored.
-    pub fn draw(&mut self, ui: &mut Ui) -> Result<(), Failed> {
+    pub fn draw(&mut self, ui: &mut Ui) -> Result<(), Error> {
         self.update(ui)?;
         if self.view.is_null() {
             return Ok(());
@@ -553,7 +553,7 @@ mod tests {
         for code in [0x8007_000E_u32, 0x8007_0057, 0x887A_0005] {
             let failed = check(code as i32, "making the texture").unwrap_err();
             println!("{failed}");
-            assert!(!failed.said.is_empty(), "{code:#x} is said");
+            assert!(!failed.message.is_empty(), "{code:#x} is said");
             assert!(failed.to_string().starts_with(&format!("making the texture failed with {code:#010x}: ")));
         }
     }

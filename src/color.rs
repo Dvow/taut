@@ -18,7 +18,7 @@ impl Color {
         Color(0xff00_0000 | rgb)
     }
     /// The same colour with this alpha: 0.0 transparent, 1.0 opaque.
-    pub const fn alpha(self, alpha: f32) -> Self {
+    pub const fn with_alpha(self, alpha: f32) -> Self {
         let a = (self.a() as f32 * alpha.clamp(0.0, 1.0) + 0.5) as u32;
         Color(a << 24 | self.0 & 0x00ff_ffff)
     }
@@ -41,7 +41,7 @@ impl Color {
 
     /// Linear blend toward `other`: 0 is this, 1 is `other`.
     #[inline]
-    pub fn toward(self, other: Color, part: f32) -> Self {
+    pub fn lerp(self, other: Color, part: f32) -> Self {
         let t = (part.clamp(0.0, 1.0) * 256.0) as u32;
         // Red and blue blend in one step, alpha and green in another.
         let mix = |a: u32, b: u32| ((a * (256 - t) + b * t) >> 8) & 0x00ff_00ff;
@@ -82,7 +82,7 @@ impl Color {
     }
 
     /// Perceptual blend in OKLab, where equal steps look equal: `part` of the way to `other`.
-    /// [`toward`](Self::toward) blends the numbers instead (blue to yellow then passes through
+    /// [`lerp`](Self::lerp) blends the numbers instead (blue to yellow then passes through
     /// grey). Alpha weighs each, as CSS `color-mix(in oklab, ..)` does.
     pub fn mix(self, other: Color, part: f32) -> Self {
         let (t, [a, b]) = (part.clamp(0.0, 1.0), [self, other].map(|color| color.a() as f32 / 255.0));
@@ -92,13 +92,13 @@ impl Color {
         }
         let ([l1, a1, b1], [l2, a2, b2]) = (self.to_oklab(), other.to_oklab());
         let weigh = |one: f32, two: f32| (one * a + (two * b - one * a) * t) / solid;
-        Color::from_oklab([weigh(l1, l2), weigh(a1, a2), weigh(b1, b2)]).alpha(solid)
+        Color::from_oklab([weigh(l1, l2), weigh(a1, a2), weigh(b1, b2)]).with_alpha(solid)
     }
     /// Lighter by `by` in OKLCH lightness (0 to 1), same hue, chroma clipped to what a screen
     /// shows.
     pub fn lighter(self, by: f32) -> Self {
         let [light, chroma, hue] = self.to_oklch();
-        Color::oklch(light + by, chroma, hue).alpha(self.a() as f32 / 255.0)
+        Color::oklch(light + by, chroma, hue).with_alpha(self.a() as f32 / 255.0)
     }
     /// Darker by `by`; see [`lighter`](Self::lighter).
     pub fn darker(self, by: f32) -> Self {
@@ -249,7 +249,7 @@ mod tests {
             assert_eq!(Color::hsv(hue, strong, light), Color::rgb(color), "{color:06x} comes back the same");
         }
         assert_eq!(Color::rgb(0x8b93ff).to_string(), "#8b93ff");
-        assert_eq!(Color::rgb(0x8b93ff).alpha(0.5).to_string(), "#8b93ff80");
+        assert_eq!(Color::rgb(0x8b93ff).with_alpha(0.5).to_string(), "#8b93ff80");
         assert_eq!(Color::parse("#8b93ff"), Some(Color::rgb(0x8b93ff)));
         assert_eq!(Color::parse("8B93FF80"), Some(Color(0x808b_93ff)));
         assert_eq!(Color::parse("#12"), None);
@@ -260,9 +260,9 @@ mod tests {
         let red = Color::rgb(0xff0000);
         assert_eq!(red.over(0x0000ff, 255), 0xffff0000);
         assert_eq!(red.over(0x0000ff, 0), 0x0000ff);
-        let half = red.alpha(0.5).over(0x000000, 255);
+        let half = red.with_alpha(0.5).over(0x000000, 255);
         assert!((0x7e7e0000..=0x80800000).contains(&half), "half red, half solid: {half:08x}");
-        assert_eq!(Color::rgb(0x123456).alpha(0.0), Color(0x00123456));
+        assert_eq!(Color::rgb(0x123456).with_alpha(0.0), Color(0x00123456));
     }
 
     #[test]
@@ -314,13 +314,13 @@ mod tests {
             assert!((l - want[0]).abs() < 0.004 && (a - want[1]).abs() < 0.004 && (b - want[2]).abs() < 0.004, "{one:06x} {two:06x}");
         }
         // Alpha weighs each: transparent gives no colour, only transparency.
-        assert_eq!(red.mix(Color::NONE, 0.5), red.alpha(0.5));
+        assert_eq!(red.mix(Color::NONE, 0.5), red.with_alpha(0.5));
         assert_eq!(Color::NONE.mix(Color::NONE, 0.5), Color::NONE);
         // Lighter and darker by a tenth, same hue.
         let accent = Color::rgb(0x8b93ff);
         let ([l, c, h], [lighter, _, hue], [darker, chroma, _]) = (accent.to_oklch(), accent.lighter(0.1).to_oklch(), accent.darker(0.1).to_oklch());
         assert!((lighter - l - 0.1).abs() < 0.004 && (l - darker - 0.1).abs() < 0.004 && (hue - h).abs() < 0.01 && (chroma - c).abs() < 0.004);
-        assert_eq!((Color::WHITE.lighter(0.2), accent.darker(1.0), red.alpha(0.5).lighter(0.0)), (Color::WHITE, Color::BLACK, red.alpha(0.5)));
+        assert_eq!((Color::WHITE.lighter(0.2), accent.darker(1.0), red.with_alpha(0.5).lighter(0.0)), (Color::WHITE, Color::BLACK, red.with_alpha(0.5)));
     }
 
     #[test]
@@ -341,7 +341,7 @@ mod tests {
         assert!((Color::rgb(0x767676).contrast(Color::WHITE) - 4.54).abs() < 0.005);
         assert!((Color::rgb(0x777777).contrast(Color::WHITE) - 4.48).abs() < 0.005);
         // A translucent colour is composited first: half white on black is the grey it makes.
-        assert_eq!(Color::WHITE.alpha(0.5).contrast(Color::BLACK), Color::rgb(0x7f7f7f).contrast(Color::BLACK));
+        assert_eq!(Color::WHITE.with_alpha(0.5).contrast(Color::BLACK), Color::rgb(0x7f7f7f).contrast(Color::BLACK));
         assert!((Color::rgb(0x808080).contrast(Color::BLACK) - 5.32).abs() < 0.005);
     }
 

@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use std::path::PathBuf;
 use std::process::Command;
-use taut::{Cap, Color, El, Flow, Ink, Join, Path, Pen, Transform, Ui, png};
+use taut::{Cap, Color, El, Flow, Join, Paint, Path, Pen, Transform, Ui, png};
 
 fn pictures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("pictures")
@@ -19,22 +19,22 @@ fn scene(ui: &mut Ui) {
     // An arrow at the end of the curve, pointing the way the curve goes there.
     let (end, way) = curve.point_at(curve.length()).unwrap();
     let mut arrow = Path::svg("M0 0-8-4-8 4Z");
-    arrow.transform(Transform::new().turn(way).move_by(end.x, end.y));
+    arrow.transform(Transform::new().rotate(way).translate(end.x, end.y));
     let mut ring = Path::new();
     ring.circle(160.0, 125.0, 18.0).add(Path::new().circle(160.0, 125.0, 9.0).reverse());
     let (white, blue, aqua, violet) = (Color::WHITE, Color::rgb(0x2a78d6), Color::rgb(0x1baf7a), Color::rgb(0x6250d6));
     let (orange, red) = (Color::rgb(0xeb6834), Color::rgb(0xe34948));
-    ui.el().flow(Flow::Layers).size(200.0, 150.0).fill(white).open();
+    ui.el().flow(Flow::Stack).size(200.0, 150.0).fill(white).open();
     layer(ui).outline(&zigzag(10.0), Pen::new(6.0).cap(Cap::Flat).join(Join::Mitre(4.0)), blue).show();
     layer(ui).outline(&zigzag(80.0), Pen::new(6.0).cap(Cap::Square).join(Join::Bevel), orange).show();
     layer(ui).outline(&curve, Pen::new(3.0).cap(Cap::Flat).join(Join::Mitre(4.0)).dashes(&[6.0, 3.0], 2.0), red).show();
     layer(ui).shape(&arrow, red).show();
-    layer(ui).shape(Path::new().ellipse(35.0, 75.0, 25.0, 15.0), Ink::Around(&[(0.0, white), (1.0, blue)])).show();
+    layer(ui).shape(Path::new().ellipse(35.0, 75.0, 25.0, 15.0), Paint::Radial(&[(0.0, white), (1.0, blue)])).show();
     layer(ui).outline(Path::new().arc(35.0, 75.0, 30.0, 200.0, 140.0), 2.0, Color::rgb(0xe87ba4)).show();
     layer(ui).shape(Path::new().move_to(100.0, 75.0).arc(100.0, 75.0, 20.0, -90.0, 120.0).close(), orange).show();
-    layer(ui).shape(Path::new().star(160.0, 75.0, 20.0, 8.0, 5), Ink::Along(90.0, &[(0.0, aqua), (1.0, violet)])).show();
+    layer(ui).shape(Path::new().star(160.0, 75.0, 20.0, 8.0, 5), Paint::Linear(90.0, &[(0.0, aqua), (1.0, violet)])).show();
     layer(ui).shape(Path::new().rounded_rect(10.0, 105.0, 60.0, 35.0, (0.0, 8.0, 16.0, 4.0)), red).show();
-    let turned = Path::new().rect(-15.0, -8.0, 30.0, 16.0).transform(Transform::new().turn(30.0).move_by(105.0, 125.0)).clone();
+    let turned = Path::new().rect(-15.0, -8.0, 30.0, 16.0).transform(Transform::new().rotate(30.0).translate(105.0, 125.0)).clone();
     layer(ui).outline(&turned, Pen::new(3.0).cap(Cap::Flat).join(Join::Round), violet).show();
     layer(ui).shape(&ring, Color::rgb(0x008300)).show();
     ui.close();
@@ -97,7 +97,7 @@ fn a_shape_is_drawn_again_only_when_how_it_is_drawn_changes() {
     // time only its box is drawn again (the window checks at every run that what was
     // drawn again is all that changed), and nothing at all when nothing changed.
     let square = Path::new().rect(4.0, 4.0, 32.0, 32.0).clone();
-    let draw = |ui: &mut Ui, pen: Pen, ink: Ink, shape: &Path| {
+    let draw = |ui: &mut Ui, pen: Pen, ink: Paint, shape: &Path| {
         ui.el().size(100.0, 20.0).show();
         ui.el().size(40.0, 40.0).outline(shape, pen, ink).show();
     };
@@ -110,10 +110,10 @@ fn a_shape_is_drawn_again_only_when_how_it_is_drawn_changes() {
     assert!(unchanged.w == 0.0 || unchanged.h == 0.0, "{unchanged:?}");
     let stops = [(0.0, Color::BLACK), (1.0, Color::WHITE)];
     for (pen, ink, shape) in [
-        (pen.join(Join::Bevel), Ink::Color(Color::rgb(0x2a78d6)), &square),
-        (pen.dashes(&[4.0, 4.0], 0.0), Ink::Color(Color::rgb(0x2a78d6)), &square),
-        (pen, Ink::Along(90.0, &stops), &square),
-        (pen, Ink::Color(Color::rgb(0x2a78d6)), &Path::new().circle(20.0, 20.0, 16.0).clone()),
+        (pen.join(Join::Bevel), Paint::Color(Color::rgb(0x2a78d6)), &square),
+        (pen.dashes(&[4.0, 4.0], 0.0), Paint::Color(Color::rgb(0x2a78d6)), &square),
+        (pen, Paint::Linear(90.0, &stops), &square),
+        (pen, Paint::Color(Color::rgb(0x2a78d6)), &Path::new().circle(20.0, 20.0, 16.0).clone()),
     ] {
         settle(&mut ui, |ui| draw(ui, Pen::new(4.0), Color::rgb(0x2a78d6).into(), &square));
         let changed = ui.run(&mut |ui| draw(ui, pen, ink, shape));
@@ -122,7 +122,7 @@ fn a_shape_is_drawn_again_only_when_how_it_is_drawn_changes() {
     // Switched off, a shape is in the colour of what is off, whatever ink it was given.
     ui.run(&mut |ui| {
         ui.set_enabled(false);
-        ui.el().size(40.0, 40.0).shape(&square, Ink::Along(90.0, &stops)).show();
+        ui.el().size(40.0, 40.0).shape(&square, Paint::Linear(90.0, &stops)).show();
     });
     assert_eq!(count(&ui, ui.theme.text_faint.0), 32 * 32);
 }

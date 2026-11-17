@@ -74,11 +74,11 @@ fn held(width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
         return None;
     }
     if width == 256 || height == 256 {
-        return png::encode_clear(width, &pixels[..width * height]);
+        return png::encode_rgba(width, &pixels[..width * height]);
     }
-    let said = [&40u32.to_le_bytes()[..], &(width as u32).to_le_bytes(), &(2 * height as u32).to_le_bytes(), &[1, 0, 32, 0], &[0; 24]].concat();
+    let header = [&40u32.to_le_bytes()[..], &(width as u32).to_le_bytes(), &(2 * height as u32).to_le_bytes(), &[1, 0, 32, 0], &[0; 24]].concat();
     let rows = pixels.chunks_exact(width).rev().flatten().flat_map(|pixel| pixel.to_le_bytes());
-    Some(said.into_iter().chain(rows).chain(pixels.chunks_exact(width).rev().flat_map(clear_bits)).collect())
+    Some(header.into_iter().chain(rows).chain(pixels.chunks_exact(width).rev().flat_map(clear_bits)).collect())
 }
 
 /// A row's transparency mask bits, first pixel in the highest bit, padded to 4 bytes.
@@ -92,7 +92,7 @@ fn weight(picture: &[u8]) -> Option<(usize, usize)> {
         let size = [16, 20].map(|at| picture.get(at..at + 4).map_or(0, |n| u32::from_be_bytes([n[0], n[1], n[2], n[3]]) as usize));
         return Some((size[0].saturating_mul(size[1]), 32));
     }
-    told(picture, true).map(|told| (told.size[0].saturating_mul(told.size[1]), told.bits))
+    read_header(picture, true).map(|header| (header.size[0].saturating_mul(header.size[1]), header.bits))
 }
 
 /// A little-endian number of `long` bytes at `at` in `bytes`.
@@ -101,7 +101,7 @@ fn number(bytes: &[u8], at: usize, long: usize) -> Option<u32> {
 }
 
 /// A BMP's header data.
-struct Told {
+struct Header {
     /// Width and height in pixels.
     size: [usize; 2],
     /// Rows go top-down. (Else bottom-up.)
@@ -114,19 +114,19 @@ struct Told {
     places: [u32; 4],
     /// The palette that pixels of up to 8 bits index.
     colours: Vec<u32>,
-    /// The header and palette's length: where rows start, unless said otherwise.
+    /// The header and palette's length: where rows start, unless given otherwise.
     long: usize,
 }
 
 /// Reads a BMP header. Inside an ICO (`icon`), the stated height is double.
-fn told(said: &[u8], icon: bool) -> Option<Told> {
+fn read_header(bytes: &[u8], icon: bool) -> Option<Header> {
     // It starts with its own length. The oldest (12 bytes) gives its size in two bytes each and
     // no compression; all later ones share their first 40 bytes.
-    let long = number(said, 0, 4)? as usize;
+    let long = number(bytes, 0, 4)? as usize;
     let (old, step) = (long == 12, if long == 12 { 2 } else { 4 });
-    let (wide, high) = (number(said, 4, step)? as i32, number(said, 4 + step, step)? as i32);
-    let bits = number(said, 6 + 2 * step, 2)? as usize;
-    let (packing, listed) = if old { (0, 0) } else { (number(said, 16, 4)?, number(said, 32, 4)? as usize) };
+    let (wide, high) = (number(bytes, 4, step)? as i32, number(bytes, 4 + step, step)? as i32);
+    let bits = number(bytes, 6 + 2 * step, 2)? as usize;
+    let (packing, listed) = if old { (0, 0) } else { (number(bytes, 16, 4)?, number(bytes, 32, 4)? as usize) };
     let fits = match packing {
         0 => [1, 2, 4, 8, 16, 24, 32].contains(&bits),
         1 => bits == 8,
@@ -140,7 +140,7 @@ fn told(said: &[u8], icon: bool) -> Option<Told> {
     }
     // Bitmasks for 16 bits or more: four-byte values after the first 40 (alpha only in headers
     // long enough, or that say so), or the defaults: 5 bits each in 16, a byte each otherwise.
-    let (own, place) = (packing == 3 || packing == 6, |at: usize| number(said, 40 + 4 * at, 4));
+    let (own, place) = (packing == 3 || packing == 6, |at: usize| number(bytes, 40 + 4 * at, 4));
     let places = match (own, bits) {
         (true, _) => [place(0)?, place(1)?, place(2)?, place(3).filter(|_| long >= 56 || packing == 6).unwrap_or(0)],
         (false, 16) => [0x7c00, 0x03e0, 0x001f, 0],
@@ -150,44 +150,44 @@ fn told(said: &[u8], icon: bool) -> Option<Told> {
     // omits): as many as stated, or as the bits can index.
     let list = long + if own && long == 40 { [12, 16][(packing == 6) as usize] } else { 0 };
     let (each, listed) = (if old { 3 } else { 4 }, if listed == 0 && bits <= 8 { 1 << bits } else { listed });
-    let colour = |n: usize| said.get(list + n * each..)?.first_chunk::<3>().map(|c| 0xff00_0000 | (c[2] as u32) << 16 | (c[1] as u32) << 8 | c[0] as u32);
+    let colour = |n: usize| bytes.get(list + n * each..)?.first_chunk::<3>().map(|c| 0xff00_0000 | (c[2] as u32) << 16 | (c[1] as u32) << 8 | c[0] as u32);
     let colours = (0..listed.min(256)).map_while(colour).collect();
-    Some(Told { size: [wide as usize, rows], top_first: high < 0, bits, packed: packing == 1 || packing == 2, places, colours, long: list.saturating_add(listed.saturating_mul(each)) })
+    Some(Header { size: [wide as usize, rows], top_first: high < 0, bits, packed: packing == 1 || packing == 2, places, colours, long: list.saturating_add(listed.saturating_mul(each)) })
 }
 
 /// The default masks for 24 or 32 bits: red, green, blue, alpha, a byte each, as returned.
 const USUAL: [u32; 4] = [0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0xff00_0000];
 
-/// Decodes an image from its header (`said`) and rows, which follow it if not given. Inside an
+/// Decodes an image from its header bytes and rows, which follow it if not given. Inside an
 /// ICO (`icon`), a transparency mask follows the rows.
-fn picture(said: &[u8], rows: Option<&[u8]>, icon: bool) -> Option<(usize, Vec<u32>)> {
-    let told = told(said, icon)?;
-    let ([wide, high], rows) = (told.size, rows.or(said.get(told.long..))?);
-    if told.packed && wide.checked_mul(high)? > rows.len().saturating_mul(MOST) {
+fn picture(bytes: &[u8], rows: Option<&[u8]>, icon: bool) -> Option<(usize, Vec<u32>)> {
+    let header = read_header(bytes, icon)?;
+    let ([wide, high], rows) = (header.size, rows.or(bytes.get(header.long..))?);
+    if header.packed && wide.checked_mul(high)? > rows.len().saturating_mul(MOST) {
         return None;
     }
     // RLE rows decompress to a byte per pixel. Others are each padded to 4 bytes, and all must
     // be there: except the last row's padding.
-    let unpacked = if told.packed { runs(rows, [wide, high], told.bits) } else { Vec::new() };
-    let (rows, bits, row) = if told.packed { (&unpacked[..], 8, wide) } else { (rows, told.bits, wide.checked_mul(told.bits)?.div_ceil(32) * 4) };
+    let unpacked = if header.packed { runs(rows, [wide, high], header.bits) } else { Vec::new() };
+    let (rows, bits, row) = if header.packed { (&unpacked[..], 8, wide) } else { (rows, header.bits, wide.checked_mul(header.bits)?.div_ceil(32) * 4) };
     if rows.len() < row.checked_mul(high - 1)?.checked_add((wide * bits).div_ceil(8))? {
         return None;
     }
     // A pixel of up to 8 bits indexes the palette, the first in a byte's highest bits. Larger
     // ones are little-endian values whose fields are extracted and scaled to 0..255, unless
     // already laid out as wanted.
-    let (usual, line) = (told.places == USUAL, |at: usize| if told.top_first { at / wide } else { high - 1 - at / wide });
+    let (usual, line) = (header.places == USUAL, |at: usize| if header.top_first { at / wide } else { high - 1 - at / wide });
     let pixel = |at: usize| {
         let (x, row) = (at % wide, &rows[row * line(at)..]);
         if bits <= 8 {
             let number = row[x * bits / 8] >> (8 - bits - x * bits % 8) & (0xff >> (8 - bits));
-            return told.colours.get(number as usize).copied().unwrap_or(0xff00_0000);
+            return header.colours.get(number as usize).copied().unwrap_or(0xff00_0000);
         }
         let value = number(row, x * bits / 8, bits / 8).unwrap_or(0);
         if usual {
             return value;
         }
-        let [red, green, blue, solid] = told.places.map(|place| part(value, place));
+        let [red, green, blue, solid] = header.places.map(|place| part(value, place));
         solid.unwrap_or(255) << 24 | red.unwrap_or(0) << 16 | green.unwrap_or(0) << 8 | blue.unwrap_or(0)
     };
     let mut pixels: Vec<u32> = (0..wide * high).map(pixel).collect();
@@ -356,7 +356,7 @@ mod tests {
         };
         let at = |name: &str| pictures.join(name).to_str().unwrap().to_string();
         let (pattern, [wide, high]) = (pattern(), SIZE.map(|side| side as i32));
-        std::fs::write(work.join("in.png"), png::encode_clear(SIZE[0], &pattern).unwrap()).unwrap();
+        std::fs::write(work.join("in.png"), png::encode_rgba(SIZE[0], &pattern).unwrap()).unwrap();
         // As ffmpeg writes them: every pixel format it has.
         for (name, how) in [("24", "bgr24"), ("32", "bgra"), ("555", "rgb555le"), ("565", "rgb565le"), ("444", "rgb444le"), ("8", "rgb8"), ("grey", "gray"), ("1", "monob")] {
             run(&["-i", "in.png", "-pix_fmt", how, &at(&format!("bmp-{name}.bmp"))]);
@@ -385,7 +385,7 @@ mod tests {
             run(&["-i", &at(&format!("bmp-{name}.bmp")), "-f", "rawvideo", "-pix_fmt", how, &at(&format!("bmp-{name}.bmp.raw"))]);
         }
         // Icons: two sizes in one file, as BMP and as PNG. ffmpeg decodes the larger.
-        std::fs::write(work.join("small.png"), png::encode_clear(9, &pattern[..63]).unwrap()).unwrap();
+        std::fs::write(work.join("small.png"), png::encode_rgba(9, &pattern[..63]).unwrap()).unwrap();
         run(&["-i", "small.png", "-i", "in.png", "-map", "0", "-map", "1", "-c:v", "bmp", "-pix_fmt", "bgra", &at("icon.ico")]);
         run(&["-i", "in.png", "-i", "small.png", "-map", "0", "-map", "1", "-c:v", "png", &at("icon-png.ico")]);
         for name in ["icon", "icon-png"] {

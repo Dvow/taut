@@ -77,7 +77,7 @@ fn packed_bytes_take_no_room_for_what_they_only_say_they_hold() {
     let (read, most) = taken(|| taut::png::decode(&png));
     assert!(read.is_none() && most < 8 * png.len(), "reading a picture of {} bytes took {most} bytes", png.len());
     let packed = damaged(2 << 20);
-    let (read, most) = taken(|| taut::png::unpack(&packed, usize::MAX));
+    let (read, most) = taken(|| taut::png::zlib_decompress(&packed, usize::MAX));
     assert!(read.is_none() && most < 8 * packed.len(), "unpacking {} bytes took {most} bytes", packed.len());
 }
 
@@ -148,7 +148,7 @@ fn how_much_a_page_of_east_asian_text_takes() {
         counters
     };
     let _turn = turn();
-    taut::svg::read_text();
+    taut::svg::enable_text();
     let scripts = [(0x4e00, 600), (0x3041, 86), (0x30a1, 90), (0xac00, 400)];
     let letters: Vec<char> = scripts.iter().flat_map(|(first, count)| (*first..first + count).filter_map(char::from_u32)).collect();
     let lines: Vec<String> = letters.chunks(40).enumerate().map(|(n, line)| format!("<text x=\"10\" y=\"{}\" font-size=\"18\">{}</text>", 24 + 22 * n, line.iter().collect::<String>())).collect();

@@ -8,7 +8,7 @@ mod common;
 use common::*;
 use std::time::Duration;
 use taut::geom::{Point, pt};
-use taut::{Button, Event, Length, Mods, Phase, Rect, Stylus, Touch, Ui, Zoom};
+use taut::{Button, Event, Length, Mods, Rect, Stylus, Touch, TouchPhase, Ui, Zoom};
 
 /// A page with a button on it, a list of buttons that scrolls, a slider in that list, a box
 /// in it that the app drags with `held`, and a box that zooms.
@@ -38,7 +38,7 @@ fn app(app: &mut App, ui: &mut Ui) {
     app.slider = slider.rect;
     // A box the app drags with `held` (it counts how far, and stays where it is).
     let knob = ui.el().size(60.0, 24.0).fill(taut::Color::rgb(0x336699)).sense().show();
-    if let Some((gone, was)) = ui.held(&knob, [app.knob_at, 0.0, 0.0, 0.0]) {
+    if let Some((gone, was)) = ui.drag_delta(&knob, [app.knob_at, 0.0, 0.0, 0.0]) {
         app.knob_at = was[0] + gone.y;
     }
     app.knob = knob.rect;
@@ -84,8 +84,8 @@ impl Hand {
         self.first.y + i as f32 * self.pitch - row.y
     }
     /// Lets `ms` go by, then has a finger do something, and runs the interface.
-    fn finger(&mut self, ms: u64, finger: u32, at: Point, phase: Phase) {
-        self.event(ms, Event::Touch(Touch { finger, at, phase }));
+    fn finger(&mut self, ms: u64, finger: u32, at: Point, phase: TouchPhase) {
+        self.event(ms, Event::Touch(Touch { id: finger, position: at, phase }));
     }
     fn event(&mut self, ms: u64, event: Event) {
         self.now += ms;
@@ -117,13 +117,13 @@ impl Hand {
     /// Runs the interface each time it asks to be woken, for as long as it asks: how far the
     /// list is scrolled after each run.
     fn coast(&mut self) -> Vec<f32> {
-        let mut seen = Vec::new();
+        let mut offsets = Vec::new();
         while let Some(wait) = self.ui.wake_in() {
-            assert!(wait <= Duration::from_millis(16) && seen.len() < 400, "it goes on for ever");
+            assert!(wait <= Duration::from_millis(16) && offsets.len() < 400, "it goes on for ever");
             self.wait(16);
-            seen.push(self.scrolled());
+            offsets.push(self.scrolled());
         }
-        seen
+        offsets
     }
 }
 
@@ -132,34 +132,34 @@ fn a_tap_clicks_once_and_leaves_nothing_under_the_pointer() {
     let mut hand = Hand::new();
     // In the list that scrolls: the press waits for the finger to lift, then it is a click.
     let at = middle(hand.app.rows[2]);
-    hand.finger(0, 7, at, Phase::Down);
+    hand.finger(0, 7, at, TouchPhase::Down);
     assert_eq!(hand.app.clicks, [0; 16]);
-    hand.finger(80, 7, at, Phase::Up);
+    hand.finger(80, 7, at, TouchPhase::Up);
     assert_eq!((hand.app.clicks[2], hand.app.clicks.iter().sum::<u32>()), (1, 1));
     assert_eq!(hand.ui.pointer(), None, "the pointer went with the finger");
     hand.quiet();
     // On the page, where nothing scrolls, the finger presses at once, as the mouse does.
     let at = middle(hand.app.page);
-    hand.finger(500, 8, at, Phase::Down);
-    hand.finger(80, 8, at, Phase::Up);
+    hand.finger(500, 8, at, TouchPhase::Down);
+    hand.finger(80, 8, at, TouchPhase::Up);
     assert_eq!((hand.app.page_clicks, hand.ui.pointer()), (1, None));
-    assert!(hand.ui.fingers(), "the last press was a finger's");
+    assert!(hand.ui.is_touch(), "the last press was a finger's");
     hand.quiet();
     // The mouse after it is the mouse again.
     click(&mut hand.ui, middle(hand.app.page), |ui| app(&mut hand.app, ui));
-    assert_eq!((hand.app.page_clicks, hand.ui.fingers()), (2, false));
+    assert_eq!((hand.app.page_clicks, hand.ui.is_touch()), (2, false));
 }
 
 #[test]
 fn two_taps_close_together_are_a_double_click() {
     let mut hand = Hand::new();
     let at = middle(hand.app.rows[1]);
-    hand.finger(0, 1, at, Phase::Down);
-    hand.finger(60, 1, at, Phase::Up);
+    hand.finger(0, 1, at, TouchPhase::Down);
+    hand.finger(60, 1, at, TouchPhase::Up);
     // The second lands a little off the first: a finger is set down less exactly.
     let near = pt(at.x + 9.0, at.y + 3.0);
-    hand.finger(150, 2, near, Phase::Down);
-    hand.finger(60, 2, near, Phase::Up);
+    hand.finger(150, 2, near, TouchPhase::Down);
+    hand.finger(60, 2, near, TouchPhase::Up);
     assert_eq!((hand.app.clicks[1], hand.app.doubles), (2, 1));
 }
 
@@ -169,13 +169,13 @@ fn a_finger_that_lands_beside_a_part_presses_the_nearest_one_within_reach() {
     let page = hand.app.page;
     // Just to the left of the button, in the page's margin, where nothing senses.
     let beside = pt(page.x - 6.0, page.y + page.h / 2.0);
-    hand.finger(0, 1, beside, Phase::Down);
-    hand.finger(60, 1, beside, Phase::Up);
+    hand.finger(0, 1, beside, TouchPhase::Down);
+    hand.finger(60, 1, beside, TouchPhase::Up);
     assert_eq!(hand.app.page_clicks, 1);
     // Too far from it, nothing.
     let away = pt(page.x - 9.5, page.y - 9.5);
-    hand.finger(500, 2, away, Phase::Down);
-    hand.finger(60, 2, away, Phase::Up);
+    hand.finger(500, 2, away, TouchPhase::Down);
+    hand.finger(60, 2, away, TouchPhase::Up);
     assert_eq!(hand.app.page_clicks, 1);
 }
 
@@ -183,26 +183,26 @@ fn a_finger_that_lands_beside_a_part_presses_the_nearest_one_within_reach() {
 fn a_finger_dragged_through_a_list_scrolls_it_and_clicks_nothing() {
     let mut hand = Hand::new();
     let at = middle(hand.app.rows[2]);
-    hand.finger(0, 3, at, Phase::Down);
+    hand.finger(0, 3, at, TouchPhase::Down);
     for (i, up) in [10.0, 30.0, 60.0, 90.0].into_iter().enumerate() {
-        hand.finger(16, 3, pt(at.x + i as f32, at.y - up), Phase::Move);
+        hand.finger(16, 3, pt(at.x + i as f32, at.y - up), TouchPhase::Move);
     }
     assert_eq!(hand.ui.pointer(), None, "nothing is under a finger that scrolls");
     // It went 90 down the list; the first 10 told it from a tap.
     assert_eq!(hand.scrolled(), 80.0);
     // Held still, then lifted: no flick, and no click.
-    hand.finger(300, 3, pt(at.x + 3.0, at.y - 90.0), Phase::Up);
+    hand.finger(300, 3, pt(at.x + 3.0, at.y - 90.0), TouchPhase::Up);
     assert_eq!((hand.scrolled(), hand.app.clicks, hand.ui.wake_in()), (80.0, [0; 16], None));
     hand.quiet();
     // Back up past the top: it stops there, and goes down again as soon as the finger does.
     let at = middle(hand.app.rows[3]);
-    hand.finger(500, 4, at, Phase::Down);
-    hand.finger(16, 4, pt(at.x, at.y + 20.0), Phase::Move);
-    hand.finger(16, 4, pt(at.x, at.y + 200.0), Phase::Move);
+    hand.finger(500, 4, at, TouchPhase::Down);
+    hand.finger(16, 4, pt(at.x, at.y + 20.0), TouchPhase::Move);
+    hand.finger(16, 4, pt(at.x, at.y + 200.0), TouchPhase::Move);
     assert_eq!(hand.scrolled(), 0.0, "at the top");
-    hand.finger(16, 4, pt(at.x, at.y + 170.0), Phase::Move);
+    hand.finger(16, 4, pt(at.x, at.y + 170.0), TouchPhase::Move);
     assert_eq!(hand.scrolled(), 30.0);
-    hand.finger(300, 4, pt(at.x, at.y + 170.0), Phase::Up);
+    hand.finger(300, 4, pt(at.x, at.y + 170.0), TouchPhase::Up);
     assert_eq!(hand.app.clicks, [0; 16]);
 }
 
@@ -210,11 +210,11 @@ fn a_finger_dragged_through_a_list_scrolls_it_and_clicks_nothing() {
 fn a_flick_goes_on_slowing_and_stops_and_a_finger_stops_it_sooner() {
     let mut hand = Hand::new();
     let at = middle(hand.app.rows[2]);
-    hand.finger(0, 1, at, Phase::Down);
+    hand.finger(0, 1, at, TouchPhase::Down);
     for up in [10.0, 15.0, 20.0, 25.0, 30.0] {
-        hand.finger(10, 1, pt(at.x, at.y - up), Phase::Move);
+        hand.finger(10, 1, pt(at.x, at.y - up), TouchPhase::Move);
     }
-    hand.finger(5, 1, pt(at.x, at.y - 30.0), Phase::Up);
+    hand.finger(5, 1, pt(at.x, at.y - 30.0), TouchPhase::Up);
     let let_go = hand.scrolled();
     assert_eq!(let_go, 20.0);
     assert_eq!(hand.ui.wake_in(), Some(Duration::from_millis(16)), "it asks to be run while it goes on");
@@ -230,24 +230,24 @@ fn a_flick_goes_on_slowing_and_stops_and_a_finger_stops_it_sooner() {
 
     // Back to the top, flicked again, and stopped by a finger: the finger's tap clicks nothing.
     let at = hand.in_view();
-    hand.finger(500, 2, at, Phase::Down);
-    hand.finger(16, 2, pt(at.x, at.y + 200.0), Phase::Move);
-    hand.finger(16, 2, pt(at.x, at.y + 600.0), Phase::Move);
-    hand.finger(300, 2, pt(at.x, at.y + 600.0), Phase::Up);
+    hand.finger(500, 2, at, TouchPhase::Down);
+    hand.finger(16, 2, pt(at.x, at.y + 200.0), TouchPhase::Move);
+    hand.finger(16, 2, pt(at.x, at.y + 600.0), TouchPhase::Move);
+    hand.finger(300, 2, pt(at.x, at.y + 600.0), TouchPhase::Up);
     assert_eq!(hand.scrolled(), 0.0);
     let at = middle(hand.app.rows[2]);
-    hand.finger(500, 3, at, Phase::Down);
+    hand.finger(500, 3, at, TouchPhase::Down);
     for up in [10.0, 30.0, 50.0] {
-        hand.finger(10, 3, pt(at.x, at.y - up), Phase::Move);
+        hand.finger(10, 3, pt(at.x, at.y - up), TouchPhase::Move);
     }
-    hand.finger(5, 3, pt(at.x, at.y - 50.0), Phase::Up);
+    hand.finger(5, 3, pt(at.x, at.y - 50.0), TouchPhase::Up);
     hand.wait(16);
     hand.wait(16);
     let stopped = hand.scrolled();
     let under = hand.in_view();
-    hand.finger(10, 4, under, Phase::Down);
+    hand.finger(10, 4, under, TouchPhase::Down);
     assert_eq!(hand.scrolled(), stopped, "it stopped where it was");
-    hand.finger(60, 4, under, Phase::Up);
+    hand.finger(60, 4, under, TouchPhase::Up);
     assert_eq!((hand.scrolled(), hand.app.clicks, hand.ui.wake_in()), (stopped, [0; 16], None));
 }
 
@@ -255,11 +255,11 @@ fn a_flick_goes_on_slowing_and_stops_and_a_finger_stops_it_sooner() {
 fn a_flick_stops_at_the_end_of_the_list() {
     let mut hand = Hand::new();
     let at = middle(hand.app.rows[2]);
-    hand.finger(0, 1, at, Phase::Down);
+    hand.finger(0, 1, at, TouchPhase::Down);
     for up in [10.0, 40.0, 70.0, 100.0] {
-        hand.finger(10, 1, pt(at.x, at.y - up), Phase::Move);
+        hand.finger(10, 1, pt(at.x, at.y - up), TouchPhase::Move);
     }
-    hand.finger(2, 1, pt(at.x, at.y - 100.0), Phase::Up);
+    hand.finger(2, 1, pt(at.x, at.y - 100.0), TouchPhase::Up);
     let went = hand.coast();
     // The last row came to the bottom of the list, and the list stopped there at once.
     let (last, end) = (hand.app.rows[15], *went.last().unwrap());
@@ -272,20 +272,20 @@ fn a_flick_stops_at_the_end_of_the_list() {
 fn a_finger_held_still_is_the_menus_press() {
     let mut hand = Hand::new();
     let at = middle(hand.app.rows[3]);
-    hand.finger(0, 5, at, Phase::Down);
+    hand.finger(0, 5, at, TouchPhase::Down);
     assert_eq!(hand.ui.wake_in(), Some(Duration::from_millis(500)), "it is to be run when the finger has been held long enough");
     hand.wait(300);
     assert_eq!(hand.app.menus, 0);
     hand.wait(200);
     assert_eq!(hand.app.menus, 1, "the menu's press, while the finger is still down");
     hand.quiet();
-    hand.finger(400, 5, at, Phase::Up);
+    hand.finger(400, 5, at, TouchPhase::Up);
     assert_eq!((hand.app.menus, hand.app.clicks), (1, [0; 16]), "and lifting it clicks nothing");
     // (Where the clock woke nobody in time, it is the menu's press when it lifts.)
     let at = middle(hand.app.rows[1]);
     hand.event(500, Event::Key(taut::Key::Escape, Mods::NONE));
-    hand.finger(0, 6, at, Phase::Down);
-    hand.finger(700, 6, at, Phase::Up);
+    hand.finger(0, 6, at, TouchPhase::Down);
+    hand.finger(700, 6, at, TouchPhase::Up);
     assert_eq!((hand.app.menus, hand.app.clicks), (2, [0; 16]));
 }
 
@@ -295,26 +295,26 @@ fn a_part_that_is_dragged_takes_the_finger_where_a_scroll_would() {
     // Across the slider: nothing scrolls that way, so the finger drags its knob.
     let slider = hand.app.slider;
     let at = pt(slider.x + 20.0, slider.y + slider.h / 2.0);
-    hand.finger(0, 1, at, Phase::Down);
-    hand.finger(16, 1, pt(at.x + 30.0, at.y + 1.0), Phase::Move);
-    hand.finger(16, 1, pt(slider.x + slider.w, at.y + 2.0), Phase::Move);
-    hand.finger(16, 1, pt(slider.x + slider.w, at.y + 2.0), Phase::Up);
+    hand.finger(0, 1, at, TouchPhase::Down);
+    hand.finger(16, 1, pt(at.x + 30.0, at.y + 1.0), TouchPhase::Move);
+    hand.finger(16, 1, pt(slider.x + slider.w, at.y + 2.0), TouchPhase::Move);
+    hand.finger(16, 1, pt(slider.x + slider.w, at.y + 2.0), TouchPhase::Up);
     let scrolled = hand.scrolled();
     assert!((hand.app.value - 1.0).abs() < 1e-6 && scrolled == 0.0, "{}", hand.app.value);
     // Up and down on it, the list scrolls instead, and the slider stays as it was.
     let at = pt(slider.x + 20.0, slider.y + slider.h / 2.0);
-    hand.finger(500, 2, at, Phase::Down);
-    hand.finger(16, 2, pt(at.x, at.y - 20.0), Phase::Move);
-    hand.finger(16, 2, pt(at.x, at.y - 40.0), Phase::Move);
-    hand.finger(300, 2, pt(at.x, at.y - 40.0), Phase::Up);
+    hand.finger(500, 2, at, TouchPhase::Down);
+    hand.finger(16, 2, pt(at.x, at.y - 20.0), TouchPhase::Move);
+    hand.finger(16, 2, pt(at.x, at.y - 40.0), TouchPhase::Move);
+    hand.finger(300, 2, pt(at.x, at.y - 40.0), TouchPhase::Up);
     let scrolled = hand.scrolled();
     assert!((hand.app.value - 1.0).abs() < 1e-6 && scrolled == 20.0, "{} {scrolled}", hand.app.value);
     // A box held with `held` is dragged whichever way the finger goes: it lands pressed.
     let (knob, scrolled) = (middle(hand.app.knob), hand.scrolled());
-    hand.finger(500, 3, knob, Phase::Down);
-    hand.finger(16, 3, pt(knob.x, knob.y + 20.0), Phase::Move);
-    hand.finger(16, 3, pt(knob.x, knob.y + 30.0), Phase::Move);
-    hand.finger(16, 3, pt(knob.x, knob.y + 30.0), Phase::Up);
+    hand.finger(500, 3, knob, TouchPhase::Down);
+    hand.finger(16, 3, pt(knob.x, knob.y + 20.0), TouchPhase::Move);
+    hand.finger(16, 3, pt(knob.x, knob.y + 30.0), TouchPhase::Move);
+    hand.finger(16, 3, pt(knob.x, knob.y + 30.0), TouchPhase::Up);
     assert_eq!((hand.app.knob_at, hand.scrolled()), (30.0, scrolled));
 }
 
@@ -322,11 +322,11 @@ fn a_part_that_is_dragged_takes_the_finger_where_a_scroll_would() {
 fn a_finger_the_system_takes_away_clicks_nothing() {
     let mut hand = Hand::new();
     let at = middle(hand.app.page);
-    hand.finger(0, 1, at, Phase::Down);
-    hand.finger(50, 1, at, Phase::Cancel);
+    hand.finger(0, 1, at, TouchPhase::Down);
+    hand.finger(50, 1, at, TouchPhase::Cancel);
     let at = middle(hand.app.rows[0]);
-    hand.finger(500, 2, at, Phase::Down);
-    hand.finger(50, 2, at, Phase::Cancel);
+    hand.finger(500, 2, at, TouchPhase::Down);
+    hand.finger(50, 2, at, TouchPhase::Cancel);
     assert_eq!((hand.app.page_clicks, hand.app.clicks, hand.ui.pointer()), (0, [0; 16], None));
 }
 
@@ -335,30 +335,30 @@ fn two_fingers_pinch_a_box_that_zooms_and_scroll_a_list() {
     let mut hand = Hand::new();
     let middle_of = middle(hand.app.map);
     let (left, right) = (pt(middle_of.x - 20.0, middle_of.y), pt(middle_of.x + 20.0, middle_of.y));
-    hand.finger(0, 1, left, Phase::Down);
-    hand.finger(10, 2, right, Phase::Down);
+    hand.finger(0, 1, left, TouchPhase::Down);
+    hand.finger(10, 2, right, TouchPhase::Down);
     // Twice as far apart, and both moved down by 10.
-    hand.finger(16, 1, pt(left.x - 20.0, left.y + 10.0), Phase::Move);
-    hand.finger(16, 2, pt(right.x + 20.0, right.y + 10.0), Phase::Move);
-    let by: f32 = hand.app.zooms.iter().map(|zoom| zoom.by).product();
-    let moved = hand.app.zooms.iter().fold(pt(0.0, 0.0), |all, zoom| pt(all.x + zoom.moved.x, all.y + zoom.moved.y));
+    hand.finger(16, 1, pt(left.x - 20.0, left.y + 10.0), TouchPhase::Move);
+    hand.finger(16, 2, pt(right.x + 20.0, right.y + 10.0), TouchPhase::Move);
+    let by: f32 = hand.app.zooms.iter().map(|zoom| zoom.factor).product();
+    let moved = hand.app.zooms.iter().fold(pt(0.0, 0.0), |all, zoom| pt(all.x + zoom.pan.x, all.y + zoom.pan.y));
     assert!((by - 2.0).abs() < 1e-4 && moved == pt(0.0, 10.0), "{:?}", hand.app.zooms);
-    assert_eq!(hand.app.zooms.last().unwrap().at, pt(middle_of.x, middle_of.y + 10.0));
-    hand.finger(16, 1, pt(left.x - 20.0, left.y + 10.0), Phase::Up);
-    hand.finger(16, 2, pt(right.x + 20.0, right.y + 10.0), Phase::Up);
+    assert_eq!(hand.app.zooms.last().unwrap().center, pt(middle_of.x, middle_of.y + 10.0));
+    hand.finger(16, 1, pt(left.x - 20.0, left.y + 10.0), TouchPhase::Up);
+    hand.finger(16, 2, pt(right.x + 20.0, right.y + 10.0), TouchPhase::Up);
     assert_eq!(hand.app.page_clicks + hand.app.clicks.iter().sum::<u32>(), 0);
 
     // On the list, two fingers scroll it, from their middle.
     let at = middle(hand.app.rows[2]);
-    hand.finger(500, 3, pt(at.x - 10.0, at.y), Phase::Down);
-    hand.finger(10, 4, pt(at.x + 10.0, at.y), Phase::Down);
-    hand.finger(16, 3, pt(at.x - 10.0, at.y - 40.0), Phase::Move);
-    hand.finger(16, 4, pt(at.x + 10.0, at.y - 40.0), Phase::Move);
+    hand.finger(500, 3, pt(at.x - 10.0, at.y), TouchPhase::Down);
+    hand.finger(10, 4, pt(at.x + 10.0, at.y), TouchPhase::Down);
+    hand.finger(16, 3, pt(at.x - 10.0, at.y - 40.0), TouchPhase::Move);
+    hand.finger(16, 4, pt(at.x + 10.0, at.y - 40.0), TouchPhase::Move);
     assert_eq!(hand.scrolled(), 40.0);
     // One lifts: the other goes on, from where it is.
-    hand.finger(16, 3, pt(at.x - 10.0, at.y - 40.0), Phase::Up);
-    hand.finger(16, 4, pt(at.x + 10.0, at.y - 60.0), Phase::Move);
-    hand.finger(300, 4, pt(at.x + 10.0, at.y - 60.0), Phase::Up);
+    hand.finger(16, 3, pt(at.x - 10.0, at.y - 40.0), TouchPhase::Up);
+    hand.finger(16, 4, pt(at.x + 10.0, at.y - 60.0), TouchPhase::Move);
+    hand.finger(300, 4, pt(at.x + 10.0, at.y - 60.0), TouchPhase::Up);
     assert_eq!((hand.scrolled(), hand.app.clicks), (60.0, [0; 16]));
 }
 
@@ -368,7 +368,7 @@ fn the_wheel_with_ctrl_zooms_what_zooms_under_the_pointer() {
     let at = middle(hand.app.map);
     hand.event(0, Event::Move(at));
     hand.event(10, Event::Zoom(1.25));
-    assert_eq!(hand.app.zooms, [Zoom { by: 1.25, at, moved: pt(0.0, 0.0) }]);
+    assert_eq!(hand.app.zooms, [Zoom { factor: 1.25, center: at, pan: pt(0.0, 0.0) }]);
     // Over what does not zoom, it is nothing at all.
     hand.event(10, Event::Move(middle(hand.app.page)));
     assert!(!hand.ui.event(Event::Zoom(2.0)));
@@ -391,7 +391,7 @@ fn a_pen_is_the_mouse_and_says_how_hard_it_presses() {
     assert_eq!(hand.ui.stylus().map(|pen| pen.pressure), Some(0.7));
     hand.event(10, Event::Stylus(Some(pen)));
     hand.event(0, Event::Release(Button::Left));
-    assert_eq!((hand.app.page_clicks, hand.ui.fingers()), (1, false));
+    assert_eq!((hand.app.page_clicks, hand.ui.is_touch()), (1, false));
     hand.event(10, Event::Stylus(None));
     hand.event(0, Event::Leave);
     assert_eq!(hand.ui.stylus(), None);

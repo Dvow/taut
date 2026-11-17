@@ -5,19 +5,19 @@
 //!   cargo run -p taut --example report
 //!   cargo run -p taut --example report -- report.pdf   (writes the file, and shows nothing)
 #![windows_subsystem = "windows"]
-use taut::{Align, Chart, Color, Font, Length, Markdown, Paper, Path, Pen, Printed, Printing, Series, Ui, Window, geom::rect};
+use taut::{Align, Chart, Color, Font, Length, Markdown, Paper, Path, Pen, PrintJob, PrintOutcome, Series, Ui, Window, geom::rect};
 
 /// The months, and what was sold in each, and what came back.
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const SOLD: [f32; 12] = [412.0, 388.0, 455.0, 501.0, 532.0, 610.0, 588.0, 571.0, 640.0, 702.0, 765.0, 820.0];
 const BACK: [f32; 12] = [21.0, 18.0, 25.0, 22.0, 30.0, 28.0, 35.0, 31.0, 27.0, 33.0, 38.0, 41.0];
 
-/// What the window keeps: where the file was saved, and printing on its way.
+/// What the window keeps: where the file was saved, printing on its way, and how either went.
 #[derive(Default)]
 pub struct Report {
     saved: Option<String>,
-    printing: Option<Printing>,
-    said: String,
+    printing: Option<PrintJob>,
+    status: String,
 }
 
 /// The report's words, written in Markdown.
@@ -49,14 +49,14 @@ pub fn paper() -> Paper {
     paper.text("The year in sales", 72.0, 72.0, Font::new(28.0).bold(), black);
     paper.text("Things sold and things that came back, by month", 72.0, 116.0, Font::new(14.0), dim);
     chart(&mut paper, rect(72.0, 170.0, Paper::A4.w - 144.0, 420.0));
-    paper.markdown(&Markdown::read(&words()), Paper::A4, 72.0);
+    paper.markdown(&Markdown::parse(&words()), Paper::A4, 72.0);
     // A number at the foot of every page.
     let pages = paper.pages();
     for page in 0..pages {
-        paper.turn_to(page);
-        let said = format!("{} of {pages}", page + 1);
-        let wide = paper.measure(&said, Font::new(11.0));
-        paper.text(&said, (Paper::A4.w - wide) / 2.0, Paper::A4.h - 48.0, Font::new(11.0), dim);
+        paper.set_page(page);
+        let number = format!("{} of {pages}", page + 1);
+        let wide = paper.measure(&number, Font::new(11.0));
+        paper.text(&number, (Paper::A4.w - wide) / 2.0, Paper::A4.h - 48.0, Font::new(11.0), dim);
     }
     paper
 }
@@ -72,9 +72,9 @@ fn chart(paper: &mut Paper, r: taut::Rect) {
     for step in 0..=5 {
         let y = plot.bottom() - plot.h * step as f32 / 5.0;
         paper.rect(rect(plot.x, y, plot.w, 1.0), line);
-        let said = format!("{}", step * 200);
-        let wide = paper.measure(&said, small);
-        paper.text(&said, plot.x - 8.0 - wide, y - 8.0, small, dim);
+        let label = format!("{}", step * 200);
+        let wide = paper.measure(&label, small);
+        paper.text(&label, plot.x - 8.0 - wide, y - 8.0, small, dim);
         paper.text(&format!("{}", step * 10), plot.right() + 8.0, y - 8.0, small, back);
     }
     let slot = plot.w / 12.0;
@@ -111,11 +111,11 @@ pub fn describe(report: &mut Report, ui: &mut Ui) {
     ui.column().pad(16.0).gap(12.0).grow().open();
     ui.text("The year in sales", t.font.bold(), t.text);
     let rows = [Series::bars("Sold", &SOLD), Series::line("Came back", &BACK).color(t.red)];
-    ui.chart(&Chart::of(&rows).names(&MONTHS), 560.0, 260.0);
+    ui.chart(&Chart::of(&rows).categories(&MONTHS), 560.0, 260.0);
     ui.row().gap(8.0).align(Align::Start, Align::Center).open();
     if ui.primary_button("Save as PDF").clicked {
         let file = std::env::temp_dir().join("report.pdf");
-        report.said = match std::fs::write(&file, paper().pdf()) {
+        report.status = match std::fs::write(&file, paper().to_pdf()) {
             Ok(()) => format!("Saved as {}", file.display()),
             Err(error) => format!("Not saved: {error}"),
         };
@@ -124,15 +124,15 @@ pub fn describe(report: &mut Report, ui: &mut Ui) {
     if ui.button("Print").clicked && report.printing.is_none() {
         report.printing = Some(taut::print(paper(), "The year in sales"));
     }
-    if let Some(done) = report.printing.as_ref().and_then(Printing::done) {
+    if let Some(done) = report.printing.as_ref().and_then(PrintJob::outcome) {
         report.printing = None;
-        report.said = match done {
-            Printed::Sent => "Sent to the printer".into(),
-            Printed::Closed => String::new(),
+        report.status = match done {
+            PrintOutcome::Sent => "Sent to the printer".into(),
+            PrintOutcome::Closed => String::new(),
             _ => "There is no printing here".into(),
         };
     }
-    ui.el().w(Length::Grow(1.0)).text(&report.said, t.font, t.text_dim).clip().show();
+    ui.el().w(Length::Grow(1.0)).text(&report.status, t.font, t.text_dim).clip().show();
     ui.close();
     ui.close();
 }
@@ -140,7 +140,7 @@ pub fn describe(report: &mut Report, ui: &mut Ui) {
 fn main() {
     // With a name, the file is written there, and that is all.
     if let Some(name) = std::env::args().nth(1) {
-        std::fs::write(&name, paper().pdf()).expect("the file is written");
+        std::fs::write(&name, paper().to_pdf()).expect("the file is written");
         return;
     }
     let mut report = Report::default();
@@ -156,7 +156,7 @@ mod tests {
     fn the_report_is_a_chart_and_a_page_of_words() {
         let paper = paper();
         assert!(paper.pages() >= 2, "{} pages", paper.pages());
-        let file = paper.pdf();
+        let file = paper.to_pdf();
         assert!(file.starts_with(b"%PDF-") && file.len() > 2_000);
     }
 
@@ -167,6 +167,6 @@ mod tests {
         trial.press(taut::Role::Button, "Save as PDF");
         let saved = trial.app.saved.clone().expect("saved");
         assert!(std::fs::read(&saved).expect("the file is there").starts_with(b"%PDF-"));
-        assert!(trial.app.said.starts_with("Saved as"));
+        assert!(trial.app.status.starts_with("Saved as"));
     }
 }

@@ -4,13 +4,13 @@
 //!
 //! ```ignore
 //! if ui.tray(&[(32, &icon)], "Notes").clicked {
-//!     ui.come_forward(); // back from the tray
+//!     ui.bring_to_front(); // back from the tray
 //! }
 //! if ui.tray_item("&Show") {
-//!     ui.come_forward();
+//!     ui.bring_to_front();
 //! }
-//! ui.tray_check(&mut app.quiet, "&Quiet");
-//! ui.tray_line();
+//! ui.tray_checkbox(&mut app.quiet, "&Quiet");
+//! ui.tray_separator();
 //! if ui.tray_item("&Quit") {
 //!     ui.quit();
 //! }
@@ -19,14 +19,15 @@
 //! The icon is added after the first run that says it, updated after a run that says it
 //! differently, and removed after the first run that does not. A program living in the tray
 //! hides its window there ([`Ui::hide_window`]), off the screen and the task bar, and brings it
-//! back with [`Ui::come_forward`].
+//! back with [`Ui::bring_to_front`].
 //!
 //! The menu is the system's own: it is what the person knows from every other tray icon, works
 //! with the system's keys and screen readers, and under Wayland is the only kind possible (no
-//! program can put a window beside the panel). The system shows the rows the app said last; a
-//! picked row comes back as the next run says that row again. On Windows it is a system menu
-//! (`TrackPopupMenu`, in `shell`); on Linux the panel draws it from what the program tells over
-//! D-Bus (`com.canonical.dbusmenu`, beside the `StatusNotifierItem` icon, in `freedesktop`).
+//! program can put a window beside the panel). The system shows the rows the app described
+//! last; a chosen row comes back as the next run says that row again. On Windows it is a system
+//! menu (`TrackPopupMenu`, in `windows_shell`); on Linux the panel draws it from what the
+//! program tells over D-Bus (`com.canonical.dbusmenu`, beside the `StatusNotifierItem` icon, in
+//! `freedesktop`).
 use crate::ui::{Response, Ui};
 use std::cell::RefCell;
 
@@ -40,8 +41,8 @@ pub(crate) enum RowKind {
     Line,
 }
 
-/// A tray menu row as the app said it: its label (`&` before its access key), its kind, and
-/// whether it is enabled.
+/// A tray menu row as the app described it: its label (`&` before its access key), its kind,
+/// and whether it is enabled.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Row {
     pub label: String,
@@ -50,7 +51,7 @@ pub(crate) struct Row {
 }
 
 /// What the person did with the icon: clicked it (or pressed Enter on it), double-clicked it,
-/// or picked the menu row at this index.
+/// or chose the menu row at this index.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Did {
     Clicked,
@@ -66,14 +67,14 @@ pub(crate) const ROWS: u8 = 4;
 /// The tray icon as the app says it, and what the person did with it, on this thread.
 #[derive(Default)]
 pub(crate) struct Tray {
-    /// It was said in this run.
-    pub said: bool,
+    /// It was described in this run.
+    pub described: bool,
     /// Its pictures (each its width and pixels), its hint, its menu.
     pub pictures: Vec<(usize, Vec<u32>)>,
     pub hint: String,
     pub rows: Vec<Row>,
-    /// How many rows were said so far in this pass.
-    rows_said: usize,
+    /// How many rows were described so far in this pass.
+    rows_described: usize,
     /// What changed since the system was last told (`PICTURES`, `HINT`, `ROWS`).
     pub changed: u8,
     /// What the person did, until a run takes it.
@@ -87,18 +88,19 @@ thread_local! {
 }
 
 impl Tray {
-    /// After a run: rows the run no longer said leave the menu. Gives back whether the icon was
-    /// said and what changed of it, which the system is now told; from here on nothing has
-    /// changed and nothing was said. (What the person did that no run took is dropped.)
+    /// After a run: rows the run no longer described leave the menu. Gives back whether the
+    /// icon was described and what changed of it, which the system is now told; from here on
+    /// nothing has changed and nothing was described. (What the person did that no run took is
+    /// dropped.)
     pub(crate) fn settle(&mut self) -> (bool, u8) {
-        if self.said && self.rows_said < self.rows.len() {
-            self.rows.truncate(self.rows_said);
+        if self.described && self.rows_described < self.rows.len() {
+            self.rows.truncate(self.rows_described);
             self.changed |= ROWS;
         }
-        let said = (std::mem::take(&mut self.said), std::mem::take(&mut self.changed));
-        self.rows_said = 0;
+        let described = (std::mem::take(&mut self.described), std::mem::take(&mut self.changed));
+        self.rows_described = 0;
         self.news.clear();
-        said
+        described
     }
 
     /// Takes what the person did, if it was this.
@@ -113,11 +115,11 @@ impl Ui {
     /// The program's tray icon: its pictures (square, in as many sizes as given, each its width
     /// in pixels and pixels, as [`Window::icons`](crate::Window::icons) takes them; the system
     /// shows the one that fits), and a hint shown while the pointer rests on it. `clicked` when
-    /// the person clicks it (or picks it from the keyboard), `double_clicked` where the system
-    /// tells a double click apart (Windows). Say it every run while it should stay; its menu
-    /// rows follow ([`tray_item`](Self::tray_item), [`tray_check`](Self::tray_check),
-    /// [`tray_radio`](Self::tray_radio), [`tray_line`](Self::tray_line)). Only in a window run
-    /// by `taut::run`.
+    /// the person clicks it (or chooses it from the keyboard), `double_clicked` where the
+    /// system tells a double click apart (Windows). Say it every run while it should stay; its
+    /// menu rows follow ([`tray_item`](Self::tray_item),
+    /// [`tray_checkbox`](Self::tray_checkbox), [`tray_radio`](Self::tray_radio),
+    /// [`tray_separator`](Self::tray_separator)). Only in a window run by `taut::run`.
     pub fn tray(&mut self, pictures: &[(usize, &[u32])], hint: &str) -> Response {
         crate::platform::hand_desktop();
         let (clicked, double_clicked) = TRAY.with_borrow_mut(|tray| {
@@ -130,7 +132,7 @@ impl Ui {
                 tray.hint = hint.into();
                 tray.changed |= HINT;
             }
-            (tray.said, tray.rows_said) = (true, 0);
+            (tray.described, tray.rows_described) = (true, 0);
             (tray.took(Did::Clicked), tray.took(Did::Twice))
         });
         self.again |= clicked | double_clicked;
@@ -139,51 +141,51 @@ impl Ui {
 
     /// A tray menu row: true once, in the run after the person picked it. (`"&Show"` makes S
     /// its access key. What [`set_enabled(false)`](Self::set_enabled) disabled shows pale and
-    /// cannot be picked.)
+    /// cannot be chosen.)
     pub fn tray_item(&mut self, label: &str) -> bool {
         self.tray_row(label, RowKind::Item)
     }
 
     /// A tray menu row with a check mark while `on`: picking it flips that. Says whether it
     /// did.
-    pub fn tray_check(&mut self, on: &mut bool, label: &str) -> bool {
-        let picked = self.tray_row(label, RowKind::Tick(*on));
-        *on ^= picked;
-        picked
+    pub fn tray_checkbox(&mut self, on: &mut bool, label: &str) -> bool {
+        let chosen = self.tray_row(label, RowKind::Tick(*on));
+        *on ^= chosen;
+        chosen
     }
 
     /// A tray menu row that is one of several exclusive choices, with a dot while chosen:
     /// picking it sets `choice` to `value`. Says whether that changed `choice`.
     pub fn tray_radio<T: PartialEq>(&mut self, choice: &mut T, value: T, label: &str) -> bool {
-        let picked = self.tray_row(label, RowKind::Choice(*choice == value)) && *choice != value;
-        if picked {
+        let chosen = self.tray_row(label, RowKind::Choice(*choice == value)) && *choice != value;
+        if chosen {
             *choice = value;
         }
-        picked
+        chosen
     }
 
     /// A separator between tray menu rows.
-    pub fn tray_line(&mut self) {
+    pub fn tray_separator(&mut self) {
         self.tray_row("", RowKind::Line);
     }
 
     /// Hides the first window entirely: off the screen, the task bar and the system's window
     /// lists. What a tray program does when its window is closed or minimized;
-    /// [`come_forward`](Self::come_forward) brings it back.
-    /// ([`window_hidden`](Self::window_hidden) says so meanwhile, and the interface still runs
-    /// for the icon, global hotkeys and notifications.)
+    /// [`bring_to_front`](Self::bring_to_front) brings it back.
+    /// ([`window_minimized`](Self::window_minimized) says so meanwhile, and the interface still
+    /// runs for the icon, global hotkeys and notifications.)
     pub fn hide_window(&mut self) {
         crate::platform::hand_desktop();
         TRAY.with_borrow_mut(|tray| tray.hide = true);
     }
 
-    /// A tray menu row said after the icon: kept as the menu's row at that index (the menu
-    /// changes where it differs), and whether the person picked it.
+    /// A tray menu row described after the icon: kept as the menu's row at that index (the menu
+    /// changes where it differs), and whether the person chose it.
     fn tray_row(&mut self, label: &str, kind: RowKind) -> bool {
         let enabled = self.enabled;
-        let picked = TRAY.with_borrow_mut(|tray| {
-            let at = tray.rows_said;
-            tray.rows_said += 1;
+        let chosen = TRAY.with_borrow_mut(|tray| {
+            let at = tray.rows_described;
+            tray.rows_described += 1;
             let same = tray.rows.get(at).is_some_and(|row| row.label == label && row.kind == kind && row.enabled == enabled);
             if !same {
                 tray.rows.truncate(at);
@@ -192,8 +194,8 @@ impl Ui {
             }
             enabled && tray.took(Did::Picked(at))
         });
-        self.again |= picked;
-        picked
+        self.again |= chosen;
+        chosen
     }
 }
 
@@ -270,13 +272,13 @@ mod tests {
         if ui.tray_item("&Show") {
             app.heard.push("show");
         }
-        if ui.tray_check(&mut app.quiet, "&Quiet") {
+        if ui.tray_checkbox(&mut app.quiet, "&Quiet") {
             app.heard.push("quiet");
         }
         ui.tray_radio(&mut app.which, 0, "One");
         ui.tray_radio(&mut app.which, 1, "Two");
         if app.more {
-            ui.tray_line();
+            ui.tray_separator();
             ui.set_enabled(false);
             if ui.tray_item("Pale") {
                 app.heard.push("pale");

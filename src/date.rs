@@ -12,12 +12,12 @@
 //! user's first day. In the calendar, focus starts on the picked day: arrows move a day or a
 //! week, Page Up/Down a month (with Shift, a year), Home/End to the week's start and end, Enter
 //! picks.
+use crate::accessibility::Role;
 use crate::color::Color;
 use crate::event::{Key, Mods};
 use crate::geom::Rect;
 use crate::id::Id;
 use crate::layout::Align;
-use crate::told::Role;
 use crate::ui::{Icon, Response, Ui};
 use crate::widgets::{Before, DOWN, RIGHT};
 #[cfg(unix)]
@@ -85,7 +85,7 @@ impl Date {
     }
     /// The same day `months` later (earlier, if negative); the month's last day if it has
     /// fewer.
-    pub fn months_on(self, months: i32) -> Self {
+    pub fn add_months(self, months: i32) -> Self {
         let counted = self.year as i64 * 12 + self.month as i64 - 1 + months as i64;
         let year = counted.div_euclid(12).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         let first = Date::new(year, counted.rem_euclid(12) as u8 + 1, 1);
@@ -106,7 +106,7 @@ impl Default for Date {
 }
 
 /// ISO 8601, which sorts: `2026-11-30`. For the user's format, see
-/// [`ui.written_date(date)`](Ui::written_date).
+/// [`ui.format_date(date)`](Ui::format_date).
 impl std::fmt::Display for Date {
     fn fmt(&self, to: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(to, "{:04}-{:02}-{:02}", self.year, self.month, self.day)
@@ -197,10 +197,11 @@ fn ahead(_at: i64) -> i64 {
     0
 }
 
-/// Calendar and clock words: English until the app sets its own in `ui.calendar`. (Date and
-/// time formats and the week's first day come from the system: see [`ui.locale`](Ui::locale).)
+/// Calendar and clock words: English until the app sets its own in `ui.calendar_words`. (Date
+/// and time formats and the week's first day come from the system: see
+/// [`ui.locale`](Ui::locale).)
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Calendar {
+pub struct CalendarWords {
     /// The names of the twelve months.
     pub months: [&'static str; 12],
     /// Short weekday names, Monday first.
@@ -213,9 +214,9 @@ pub struct Calendar {
     pub arrows: [&'static str; 2],
 }
 
-impl Default for Calendar {
+impl Default for CalendarWords {
     fn default() -> Self {
-        Calendar {
+        CalendarWords {
             months: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
             days: ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"],
             halves: ["AM", "PM"],
@@ -299,15 +300,34 @@ impl Ui {
         if !self.popup(of) {
             return None;
         }
-        let (t, words, first_day) = (self.theme, self.calendar, self.locale_in_use().first_day);
+        let t = self.theme;
         let fresh = self.calendar_open.of != of;
         if fresh {
             self.calendar_open = Shown { of, month: (picked[0].year, picked[0].month), ..Shown::default() };
         }
-        let (year, month) = self.calendar_open.month;
         // Never larger than the window, either way: what doesn't fit scrolls.
         let [wide, high] = self.popup_most();
-        self.column().pad(8.0).gap(6.0).max(wide, high).scroll().scroll_x().fill(t.raise).border(t.line_strong, 1.0).radius(8.0).shadow(16.0).sense().open();
+        self.column().pad(8.0).gap(6.0).max(wide, high).scroll().scroll_x().fill(t.raised).border(t.line_strong, 1.0).radius(8.0).shadow(16.0).sense().open();
+        let first = self.calendar_month_row();
+        self.grid(7).gap(2.0).open();
+        // On opening, focus goes to the picked day, and keys move between days. Handled here,
+        // where the days' ids are known and before them, so no other box gets the keys first.
+        if fresh {
+            self.set_focus(self.id(picked[0].days()));
+        }
+        self.calendar_keys(first);
+        let size = self.day_size();
+        self.calendar_weekdays(first, size);
+        let pressed = self.calendar_days(first, picked, size);
+        self.close();
+        self.close();
+        pressed
+    }
+
+    /// The calendar's top row: the previous-month arrow, the month and year, the next-month
+    /// arrow. Returns the first day of the month shown, after the arrows.
+    fn calendar_month_row(&mut self) -> Date {
+        let (t, words, (year, month)) = (self.theme, self.calendar_words, self.calendar_open.month);
         self.row().gap(6.0).open();
         let back = self.button_like(Before::Icon(LEFT), "", None, false);
         self.tell(&back, Role::Button, None, words.arrows[0]);
@@ -319,25 +339,27 @@ impl Ui {
         self.tell(&on, Role::Button, None, words.arrows[1]);
         self.close();
         let (back, on) = (back.clicked, on.clicked);
-        let first = Date::new(year, month, 1).months_on(on as i32 - back as i32);
+        let first = Date::new(year, month, 1).add_months(on as i32 - back as i32);
         self.calendar_open.month = (first.year, first.month);
         self.again |= on || back;
-        self.grid(7).gap(2.0).open();
-        // On opening, focus goes to the picked day, and keys move between days. Handled here,
-        // where the days' ids are known and before them, so no other box gets the keys first.
-        if fresh {
-            self.set_focus(self.id(picked[0].days()));
-        }
-        self.calendar_keys(first);
-        let size = self.day_size();
-        let heading = 18f32.max(self.text.metrics(t.small, self.scale).height().ceil() + 2.0);
+        first
+    }
+
+    /// The weekday names, from the user's first weekday; then blanks for the weekdays before
+    /// the 1st of `first`'s month.
+    fn calendar_weekdays(&mut self, first: Date, size: [f32; 2]) {
+        let (t, words, first_day) = (self.theme, self.calendar_words, self.locale_in_use().first_weekday);
+        let heading = 18f32.max(self.text.metrics(t.small_font, self.scale).height().ceil() + 2.0);
         for day in 0..7 {
-            self.el().size(size[0], heading).text(words.days[(day + first_day as usize) % 7], t.small, t.text_faint).text_align(Align::Center).show();
+            self.el().size(size[0], heading).text(words.days[(day + first_day as usize) % 7], t.small_font, t.text_faint).text_align(Align::Center).show();
         }
-        // Blanks for the weekdays before the 1st.
         for _ in 0..(first.weekday() + 7 - first_day % 7) % 7 {
             self.el().size(size[0], size[1]).show();
         }
+    }
+
+    /// The days of `first`'s month, `picked` marked. Returns the day pressed, if any.
+    fn calendar_days(&mut self, first: Date, picked: [Date; 2], size: [f32; 2]) -> Option<Date> {
         // A half-picked range shows up to the day pointed at.
         let shown = match (self.calendar_open.first, self.calendar_open.pointed) {
             (Some(start), Some(end)) => [start.min(end), start.max(end)],
@@ -350,13 +372,10 @@ impl Ui {
             pressed = pressed.or(state.clicked.then_some(day));
             (hovered, keyed) = (hovered.or(state.hovered.then_some(day)), keyed.or(state.focused.then_some(day)));
         }
-        // The pointer's day if over one; else focus.
+        // The pointer's day if over one; else focus. A half-picked range is redrawn up to it.
         let pointed = hovered.or(keyed);
-        // A half-picked range is redrawn up to the pointer.
-        let first_picked = self.calendar_open.first.is_some();
-        self.again |= first_picked && std::mem::replace(&mut self.calendar_open.pointed, pointed) != pointed;
-        self.close();
-        self.close();
+        let half_picked = self.calendar_open.first.is_some();
+        self.again |= half_picked && std::mem::replace(&mut self.calendar_open.pointed, pointed) != pointed;
         pressed
     }
 
@@ -366,12 +385,12 @@ impl Ui {
         let mut days = (0..first.month_length() as i64).map(|day| Date::from_days(first.days() + day));
         let Some(on) = days.find(|day| self.id(day.days()) == self.focus) else { return };
         // Home and End go to the user's week start and end.
-        let into_week = (on.weekday() as i64 - self.locale_in_use().first_day as i64).rem_euclid(7);
+        let into_week = (on.weekday() as i64 - self.locale_in_use().first_weekday as i64).rem_euclid(7);
         let mut key = |key: Key, mods: Mods| self.key(key, mods) as i64;
         let along = key(Key::Right, Mods::NONE) - key(Key::Left, Mods::NONE) + 7 * (key(Key::Down, Mods::NONE) - key(Key::Up, Mods::NONE));
         let months = key(Key::PageDown, Mods::NONE) - key(Key::PageUp, Mods::NONE) + 12 * (key(Key::PageDown, Mods::SHIFT) - key(Key::PageUp, Mods::SHIFT));
         let ends = (6 - into_week) * key(Key::End, Mods::NONE) - into_week * key(Key::Home, Mods::NONE);
-        let to = Date::from_days(on.months_on(months as i32).days() + along + ends);
+        let to = Date::from_days(on.add_months(months as i32).days() + along + ends);
         if to != on {
             self.calendar_open.month = (to.year, to.month);
             self.set_focus(self.id(to.days()));
@@ -380,7 +399,7 @@ impl Ui {
 
     /// The height of a one-line part: the theme's, or the text's, if larger text needs more.
     pub(crate) fn line_part(&mut self) -> f32 {
-        self.theme.control.max(self.text.metrics(self.theme.font, self.scale).height().ceil() + 8.0)
+        self.theme.control_height.max(self.text.metrics(self.theme.font, self.scale).height().ceil() + 8.0)
     }
     /// A calendar day's size: room for "30".
     fn day_size(&mut self) -> [f32; 2] {
@@ -420,9 +439,9 @@ impl Ui {
         let cell = self.el().key(day.days()).size(wide, high).text(NUMBERS[day.day as usize - 1], t.font, ink).text_align(Align::Center);
         cell.fill(fill).border(edge, 1.0).radius(5.0).sense().focusable().show();
         if self.listening {
-            let name = format!("{} {} {}", day.day, self.calendar.months[day.month as usize - 1], day.year);
+            let name = format!("{} {} {}", day.day, self.calendar_words.months[day.month as usize - 1], day.year);
             self.tell(&state, Role::Row, Some(ends || within), &name);
-            self.tell_place(day.day as usize, day.month_length() as usize);
+            self.tell_position(day.day as usize, day.month_length() as usize);
         }
         state
     }
@@ -447,9 +466,12 @@ mod tests {
     #[test]
     fn a_month_on_or_back_keeps_the_day_where_the_month_has_it() {
         let last = Date::new(2026, 1, 31);
-        assert_eq!([last.months_on(1), last.months_on(2), last.months_on(-2), last.months_on(13)], [Date::new(2026, 2, 28), Date::new(2026, 3, 31), Date::new(2025, 11, 30), Date::new(2027, 2, 28)]);
-        assert_eq!(Date::new(2024, 2, 29).months_on(-12), Date::new(2023, 2, 28));
-        assert_eq!(Date::new(2026, 11, 13).months_on(0), Date::new(2026, 11, 13));
+        assert_eq!(
+            [last.add_months(1), last.add_months(2), last.add_months(-2), last.add_months(13)],
+            [Date::new(2026, 2, 28), Date::new(2026, 3, 31), Date::new(2025, 11, 30), Date::new(2027, 2, 28)]
+        );
+        assert_eq!(Date::new(2024, 2, 29).add_months(-12), Date::new(2023, 2, 28));
+        assert_eq!(Date::new(2026, 11, 13).add_months(0), Date::new(2026, 11, 13));
     }
 
     #[test]

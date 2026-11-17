@@ -1,4 +1,4 @@
-//! GIF decoding: still images, and animations as frames (see `film`) with their delays.
+//! GIF decoding: still images, and animations as frames (see `animation`) with their delays.
 //!
 //! A GIF has a canvas, and one or more frames. A frame is a block of pixels on the canvas, each
 //! an index into a palette of up to 256 colours, one of which may be transparent. Indices are
@@ -9,7 +9,7 @@
 //! disposal methods, delays, and loop count. Not read: plain text extensions and comments
 //! (nothing writes the first), and the user input flag. A file is refused if its canvas is
 //! larger than its bytes could fill; an animation ends before the first damaged frame.
-use crate::film::{After, Frame, Kind, Laid, Reel};
+use crate::animation::{After, Frame, Kind, Laid, Reel};
 
 /// The most pixels one byte of LZW data can expand to: a 12-bit code for a run as long as there
 /// are codes.
@@ -21,7 +21,7 @@ const CODES: usize = 4096;
 /// from the top, `0xAARRGGBB` (transparent where the file has nothing): what
 /// [`Ui::add_picture`](crate::Ui::add_picture) takes. `None` for a damaged file or not a GIF.
 pub fn decode(gif: &[u8]) -> Option<(usize, Vec<u32>)> {
-    let mut reel = film(gif, 1)?;
+    let mut reel = read_animation(gif, 1)?;
     let (pixels, width) = reel.shown(0);
     Some((width, pixels.to_vec()))
 }
@@ -29,7 +29,7 @@ pub fn decode(gif: &[u8]) -> Option<(usize, Vec<u32>)> {
 /// What the file says of the next frame beforehand (its graphic control extension): the
 /// transparent index, disposal, and delay (0 if none).
 #[derive(Clone, Copy, Default)]
-struct Said {
+struct Control {
     clear: Option<u8>,
     after: u8,
     shows: u64,
@@ -37,7 +37,7 @@ struct Said {
 
 /// Reads a GIF as an animation: at most its first `most` frames. `None` if not a GIF, or no
 /// whole frame.
-pub(crate) fn film(gif: &[u8], most: usize) -> Option<Reel> {
+pub(crate) fn read_animation(gif: &[u8], most: usize) -> Option<Reel> {
     let head = gif.first_chunk::<13>().filter(|head| head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a"))?;
     let size = [u16::from_le_bytes([head[6], head[7]]) as usize, u16::from_le_bytes([head[8], head[9]]) as usize];
     // An empty canvas is no image; one the whole file could not fill gets no memory.
@@ -46,14 +46,14 @@ pub(crate) fn film(gif: &[u8], most: usize) -> Option<Reel> {
     }
     let mut reel = Reel::new(size, Kind::Gif(Vec::new(), Vec::new()), Some(1));
     let mut rest = &gif[13..];
-    let (shared, mut said) = (list(&mut reel, &mut rest, head[10])?, Said::default());
+    let (shared, mut control) = (list(&mut reel, &mut rest, head[10])?, Control::default());
     // The file is a sequence of blocks: a frame, an extension about the next frame or the file,
     // or the trailer. (The file ends before anything truncated or damaged.)
     while let Some((kind, after)) = rest.split_first().filter(|_| reel.frames.len() < most) {
         rest = after;
         let sound = match kind {
-            0x2C => frame(&mut reel, &mut rest, shared, &mut said),
-            0x21 => note(&mut reel, &mut rest, &mut said),
+            0x2C => frame(&mut reel, &mut rest, shared, &mut control),
+            0x21 => extension(&mut reel, &mut rest, &mut control),
             _ => None,
         };
         if sound.is_none() {
@@ -64,7 +64,7 @@ pub(crate) fn film(gif: &[u8], most: usize) -> Option<Reel> {
 }
 
 /// A GIF animation's palettes and index buffer.
-fn kept(kind: &mut Kind) -> (&mut Vec<u32>, &mut Vec<u8>) {
+fn gif_buffers(kind: &mut Kind) -> (&mut Vec<u32>, &mut Vec<u8>) {
     match kind {
         Kind::Gif(colors, numbers) => (colors, numbers),
         // Only GIF animations are ever read here.
@@ -75,7 +75,7 @@ fn kept(kind: &mut Kind) -> (&mut Vec<u32>, &mut Vec<u8>) {
 /// Takes a palette, if `flags` says one follows: 2^(low three bits + 1) colours of three bytes.
 /// Returns its range in the kept colours.
 fn list(reel: &mut Reel, rest: &mut &[u8], flags: u8) -> Option<[usize; 2]> {
-    let colors = kept(&mut reel.kind).0;
+    let colors = gif_buffers(&mut reel.kind).0;
     let (first, count) = (colors.len(), if flags & 0x80 == 0 { 0 } else { 2 << (flags & 7) });
     let (list, after) = rest.split_at_checked(count * 3)?;
     colors.extend(list.as_chunks::<3>().0.iter().map(|[red, green, blue]| u32::from_be_bytes([255, *red, *green, *blue])));
@@ -85,15 +85,15 @@ fn list(reel: &mut Reel, rest: &mut &[u8], flags: u8) -> Option<[usize; 2]> {
 
 /// Takes an extension between frames: a label byte, then data sub-blocks. For the next frame:
 /// transparent index, disposal, delay. For the file: the loop count.
-fn note(reel: &mut Reel, rest: &mut &[u8], said: &mut Said) -> Option<()> {
+fn extension(reel: &mut Reel, rest: &mut &[u8], control: &mut Control) -> Option<()> {
     let (kind, after) = rest.split_first()?;
-    let mut note = Vec::new();
+    let mut data = Vec::new();
     *rest = after;
-    blocks(rest, &mut note)?;
-    match (kind, &note[..]) {
+    blocks(rest, &mut data)?;
+    match (kind, &data[..]) {
         (0xF9, [flags, low, high, clear, ..]) => {
             let hundredths = u16::from_le_bytes([*low, *high]) as u64;
-            *said = Said { clear: (flags & 1 == 1).then_some(*clear), after: flags >> 2 & 7, shows: hundredths * 10 };
+            *control = Control { clear: (flags & 1 == 1).then_some(*clear), after: flags >> 2 & 7, shows: hundredths * 10 };
         }
         // Once, and so many times again; none means for ever.
         (0xFF, [name @ .., 1, low, high]) if name == b"NETSCAPE2.0" || name == b"ANIMEXTS1.0" => {
@@ -106,9 +106,9 @@ fn note(reel: &mut Reel, rest: &mut &[u8], said: &mut Said) -> Option<()> {
 }
 
 /// Takes a frame: its rect, its own palette if any (else the file's, `shared`), and its packed
-/// pixels, decoded once to check they are complete. It takes `said`, which then holds for no
+/// pixels, decoded once to check they are complete. It takes `control`, which then holds for no
 /// other frame. `None` for a truncated or damaged frame.
-fn frame(reel: &mut Reel, rest: &mut &[u8], shared: [usize; 2], said: &mut Said) -> Option<()> {
+fn frame(reel: &mut Reel, rest: &mut &[u8], shared: [usize; 2], control: &mut Control) -> Option<()> {
     let (head, after) = rest.split_first_chunk::<9>()?;
     *rest = after;
     let place = [0, 2, 4, 6].map(|at| u16::from_le_bytes([head[at], head[at + 1]]) as usize);
@@ -116,7 +116,7 @@ fn frame(reel: &mut Reel, rest: &mut &[u8], shared: [usize; 2], said: &mut Said)
     let (bits, after) = rest.split_first()?;
     *rest = after;
     blocks(rest, &mut reel.packed)?;
-    let Said { clear, after, shows } = std::mem::take(said);
+    let Control { clear, after, shows } = std::mem::take(control);
     let after = match after {
         2 => After::Cleared,
         3 => After::PutBack,
@@ -129,7 +129,7 @@ fn frame(reel: &mut Reel, rest: &mut &[u8], shared: [usize; 2], said: &mut Said)
     if count == 0 || count > (reel.packed.len() - first).saturating_mul(MOST) || !(1..=8).contains(&frame.bits) {
         return None;
     }
-    unpack(&reel.packed[first..], frame.bits, kept(&mut reel.kind).1, count)?;
+    unpack(&reel.packed[first..], frame.bits, gif_buffers(&mut reel.kind).1, count)?;
     reel.frames.push(frame);
     Some(())
 }
@@ -430,7 +430,7 @@ mod tests {
                     _ => [0xff1e_3a8a, 0xff0f_766e, 0xff7c_2d12, 0xfff1_f5f9][y / 4],
                 }
             };
-            std::fs::write(work.join(format!("f{step}.png")), png::encode_clear(24, &(0..24 * 16).map(pixel).collect::<Vec<u32>>()).unwrap()).unwrap();
+            std::fs::write(work.join(format!("f{step}.png")), png::encode_rgba(24, &(0..24 * 16).map(pixel).collect::<Vec<u32>>()).unwrap()).unwrap();
         }
         let run = |program: &str, arguments: &[&str], input: Option<&PathBuf>, output: Option<&PathBuf>| {
             let mut command = Command::new(program);

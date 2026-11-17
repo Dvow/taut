@@ -11,7 +11,7 @@ Every feature, by area. Gaps: [what is missing](what-is-missing.md). Calls: the
 - Boxes that shrink in priority order when room runs short (`.gives_way`).
 - Scrolling both ways (wheel, keys, bars that never cover content); rows kept in view
   (`.kept()`); sticky headings (`.sticky()`); the page scrolls when taller than the window.
-- Programmatic scrolling, stay-at-end for chats and logs, scroll into view; `ui.room` to fit
+- Programmatic scrolling, stay-at-end for chats and logs, scroll into view; `ui.available_size` to fit
   content in the same run.
 
 ## Parts
@@ -61,13 +61,13 @@ Popovers anchored to their button.
   choice); Ctrl+C copies rows as spreadsheet text.
 - Lists of any length cost only visible rows, including rows of varying height.
 
-## Panels, docks, boards, graphs
+## Panels, docks, pan and zoom, graphs
 
 - **Panels:** float, move, resize, fold, close, raise; snap to edges and each other; keyboard
   move and resize. `ui.pin` fixes a box to a window edge.
 - **Docks:** split, stacked and tabbed; drag tabs to drop markers; float and re-dock; reorder,
   close, maximise; Ctrl+Tab, Ctrl+F6, Ctrl+F4. The layout is a plain value.
-- **Boards:** own coordinate space; pan by drag, wheel and bars; zoom by Ctrl+wheel, pinch and
+- **Pan and zoom:** own coordinate space; pan by drag, wheel and bars; zoom by Ctrl+wheel, pinch and
   keys. Only visible content is described, drawn at its zoomed size.
 - **Node graphs:** typed ports, app parts in nodes, wiring with type checks, rubber-band
   selection, copy and delete, minimap; fully keyboard-operable and readable by screen readers.
@@ -75,7 +75,7 @@ Popovers anchored to their button.
 
 ## Code, inspector, rich text
 
-- **Code box:** syntax colouring from data (`Rules`: Rust, C, Python, JavaScript, custom),
+- **Code box:** syntax colouring from data (`Syntax`: Rust, C, Python, JavaScript, custom),
   multiple cursors, undo, folding; cost is the visible lines.
 - **Inspector:** an app value as name/editor rows; folding sections, editable lists, filter,
   changed marks, reset, undo, several values at once.
@@ -91,7 +91,7 @@ Popovers anchored to their button.
 - **App fonts:** TrueType, OpenType, WOFF, WOFF2 (`woff2`), CFF and CFF2 (`cff`), collections,
   variable fonts at any axis position; same output on every system.
 - **Hinting:** small Latin, Greek and Cyrillic snap vertically to whole pixels, as FreeType's
-  light hinting; `OwnFonts::smooth` turns it off.
+  light hinting; `AppFonts::unhinted` turns it off.
 - **Emoji** (`emoji`): colour emoji in all text, sequences as one glyph and one cursor step;
   from the system's font or the app's. `ui.emoji_in_full()` adds `COLR` v1 and SVG glyphs
   (about 30 KB with fonts already read; 360 KB in the smallest program).
@@ -104,7 +104,7 @@ Popovers anchored to their button.
   fractions, variable-font feature variations: matches HarfBuzz 12.3.2 and 14.5 on 13,066 words
   in 77 fonts. Mark composition and decomposition: matches HarfBuzz 14.5 on 428,444 word-font
   pairs.
-- **Vertical text** (`ui.label_downward`): UAX #50 orientation, `vert` forms, `vmtx`/`VORG`;
+- **Vertical text** (`ui.vertical_label`): UAX #50 orientation, `vert` forms, `vmtx`/`VORG`;
   matches HarfBuzz in seven CJK fonts.
 - **Dates, times, numbers** in the user's system format; overridable.
 
@@ -117,7 +117,7 @@ Popovers anchored to their button.
   never more than 9/255 off per pixel, under 1/255 on average.
 - Read PNG, JPEG, GIF, WebP, BMP, ICO; EXIF orientation; colour profiles (`color-profiles`).
 - Write PNG, JPEG (byte-identical to `cjpeg -baseline`) and multi-size ICO.
-- Animated GIF, PNG and WebP; only the film's box redraws.
+- Animated GIF, PNG and WebP; only the animation's box redraws.
 - SVG: clip paths, masks, patterns, markers, symbols; on request, text, filters (about 73 KB)
   and embedded pictures. Drawing cost is bounded by file length.
 - 3D meshes: filled, lit, coloured or outlined, with depth; all CPU cores, only on change; a
@@ -132,14 +132,19 @@ Popovers anchored to their button.
   tool, dialog, always on top); close requests that can be refused, also at logoff.
 - Frameless windows with app-drawn title strips (real title bar on Windows: snapping works);
   full screen; transparent windows.
-- Saved state: docks, tables, panels, windows, boards, window position, one line of text each;
-  `taut::kept` writes atomically to the settings folder.
+- Saved state: docks, tables, panels, windows, pan-zoom views, window position, one line of text each;
+  `taut::storage` writes atomically to the settings folder.
 - Drag and drop between boxes, from other programs (files, text) and out to them (files, text,
   pictures, links).
 - Clipboard (Windows, X11, Wayland): text, pictures, files.
 - Open files and links with the default program.
 - Tray icon with native menu, system notifications, global hotkeys, single instance. Unused,
   none of it is compiled in.
+- **GPU or CPU** (`gpu`): Direct3D 11 or 12, Vulkan or OpenGL (Windows), or OpenGL ES 3 (EGL) and
+  Vulkan (Linux, X11) show the pixels the CPU drew, byte for byte the same; whole frames in step with
+  the screen; only changed rectangles uploaded (and presented, where the path can); a missing
+  path falls back to the next; a lost device made again, else the CPU. `Window::renderer`,
+  `ui.renderer()`, `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl`.
 
 ## Input and accessibility
 
@@ -157,7 +162,8 @@ Popovers anchored to their button.
 
 - `Surface`: draw into memory for any renderer, as a transparent overlay, or in tests;
   `ui.wants_pointer()` and `ui.wants_keyboard()` split input with the host.
-- Layers for Direct3D 11 and OpenGL; a DLL with a C interface.
+- Layers for Direct3D 9, 11 and 12, OpenGL and Vulkan; `Surface::upload` for any other
+  renderer's texture upload; a DLL with a C interface.
 - A whole desktop on a pixel buffer, pointer drawn by the library: a mouse move at 1280×720
   redraws about 0.1% of the screen in about 50 µs.
 - `testing::Trial`: a window with no screen, driven as a user would; parts found as a screen

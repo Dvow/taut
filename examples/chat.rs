@@ -61,21 +61,21 @@ pub fn describe(app: &mut Chat, ui: &mut Ui) {
 
     // The list, and what lies over it (the friend writing, the way back to the newest).
     ui.column().grow().open();
-    ui.el().grow().flow(Flow::Layers).open();
+    ui.el().grow().flow(Flow::Stack).open();
     // (A few stand at the bottom, as the newest always does.)
     let list = ui.column().key("list").grow().scroll().align(Align::End, Align::Spread).open();
-    ui.stay_at_end(&list);
+    ui.stick_to_bottom(&list);
     if std::mem::take(&mut app.to_end) {
         ui.scroll_to(&list, [f32::NAN, f32::INFINITY]);
     }
     // Each message as high as its text comes out: only the ones in view are described.
     let wide = ui.size().w;
-    for at in ui.uneven_rows(app.messages.len(), 40.0) {
+    for at in ui.variable_rows(app.messages.len(), 40.0) {
         bubble(&app.messages[at], wide, ui);
     }
     ui.close();
     ui.close();
-    app.at_end = ui.scrolled(&list).at_end();
+    app.at_end = ui.scroll_state(&list).at_end();
     app.unread = if app.at_end { 0 } else { app.unread };
     if app.messages.is_empty() {
         ui.row().place(Align::Center).open();
@@ -88,7 +88,7 @@ pub fn describe(app: &mut Chat, ui: &mut Ui) {
         ui.close();
     }
     if !app.at_end {
-        ui.row().place((Align::Center, Align::End)).pad(6.0).gap(8.0).fill(t.raise).radius(t.radius).align(Align::Center, Align::Center).open();
+        ui.row().place((Align::Center, Align::End)).pad(6.0).gap(8.0).fill(t.raised).radius(t.radius).align(Align::Center, Align::Center).open();
         if app.unread > 0 {
             ui.note(&format!("{} new", app.unread));
         }
@@ -100,7 +100,7 @@ pub fn describe(app: &mut Chat, ui: &mut Ui) {
     // The box to type in: Enter sends what is in it, as the button does; Shift and Enter
     // start a new line.
     ui.row().pad(10.0).gap(8.0).fill(t.panel).open();
-    ui.leave_enter();
+    ui.enter_submits();
     let typing = ui.text_area(&mut app.typed, "Write a message", (1, 4));
     let send = ui.primary_button("Send").clicked || typing.focused && ui.key(Key::Enter, Mods::NONE);
     ui.close();
@@ -117,7 +117,7 @@ pub fn describe(app: &mut Chat, ui: &mut Ui) {
 /// out, the friend's on the left; as wide as its text, up to three quarters of the window.
 fn bubble(message: &Message, wide: f32, ui: &mut Ui) {
     let t = ui.theme;
-    let (side, fill, ink) = if message.mine { (Align::End, t.accent, t.on_accent) } else { (Align::Start, t.raise, t.text) };
+    let (side, fill, ink) = if message.mine { (Align::End, t.accent, t.on_accent) } else { (Align::Start, t.raised, t.text) };
     ui.row().w(Length::Grow(1.0)).pad((12.0, 3.0)).align(side, Align::Start).open();
     ui.column().max((wide * 0.75).max(120.0), f32::INFINITY).pad((10.0, 6.0)).fill(fill).radius(10.0).open();
     ui.el().text(&message.text, t.font, ink).wrap().show();
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn the_list_stays_at_its_end_while_the_person_is_there() {
         let mut trial = Trial::new(Chat::default(), describe);
-        trial.tell_time(|chat, now| chat.now = now);
+        trial.set_time(|chat, now| chat.now = now);
         trial.resize(360.0, 400.0, 1.0);
         assert!(trial.has(Role::Text, "No messages yet. Say hello!"));
 
@@ -172,10 +172,10 @@ mod tests {
         assert!(last.bottom() <= typing.y && last.bottom() > typing.y - 60.0, "the newest is just over the box to type in: {last:?}");
         assert!(!trial.has(Role::Text, "Hi Sam!\nHow are you?"));
         trial.wait(Duration::from_secs(2));
-        assert!(trial.has(Role::Text, ANSWERS[1]), "and the answer that came is in view, at the end:\n{}", trial.listed());
+        assert!(trial.has(Role::Text, ANSWERS[1]), "and the answer that came is in view, at the end:\n{}", trial.dump());
 
         // Back to read what came before: the list stays there as more comes, and says so.
-        let middle = trial.spot(Role::Text, "Message 12");
+        let middle = trial.center_of(Role::Text, "Message 12");
         trial.wheel(middle, 0.0, -10_000.0);
         assert!(trial.has(Role::Text, "Hi Sam!\nHow are you?") && trial.has(Role::Button, "Back to the newest"));
         trial.app.answer_at = Some(trial.app.now + THINKING); // (as if the friend wrote first)
@@ -187,7 +187,7 @@ mod tests {
         trial.press(Role::Button, "Back to the newest");
         assert!(trial.has(Role::Text, ANSWERS[2]) && !trial.has(Role::Text, "Hi Sam!\nHow are you?"));
         assert!(!trial.has(Role::Button, "Back to the newest"));
-        let middle = trial.spot(Role::Text, ANSWERS[2]);
+        let middle = trial.center_of(Role::Text, ANSWERS[2]);
         trial.wheel(middle, 0.0, -10_000.0);
         send(&mut trial, "Bye!");
         assert!(trial.has(Role::Text, "Bye!") && trial.app.at_end);

@@ -4,8 +4,8 @@
 // (Each app's `main` is not used here, nor is the attribute that keeps a console away.)
 #![allow(dead_code, unused_attributes)]
 
-#[path = "../examples/files.rs"]
-mod files;
+#[path = "../examples/file_browser.rs"]
+mod file_dialog;
 
 #[path = "../examples/editor.rs"]
 mod editor;
@@ -22,8 +22,8 @@ mod viewer;
 #[path = "../examples/dashboard.rs"]
 mod dashboard;
 
-#[path = "../examples/nodes.rs"]
-mod nodes;
+#[path = "../examples/node_editor.rs"]
+mod node_graph;
 
 #[path = "../examples/report.rs"]
 mod report;

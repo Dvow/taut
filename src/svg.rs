@@ -10,7 +10,7 @@
 //! composite. A box aligned with the picture (a nested viewport, or a clip path that is such a
 //! box) needs no block: shapes are clipped to it exactly. A pattern's tile renders to a block
 //! just before the shape it fills. Clip paths, masks, patterns and markers are expanded where
-//! used, as `<use>` is. Filters run on their block (see `filter.rs`).
+//! used, as `<use>` is. Filters run on their block (see `svg_filters.rs`).
 //!
 //! Read:
 //! - shapes: `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`; groups and
@@ -31,10 +31,10 @@
 //!   `feBlend` (all Compositing and Blending modes), `feColorMatrix`, `feComponentTransfer`,
 //!   `feDropShadow`, `feMorphology`, `feTile`, `feTurbulence`, with subregions and named inputs
 //!   (`SourceGraphic`, `SourceAlpha`, results)
-//! - with [`read_text`]: `<text>` and `<tspan>` in the system font of the first installed
+//! - with [`enable_text`]: `<text>` and `<tspan>` in the system font of the first installed
 //!   family named, with size, weight, style, per-letter positions, `text-anchor` and
 //!   `letter-spacing`
-//! - with [`read_pictures`]: `<image>` with a `data:` URL of a PNG, JPEG, GIF, WebP, BMP or
+//! - with [`enable_images`]: `<image>` with a `data:` URL of a PNG, JPEG, GIF, WebP, BMP or
 //!   ICO, fitted by `preserveAspectRatio`
 //!
 //! Not read: images by path or URL, SVG images, `feImage`, the lighting filters (give nothing),
@@ -72,11 +72,11 @@
 //! Transformed pattern tiles are sampled bilinearly.
 use crate::canvas::{Canvas, color_at};
 use crate::color::Color;
-use crate::filter::{self, Filter, Function, Input, Kind, Mode, Noise, Operator, Space};
-use crate::font::FontFile;
+use crate::font_file::FontFile;
 use crate::geom::{Point, Rect, Transform, pt};
 use crate::path::{Path, Step};
 use crate::pen::{self, Cap, FINER, Join, Work};
+use crate::svg_filters::{self, Filter, Function, Input, Kind, Mode, Noise, Operator, Space};
 use crate::text::Face;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -147,7 +147,7 @@ const NAMES: &str = "aliceblue=f0f8ff antiquewhite=faebd7 aqua=00ffff aquamarine
 /// system font of the first installed family its text names. Without this, a drawing's text is
 /// left out and the rest drawn; text needs the font reader (some 150 KB), which a program whose
 /// drawings hold no text need not carry.
-pub fn read_text() {
+pub fn enable_text() {
     _ = TEXT.set(|reading, at, style| reading.text(at, style));
 }
 
@@ -157,7 +157,7 @@ pub fn read_text() {
 /// reading them needs those decoders, which a program whose drawings hold no images need not
 /// carry. (An image in a separate file, by path or URL, is never read: a drawing shows only
 /// what it holds.)
-pub fn read_pictures() {
+pub fn enable_images() {
     _ = PICTURES.set(|reading, at, style| reading.picture(at, style));
 }
 
@@ -166,28 +166,28 @@ pub fn read_pictures() {
 /// functions (`blur()`, `drop-shadow()` and the rest). Without this, an element with a filter
 /// is drawn unfiltered; filters take some 73 KB of code, which a program whose drawings hold
 /// none need not carry. (Glyphs are always drawn without filters.)
-pub fn read_filters() {
-    _ = FILTERS.set(Filters { read: |reading, value, walk| reading.filtered(value, walk), apply: filter::apply });
+pub fn enable_filters() {
+    _ = FILTERS.set(Filters { read: |reading, value, walk| reading.filtered(value, walk), apply: svg_filters::apply });
 }
 
 /// How an `<image>`'s picture is read and kept (`Reading::picture`), once a program called
-/// `read_pictures`.
+/// `enable_images`.
 static PICTURES: std::sync::OnceLock<Pictures> = std::sync::OnceLock::new();
 
 /// Reads an `<image>`'s picture (see `Reading::picture`).
 type Pictures = for<'a, 'b> fn(&'b mut Reading<'a>, usize, &Style);
 
-/// How a text element's letters are set (`Reading::text`), once a program called `read_text`.
+/// How a text element's letters are set (`Reading::text`), once a program called `enable_text`.
 static TEXT: std::sync::OnceLock<Texts> = std::sync::OnceLock::new();
 
 /// Sets a text element's letters (see `Reading::text`).
 type Texts = for<'a, 'b> fn(&'b mut Reading<'a>, usize, &Style) -> Vec<(u32, Style)>;
 
-/// How filters are read and drawn, once a program called `read_filters`.
+/// How filters are read and drawn, once a program called `enable_filters`.
 static FILTERS: std::sync::OnceLock<Filters> = std::sync::OnceLock::new();
 
 /// What reads an element's filters (see `Reading::filtered`), and what applies one to a block
-/// (`filter::apply`).
+/// (`svg_filters::apply`).
 struct Filters {
     read: for<'a, 'b> fn(&'b mut Reading<'a>, [u32; 2], &Walk),
     apply: fn(&Filter, &mut [u32], usize, i32, &Table),
@@ -196,7 +196,7 @@ struct Filters {
 /// Reads an SVG file and draws it as a `width` by `height` picture: its pixels, rows from the
 /// top, each `0xAARRGGBB` (clear where the drawing has nothing), and the row length, as
 /// [`Ui::add_picture`](crate::Ui::add_picture) and
-/// [`png::encode_clear`](crate::png::encode_clear) take them. `currentColor` is black. Nothing
+/// [`png::encode_rgba`](crate::png::encode_rgba) take them. `currentColor` is black. Nothing
 /// for a file holding no drawing, or a picture of no size.
 pub fn decode(svg: &str, width: usize, height: usize) -> Option<(usize, Vec<u32>)> {
     let kept = Kept::read(svg).filter(|_| width > 0 && height > 0)?;
@@ -317,7 +317,7 @@ fn color(text: &str) -> Option<Color> {
         let mut parts = parts.split(|c: char| c == ',' || c == '/' || c == ')' || c.is_whitespace()).filter(|part| !part.is_empty());
         let part = |text: Option<&str>, whole: f32| text.and_then(number).map(|(part, unit)| if unit.starts_with('%') { part * whole / 100.0 } else { part });
         let [red, green, blue] = [part(parts.next(), 255.0)?, part(parts.next(), 255.0)?, part(parts.next(), 255.0)?].map(|part| (part.clamp(0.0, 255.0) + 0.5) as u32);
-        return Some(Color::rgb(red << 16 | green << 8 | blue).alpha(part(parts.next(), 1.0).unwrap_or(1.0)));
+        return Some(Color::rgb(red << 16 | green << 8 | blue).with_alpha(part(parts.next(), 1.0).unwrap_or(1.0)));
     }
     let named = NAMES.split_ascii_whitespace().find_map(|pair| pair.strip_prefix(text)?.strip_prefix('='));
     named.and_then(|digits| u32::from_str_radix(digits, 16).ok()).map(Color::rgb)
@@ -351,7 +351,7 @@ fn turned(text: &str) -> Table {
 struct Element<'a> {
     name: &'a str,
     /// Its attributes' range in the list of all attributes.
-    said: [usize; 2],
+    attributes: [usize; 2],
     /// The first element after it that is not inside it.
     end: usize,
 }
@@ -363,7 +363,7 @@ struct File<'a> {
     /// The file's text.
     text: &'a str,
     elements: Vec<Element<'a>>,
-    said: Vec<(&'a str, &'a str)>,
+    attributes: Vec<(&'a str, &'a str)>,
     named: HashMap<&'a str, usize>,
     rules: Vec<(&'a str, &'a str)>,
     /// The character data of text elements and their pieces, by innermost element.
@@ -373,7 +373,7 @@ struct File<'a> {
 impl<'a> File<'a> {
     /// Parses a file. Malformed parts are skipped; elements never closed end at the file's end.
     fn read(text: &'a str) -> File<'a> {
-        let mut file = File { text, elements: Vec::new(), said: Vec::new(), named: HashMap::new(), rules: Vec::new(), words: Vec::new() };
+        let mut file = File { text, elements: Vec::new(), attributes: Vec::new(), named: HashMap::new(), rules: Vec::new(), words: Vec::new() };
         // The open elements, innermost last.
         let (mut open, mut rest) = (Vec::new(), text);
         while let Some(start) = rest.find('<') {
@@ -409,13 +409,13 @@ impl<'a> File<'a> {
             return open;
         }
         let (name, mut says) = tag.split_at(tag.find(|c: char| c.is_whitespace() || c == '/').unwrap_or(tag.len()));
-        let (at, first) = (self.elements.len(), self.said.len());
-        while let Some((pair, after)) = next_said(says) {
-            self.said.push(pair);
+        let (at, first) = (self.elements.len(), self.attributes.len());
+        while let Some((pair, after)) = next_attribute(says) {
+            self.attributes.push(pair);
             says = after;
         }
-        self.elements.push(Element { name: local(name), said: [first, self.said.len()], end: at + 1 });
-        if let Some(id) = self.say(at, "id") {
+        self.elements.push(Element { name: local(name), attributes: [first, self.attributes.len()], end: at + 1 });
+        if let Some(id) = self.attribute(at, "id") {
             self.named.entry(id).or_insert(at);
         }
         if !tag.ends_with('/') {
@@ -438,14 +438,14 @@ impl<'a> File<'a> {
         let (whom, class) = whom.split_once('.').map_or((whom, None), |(whom, class)| (whom, Some(class)));
         let (name, id) = whom.split_once('#').map_or((whom, None), |(name, id)| (name, Some(id)));
         let named = (name.is_empty() && (class.is_some() || id.is_some())) || name == "*" || name == self.elements[at].name;
-        let classed = class.is_none_or(|class| self.say(at, "class").is_some_and(|classes| classes.split_whitespace().any(|own| own == class)));
-        named && classed && id.is_none_or(|id| self.say(at, "id") == Some(id))
+        let classed = class.is_none_or(|class| self.attribute(at, "class").is_some_and(|classes| classes.split_whitespace().any(|own| own == class)));
+        named && classed && id.is_none_or(|id| self.attribute(at, "id") == Some(id))
     }
 
     /// An attribute of an element, if present.
-    fn say(&self, at: usize, name: &str) -> Option<&'a str> {
-        let [first, last] = self.elements[at].said;
-        self.said[first..last].iter().find(|(said, _)| *said == name).map(|(_, value)| *value)
+    fn attribute(&self, at: usize, name: &str) -> Option<&'a str> {
+        let [first, last] = self.elements[at].attributes;
+        self.attributes[first..last].iter().find(|(attributes, _)| *attributes == name).map(|(_, value)| *value)
     }
 
     /// Where a slice of the file's text lies in it (nowhere, for text not from the file).
@@ -469,9 +469,9 @@ impl<'a> File<'a> {
         let mut functions = [Function::Same, Function::Same, Function::Same, Function::Same];
         for child in self.inside(at) {
             let Some(n) = ["feFuncR", "feFuncG", "feFuncB", "feFuncA"].iter().position(|name| *name == self.elements[child].name) else { continue };
-            let one = |name: &str, unsaid: f32| self.say(child, name).and_then(number).map_or(unsaid, |(number, _)| number);
-            let values: Vec<f32> = self.say(child, "tableValues").map(|text| numbers(text).collect()).unwrap_or_default();
-            functions[n] = match self.say(child, "type").map(str::trim) {
+            let one = |name: &str, fallback: f32| self.attribute(child, name).and_then(number).map_or(fallback, |(number, _)| number);
+            let values: Vec<f32> = self.attribute(child, "tableValues").map(|text| numbers(text).collect()).unwrap_or_default();
+            functions[n] = match self.attribute(child, "type").map(str::trim) {
                 Some("table") => Function::Table(values),
                 Some("discrete") => Function::Discrete(values),
                 Some("linear") => Function::Linear(one("slope", 1.0), one("intercept", 0.0)),
@@ -484,7 +484,7 @@ impl<'a> File<'a> {
 
     /// The element another one references (`href="#id"`), if any.
     fn linked(&self, at: usize) -> Option<usize> {
-        let link = self.say(at, "href").or_else(|| self.say(at, "xlink:href"))?;
+        let link = self.attribute(at, "href").or_else(|| self.attribute(at, "xlink:href"))?;
         self.named.get(link.trim().strip_prefix('#')?).copied()
     }
 }
@@ -513,7 +513,7 @@ fn tag_length(tag: &str) -> usize {
 }
 
 /// The next attribute in a tag, `name="value"`, and the rest of the tag.
-fn next_said(tag: &str) -> Option<((&str, &str), &str)> {
+fn next_attribute(tag: &str) -> Option<((&str, &str), &str)> {
     let (name, rest) = tag.split_once('=')?;
     let rest = rest.trim_start();
     let quote = rest.chars().next().filter(|quote| matches!(quote, '"' | '\''))?;
@@ -529,9 +529,9 @@ enum Paint {
     /// A colour of the file's own.
     Own(Color),
     /// `currentColor`: the colour given where the drawing is used.
-    Said,
+    CurrentColor,
     /// A gradient: its element.
-    Blend(usize),
+    Gradient(usize),
     /// A pattern: its element.
     Tiles(usize),
 }
@@ -540,7 +540,7 @@ enum Paint {
 fn plain(text: &str) -> Option<Paint> {
     match text.trim().to_ascii_lowercase().as_str() {
         "none" | "transparent" => Some(Paint::None),
-        "currentcolor" => Some(Paint::Said),
+        "currentcolor" => Some(Paint::CurrentColor),
         other => color(other).map(Paint::Own),
     }
 }
@@ -672,9 +672,9 @@ enum Ink {
     /// A colour of the file's own.
     Own(Color),
     /// The box's colour, at this opacity.
-    Said(f32),
+    CurrentColor(f32),
     /// A gradient: which kept one, and opacity.
-    Blend(u32, f32),
+    Gradient(u32, f32),
     /// A pattern: which kept tile, and opacity. (The tile is drawn just before the shape, on a
     /// block of its own on top while the shape is.)
     Tiles(u32, f32),
@@ -780,9 +780,9 @@ struct Aspect {
 
 impl Aspect {
     /// As written: `none`, or an alignment (`xMidYMid`) then `meet` or `slice`.
-    fn read(said: &str) -> Aspect {
-        let sits = |low: &str, high: &str| [0.5, 0.0, 1.0][said.contains(low) as usize + 2 * (said.contains(high) && !said.contains(low)) as usize];
-        Aspect { stretched: said.contains("none"), cut: said.contains("slice"), sits: [sits("xMin", "xMax"), sits("YMin", "YMax")] }
+    fn read(value: &str) -> Aspect {
+        let sits = |low: &str, high: &str| [0.5, 0.0, 1.0][value.contains(low) as usize + 2 * (value.contains(high) && !value.contains(low)) as usize];
+        Aspect { stretched: value.contains("none"), cut: value.contains("slice"), sits: [sits("xMin", "xMax"), sits("YMin", "YMax")] }
     }
 
     /// The transform bringing `view` of a space (left, top, width, height) into a box of `size`
@@ -820,7 +820,7 @@ enum Spread {
 
 /// A gradient as one shape is filled with it.
 #[derive(Clone, Copy)]
-struct Blend {
+struct Gradient {
     /// Which kept stops: colour and offset each.
     stops: [u32; 2],
     way: Way,
@@ -831,7 +831,7 @@ struct Blend {
     boxed: bool,
 }
 
-impl Blend {
+impl Gradient {
     /// Where a point lies along the gradient: 0 at its start, 1 at its end.
     fn along(&self, p: Point) -> f32 {
         let along = match self.way {
@@ -855,7 +855,7 @@ impl Blend {
 /// A cached picture of a drawing: size, `currentColor` used, pixels.
 struct Drawn {
     size: [usize; 2],
-    said: Color,
+    current_color: Color,
     pixels: Vec<u32>,
 }
 
@@ -887,7 +887,7 @@ pub(crate) struct Kept {
     pens: Vec<Pen>,
     /// All dash and gap lengths.
     dashes: Vec<f32>,
-    blends: Vec<Blend>,
+    gradients: Vec<Gradient>,
     stops: Vec<(f32, Color)>,
     tiles: Vec<Tile>,
     /// Boxes aligned with the picture that shapes are clipped to: left, top, right, bottom of
@@ -898,7 +898,7 @@ pub(crate) struct Kept {
     /// and a program carries those once it asks.)
     more: Option<Box<dyn std::any::Any>>,
     /// Whether any of it uses `currentColor`.
-    said: bool,
+    uses_current_color: bool,
     drawn: Vec<Drawn>,
 }
 
@@ -909,7 +909,7 @@ struct Reading<'a> {
     /// Elements to kept outlines.
     outlined: HashMap<usize, u32>,
     /// Gradients read, by element; none for one with no stops.
-    blended: HashMap<usize, Option<Blend>>,
+    gradients_read: HashMap<usize, Option<Gradient>>,
     /// Images read, by element: which kept one; none for one unreadable.
     pictured: HashMap<usize, Option<u32>>,
     /// System fonts letters were found in, each with the face and letter it was found for (0:
@@ -935,7 +935,7 @@ struct Reading<'a> {
     /// angle), and whether it is the start.
     corners: Vec<(usize, Point, f32, bool)>,
     /// The filter reader, where filters are read: in a file once a program asked (see
-    /// `read_filters`), not in glyphs.
+    /// `enable_filters`), not in glyphs.
     filtering: Option<&'static Filters>,
 }
 
@@ -1008,7 +1008,7 @@ struct Walk {
     /// The tile to begin once this is drawn: the next pattern's, for a shape filled with two.
     then: Option<u32>,
     /// A `<use>`'s width and height for what it brings, where given.
-    room: [Option<f32>; 2],
+    use_size: [Option<f32>; 2],
     /// The units the block's clips are in: the group's, or those of the shape walked again as
     /// itself.
     units: Table,
@@ -1035,7 +1035,7 @@ impl Walk {
             own: None,
             tiled: None,
             then: None,
-            room: [None; 2],
+            use_size: [None; 2],
             units: style.table,
             marking: false,
         }
@@ -1082,8 +1082,8 @@ impl Kept {
 
     /// The `currentColor` as the drawing takes it: none for a drawing that does not use it, so
     /// one picture serves any colour.
-    pub(crate) fn takes(&self, said: Color) -> Color {
-        if self.said { said } else { Color::NONE }
+    pub(crate) fn takes(&self, current_color: Color) -> Color {
+        if self.uses_current_color { current_color } else { Color::NONE }
     }
 
     /// The transform bringing the drawing's space into a picture of `size` pixels.
@@ -1091,49 +1091,49 @@ impl Kept {
         self.aspect.fit(self.view, size)
     }
 
-    /// Shows the drawing in `within` of a window with `said` as `currentColor`: the cached
-    /// picture at that size, drawn first if missing.
-    pub(crate) fn show(&mut self, within: Rect, said: Color, canvas: &mut Canvas) {
+    /// Shows the drawing in `within` of a window with `current_color` as `currentColor`: the
+    /// cached picture at that size, drawn first if missing.
+    pub(crate) fn show(&mut self, within: Rect, current_color: Color, canvas: &mut Canvas) {
         let scale = canvas.scale();
         let corner = |x: f32, y: f32| ((x * scale).round() as i32, (y * scale).round() as i32);
         let ((left, top), (right, bottom)) = (corner(within.x, within.y), corner(within.right(), within.bottom()));
         let size = [(right - left).max(0) as usize, (bottom - top).max(0) as usize];
         // One picture for any colour, if the drawing does not use it.
-        let said = self.takes(said);
+        let current_color = self.takes(current_color);
         if size[0].saturating_mul(size[1]) > MOST {
             let [_, first, _, last] = canvas.clip_pixels();
             let rows = [first.saturating_sub(top).clamp(0, size[1] as i32) as usize, last.saturating_sub(top).clamp(0, size[1] as i32) as usize];
-            let pixels = if rows[0] < rows[1] { self.draw(size, rows, said) } else { Vec::new() };
+            let pixels = if rows[0] < rows[1] { self.draw(size, rows, current_color) } else { Vec::new() };
             return canvas.pixels(&pixels, size[0], [left, top + rows[0] as i32], false);
         }
         if size[0] == 0 || size[1] == 0 {
             return;
         }
-        let kept = self.drawn.iter().position(|drawn| (drawn.size, drawn.said) == (size, said));
+        let kept = self.drawn.iter().position(|drawn| (drawn.size, drawn.current_color) == (size, current_color));
         let at = kept.unwrap_or_else(|| {
             // The oldest cached picture makes room once `KEPT` are cached.
             self.drawn.drain(..self.drawn.len().saturating_sub(KEPT - 1));
-            self.drawn.push(Drawn { size, said, pixels: self.draw(size, [0, size[1]], said) });
+            self.drawn.push(Drawn { size, current_color, pixels: self.draw(size, [0, size[1]], current_color) });
             self.drawn.len() - 1
         });
         canvas.pixels(&self.drawn[at].pixels, size[0], [left, top], false);
     }
 
-    /// Rows `rows[0]` to `rows[1]` of the drawing at `size` pixels with `said` as
+    /// Rows `rows[0]` to `rows[1]` of the drawing at `size` pixels with `current_color` as
     /// `currentColor`: premultiplied pixels.
-    fn draw(&self, size: [usize; 2], rows: [usize; 2], said: Color) -> Vec<u32> {
-        self.drawn_by(self.fit(size.map(|side| side as f32)), size[0], rows, said)
+    fn draw(&self, size: [usize; 2], rows: [usize; 2], current_color: Color) -> Vec<u32> {
+        self.drawn_by(self.fit(size.map(|side| side as f32)), size[0], rows, current_color)
     }
 
     /// A glyph drawing's pixels (see `glyph`), `size` pixels, where `place` maps font units to
     /// them.
-    pub(crate) fn glyph_pixels(&self, place: &Table, size: [usize; 2], said: Color) -> Vec<u32> {
-        self.drawn_by(both(place, &self.fit(self.size)), size[0], [0, size[1]], said)
+    pub(crate) fn glyph_pixels(&self, place: &Table, size: [usize; 2], current_color: Color) -> Vec<u32> {
+        self.drawn_by(both(place, &self.fit(self.size)), size[0], [0, size[1]], current_color)
     }
 
     /// Rows `rows[0]` to `rows[1]` of the drawing as `fit` brings it into a picture `wide`
     /// pixels wide.
-    fn drawn_by(&self, fit: Table, wide: usize, rows: [usize; 2], said: Color) -> Vec<u32> {
+    fn drawn_by(&self, fit: Table, wide: usize, rows: [usize; 2], current_color: Color) -> Vec<u32> {
         // Picture pixels per drawing pixel at the drawing's stated size: a non-scaling stroke
         // is that many pixels per one of its own.
         let zoom = ((fit[0] * fit[3]).abs() * self.view[2] * self.view[3] / (self.size[0] * self.size[1])).sqrt();
@@ -1143,7 +1143,7 @@ impl Kept {
         for item in &self.items {
             let top = blocks.len() - 1;
             match item {
-                Item::Shape(shape) => self.lay(shape, said, &mut blocks, &mut work),
+                Item::Shape(shape) => self.lay(shape, current_color, &mut blocks, &mut work),
                 Item::Begin => blocks.push(blocks[top].blank()),
                 Item::End(solid) => merge(&mut blocks, *solid),
                 Item::Cut(keep) => cut(&mut blocks, *keep),
@@ -1155,7 +1155,7 @@ impl Kept {
     }
 
     /// Filters the top block's content through a kept filter. (Only a program that asked for
-    /// filters keeps any: see `read_filters`.)
+    /// filters keeps any: see `enable_filters`.)
     fn filter(&self, filter: u32, block: &mut Block) {
         if let Some(filters) = FILTERS.get() {
             let Some(filter) = self.held().and_then(|more| more.filters.get(filter as usize)) else { return };
@@ -1165,7 +1165,7 @@ impl Kept {
 
     /// Draws one shape on the top block: fill, then stroke. (Where filled with patterns, their
     /// tiles lie on top: the stroke's over the fill's.)
-    fn lay(&self, shape: &Shape, said: Color, blocks: &mut Vec<Block>, work: &mut Work) {
+    fn lay(&self, shape: &Shape, current_color: Color, blocks: &mut Vec<Block>, work: &mut Work) {
         let tiled = |ink: Ink| matches!(ink, Ink::Tiles(..));
         let line_tile = if tiled(shape.line) && blocks.len() > 1 { blocks.pop() } else { None };
         let fill_tile = if tiled(shape.fill) && blocks.len() > 1 { blocks.pop() } else { None };
@@ -1185,7 +1185,7 @@ impl Kept {
         let place = shape.boxed.map(|boxed| self.boxes[boxed as usize]).map(|[left, top, right, bottom]| [through(&fit, pt(left, top)), through(&fit, pt(right, bottom))]);
         let place = place.map(|[a, b]| [a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)]);
         let mut canvas = Canvas::new(&mut block.pixels, wide, high, (0, top), 1.0);
-        if let Some(ink) = self.ready(shape.fill, said, (&table, &fit), fill_tile.as_ref()) {
+        if let Some(ink) = self.ready(shape.fill, current_color, (&table, &fit), fill_tile.as_ref()) {
             // Its outline clipped to the box is in pixels.
             let cut = place.map(|place| cut_to(path, &table, place));
             let (outline, fine, to_pixels) = match &cut {
@@ -1194,7 +1194,7 @@ impl Kept {
             };
             work.fill(&mut canvas, outline, fine, Transform(to_pixels), shape.even_odd, |x, y| ink.at(x, y));
         }
-        let Some(ink) = self.ready(shape.line, said, (&table, &fit), line_tile.as_ref()) else { return };
+        let Some(ink) = self.ready(shape.line, current_color, (&table, &fit), line_tile.as_ref()) else { return };
         // A non-scaling stroke is computed in fractions of a picture pixel, not of a shape
         // unit: the outline is transformed there first (`there`), and the stroke's edges
         // brought back from where it was computed (`back`).
@@ -1213,15 +1213,15 @@ impl Kept {
 
     /// Prepares a paint to fill a shape whose units the first transform maps to pixels (the
     /// second maps drawing units), with its drawn tile for a pattern. Nothing for no paint.
-    fn ready<'b>(&'b self, ink: Ink, said: Color, (table, fit): (&Table, &Table), tile: Option<&'b Block>) -> Option<Ready<'b>> {
+    fn ready<'b>(&'b self, ink: Ink, current_color: Color, (table, fit): (&Table, &Table), tile: Option<&'b Block>) -> Option<Ready<'b>> {
         match ink {
             Ink::None => None,
             Ink::Own(color) => Some(Ready::Flat(color)),
-            Ink::Said(solid) => Some(Ready::Flat(said.alpha(solid))),
-            Ink::Blend(blend, solid) => {
-                let blend = &self.blends[blend as usize];
+            Ink::CurrentColor(solid) => Some(Ready::Flat(current_color.with_alpha(solid))),
+            Ink::Gradient(blend, solid) => {
+                let blend = &self.gradients[blend as usize];
                 let stops = &self.stops[blend.stops[0] as usize..blend.stops[1] as usize];
-                undone(&both(table, &blend.table)).map(|back| Ready::Blend(blend, stops, solid, back))
+                undone(&both(table, &blend.table)).map(|back| Ready::Gradient(blend, stops, solid, back))
             }
             Ink::Tiles(kept, solid) => {
                 let (kept, tile) = (&self.tiles[kept as usize], tile?);
@@ -1249,7 +1249,7 @@ impl Kept {
 /// (an image).
 enum Ready<'a> {
     Flat(Color),
-    Blend(&'a Blend, &'a [(f32, Color)], f32, Table),
+    Gradient(&'a Gradient, &'a [(f32, Color)], f32, Table),
     Tiles(Cow<'a, [u32]>, usize, Table, f32, bool),
 }
 
@@ -1261,8 +1261,8 @@ impl Ready<'_> {
         let middle = pt(x as f32 + 0.5, y as f32 + 0.5);
         match self {
             Ready::Flat(color) => *color,
-            Ready::Blend(blend, stops, solid, back) => color_at(stops, blend.along(through(back, middle))).alpha(*solid),
-            Ready::Tiles(pixels, wide, back, solid, again) => Color(unmultiplied(tiled(pixels, *wide, through(back, middle), *again))).alpha(*solid),
+            Ready::Gradient(blend, stops, solid, back) => color_at(stops, blend.along(through(back, middle))).with_alpha(*solid),
+            Ready::Tiles(pixels, wide, back, solid, again) => Color(unmultiplied(tiled(pixels, *wide, through(back, middle), *again))).with_alpha(*solid),
         }
     }
 }
@@ -1466,15 +1466,15 @@ impl<'a> Reading<'a> {
             Some((id, _)) => *file.named.get(id)?,
             None => root,
         };
-        let side = |name: &str| file.say(root, name).and_then(|text| length(text, f32::NAN)).filter(|side| *side > 0.0);
+        let side = |name: &str| file.attribute(root, name).and_then(|text| length(text, f32::NAN)).filter(|side| *side > 0.0);
         let (wide, high) = (side("width"), side("height"));
         // The view: as `viewBox` says, else from the origin to its size (300 by 150 when
         // unstated, or a glyph's em).
-        let said: Vec<f32> = file.say(root, "viewBox").map(|said| numbers(said).take(5).collect()).unwrap_or_default();
-        let unsaid = glyph.map_or([300.0, 150.0], |(_, em)| [em, em]);
-        let view = match said[..] {
+        let stated: Vec<f32> = file.attribute(root, "viewBox").map(|value| numbers(value).take(5).collect()).unwrap_or_default();
+        let fallback = glyph.map_or([300.0, 150.0], |(_, em)| [em, em]);
+        let view = match stated[..] {
             [left, top, across, down] if across > 0.0 && down > 0.0 => [left, top, across, down],
-            _ => [0.0, 0.0, wide.unwrap_or(unsaid[0]), high.unwrap_or(unsaid[1])],
+            _ => [0.0, 0.0, wide.unwrap_or(fallback[0]), high.unwrap_or(fallback[1])],
         };
         let [_, _, across, down] = view;
         if !view.iter().all(|side| side.is_finite()) {
@@ -1482,17 +1482,31 @@ impl<'a> Reading<'a> {
         }
         // An unstated side follows from the other and the view's aspect.
         let size = match glyph {
-            Some(_) => [wide.unwrap_or(unsaid[0]), high.unwrap_or(unsaid[1])],
+            Some(_) => [wide.unwrap_or(fallback[0]), high.unwrap_or(fallback[1])],
             None => [wide.or(high.map(|high| high * across / down)).unwrap_or(across), high.or(wide.map(|wide| wide * down / across)).unwrap_or(down)],
         };
-        let aspect = Aspect::read(file.say(root, "preserveAspectRatio").unwrap_or(""));
-        let (items, paths, pens, dashes, blends, stops, tiles) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let kept = Kept { size, view, aspect, items, paths, pens, dashes, blends, stops, tiles, boxes: Vec::new(), more: None, said: false, drawn: Vec::new() };
+        let aspect = Aspect::read(file.attribute(root, "preserveAspectRatio").unwrap_or(""));
+        let kept = Kept {
+            size,
+            view,
+            aspect,
+            items: Vec::new(),
+            paths: Vec::new(),
+            pens: Vec::new(),
+            dashes: Vec::new(),
+            gradients: Vec::new(),
+            stops: Vec::new(),
+            tiles: Vec::new(),
+            boxes: Vec::new(),
+            more: None,
+            uses_current_color: false,
+            drawn: Vec::new(),
+        };
         let mut reading = Reading {
             file,
             kept,
             outlined: HashMap::new(),
-            blended: HashMap::new(),
+            gradients_read: HashMap::new(),
             pictured: HashMap::new(),
             fonts: Vec::new(),
             files: Vec::new(),
@@ -1531,7 +1545,7 @@ impl<'a> Reading<'a> {
                 continue;
             }
             let (at, around, brought, itself) = (walk.at, walk.style, walk.used == Some(walk.at), walk.own == Some(walk.at));
-            let (given, tiled) = (if brought { walk.room } else { [None; 2] }, walk.tiled.filter(|(own, _)| *own == at).map(|(_, tiles)| tiles));
+            let (given, tiled) = (if brought { walk.use_size } else { [None; 2] }, walk.tiled.filter(|(own, _)| *own == at).map(|(_, tiles)| tiles));
             let (name, end) = (self.file.elements[at].name, self.file.elements[at].end);
             walk.at = end;
             let mut style = self.styled(at, &around);
@@ -1551,14 +1565,14 @@ impl<'a> Reading<'a> {
             // A `<use>` and a nested `<svg>` position what they hold; a nested viewport is
             // fitted to its box and clipped at its edges.
             let [.., wide, high] = self.kept.view;
-            let said = |name: &str, whole: f32| self.file.say(at, name).and_then(|text| length(text, whole));
+            let length_of = |name: &str, whole: f32| self.file.attribute(at, name).and_then(|text| length(text, whole));
             if matches!(name, "use" | "svg") && at != root {
-                style.table = both(&style.table, &[1.0, 0.0, 0.0, 1.0, said("x", wide).unwrap_or(0.0), said("y", high).unwrap_or(0.0)]);
+                style.table = both(&style.table, &[1.0, 0.0, 0.0, 1.0, length_of("x", wide).unwrap_or(0.0), length_of("y", high).unwrap_or(0.0)]);
             }
-            let size = [given[0].or(said("width", wide)).unwrap_or(wide), given[1].or(said("height", high)).unwrap_or(high)];
+            let size = [given[0].or(length_of("width", wide)).unwrap_or(wide), given[1].or(length_of("height", high)).unwrap_or(high)];
             // A `<use>` gives the size of what it brings, for a `<symbol>` that fills it.
-            let brings = if name == "use" { [said("width", wide), said("height", high)] } else { [None; 2] };
-            let mut room = if (name == "svg" && at != root) || (name == "symbol" && brought) { self.room(at, size, &mut style) } else { None };
+            let brings = if name == "use" { [length_of("width", wide), length_of("height", high)] } else { [None; 2] };
+            let mut room = if (name == "svg" && at != root) || (name == "symbol" && brought) { self.fit_viewport(at, size, &mut style) } else { None };
             if itself {
                 (style.clip, style.mask, style.opacity, style.filter) = (None, None, 1.0, None);
             }
@@ -1595,7 +1609,7 @@ impl<'a> Reading<'a> {
                 Some(_) => self.begin(&style),
                 None => style.faded *= style.opacity,
             }
-            walks.push(Walk { used, layer, cuts, filter, first, room: brings, ..Walk::through(from, to, style) });
+            walks.push(Walk { used, layer, cuts, filter, first, use_size: brings, ..Walk::through(from, to, style) });
         }
     }
 
@@ -1666,7 +1680,7 @@ impl<'a> Reading<'a> {
             // A clip path is in the units of what it clips, or its bounding box.
             Cut::Clip(at) => {
                 let mut style = self.styled(at, &Style { clipping: true, table, share: walk.style.share, ..Style::default() });
-                let boxed = self.file.say(at, "clipPathUnits") == Some("objectBoundingBox");
+                let boxed = self.file.attribute(at, "clipPathUnits") == Some("objectBoundingBox");
                 style.table = both(&style.table, &if boxed { self.box_of(walk) } else { SAME });
                 Walk { keep: Some(Keep::Solid), first, ..Walk::through(at + 1, self.file.elements[at].end, style) }
             }
@@ -1675,13 +1689,13 @@ impl<'a> Reading<'a> {
             // bounding box.
             Cut::Mask(at) => {
                 let ([.., wide, high], square) = (self.kept.view, self.box_of(walk));
-                let boxed = self.file.say(at, "maskUnits") != Some("userSpaceOnUse");
+                let boxed = self.file.attribute(at, "maskUnits") != Some("userSpaceOnUse");
                 let [wide, high] = if boxed { [1.0; 2] } else { [wide, high] };
-                let side = |name: &str, whole: f32, unsaid: f32| self.file.say(at, name).and_then(|text| length(text, whole)).unwrap_or(unsaid * whole);
+                let side = |name: &str, whole: f32, fallback: f32| self.file.attribute(at, name).and_then(|text| length(text, whole)).unwrap_or(fallback * whole);
                 let place = [side("x", wide, -0.1), side("y", high, -0.1), side("width", wide, 1.2), side("height", high, 1.2)];
                 let place = if boxed { [square[4] + place[0] * square[0], square[5] + place[1] * square[3], place[2] * square[0], place[3] * square[3]] } else { place };
                 let mut style = self.styled(at, &Style { table, share: walk.style.share, ..Style::default() });
-                let inside = self.file.say(at, "maskContentUnits") == Some("objectBoundingBox");
+                let inside = self.file.attribute(at, "maskContentUnits") == Some("objectBoundingBox");
                 let back = if inside { undone(&square) } else { Some(SAME) };
                 style.table = both(&style.table, &[square, SAME][(!inside) as usize]);
                 let place = back.map(|back| [through(&back, pt(place[0], place[1])), through(&back, pt(place[0] + place[2], place[1] + place[3]))]);
@@ -1718,7 +1732,7 @@ impl<'a> Reading<'a> {
             // elements could stand for any number of full-picture blurs.
             let [l, t, r, b] = filter.bounds();
             let share = ((r - l) * (b - t) * walk.style.share[0]).min(walk.style.share[1]);
-            let cost = share * (filter::FIXED + filter.steps.iter().map(|step| filter::weight(&step.kind)).sum::<f32>());
+            let cost = share * (svg_filters::FIXED + filter.steps.iter().map(|step| svg_filters::weight(&step.kind)).sum::<f32>());
             if self.passes + cost > passes(self.file.text.len()) {
                 return;
             }
@@ -1736,26 +1750,26 @@ impl<'a> Reading<'a> {
     fn filter_of(&mut self, at: usize, walk: &Walk, square: &Table) -> Filter {
         let ([.., wide, high], end) = (self.kept.view, self.file.elements[at].end);
         let [bw, bh, bx, by] = [square[0], square[3], square[4], square[5]];
-        let say = |name: &str| self.file.say(at, name);
+        let attr = |name: &str| self.file.attribute(at, name);
         // Its region: in bounding-box fractions (by default 10% larger each way), or in units.
         let [x, y, w, h] = [bx, by, bw, bh].map(f64::from);
-        let region = match say("filterUnits") != Some("userSpaceOnUse") {
+        let region = match attr("filterUnits") != Some("userSpaceOnUse") {
             true => {
-                let part = |name: &str, unsaid: f32| f64::from(say(name).and_then(share).unwrap_or(unsaid));
+                let part = |name: &str, fallback: f32| f64::from(attr(name).and_then(share).unwrap_or(fallback));
                 [x + part("x", -0.1) * w, y + part("y", -0.1) * h, part("width", 1.2) * w, part("height", 1.2) * h]
             }
             false => {
-                let side = |name: &str, whole: f32, unsaid: f32| say(name).and_then(|text| exact_length(text, whole.into())).unwrap_or(f64::from(unsaid) * f64::from(whole));
+                let side = |name: &str, whole: f32, fallback: f32| attr(name).and_then(|text| exact_length(text, whole.into())).unwrap_or(f64::from(fallback) * f64::from(whole));
                 [side("x", wide, -0.1), side("y", high, -0.1), side("width", wide, 1.2), side("height", high, 1.2)]
             }
         };
-        let in_box = say("primitiveUnits") == Some("objectBoundingBox");
+        let in_box = attr("primitiveUnits") == Some("objectBoundingBox");
         let style = self.styled(at, &Style::default());
         let (mut steps, mut results, mut child) = (Vec::new(), Vec::new(), at + 1);
         while child < end && !self.spent() {
             self.steps += self.file.elements[child].end - child;
             if let Some(step) = self.step(child, &style, (in_box, [bx, by, bw, bh]), (&results, steps.len())) {
-                results.extend(self.file.say(child, "result").map(|result| (result.trim(), steps.len())));
+                results.extend(self.file.attribute(child, "result").map(|result| (result.trim(), steps.len())));
                 steps.push(step);
             }
             child = self.file.elements[child].end;
@@ -1767,44 +1781,46 @@ impl<'a> Reading<'a> {
     /// bounding-box fractions (`in_box`; the box's left, top, width, height), else units, after
     /// the steps already made (`made`, with their result names). Nothing for a non-step, or a
     /// malformed step (librsvg skips those too).
-    fn step(&mut self, at: usize, around: &Style, (in_box, [bx, by, bw, bh]): (bool, [f32; 4]), (results, made): (&[(&'a str, usize)], usize)) -> Option<filter::Step> {
+    fn step(&mut self, at: usize, around: &Style, (in_box, [bx, by, bw, bh]): (bool, [f32; 4]), (results, made): (&[(&'a str, usize)], usize)) -> Option<svg_filters::Step> {
         let style = self.styled(at, around);
         let (file, [.., wide, high]) = (&self.file, self.kept.view);
-        let say = |name: &str| file.say(at, name);
-        let input = |name: &str| input_of(say(name).map(str::trim), results, made);
+        let attr = |name: &str| file.attribute(at, name);
+        let input = |name: &str| input_of(attr(name).map(str::trim), results, made);
         // Lengths and subregion: in bounding-box fractions, or units.
         let scaled = |[x, y]: [f32; 2]| if in_box { [x * bw, y * bh] } else { [x, y] };
-        let pair = |name: &str, unsaid: f32| {
-            let said: Vec<f32> = say(name).map(|text| numbers(text).take(2).collect()).unwrap_or_default();
-            [said.first().copied().unwrap_or(unsaid), said.get(1).or(said.first()).copied().unwrap_or(unsaid)]
+        let pair = |name: &str, fallback: f32| {
+            let stated: Vec<f32> = attr(name).map(|text| numbers(text).take(2).collect()).unwrap_or_default();
+            [stated.first().copied().unwrap_or(fallback), stated.get(1).or(stated.first()).copied().unwrap_or(fallback)]
         };
-        let one = |name: &str, unsaid: f32| say(name).and_then(number).map_or(unsaid, |(number, _)| number);
+        let one = |name: &str, fallback: f32| attr(name).and_then(number).map_or(fallback, |(number, _)| number);
         let place = |name: &str, axis: usize, start: bool| match in_box {
-            true => say(name).and_then(share).map(|part| f64::from([bx, by][axis]) * start as u8 as f64 + f64::from(part) * f64::from([bw, bh][axis])),
-            false => say(name).and_then(|text| exact_length(text, [wide, high][axis].into())),
+            true => attr(name).and_then(share).map(|part| f64::from([bx, by][axis]) * start as u8 as f64 + f64::from(part) * f64::from([bw, bh][axis])),
+            false => attr(name).and_then(|text| exact_length(text, [wide, high][axis].into())),
         };
         let flood = match style.flood.0 {
             Paint::Own(color) => color,
             _ => style.ink.unwrap_or(Color::BLACK),
         };
-        let flood = flood.alpha(style.flood.1);
+        let flood = flood.with_alpha(style.flood.1);
         let kind = match file.elements[at].name {
             "feGaussianBlur" => Kind::Blur(scaled(pair("stdDeviation", 0.0)).map(|deviation| deviation.max(0.0))),
             "feOffset" => Kind::Offset(scaled([one("dx", 0.0), one("dy", 0.0)])),
             "feFlood" => Kind::Flood(flood),
-            "feMerge" => Kind::Merge(file.inside(at).filter(|node| file.elements[*node].name == "feMergeNode").map(|node| input_of(file.say(node, "in").map(str::trim), results, made)).collect()),
-            "feComposite" => Kind::Composite(operator(say("operator").unwrap_or("over").trim(), [one("k1", 0.0), one("k2", 0.0), one("k3", 0.0), one("k4", 0.0)])),
-            "feBlend" => Kind::Blend(Mode::named(say("mode").unwrap_or("normal").trim()).unwrap_or(Mode::Normal)),
-            "feColorMatrix" => Kind::Matrix(matrix(say("type").unwrap_or("matrix").trim(), say("values"))?),
+            "feMerge" => {
+                Kind::Merge(file.inside(at).filter(|node| file.elements[*node].name == "feMergeNode").map(|node| input_of(file.attribute(node, "in").map(str::trim), results, made)).collect())
+            }
+            "feComposite" => Kind::Composite(operator(attr("operator").unwrap_or("over").trim(), [one("k1", 0.0), one("k2", 0.0), one("k3", 0.0), one("k4", 0.0)])),
+            "feBlend" => Kind::Blend(Mode::named(attr("mode").unwrap_or("normal").trim()).unwrap_or(Mode::Normal)),
+            "feColorMatrix" => Kind::Matrix(matrix(attr("type").unwrap_or("matrix").trim(), attr("values"))?),
             "feComponentTransfer" => Kind::Transfer(Box::new(file.functions(at))),
             "feDropShadow" => Kind::Shadow(scaled([one("dx", 2.0), one("dy", 2.0)]), scaled(pair("stdDeviation", 2.0)).map(|deviation| deviation.max(0.0)), flood),
-            "feMorphology" => Kind::Morphology(say("operator").map(str::trim) == Some("dilate"), scaled(pair("radius", 0.0))),
+            "feMorphology" => Kind::Morphology(attr("operator").map(str::trim) == Some("dilate"), scaled(pair("radius", 0.0))),
             "feTile" => Kind::Tile,
             "feTurbulence" => {
                 let base = pair("baseFrequency", 0.0);
-                let (fractal, stitch) = (say("type").map(str::trim) == Some("fractalNoise"), say("stitchTiles").map(str::trim) == Some("stitch"));
+                let (fractal, stitch) = (attr("type").map(str::trim) == Some("fractalNoise"), attr("stitchTiles").map(str::trim) == Some("stitch"));
                 (base[0] >= 0.0 && base[1] >= 0.0).then_some(())?;
-                Kind::Noise(Noise { base, octaves: one("numOctaves", 1.0).clamp(0.0, filter::OCTAVES as f32) as u32, seed: one("seed", 0.0), stitch, fractal })
+                Kind::Noise(Noise { base, octaves: one("numOctaves", 1.0).clamp(0.0, svg_filters::OCTAVES as f32) as u32, seed: one("seed", 0.0), stitch, fractal })
             }
             // What is not read gives nothing, or passes its input through where it only moves
             // it.
@@ -1813,7 +1829,7 @@ impl<'a> Reading<'a> {
             _ => return None,
         };
         let place = [place("x", 0, true), place("y", 1, true), place("width", 0, false), place("height", 1, false)];
-        Some(filter::Step { kind, inputs: [input("in"), input("in2")], place, space: style.space })
+        Some(svg_filters::Step { kind, inputs: [input("in"), input("in2")], place, space: style.space })
     }
 
     /// A box clip's box (left, top, width, height), with the transform from its units to
@@ -1880,10 +1896,10 @@ impl<'a> Reading<'a> {
     /// path.
     fn clip_box(&mut self, at: usize, style: &Style) -> Option<[f32; 4]> {
         let only = at + 1;
-        if self.file.elements[at].end != at + 2 || self.file.say(at, "clipPathUnits") == Some("objectBoundingBox") {
+        if self.file.elements[at].end != at + 2 || self.file.attribute(at, "clipPathUnits") == Some("objectBoundingBox") {
             return None;
         }
-        let round = ["rx", "ry"].iter().any(|name| self.file.say(only, name).and_then(number).is_some_and(|(round, _)| round > 0.0));
+        let round = ["rx", "ry"].iter().any(|name| self.file.attribute(only, name).and_then(number).is_some_and(|(round, _)| round > 0.0));
         let clipping = self.styled(at, &Style { clipping: true, ..*style });
         let rect = self.styled(only, &clipping);
         let [across, b, c, down, left, top] = both(&undone(&style.table)?, &rect.table);
@@ -1891,7 +1907,7 @@ impl<'a> Reading<'a> {
             return None;
         }
         let [.., wide, high] = self.kept.view;
-        let side = |name: &str, whole: f32| self.file.say(only, name).and_then(|text| length(text, whole)).unwrap_or(0.0);
+        let side = |name: &str, whole: f32| self.file.attribute(only, name).and_then(|text| length(text, whole)).unwrap_or(0.0);
         let [x, y, w, h] = [side("x", wide), side("y", high), side("width", wide), side("height", high)];
         Some([across * x + left, down * y + top, across * w.max(0.0), down * h.max(0.0)])
     }
@@ -1899,10 +1915,10 @@ impl<'a> Reading<'a> {
     /// Fits a nested viewport (an inner `<svg>`, or a `<symbol>` a `<use>` brings) into its
     /// `size` box: its `viewBox` into the box per `preserveAspectRatio`. Gives back the box in
     /// its own units, where it is clipped: none where `overflow` is visible.
-    fn room(&self, at: usize, size: [f32; 2], style: &mut Style) -> Option<[f32; 4]> {
-        let view: Vec<f32> = self.file.say(at, "viewBox").map(|said| numbers(said).take(5).collect()).unwrap_or_default();
+    fn fit_viewport(&self, at: usize, size: [f32; 2], style: &mut Style) -> Option<[f32; 4]> {
+        let view: Vec<f32> = self.file.attribute(at, "viewBox").map(|value| numbers(value).take(5).collect()).unwrap_or_default();
         let fit = match view[..] {
-            [left, top, across, down] if across > 0.0 && down > 0.0 => Aspect::read(self.file.say(at, "preserveAspectRatio").unwrap_or("")).fit([left, top, across, down], size),
+            [left, top, across, down] if across > 0.0 && down > 0.0 => Aspect::read(self.file.attribute(at, "preserveAspectRatio").unwrap_or("")).fit([left, top, across, down], size),
             _ => SAME,
         };
         style.table = both(&style.table, &fit);
@@ -1916,37 +1932,37 @@ impl<'a> Reading<'a> {
         let black = (Paint::Own(Color::BLACK), 1.0);
         let mut style = Style { opacity: 1.0, gone: false, stop: black, clip: None, mask: None, overflows: false, filter: None, flood: black, ..*around };
         style.pen.fixed = false;
-        let [first, last] = self.file.elements[at].said;
+        let [first, last] = self.file.elements[at].attributes;
         self.steps += last - first + RULE * self.file.rules.len();
-        for said in first..last {
-            let (name, value) = self.file.said[said];
-            self.say(&mut style, name, value);
+        for index in first..last {
+            let (name, value) = self.file.attributes[index];
+            self.take_property(&mut style, name, value);
         }
         for rule in 0..self.file.rules.len() {
-            let (whom, says) = self.file.rules[rule];
+            let (whom, declarations) = self.file.rules[rule];
             if self.file.is_for(whom, at) {
-                self.say_all(&mut style, says);
+                self.take_declarations(&mut style, declarations);
             }
         }
-        if let Some(says) = self.file.say(at, "style") {
-            self.say_all(&mut style, says);
+        if let Some(declarations) = self.file.attribute(at, "style") {
+            self.take_declarations(&mut style, declarations);
         }
         style
     }
 
     /// Takes in a declaration list: `name: value; name: value`.
-    fn say_all(&mut self, style: &mut Style, says: &str) {
-        for (name, value) in says.split(';').filter_map(|one| one.split_once(':')) {
-            self.say(style, name.trim(), value);
+    fn take_declarations(&mut self, style: &mut Style, declarations: &str) {
+        for (name, value) in declarations.split(';').filter_map(|one| one.split_once(':')) {
+            self.take_property(style, name.trim(), value);
         }
     }
 
     /// Takes in one property. (Unknown names say nothing.)
-    fn say(&mut self, style: &mut Style, name: &str, value: &str) {
+    fn take_property(&mut self, style: &mut Style, name: &str, value: &str) {
         let value = value.trim().trim_end_matches("!important").trim_end();
         let [.., wide, high] = self.kept.view;
-        let part = |unsaid: f32| share(value).unwrap_or(unsaid).clamp(0.0, 1.0);
-        let thick = |unsaid: f32| length(value, ((wide * wide + high * high) / 2.0).sqrt()).unwrap_or(unsaid);
+        let part = |fallback: f32| share(value).unwrap_or(fallback).clamp(0.0, 1.0);
+        let thick = |fallback: f32| length(value, ((wide * wide + high * high) / 2.0).sqrt()).unwrap_or(fallback);
         match name {
             "fill" => style.paints[0] = self.paint(value).unwrap_or(style.paints[0]),
             "stroke" => style.paints[1] = self.paint(value).unwrap_or(style.paints[1]),
@@ -2000,7 +2016,7 @@ impl<'a> Reading<'a> {
         let Some(link) = text.strip_prefix("url(") else { return plain(text) };
         let or_else = link.split_once(')').map_or("", |(_, rest)| rest);
         let to = self.pointed_to(text, &["linearGradient", "radialGradient", "pattern"]);
-        let paint = to.map(|at| if self.file.elements[at].name == "pattern" { Paint::Tiles(at) } else { Paint::Blend(at) });
+        let paint = to.map(|at| if self.file.elements[at].name == "pattern" { Paint::Tiles(at) } else { Paint::Gradient(at) });
         paint.or_else(|| plain(or_else)).or(Some(Paint::None))
     }
 
@@ -2031,14 +2047,14 @@ impl<'a> Reading<'a> {
     /// invisible one is not kept.)
     fn shape(&mut self, at: usize, name: &str, style: &Style, tiles: [Option<u32>; 2]) -> Option<Walk> {
         if name == "image" {
-            // Once a program asks: see `read_pictures`.
+            // Once a program asks: see `enable_images`.
             if let Some(picture) = PICTURES.get() {
                 picture(self, at, style);
             }
             return None;
         }
         if name == "text" {
-            // Once a program asks: see `read_text`.
+            // Once a program asks: see `enable_text`.
             let pieces = TEXT.get().map(|text| text(self, at, style)).unwrap_or_default();
             pieces.into_iter().for_each(|(path, style)| self.keep(path, &style, [None; 2]));
             return None;
@@ -2064,9 +2080,9 @@ impl<'a> Reading<'a> {
         let picture = &self.kept.more().pictures[kept as usize];
         let [wide, high] = [picture.wide as f32, (picture.pixels.len() / picture.wide) as f32];
         let [.., across, down] = self.kept.view;
-        let said = |name: &str, whole: f32| self.file.say(at, name).and_then(|text| length(text, whole));
-        let [x, y, w, h] = [said("x", across).unwrap_or(0.0), said("y", down).unwrap_or(0.0), said("width", across).unwrap_or(wide), said("height", down).unwrap_or(high)];
-        let place = both(&[1.0, 0.0, 0.0, 1.0, x, y], &Aspect::read(self.file.say(at, "preserveAspectRatio").unwrap_or("")).fit([0.0, 0.0, wide, high], [w, h]));
+        let length_of = |name: &str, whole: f32| self.file.attribute(at, name).and_then(|text| length(text, whole));
+        let [x, y, w, h] = [length_of("x", across).unwrap_or(0.0), length_of("y", down).unwrap_or(0.0), length_of("width", across).unwrap_or(wide), length_of("height", down).unwrap_or(high)];
+        let place = both(&[1.0, 0.0, 0.0, 1.0, x, y], &Aspect::read(self.file.attribute(at, "preserveAspectRatio").unwrap_or("")).fit([0.0, 0.0, wide, high], [w, h]));
         // It shows where the picture and its box overlap.
         let [left, top] = [place[4].max(x), place[5].max(y)];
         let [right, bottom] = [(place[4] + place[0] * wide).min(x + w), (place[5] + place[3] * high).min(y + h)];
@@ -2085,7 +2101,7 @@ impl<'a> Reading<'a> {
     /// Reads and keeps an `<image>`'s picture: which kept one. Nothing if it holds none
     /// readable. (Reading costs a step per 64 pixels.)
     fn picture_of(&mut self, at: usize) -> Option<u32> {
-        let href = self.file.say(at, "href").or_else(|| self.file.say(at, "xlink:href"))?;
+        let href = self.file.attribute(at, "href").or_else(|| self.file.attribute(at, "xlink:href"))?;
         let (wide, pixels) = crate::ui::read_picture(&data(href)?)?;
         self.steps += pixels.len() / 64;
         let pixels = pixels.into_iter().map(premultiplied).collect();
@@ -2131,8 +2147,8 @@ impl<'a> Reading<'a> {
         // covered again to clip it.
         let worth = |ink: Ink| match ink {
             Ink::None => 0.0,
-            Ink::Own(_) | Ink::Said(_) => 1.0,
-            Ink::Blend(..) => BLENDS,
+            Ink::Own(_) | Ink::CurrentColor(_) => 1.0,
+            Ink::Gradient(..) => BLENDS,
             Ink::Tiles(..) | Ink::Picture(..) => TILES,
         };
         let boxed_line = if boxed.is_some() && line != Ink::None { 2.0 * style.share[1] } else { 0.0 };
@@ -2180,7 +2196,8 @@ impl<'a> Reading<'a> {
     /// positions (x, y, dx, dy).
     fn piece(&mut self, at: usize, style: Style, around: usize) -> Piece {
         let [.., wide, high] = self.kept.view;
-        let list = |name: &str, whole: f32| self.file.say(at, name).map(|said| said.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|one| length(one, whole)).collect()).unwrap_or_default();
+        let list =
+            |name: &str, whole: f32| self.file.attribute(at, name).map(|value| value.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|one| length(one, whole)).collect()).unwrap_or_default();
         let places = [list("x", wide), list("y", high), list("dx", wide), list("dy", high)];
         Piece { at, style, around, places, letters: 0, outline: Path::new() }
     }
@@ -2208,22 +2225,22 @@ impl<'a> Reading<'a> {
         self.steps += LETTER;
         // Its given position: from the piece or the nearest ancestor piece giving one for that
         // letter index. Every piece it is in counts one more letter.
-        let mut said = [None; 4];
+        let mut given = [None; 4];
         let mut inside = Some(piece);
         while let Some(at) = inside {
             let own = &mut pieces[at];
-            said = std::array::from_fn(|n| said[n].or(own.places[n].get(own.letters).copied()));
+            given = std::array::from_fn(|n| given[n].or(own.places[n].get(own.letters).copied()));
             own.letters += 1;
             inside = (at != 0).then_some(own.around);
         }
         // A letter with a position of its own starts a chunk: the previous one is placed by its
         // anchor.
-        if said[0].is_some() || said[1].is_some() {
+        if given[0].is_some() || given[1].is_some() {
             setting.end(pieces);
-            setting.pen = pt(said[0].unwrap_or(setting.pen.x), said[1].unwrap_or(setting.pen.y));
+            setting.pen = pt(given[0].unwrap_or(setting.pen.x), given[1].unwrap_or(setting.pen.y));
             setting.start = setting.pen.x;
         }
-        setting.pen = pt(setting.pen.x + said[2].unwrap_or(0.0), setting.pen.y + said[3].unwrap_or(0.0));
+        setting.pen = pt(setting.pen.x + given[2].unwrap_or(0.0), setting.pen.y + given[3].unwrap_or(0.0));
         let style = pieces[piece].style;
         let face = self.face(style.family, style.weight, style.italic);
         let Some(font) = self.font(face, letter) else { return };
@@ -2246,7 +2263,7 @@ impl<'a> Reading<'a> {
     /// installed family, or a generic one the system resolves (`serif`, `sans-serif`,
     /// `monospace`); else the last. (Each looked up once.)
     fn face(&mut self, family: [u32; 2], weight: u16, italic: bool) -> Face {
-        if let Some((.., face)) = self.faces.iter().find(|(said, heavy, leans, _)| (*said, *heavy, *leans) == (family, weight, italic)) {
+        if let Some((.., face)) = self.faces.iter().find(|(named, heavy, leans, _)| (*named, *heavy, *leans) == (family, weight, italic)) {
             return *face;
         }
         // Past the lookup budget the system is not asked whether it has a family: see
@@ -2255,7 +2272,7 @@ impl<'a> Reading<'a> {
         let names: Vec<&str> =
             self.file.text.get(family[0] as usize..family[1] as usize).unwrap_or("").split(',').map(|name| name.trim().trim_matches(['"', '\''])).filter(|name| !name.is_empty()).collect();
         let standing = |name: &str| ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui"].contains(&name.to_ascii_lowercase().as_str());
-        let has = |name: &str| standing(name) || (looks && !crate::fonts::styles(name).is_empty());
+        let has = |name: &str| standing(name) || (looks && !crate::system_fonts::styles(name).is_empty());
         let name = names.iter().copied().find(|name| has(name)).or(names.last().copied()).unwrap_or("sans-serif");
         let face = Face::named(name).weight(weight);
         let face = if italic { face.italic() } else { face };
@@ -2295,7 +2312,7 @@ impl<'a> Reading<'a> {
             return at;
         }
         // Past the lookup budget a letter has no font: see `LOOKUPS`.
-        let file = if self.looks() { crate::fonts::file_for(face, if letter == '\0' { 'a' } else { letter }) } else { None };
+        let file = if self.looks() { crate::system_fonts::file_for(face, if letter == '\0' { 'a' } else { letter }) } else { None };
         // A file found before for another letter is kept once: one copy per letter the face
         // lacks would come to gigabytes.
         let same = |kept: &FontFile, file: &FontFile| kept.start == file.start && kept.varied.is_none() && kept.bytes().0 == file.bytes().0;
@@ -2413,24 +2430,24 @@ impl<'a> Reading<'a> {
         while let Some(after) = self.file.linked(line[line.len() - 1]).filter(|after| line.len() < 8 && !line.contains(after) && self.file.elements[*after].name == "pattern") {
             line.push(after);
         }
-        let say = |name: &str| line.iter().find_map(|at| self.file.say(*at, name));
+        let attr = |name: &str| line.iter().find_map(|at| self.file.attribute(*at, name));
         let [.., wide, high] = self.kept.view;
         // Tile position and size: in bounding-box fractions, or units.
-        let side = |name: &str, whole: f32| say(name).and_then(|text| length(text, whole)).unwrap_or(0.0);
-        let [x, y, w, h] = match say("patternUnits") != Some("userSpaceOnUse") {
+        let side = |name: &str, whole: f32| attr(name).and_then(|text| length(text, whole)).unwrap_or(0.0);
+        let [x, y, w, h] = match attr("patternUnits") != Some("userSpaceOnUse") {
             true => [left + side("x", 1.0) * across, top + side("y", 1.0) * down, side("width", 1.0) * across, side("height", 1.0) * down],
             false => [side("x", wide), side("y", high), side("width", wide), side("height", high)],
         };
         let content = line.iter().copied().find(|at| self.file.elements[*at].end > at + 1).filter(|_| positive(w) && positive(h))?;
         // Its content is in units from its origin, bounding-box fractions, or per its
         // `viewBox`.
-        let view: Vec<f32> = say("viewBox").map(|said| numbers(said).take(5).collect()).unwrap_or_default();
+        let view: Vec<f32> = attr("viewBox").map(|value| numbers(value).take(5).collect()).unwrap_or_default();
         let inner = match view[..] {
-            [left, top, across, down] if across > 0.0 && down > 0.0 => Aspect::read(say("preserveAspectRatio").unwrap_or("")).fit([left, top, across, down], [w, h]),
-            _ if say("patternContentUnits") == Some("objectBoundingBox") => [across, 0.0, 0.0, down, 0.0, 0.0],
+            [left, top, across, down] if across > 0.0 && down > 0.0 => Aspect::read(attr("preserveAspectRatio").unwrap_or("")).fit([left, top, across, down], [w, h]),
+            _ if attr("patternContentUnits") == Some("objectBoundingBox") => [across, 0.0, 0.0, down, 0.0, 0.0],
             _ => SAME,
         };
-        let table = both(&style.table, &both(&say("patternTransform").map_or(SAME, turned), &[1.0, 0.0, 0.0, 1.0, x, y]));
+        let table = both(&style.table, &both(&attr("patternTransform").map_or(SAME, turned), &[1.0, 0.0, 0.0, 1.0, x, y]));
         // Its block is as many pixels as it shows (`Tile::block`): this share of the picture.
         // Its content is in tile units, so many per block.
         let block = table[0].hypot(table[1]) * table[2].hypot(table[3]) * w * h * style.share[0];
@@ -2462,20 +2479,20 @@ impl<'a> Reading<'a> {
     /// to `way` (an angle) if it says so, and reversed at the outline's start (`first`) if it
     /// says that too.
     fn marker(&mut self, at: usize, (point, way, first): (Point, f32, bool), style: &Style) -> Walk {
-        let say = |name: &str| self.file.say(at, name);
-        let angle = match say("orient").map(str::trim) {
+        let attr = |name: &str| self.file.attribute(at, name);
+        let angle = match attr("orient").map(str::trim) {
             Some("auto") => way,
             Some("auto-start-reverse") => way + std::f32::consts::PI * first as u8 as f32,
             other => other.and_then(number).map_or(0.0, |(degrees, _)| degrees.to_radians()),
         };
         // It is scaled by the stroke width unless in user units; its `viewBox` is fitted to its
         // box, and its reference point put on the vertex.
-        let scale = if say("markerUnits") == Some("userSpaceOnUse") { 1.0 } else { style.pen.width };
-        let unit = |name: &str, unsaid: f32| say(name).and_then(|text| length(text, 1.0)).unwrap_or(unsaid);
-        let view: Vec<f32> = say("viewBox").map(|said| numbers(said).take(5).collect()).unwrap_or_default();
+        let scale = if attr("markerUnits") == Some("userSpaceOnUse") { 1.0 } else { style.pen.width };
+        let unit = |name: &str, fallback: f32| attr(name).and_then(|text| length(text, 1.0)).unwrap_or(fallback);
+        let view: Vec<f32> = attr("viewBox").map(|value| numbers(value).take(5).collect()).unwrap_or_default();
         let fit = match view[..] {
             [left, top, across, down] if across > 0.0 && down > 0.0 => {
-                Aspect::read(say("preserveAspectRatio").unwrap_or("")).fit([left, top, across, down], [unit("markerWidth", 3.0), unit("markerHeight", 3.0)])
+                Aspect::read(attr("preserveAspectRatio").unwrap_or("")).fit([left, top, across, down], [unit("markerWidth", 3.0), unit("markerHeight", 3.0)])
             }
             _ => SAME,
         };
@@ -2494,13 +2511,13 @@ impl<'a> Reading<'a> {
         }
         let [.., wide, high] = self.kept.view;
         let across = ((wide * wide + high * high) / 2.0).sqrt();
-        let said = |name: &str, whole: f32| self.file.say(at, name).and_then(|text| length(text, whole));
-        let (x, y) = (|name: &str| said(name, wide).unwrap_or(0.0), |name: &str| said(name, high).unwrap_or(0.0));
-        let points = self.file.say(at, "points").unwrap_or("");
+        let length_of = |name: &str, whole: f32| self.file.attribute(at, name).and_then(|text| length(text, whole));
+        let (x, y) = (|name: &str| length_of(name, wide).unwrap_or(0.0), |name: &str| length_of(name, high).unwrap_or(0.0));
+        let points = self.file.attribute(at, "points").unwrap_or("");
         let path = match name {
-            "path" => Path::svg(self.file.say(at, "d").unwrap_or("")),
-            "rect" => rect([x("x"), y("y"), x("width"), y("height")], [said("rx", wide), said("ry", high)]),
-            "circle" => ellipse([x("cx"), y("cy")], [said("r", across).unwrap_or(0.0); 2]),
+            "path" => Path::svg(self.file.attribute(at, "d").unwrap_or("")),
+            "rect" => rect([x("x"), y("y"), x("width"), y("height")], [length_of("rx", wide), length_of("ry", high)]),
+            "circle" => ellipse([x("cx"), y("cy")], [length_of("r", across).unwrap_or(0.0); 2]),
             "ellipse" => ellipse([x("cx"), y("cy")], [x("rx"), y("ry")]),
             "line" => Path::svg(&format!("M{} {}L{} {}", x("x1"), y("y1"), x("x2"), y("y2"))),
             // A polyline is written as path points.
@@ -2513,29 +2530,30 @@ impl<'a> Reading<'a> {
         Some(self.kept.paths.len() as u32 - 1)
     }
 
-    /// A shape's final fill or stroke: `paint` as written, at opacity `solid`, `said` being
-    /// what the file makes of `currentColor`, `path` the outline, `tile` its pattern tile.
-    fn ink(&mut self, paint: Paint, solid: f32, said: Option<Color>, path: u32, tile: Option<u32>) -> Ink {
-        match (paint, said) {
+    /// A shape's final fill or stroke: `paint` as written, at opacity `solid`, `current_color`
+    /// being what the file makes of `currentColor`, `path` the outline, `tile` its pattern
+    /// tile.
+    fn ink(&mut self, paint: Paint, solid: f32, current_color: Option<Color>, path: u32, tile: Option<u32>) -> Ink {
+        match (paint, current_color) {
             _ if !positive(solid) => Ink::None,
             (Paint::None, _) => Ink::None,
-            (Paint::Own(color), _) | (Paint::Said, Some(color)) => Ink::Own(color.alpha(solid)),
-            (Paint::Said, None) => {
-                self.kept.said = true;
-                Ink::Said(solid)
+            (Paint::Own(color), _) | (Paint::CurrentColor, Some(color)) => Ink::Own(color.with_alpha(solid)),
+            (Paint::CurrentColor, None) => {
+                self.kept.uses_current_color = true;
+                Ink::CurrentColor(solid)
             }
-            (Paint::Blend(at), _) => self.blend(at, solid, path),
+            (Paint::Gradient(at), _) => self.gradient(at, solid, path),
             (Paint::Tiles(_), _) => tile.map_or(Ink::None, |tile| Ink::Tiles(tile, solid)),
         }
     }
 
     /// An element's gradient as it fills the shape with outline `path`.
-    fn blend(&mut self, at: usize, solid: f32, path: u32) -> Ink {
-        let read = match self.blended.get(&at) {
+    fn gradient(&mut self, at: usize, solid: f32, path: u32) -> Ink {
+        let read = match self.gradients_read.get(&at) {
             Some(read) => *read,
             None => self.read_blend(at),
         };
-        self.blended.insert(at, read);
+        self.gradients_read.insert(at, read);
         let Some(mut blend) = read else { return Ink::None };
         let last = self.kept.stops[blend.stops[1] as usize - 1].1;
         // A zero-length gradient, and a single stop, give the last colour everywhere.
@@ -2544,7 +2562,7 @@ impl<'a> Reading<'a> {
             Way::Round([_, _, r, _, _]) => !positive(r),
         };
         if flat || blend.stops[1] - blend.stops[0] == 1 {
-            return Ink::Own(last.alpha(solid));
+            return Ink::Own(last.with_alpha(solid));
         }
         // In bounding-box units, the geometry follows the shape's box; a shape with no width or
         // height has none.
@@ -2555,24 +2573,24 @@ impl<'a> Reading<'a> {
         if blend.boxed {
             blend.table = both(&[wide, 0.0, 0.0, high, left, top], &blend.table);
         }
-        self.kept.blends.push(blend);
-        Ink::Blend(self.kept.blends.len() as u32 - 1, solid)
+        self.kept.gradients.push(blend);
+        Ink::Gradient(self.kept.gradients.len() as u32 - 1, solid)
     }
 
     /// Reads a gradient from its element and those it inherits from (`href`) for what it does
     /// not say. Nothing without stops.
-    fn read_blend(&mut self, at: usize) -> Option<Blend> {
+    fn read_blend(&mut self, at: usize) -> Option<Gradient> {
         // The element and those it inherits from, nearest first.
         let mut line = vec![at];
         while let Some(after) = self.file.linked(line[line.len() - 1]).filter(|after| line.len() < 8 && !line.contains(after)) {
             line.push(after);
         }
-        let say = |name: &str| line.iter().find_map(|at| self.file.say(*at, name));
+        let attr = |name: &str| line.iter().find_map(|at| self.file.attribute(*at, name));
         let [.., wide, high] = self.kept.view;
-        let boxed = say("gradientUnits") != Some("userSpaceOnUse");
+        let boxed = attr("gradientUnits") != Some("userSpaceOnUse");
         let [wide, high, across] = if boxed { [1.0; 3] } else { [wide, high, ((wide * wide + high * high) / 2.0).sqrt()] };
         // Unstated values are these fractions of the whole.
-        let lies = |name: &str, whole: f32, unsaid: f32| say(name).and_then(|text| length(text, whole)).unwrap_or(unsaid * whole);
+        let lies = |name: &str, whole: f32, fallback: f32| attr(name).and_then(|text| length(text, whole)).unwrap_or(fallback * whole);
         let way = if self.file.elements[at].name == "radialGradient" {
             let (cx, cy, r) = (lies("cx", wide, 0.5), lies("cy", high, 0.5), lies("r", across, 0.5));
             // The focus: the centre unless given. One outside the circle is moved onto it (just
@@ -2583,12 +2601,12 @@ impl<'a> Reading<'a> {
         } else {
             Way::Line([lies("x1", wide, 0.0), lies("y1", high, 0.0), lies("x2", wide, 1.0), lies("y2", high, 0.0)])
         };
-        let spread = match say("spreadMethod") {
+        let spread = match attr("spreadMethod") {
             Some("reflect") => Spread::Reflect,
             Some("repeat") => Spread::Repeat,
             _ => Spread::Pad,
         };
-        let (table, first) = (say("gradientTransform").map_or(SAME, turned), self.kept.stops.len());
+        let (table, first) = (attr("gradientTransform").map_or(SAME, turned), self.kept.stops.len());
         // Its stops are its own, or those of the nearest it inherits from that has any.
         for from in line {
             self.stops(from);
@@ -2596,7 +2614,7 @@ impl<'a> Reading<'a> {
                 break;
             }
         }
-        (self.kept.stops.len() > first).then_some(Blend { stops: [first as u32, self.kept.stops.len() as u32], way, spread, table, boxed })
+        (self.kept.stops.len() > first).then_some(Gradient { stops: [first as u32, self.kept.stops.len() as u32], way, spread, table, boxed })
     }
 
     /// Keeps a gradient element's stops, each with its offset, never before the previous one.
@@ -2608,10 +2626,10 @@ impl<'a> Reading<'a> {
                 Paint::Own(color) => color,
                 _ => style.ink.unwrap_or(Color::BLACK),
             };
-            let along = self.file.say(at, "offset").and_then(share).unwrap_or(0.0);
+            let along = self.file.attribute(at, "offset").and_then(share).unwrap_or(0.0);
             let least = self.kept.stops[first..].last().map_or(0.0, |before| before.0);
             if self.file.elements[at].name == "stop" {
-                self.kept.stops.push((along.max(least).min(1.0), color.alpha(style.stop.1)));
+                self.kept.stops.push((along.max(least).min(1.0), color.with_alpha(style.stop.1)));
             }
             at = self.file.elements[at].end;
         }
@@ -2651,22 +2669,22 @@ fn closing(text: &str) -> Option<usize> {
 /// Nothing for an unknown function.
 fn function(name: &str, inside: &str, walk: &Walk) -> Option<Filter> {
     let inside = inside.trim();
-    let amount = |unsaid: f32| if inside.is_empty() { Some(unsaid) } else { share(inside).filter(|amount| *amount >= 0.0) };
+    let amount = |fallback: f32| if inside.is_empty() { Some(fallback) } else { share(inside).filter(|amount| *amount >= 0.0) };
     let colors = |function: Function| Box::new([function.clone(), function.clone(), function, Function::Same]);
     let kind = match name {
         "blur" => Kind::Blur([if inside.is_empty() { 0.0 } else { length(inside, 0.0)? }.max(0.0); 2]),
         "drop-shadow" => shadow(inside, walk.style.ink.unwrap_or(Color::BLACK))?,
-        "grayscale" => Kind::Matrix(filter::toned(amount(1.0)?, false)),
-        "sepia" => Kind::Matrix(filter::toned(amount(1.0)?, true)),
-        "saturate" => Kind::Matrix(filter::saturated(amount(1.0)?)),
-        "hue-rotate" => Kind::Matrix(filter::hue_turned(if inside.is_empty() { 0.0 } else { angle(inside)? })),
+        "grayscale" => Kind::Matrix(svg_filters::toned(amount(1.0)?, false)),
+        "sepia" => Kind::Matrix(svg_filters::toned(amount(1.0)?, true)),
+        "saturate" => Kind::Matrix(svg_filters::saturated(amount(1.0)?)),
+        "hue-rotate" => Kind::Matrix(svg_filters::hue_turned(if inside.is_empty() { 0.0 } else { angle(inside)? })),
         "invert" => Kind::Transfer(colors(Function::Table(vec![amount(1.0)?.min(1.0), 1.0 - amount(1.0)?.min(1.0)]))),
         "opacity" => Kind::Transfer(Box::new([Function::Same, Function::Same, Function::Same, Function::Table(vec![0.0, amount(1.0)?.min(1.0)])])),
         "brightness" => Kind::Transfer(colors(Function::Linear(amount(1.0)?, 0.0))),
         "contrast" => Kind::Transfer(colors(Function::Linear(amount(1.0)?, 0.5 - 0.5 * amount(1.0)?))),
         _ => return None,
     };
-    let steps = vec![filter::Step { kind, inputs: [Input::Source; 2], place: [None; 4], space: walk.style.space }];
+    let steps = vec![svg_filters::Step { kind, inputs: [Input::Source; 2], place: [None; 4], space: walk.style.space }];
     Some(Filter { table: walk.units, region: [-1e9, -1e9, 2e9, 2e9], steps })
 }
 
@@ -2706,15 +2724,15 @@ fn angle(text: &str) -> Option<f32> {
 /// A filter step's input per its `in` (none where unstated), after `made` steps named by
 /// `results`: by default, or where it names what nothing made, the previous step's result
 /// (`SourceGraphic` for the first).
-fn input_of(said: Option<&str>, results: &[(&str, usize)], made: usize) -> Input {
-    let unsaid = if made > 0 { Input::Made(made - 1) } else { Input::Source };
-    match said {
-        None => unsaid,
+fn input_of(named: Option<&str>, results: &[(&str, usize)], made: usize) -> Input {
+    let fallback = if made > 0 { Input::Made(made - 1) } else { Input::Source };
+    match named {
+        None => fallback,
         Some("SourceGraphic") => Input::Source,
         Some("SourceAlpha") => Input::Alpha,
         // Background and paint inputs are not read.
         Some("BackgroundImage" | "BackgroundAlpha" | "FillPaint" | "StrokePaint") => Input::Clear,
-        Some(name) => results.iter().rev().find(|(result, _)| *result == name).map_or(unsaid, |(_, at)| Input::Made(*at)),
+        Some(name) => results.iter().rev().find(|(result, _)| *result == name).map_or(fallback, |(_, at)| Input::Made(*at)),
     }
 }
 
@@ -2738,10 +2756,10 @@ fn matrix(kind: &str, values: Option<&str>) -> Option<[f32; 20]> {
     let values: Vec<f32> = values.map(|text| numbers(text).collect()).unwrap_or_default();
     let first = values.first().copied();
     match kind {
-        "matrix" => Some(values.as_slice().try_into().unwrap_or(filter::SAME)),
-        "saturate" => Some(filter::saturated(first.unwrap_or(1.0).max(0.0))),
-        "hueRotate" => Some(filter::hue_turned(first.unwrap_or(0.0))),
-        "luminanceToAlpha" => Some(filter::LUMINANCE),
+        "matrix" => Some(values.as_slice().try_into().unwrap_or(svg_filters::SAME)),
+        "saturate" => Some(svg_filters::saturated(first.unwrap_or(1.0).max(0.0))),
+        "hueRotate" => Some(svg_filters::hue_turned(first.unwrap_or(0.0))),
+        "luminanceToAlpha" => Some(svg_filters::LUMINANCE),
         _ => None,
     }
 }
@@ -3000,7 +3018,7 @@ mod tests {
         // All 148 names, each a colour, alphabetical.
         let names: Vec<&str> = NAMES.split_ascii_whitespace().map(|pair| pair.split_once('=').unwrap().0).collect();
         assert!(names.len() == 148 && names.is_sorted() && names.iter().all(|name| color(name).is_some()));
-        assert!([plain("None"), plain("currentColor"), plain(" Red ")] == [Some(Paint::None), Some(Paint::Said), Some(Paint::Own(Color(RED)))]);
+        assert!([plain("None"), plain("currentColor"), plain(" Red ")] == [Some(Paint::None), Some(Paint::CurrentColor), Some(Paint::Own(Color(RED)))]);
     }
 
     #[test]
@@ -3032,7 +3050,10 @@ mod tests {
         assert_eq!(names, ["svg", "g", "path", "rect", "style", "rect", "circle"]);
         // Unclosed elements end with their parent, or the file.
         assert_eq!(file.elements.iter().map(|element| element.end).collect::<Vec<usize>>(), [7, 4, 3, 4, 5, 6, 7]);
-        assert_eq!([file.say(0, "a"), file.say(0, "b"), file.say(0, "c"), file.say(0, "hidden"), file.say(2, "d")], [Some("1"), Some("x > y"), Some("3"), None, Some("M0 0")]);
+        assert_eq!(
+            [file.attribute(0, "a"), file.attribute(0, "b"), file.attribute(0, "c"), file.attribute(0, "hidden"), file.attribute(2, "d")],
+            [Some("1"), Some("x > y"), Some("3"), None, Some("M0 0")]
+        );
         assert_eq!((file.named.get("one"), file.named.get("two")), (Some(&1), Some(&5)));
         // The sheet's rules: by class, by name and id; not by negation.
         assert_eq!(file.rules.iter().map(|(whom, _)| *whom).collect::<Vec<&str>>(), [".a", "rect#two"]);
@@ -3287,7 +3308,7 @@ mod tests {
         // `currentColor`: black in a picture, or what the file sets.
         assert_eq!(drawn(4, 4, r#"<rect width="4" height="4" fill="currentColor"/>"#)[0], 0xff00_0000);
         assert_eq!(drawn(4, 4, r#"<g color="red"><rect width="4" height="4" fill="currentColor"/></g>"#)[0], RED);
-        let said = |shapes: &str| Kept::read(&format!("<svg>{shapes}</svg>")).unwrap().said;
+        let said = |shapes: &str| Kept::read(&format!("<svg>{shapes}</svg>")).unwrap().uses_current_color;
         assert_eq!(
             [said(r#"<path stroke="currentColor" d="M0 0h9"/>"#), said(r#"<path fill="red" d="M0 0h9v9z"/>"#), said(r#"<path color="red" fill="currentColor" d="M0 0h9v9z"/>"#)],
             [true, false, false]
@@ -3542,7 +3563,7 @@ mod tests {
 
     #[test]
     fn text_is_written_in_the_fonts_of_the_system() {
-        read_text();
+        enable_text();
         // Where the system has fonts: letters in their piece's colour, along a line from the
         // text's position, anchored at start, middle or end.
         let written = |text: &str| drawn(64, 64, text);
@@ -3580,7 +3601,7 @@ mod tests {
     fn text_comes_out_as_librsvg_writes_it() {
         use std::io::Write;
         use std::process::{Command, Stdio};
-        read_text();
+        enable_text();
         let file = include_str!("../tests/pictures/words.svg");
         let weighed = |pixel: u32| [24, 16, 8, 0].map(|shift| (pixel >> shift & 255) as i32 * if shift == 24 { 255 } else { (pixel >> 24) as i32 } / 255);
         for [wide, high] in [[200, 100], [400, 200]] {
@@ -3647,9 +3668,9 @@ mod tests {
     fn no_drawing_in_a_folder_comes_near_what_a_drawing_may_cost() {
         let Ok(corpus) = std::env::var("CORPUS") else { return eprintln!("CORPUS=folder names no folder: no drawings are read") };
         // With the text, filters and images a program that asks reads.
-        read_text();
-        read_pictures();
-        read_filters();
+        enable_text();
+        enable_images();
+        enable_filters();
         let (mut files, mut folders) = (Vec::new(), vec![std::path::PathBuf::from(corpus)]);
         while let Some(folder) = folders.pop() {
             for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
@@ -3759,7 +3780,7 @@ mod tests {
 
     #[test]
     fn a_blur_comes_out_as_librsvg_blurs_it() {
-        read_filters();
+        enable_filters();
         // Deviation of two pixels or more, by three box blurs: to the level, within the
         // square's region grown 10% each way. (librsvg reads -10% in `f32`, a hair over a
         // tenth, so its region includes the pixel that edge would otherwise stop at; so does
@@ -3797,7 +3818,7 @@ mod tests {
 
     #[test]
     fn a_filter_draws_only_within_its_region() {
-        read_filters();
+        enable_filters();
         // In bounding-box fractions: its start and width in pixels, as librsvg has them. (Where
         // an edge read in `f32` falls a hair before a pixel edge, that pixel is in.)
         for (x, width, first, across) in [("-0.1", "1.2", 7, 26), ("0", "1.2", 10, 25), ("-0.05", "1.1", 8, 24), ("0.25", "0.5", 15, 10), ("0", "1", 10, 20), ("-0.5", "2", 0, 40)] {
@@ -3820,7 +3841,7 @@ mod tests {
 
     #[test]
     fn steps_take_in_what_the_steps_before_them_made() {
-        read_filters();
+        enable_filters();
         // Offset by fractions of a pixel: interpolated, clipped to its subregion as offset
         // (librsvg clips the same way, edges and all).
         let moved = format!(r#"<filter id="e" x="0" y="0" width="1" height="1"><feOffset dx="2.5" dy="0.5"/></filter>{SQUARE}"#);
@@ -3860,7 +3881,7 @@ mod tests {
 
     #[test]
     fn colours_are_mixed_and_worked_out_afresh() {
-        read_filters();
+        enable_filters();
         let one =
             |inside: &str, fill: &str| row_of(&format!(r#"<filter id="e" color-interpolation-filters="sRGB">{inside}</filter><rect width="40" height="40" fill="{fill}" filter="url(#e)"/>"#), 20)[20];
         // Blended with a colour under it, each mode of Compositing and Blending, dark orange
@@ -3887,7 +3908,7 @@ mod tests {
 
     #[test]
     fn thicker_thinner_tiles_and_noise() {
-        read_filters();
+        enable_filters();
         // Dilate and erode as librsvg makes them; each costs the same per pixel at any radius.
         let morph = r#"<filter id="e"><feMorphology operator="dilate" radius="2"/></filter><filter id="f"><feMorphology radius="2"/></filter><rect x="5" y="5" width="12" height="12" fill="red" filter="url(#e)"/><rect x="22" y="22" width="12" height="12" fill="red" filter="url(#f)"/>"#;
         assert_eq!(row_of(morph, 11), written(THICKER));
@@ -3904,7 +3925,7 @@ mod tests {
 
     #[test]
     fn what_goes_through_a_filter_and_what_does_not() {
-        read_filters();
+        enable_filters();
         let plain = row_of(&SQUARE.replace(r#" filter="url(#e)""#, ""), 20);
         // A missing or non-filter reference leaves the element unfiltered, with the whole list;
         // as does one inside a clip path.
@@ -3939,7 +3960,7 @@ mod tests {
 
     #[test]
     fn filters_of_numbers_beyond_all_measure_stop_nothing() {
-        read_filters();
+        enable_filters();
         // Every step with sizes, positions, deviations, frequencies and matrices no real
         // drawing has: each read and drawn quickly. (Stitched turbulence at frequency 1e40 once
         // overflowed.)
@@ -3964,7 +3985,7 @@ mod tests {
     #[test]
     fn the_glyphs_of_fonts_are_drawn_without_filters() {
         // Filters are read once a program asks.
-        read_filters();
+        enable_filters();
         let font = r##"<svg><filter id="f"><feGaussianBlur stdDeviation="9"/></filter><path id="glyph3" d="M0 0h100v-100h-100z" filter="url(#f)"/></svg>"##;
         let (glyph, file) = (Kept::glyph(font, "glyph3", 100.0).unwrap(), Kept::read(font).unwrap());
         assert!(glyph.held().is_none() && file.held().is_some_and(|more| more.filters.len() == 1));
@@ -3972,7 +3993,7 @@ mod tests {
 
     #[test]
     fn what_a_filter_costs_is_counted() {
-        read_filters();
+        enable_filters();
         let cost = |shapes: &str| Reading::of(&format!(r#"<svg viewBox="0 0 100 100">{shapes}</svg>"#), None).unwrap().passes;
         // Each step costs the filter region's share times its weight (blur 18, flood 2), plus
         // four for copying the region out and back; the element and its block cost as before.

@@ -2,10 +2,10 @@
 //! spreadsheets.
 //!
 //! ```ignore
-//! const COLUMNS: [Column; 2] = [Column::new("Name").edited(Entry::Text), Column::new("Size").edited(Entry::Number)];
+//! const COLUMNS: [Column; 2] = [Column::new("Name").editable(CellEditor::Text), Column::new("Size").editable(CellEditor::Number)];
 //!
 //! let table = ui.table(&mut app.table, &COLUMNS);
-//! if let Some(change) = ui.edited(&table) {
+//! if let Some(change) = ui.edited_cell(&table) {
 //!     app.put(change.row, change.column, change.value); // the app changes its own data
 //! }
 //! ui.copy_rows(&table, app.picks.iter().map(|row| app.cells(row)));
@@ -20,11 +20,11 @@
 //! A table is one Tab stop. With focus, arrows move the cell, Home/End go to the first and last
 //! column, Page Up/Down a page of rows, Ctrl+Home/End to the first and last cell. A click moves
 //! the cell there. The cell is outlined and reported to screen readers as focused. Where rows
-//! are selectable ([`pick_row`](Ui::pick_row)), moving onto a row selects it as a click would
-//! (Shift extends; Ctrl moves alone, and Space toggles its row), so keyboard selection needs no
-//! extra code.
+//! are selectable ([`selectable_row`](Ui::selectable_row)), moving onto a row selects it as a
+//! click would (Shift extends; Ctrl moves alone, and Space toggles its row), so keyboard
+//! selection needs no extra code.
 //!
-//! Editable columns ([`Column::edited`]) edit in place: a double click, Enter, F2 or a typed
+//! Editable columns ([`Column::editable`]) edit in place: a double click, Enter, F2 or a typed
 //! letter opens a text box, number box or choice list. Enter commits and moves down (Shift:
 //! up), Tab to the next cell (Shift: back), Escape cancels. The app gets the new value and
 //! where, and updates its data. Only the cell being edited is a box, so editing row 50,000
@@ -44,7 +44,7 @@ const KEYS: [Key; 10] = [Key::Up, Key::Down, Key::Left, Key::Right, Key::Home, K
 
 /// How a column's cells are edited in place, if at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum Entry<'a> {
+pub enum CellEditor<'a> {
     /// Not editable.
     #[default]
     None,
@@ -59,7 +59,7 @@ pub enum Entry<'a> {
 
 /// A cell's new value.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Value {
+pub enum CellValue {
     /// The typed text.
     Text(String),
     /// The typed number.
@@ -71,13 +71,13 @@ pub enum Value {
 /// A cell the user edited in place: its row (as `rows` counts them), column (index among the
 /// app's columns), and new value.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Edited {
+pub struct EditedCell {
     /// The row.
     pub row: usize,
     /// The column.
     pub column: usize,
     /// The new value.
-    pub value: Value,
+    pub value: CellValue,
 }
 
 /// What a window's tables keep between runs: rows as last counted, the cell being edited and
@@ -103,7 +103,7 @@ pub(crate) struct Grids {
     pick: Option<(Id, usize, Mods)>,
     /// An edited cell for the app: table, change, and whether the app may see it yet (from the
     /// table's next description).
-    edited: Option<(Id, Edited, bool)>,
+    edited: Option<(Id, EditedCell, bool)>,
     /// Where the focused cell goes after an edit: table, and rows and columns to step.
     step: Option<(Id, [isize; 2])>,
     /// The table whose rows are to be copied.
@@ -197,12 +197,12 @@ struct Editing {
 }
 
 /// A column's entry as the edited cell keeps it.
-fn way_of(entry: Entry) -> Option<(Way, Vec<String>)> {
+fn way_of(entry: CellEditor) -> Option<(Way, Vec<String>)> {
     match entry {
-        Entry::None => None,
-        Entry::Text => Some((Way::Text, Vec::new())),
-        Entry::Number => Some((Way::Number, Vec::new())),
-        Entry::Choice(options) => Some((Way::Choice, options.iter().map(|option| option.to_string()).collect())),
+        CellEditor::None => None,
+        CellEditor::Text => Some((Way::Text, Vec::new())),
+        CellEditor::Number => Some((Way::Number, Vec::new())),
+        CellEditor::Choice(options) => Some((Way::Choice, options.iter().map(|option| option.to_string()).collect())),
     }
 }
 
@@ -254,11 +254,11 @@ impl Ui {
         }
         let rows = std::mem::take(self.grids.rows_of(table));
         let shown: Vec<usize> = (0..columns.len()).map(|place| state.column_at(place, columns.len())).filter(|column| !state.hidden.contains(column)).collect();
-        let was = state.cell;
+        let was = state.focused_cell;
         self.take_in_press(state, columns, table, keys);
         self.take_in_change(state, &shown, table, keys);
-        if self.focus == keys && state.cell.is_none() && rows.count > 0 {
-            state.cell = shown.first().map(|column| [0, *column]);
+        if self.focus == keys && state.focused_cell.is_none() && rows.count > 0 {
+            state.focused_cell = shown.first().map(|column| [0, *column]);
         }
         if self.focus == keys {
             self.cell_keys(state, columns, &shown, table, rows, room[1]);
@@ -266,10 +266,19 @@ impl Ui {
         // The cell stays in the table: on an existing row, in a visible column.
         let last = rows.count.checked_sub(1);
         let inside = |[row, column]: [usize; 2]| [last.map_or(row, |last| row.min(last)), if shown.contains(&column) { column } else { shown.first().copied().unwrap_or(0) }];
-        state.cell = state.cell.map(inside);
+        state.focused_cell = state.focused_cell.map(inside);
         let editing = self.grids.editing.as_ref().is_some_and(|editing| editing.table == table);
-        self.grids.now.push(Now { id: table, columns: [first, first + columns.len() as u32], body, keys, cell: state.cell, keyed: self.focus == keys && !editing, row: (NONE, None), plain: 0 });
-        let moved = state.cell.filter(|_| state.cell != was)?;
+        self.grids.now.push(Now {
+            id: table,
+            columns: [first, first + columns.len() as u32],
+            body,
+            keys,
+            cell: state.focused_cell,
+            keyed: self.focus == keys && !editing,
+            row: (NONE, None),
+            plain: 0,
+        });
+        let moved = state.focused_cell.filter(|_| state.focused_cell != was)?;
         self.bring_row_to_view(moved[0], body, rows, room[1]);
         self.bring_column_to_view(state, moved[1], first, body, room[0])
     }
@@ -301,11 +310,11 @@ impl Ui {
     /// the click focused something in the cell), and a double click edits an editable cell.
     fn take_in_press(&mut self, state: &mut Table, columns: &[Column], table: Id, keys: Id) {
         let Some((_, cell, double)) = self.grids.pressed.take_if(|pressed| pressed.0 == table) else { return };
-        state.cell = Some(cell);
+        state.focused_cell = Some(cell);
         if self.focus == 0 {
             self.focus = keys;
         }
-        if let Some(entry) = columns.get(cell[1]).map(|column| column.entry).filter(|_| double) {
+        if let Some(entry) = columns.get(cell[1]).map(|column| column.editor).filter(|_| double) {
             self.start_editing(table, cell, entry, String::new());
         }
     }
@@ -323,9 +332,9 @@ impl Ui {
         }
         if let Some((_, [down, on])) = self.grids.step.take_if(|step| step.0 == table) {
             let wide = shown.len().max(1) as isize;
-            let [row, column] = state.cell.unwrap_or_default();
+            let [row, column] = state.focused_cell.unwrap_or_default();
             let place = shown.iter().position(|shown| *shown == column).unwrap_or(0) as isize + on;
-            state.cell = Some([row.saturating_add_signed(down + place.div_euclid(wide)), shown.get(place.rem_euclid(wide) as usize).copied().unwrap_or(column)]);
+            state.focused_cell = Some([row.saturating_add_signed(down + place.div_euclid(wide)), shown.get(place.rem_euclid(wide) as usize).copied().unwrap_or(column)]);
             self.focus = if self.focus == 0 { keys } else { self.focus };
         }
         // A choice list takes focus while open.
@@ -337,15 +346,15 @@ impl Ui {
 
     /// Keys on a focused table's cell: move it, select its row, edit it, or copy.
     fn cell_keys(&mut self, state: &mut Table, columns: &[Column], shown: &[usize], table: Id, rows: Rows, high: f32) {
-        let Some([row, column]) = state.cell else { return };
-        let entry = columns.get(column).map_or(Entry::None, |column| column.entry);
+        let Some([row, column]) = state.focused_cell else { return };
+        let entry = columns.get(column).map_or(CellEditor::None, |column| column.editor);
         if self.key(Key::Char('c'), Mods::CTRL) {
             self.grids.copy = table;
         }
         // Enter edits an editable cell, and is left to the app on any other. A letter typed
         // into a text or number cell starts editing with it.
-        let typed = matches!(entry, Entry::Text | Entry::Number) && self.input.strokes.iter().any(|stroke| matches!(stroke, Stroke::Text(_)));
-        if entry != Entry::None && self.key(Key::Enter, Mods::NONE) || typed {
+        let typed = matches!(entry, CellEditor::Text | CellEditor::Number) && self.input.strokes.iter().any(|stroke| matches!(stroke, Stroke::Text(_)));
+        if entry != CellEditor::None && self.key(Key::Enter, Mods::NONE) || typed {
             let text = self.typed();
             return self.start_editing(table, [row, column], entry, text);
         }
@@ -366,7 +375,7 @@ impl Ui {
             (Key::Home, true) => [0, 0],
             _ => [last, end],
         };
-        state.cell = Some([to[0], shown.get(to[1]).copied().unwrap_or(column)]);
+        state.focused_cell = Some([to[0], shown.get(to[1]).copied().unwrap_or(column)]);
         // The row moved onto is selected as a click would: alone, or a range with Shift. With
         // Ctrl the cell moves alone, except Home/End, where Ctrl is part of the key; Space
         // selects its row as a click with those modifiers would.
@@ -425,11 +434,11 @@ impl Ui {
     fn bring_column_to_view(&mut self, state: &Table, column: usize, first: u32, body: Id, room: f32) -> Option<f32> {
         let track = *self.tracks.get(first as usize + column)?;
         let mut offset = self.scrolls.get(&body).copied().unwrap_or_default();
-        if (track.place as usize) < state.kept {
+        if (track.place as usize) < state.frozen {
             return None;
         }
         // How far the frozen columns reach from the row's start.
-        let kept = self.tracks[first as usize..].iter().filter(|track| track.shows && (track.place as usize) < state.kept);
+        let kept = self.tracks[first as usize..].iter().filter(|track| track.shows && (track.place as usize) < state.frozen);
         let reach = kept.map(|track| track.start() - offset[0] + track.width + BETWEEN).fold(0.0, f32::max);
         let was = offset[0];
         if track.start() - offset[0] < reach {
@@ -444,7 +453,7 @@ impl Ui {
 
     /// Starts editing an editable cell, from `typed` if started by typing. (A read-only
     /// column's cell stays as is.)
-    fn start_editing(&mut self, table: Id, cell: [usize; 2], entry: Entry, typed: String) {
+    fn start_editing(&mut self, table: Id, cell: [usize; 2], entry: CellEditor, typed: String) {
         let Some((way, options)) = way_of(entry) else { return };
         let started_by_typing = !typed.is_empty();
         self.grids.editing = Some(Editing { table, cell, way, options, choice: 0, text: typed, fresh: true, typed: started_by_typing, id: 0, opened: false });
@@ -456,12 +465,12 @@ impl Ui {
     fn finish_editing(&mut self, keep: bool, step: [isize; 2]) {
         let Some(editing) = self.grids.editing.take() else { return };
         let value = match editing.way {
-            Way::Text => Some(Value::Text(editing.text)),
-            Way::Number => editing.text.trim().parse().ok().map(Value::Number),
-            Way::Choice => Some(Value::Choice(editing.choice)),
+            Way::Text => Some(CellValue::Text(editing.text)),
+            Way::Number => editing.text.trim().parse().ok().map(CellValue::Number),
+            Way::Choice => Some(CellValue::Choice(editing.choice)),
         };
         if let Some(value) = value.filter(|_| keep) {
-            self.grids.edited = Some((editing.table, Edited { row: editing.cell[0], column: editing.cell[1], value }, false));
+            self.grids.edited = Some((editing.table, EditedCell { row: editing.cell[0], column: editing.cell[1], value }, false));
         }
         let keys = self.grids.now.iter().find(|now| now.id == editing.table).map_or(0, |now| now.keys);
         if self.focus == editing.id || self.focus == 0 {
@@ -474,7 +483,7 @@ impl Ui {
     /// The user's in-place edit of a cell of table `of`: which cell, and the new value. Ask
     /// right after `table`, before describing rows, so the app updates its data and the rows
     /// show it.
-    pub fn edited(&mut self, of: &Response) -> Option<Edited> {
+    pub fn edited_cell(&mut self, of: &Response) -> Option<EditedCell> {
         self.grids.edited.take_if(|(table, _, ready)| *table == of.id && *ready).map(|(_, edited, _)| edited)
     }
 
@@ -500,7 +509,7 @@ impl Ui {
     }
 
     /// A table cell showing `text`. While edited in place (if its column allows it:
-    /// [`Column::edited`]), it is the editor: a text box or a choice list. Otherwise a label.
+    /// [`Column::editable`]), it is the editor: a text box or a choice list. Otherwise a label.
     pub fn cell(&mut self, text: &str) -> Response {
         let open = self.open.last().filter(|open| open.cells).map(|open| (open.columns, open.children as usize));
         let Some((table, column)) = open.and_then(|(columns, column)| Some((self.table_now(columns)?, column))) else { return self.label(text) };
@@ -537,10 +546,10 @@ impl Ui {
         let (t, high) = (self.theme, self.open.iter().rev().nth(1).map_or(0.0, |around| around.row));
         let wrong = editing.way == Way::Number && editing.text.trim().parse::<f64>().is_err();
         // A text box is the theme's control height, with an accent border while focused.
-        self.theme.control = if high > 0.0 { high } else { t.control };
+        self.theme.control_height = if high > 0.0 { high } else { t.control_height };
         self.theme.accent = if wrong { t.red } else { t.accent };
-        let state = self.edit_box(&mut editing.text, "", crate::edit::Kind::Line, f32::INFINITY);
-        (self.theme.control, self.theme.accent) = (t.control, t.accent);
+        let state = self.edit_box(&mut editing.text, "", crate::text_edit::Kind::Line, f32::INFINITY);
+        (self.theme.control_height, self.theme.accent) = (t.control_height, t.accent);
         self.grids.editing = Some(editing);
         let wanted = match [Key::Enter, Key::Tab].map(|key| [Mods::NONE, Mods::SHIFT].map(|mods| self.key(key, mods))) {
             [[true, _], _] => Some([1, 0]),
@@ -597,7 +606,7 @@ impl Ui {
         // Among the rows of `rows`, the box around the row has counted it, and the room above
         // the rows in view before the first.
         let around = self.open.iter().rev().nth(1).filter(|around| around.row > 0.0).map(|around| around.children as usize);
-        let kept = self.tree.specs[at as usize].frame.kept != 0;
+        let kept = self.tree.specs[at as usize].frame.pinned != 0;
         let now = &mut self.grids.now[table];
         let row = match around {
             Some(children) => Some(children - 2),
@@ -621,9 +630,9 @@ impl Ui {
     }
 
     /// Whether the next row `row` (by id) of the table with these columns is to be selected as
-    /// a click would ([`pick_row`](Self::pick_row)) without one: keys moved the cell onto it
-    /// (`mods` says which were held), or a screen reader focused it, which moves the cell
-    /// there.
+    /// a click would ([`selectable_row`](Self::selectable_row)) without one: keys moved the
+    /// cell onto it (`mods` says which were held), or a screen reader focused it, which moves
+    /// the cell there.
     pub(crate) fn keys_picked(&mut self, columns: [u32; 2], row: Id) -> bool {
         let Some(table) = self.table_now(columns) else { return false };
         let (id, nth, keys) = (self.grids.now[table].id, self.row_next(table), self.grids.now[table].keys);
@@ -685,7 +694,7 @@ impl Ui {
             return;
         }
         let (state, now) = (self.interact(id), &self.grids.now[table]);
-        let (Some(at), true) = (self.pointer(), state.over) else { return };
+        let (Some(at), true) = (self.pointer(), state.contains_pointer) else { return };
         // The pointer's position along the row: the row starts as far before the visible edge
         // as the table is scrolled sideways.
         let along = at.x - state.rect.x + self.scrolls.get(&now.body).map_or(0.0, |offset| offset[0]) - EDGE;

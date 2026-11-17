@@ -1,6 +1,6 @@
 //! The desktop portal (`xdg-desktop-portal`) on Linux, reached over the session bus, which
 //! forwards requests to whatever desktop runs. Two things are asked of it: the user's
-//! appearance and motion preferences ([`Wishes`]), read at start and then followed through
+//! appearance and motion preferences ([`Preferences`]), read at start and then followed through
 //! change signals; and the desktop's own file dialog over a window, which the portal shows from
 //! its own process and answers later, so nothing waits and the window keeps running.
 //!
@@ -15,10 +15,10 @@
 //! says nothing of it, which counts as no preference.
 use crate::atspi::{ANSWER, BUS, Bus, CALL, FAILED, Header, Message, NEWS, PROPERTIES, Pack, Unpack, Value};
 use crate::color::Color;
-use crate::files::FileAsk;
+use crate::file_dialog::FileDialogRequest;
 use crate::id::Id;
-use crate::theme::Contrast;
-use crate::wishes::Wishes;
+use crate::preferences::Preferences;
+use crate::theme::ContrastColors;
 use crate::x11::path_of;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -45,10 +45,10 @@ const MOTION: &str = "reduced-motion";
 const PATIENCE: Duration = Duration::from_secs(5);
 
 /// How the portal is asked for its file dialog (`Portal::ask`). Handed over by the first
-/// request for the system dialog ([`Files::system`](crate::Files::system), through
+/// request for the system dialog ([`FileDialog::native`](crate::FileDialog::native), through
 /// `platform::hand_file_dialog`); nothing else reaches that code, so a program that never asks
 /// is built without it.
-type Asks = fn(&mut Portal, Option<&mut Bus>, &str, Id, &FileAsk);
+type Asks = fn(&mut Portal, Option<&mut Bus>, &str, Id, &FileDialogRequest);
 
 thread_local! {
     /// How the portal is asked for its file dialog: unset until an interface on this thread
@@ -78,12 +78,12 @@ struct Asked {
 pub(crate) struct Portal {
     /// The user's colour scheme preference, as far as the portal said: dark or light. None for
     /// no preference, or unknown.
-    pub(crate) wish: Option<bool>,
+    pub(crate) dark: Option<bool>,
     /// The user's accent colour, where the portal gave one; and whether they want higher
     /// contrast, and reduced motion (no, while unknown).
     pub(crate) accent: Option<Color>,
-    pub(crate) contrast: bool,
-    pub(crate) still: bool,
+    pub(crate) high_contrast: bool,
+    pub(crate) reduced_motion: bool,
     /// The portal has a file dialog that can also pick folders.
     pub(crate) files: bool,
     /// Ended file dialogs, until the windows take them: the window that asked, and the picked
@@ -111,10 +111,10 @@ impl Portal {
     /// and without a bus never.
     pub(crate) fn new(session: Option<&mut Bus>) -> Self {
         let mut portal = Portal {
-            wish: None,
+            dark: None,
             accent: None,
-            contrast: false,
-            still: false,
+            high_contrast: false,
+            reduced_motion: false,
             files: false,
             answers: Vec::new(),
             asked: [0; 2],
@@ -144,24 +144,24 @@ impl Portal {
     /// reduced motion counts where either says so; text size comes only from X. (The portal
     /// names no high-contrast colours: the library's own pair is used, dark or light as the
     /// user prefers.)
-    pub(crate) fn wishes(&self, desk: Wishes) -> Wishes {
-        let dark = self.wish.unwrap_or(desk.dark);
-        let contrast = (self.contrast || desk.contrast.is_some()).then_some(if dark { Contrast::DARK } else { Contrast::LIGHT });
-        Wishes { dark, accent: self.accent, contrast, still: self.still || desk.still, text: desk.text }
+    pub(crate) fn preferences(&self, desk: Preferences) -> Preferences {
+        let dark = self.dark.unwrap_or(desk.dark);
+        let contrast = (self.high_contrast || desk.high_contrast.is_some()).then_some(if dark { ContrastColors::DARK } else { ContrastColors::LIGHT });
+        Preferences { dark, accent: self.accent, high_contrast: contrast, reduced_motion: self.reduced_motion || desk.reduced_motion, text_scale: desk.text_scale }
     }
 
     /// A message came over the session bus, perhaps for this part: a reply to a question, a bus
     /// signal about the portal, or a portal signal.
     pub(crate) fn hear(&mut self, bus: &mut Bus, message: &Message) {
-        let (mut said, from_portal) = (message.body, message.sender == self.owner);
+        let (mut body, from_portal) = (message.body, message.sender == self.owner);
         match (message.kind, message.member) {
             // (Hello was the first call on the bus: its reply is this program's unique name. In
             // a request path it appears without its colon, with underscores for dots.)
-            (ANSWER, _) if message.answers == 1 => self.me = said.text().unwrap_or_default().trim_start_matches(':').replace('.', "_"),
+            (ANSWER, _) if message.answers == 1 => self.me = body.text().unwrap_or_default().trim_start_matches(':').replace('.', "_"),
             (ANSWER | FAILED, _) if message.answers != 0 => self.answered(message),
-            (NEWS, "NameOwnerChanged") if message.sender == BUS => self.owned(bus, said),
-            (NEWS, "SettingChanged") if from_portal => self.set(said),
-            (NEWS, "Response") if from_portal => self.ended(message.path, said),
+            (NEWS, "NameOwnerChanged") if message.sender == BUS => self.owned(bus, body),
+            (NEWS, "SettingChanged") if from_portal => self.set(body),
+            (NEWS, "Response") if from_portal => self.ended(message.path, body),
             _ => {}
         }
     }
@@ -169,7 +169,7 @@ impl Portal {
     /// A reply came: to one of the questions if its serial matches, else perhaps to a file
     /// dialog request.
     fn answered(&mut self, message: &Message) {
-        let (fine, said) = (message.kind == ANSWER, message.body);
+        let (fine, body) = (message.kind == ANSWER, message.body);
         let Some(which) = self.asked.iter().position(|asked| *asked == message.answers) else { return self.taken(message) };
         self.asked[which] = 0;
         // (A reply from the portal itself, not the bus on its behalf, comes from its current
@@ -180,32 +180,32 @@ impl Portal {
         match which {
             // (An error is an answer too: the portal has no settings, or there is no portal. No
             // preference is known then.)
-            0 => self.read_all(fine.then_some(said)),
+            0 => self.read_all(fine.then_some(body)),
             // (A file chooser that can pick folders is version 3, of 2020.)
-            _ => self.files = fine && number_in(said).is_some_and(|version| version >= 3),
+            _ => self.files = fine && number_in(body).is_some_and(|version| version >= 3),
         }
     }
 
     /// The portal replied with its appearance settings, or did not (none): a dict of groups,
     /// each a dict of settings and values. Only the one group was asked for; an unlisted
     /// setting is no preference.
-    fn read_all(&mut self, said: Option<Unpack>) {
-        (self.wish, self.accent, self.contrast, self.still) = (None, None, false, false);
-        let Some(mut said) = said else { return };
-        let Some(end) = said.list(8) else { return };
-        while said.at < end && self.read_group(&mut said).is_some() {}
+    fn read_all(&mut self, body: Option<Unpack>) {
+        (self.dark, self.accent, self.high_contrast, self.reduced_motion) = (None, None, false, false);
+        let Some(mut body) = body else { return };
+        let Some(end) = body.list(8) else { return };
+        while body.at < end && self.read_group(&mut body).is_some() {}
     }
 
-    /// One settings group, read from `said`: its name, then its settings, each taken in if the
+    /// One settings group, read from `body`: its name, then its settings, each taken in if the
     /// group is the appearance one. Nothing where the bytes are not laid out so.
-    fn read_group(&mut self, said: &mut Unpack) -> Option<()> {
-        let (group, end) = (said.take(8, 0).and(said.text())?, said.list(8)?);
-        while said.at < end {
-            let name = said.take(8, 0).and(said.text())?;
+    fn read_group(&mut self, body: &mut Unpack) -> Option<()> {
+        let (group, end) = (body.take(8, 0).and(body.text())?, body.list(8)?);
+        while body.at < end {
+            let name = body.take(8, 0).and(body.text())?;
             if group == APPEARANCE {
-                self.heard(name, *said);
+                self.heard(name, *body);
             }
-            said.skip("v")?;
+            body.skip("v")?;
         }
         Some(())
     }
@@ -214,8 +214,8 @@ impl Portal {
     /// the request (as told, but its word goes); or it refused, and there is no dialog.
     fn taken(&mut self, message: &Message) {
         let Some(at) = self.up.iter().position(|asked| asked.call == message.answers) else { return };
-        let (mut said, asked) = (message.body, self.up.remove(at));
-        match said.text().filter(|_| message.kind == ANSWER) {
+        let (mut body, asked) = (message.body, self.up.remove(at));
+        match body.text().filter(|_| message.kind == ANSWER) {
             Some(request) => self.up.insert(at, Asked { call: 0, request: request.into(), ..asked }),
             None => self.refused(asked.window),
         }
@@ -224,8 +224,8 @@ impl Portal {
     /// The bus says a name changed owner. If it is the portal's: a departed portal has no
     /// dialog to show and none up; an arrived one is asked its state. (Unless that question is
     /// already out: asking was what activated it.)
-    fn owned(&mut self, bus: &mut Bus, mut said: Unpack) {
-        let (Some(PORTAL), Some(_), Some(now)) = (said.text(), said.text(), said.text()) else { return };
+    fn owned(&mut self, bus: &mut Bus, mut body: Unpack) {
+        let (Some(PORTAL), Some(_), Some(now)) = (body.text(), body.text(), body.text()) else { return };
         self.owner = now.into();
         if now.is_empty() {
             self.gone();
@@ -235,9 +235,9 @@ impl Portal {
     }
 
     /// The portal says a setting changed: its group, name and value.
-    fn set(&mut self, mut said: Unpack) {
-        if let (Some(APPEARANCE), Some(name)) = (said.text(), said.text()) {
-            self.heard(name, said);
+    fn set(&mut self, mut body: Unpack) {
+        if let (Some(APPEARANCE), Some(name)) = (body.text(), body.text()) {
+            self.heard(name, body);
         }
     }
 
@@ -245,10 +245,10 @@ impl Portal {
     /// is no preference.
     fn heard(&mut self, name: &str, value: Unpack) {
         match name {
-            SCHEME => self.wish = wish_in(value),
+            SCHEME => self.dark = dark_in(value),
             ACCENT => self.accent = color_in(value),
-            CONTRAST => self.contrast = number_in(value) == Some(1),
-            MOTION => self.still = number_in(value) == Some(1),
+            CONTRAST => self.high_contrast = number_in(value) == Some(1),
+            MOTION => self.reduced_motion = number_in(value) == Some(1),
             _ => {}
         }
     }
@@ -258,9 +258,9 @@ impl Portal {
     /// it another way, by a key or its window's close button (2). (A portal whose dialog could
     /// not show at all says 2 as well. The two cannot be told apart, and a closed dialog is
     /// what happens: so it counts as that.)
-    fn ended(&mut self, request: &str, mut said: Unpack) {
+    fn ended(&mut self, request: &str, mut body: Unpack) {
         let Some(at) = self.up.iter().position(|asked| asked.request == request) else { return };
-        let file = if said.u32() == Some(0) { picked(said) } else { None };
+        let file = if body.u32() == Some(0) { chosen_file(body) } else { None };
         self.answers.push((self.up.remove(at).window, file));
     }
 
@@ -284,7 +284,7 @@ impl Portal {
     /// Asks the portal for its file dialog over a window, as `ask` does, once an app on this
     /// thread asked for the system dialog: that request hands over how (see `Asks`). (Nothing
     /// else asks for the dialog; should anything, it is answered at once with no file.)
-    pub(crate) fn ask_for_files(&mut self, session: Option<&mut Bus>, parent: &str, known: Id, ask: &FileAsk) {
+    pub(crate) fn ask_for_files(&mut self, session: Option<&mut Bus>, parent: &str, known: Id, ask: &FileDialogRequest) {
         match ASKS.get() {
             Some(asks) => asks(self, session, parent, known, ask),
             None => self.answers.push((known, None)),
@@ -296,7 +296,7 @@ impl Portal {
     /// id in the first window's interface. The portal is told the request's handle token, so
     /// where the answer comes from is known before it replies. With no portal (any more), the
     /// request is refused at once.
-    pub(crate) fn ask(&mut self, session: Option<&mut Bus>, parent: &str, known: Id, ask: &FileAsk) {
+    pub(crate) fn ask(&mut self, session: Option<&mut Bus>, parent: &str, known: Id, ask: &FileDialogRequest) {
         let Some(bus) = session.filter(|_| self.files) else { return self.refused(known) };
         self.count += 1;
         let token = format!("taut{}", self.count);
@@ -390,7 +390,7 @@ fn pattern(ending: &str) -> String {
 
 /// The colour scheme preference from the portal's setting: dark for 1, light for 2, none for
 /// anything else.
-fn wish_in(value: Unpack) -> Option<bool> {
+fn dark_in(value: Unpack) -> Option<bool> {
     match number_in(value) {
         Some(1) => Some(true),
         Some(2) => Some(false),
@@ -428,15 +428,15 @@ fn unwrapped(mut value: Unpack) -> Unpack {
 
 /// The file a file dialog answered with: of the results dict, `uris` lists the picked
 /// addresses, and the first is the one. Nothing if it is no local file.
-fn picked(mut said: Unpack) -> Option<PathBuf> {
-    let end = said.list(8)?;
-    while said.at < end {
-        let (name, kinds) = (said.take(8, 0).and(said.text())?, said.kinds()?);
+fn chosen_file(mut body: Unpack) -> Option<PathBuf> {
+    let end = body.list(8)?;
+    while body.at < end {
+        let (name, kinds) = (body.take(8, 0).and(body.text())?, body.kinds()?);
         if (name, kinds) == ("uris", "as") {
-            let last = said.list(4)?;
-            return path_of(said.text().filter(|_| said.at <= last)?.as_bytes());
+            let last = body.list(4)?;
+            return path_of(body.text().filter(|_| body.at <= last)?.as_bytes());
         }
-        said.skip(kinds)?;
+        body.skip(kinds)?;
     }
     None
 }
@@ -484,7 +484,7 @@ pub(crate) mod tests {
             let (mut side, asked) = Side::new();
             side.answers(THEM, serial(&asked, "ReadAll"), "a{sa{sv}}", &appearance(&Stand { scheme: Some(0), ..Stand::default() }));
             side.answers(THEM, serial(&asked, "Get"), "v", Pack::default().kinds("u").u32(4));
-            assert!(side.portal.files && side.portal.wish.is_none());
+            assert!(side.portal.files && side.portal.dark.is_none());
             side
         }
 
@@ -521,7 +521,7 @@ pub(crate) mod tests {
 
         /// Asks for a file dialog over X window `window`, for interface window `known`; and
         /// returns the call sent to the portal.
-        fn asks(&mut self, window: c_ulong, known: Id, ask: &FileAsk) -> Vec<(String, Vec<u8>)> {
+        fn asks(&mut self, window: c_ulong, known: Id, ask: &FileDialogRequest) -> Vec<(String, Vec<u8>)> {
             self.portal.ask(Some(&mut self.bus), &format!("x11:{window:x}"), known, ask);
             self.peer.said()
         }
@@ -550,8 +550,8 @@ pub(crate) mod tests {
     }
 
     /// A file to open, asked for as an app does.
-    fn ask() -> FileAsk {
-        FileAsk { saving: false, folders: false, folder: "/home/someone/Pictures of mine".into(), name: String::new(), endings: vec![".png".into(), ".jpeg".into()], title: "Open a file" }
+    fn ask() -> FileDialogRequest {
+        FileDialogRequest { saving: false, folders: false, folder: "/home/someone/Pictures of mine".into(), name: String::new(), endings: vec![".png".into(), ".jpeg".into()], title: "Open a file" }
     }
 
     /// What a file dialog request says: the window, the title, then each option as
@@ -612,7 +612,7 @@ pub(crate) mod tests {
     fn file_in(ending: &[u8]) -> Option<PathBuf> {
         let mut said = Message::read(ending)?.body;
         said.u32()?;
-        picked(said)
+        chosen_file(said)
     }
 
     #[test]
@@ -635,26 +635,26 @@ pub(crate) mod tests {
         let mut all = call.body;
         let end = all.list(4);
         assert_eq!((call.path, call.interface, all.text(), end == Some(all.at), asked[2].1[2]), (PORTAL_PATH, SETTINGS, Some(APPEARANCE), true, 0));
-        assert!(side.portal.wish.is_none() && !side.portal.files, "until the portal has said otherwise");
+        assert!(side.portal.dark.is_none() && !side.portal.files, "until the portal has said otherwise");
 
         // The user wants dark windows and reduced motion, and picked a colour; the file chooser
         // can pick folders. Nothing more is asked.
         let how = Stand { scheme: Some(1), accent: Some([0.0, 120.0 / 255.0, 212.0 / 255.0]), motion: Some(1), ..Stand::default() };
         assert!(side.answers(THEM, serial(&asked, "ReadAll"), "a{sa{sv}}", &appearance(&how)).is_empty() && !side.portal.files);
-        assert_eq!((side.portal.wish, side.portal.accent, side.portal.contrast, side.portal.still), (Some(true), Some(Color::rgb(0x0078d4)), false, true));
+        assert_eq!((side.portal.dark, side.portal.accent, side.portal.high_contrast, side.portal.reduced_motion), (Some(true), Some(Color::rgb(0x0078d4)), false, true));
         assert!(side.answers(THEM, serial(&asked, "Get"), "v", Pack::default().kinds("u").u32(3)).is_empty() && side.portal.files);
         assert_eq!((side.portal.asked, side.portal.owner.as_str(), side.portal.me.as_str()), ([0; 2], THEM, "1_42"));
 
         // The user changes their mind, and the portal signals it: light, dark, no preference.
         let mut changed = |from: &str, group: &str, name: &str, value: u32| {
             assert!(side.news(from, PORTAL_PATH, "SettingChanged", "ssv", &setting(group, name, value)).is_empty());
-            side.portal.wish
+            side.portal.dark
         };
-        assert_eq!([2, 1, 0, 1].map(|wish| changed(THEM, APPEARANCE, SCHEME, wish)), [Some(false), Some(true), None, Some(true)]);
+        assert_eq!([2, 1, 0, 1].map(|scheme| changed(THEM, APPEARANCE, SCHEME, scheme)), [Some(false), Some(true), None, Some(true)]);
         // Another program's word is not the portal's, and another setting is not this one.
         assert_eq!([changed(STRANGER, APPEARANCE, SCHEME, 2), changed(THEM, APPEARANCE, CONTRAST, 2), changed(THEM, "org.example", SCHEME, 2)], [Some(true); 3]);
         // (A non-number says nothing of the colour scheme.)
-        assert!(side.news(THEM, PORTAL_PATH, "SettingChanged", "ssv", Pack::default().text(APPEARANCE).text(SCHEME).kinds("s").text("dark")).is_empty() && side.portal.wish.is_none());
+        assert!(side.news(THEM, PORTAL_PATH, "SettingChanged", "ssv", Pack::default().text(APPEARANCE).text(SCHEME).kinds("s").text("dark")).is_empty() && side.portal.dark.is_none());
 
         // Contrast and reduced motion, on and off; another colour, and an invalid one (a
         // component out of range).
@@ -663,7 +663,7 @@ pub(crate) mod tests {
             said.text(APPEARANCE).text(name);
             assert!(value_of(&mut said, name, how));
             side.news(THEM, PORTAL_PATH, "SettingChanged", "ssv", &said);
-            (side.portal.contrast, side.portal.still, side.portal.accent)
+            (side.portal.high_contrast, side.portal.reduced_motion, side.portal.accent)
         };
         assert_eq!(told(CONTRAST, &Stand { contrast: Some(1), ..Stand::default() }), (true, true, Some(Color::rgb(0x0078d4))));
         assert_eq!(told(MOTION, &Stand { motion: Some(0), ..Stand::default() }), (true, false, Some(Color::rgb(0x0078d4))));
@@ -683,12 +683,12 @@ pub(crate) mod tests {
     fn what_the_portal_says_of_its_settings_comes_together_with_the_desktops() {
         // A portal without settings, or none at all: no preference is known, and the X settings
         // go.
-        let desk = Wishes { dark: true, contrast: Some(Contrast::DARK), still: true, text: 1.5, ..Wishes::default() };
+        let desk = Preferences { dark: true, high_contrast: Some(ContrastColors::DARK), reduced_motion: true, text_scale: 1.5, ..Preferences::default() };
         for (failure, from) in [("org.freedesktop.portal.Error.NotFound", THEM), (NO_SUCH_CALL, THEM), ("org.freedesktop.DBus.Error.ServiceUnknown", BUS)] {
             let (mut side, asked) = Side::new();
-            side.portal.wish = Some(false);
+            side.portal.dark = Some(false);
             assert!(side.fails(from, serial(&asked, "ReadAll"), failure).is_empty());
-            assert_eq!((side.portal.wishes(Wishes::default()), side.portal.wishes(desk)), (Wishes::default(), desk), "{failure}");
+            assert_eq!((side.portal.preferences(Preferences::default()), side.portal.preferences(desk)), (Preferences::default(), desk), "{failure}");
         }
         // One knowing some of them, among other groups and settings of every type: what it does
         // not say is no preference.
@@ -698,19 +698,19 @@ pub(crate) mod tests {
         all.pad(8).text(APPEARANCE).open(8).pad(8).text("future-setting").kinds("a{sv}").open(8).close().pad(8).text(SCHEME).kinds("u").u32(2);
         all.pad(8).text(MOTION).kinds("v").kinds("u").u32(1).close().close();
         side.answers(THEM, serial(&asked, "ReadAll"), "a{sa{sv}}", &all);
-        assert_eq!((side.portal.wish, side.portal.accent, side.portal.contrast, side.portal.still), (Some(false), None, false, true));
+        assert_eq!((side.portal.dark, side.portal.accent, side.portal.high_contrast, side.portal.reduced_motion), (Some(false), None, false, true));
         // The colour scheme preference beats the desktop's theme; contrast or reduced motion
         // counts where either says so, in the library's colours, dark or light as windows are;
         // text size is the desktop's.
-        let joined = side.portal.wishes(desk);
-        assert_eq!(joined, Wishes { dark: false, accent: None, contrast: Some(Contrast::LIGHT), still: true, text: 1.5 });
-        side.portal.contrast = true;
-        assert_eq!(side.portal.wishes(Wishes::default()).contrast, Some(Contrast::LIGHT));
-        side.portal.wish = Some(true);
-        assert_eq!(side.portal.wishes(Wishes::default()).contrast, Some(Contrast::DARK));
+        let joined = side.portal.preferences(desk);
+        assert_eq!(joined, Preferences { dark: false, accent: None, high_contrast: Some(ContrastColors::LIGHT), reduced_motion: true, text_scale: 1.5 });
+        side.portal.high_contrast = true;
+        assert_eq!(side.portal.preferences(Preferences::default()).high_contrast, Some(ContrastColors::LIGHT));
+        side.portal.dark = Some(true);
+        assert_eq!(side.portal.preferences(Preferences::default()).high_contrast, Some(ContrastColors::DARK));
         // An accent colour comes only from the portal.
         side.portal.accent = Some(Color::rgb(0x3584e4));
-        assert_eq!(side.portal.wishes(desk).accent, Some(Color::rgb(0x3584e4)));
+        assert_eq!(side.portal.preferences(desk).accent, Some(Color::rgb(0x3584e4)));
     }
 
     #[test]
@@ -720,7 +720,7 @@ pub(crate) mod tests {
         for member in ["ReadAll", "Get"] {
             assert!(side.fails(BUS, serial(&asked, member), "org.freedesktop.DBus.Error.ServiceUnknown").is_empty());
         }
-        assert!(side.portal.wish.is_none() && !side.portal.files && side.portal.owner.is_empty());
+        assert!(side.portal.dark.is_none() && !side.portal.files && side.portal.owner.is_empty());
         // (A file dialog asked anyway is refused at once, and nothing is sent.)
         assert!(side.asks(9, 5, &ask()).is_empty());
         assert_eq!(side.answered(), [(5, None)]);
@@ -735,10 +735,10 @@ pub(crate) mod tests {
         assert_eq!((names(&asked), owned(&mut side, BUS, PORTAL, ":1.8").len()), (vec!["ReadAll", "Get"], 0));
         side.answers(":1.8", serial(&asked, "ReadAll"), "a{sa{sv}}", &appearance(&Stand { scheme: Some(1), ..Stand::default() }));
         side.answers(":1.8", serial(&asked, "Get"), "v", Pack::default().kinds("u").u32(4));
-        assert!(side.portal.wish == Some(true) && side.portal.files);
+        assert!(side.portal.dark == Some(true) && side.portal.files);
         // The former portal's word is nobody's now.
         side.news(THEM, PORTAL_PATH, "SettingChanged", "ssv", &setting(APPEARANCE, SCHEME, 2));
-        assert_eq!(side.portal.wish, Some(true));
+        assert_eq!(side.portal.dark, Some(true));
 
         // The portal leaves while a dialog is up: no answer will come, the window gets the
         // library's own, and no further dialog is asked of an absent portal. (The colour scheme
@@ -746,7 +746,7 @@ pub(crate) mod tests {
         let call = side.asks(9, 5, &ask());
         side.answers(":1.8", serial(&call, "OpenFile"), "o", Pack::default().text("/org/freedesktop/portal/desktop/request/1_42/taut1"));
         assert!(side.news(BUS, BUS_PATH, "NameOwnerChanged", "sss", Pack::default().text(PORTAL).text(":1.8").text("")).is_empty());
-        assert_eq!((side.answered(), side.portal.files, side.portal.wish, side.portal.up.len()), (vec![(5, None)], false, Some(true), 0));
+        assert_eq!((side.answered(), side.portal.files, side.portal.dark, side.portal.up.len()), (vec![(5, None)], false, Some(true), 0));
         // It reappears: asked again, and it has a dialog again.
         let asked = owned(&mut side, BUS, PORTAL, ":1.9");
         side.answers(":1.9", serial(&asked, "Get"), "v", Pack::default().kinds("u").u32(4));
@@ -799,24 +799,24 @@ pub(crate) mod tests {
     #[test]
     fn a_dialog_is_asked_to_save_or_for_a_folder() {
         let mut side = Side::with_a_portal();
-        let mut asked_as = |ask: &FileAsk| {
+        let mut asked_as = |ask: &FileDialogRequest| {
             let said = side.asks(0x40, 0, ask);
             let call = Message::read(&said[0].1).unwrap();
             (call.member.to_string(), asking(call.body)[3..].join(" | "))
         };
         // Where to save, with a starting name; and without.
-        let save = FileAsk { saving: true, name: "notes of mine.txt".into(), endings: vec![".txt".into()], title: "Save as", ..ask() };
+        let save = FileDialogRequest { saving: true, name: "notes of mine.txt".into(), endings: vec![".txt".into()], title: "Save as", ..ask() };
         let folder = "current_folder=/home/someone/Pictures of mine\0";
         assert_eq!(asked_as(&save), ("SaveFile".into(), format!("{folder} | current_name=notes of mine.txt | filters=*.txt:*.[tT][xX][tT]")));
-        assert_eq!(asked_as(&FileAsk { name: String::new(), endings: Vec::new(), ..save }), ("SaveFile".into(), folder.into()));
+        assert_eq!(asked_as(&FileDialogRequest { name: String::new(), endings: Vec::new(), ..save }), ("SaveFile".into(), folder.into()));
         // A folder: filters mean nothing there. And a starting name means nothing when opening.
-        assert_eq!(asked_as(&FileAsk { folders: true, title: "Pick a folder", ..ask() }), ("OpenFile".into(), format!("{folder} | directory=1")));
-        assert_eq!(asked_as(&FileAsk { name: "report.txt".into(), endings: Vec::new(), ..ask() }), ("OpenFile".into(), folder.into()));
+        assert_eq!(asked_as(&FileDialogRequest { folders: true, title: "Pick a folder", ..ask() }), ("OpenFile".into(), format!("{folder} | directory=1")));
+        assert_eq!(asked_as(&FileDialogRequest { name: "report.txt".into(), endings: Vec::new(), ..ask() }), ("OpenFile".into(), folder.into()));
     }
 
     /// The portal is asked for its dialog in the way the first system dialog request hands over
-    /// (`Files::system`): before that, nothing is sent and the request is refused at once, as
-    /// with no portal; after, the portal is asked.
+    /// (`FileDialog::native`): before that, nothing is sent and the request is refused at once,
+    /// as with no portal; after, the portal is asked.
     #[test]
     fn the_portal_is_asked_for_a_dialog_once_an_app_has_asked_for_one() {
         let mut side = Side::with_a_portal();
@@ -951,7 +951,7 @@ pub(crate) mod tests {
         let read_all = |bytes: &[u8]| {
             let mut portal = Portal::new(None);
             portal.read_all(Message::read(bytes).map(|message| message.body));
-            (portal.wish, portal.accent, portal.contrast, portal.still)
+            (portal.dark, portal.accent, portal.high_contrast, portal.reduced_motion)
         };
         assert_eq!(read_all(&settings), (Some(true), Some(Color::rgb(0x4080bf)), true, true));
         (0..settings.len()).for_each(|len| _ = std::hint::black_box(read_all(&settings[..len])));
@@ -1162,8 +1162,8 @@ pub(crate) mod tests {
         }
 
         /// The user sets the colour scheme: 1 dark, 2 light.
-        pub(crate) fn say(&self, wish: u32) {
-            self.change(SCHEME, |how| how.scheme = Some(wish));
+        pub(crate) fn say(&self, scheme: u32) {
+            self.change(SCHEME, |how| how.scheme = Some(scheme));
         }
 
         /// The user changes appearance setting `name` as `change` does: the portal signals it.
@@ -1305,17 +1305,17 @@ pub(crate) mod tests {
         let mut portal = Portal::new(Some(&mut bus));
         // Nobody owns the portal's name: the bus says so, to both questions.
         assert!(until(&mut bus, &mut portal, |portal| portal.asked == [0; 2] && !portal.me.is_empty()));
-        assert!(portal.wish.is_none() && !portal.files && portal.owner.is_empty() && !bus.dead);
+        assert!(portal.dark.is_none() && !portal.files && portal.owner.is_empty() && !bus.dead);
 
         // A portal arrives whose user wants dark windows: the bus signals it, and it is asked.
         let stand = StandIn::start(&own.address, true, Ends::Picked(vec!["file:///tmp/a%20file%20of%20100%25/gr%C3%BCn.png".into()]));
-        assert!(until(&mut bus, &mut portal, |portal| portal.wish == Some(true) && portal.files));
+        assert!(until(&mut bus, &mut portal, |portal| portal.dark == Some(true) && portal.files));
         // The user changes their mind twice. A change to another setting is not even routed
         // here: all it hears is counted.
-        for (wish, dark) in [(2, false), (1, true)] {
+        for (scheme, dark) in [(2, false), (1, true)] {
             stand.say_other();
-            stand.say(wish);
-            assert!(until(&mut bus, &mut portal, |portal| portal.wish == Some(dark)), "wish {wish}");
+            stand.say(scheme);
+            assert!(until(&mut bus, &mut portal, |portal| portal.dark == Some(dark)), "scheme {scheme}");
         }
         let mut heard = 0;
         stand.say_other();
@@ -1325,15 +1325,15 @@ pub(crate) mod tests {
             bus.turn(&mut |bus, message| (heard, _) = (heard + 1, portal.hear(bus, message)));
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!((heard, portal.wish), (1, Some(false)), "one piece of news came, and it was the one asked for");
+        assert_eq!((heard, portal.dark), (1, Some(false)), "one piece of news came, and it was the one asked for");
         // The user asks for contrast and reduced motion, and picks a colour: the portal signals
         // each.
         stand.change(CONTRAST, |how| how.contrast = Some(1));
         stand.change(MOTION, |how| how.motion = Some(1));
         stand.change(ACCENT, |how| how.accent = Some([1.0, 0.0, 0.5]));
-        assert!(until(&mut bus, &mut portal, |portal| portal.contrast && portal.still && portal.accent == Some(Color::rgb(0xff0080))));
+        assert!(until(&mut bus, &mut portal, |portal| portal.high_contrast && portal.reduced_motion && portal.accent == Some(Color::rgb(0xff0080))));
         stand.change(MOTION, |how| how.motion = Some(0));
-        assert!(until(&mut bus, &mut portal, |portal| !portal.still) && portal.contrast);
+        assert!(until(&mut bus, &mut portal, |portal| !portal.reduced_motion) && portal.high_contrast);
 
         // A file dialog: requested, taken, answered with the file.
         portal.ask(Some(&mut bus), "x11:1e00003", 4, &ask());

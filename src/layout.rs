@@ -45,7 +45,7 @@ pub enum Flow {
     #[default]
     Column,
     /// Stacked, each placed on its own.
-    Layers,
+    Stack,
     /// In this many columns, row by row: a column is as wide as its widest box, a row as high
     /// as its tallest. Columns with a growing box share the leftover room. The gap applies
     /// between columns and rows, unless the box sets a row gap
@@ -65,7 +65,7 @@ impl Flow {
         match self {
             Flow::Row => 0,
             Flow::Column => 1,
-            Flow::Layers => 2,
+            Flow::Stack => 2,
             Flow::Grid(_) => 3,
             Flow::Wrap => 4,
         }
@@ -93,36 +93,36 @@ pub enum Align {
 /// Where a box places itself, horizontally and vertically. An [`Align`] alone sets both
 /// ([`Align::End`]: the far corner, [`Align::Center`]: the middle); a pair sets each
 /// (`(Align::End, Align::Center)`: right, vertically centred). (One non-zero byte, so
-/// `Option<Spot>` costs boxes without one nothing: every box is copied as it is described, and
-/// 8 more bytes per box made describing a window a sixth slower.)
+/// `Option<Placement>` costs boxes without one nothing: every box is copied as it is described,
+/// and 8 more bytes per box made describing a window a sixth slower.)
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Spot(std::num::NonZeroU8);
+pub struct Placement(std::num::NonZeroU8);
 
-impl Spot {
+impl Placement {
     /// `across` horizontally, `down` vertically.
-    pub const fn at(across: Align, down: Align) -> Spot {
-        Spot(std::num::NonZeroU8::new(1 + across as u8 + ((down as u8) << 2)).unwrap())
+    pub const fn new(across: Align, down: Align) -> Placement {
+        Placement(std::num::NonZeroU8::new(1 + across as u8 + ((down as u8) << 2)).unwrap())
     }
     /// Horizontal alignment.
-    pub const fn across(self) -> Align {
+    pub const fn horizontal(self) -> Align {
         [Align::Start, Align::Center, Align::End, Align::Spread][((self.0.get() - 1) & 3) as usize]
     }
     /// Vertical alignment.
-    pub const fn down(self) -> Align {
+    pub const fn vertical(self) -> Align {
         [Align::Start, Align::Center, Align::End, Align::Spread][((self.0.get() - 1) >> 2) as usize]
     }
 }
 
-impl From<Align> for Spot {
+impl From<Align> for Placement {
     #[inline]
-    fn from(both: Align) -> Spot {
-        Spot::at(both, both)
+    fn from(both: Align) -> Placement {
+        Placement::new(both, both)
     }
 }
-impl From<(Align, Align)> for Spot {
+impl From<(Align, Align)> for Placement {
     #[inline]
-    fn from((across, down): (Align, Align)) -> Spot {
-        Spot::at(across, down)
+    fn from((across, down): (Align, Align)) -> Placement {
+        Placement::new(across, down)
     }
 }
 
@@ -138,7 +138,7 @@ pub(crate) enum Content {
     /// The app's own shape, by index in the UI's list, which also says how it is drawn.
     Shape { shape: u32 },
     /// An image the UI keeps, by index. (For these three, `keep` draws it aspect-fit: see
-    /// [`El::keep_shape`](crate::El::keep_shape).)
+    /// [`El::keep_aspect`](crate::El::keep_aspect).)
     Picture { picture: u32, keep: bool },
     /// An SVG drawing, by index, with the colour for its `currentColor` parts.
     Drawing { drawing: u32, color: Color, keep: bool },
@@ -166,7 +166,7 @@ impl Content {
     #[inline]
     pub fn shape_key(&self) -> u64 {
         let Content::Text { font, wrap, .. } = *self else { return 0 };
-        mix(Part::Text as u64, (font.face.number() as u64) << 40 | (font.size.to_bits() as u64) << 8 | (font.rule as u64) << 3 | wrap as u64)
+        mix(Part::Text as u64, (font.face.number() as u64) << 40 | (font.size.to_bits() as u64) << 8 | (font.decoration as u64) << 3 | wrap as u64)
     }
 }
 
@@ -192,8 +192,8 @@ pub(crate) enum Part {
     Focus,
     Shadow,
     Edited,
-    Kept,
-    Gives,
+    Pinned,
+    Shrink,
     /// (Not in the frame, but read by layout too: the text's font and wrapping.)
     Text,
 }
@@ -215,7 +215,7 @@ pub(crate) struct Frame {
     pub across: Align,
     /// This box's own alignment across its parent's flow, if it differs from its siblings'; in
     /// a stack, both ways.
-    pub place: Option<Spot>,
+    pub place: Option<Placement>,
     /// Offset from where layout puts it; what follows does not move.
     pub nudge: [f32; 2],
     /// Which axes it scrolls on. And whether it keeps its vertical scroll bar gutter free (see
@@ -233,21 +233,21 @@ pub(crate) struct Frame {
     /// Its text is being edited, so a cursor and selection marks draw just outside the text.
     pub edited: bool,
     /// It stays in view while its parent scrolls vertically: 1 at the parent's top (where it is
-    /// when unscrolled), 2 at its bottom (where it is when fully scrolled); `STICKS` at the top
+    /// when unscrolled), 2 at its bottom (where it is when fully scrolled); `STICKY` at the top
     /// of the nearest scroll box, while the rest of its parent passes under it; 0 scrolls with
     /// the rest.
-    pub kept: u8,
+    pub pinned: u8,
     /// How readily it shrinks along its parent's flow when short of room: 0 never; of 1 to 3,
-    /// higher first. Plus `NARROWS`: in rows only, it narrows but never gets shorter.
-    pub gives: u8,
+    /// higher first. Plus `SHRINK_WIDTH`: in rows only, it narrows but never gets shorter.
+    pub shrink: u8,
 }
 
-/// Added to `gives`: shrinks its width in a row, never its height in a column.
-pub(crate) const NARROWS: u8 = 4;
-/// `Frame::kept` for a sticky heading of what follows it in its parent: at the top of the
+/// Added to `shrink`: shrinks its width in a row, never its height in a column.
+pub(crate) const SHRINK_WIDTH: u8 = 4;
+/// `Frame::pinned` for a sticky heading of what follows it in its parent: at the top of the
 /// nearest vertical scroll box while that scrolls under it (see
 /// [`El::sticky`](crate::El::sticky)).
-pub(crate) const STICKS: u8 = 3;
+pub(crate) const STICKY: u8 = 3;
 
 /// What only sticky headings need: how far one sits below its scrolled position
 /// (`Tree::pinned`), which one lies over a box at the top of a scroll view
@@ -257,9 +257,9 @@ pub(crate) const STICKS: u8 = 3;
 pub(crate) struct Sticks {
     pub pinned: fn(&Tree, u32) -> f32,
     pub over: fn(&Tree, u32, u32) -> Option<u32>,
-    pub pin: fn(&mut crate::survey::Lying, &Tree, u32, Rect) -> bool,
+    pub pin: fn(&mut crate::visible_boxes::Lying, &Tree, u32, Rect) -> bool,
 }
-pub(crate) static STICKING: Sticks = Sticks { pinned: Tree::pinned, over: Tree::heading_over, pin: crate::survey::Lying::pin_below };
+pub(crate) static STICKING: Sticks = Sticks { pinned: Tree::pinned, over: Tree::heading_over, pin: crate::visible_boxes::Lying::pin_below };
 
 /// Whether any value in a frame is NaN: then the frame is unequal even to itself.
 #[cfg(debug_assertions)]
@@ -290,8 +290,8 @@ impl Default for Frame {
             focus: false,
             shadow: 0.0,
             edited: false,
-            kept: 0,
-            gives: 0,
+            pinned: 0,
+            shrink: 0,
         }
     }
 }
@@ -318,11 +318,11 @@ pub(crate) fn grow_where_it_scrolls(frame: &mut Frame) -> u64 {
 }
 
 impl Frame {
-    /// How readily it shrinks along `axis` (1 to 3, see `gives`); 0 if it doesn't, as
+    /// How readily it shrinks along `axis` (1 to 3, see `shrink`); 0 if it doesn't, as
     /// vertically for a box that only narrows.
     #[inline(always)]
     fn yields(&self, axis: usize) -> u8 {
-        if axis == 1 && self.gives & NARROWS != 0 { 0 } else { self.gives & 3 }
+        if axis == 1 && self.shrink & SHRINK_WIDTH != 0 { 0 } else { self.shrink & 3 }
     }
     /// One part of the frame, as a hash.
     #[inline(always)]
@@ -343,7 +343,7 @@ impl Frame {
             Part::PadAfter => pair(self.pad.right, self.pad.bottom),
             Part::Gap => self.gap.to_bits() as u64,
             Part::Align => self.along as u64 | (self.across as u64) << 8,
-            Part::Place => self.place.map_or(16, |place| place.across() as u64 | (place.down() as u64) << 2),
+            Part::Place => self.place.map_or(16, |place| place.horizontal() as u64 | (place.vertical() as u64) << 2),
             Part::Nudge => pair(self.nudge[0], self.nudge[1]),
             Part::Scroll => self.scroll[0] as u64 | (self.scroll[1] as u64) << 1 | (self.strip as u64) << 2,
             Part::Clip => self.clip as u64,
@@ -351,8 +351,8 @@ impl Frame {
             Part::Focus => self.focus as u64,
             Part::Shadow => self.shadow.to_bits() as u64,
             Part::Edited => self.edited as u64,
-            Part::Kept => self.kept as u64,
-            Part::Gives => self.gives as u64,
+            Part::Pinned => self.pinned as u64,
+            Part::Shrink => self.shrink as u64,
             Part::Text => 0,
         }
     }
@@ -377,8 +377,8 @@ impl Frame {
             Part::Focus,
             Part::Shadow,
             Part::Edited,
-            Part::Kept,
-            Part::Gives,
+            Part::Pinned,
+            Part::Shrink,
         ];
         PARTS.iter().fold(0, |sum, part| sum ^ mix(*part as u64, self.part(*part)))
     }
@@ -470,7 +470,7 @@ pub(crate) struct Place {
     /// How much its shrinking children can give, at each of the three readiness levels.
     give: [f32; 3],
     // What it has for its children on the way down:
-    room: f32,
+    available: f32,
     spare: f32,
     shares: f32,
     pen: f32,
@@ -569,14 +569,14 @@ impl Tree {
     /// fully scrolled; a sticky heading, as `pinned` says.
     pub fn stuck(&self, at: u32) -> f32 {
         let frame = &self.specs[at as usize].frame;
-        match frame.kept {
+        match frame.pinned {
             0 => 0.0,
             1 => self.specs[frame.parent as usize].offset[1],
             2 => self.specs[frame.parent as usize].offset[1] - self.scroll_end(frame.parent, 1),
             _ => self.sticks.map_or(0.0, |sticks| (sticks.pinned)(self, at)),
         }
     }
-    /// How far below its scrolled position a sticky heading (`STICKS`) at `at` sits: where it
+    /// How far below its scrolled position a sticky heading (`STICKY`) at `at` sits: where it
     /// would scroll above the top of its nearest vertical scroll box (or the page), it sits at
     /// that top; but no lower than keeps it inside its parent, and above the next sticky
     /// heading there. (Only computed for such a heading: it finds what it needs walking up its
@@ -603,24 +603,24 @@ impl Tree {
             false => from + self.specs[parent as usize].offset[1] + self.places[parent as usize].dim[1],
         };
         let (mut next, stop) = (self.specs[at as usize].end, self.specs[parent as usize].end);
-        while next < stop && !(self.specs[next as usize].frame.parent == parent && self.specs[next as usize].frame.kept == STICKS) {
+        while next < stop && !(self.specs[next as usize].frame.parent == parent && self.specs[next as usize].frame.pinned == STICKY) {
             next = self.specs[next as usize].end;
         }
         let end = if next < stop { end.min(from + self.places[next as usize].pos[1]) } else { end };
         let natural = from + self.places[at as usize].pos[1];
         (line.min(end - high) - natural).max(0.0)
     }
-    /// The sticky heading (`STICKS`) over box `at` while it is at the top of what `within`
+    /// The sticky heading (`STICKY`) over box `at` while it is at the top of what `within`
     /// scrolls: the last one before it in one of its ancestors, inside `within`. `None` if
     /// there is none, and for content of a sticky heading (which is at the top itself then).
     fn heading_over(&self, at: u32, within: u32) -> Option<u32> {
         let mut inner = at;
         while inner != NONE && inner != within {
-            if self.specs[inner as usize].frame.kept == STICKS {
+            if self.specs[inner as usize].frame.pinned == STICKY {
                 return None;
             }
             let parent = self.specs[inner as usize].frame.parent;
-            let heads = self.children(parent).take_while(|child| *child < inner).filter(|child| self.specs[*child as usize].frame.kept == STICKS).last();
+            let heads = self.children(parent).take_while(|child| *child < inner).filter(|child| self.specs[*child as usize].frame.pinned == STICKY).last();
             if heads.is_some() {
                 return heads;
             }
@@ -632,7 +632,7 @@ impl Tree {
     /// The room box `at` has for its children along `axis`. (Less the scroll bar gutter:
     /// vertically the bottom one, if it scrolls sideways; horizontally the side one, if it
     /// keeps that free.)
-    pub fn room(&self, at: u32, axis: usize) -> f32 {
+    pub fn available(&self, at: u32, axis: usize) -> f32 {
         let frame = &self.specs[at as usize].frame;
         let strip = if axis == 1 && self.has_bar(at, 0) || axis == 0 && frame.strip { BAR } else { 0.0 };
         self.places[at as usize].dim[axis] - frame.pad_along(axis) - strip
@@ -644,7 +644,7 @@ impl Tree {
     }
     /// The part of box `at` (at `r`) its scrolled content shows in: its view between the
     /// kept-in-view boxes at its top and bottom.
-    pub fn scrolled(&self, at: u32, r: Rect) -> Rect {
+    pub fn scrolled_view(&self, at: u32, r: Rect) -> Rect {
         let (view, [top, bottom], pad) = (self.view(at, r), self.places[at as usize].bands, self.specs[at as usize].frame.pad);
         if top + bottom == 0.0 {
             return view;
@@ -660,7 +660,7 @@ impl Tree {
     /// Whether box `at` has more content along `axis` than room, so it scrolls. (The page, by
     /// more than half a unit: its children's shares may add up to a little more than it.)
     pub fn overflows(&self, at: u32, axis: usize) -> bool {
-        self.specs[at as usize].frame.scroll[axis] && self.extent(at, axis) > self.room(at, axis) || axis == 1 && at == PAGE && self.extent(at, 1) > self.room(at, 1) + 0.5
+        self.specs[at as usize].frame.scroll[axis] && self.extent(at, axis) > self.available(at, axis) || axis == 1 && at == PAGE && self.extent(at, 1) > self.available(at, 1) + 0.5
     }
     /// Whether box `at` scrolls along `axis`: a box set to ([`El::scroll`](crate::El::scroll)),
     /// and the page vertically. The page is laid out as a non-scrolling box, so growing
@@ -681,7 +681,7 @@ impl Tree {
         if at == PAGE && !self.overflows(at, axis) {
             return 0.0;
         }
-        (self.extent(at, axis) - self.room(at, axis)).max(0.0)
+        (self.extent(at, axis) - self.available(at, axis)).max(0.0)
     }
     /// Everything box `at` draws on, from its own corner: the box, its shadow (offset a quarter
     /// down), and for edited text the cursor and selection marks just outside it. Unclipped
@@ -859,30 +859,30 @@ impl Tree {
             (up.pen, up.taken_up[axis]) = (up.pen + place.dim[axis] + up.between, up.taken_up[axis] + place.dim[axis] + around.gap);
             // A kept-in-view box takes its height, and the gap after it, from the scrolled
             // area.
-            if matches!(frame.kept, 1 | 2) && axis == 1 {
-                up.bands[frame.kept as usize - 1] += place.dim[1] + up.between;
+            if matches!(frame.pinned, 1 | 2) && axis == 1 {
+                up.bands[frame.pinned as usize - 1] += place.dim[1] + up.between;
             }
             return;
         }
         // Across the flow, and in a stack: each child on its own.
-        let own = frame.place.map(|place| [place.across(), place.down()][axis]);
-        let how = own.unwrap_or(if around.flow == Flow::Layers && axis == 0 { around.along } else { around.across });
+        let own = frame.place.map(|place| [place.horizontal(), place.vertical()][axis]);
+        let how = own.unwrap_or(if around.flow == Flow::Stack && axis == 0 { around.along } else { around.across });
         let fills = matches!(frame.size[axis], Length::Grow(_)) || (how == Align::Spread && frame.size[axis] == Length::Fit);
         let keeps = around.scroll[axis] || matches!(frame.size[axis], Length::Px(_));
         // In a box scrolling this way, a filling child is no smaller than its content.
         let want = if fills && around.scroll[axis] {
-            up.room.max(place.fit[axis])
+            up.available.max(place.fit[axis])
         } else if fills {
-            up.room
+            up.available
         } else if keeps {
             place.fit[axis]
         } else {
-            place.fit[axis].min(up.room)
+            place.fit[axis].min(up.available)
         };
         place.dim[axis] = want.max(frame.min[axis]).min(frame.max[axis]);
         let spare = match how {
-            Align::Center => (up.room - place.dim[axis]) / 2.0,
-            Align::End => up.room - place.dim[axis],
+            Align::Center => (up.available - place.dim[axis]) / 2.0,
+            Align::End => up.available - place.dim[axis],
             _ => 0.0,
         };
         place.pos[axis] = around.pad_before(axis) + spare + frame.nudge[axis];
@@ -897,7 +897,7 @@ impl Tree {
             Flow::Wrap => self.seat_lines(i as u32, axis),
             _ => {}
         }
-        let room = self.room(i as u32, axis);
+        let room = self.available(i as u32, axis);
         let (frame, place) = (&self.specs[i].frame, &mut self.places[i]);
         let spare = (room - place.fixed - frame.gap * (place.count - 1.0).max(0.0)).max(0.0);
         // Spare room no child takes goes before the children, or between them.
@@ -911,7 +911,7 @@ impl Tree {
             Align::Spread if place.count > 1.0 => between += spare / (place.count - 1.0),
             _ => {}
         }
-        (place.room, place.spare, place.shares, place.pen, place.between) = (room, spare, place.weight, pen, between);
+        (place.available, place.spare, place.shares, place.pen, place.between) = (room, spare, place.weight, pen, between);
         // How much the children overflow, where they flow this way and nothing scrolls: the
         // shrinking ones make up for it between them.
         let over = place.fixed + frame.gap * (place.count - 1.0).max(0.0) - room;
@@ -1002,7 +1002,7 @@ impl Tree {
         let used = self.measure_tracks(grid, axis, columns);
         let frame = self.specs[grid as usize].frame;
         let gap = if axis == 0 { frame.gap } else { self.line_gap(grid) };
-        let spare = (self.room(grid, axis) - used).max(0.0);
+        let spare = (self.available(grid, axis) - used).max(0.0);
         // Spare room goes to the growing tracks; then each track's size becomes its start and
         // size.
         let mut tracks = std::mem::take(&mut self.tracks);
@@ -1064,7 +1064,7 @@ impl Tree {
     /// line goes where the row's alignment says. Vertically: each on its line, aligned in the
     /// line's height as the row's cross alignment says.
     fn seat_lines(&mut self, row: u32, axis: usize) {
-        let (frame, room, end, down) = (self.specs[row as usize].frame, self.room(row, axis), self.specs[row as usize].end, self.line_gap(row));
+        let (frame, room, end, down) = (self.specs[row as usize].frame, self.available(row, axis), self.specs[row as usize].end, self.line_gap(row));
         if axis == 0 {
             self.break_lines(row, room);
         } else {
@@ -1237,9 +1237,9 @@ mod tests {
         let row = |gives: [u8; 2], number: f32| {
             let (_, rects) = laid_out(Frame::default(), |t| {
                 let name = label(t, 0, &"n".repeat(20), false) as usize;
-                (t.specs[name].frame.gives, t.specs[name].frame.min[0]) = (gives[0], 24.0);
+                (t.specs[name].frame.shrink, t.specs[name].frame.min[0]) = (gives[0], 24.0);
                 let path = label(t, 0, &"p".repeat(30), false) as usize;
-                t.specs[path].frame.gives = gives[1];
+                t.specs[path].frame.shrink = gives[1];
                 add(t, 0, sized(Length::Px(number), Length::Px(10.0)));
             });
             [rects[0].w, rects[1].w, rects[2].x]
@@ -1259,7 +1259,7 @@ mod tests {
         // With room to spare, nothing shrinks.
         let (_, rects) = laid_out(Frame::default(), |t| {
             let name = label(t, 0, "name", false) as usize;
-            t.specs[name].frame.gives = 1;
+            t.specs[name].frame.shrink = 1;
             add(t, 0, sized(Length::Grow(1.0), Length::Px(10.0)));
         });
         assert_eq!((rects[0].w, rects[1].w), (24.0, 176.0));
@@ -1271,11 +1271,11 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn a_box_is_no_bigger_than_it_has_to_be() {
-        assert_eq!((size_of::<Frame>(), size_of::<Spec>(), size_of::<Option<Spot>>()), (84, 160, 1));
+        assert_eq!((size_of::<Frame>(), size_of::<Spec>(), size_of::<Option<Placement>>()), (84, 160, 1));
         // A box's own alignment, each axis, round-trips through its one byte.
         for (across, down) in [(Align::Start, Align::Start), (Align::End, Align::Center), (Align::Center, Align::Spread), (Align::Spread, Align::End)] {
-            let spot = Spot::at(across, down);
-            assert_eq!((spot.across(), spot.down(), Spot::from((across, down)), Spot::from(across)), (across, down, spot, Spot::at(across, across)));
+            let spot = Placement::new(across, down);
+            assert_eq!((spot.horizontal(), spot.vertical(), Placement::from((across, down)), Placement::from(across)), (across, down, spot, Placement::new(across, across)));
         }
     }
 
@@ -1286,7 +1286,7 @@ mod tests {
         let column = |gives: u8| {
             let (_, rects) = laid_out(Frame::default(), |t| {
                 let column = add(t, 0, Frame { flow: Flow::Column, ..sized(Length::Px(50.0), Length::Px(100.0)) });
-                add(t, column, Frame { gives, ..sized(Length::Px(50.0), Length::Px(60.0)) });
+                add(t, column, Frame { shrink: gives, ..sized(Length::Px(50.0), Length::Px(60.0)) });
                 add(t, column, sized(Length::Px(50.0), Length::Px(70.0)));
             });
             [rects[1].h, rects[2].y]
@@ -1294,10 +1294,10 @@ mod tests {
         // Along its parent's flow, whichever way: it shrinks its height.
         assert_eq!(column(1), [30.0, 30.0]);
         // One that only narrows keeps it, and the overflow runs out of the column.
-        assert_eq!(column(1 | NARROWS), [60.0, 60.0]);
+        assert_eq!(column(1 | SHRINK_WIDTH), [60.0, 60.0]);
         // In a row it narrows like any shrinking box.
         let (_, rects) = laid_out(Frame::default(), |t| {
-            add(t, 0, Frame { gives: 1 | NARROWS, ..sized(Length::Px(150.0), Length::Px(10.0)) });
+            add(t, 0, Frame { shrink: 1 | SHRINK_WIDTH, ..sized(Length::Px(150.0), Length::Px(10.0)) });
             add(t, 0, sized(Length::Px(120.0), Length::Px(10.0)));
         });
         assert_eq!((rects[0].w, rects[1].x), (80.0, 80.0));
@@ -1412,7 +1412,7 @@ mod tests {
             ui.wrapping_row().w(Length::Px(200.0)).gap(4.0).line_gap(*down).open();
             let t = ui.theme;
             for tag in ["one", "two", "three", "four", "five", "six", "seven"] {
-                ui.el().pad(4.0).fill(t.raise).text(tag, t.font, t.text).show();
+                ui.el().pad(4.0).fill(t.raised).text(tag, t.font, t.text).show();
             }
             ui.close();
             ui.close();

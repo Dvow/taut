@@ -22,13 +22,13 @@
 //! Keys, as in other programs: Ctrl+Tab brings the next panel of a place to the front and
 //! focuses it, Ctrl+F6 focuses the next place, Shift reverses both, Ctrl+F4 closes a closable
 //! panel.
+use crate::accessibility::Role;
 use crate::color::Color;
 use crate::event::{Cursor, Key, Mods};
 use crate::geom::{Point, Rect, pt, rect};
 use crate::id::{Id, hash};
 use crate::layout::{Align, Flow, Length};
 use crate::panel::{LEAST, Panel};
-use crate::told::Role;
 use crate::ui::{Anchor, Icon, Measure, Response, Ui};
 use crate::widgets::CROSS;
 
@@ -50,9 +50,9 @@ const STEP: f32 = 0.05;
 const FILL: Icon = Icon::line("M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10");
 const BACK: Icon = Icon::line("M6 2.5V6H2.5M13.5 6H10V2.5M10 13.5V10h3.5M2.5 10H6v3.5");
 
-/// One place in a dock.
+/// One node of a dock's layout.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Place {
+pub enum DockNode {
     /// Stacked panels, chosen by tabs.
     Tabs {
         /// Panel names.
@@ -89,7 +89,7 @@ pub(crate) struct Home {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Dock {
     /// Its places; the first is the whole dock.
-    pub places: Vec<Place>,
+    pub nodes: Vec<DockNode>,
     /// Panels floating over the window instead, each with its placement.
     pub floating: Vec<(String, Panel)>,
     /// Panels the user closed with their tab's close button (where allowed:
@@ -98,7 +98,7 @@ pub struct Dock {
     pub closed: Vec<String>,
     /// The panel maximized within the dock, with the rest of its place: usually none. The user
     /// toggles it with the button at the end of its tabs.
-    pub filled: Option<String>,
+    pub maximized: Option<String>,
     /// Where each floating or closed panel returns.
     pub(crate) homes: Vec<Home>,
 }
@@ -106,7 +106,7 @@ pub struct Dock {
 impl Dock {
     /// A dock of these panels as tabs.
     pub fn of(names: &[&str]) -> Self {
-        Dock { places: vec![Place::Tabs { names: names.iter().map(|name| name.to_string()).collect(), front: 0 }], ..Default::default() }
+        Dock { nodes: vec![DockNode::Tabs { names: names.iter().map(|name| name.to_string()).collect(), front: 0 }], ..Default::default() }
     }
     /// This dock on the left with `share` of the width, `other` on the right.
     pub fn beside(self, other: Dock, share: f32) -> Self {
@@ -118,7 +118,7 @@ impl Dock {
     }
     /// The names of all shown panels: docked, then floating.
     pub fn panels(&self) -> impl Iterator<Item = &str> {
-        let docked = self.places.iter().flat_map(|place| if let Place::Tabs { names, .. } = place { names.as_slice() } else { &[] });
+        let docked = self.nodes.iter().flat_map(|place| if let DockNode::Tabs { names, .. } = place { names.as_slice() } else { &[] });
         docked.map(String::as_str).chain(self.floating.iter().map(|(name, _)| name.as_str()))
     }
     /// Whether a panel is open: not among the closed ones.
@@ -148,40 +148,40 @@ impl Dock {
         let known = |name: &String| names.contains(&name.as_str());
         self.closed.retain(known);
         self.homes.retain(|home| known(&home.name));
-        self.filled = self.filled.filter(known);
+        self.maximized = self.maximized.filter(known);
         self
     }
     fn joined(self, other: Dock, across: bool, share: f32) -> Self {
         // Both place lists go behind a new first place; their indices shift by that.
-        let moved = |place: Place, by: usize| match place {
-            Place::Split { across, share, first, second } => Place::Split { across, share, first: first + by, second: second + by },
+        let moved = |place: DockNode, by: usize| match place {
+            DockNode::Split { across, share, first, second } => DockNode::Split { across, share, first: first + by, second: second + by },
             other => other,
         };
-        let second = 1 + self.places.len();
-        let mut places = vec![Place::Split { across, share, first: 1, second }];
-        places.extend(self.places.into_iter().map(|place| moved(place, 1)));
-        places.extend(other.places.into_iter().map(|place| moved(place, second)));
+        let second = 1 + self.nodes.len();
+        let mut places = vec![DockNode::Split { across, share, first: 1, second }];
+        places.extend(self.nodes.into_iter().map(|place| moved(place, 1)));
+        places.extend(other.nodes.into_iter().map(|place| moved(place, second)));
         let (floating, closed, homes) = ([self.floating, other.floating].concat(), [self.closed, other.closed].concat(), [self.homes, other.homes].concat());
-        Dock { places, floating, closed, filled: self.filled.or(other.filled), homes }
+        Dock { nodes: places, floating, closed, maximized: self.maximized.or(other.maximized), homes }
     }
 
     /// Where a panel is: place and tab.
     fn find(&self, name: &str) -> Option<(usize, usize)> {
-        let tab = |place: &Place| if let Place::Tabs { names, .. } = place { names.iter().position(|tab| tab == name) } else { None };
-        self.places.iter().enumerate().find_map(|(at, place)| tab(place).map(|tab| (at, tab)))
+        let tab = |place: &DockNode| if let DockNode::Tabs { names, .. } = place { names.iter().position(|tab| tab == name) } else { None };
+        self.nodes.iter().enumerate().find_map(|(at, place)| tab(place).map(|tab| (at, tab)))
     }
     /// The first tab place: where a panel with nowhere else to go goes.
     fn first_tabs(&self) -> usize {
-        self.places.iter().position(|place| matches!(place, Place::Tabs { .. })).unwrap_or(0)
+        self.nodes.iter().position(|place| matches!(place, DockNode::Tabs { .. })).unwrap_or(0)
     }
     /// The first panel in a place, descending into the first half of a split: one standing for
     /// the place.
     fn first_in(&self, mut at: usize) -> Option<&str> {
-        for _ in 0..self.places.len() {
-            match self.places.get(at)? {
-                Place::Split { first, .. } => at = *first,
-                Place::Tabs { names, .. } => return names.first().map(String::as_str),
-                Place::Gone => return None,
+        for _ in 0..self.nodes.len() {
+            match self.nodes.get(at)? {
+                DockNode::Split { first, .. } => at = *first,
+                DockNode::Tabs { names, .. } => return names.first().map(String::as_str),
+                DockNode::Gone => return None,
             }
         }
         None
@@ -190,41 +190,41 @@ impl Dock {
     fn take(&mut self, name: &str) {
         self.floating.retain(|(floating, _)| floating != name);
         let Some((at, mut tab)) = self.find(name) else { return };
-        let Place::Tabs { names, front } = &mut self.places[at] else { return };
+        let DockNode::Tabs { names, front } = &mut self.nodes[at] else { return };
         names.remove(tab);
         // The front panel stays in front: removing one before it shifts its index.
         let stays = if tab < *front { *front - 1 } else { *front };
         (*front, tab) = (stays.min(names.len().saturating_sub(1)), names.len());
-        let shared = self.places.iter().position(|place| matches!(place, Place::Split { first, second, .. } if *first == at || *second == at));
+        let shared = self.nodes.iter().position(|place| matches!(place, DockNode::Split { first, second, .. } if *first == at || *second == at));
         let (Some(shared), 0) = (shared, tab) else { return };
-        let Place::Split { first, second, .. } = self.places[shared] else { return };
-        let stays = std::mem::replace(&mut self.places[if first == at { second } else { first }], Place::Gone);
-        (self.places[shared], self.places[at]) = (stays, Place::Gone);
+        let DockNode::Split { first, second, .. } = self.nodes[shared] else { return };
+        let stays = std::mem::replace(&mut self.nodes[if first == at { second } else { first }], DockNode::Gone);
+        (self.nodes[shared], self.nodes[at]) = (stays, DockNode::Gone);
     }
     /// Puts a panel into place `at`: among its tabs (in front) for `MIDDLE`, else on that side,
     /// splitting the place; the panel's side gets `share` of the room.
     fn put(&mut self, name: &str, at: usize, side: usize, share: f32) {
-        if self.places.is_empty() {
-            self.places.push(Place::Tabs { names: Vec::new(), front: 0 });
+        if self.nodes.is_empty() {
+            self.nodes.push(DockNode::Tabs { names: Vec::new(), front: 0 });
         }
-        let at = at.min(self.places.len() - 1);
-        if let (MIDDLE, Place::Tabs { names, front }) = (side, &mut self.places[at]) {
+        let at = at.min(self.nodes.len() - 1);
+        if let (MIDDLE, DockNode::Tabs { names, front }) = (side, &mut self.nodes[at]) {
             names.push(name.into());
             *front = names.len() - 1;
             return;
         }
         // The old place moves to a free slot; this one is held meanwhile so it is not taken as
         // free.
-        let was = std::mem::replace(&mut self.places[at], Place::Tabs { names: Vec::new(), front: 0 });
-        let (kept, new) = (self.keep(was), self.keep(Place::Tabs { names: vec![name.into()], front: 0 }));
+        let was = std::mem::replace(&mut self.nodes[at], DockNode::Tabs { names: Vec::new(), front: 0 });
+        let (kept, new) = (self.keep(was), self.keep(DockNode::Tabs { names: vec![name.into()], front: 0 }));
         let (first, second, share) = if side < 2 { (new, kept, share) } else { (kept, new, 1.0 - share) };
-        self.places[at] = Place::Split { across: side.is_multiple_of(2), share, first, second };
+        self.nodes[at] = DockNode::Split { across: side.is_multiple_of(2), share, first, second };
     }
     /// Stores a place in a free slot; returns its index.
-    fn keep(&mut self, place: Place) -> usize {
-        let free = self.places.iter().skip(1).position(|place| *place == Place::Gone).map_or(self.places.len(), |at| at + 1);
-        self.places.resize(self.places.len().max(free + 1), Place::Gone);
-        self.places[free] = place;
+    fn keep(&mut self, place: DockNode) -> usize {
+        let free = self.nodes.iter().skip(1).position(|place| *place == DockNode::Gone).map_or(self.nodes.len(), |at| at + 1);
+        self.nodes.resize(self.nodes.len().max(free + 1), DockNode::Gone);
+        self.nodes[free] = place;
         free
     }
     /// Moves a panel to panel `beside`'s place: among its tabs, or onto a side, taking `share`
@@ -240,16 +240,16 @@ impl Dock {
     /// its place, beside its sibling place, on its side and with its share.
     fn home_of(&self, name: &str) -> Option<Home> {
         let (at, _) = self.find(name)?;
-        let Place::Tabs { names, .. } = &self.places[at] else { return None };
+        let DockNode::Tabs { names, .. } = &self.nodes[at] else { return None };
         let home = |beside: &str, side: usize, share: f32| Some(Home { name: name.into(), beside: beside.into(), side, share });
         if let Some(other) = names.iter().find(|other| *other != name) {
             return home(other, MIDDLE, 0.5);
         }
-        let halves = |place: &Place| match *place {
-            Place::Split { across, share, first, second } if first == at || second == at => Some((across, share, first == at, if first == at { second } else { first })),
+        let halves = |place: &DockNode| match *place {
+            DockNode::Split { across, share, first, second } if first == at || second == at => Some((across, share, first == at, if first == at { second } else { first })),
             _ => None,
         };
-        let (across, share, before, other) = self.places.iter().find_map(halves)?;
+        let (across, share, before, other) = self.nodes.iter().find_map(halves)?;
         // Before the other: left or above; after it: right or below.
         home(self.first_in(other)?, [[3, 1], [2, 0]][across as usize][before as usize], if before { share } else { 1.0 - share })
     }
@@ -260,7 +260,7 @@ impl Dock {
             self.homes.push(home);
         }
         self.take(name);
-        self.filled = self.filled.take().filter(|filled| filled != name);
+        self.maximized = self.maximized.take().filter(|filled| filled != name);
     }
     /// Puts a panel back where it was, in front: beside the panel it was beside, if docked;
     /// else among the first tabs.
@@ -292,12 +292,12 @@ impl Dock {
         // Places still to lay out, each with its room: never more than a few at once. (And no
         // more steps than places: a malformed dock whose places form a cycle lays out wrong,
         // but ends.)
-        let (mut waiting, mut count, mut steps) = ([(0usize, area); 32], 1, self.places.len());
+        let (mut waiting, mut count, mut steps) = ([(0usize, area); 32], 1, self.nodes.len());
         while count > 0 && steps > 0 {
             (count, steps) = (count - 1, steps - 1);
             let (at, room) = waiting[count];
-            let Some(Place::Split { across, share, first, second }) = self.places.get(at).filter(|_| count + 2 <= waiting.len()) else {
-                tabs.extend(self.places.get(at).filter(|place| matches!(place, Place::Tabs { .. })).map(|_| (at, room)));
+            let Some(DockNode::Split { across, share, first, second }) = self.nodes.get(at).filter(|_| count + 2 <= waiting.len()) else {
+                tabs.extend(self.nodes.get(at).filter(|place| matches!(place, DockNode::Tabs { .. })).map(|_| (at, room)));
                 continue;
             };
             let [near, bar, far] = halves(room, *across, *share);
@@ -360,19 +360,19 @@ impl Ui {
     pub fn dock(&mut self, dock: &mut Dock) {
         let (id, at) = (self.next_id(), self.tree.specs.len() as u32);
         let read = self.rooms.get(&id).copied().unwrap_or([self.size().w, self.size().h, 0.0]);
-        self.el().flow(Flow::Layers).grow().clip().sense().open();
+        self.el().flow(Flow::Stack).grow().clip().sense().open();
         self.measures.push(Measure { at, within: at, id, read });
         let (mut tabs, mut bars) = (std::mem::take(&mut self.docks), std::mem::take(&mut self.dock_bars));
         tabs.clear();
         bars.clear();
         // A maximized panel gets all of it; the others none.
         let whole = rect(0.0, 0.0, read[0], read[1]);
-        let filled = dock.filled.as_deref().and_then(|name| dock.find(name));
+        let filled = dock.maximized.as_deref().and_then(|name| dock.find(name));
         match filled {
             Some((place, _)) => tabs.push((place, whole)),
             None => dock.lay(whole, &mut tabs, &mut bars),
         }
-        dock.filled = dock.filled.take().filter(|_| filled.is_some());
+        dock.maximized = dock.maximized.take().filter(|_| filled.is_some());
         let area = self.seen(id);
         self.dock_keys(dock, &tabs, area);
         for (place, bar, long) in bars.iter().copied() {
@@ -406,7 +406,7 @@ impl Ui {
         // The target place, and its tabs.
         let count = tabs.len() as i32;
         let to = here.map_or(if place < 0 { count - 1 } else { 0 }, |here| (here as i32 + place).rem_euclid(count)) as usize;
-        let Some(Place::Tabs { names, front }) = dock.places.get_mut(tabs[to].0) else { return };
+        let Some(DockNode::Tabs { names, front }) = dock.nodes.get_mut(tabs[to].0) else { return };
         *front = (*front as i32 + tab).rem_euclid(names.len().max(1) as i32) as usize;
         let Some(name) = names.get(*front).cloned() else { return };
         self.again = true;
@@ -421,11 +421,11 @@ impl Ui {
     /// (Home/End to its ends); screen readers get a slider named by the panels either side.
     fn dock_bar(&mut self, dock: &mut Dock, place: usize, bar: Rect, long: f32) {
         let t = self.theme;
-        let name = match (self.listening, dock.places.get(place)) {
-            (true, Some(Place::Split { first, second, .. })) => [*first, *second].map(|half| dock.first_in(half).unwrap_or("")).join(", "),
+        let name = match (self.listening, dock.nodes.get(place)) {
+            (true, Some(DockNode::Split { first, second, .. })) => [*first, *second].map(|half| dock.first_in(half).unwrap_or("")).join(", "),
             _ => String::new(),
         };
-        let Some(Place::Split { across, share, .. }) = dock.places.get_mut(place) else { return };
+        let Some(DockNode::Split { across, share, .. }) = dock.nodes.get_mut(place) else { return };
         let hold = self.interact(self.id((place, "bar")));
         let was = *share;
         if hold.focused {
@@ -441,13 +441,13 @@ impl Ui {
         if hold.hovered || hold.pressed {
             self.set_cursor(if *across { Cursor::ResizeX } else { Cursor::ResizeY });
         }
-        if let Some((gone, was)) = self.held(&hold, [*share, 0.0, 0.0, 0.0]) {
+        if let Some((gone, was)) = self.drag_delta(&hold, [*share, 0.0, 0.0, 0.0]) {
             let to = (was[0] + if *across { gone.x } else { gone.y } / long.max(1.0)).clamp(0.05, 0.95);
             (self.again, *share) = (self.again || to != *share, to);
         }
         let fill = if hold.hovered || hold.pressed || hold.focused { t.accent } else { t.line };
-        self.el().key((place, "bar")).at(bar.x, bar.y).size(bar.w, bar.h).fill(fill).sense().focusable().show();
-        self.tell_amount_named(&hold, Role::Slider, [*share, 0.05, 0.95], &name);
+        self.el().key((place, "bar")).offset(bar.x, bar.y).size(bar.w, bar.h).fill(fill).sense().focusable().show();
+        self.tell_value_named(&hold, Role::Slider, [*share, 0.05, 0.95], &name);
         self.tell_step(STEP);
     }
 
@@ -455,18 +455,18 @@ impl Ui {
     /// reorders, dragged off it drags its panel; a double click floats it, its close button (or
     /// the middle button) closes it. At the strip's end, the maximize/restore button.
     fn dock_tabs(&mut self, dock: &mut Dock, place: usize, room: Rect, area: Rect, places: &[(usize, Rect)]) {
-        let (t, filled, split) = (self.theme, dock.filled.is_some(), dock.places.len() > 1);
-        let Some(Place::Tabs { names, front }) = dock.places.get_mut(place) else { return };
-        let strip = self.row().key((place, "tabs")).at(room.x, room.y).size(room.w, TABS).pad((4.0, 0.0)).gap(2.0).fill(t.panel).clip().sense().open();
+        let (t, filled, split) = (self.theme, dock.maximized.is_some(), dock.nodes.len() > 1);
+        let Some(DockNode::Tabs { names, front }) = dock.nodes.get_mut(place) else { return };
+        let strip = self.row().key((place, "tabs")).offset(room.x, room.y).size(room.w, TABS).pad((4.0, 0.0)).gap(2.0).fill(t.panel).clip().sense().open();
         self.tell(&strip, Role::Tabs, None, "");
-        let (mut picked, mut moved, mut floats, mut shut, mut goes) = (None, None, None, None, None);
+        let (mut selected, mut moved, mut floats, mut shut, mut goes) = (None, None, None, None, None);
         for number in 0..names.len() {
             let beside = [number.checked_sub(1), Some(number + 1)].map(|at| at.and_then(|at| names.get(at)).map(String::as_str));
             let done = self.dock_tab(&names[number], number == *front, beside, strip.rect);
-            self.tell_place(number + 1, names.len());
+            self.tell_position(number + 1, names.len());
             // A tab dragged and dropped over itself was not selected.
             let (gone, released) = (self.gone(), self.input.released[0]);
-            picked = picked.or((done.tab.clicked && !(released && gone.x.abs().max(gone.y.abs()) > 4.0)).then_some(number));
+            selected = selected.or((done.tab.clicked && !(released && gone.x.abs().max(gone.y.abs()) > 4.0)).then_some(number));
             moved = moved.or((done.moves != 0).then(|| (number, (number as isize + done.moves as isize) as usize)));
             floats = floats.or(done.tab.double_clicked.then_some(number));
             shut = shut.or(done.closed.then_some(number));
@@ -479,7 +479,7 @@ impl Ui {
             *front = [to, from, *front][if *front == from { 0 } else { 1 + (*front != to) as usize }];
             self.again = true;
         }
-        *front = picked.unwrap_or(*front);
+        *front = selected.unwrap_or(*front);
         let [floats, shut] = [floats, shut].map(|at| at.and_then(|at| names.get(at)).cloned());
         let goes = goes.and_then(|(at, to)| Some((names.get(at)?.clone(), to)));
         self.spacer();
@@ -487,6 +487,12 @@ impl Ui {
             self.fill_button(dock, place);
         }
         self.close();
+        self.dock_tab_requests(dock, [floats, shut], goes, room, area);
+    }
+
+    /// Acts on what a place's tabs asked: panel `floats` floats near the place (`room`, in
+    /// `area`), `shut` closes, and `goes` joins the tabs of the place it was sent to.
+    fn dock_tab_requests(&mut self, dock: &mut Dock, [floats, shut]: [Option<String>; 2], goes: Option<(String, usize)>, room: Rect, area: Rect) {
         if let Some(name) = floats {
             let (window, x, y) = (self.size(), area.x + room.x + 24.0, area.y + room.y + 24.0);
             let [w, h] = [room.w.max(LEAST[0]).min(window.w), room.h.max(LEAST[1]).min(window.h)];
@@ -499,7 +505,7 @@ impl Ui {
         }
         // Sent by keys to the neighbouring place, the panel joins its tabs, and focus follows
         // it.
-        let beside = goes.and_then(|(name, to)| if let Some(Place::Tabs { names, front }) = dock.places.get(to) { Some((name, names.get(*front)?.clone())) } else { None });
+        let beside = goes.and_then(|(name, to)| if let Some(DockNode::Tabs { names, front }) = dock.nodes.get(to) { Some((name, names.get(*front)?.clone())) } else { None });
         if let Some((name, beside)) = beside {
             dock.move_to(&name, &beside, MIDDLE, 0.5);
             (self.frame.into, self.again) = (Some(name), true);
@@ -515,24 +521,24 @@ impl Ui {
         // The tab and its close button are one box in the strip, keyed by the panel's name,
         // that senses the pointer so neighbouring tabs know where it is. In a strip too narrow
         // for all its tabs, each shrinks, its name ending in "…".
-        self.row().key(name).h(Length::Grow(1.0)).align(Align::Start, Align::Spread).gives_way(1).min(36.0, 0.0).sense().open();
+        self.row().key(name).h(Length::Grow(1.0)).align(Align::Start, Align::Spread).shrink(1).min(36.0, 0.0).sense().open();
         let tab = self.press(self.id("tab"));
         if self.frame.into.as_deref() == Some(name) {
             self.frame.into_tab = tab.id;
         }
         // Dragged a little with the button down: along the strip it passes its neighbours, off
         // the strip it drags its panel.
-        let (at, carrying) = (self.pointer().unwrap_or_default(), self.carried_panel == name);
-        let held = self.held(&tab, [0.0; 4]).is_some_and(|(gone, _)| gone.x.abs().max(gone.y.abs()) > 4.0);
+        let (at, carrying) = (self.pointer().unwrap_or_default(), self.dragged_panel == name);
+        let held = self.drag_delta(&tab, [0.0; 4]).is_some_and(|(gone, _)| gone.x.abs().max(gone.y.abs()) > 4.0);
         let along = held && !carrying && strip.grow(STRAY).contains(at);
         if held && !along {
-            self.carried_panel.clear();
-            self.carried_panel.push_str(name);
+            self.dragged_panel.clear();
+            self.dragged_panel.push_str(name);
         }
         let x = if along { at.x } else { f32::NAN };
         let ink = if front || tab.hovered { t.text } else { t.text_dim };
         let right = if closable { 4.0 } else { 10.0 };
-        self.column().key("tab").pad((10.0, 7.0, right, 0.0)).align(Align::Spread, Align::Spread).gives_way(1).sense().focusable().open();
+        self.column().key("tab").pad((10.0, 7.0, right, 0.0)).align(Align::Spread, Align::Spread).shrink(1).sense().focusable().open();
         self.el().text(name, t.font, ink).clip().show();
         self.el().h(Length::Px(2.0)).radius(1.0).fill(if front { t.accent } else { Color::NONE }).show();
         self.close();
@@ -567,14 +573,14 @@ impl Ui {
         self.close();
         let words = self.frame_words.close;
         self.tell(&cross, Role::Button, None, words);
-        self.tell_keys("Ctrl+F4");
+        self.tell_shortcut("Ctrl+F4");
         cross.clicked
     }
     /// The button at the end of a tab strip that maximizes its place within the dock, and
     /// restores it.
     fn fill_button(&mut self, dock: &mut Dock, place: usize) {
         let t = self.theme;
-        let fills = dock.filled.as_ref().and_then(|name| dock.find(name)).is_some_and(|(at, _)| at == place);
+        let fills = dock.maximized.as_ref().and_then(|name| dock.find(name)).is_some_and(|(at, _)| at == place);
         let state = self.press(self.id("fill"));
         let ink = if state.hovered || state.focused { t.text } else { t.text_dim };
         self.row().key("fill").size(22.0, 22.0).align(Align::Center, Align::Center).fill(if state.hovered { t.hover } else { Color::NONE }).radius(4.0).sense().focusable().open();
@@ -584,8 +590,8 @@ impl Ui {
         self.tell(&state, Role::Button, Some(fills), words);
         self.tooltip(&state, words);
         if state.clicked {
-            let front = if let Some(Place::Tabs { names, front }) = dock.places.get(place) { names.get(*front).cloned() } else { None };
-            (dock.filled, self.again) = (if fills { None } else { front }, true);
+            let front = if let Some(DockNode::Tabs { names, front }) = dock.nodes.get(place) { names.get(*front).cloned() } else { None };
+            (dock.maximized, self.again) = (if fills { None } else { front }, true);
         }
     }
 
@@ -620,7 +626,7 @@ impl Ui {
             return false;
         };
         let room = self.docks.iter().find(|(at, _)| *at == place).map(|(_, room)| *room);
-        let (Some(room), Some(Place::Tabs { front, .. })) = (room, dock.places.get(place)) else { return false };
+        let (Some(room), Some(DockNode::Tabs { front, .. })) = (room, dock.nodes.get(place)) else { return false };
         if *front != tab {
             return false;
         }
@@ -628,7 +634,7 @@ impl Ui {
         if self.frame.into.as_deref() == Some(name) {
             self.frame.into_box = Some((at, self.frame.into_tab));
         }
-        self.column().key(name).at(room.x, room.y + TABS).size(room.w, (room.h - TABS).max(0.0)).pad(10.0).gap(t.gap).scroll().sense().open();
+        self.column().key(name).offset(room.x, room.y + TABS).size(room.w, (room.h - TABS).max(0.0)).pad(10.0).gap(t.gap).scroll().sense().open();
         true
     }
     /// Focuses the panel focus was sent to: its first focusable part, or else its tab. (After
@@ -652,7 +658,7 @@ impl Ui {
         // drag.
         let gone = self.gone();
         if self.panel_held && gone.x.abs().max(gone.y.abs()) > 4.0 {
-            self.carried_panel.clone_from(name);
+            self.dragged_panel.clone_from(name);
         }
         let (twice, shut) = (std::mem::take(&mut self.frame.title_twice), !panel.open);
         if twice || shut {
@@ -671,10 +677,10 @@ impl Ui {
     /// puts the panel where the target under the pointer says (over a tab strip, among its
     /// tabs). A tab dropped on no target floats there.
     fn let_go_on(&mut self, dock: &mut Dock, id: Id) {
-        if self.carried_panel.is_empty() {
+        if self.dragged_panel.is_empty() {
             return;
         }
-        let (name, area) = (std::mem::take(&mut self.carried_panel), self.seen(id));
+        let (name, area) = (std::mem::take(&mut self.dragged_panel), self.seen(id));
         let at = self.pointer().unwrap_or(Point { x: -1.0, y: -1.0 });
         // The place under the pointer, in window coordinates, and its target under it.
         let under = self.docks.iter().map(|(place, room)| (*place, room.moved(area.x, area.y))).find(|(_, room)| room.contains(at));
@@ -690,7 +696,7 @@ impl Ui {
         }
         // Dragged as long as the button is down; the dragger says so every run.
         if held && !self.input.released[0] {
-            self.carried_panel = name;
+            self.dragged_panel = name;
         }
     }
 
@@ -700,12 +706,12 @@ impl Ui {
         let t = self.theme;
         self.layer(id ^ MARKS, Anchor::At(pt(0.0, 0.0)), false, Color::NONE);
         let window = self.size();
-        self.el().flow(Flow::Layers).size(window.w, window.h).open();
+        self.el().flow(Flow::Stack).size(window.w, window.h).open();
         let takes = aimed.map_or(Rect::EMPTY, |side| marks(room)[side].1);
-        self.el().at(takes.x, takes.y).size(takes.w, takes.h).fill(t.accent.alpha(0.22)).show();
+        self.el().offset(takes.x, takes.y).size(takes.w, takes.h).fill(t.accent.with_alpha(0.22)).show();
         for (side, (mark, _)) in marks(room).iter().enumerate() {
-            let fill = if aimed == Some(side) { t.accent } else { t.raise };
-            self.el().at(mark.x, mark.y).size(mark.w, mark.h).radius(6.0).fill(fill).border(t.line_strong, 1.0).show();
+            let fill = if aimed == Some(side) { t.accent } else { t.raised };
+            self.el().offset(mark.x, mark.y).size(mark.w, mark.h).radius(6.0).fill(fill).border(t.line_strong, 1.0).show();
         }
         self.close();
     }
@@ -717,7 +723,7 @@ impl Ui {
         let floats = dock.floating.iter().any(|(floating, _)| floating == name);
         // The front panel of the aimed place identifies it, whatever removing this panel does
         // to place indices.
-        let beside = aimed.and_then(|(place, _)| if let Some(Place::Tabs { names, .. }) = dock.places.get(place) { names.iter().find(|other| *other != name).cloned() } else { None });
+        let beside = aimed.and_then(|(place, _)| if let Some(DockNode::Tabs { names, .. }) = dock.nodes.get(place) { names.iter().find(|other| *other != name).cloned() } else { None });
         match (aimed, beside) {
             (Some((_, side)), Some(beside)) => dock.move_to(name, &beside, side, 0.5),
             // Alone in the place it was dropped on: it is there already.
@@ -734,13 +740,13 @@ mod tests {
 
     fn tabs(dock: &Dock, name: &str) -> Vec<String> {
         let (place, _) = dock.find(name).unwrap();
-        if let Place::Tabs { names, .. } = &dock.places[place] { names.clone() } else { Vec::new() }
+        if let DockNode::Tabs { names, .. } = &dock.nodes[place] { names.clone() } else { Vec::new() }
     }
     /// Front panels' rects by name, in a 400 by 300 dock.
     fn rooms(dock: &Dock) -> Vec<(String, Rect)> {
         let (mut places, mut bars) = (Vec::new(), Vec::new());
         dock.lay(rect(0.0, 0.0, 400.0, 300.0), &mut places, &mut bars);
-        let named = |(place, room): &(usize, Rect)| if let Place::Tabs { names, front } = &dock.places[*place] { (names[*front].clone(), *room) } else { (String::new(), *room) };
+        let named = |(place, room): &(usize, Rect)| if let DockNode::Tabs { names, front } = &dock.nodes[*place] { (names[*front].clone(), *room) } else { (String::new(), *room) };
         let mut rooms: Vec<_> = places.iter().map(named).collect();
         rooms.sort_by(|a, b| a.0.cmp(&b.0));
         rooms
@@ -797,11 +803,11 @@ mod tests {
 
     #[test]
     fn places_that_name_each_other_in_a_ring_are_not_laid_out_for_ever() {
-        let ring = |first, second| Place::Split { across: true, share: 0.5, first, second };
-        let tabs = Place::Tabs { names: vec!["a".into()], front: 0 };
+        let ring = |first, second| DockNode::Split { across: true, share: 0.5, first, second };
+        let tabs = DockNode::Tabs { names: vec!["a".into()], front: 0 };
         for places in [vec![ring(0, 0)], vec![ring(1, 2), ring(0, 2), tabs.clone()], vec![ring(1, 1), tabs.clone()], vec![ring(7, 9)]] {
             let (mut rooms, mut bars) = (Vec::new(), Vec::new());
-            Dock { places, ..Default::default() }.lay(rect(0.0, 0.0, 400.0, 300.0), &mut rooms, &mut bars);
+            Dock { nodes: places, ..Default::default() }.lay(rect(0.0, 0.0, 400.0, 300.0), &mut rooms, &mut bars);
             assert!(rooms.len() <= 2 && bars.len() <= 3);
         }
     }
@@ -844,10 +850,10 @@ mod tests {
     #[test]
     fn a_panel_that_fills_the_dock_leaves_it_when_it_floats_or_closes() {
         let mut dock = Dock::of(&["a"]).beside(Dock::of(&["b"]), 0.5);
-        dock.filled = Some("b".into());
+        dock.maximized = Some("b".into());
         dock.float("a", Panel::default());
-        assert_eq!(dock.filled.as_deref(), Some("b"));
+        assert_eq!(dock.maximized.as_deref(), Some("b"));
         dock.close("b");
-        assert_eq!(dock.filled, None);
+        assert_eq!(dock.maximized, None);
     }
 }

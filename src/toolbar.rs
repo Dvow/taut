@@ -15,12 +15,12 @@
 //! described, so each tool knows whether it fits. One that does not becomes a row of the end
 //! menu, which is described after the rest of the window; a row picked there goes to its tool
 //! when next described, at once.
+use crate::accessibility::Role;
 use crate::color::Color;
 use crate::event::{Cursor, Key, Mods};
 use crate::id::Id;
 use crate::layout::{Align, Length};
-use crate::menus::{Lead, Row};
-use crate::told::Role;
+use crate::popups::{Lead, Row};
 use crate::ui::{Icon, Measure, Response, Ui};
 
 /// The room a group separator takes along the bar, and the gap between tools.
@@ -129,7 +129,7 @@ impl Ui {
     /// whether it is down, for a toggle.
     fn tool_like(&mut self, icon: Icon, hint: &str, on: Option<bool>) -> Response {
         let Some(at) = self.this_bar() else { return self.tool_button(None, icon, hint, on) };
-        let (control, bar) = (self.theme.control, &mut self.frame.bars[at]);
+        let (control, bar) = (self.theme.control_height, &mut self.frame.bars[at]);
         let (nth, line) = (bar.count, std::mem::take(&mut bar.line) && bar.count > 0);
         let wide = control + GAP + if line { LINE + GAP } else { 0.0 };
         // Room is kept for the end button while not all tools fit.
@@ -168,7 +168,7 @@ impl Ui {
             (false, false) => (Color::NONE, t.text_dim),
         };
         let edge = if on == Some(true) { t.accent } else { Color::NONE };
-        let frame = self.row().size(t.control, t.control).align(Align::Center, Align::Center).fill(fill).border(edge, 1.0).radius(t.radius);
+        let frame = self.row().size(t.control_height, t.control_height).align(Align::Center, Align::Center).fill(fill).border(edge, 1.0).radius(t.radius);
         match nth {
             Some(nth) => frame.key(("tool", nth)).sense().focusable().open(),
             None => frame.sense().focusable().open(),
@@ -177,16 +177,16 @@ impl Ui {
         self.close();
         let (name, keys) = hint.split_once('\t').unwrap_or((hint, ""));
         self.tell(&state, Role::Button, on, name);
-        self.tell_keys(keys);
+        self.tell_shortcut(keys);
         self.tooltip(&state, hint);
         state
     }
     /// The line between two groups of tools.
     fn tool_line(&mut self, at: usize) {
         let (t, down) = (self.theme, self.frame.bars[at].down);
-        let [wide, high] = if down { [t.control, LINE] } else { [LINE, t.control] };
+        let [wide, high] = if down { [t.control_height, LINE] } else { [LINE, t.control_height] };
         self.row().size(wide, high).align(Align::Center, Align::Center).open();
-        self.el().size(if down { t.control - 10.0 } else { 1.0 }, if down { 1.0 } else { t.control - 10.0 }).fill(t.line).show();
+        self.el().size(if down { t.control_height - 10.0 } else { 1.0 }, if down { 1.0 } else { t.control_height - 10.0 }).fill(t.line).show();
         self.close();
     }
 
@@ -200,7 +200,7 @@ impl Ui {
             self.pop_up(more, state.rect, down);
         }
         let fill = if open || state.hovered { t.hover } else { Color::NONE };
-        self.row().key("more").size(t.control, t.control).align(Align::Center, Align::Center).fill(fill).radius(t.radius).sense().focusable().open();
+        self.row().key("more").size(t.control_height, t.control_height).align(Align::Center, Align::Center).fill(fill).radius(t.radius).sense().focusable().open();
         self.el().icon(MORE, 16.0, if open || state.hovered { t.text } else { t.text_dim }).show();
         self.close();
         let words = self.frame_words.more;

@@ -7,7 +7,7 @@ Measurements: [costs and speed](costs-and-speed.md).
 | | taut | egui | iced | Slint | Dioxus | gtk-rs (gtk4) | Tauri |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Model | one function from app state, run on events | immediate mode | Elm: state, messages, update, view | `.slint` markup | React-like components | GTK widgets | a web page talking to Rust |
-| Drawn by | the CPU, into the system window | the GPU (wgpu or OpenGL) | wgpu, or tiny-skia on the CPU | femtovg (OpenGL), Skia, or the CPU | the system web view | GTK | the system web view |
+| Drawn by | the CPU; shown by Direct3D 11/12, Vulkan, OpenGL or the system window | the GPU (wgpu or OpenGL) | wgpu, or tiny-skia on the CPU | femtovg (OpenGL), Skia, or the CPU | the system web view | GTK | the system web view |
 | Systems | Windows, Linux | Windows, macOS, Linux, web, Android | Windows, macOS, Linux, web | Windows, macOS, Linux, Android, iOS, embedded, web | Windows, macOS, Linux, iOS, Android, web | where GTK 4 is installed | Windows, macOS, Linux, iOS, Android |
 | Screen readers | own: UI Automation, AT-SPI | AccessKit | none in 0.14 | AccessKit | the web view's | GTK's | the web view's |
 | Needs besides Rust | nothing | nothing | nothing | nothing | WebKitGTK dev files on Linux | GTK 4 dev files | C++ build tools and WebView2; WebKitGTK 4.1 dev files on Linux |

@@ -1,5 +1,5 @@
 //! Linux under Wayland: windows the compositor shows, spoken to over its socket in the
-//! protocol's bytes (`wire`). Text is as under X (FreeType with Fontconfig's fonts,
+//! protocol's bytes (`wayland_wire`). Text is as under X (FreeType with Fontconfig's fonts,
 //! `x11::SystemText`, which needs no X server), and so are screen readers and the desktop
 //! portal over D-Bus (`atspi`, `portal`).
 //!
@@ -15,11 +15,11 @@
 //! compositor still holds the first when something must be drawn: that one is brought up to
 //! date by redrawing what changed since it was last committed. (Under Wayland the program keeps
 //! its pixels, where X keeps them for it: so windows draw straight into the buffer, with no
-//! strip.)
+//! title bar.)
 //!
 //! Decorations are the compositor's where it offers them (`xdg-decoration`); else the library
-//! draws its own title strip over the window (`frame`), as a subsurface. Bare and see-through
-//! windows have neither.
+//! draws its own title bar over the window (`decorations`), as a subsurface. Bare and
+//! see-through windows have neither.
 //!
 //! Optional protocols are used where offered: cursor shapes by name (`cursor-shape`, else the
 //! desktop cursor theme via `xcursor`), fractional scale (`fractional-scale` with
@@ -31,7 +31,7 @@
 //! fingers are taken as such (`touch`).
 //!
 //! Compositor differences are handled as they come: one that draws no decorations (Mutter,
-//! Weston) gets the library's title strip; one that reports a window's output only once it
+//! Weston) gets the library's title bar; one that reports a window's output only once it
 //! shows (Mutter, Sway, Weston) gets it first drawn at the outputs' largest scale; one that
 //! puts a new window behind the active one (Mutter) is asked to activate a second window as it
 //! maps, and the first with the startup token the desktop gave; one that leaves a window to
@@ -39,25 +39,25 @@
 //!
 //! What no program can do under Wayland, by design: know or set its window's screen position,
 //! stay above other programs, or come to the front unless the compositor agrees (it is asked,
-//! with the last input serial as reason). So a window's place for its app ([`Ui::placed`]) is
-//! where the app asked it to open, unchanged: a place kept one day still works on a day it runs
-//! under X.
+//! with the last input serial as reason). So a window's place for its app
+//! ([`Ui::window_placement`]) is where the app asked it to open, unchanged: a place kept one
+//! day still works on a day it runs under X.
 use crate::atspi::{Bus, Message as BusMessage};
-use crate::bare::Grip;
 use crate::canvas::Canvas;
 use crate::color::Color;
+use crate::decorations::{self, Asked, Strip};
 use crate::event::{Button, Cursor, Event, Mods};
-use crate::files::FileAsk;
-use crate::frame::{self, Asked, Strip};
+use crate::file_dialog::FileDialogRequest;
+use crate::frameless::HitTest;
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::id::Id;
 use crate::keymap::Keyboard;
-use crate::platform::{Clipboard, PicturesAndFiles, Placed, Window};
+use crate::platform::{Clipboard, PicturesAndFiles, Window, WindowPlacement};
+use crate::preferences::Preferences;
 use crate::text::{Font, Metrics, TextSystem};
-use crate::touch::{Phase, Stylus, Touch};
+use crate::touch::{Stylus, Touch, TouchPhase};
 use crate::ui::Ui;
-use crate::wire::{Arg, Interface, Message, Shared, Wire};
-use crate::wishes::Wishes;
+use crate::wayland_wire::{Arg, Interface, Message, Shared, Wire};
 use crate::x11::{MOST, PollFd, Session, SystemText, WOKEN, decimal, files_in, lists_of, pipe_ends, poll, read};
 use std::cell::{Cell, RefCell};
 use std::ffi::c_int;
@@ -91,7 +91,7 @@ const SIDE: [u32; 3] = [0x14b, 0x14c, 0x149];
 const NOTCH: f32 = 48.0;
 const STEPS: f32 = 120.0;
 
-/// Two presses on a window's strip within this many ms are a double press.
+/// Two presses on a window's title bar within this many ms are a double press.
 const DOUBLE_PRESS: u32 = 500;
 
 /// `xdg_toplevel` states: maximized, fullscreen, activated, suspended (as when minimized: the
@@ -137,14 +137,14 @@ struct Has {
 struct Link {
     wire: Wire,
     has: Has,
-    board: RefCell<Board>,
+    clipboard: RefCell<ClipboardState>,
     serial: Cell<u32>,
 }
 
 /// The Wayland clipboard: whoever copied last offers it in some MIME types and hands it to any
 /// program that asks.
 #[derive(Default)]
-struct Board {
+struct ClipboardState {
     /// The seat's data device (0: none).
     device: u32,
     /// What was copied here while it is the selection: each type it is offered as with its
@@ -204,7 +204,7 @@ impl Link {
         if has.compositor == 0 || has.shm == 0 || has.shell == 0 {
             return None;
         }
-        Some((Link { wire, has, board: RefCell::default(), serial: Cell::new(0) }, outputs))
+        Some((Link { wire, has, clipboard: RefCell::default(), serial: Cell::new(0) }, outputs))
     }
 
     /// The registry's globals: name, interface and version each. Nothing where it says nothing
@@ -228,20 +228,20 @@ impl Link {
     /// The clipboard content in the first of `kinds` it offers; nothing if none. What was
     /// copied here is at hand, and nobody is asked.
     fn get(&self, kinds: &[&str]) -> Option<Vec<u8>> {
-        let board = self.board.borrow();
-        if !board.held.is_empty() {
-            return kinds.iter().find_map(|kind| board.held.iter().find(|(held, _)| held == kind)).map(|(_, bytes)| bytes.to_vec());
+        let clipboard = self.clipboard.borrow();
+        if !clipboard.held.is_empty() {
+            return kinds.iter().find_map(|kind| clipboard.held.iter().find(|(held, _)| held == kind)).map(|(_, bytes)| bytes.to_vec());
         }
-        let offer = board.selection;
-        let kind = kinds.iter().find(|kind| board.offers.iter().any(|(id, has)| *id == offer && has.iter().any(|has| has == *kind)))?;
-        drop(board);
+        let offer = clipboard.selection;
+        let kind = kinds.iter().find(|kind| clipboard.offers.iter().any(|(id, has)| *id == offer && has.iter().any(|has| has == *kind)))?;
+        drop(clipboard);
         self.receive(offer, kind)
     }
 
     /// Asks the offering program for one MIME type through a pipe and reads it all. Five
     /// seconds for that, as under X; more than `MOST` is no answer.
     fn receive(&self, offer: u32, kind: &str) -> Option<Vec<u8>> {
-        let (out, into) = crate::wire::pipe()?;
+        let (out, into) = crate::wayland_wire::pipe()?;
         self.wire.send(offer, 1, &[Arg::Text(kind), Arg::File(into.as_raw_fd())]);
         drop(into);
         let (until, mut file, mut all) = (Instant::now() + Duration::from_secs(5), std::fs::File::from(out), Vec::new());
@@ -264,27 +264,27 @@ impl Link {
     /// bytes. The compositor only hears the types; the bytes stay here until asked for. (The
     /// previous data source goes when the compositor cancels it, as for every copy.)
     fn set(&self, kinds: Vec<(&'static str, Rc<[u8]>)>) {
-        let mut board = self.board.borrow_mut();
-        let (wire, device) = (&self.wire, board.device);
-        (board.source, board.held) = (0, kinds);
+        let mut clipboard = self.clipboard.borrow_mut();
+        let (wire, device) = (&self.wire, clipboard.device);
+        (clipboard.source, clipboard.held) = (0, kinds);
         if device == 0 {
             return; // no seat: the copy stays inside the program
         }
         let source = wire.make(Interface::DataSource);
         wire.send(self.has.data, 0, &[Arg::Uint(source)]);
-        board.held.iter().for_each(|(kind, _)| wire.send(source, 0, &[Arg::Text(kind)]));
+        clipboard.held.iter().for_each(|(kind, _)| wire.send(source, 0, &[Arg::Text(kind)]));
         wire.send(device, 1, &[Arg::Object(source), Arg::Uint(self.serial.get())]);
         wire.flush();
-        board.source = source;
+        clipboard.source = source;
     }
 
     /// Another program asks for what was copied here, in one type, through a pipe: a thread of
     /// its own writes it and ends when done (or the reader stops), so no window waits.
     fn hand_over(&self, kind: &str, file: Option<OwnedFd>) {
-        let bytes = self.board.borrow().held.iter().find(|(held, _)| *held == kind).map(|(_, bytes)| bytes.to_vec());
+        let bytes = self.clipboard.borrow().held.iter().find(|(held, _)| *held == kind).map(|(_, bytes)| bytes.to_vec());
         let (Some(file), Some(bytes)) = (file, bytes) else { return };
         std::thread::spawn(move || {
-            crate::wire::no_signal_for_pipes();
+            crate::wayland_wire::no_signal_for_pipes();
             std::io::Write::write_all(&mut std::fs::File::from(file), &bytes)
         });
     }
@@ -292,25 +292,25 @@ impl Link {
     /// The compositor says this program's data source is no longer the selection: another copy
     /// replaced it (another program's, or a later one of this program's).
     fn cancelled(&self, source: u32) {
-        let mut board = self.board.borrow_mut();
+        let mut clipboard = self.clipboard.borrow_mut();
         self.wire.send(source, 1, &[]);
-        if board.source == source {
-            (board.source, board.held) = (0, Vec::new());
+        if clipboard.source == source {
+            (clipboard.source, clipboard.held) = (0, Vec::new());
         }
     }
 
     /// Whether an offer has a MIME type.
     fn offers(&self, offer: u32, kind: &str) -> bool {
-        self.board.borrow().offers.iter().any(|(id, has)| *id == offer && has.iter().any(|has| has == kind))
+        self.clipboard.borrow().offers.iter().any(|(id, has)| *id == offer && has.iter().any(|has| has == kind))
     }
 
     /// Destroys an offer and forgets it.
     fn forget(&self, offer: u32) {
-        let mut board = self.board.borrow_mut();
-        if offer != 0 && board.offers.iter().any(|(id, _)| *id == offer) {
+        let mut clipboard = self.clipboard.borrow_mut();
+        if offer != 0 && clipboard.offers.iter().any(|(id, _)| *id == offer) {
             self.wire.send(offer, 2, &[]);
             self.wire.note(offer, Interface::Free);
-            board.offers.retain(|(id, _)| *id != offer);
+            clipboard.offers.retain(|(id, _)| *id != offer);
         }
     }
 }
@@ -415,7 +415,7 @@ impl SystemClipboard {
     }
     /// Puts a picture on the clipboard as PNG.
     fn put_picture(&mut self, width: usize, pixels: &[u32]) {
-        let Some(png) = crate::png::encode_clear(width, pixels) else { return };
+        let Some(png) = crate::png::encode_rgba(width, pixels) else { return };
         self.0.set(vec![(PICTURE, png.into())]);
     }
     /// The files as a URI list; or, from a file manager offering nothing else, its own list.
@@ -478,7 +478,7 @@ impl Buffer {
     }
 }
 
-/// A surface the library draws: a window's, or its title strip's. It knows its buffers, its
+/// A surface the library draws: a window's, or its title bar's. It knows its buffers, its
 /// size, what changed since the last commit, and whether the compositor has shown it yet.
 struct Sheet {
     surface: u32,
@@ -631,7 +631,7 @@ fn paint_area(buffer: &mut Buffer, area: Rect, scale: f32, clear: bool, paint: &
     }
     let rows = &mut buffer.memory.pixels()[(top * width) as usize..(bottom * width) as usize];
     let mut canvas = Canvas::new(rows, width as usize, (bottom - top) as usize, (0, top), scale);
-    canvas.clip(area.on_pixels(scale));
+    canvas.clip(area.snap_to_pixels(scale));
     if clear {
         canvas.erase();
     }
@@ -640,16 +640,16 @@ fn paint_area(buffer: &mut Buffer, area: Rect, scale: f32, clear: bool, paint: &
 
 /// A window's kind, fixed when it was made.
 struct Kind {
-    /// Frameless: the app draws its own strip and it is resized by its edges.
-    bare: bool,
-    /// See-through; and it keeps its creation size unless also bare.
-    clear: bool,
+    /// Frameless: the app draws its own title bar and it is resized by its edges.
+    frameless: bool,
+    /// See-through; and it keeps its creation size unless also frameless.
+    transparent: bool,
 }
 
-/// The library's own title strip for a window: the strip, its surface, and the subsurface
+/// The library's own title bar for a window: the title bar, its surface, and the subsurface
 /// placing it over the window.
 struct Framed {
-    strip: Strip,
+    title_bar: Strip,
     sheet: Sheet,
     sub: u32,
 }
@@ -694,15 +694,15 @@ struct Shown {
     lying_over: bool,
     active: bool,
     hidden: bool,
-    /// Its decorations are to be the library's own (unless fullscreen); and that title strip,
+    /// Its decorations are to be the library's own (unless fullscreen); and that title bar,
     /// while it shows.
     framed: bool,
     frame: Option<Framed>,
     /// Something of it is the window's, not the interface's, as of the last run (a resize edge,
-    /// a move strip); and which the pointer is over.
+    /// a title bar); and which the pointer is over.
     grips: bool,
-    over: Grip,
-    /// When and where its strip was last pressed: a press soon after, close by, is a double
+    over: HitTest,
+    /// When and where its title bar was last pressed: a press soon after, close by, is a double
     /// press.
     pressed: Option<(u32, Point)>,
     cursor: Cursor,
@@ -723,10 +723,10 @@ struct Opening<'a> {
     known: Option<Id>,
     title: &'a str,
     size: [i32; 2],
-    least: [i32; 2],
-    at: (i32, i32),
-    bare: bool,
-    clear: bool,
+    min_size: [i32; 2],
+    position: (i32, i32),
+    frameless: bool,
+    transparent: bool,
     maximized: bool,
     minimized: bool,
     icons: &'a [(usize, Vec<u32>)],
@@ -739,7 +739,7 @@ fn program() -> String {
 
 /// A title as long as one message takes, cut at a character.
 fn titled(title: &str) -> &str {
-    let mut end = title.len().min(crate::wire::LONGEST - 64);
+    let mut end = title.len().min(crate::wayland_wire::LONGEST - 64);
     while !title.is_char_boundary(end) {
         end -= 1;
     }
@@ -752,15 +752,15 @@ impl Shown {
     /// configures it.
     fn open(link: &Link, text: &SharedText, opening: Opening) -> Self {
         let (wire, has) = (&link.wire, &link.has);
-        let mut sheet = Sheet::new(link, opening.clear);
+        let mut sheet = Sheet::new(link, opening.transparent);
         let fraction = if has.scales != 0 { wire.make(Interface::Scale) } else { 0 };
         if fraction != 0 {
             wire.send(has.scales, 1, &[Arg::Uint(fraction), Arg::Uint(sheet.surface)]);
             sheet.view(link);
         }
-        // A see-through window that is not bare keeps its creation size.
-        let (size, kind) = (opening.size, Kind { bare: opening.bare, clear: opening.clear });
-        let least = if opening.clear && !opening.bare { opening.size } else { opening.least };
+        // A see-through window that is not frameless keeps its creation size.
+        let (size, kind) = (opening.size, Kind { frameless: opening.frameless, transparent: opening.transparent });
+        let least = if opening.transparent && !opening.frameless { opening.size } else { opening.min_size };
         let mut shown = Shown {
             known: opening.known,
             title: opening.title.into(),
@@ -775,7 +775,7 @@ impl Shown {
             size,
             normal: size,
             least,
-            at: opening.at,
+            at: opening.position,
             scale: 1.0,
             finer: None,
             whole: None,
@@ -789,7 +789,7 @@ impl Shown {
             framed: false,
             frame: None,
             grips: false,
-            over: Grip::Inside,
+            over: HitTest::Client,
             pressed: None,
             cursor: Cursor::Arrow,
             minimize: opening.minimized,
@@ -798,7 +798,7 @@ impl Shown {
             withdrawn: false,
         };
         shown.role(link);
-        shown.framed = !opening.bare && !opening.clear && shown.decoration == 0;
+        shown.framed = !opening.frameless && !opening.transparent && shown.decoration == 0;
         shown.icon = pictured(link, shown.toplevel, opening.icons);
         if opening.maximized {
             wire.send(shown.toplevel, 9, &[]);
@@ -820,10 +820,10 @@ impl Shown {
         wire.send(toplevel, 3, &[Arg::Text(&program())]);
         let least = self.least;
         wire.send(toplevel, 8, &[Arg::Int(least[0]), Arg::Int(least[1])]);
-        if self.kind.clear && !self.kind.bare {
+        if self.kind.transparent && !self.kind.frameless {
             wire.send(toplevel, 7, &[Arg::Int(least[0]), Arg::Int(least[1])]);
         }
-        let framed = !self.kind.bare && !self.kind.clear;
+        let framed = !self.kind.frameless && !self.kind.transparent;
         let decoration = if has.decorations != 0 { wire.make(Interface::Decoration) } else { 0 };
         if decoration != 0 {
             wire.send(has.decorations, 1, &[Arg::Uint(decoration), Arg::Uint(toplevel)]);
@@ -849,8 +849,8 @@ impl Shown {
         link.wire.send(self.sheet.surface, 6, &[]);
     }
 
-    /// Adds or removes the library's title strip: it shows while the decorations are the
-    /// library's and the window is not fullscreen. The window geometry includes the strip.
+    /// Adds or removes the library's title bar: it shows while the decorations are the
+    /// library's and the window is not fullscreen. The window geometry includes the title bar.
     fn frame_up(&mut self, link: &Link, text: &SharedText) {
         let wanted = self.framed && !self.lying_over;
         if wanted == self.frame.is_some() || link.has.subcompositor == 0 {
@@ -871,10 +871,10 @@ impl Shown {
         }
         let sub = wire.make(Interface::Subsurface);
         wire.send(link.has.subcompositor, 1, &[Arg::Uint(sub), Arg::Uint(sheet.surface), Arg::Uint(self.sheet.surface)]);
-        wire.send(sub, 1, &[Arg::Int(0), Arg::Int(-frame::HIGH)]);
-        let mut strip = Strip::new(Box::new(text.clone()));
-        (strip.title, strip.filling, strip.active) = (self.title.clone(), self.filling, self.active);
-        self.frame = Some(Framed { strip, sheet, sub });
+        wire.send(sub, 1, &[Arg::Int(0), Arg::Int(-decorations::HIGH)]);
+        let mut title_bar = Strip::new(Box::new(text.clone()));
+        (title_bar.title, title_bar.filling, title_bar.active) = (self.title.clone(), self.filling, self.active);
+        self.frame = Some(Framed { title_bar, sheet, sub });
         // Before the first configure nothing of the window has pixels, and a window geometry
         // over nothing is invalid: Mutter says so. It is set with the first pixels.
         if self.configured {
@@ -882,10 +882,10 @@ impl Shown {
         }
     }
 
-    /// Tells the compositor the window geometry: its own surface, and the strip over it where
-    /// it has one.
+    /// Tells the compositor the window geometry: its own surface, and the title bar over it
+    /// where it has one.
     fn bounds(&self, link: &Link) {
-        let high = if self.frame.is_some() { frame::HIGH } else { 0 };
+        let high = if self.frame.is_some() { decorations::HIGH } else { 0 };
         link.wire.send(self.xdg, 3, &[Arg::Int(0), Arg::Int(-high), Arg::Int(self.size[0]), Arg::Int(self.size[1] + high)]);
     }
 
@@ -893,14 +893,14 @@ impl Shown {
     fn fit(&mut self, link: &Link) {
         self.sheet.size(link, self.size, self.scale);
         if let Some(framed) = &mut self.frame {
-            framed.sheet.size(link, [self.size[0], frame::HIGH], self.scale);
-            framed.strip.ui.resize(Size { w: self.size[0] as f32, h: frame::HIGH as f32 }, self.scale);
+            framed.sheet.size(link, [self.size[0], decorations::HIGH], self.scale);
+            framed.title_bar.ui.resize(Size { w: self.size[0] as f32, h: decorations::HIGH as f32 }, self.scale);
         }
     }
 
     /// Applies the configure the compositor sent, once it says it is done. A size of zeros is
     /// the window's to pick: it keeps its size, or restores the one from before it was
-    /// maximized or fullscreen (as Weston leaves it to). The library's title strip is part of
+    /// maximized or fullscreen (as Weston leaves it to). The library's title bar is part of
     /// the size given.
     fn configure(&mut self, link: &Link, text: &SharedText) {
         let ([wide, high], states) = std::mem::take(&mut self.asked);
@@ -912,17 +912,17 @@ impl Shown {
         if std::mem::replace(&mut self.lying_over, lying_over) != lying_over {
             self.frame_up(link, text);
         }
-        let strip = if self.frame.is_some() { frame::HIGH } else { 0 };
+        let title_bar = if self.frame.is_some() { decorations::HIGH } else { 0 };
         // No screen or row of screens is near 16,384 units a side: a compositor saying more is
         // mistaken, and a buffer that size would be gigabytes.
         if wide > 0 && high > 0 {
-            self.size = [wide.min(16_384), (high - strip).clamp(1, 16_384)];
+            self.size = [wide.min(16_384), (high - title_bar).clamp(1, 16_384)];
         }
         if !filling && !lying_over {
             self.normal = self.size;
         }
         if let Some(framed) = &mut self.frame {
-            (framed.strip.filling, framed.strip.active) = (filling, active);
+            (framed.title_bar.filling, framed.title_bar.active) = (filling, active);
         }
         self.bounds(link);
         self.fit(link);
@@ -1093,7 +1093,7 @@ struct Fingers {
     /// move or resize it, which the window hears nothing more of.
     mouse: Option<i32>,
     holds: Option<i32>,
-    /// The window (and whether on its strip) whose left button a cancelled finger held:
+    /// The window (and whether on its title bar) whose left button a cancelled finger held:
     /// released after the run that heard the finger leave, so what it pressed is not clicked.
     lifted: Option<(usize, bool)>,
 }
@@ -1185,15 +1185,15 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let forced = std::env::var("TAUT_SCALE").ok().and_then(|value| decimal(&value)).filter(|scale| *scale > 0.0);
         let icons: Vec<(usize, Vec<u32>)> = window.icons.iter().map(|(width, pixels)| (*width, pixels.to_vec())).collect();
         let size = [window.width, window.height].map(|side| side.round().max(1.0) as i32);
-        let least = [window.min_width, window.min_height].map(|side| side.round().max(1.0) as i32);
+        let min_size = [window.min_width, window.min_height].map(|side| side.round().max(1.0) as i32);
         let opening = Opening {
             known: None,
             title: window.title,
             size,
-            least,
-            at: window.at.unwrap_or_default(),
-            bare: window.bare,
-            clear: window.clear,
+            min_size,
+            position: window.position.unwrap_or_default(),
+            frameless: window.frameless,
+            transparent: window.transparent,
             maximized: window.maximized,
             minimized: window.minimized,
             icons: &icons,
@@ -1202,7 +1202,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         // The pipe a `Waker` uses is the program's, as under X.
         let wake = pipe_ends();
         let mut ui = Ui::new(Box::new(text.clone()), Box::new(SystemClipboard(link.clone())));
-        if window.clear {
+        if window.transparent {
             ui.theme.bg = Color::NONE;
         }
         let outputs = outputs.into_iter().map(|(id, name)| (id, name, 1)).collect();
@@ -1251,7 +1251,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         if link.has.data != 0 {
             let device = link.wire.make(Interface::DataDevice);
             link.wire.send(link.has.data, 1, &[Arg::Uint(device), Arg::Uint(seat)]);
-            link.board.borrow_mut().device = device;
+            link.clipboard.borrow_mut().device = device;
         }
         if link.has.text_inputs != 0 {
             self.typing.id = link.wire.make(Interface::TextInput);
@@ -1306,8 +1306,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         if self.rerun {
             self.describe();
         }
-        if let Some((at, strip)) = self.fingers.lifted.take().filter(|(at, _)| *at < self.windows.len()) {
-            self.tell(at, strip, Event::Release(Button::Left));
+        if let Some((at, title_bar)) = self.fingers.lifted.take().filter(|(at, _)| *at < self.windows.len()) {
+            self.tell(at, title_bar, Event::Release(Button::Left));
         }
         (0..self.windows.len()).for_each(|at| self.draw(at));
         self.link.wire.flush();
@@ -1404,7 +1404,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         }
     }
 
-    /// The window a surface belongs to, if theirs, and whether it is the window's title strip.
+    /// The window a surface belongs to, if theirs, and whether it is the window's title bar.
     fn window_of(&self, surface: u32) -> Option<(usize, bool)> {
         let own = self.windows.iter().position(|shown| shown.sheet.surface == surface).map(|at| (at, false));
         own.or_else(|| self.windows.iter().position(|shown| shown.frame.as_ref().is_some_and(|framed| framed.sheet.surface == surface)).map(|at| (at, true)))
@@ -1422,7 +1422,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         shown.sheet.owed = true;
         let now = (shown.size, shown.filling, shown.lying_over, true, shown.hidden);
         if now.4 != was.4 {
-            self.hear(at, Event::Hidden(now.4));
+            self.hear(at, Event::Minimized(now.4));
         }
         self.rerun |= now != was;
         self.place(at);
@@ -1449,7 +1449,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let Some(at) = self.windows.iter().position(|shown| shown.decoration == message.object) else { return };
         let (link, text, mode) = (self.link.clone(), self.text.clone(), message.uint());
         let shown = &mut self.windows[at];
-        shown.framed = mode == BY_THE_WINDOW && !shown.kind.bare && !shown.kind.clear;
+        shown.framed = mode == BY_THE_WINDOW && !shown.kind.frameless && !shown.kind.transparent;
         shown.frame_up(&link, &text);
         shown.fit(&link);
         self.rerun = true;
@@ -1565,17 +1565,17 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         }
     }
 
-    /// The pointer at a place on its surface. Over the library's title strip, the strip hears
+    /// The pointer at a place on its surface. Over the library's title bar, the title bar hears
     /// it; over the window, as under X: a held window follows it, else its interface hears
-    /// where the pointer is, unless it is on the window's strip or a resize edge, which take
-    /// it. (While fingers are down, the window hears nothing of the pointer: a finger is its
-    /// pointer then, and Mutter sends a leave as a finger lands.)
+    /// where the pointer is, unless it is on the window's title bar or a resize edge, which
+    /// take it. (While fingers are down, the window hears nothing of the pointer: a finger is
+    /// its pointer then, and Mutter sends a leave as a finger lands.)
     fn moved(&mut self, place: Point) {
         self.pointer.at = place;
-        let Some((at, strip)) = self.window_of(self.pointer.over).filter(|_| self.fingers.down.is_empty()) else { return };
-        let grip = self.grip(at, strip, place);
-        self.tell(at, strip, if grip == Grip::Inside { Event::Move(place) } else { Event::Leave });
-        self.windows[at].over = grip;
+        let Some((at, title_bar)) = self.window_of(self.pointer.over).filter(|_| self.fingers.down.is_empty()) else { return };
+        let hit = self.hit_test(at, title_bar, place);
+        self.tell(at, title_bar, if hit == HitTest::Client { Event::Move(place) } else { Event::Leave });
+        self.windows[at].over = hit;
         self.shape();
     }
 
@@ -1583,47 +1583,47 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// `moved`.)
     fn pointer_left(&mut self) {
         let over = std::mem::take(&mut self.pointer.over);
-        if let Some((at, strip)) = self.window_of(over).filter(|_| self.fingers.down.is_empty()) {
-            self.windows[at].over = Grip::Inside;
-            self.tell(at, strip, Event::Leave);
+        if let Some((at, title_bar)) = self.window_of(over).filter(|_| self.fingers.down.is_empty()) {
+            self.windows[at].over = HitTest::Client;
+            self.tell(at, title_bar, Event::Leave);
         }
     }
 
     /// What of a window the pointer grabs at a place: on the window itself, its interface is
-    /// asked where it has parts of its own to grab (a window with the library's title strip
-    /// resizes by its other edges; its top edge is the strip's); on the strip, the strip is
-    /// asked. (A maximized window has no resize edges.)
-    fn grip(&mut self, at: usize, strip: bool, place: Point) -> Grip {
+    /// asked where it has parts of its own to grab (a window with the library's title bar
+    /// resizes by its other edges; its top edge is the title bar's); on the title bar, the
+    /// title bar is asked. (A maximized window has no resize edges.)
+    fn hit_test(&mut self, at: usize, title_bar: bool, place: Point) -> HitTest {
         let shown = &mut self.windows[at];
-        let sized = (shown.kind.bare || shown.frame.is_some()) && !shown.filling && !shown.lying_over;
-        // The strip's bottom edge lies on the window and is not a window edge; nor is the
-        // window's top edge under a strip.
-        if strip {
-            let grip = shown.frame.as_ref().map_or(Grip::Inside, |framed| framed.strip.ui.grip_at(place, sized));
-            return match grip {
-                Grip::Edge(0, 1) => Grip::Strip,
-                Grip::Edge(across, 1) => Grip::Edge(across, 0),
-                _ => grip,
+        let sized = (shown.kind.frameless || shown.frame.is_some()) && !shown.filling && !shown.lying_over;
+        // The title bar's bottom edge lies on the window and is not a window edge; nor is the
+        // window's top edge under a title bar.
+        if title_bar {
+            let hit = shown.frame.as_ref().map_or(HitTest::Client, |framed| framed.title_bar.ui.hit_test(place, sized));
+            return match hit {
+                HitTest::Edge(0, 1) => HitTest::TitleBar,
+                HitTest::Edge(across, 1) => HitTest::Edge(across, 0),
+                _ => hit,
             };
         }
         if !shown.grips && shown.frame.is_none() {
-            return Grip::Inside;
+            return HitTest::Client;
         }
-        let grip = within(&mut self.ui, shown.known, |ui| ui.grip_at(place, sized)).unwrap_or_default();
-        match grip {
-            Grip::Edge(0, -1) if shown.frame.is_some() => Grip::Inside,
-            Grip::Edge(across, -1) if shown.frame.is_some() => Grip::Edge(across, 0),
-            _ => grip,
+        let hit = within(&mut self.ui, shown.known, |ui| ui.hit_test(place, sized)).unwrap_or_default();
+        match hit {
+            HitTest::Edge(0, -1) if shown.frame.is_some() => HitTest::Client,
+            HitTest::Edge(across, -1) if shown.frame.is_some() => HitTest::Edge(across, 0),
+            _ => hit,
         }
     }
 
     /// Sets the pointer's shape for what it is over: the edge's, else what the window's
-    /// interface (or its strip) asked for. Only a change is sent.
+    /// interface (or its title bar) asked for. Only a change is sent.
     fn shape(&mut self) {
-        let Some((at, strip)) = self.window_of(self.pointer.over) else { return };
+        let Some((at, title_bar)) = self.window_of(self.pointer.over) else { return };
         let shown = &self.windows[at];
-        let asked = match strip {
-            true => shown.frame.as_ref().map_or(Cursor::Arrow, |framed| framed.strip.ui.cursor()),
+        let asked = match title_bar {
+            true => shown.frame.as_ref().map_or(Cursor::Arrow, |framed| framed.title_bar.ui.cursor()),
             false => shown.cursor,
         };
         let cursor = shown.over.cursor().unwrap_or(asked);
@@ -1638,45 +1638,45 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         theme.show(&link.wire, link.has.shm, self.pointer.id, self.pointer.entered, cursor, scale);
     }
 
-    /// A mouse button went down or up over a window or its title strip. As under X, a left
-    /// press on a strip or edge grabs the window and the interface does not hear it. A right
-    /// press on a strip opens the compositor's window menu.
+    /// A mouse button went down or up over a window or its title bar. As under X, a left
+    /// press on a title bar or edge grabs the window and the interface does not hear it. A
+    /// right press on a title bar opens the compositor's window menu.
     fn button(&mut self, time: u32, button: u32, down: bool) {
-        let Some((at, strip)) = self.window_of(self.pointer.over) else { return };
-        let grip = self.grip(at, strip, self.pointer.at);
-        if down && button == LEFT && grip != Grip::Inside {
-            return self.take_hold(at, grip, time, self.pointer.at);
+        let Some((at, title_bar)) = self.window_of(self.pointer.over) else { return };
+        let hit = self.hit_test(at, title_bar, self.pointer.at);
+        if down && button == LEFT && hit != HitTest::Client {
+            return self.take_hold(at, hit, time, self.pointer.at);
         }
-        if down && button == RIGHT && grip == Grip::Strip {
+        if down && button == RIGHT && hit == HitTest::TitleBar {
             let (link, shown) = (&self.link, &self.windows[at]);
-            let y = self.pointer.at.y as i32 - if strip { frame::HIGH } else { 0 };
+            let y = self.pointer.at.y as i32 - if title_bar { decorations::HIGH } else { 0 };
             let place = [Arg::Uint(link.has.seat), Arg::Uint(link.serial.get()), Arg::Int(self.pointer.at.x as i32), Arg::Int(y)];
             return link.wire.send(shown.toplevel, 4, &place);
         }
         let Some(which) = [(LEFT, Button::Left), (RIGHT, Button::Right), (MIDDLE, Button::Middle)].into_iter().find(|(number, _)| *number == button).map(|(_, which)| which) else { return };
         let mods = self.keys.map.as_ref().map(Keyboard::held).unwrap_or_default();
-        self.tell(at, strip, if down { Event::Press(which, mods) } else { Event::Release(which) });
+        self.tell(at, title_bar, if down { Event::Press(which, mods) } else { Event::Release(which) });
     }
 
-    /// The left button (or a finger or pen) went down on a window's strip or edge: the
+    /// The left button (or a finger or pen) went down on a window's title bar or edge: the
     /// compositor is asked to move the window, or resize it by those edges, while it stays
-    /// down. A press on the strip soon after another, close by, is a double press: the window
-    /// asks to maximize or restore. (Not a window keeping its creation size.)
-    fn take_hold(&mut self, at: usize, grip: Grip, time: u32, place: Point) {
+    /// down. A press on the title bar soon after another, close by, is a double press: the
+    /// window asks to maximize or restore. (Not a window keeping its creation size.)
+    fn take_hold(&mut self, at: usize, hit: HitTest, time: u32, place: Point) {
         let link = self.link.clone();
         let shown = &mut self.windows[at];
         let before = shown.pressed.replace((time, place));
-        let again = grip == Grip::Strip && before.is_some_and(|(then, was)| time.wrapping_sub(then) < DOUBLE_PRESS && (place.x - was.x).abs() < 4.0 && (place.y - was.y).abs() < 4.0);
+        let again = hit == HitTest::TitleBar && before.is_some_and(|(then, was)| time.wrapping_sub(then) < DOUBLE_PRESS && (place.x - was.x).abs() < 4.0 && (place.y - was.y).abs() < 4.0);
         let (seat, serial) = (Arg::Uint(link.has.seat), Arg::Uint(link.serial.get()));
-        match grip {
-            Grip::Strip if again && (shown.kind.bare || !shown.kind.clear) => {
+        match hit {
+            HitTest::TitleBar if again && (shown.kind.frameless || !shown.kind.transparent) => {
                 shown.pressed = None;
                 link.wire.send(shown.toplevel, if shown.filling { 10 } else { 9 }, &[]);
             }
-            Grip::Strip if again => shown.pressed = None,
-            Grip::Strip => link.wire.send(shown.toplevel, 5, &[seat, serial]),
-            Grip::Edge(across, down) => link.wire.send(shown.toplevel, 6, &[seat, serial, Arg::Uint(edges_number(across, down))]),
-            Grip::Inside => {}
+            HitTest::TitleBar if again => shown.pressed = None,
+            HitTest::TitleBar => link.wire.send(shown.toplevel, 5, &[seat, serial]),
+            HitTest::Edge(across, down) => link.wire.send(shown.toplevel, 6, &[seat, serial, Arg::Uint(edges_number(across, down))]),
+            HitTest::Client => {}
         }
     }
 
@@ -1702,7 +1702,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         match message.opcode {
             0 => {
                 let (format, size, file) = (message.uint(), message.uint(), message.file.take());
-                let text = file.filter(|_| format == 1).and_then(|file| crate::wire::read_file(&file, size as usize));
+                let text = file.filter(|_| format == 1).and_then(|file| crate::wayland_wire::read_file(&file, size as usize));
                 self.keys.map.as_mut().zip(text).map(|(map, text)| map.take_map(&text));
             }
             1 => {
@@ -1736,11 +1736,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         }
     }
 
-    /// Focus came to or left a window: its interface is told, and the library's title strip
+    /// Focus came to or left a window: its interface is told, and the library's title bar
     /// shows it.
     fn focus(&mut self, surface: u32, on: bool) {
         let Some((at, _)) = self.window_of(surface) else { return };
-        self.hear(at, Event::Focus(on));
+        self.hear(at, Event::Focused(on));
     }
 
     /// A key went down or up in the focused window: the interface hears which and what it
@@ -1770,7 +1770,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     fn held_changed(&mut self, was: Option<Mods>) {
         let now = self.keys.map.as_ref().map(Keyboard::held);
         let Some((at, _)) = self.window_of(self.keys.focus).filter(|_| now != was) else { return };
-        self.hear(at, Event::Held(now.unwrap_or_default()));
+        self.hear(at, Event::ModifiersChanged(now.unwrap_or_default()));
     }
 
     /// Hands the focused window a key that went down: which key, and what it types.
@@ -1804,11 +1804,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             (0, _) => {
                 let offer = message.uint();
                 link.wire.note(offer, Interface::DataOffer);
-                link.board.borrow_mut().offers.push((offer, Vec::new()));
+                link.clipboard.borrow_mut().offers.push((offer, Vec::new()));
             }
             (5, _) => {
                 let offer = message.uint();
-                let old = std::mem::replace(&mut link.board.borrow_mut().selection, offer);
+                let old = std::mem::replace(&mut link.clipboard.borrow_mut().selection, offer);
                 // The previous selection offer is destroyed, unless it is the same or is being
                 // dragged.
                 link.forget(if old != offer && old != self.carried.offer { old } else { 0 });
@@ -1832,8 +1832,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             return;
         }
         let kind = message.text();
-        let mut board = self.link.board.borrow_mut();
-        if let Some((_, kinds)) = board.offers.iter_mut().find(|(id, _)| *id == message.object) {
+        let mut clipboard = self.link.clipboard.borrow_mut();
+        if let Some((_, kinds)) = clipboard.offers.iter_mut().find(|(id, _)| *id == message.object) {
             kinds.push(kind);
         }
     }
@@ -1895,72 +1895,72 @@ impl<App: FnMut(&mut Ui)> Host<App> {
                 let (serial, time, surface, finger, x, y) = (message.uint(), message.uint(), message.uint(), message.int(), message.fixed(), message.fixed());
                 self.link.serial.set(serial);
                 self.fingers.down.push((finger, surface, pt(x, y)));
-                self.finger(finger, Phase::Down, time);
+                self.finger(finger, TouchPhase::Down, time);
             }
             1 => {
                 let (serial, time, finger) = (message.uint(), message.uint(), message.int());
                 self.link.serial.set(serial);
-                self.finger(finger, Phase::Up, time);
+                self.finger(finger, TouchPhase::Up, time);
                 self.fingers.down.retain(|(down, ..)| *down != finger);
             }
             2 => {
                 let (time, finger, at) = (message.uint(), message.int(), pt(message.fixed(), message.fixed()));
                 self.fingers.down.iter_mut().filter(|(down, ..)| *down == finger).for_each(|down| down.2 = at);
-                self.finger(finger, Phase::Move, time);
+                self.finger(finger, TouchPhase::Move, time);
             }
             4 => {
                 let down: Vec<i32> = self.fingers.down.iter().map(|(finger, ..)| *finger).collect();
-                down.into_iter().for_each(|finger| self.finger(finger, Phase::Cancel, 0));
+                down.into_iter().for_each(|finger| self.finger(finger, TouchPhase::Cancel, 0));
                 self.fingers.down.clear();
             }
             _ => {}
         }
     }
 
-    /// What a finger did on a window. Landing on its strip or a resize edge, it grabs the
+    /// What a finger did on a window. Landing on its title bar or a resize edge, it grabs the
     /// window, as the mouse does, and the window hears no more of it. Else on the library's
-    /// title strip it is the mouse; on the window, its interface takes it as a finger (with the
+    /// title bar it is the mouse; on the window, its interface takes it as a finger (with the
     /// feature `touch`) or as the mouse, first finger only (without: so a finger works as on X
     /// and Windows, where the system emulates the mouse).
-    fn finger(&mut self, finger: i32, phase: Phase, time: u32) {
+    fn finger(&mut self, finger: i32, phase: TouchPhase, time: u32) {
         let Some(&(_, surface, place)) = self.fingers.down.iter().find(|(down, ..)| *down == finger) else { return };
-        let Some((at, strip)) = self.window_of(surface) else { return };
+        let Some((at, title_bar)) = self.window_of(surface) else { return };
         if self.fingers.holds == Some(finger) {
-            self.fingers.holds = self.fingers.holds.filter(|_| phase == Phase::Move);
+            self.fingers.holds = self.fingers.holds.filter(|_| phase == TouchPhase::Move);
             return;
         }
-        let grip = if phase == Phase::Down { self.grip(at, strip, place) } else { Grip::Inside };
-        if grip != Grip::Inside {
+        let hit = if phase == TouchPhase::Down { self.hit_test(at, title_bar, place) } else { HitTest::Client };
+        if hit != HitTest::Client {
             self.fingers.holds = Some(finger);
-            return self.take_hold(at, grip, time, place);
+            return self.take_hold(at, hit, time, place);
         }
-        if !strip && cfg!(feature = "touch") {
-            return self.hear(at, Event::Touch(Touch { finger: finger as u32, at: place, phase }));
+        if !title_bar && cfg!(feature = "touch") {
+            return self.hear(at, Event::Touch(Touch { id: finger as u32, position: place, phase }));
         }
         let fingers = &mut self.fingers;
-        fingers.mouse = fingers.mouse.or((phase == Phase::Down).then_some(finger));
+        fingers.mouse = fingers.mouse.or((phase == TouchPhase::Down).then_some(finger));
         if fingers.mouse != Some(finger) {
             return;
         }
-        fingers.mouse = fingers.mouse.filter(|_| matches!(phase, Phase::Down | Phase::Move));
-        self.as_mouse(at, strip, place, phase);
+        fingers.mouse = fingers.mouse.filter(|_| matches!(phase, TouchPhase::Down | TouchPhase::Move));
+        self.as_mouse(at, title_bar, place, phase);
     }
 
     /// A finger or pen emulating the mouse's left button: down where it lands, moves, up as it
     /// lifts (and leaves with it). Cancelled, it leaves, and its button comes up after the next
     /// run (`Fingers::lifted`).
-    fn as_mouse(&mut self, at: usize, strip: bool, place: Point, phase: Phase) {
+    fn as_mouse(&mut self, at: usize, title_bar: bool, place: Point, phase: TouchPhase) {
         let mods = self.keys.map.as_ref().map(Keyboard::held).unwrap_or_default();
         let events = match phase {
-            Phase::Down => [Some(Event::Move(place)), Some(Event::Press(Button::Left, mods))],
-            Phase::Move => [Some(Event::Move(place)), None],
-            Phase::Up => [Some(Event::Release(Button::Left)), Some(Event::Leave)],
-            Phase::Cancel => [Some(Event::Leave), None],
+            TouchPhase::Down => [Some(Event::Move(place)), Some(Event::Press(Button::Left, mods))],
+            TouchPhase::Move => [Some(Event::Move(place)), None],
+            TouchPhase::Up => [Some(Event::Release(Button::Left)), Some(Event::Leave)],
+            TouchPhase::Cancel => [Some(Event::Leave), None],
         };
-        if phase == Phase::Cancel {
-            self.fingers.lifted = Some((at, strip));
+        if phase == TouchPhase::Cancel {
+            self.fingers.lifted = Some((at, title_bar));
         }
-        events.into_iter().flatten().for_each(|event| self.tell(at, strip, event));
+        events.into_iter().flatten().for_each(|event| self.tell(at, title_bar, event));
     }
 
     /// A touchpad pinch began over a surface, updated (scale since begin), or ended: a zoom at
@@ -2044,25 +2044,25 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// A tool's frame is done. The window it is near hears its axes (pressure only while
     /// touching, half where not reported), position, and what its tip pressed or released: left
     /// button, or right with the side button held. A window it left hears it gone, and the
-    /// pointer with it. Touching a strip or resize edge, it grabs the window; on the library's
-    /// title strip, it is the mouse.
+    /// pointer with it. Touching a title bar or resize edge, it grabs the window; on the
+    /// library's title bar, it is the mouse.
     fn pen_frame(&mut self, at: usize, time: u32) {
         let pen = &mut self.pens.pens[at];
         let (came, went, touched) = (std::mem::take(&mut pen.came), std::mem::take(&mut pen.went), pen.touched.take());
         pen.stylus.touching = touched.unwrap_or(pen.stylus.touching);
         let pressure = [[0.0, 0.0], [0.5, pen.stylus.pressure]][pen.stylus.touching as usize][pen.says_pressure as usize];
         let (place, stylus, surface) = (pen.at, Stylus { pressure, eraser: pen.rubs, ..pen.stylus }, pen.surface);
-        let Some((window, strip)) = self.window_of(surface) else { return };
+        let Some((window, title_bar)) = self.window_of(surface) else { return };
         if came {
             self.pen_shape(at, window);
         }
-        let grip = if touched == Some(true) { self.grip(window, strip, place) } else { Grip::Inside };
-        if grip != Grip::Inside {
-            return self.take_hold(window, grip, time, place);
+        let hit = if touched == Some(true) { self.hit_test(window, title_bar, place) } else { HitTest::Client };
+        if hit != HitTest::Client {
+            return self.take_hold(window, hit, time, place);
         }
-        if strip {
-            let phase = [(went, Phase::Cancel), (touched == Some(true), Phase::Down), (touched == Some(false), Phase::Up)].into_iter().find(|(so, _)| *so);
-            return self.as_mouse(window, true, place, phase.map_or(Phase::Move, |(_, phase)| phase));
+        if title_bar {
+            let phase = [(went, TouchPhase::Cancel), (touched == Some(true), TouchPhase::Down), (touched == Some(false), TouchPhase::Up)].into_iter().find(|(so, _)| *so);
+            return self.as_mouse(window, true, place, phase.map_or(TouchPhase::Move, |(_, phase)| phase));
         }
         let mods = self.keys.map.as_ref().map(Keyboard::held).unwrap_or_default();
         let pen = &mut self.pens.pens[at];
@@ -2092,9 +2092,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         link.wire.send(pen.shapes, 1, &[Arg::Uint(pen.entered), Arg::Uint(shape_number(self.windows[window].cursor))]);
     }
 
-    /// Tells a window what the user did on it: its library title strip, or else its interface.
-    fn tell(&mut self, at: usize, strip: bool, event: Event) {
-        match strip {
+    /// Tells a window what the user did on it: its library title bar, or else its interface.
+    fn tell(&mut self, at: usize, title_bar: bool, event: Event) {
+        match title_bar {
             true => self.strip_hears(at, event),
             false => self.hear(at, event),
         }
@@ -2105,17 +2105,17 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         self.rerun |= within(&mut self.ui, self.windows[at].known, |ui| ui.event(event)) == Some(true);
     }
 
-    /// A window's title strip hears what the user did there and runs if needed; its buttons'
+    /// A window's title bar hears what the user did there and runs if needed; its buttons'
     /// requests are carried out.
     fn strip_hears(&mut self, at: usize, event: Event) {
         let theme = within(&mut self.ui, self.windows[at].known, |ui| ui.theme).unwrap_or(self.ui.theme);
         let Some(framed) = self.windows[at].frame.as_mut() else { return };
-        if !framed.strip.ui.event(event) {
+        if !framed.title_bar.ui.event(event) {
             return;
         }
-        let asked = framed.strip.run(theme);
-        framed.sheet.changed.extend(framed.strip.ui.changes());
-        framed.strip.ui.changed();
+        let asked = framed.title_bar.run(theme);
+        framed.sheet.changed.extend(framed.title_bar.ui.changes());
+        framed.title_bar.ui.changed();
         let (link, shown) = (self.link.clone(), &self.windows[at]);
         match asked {
             Some(Asked::Minimize) => link.wire.send(shown.toplevel, 13, &[]),
@@ -2130,7 +2130,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// the next run and stops describing it: only then does the window go.
     fn closed(&mut self, at: usize) {
         let Some(known) = self.windows[at].known else { return self.done = true };
-        self.rerun |= self.ui.in_window(known, Ui::ask_to_close).is_some();
+        self.rerun |= self.ui.in_window(known, Ui::request_close).is_some();
     }
 
     /// Tells a window's interface what Wayland reveals of its place: where its app asked it to
@@ -2140,9 +2140,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let shown = &self.windows[at];
         let away = shown.filling || shown.lying_over;
         let size = if away { shown.normal } else { shown.size };
-        let now = Placed { at: shown.at, width: size[0] as f32, height: size[1] as f32, maximized: shown.filling };
+        let now = WindowPlacement { position: shown.at, width: size[0] as f32, height: size[1] as f32, maximized: shown.filling };
         let whole = shown.lying_over;
-        self.rerun |= within(&mut self.ui, shown.known, |ui| ui.set_placed(now) | ui.full_screen_now(whole)) == Some(true);
+        self.rerun |= within(&mut self.ui, shown.known, |ui| ui.set_window_placement(now) | ui.full_screen_now(whole)) == Some(true);
     }
 
     /// Runs the interface, as under X: each window's interface is told its size, the first one
@@ -2180,10 +2180,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             self.ui.windows().filter(|(known, ..)| self.windows.iter().all(|shown| shown.known != Some(*known))).map(|(known, title, size)| (known, title.into(), size)).collect();
         for (known, title, size) in new {
             // Where it goes, and on which output, the compositor decides, not the app.
-            let opens = self.ui.window_opens(known).unwrap_or_default();
-            let [size, least] = [size, opens.least].map(|size| [size.w, size.h].map(|side| side.round().max(1.0) as i32));
-            let at = opens.at.unwrap_or_default();
-            let opening = Opening { known: Some(known), title: &title, size, least, at, bare: opens.bare, clear: false, maximized: false, minimized: false, icons: &self.icons };
+            let opens = self.ui.window_opening(known).unwrap_or_default();
+            let [size, min_size] = [size, opens.min_size].map(|size| [size.w, size.h].map(|side| side.round().max(1.0) as i32));
+            let position = opens.position.unwrap_or_default();
+            let opening =
+                Opening { known: Some(known), title: &title, size, min_size, position, frameless: opens.frameless, transparent: false, maximized: false, minimized: false, icons: &self.icons };
             self.windows.push(Shown::open(&link, &text, opening));
             self.rerun = true;
         }
@@ -2198,20 +2199,20 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let asks = |ui: &mut Ui| {
             changed.extend(ui.changes());
             ui.changed();
-            let stand = (ui.stand.strip != 0, ui.take_minimize(), ui.take_maximized(), ui.take_full_screen());
-            (ui.take_title(), ui.cursor(), ui.typing_at(), ui.typing_hidden(), ui.take_on_top(), ui.take_forward(), ui.take_file_ask(), ui.theme, stand)
+            let window_state = (ui.window_state.title_bar != 0, ui.take_minimize(), ui.take_maximized(), ui.take_full_screen());
+            (ui.take_title(), ui.cursor(), ui.ime_area(), ui.password_focused(), ui.take_on_top(), ui.take_bring_to_front(), ui.take_file_dialog_request(), ui.theme, window_state)
         };
         let asked = within(&mut self.ui, self.windows[at].known, asks);
         self.windows[at].sheet.changed = changed;
-        let Some((title, cursor, typing_at, hidden, _, forward, files, theme, (strip, minimize, fill, whole))) = asked else { return };
+        let Some((title, cursor, ime_area, hidden, _, forward, files, theme, (title_bar, minimize, fill, whole))) = asked else { return };
         files.into_iter().for_each(|ask| self.ask_files(at, ask));
-        self.stand(at, minimize, fill, whole);
-        self.tell_typing(at, typing_at, hidden);
+        self.apply_state(at, minimize, fill, whole);
+        self.tell_typing(at, ime_area, hidden);
         if forward {
             self.forward(at);
         }
         let (link, shown) = (self.link.clone(), &mut self.windows[at]);
-        (shown.grips, shown.cursor) = (shown.kind.bare || strip, cursor);
+        (shown.grips, shown.cursor) = (shown.kind.frameless || title_bar, cursor);
         // A tray-hidden window has no role objects: it gets its title as it comes back.
         if let Some(title) = title {
             if shown.toplevel != 0 {
@@ -2220,10 +2221,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             shown.title = title;
         }
         if let Some(framed) = &mut shown.frame {
-            framed.strip.title.clone_from(&shown.title);
-            framed.strip.run(theme);
-            framed.sheet.changed.extend(framed.strip.ui.changes());
-            framed.strip.ui.changed();
+            framed.title_bar.title.clone_from(&shown.title);
+            framed.title_bar.run(theme);
+            framed.sheet.changed.extend(framed.title_bar.ui.changes());
+            framed.title_bar.ui.changed();
         }
         if self.window_of(self.pointer.over).is_some_and(|(window, _)| window == at) {
             self.shape();
@@ -2232,7 +2233,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// Does what the app asked of a window's state, all through the compositor: minimize,
     /// maximize or restore (not while fullscreen), fullscreen or not.
-    fn stand(&mut self, at: usize, minimize: bool, fill: Option<bool>, whole: Option<bool>) {
+    fn apply_state(&mut self, at: usize, minimize: bool, fill: Option<bool>, whole: Option<bool>) {
         let (wire, shown) = (&self.link.wire, &self.windows[at]);
         if shown.toplevel == 0 {
             return;
@@ -2271,12 +2272,12 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// Tells the input methods the text cursor's place in the focused window and whether its
     /// input is hidden: enabled while something is being typed into, disabled while nothing is.
-    fn tell_typing(&mut self, at: usize, typing_at: Option<Rect>, hidden: bool) {
+    fn tell_typing(&mut self, at: usize, ime_area: Option<Rect>, hidden: bool) {
         let (wire, typing, shown) = (&self.link.wire, &mut self.typing, &self.windows[at]);
         if typing.id == 0 || typing.on != shown.sheet.surface {
             return;
         }
-        let now = typing_at.map(|place| (place, hidden));
+        let now = ime_area.map(|place| (place, hidden));
         if now == typing.told {
             return;
         }
@@ -2301,13 +2302,13 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// A window's app asked for the system file dialog: the portal is asked to show it over the
     /// window, by its exported handle.
-    fn ask_files(&mut self, at: usize, ask: FileAsk) {
+    fn ask_files(&mut self, at: usize, ask: FileDialogRequest) {
         let (shown, Session { bus, portal, .. }) = (&self.windows[at], &mut self.session);
         portal.ask_for_files(bus.as_mut(), &shown.handle, shown.known.unwrap_or(0), &ask);
         self.heed();
     }
 
-    /// Draws what changed in a window and its strip where the compositor is ready. A window
+    /// Draws what changed in a window and its title bar where the compositor is ready. A window
     /// that was to minimize, or activate, as soon as it mapped does so once it has.
     fn draw(&mut self, at: usize) {
         let (link, ui) = (self.link.clone(), &mut self.ui);
@@ -2316,11 +2317,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             return;
         }
         let (scale, known) = (shown.scale, shown.known);
-        let mut strip_drawn = false;
-        if let Some(Framed { strip, sheet, .. }) = &mut shown.frame {
-            strip_drawn = sheet.draw(&link, scale, &mut |canvas| strip.ui.paint(canvas));
+        let mut title_bar_drawn = false;
+        if let Some(Framed { title_bar, sheet, .. }) = &mut shown.frame {
+            title_bar_drawn = sheet.draw(&link, scale, &mut |canvas| title_bar.ui.paint(canvas));
         }
-        shown.sheet.owed |= strip_drawn;
+        shown.sheet.owed |= title_bar_drawn;
         let drawn = shown.sheet.draw(&link, scale, &mut |canvas| _ = within(ui, known, |ui| ui.paint(canvas)));
         if drawn {
             shown.icon_taken(&link);
@@ -2358,11 +2359,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// And whether it has a file dialog, and the answers of those that ended.
     fn heed(&mut self) {
         let portal = &mut self.session.portal;
-        self.rerun |= self.ui.set_wishes(portal.wishes(Wishes::default()));
-        self.ui.set_system_files(portal.files);
+        self.rerun |= self.ui.set_preferences(portal.preferences(Preferences::default()));
+        self.ui.set_native_file_dialog(portal.files);
         for (known, file) in std::mem::take(&mut portal.answers) {
             let shown = self.windows.iter().find(|shown| shown.known.unwrap_or(0) == known);
-            self.rerun |= shown.and_then(|shown| within(&mut self.ui, shown.known, |ui| ui.file_answered(file))).is_some();
+            self.rerun |= shown.and_then(|shown| within(&mut self.ui, shown.known, |ui| ui.file_dialog_answered(file))).is_some();
         }
     }
 
@@ -2387,7 +2388,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let listening = readers.listening();
         if listening != self.ui.listening {
             for shown in &self.windows {
-                within(&mut self.ui, shown.known, |ui| ui.listen(listening));
+                within(&mut self.ui, shown.known, |ui| ui.set_screen_reader(listening));
             }
             self.rerun = true;
         }
@@ -2426,9 +2427,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
 /// How the windows take drops of files and text: a drag is accepted over a window whose app
 /// asked about drops, and that window receives it. Set by the first call asking about drops
-/// ([`Ui::files_over`], [`Ui::files_dropped`], [`Ui::text_over`], [`Ui::text_dropped`], through
-/// `platform::hand_drops`); reached no other way, so a program that never asks is built without
-/// it and refuses drags over its windows.
+/// ([`Ui::files_hovered`], [`Ui::files_dropped`], [`Ui::text_hovered`], [`Ui::text_dropped`],
+/// through `platform::hand_drops`); reached no other way, so a program that never asks is built
+/// without it and refuses drags over its windows.
 #[derive(Clone, Copy)]
 struct Drops {
     /// A data device drag event over a window: enter, leave, motion or drop. Says whether an
@@ -2440,15 +2441,15 @@ struct Drops {
 /// whose session-bus handling is shared): set by the first call asking for any (through
 /// `platform::hand_desktop`); reached no other way, so a program that never asks is built
 /// without it.
-type Stood = fn(&Link, &mut Shown, &mut Ui, &mut Session) -> bool;
+type DesktopRequests = fn(&Link, &mut Shown, &mut Ui, &mut Session) -> bool;
 
 thread_local! {
     /// What the windows do for the desktop after a run: nothing until an app on this thread
-    /// asks (see `Stood`).
-    static DESKTOP: Cell<Option<Stood>> = const { Cell::new(None) };
+    /// asks (see `DesktopRequests`).
+    static DESKTOP: Cell<Option<DesktopRequests>> = const { Cell::new(None) };
 }
 
-/// Hands the windows their desktop integration, on this thread (see `Stood`).
+/// Hands the windows their desktop integration, on this thread (see `DesktopRequests`).
 pub(crate) fn hand_desktop() {
     DESKTOP.set(Some(stood));
 }
@@ -2465,9 +2466,9 @@ fn stood(link: &Link, first: &mut Shown, ui: &mut Ui, session: &mut Session) -> 
     let mut news = false;
     if asked.hide && !first.withdrawn {
         first.withdraw(link);
-        news |= ui.event(Event::Hidden(true));
+        news |= ui.event(Event::Minimized(true));
     }
-    let forward = asked.forward || ui.take_forward();
+    let forward = asked.forward || ui.take_bring_to_front();
     if forward && first.withdrawn {
         // Shown again as a window is first shown: its role recreated, a commit without a
         // buffer, then the compositor configures it and all of it is drawn.
@@ -2477,13 +2478,13 @@ fn stood(link: &Link, first: &mut Shown, ui: &mut Ui, session: &mut Session) -> 
         first.sheet.hurry = true;
         first.sheet.changed = vec![rect(0.0, 0.0, first.size[0] as f32, first.size[1] as f32)];
         link.wire.send(first.sheet.surface, 6, &[]);
-        news |= ui.event(Event::Hidden(false));
+        news |= ui.event(Event::Minimized(false));
     }
     // A token comes from another program: one longer than a desktop gives is none.
     let tokenless = asked.token.is_empty() || asked.token.len() > crate::freedesktop::TOKEN;
     match (forward, tokenless || link.has.activation == 0) {
         (true, false) => link.wire.send(link.has.activation, 2, &[Arg::Text(&asked.token), Arg::Uint(first.sheet.surface)]),
-        (true, true) => ui.come_forward(),
+        (true, true) => ui.bring_to_front(),
         _ => {}
     }
     news
@@ -2524,7 +2525,7 @@ impl Taking<'_> {
         self.rerun
     }
 
-    /// The window whose client surface this is, if theirs. (Over a title strip nothing is
+    /// The window whose client surface this is, if theirs. (Over a title bar nothing is
     /// taken.)
     fn window_of(&self, surface: u32) -> Option<usize> {
         self.windows.iter().position(|shown| shown.sheet.surface == surface)
@@ -2555,7 +2556,7 @@ impl Taking<'_> {
         }
         let (Some(window), Some(kind)) = (window, kind) else { return link.forget(offer) };
         *self.carried = Carried { offer, surface, at, kind };
-        self.hear(window, if kind == FILES { Event::Carry(true) } else { Event::CarryText(true) });
+        self.hear(window, if kind == FILES { Event::FilesHovered(true) } else { Event::TextHovered(true) });
         self.hear(window, Event::Move(at));
     }
 
@@ -2572,7 +2573,7 @@ impl Taking<'_> {
     fn left(&mut self) {
         let Carried { offer, surface, kind, .. } = std::mem::take(self.carried);
         if let Some(window) = self.window_of(surface).filter(|_| offer != 0) {
-            self.hear(window, if kind == FILES { Event::Carry(false) } else { Event::CarryText(false) });
+            self.hear(window, if kind == FILES { Event::FilesHovered(false) } else { Event::TextHovered(false) });
             self.hear(window, Event::Leave);
         }
         self.link.forget(offer);
@@ -2589,10 +2590,10 @@ impl Taking<'_> {
         }
         link.forget(offer);
         let files = kind == FILES;
-        self.hear(window, if files { Event::Carry(false) } else { Event::CarryText(false) });
-        let event = if files { Event::Files(files_in(&got)) } else { Event::TextDropped(String::from_utf8_lossy(&got).into_owned()) };
+        self.hear(window, if files { Event::FilesHovered(false) } else { Event::TextHovered(false) });
+        let event = if files { Event::FilesDropped(files_in(&got)) } else { Event::TextDropped(String::from_utf8_lossy(&got).into_owned()) };
         // An empty transfer, or a file list with no file, is nothing to take.
-        if !got.is_empty() && !matches!(&event, Event::Files(files) if files.is_empty()) {
+        if !got.is_empty() && !matches!(&event, Event::FilesDropped(files) if files.is_empty()) {
             self.hear(window, Event::Move(at));
             self.hear(window, event);
         }
@@ -2637,7 +2638,7 @@ mod tests {
     use crate::platform::LocalClipboard;
     use crate::surface::Surface;
     use crate::text::BuiltInFont;
-    use crate::wire::Named;
+    use crate::wayland_wire::Named;
     use std::os::unix::net::UnixStream;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, MutexGuard, mpsc};
@@ -2955,14 +2956,14 @@ mod tests {
     fn fingered(kept: &mut Fingered, ui: &mut Ui) {
         ui.column().grow().open();
         let button = ui.button("Tap");
-        let board = ui.el().w(crate::Length::Grow(1.0)).h(crate::Length::Px(60.0)).sense().show();
-        kept.zooms.extend(ui.zoom(&board).map(|zoom| zoom.by));
-        kept.pens.push((ui.stylus(), board.pressed));
+        let clipboard = ui.el().w(crate::Length::Grow(1.0)).h(crate::Length::Px(60.0)).sense().show();
+        kept.zooms.extend(ui.zoom(&clipboard).map(|zoom| zoom.factor));
+        kept.pens.push((ui.stylus(), clipboard.pressed));
         let list = ui.column().grow().scroll().open();
         (0..80).for_each(|row| _ = ui.label(&format!("Row {row}")));
         ui.close();
         ui.close();
-        (kept.clicked, kept.at, kept.list) = (kept.clicked + button.clicked as u32, [button.rect, board.rect], list.id);
+        (kept.clicked, kept.at, kept.list) = (kept.clicked + button.clicked as u32, [button.rect, clipboard.rect], list.id);
     }
 
     /// The test app shown by a played compositor whose seat has `seat`.
@@ -3231,7 +3232,7 @@ mod tests {
         let shown = &host.windows[0];
         let pixels = [320, 240].map(|side| (side as f32 * shown.scale).round() as i32);
         assert_eq!((shown.size, shown.sheet.pixels), ([320, 240], pixels), "at {}", shown.scale);
-        assert_eq!(shown.frame.is_some(), host.link.has.decorations == 0, "the library's own title strip, where the compositor draws no frame");
+        assert_eq!(shown.frame.is_some(), host.link.has.decorations == 0, "the library's own title title_bar, where the compositor draws no frame");
         let held = shown.sheet.buffers.iter().position(|buffer| buffer.missing.is_empty()).unwrap();
         let drawn = host.windows[0].sheet.buffers[held].memory.pixels().to_vec();
         assert!(drawn == Surface::draw(&mut host.ui, 64).pixels, "what was handed over is the interface, as drawn afresh");
@@ -3299,7 +3300,7 @@ mod tests {
         lets(host, 300);
     }
 
-    /// The library's title strip over a window whose compositor draws no decorations (or is
+    /// The library's title bar over a window whose compositor draws no decorations (or is
     /// told it does not): drawn; dragged, it moves the window; the window's corner resizes it;
     /// a double click on it, and its middle button, maximize the window (where the compositor
     /// does that: Sway does not for a floating window) and it restores; its last button closes
@@ -3309,13 +3310,13 @@ mod tests {
     fn a_window_whose_frame_is_its_own_is_moved_sized_filled_and_closed_by_its_strip() {
         let Some(((_alone, mut host), app)) = app_shown(true) else { return eprintln!("no compositor: not tested") };
         let Some(mut desk) = hands() else { return eprintln!("no fake input: not tested") };
-        assert!(host.windows[0].frame.is_some(), "the library's own strip is over the window");
-        let strip = host.windows[0].frame.as_ref().is_some_and(|framed| framed.sheet.buffers.iter().any(|buffer| buffer.missing.is_empty()));
-        assert!(strip, "and drawn");
-        let mid_strip = -(frame::HIGH as f32) / 2.0;
+        assert!(host.windows[0].frame.is_some(), "the library's own title_bar is over the window");
+        let title_bar = host.windows[0].frame.as_ref().is_some_and(|framed| framed.sheet.buffers.iter().any(|buffer| buffer.missing.is_empty()));
+        assert!(title_bar, "and drawn");
+        let mid_strip = -(decorations::HIGH as f32) / 2.0;
         let corner = corner(&mut host, &mut desk, 0).expect("the pointer comes over the window");
-        // Dragged by its strip, it follows the pointer, toward the screen's middle so it stays
-        // fully on screen. (Weston places a new window anywhere.)
+        // Dragged by its title bar, it follows the pointer, toward the screen's middle so it
+        // stays fully on screen. (Weston places a new window anywhere.)
         let [wide, high] = desk.units();
         let by = pt(if corner.x + 160.0 > wide / 2.0 { -40.0 } else { 40.0 }, if corner.y + 120.0 > high / 2.0 { -30.0 } else { 30.0 });
         drag(&mut host, &mut desk, pt(corner.x + 60.0, corner.y + mid_strip), by);
@@ -3331,17 +3332,17 @@ mod tests {
         let wide = sized[0] as f32;
         let fills = !desk.name.starts_with("sway");
         if fills {
-            // A double click on the strip maximizes (client and strip as tall as the screen, or
-            // the room a panel leaves); the app restores it.
+            // A double click on the title bar maximizes (client and title bar as tall as the
+            // screen, or the room a panel leaves); the app restores it.
             let place = pt(moved.x + 60.0, moved.y + mid_strip);
             desk.point(place);
             lets(&mut host, 80);
             (0..2).for_each(|_| click(&mut host, &mut desk, pt(0.0, 0.0), place));
-            assert!(waits(&mut host, |host| host.windows[0].filling), "a double press on the strip fills the screen");
+            assert!(waits(&mut host, |host| host.windows[0].filling), "a double press on the title_bar fills the screen");
             assert!(host.ui.maximized(), "and its app hears");
             let high = desk.units()[1].round() as i32;
-            let filled = host.windows[0].size[1] + frame::HIGH;
-            assert!(filled <= high && filled > sized[1] + frame::HIGH, "inside and strip, {filled} high on a screen {high} high");
+            let filled = host.windows[0].size[1] + decorations::HIGH;
+            assert!(filled <= high && filled > sized[1] + decorations::HIGH, "inside and title_bar, {filled} high on a screen {high} high");
             app.borrow_mut().fill = true;
             host.rerun = true;
             assert!(waits(&mut host, |host| !host.windows[0].filling));
@@ -3354,7 +3355,7 @@ mod tests {
             if !filled {
                 desk.shoot("fill-button");
             }
-            assert!(filled, "the strip's middle button has the window fill its screen");
+            assert!(filled, "the title_bar's middle button has the window fill its screen");
             app.borrow_mut().fill = true;
             host.rerun = true;
             assert!(waits(&mut host, |host| !host.windows[0].filling));
@@ -3368,7 +3369,7 @@ mod tests {
     /// Fingers on the compositor (KWin's fake input and Mutter's remote desktop have them;
     /// Sway's and Weston's do not): a tap presses the button; dragged up the list it scrolls
     /// with the feature `touch` (without, a mouse drag over words); and dragged by the
-    /// library's title strip the window follows.
+    /// library's title bar the window follows.
     #[test]
     #[ignore]
     fn fingers_on_the_compositor_tap_scroll_and_move_the_window() {
@@ -3377,31 +3378,31 @@ mod tests {
         let corner = corner(&mut host, &mut desk, 0).expect("the pointer comes over the window");
         let [button, text] = app.borrow().at;
         let tap = pt(corner.x + middle(button).x, corner.y + middle(button).y);
-        desk.touch(1, tap, Phase::Down);
+        desk.touch(1, tap, TouchPhase::Down);
         lets(&mut host, 80);
-        desk.touch(1, tap, Phase::Up);
+        desk.touch(1, tap, TouchPhase::Up);
         lets(&mut host, 400);
         assert_eq!(app.borrow().pressed, 1, "a tap presses the button");
         // Dragged up the list, in steps.
         let (list, from) = (app.borrow().list, pt(corner.x + 40.0, corner.y + text.bottom() + 100.0));
-        desk.touch(2, from, Phase::Down);
+        desk.touch(2, from, TouchPhase::Down);
         for step in 1..=8 {
             lets(&mut host, 16);
-            desk.touch(2, pt(from.x, from.y - 12.0 * step as f32), Phase::Move);
+            desk.touch(2, pt(from.x, from.y - 12.0 * step as f32), TouchPhase::Move);
         }
-        desk.touch(2, pt(from.x, from.y - 96.0), Phase::Up);
+        desk.touch(2, pt(from.x, from.y - 96.0), TouchPhase::Up);
         lets(&mut host, 400);
         let scrolled = host.ui.scrolls.get(&list).map_or(0.0, |scrolled| scrolled[1]);
         assert_eq!(scrolled > 50.0, cfg!(feature = "touch"), "the list scrolled {scrolled} (the feature: {})", cfg!(feature = "touch"));
-        // Dragged by the strip, the window follows the finger.
-        let strip = pt(corner.x + 60.0, corner.y - frame::HIGH as f32 / 2.0);
-        desk.touch(3, strip, Phase::Down);
+        // Dragged by the title bar, the window follows the finger.
+        let title_bar = pt(corner.x + 60.0, corner.y - decorations::HIGH as f32 / 2.0);
+        desk.touch(3, title_bar, TouchPhase::Down);
         lets(&mut host, 120);
         for step in 1..=4 {
-            desk.touch(3, pt(strip.x + 10.0 * step as f32, strip.y + 7.5 * step as f32), Phase::Move);
+            desk.touch(3, pt(title_bar.x + 10.0 * step as f32, title_bar.y + 7.5 * step as f32), TouchPhase::Move);
             lets(&mut host, 60);
         }
-        desk.touch(3, pt(strip.x + 40.0, strip.y + 30.0), Phase::Up);
+        desk.touch(3, pt(title_bar.x + 40.0, title_bar.y + 30.0), TouchPhase::Up);
         lets(&mut host, 300);
         let moved = self::corner(&mut host, &mut desk, 0).expect("the pointer comes over the window again");
         assert_eq!(pt(moved.x - corner.x, moved.y - corner.y), pt(40.0, 30.0), "moved as far as the finger, from {corner:?} to {moved:?}");
@@ -3431,7 +3432,7 @@ mod tests {
     /// The two-window test app: a button in the first opens the second, which counts presses.
     #[derive(Default)]
     struct Two {
-        second: crate::Second,
+        second: crate::SecondWindow,
         pressed: u32,
         at: [Rect; 2],
     }
@@ -3443,7 +3444,7 @@ mod tests {
     #[test]
     #[ignore]
     fn a_second_window_opens_and_closes_as_its_app_says() {
-        let mut second = crate::Second::new(260.0, 160.0);
+        let mut second = crate::SecondWindow::new(260.0, 160.0);
         second.open = false;
         let kept = Rc::new(RefCell::new(Two { second, ..Default::default() }));
         let described = kept.clone();
@@ -3550,7 +3551,7 @@ mod tests {
             let (link, outputs) = Link::new().unwrap();
             let window = Window { title: "taut pastes", width: 240.0, height: 160.0, ..Default::default() };
             let mut host = Host::open(link, outputs, SystemText::new().unwrap(), Session::on(None), window, Box::new(|ui: &mut Ui| _ = ui.label("Pastes")) as Box<dyn FnMut(&mut Ui)>).unwrap();
-            assert!(waits(&mut host, |host| host.keys.focus == host.windows[0].sheet.surface && host.link.board.borrow().selection != 0), "it has the keyboard, and the clipboard is offered");
+            assert!(waits(&mut host, |host| host.keys.focus == host.windows[0].sheet.surface && host.link.clipboard.borrow().selection != 0), "it has the keyboard, and the clipboard is offered");
             match kind {
                 0 => assert_eq!(host.ui.clipboard().as_deref(), Some(COPIED)),
                 1 => assert_eq!(host.ui.clipboard_picture(), Some((3, COPIED_PICTURE.to_vec()))),
@@ -3659,11 +3660,11 @@ mod tests {
             ui.label("Let it go here");
             ui.close();
             if taker.asks[0] {
-                taker.over[0] |= ui.files_over();
+                taker.over[0] |= ui.files_hovered();
                 taker.files.extend(ui.files_dropped(&target).into_iter().flatten());
             }
             if taker.asks[1] {
-                taker.over[1] |= ui.text_over();
+                taker.over[1] |= ui.text_hovered();
                 taker.text = taker.text.take().or(ui.text_dropped(&target));
             }
         };
@@ -3760,9 +3761,9 @@ mod tests {
                 ui.hide_window();
             }
             if std::mem::take(&mut asks[1]) {
-                ui.come_forward();
+                ui.bring_to_front();
             }
-            asks[2] = ui.window_hidden();
+            asks[2] = ui.window_minimized();
             ui.label("One");
         };
         let Some((_alone, mut host)) = shown(Window { title: "taut tray", width: 300.0, height: 200.0, ..Window::default() }, false, app) else {
@@ -3784,17 +3785,17 @@ mod tests {
         assert!(corner(&mut host, &mut desk, 0).is_some(), "the window is under the pointer again");
         // Hidden again, it comes back for a later start of the program, with that start's
         // token.
-        let _starts = crate::copies::tests::starts_alone();
+        let _starts = crate::single_instance::tests::starts_alone();
         (asks.borrow_mut()[0], host.rerun) = (true, true);
         lets(&mut host, 300);
         assert!(host.windows[0].withdrawn && asks.borrow()[2]);
-        let later = crate::Start { args: Vec::new(), folder: "/wayland test".into() };
-        crate::copies::came(crate::copies::Tokens { wayland: "token-of-a-later-start".into(), x: String::new() }, later);
+        let later = crate::Relaunch { args: Vec::new(), working_dir: "/wayland test".into() };
+        crate::single_instance::came(crate::single_instance::Tokens { wayland: "token-of-a-later-start".into(), x: String::new() }, later);
         host.rerun = true;
         assert!(waits(&mut host, shown_again) && !host.windows[0].withdrawn, "shown again for the later start");
         lets(&mut host, 100);
         assert!(!asks.borrow()[2] && corner(&mut host, &mut desk, 0).is_some());
-        drop(std::mem::take(&mut *crate::copies::tests::queued()));
+        drop(std::mem::take(&mut *crate::single_instance::tests::queued()));
     }
 
     // ---- the gallery on the compositor ----
@@ -3804,7 +3805,7 @@ mod tests {
     /// A gallery part's rectangle, found by what screen readers are told: the first whose name
     /// contains `name`, of `role` (any, for none).
     fn part(host: &Windows, role: Option<crate::Role>, name: &str) -> Option<Rect> {
-        host.ui.said().iter().find(|said| role.is_none_or(|role| said.role == role) && said.name.contains(name)).map(|said| said.rect)
+        host.ui.visible_access_nodes().iter().find(|said| role.is_none_or(|role| said.role == role) && said.name.contains(name)).map(|said| said.rect)
     }
 
     /// Types a word on a US keyboard layout.
@@ -3821,7 +3822,7 @@ mod tests {
         word.chars().for_each(|letter| press(host, desk, code(letter), &[]));
     }
 
-    /// The gallery on the compositor: it opens (with the library's title strip where the
+    /// The gallery on the compositor: it opens (with the library's title bar where the
     /// compositor draws no decorations), its button is pressed twice, a word typed into its
     /// filter, its View menu and a dropdown opened; each captured as a screenshot into the
     /// folder `TAUT_SHOTS` names. And where the compositor shows a window as drawn (integer
@@ -3832,16 +3833,16 @@ mod tests {
         let _alone = crate::x11::tests::alone();
         let Some(mut desk) = Desk::new() else { return eprintln!("no compositor: not tested") };
         let (link, outputs) = Link::new().unwrap();
-        // As large as the screen allows, with its strip.
+        // As large as the screen allows, with its title bar.
         let [wide, high] = desk.units().map(|side| (side - 60.0).min(900.0));
-        let window = Window { title: "taut gallery", width: wide, height: high - frame::HIGH as f32, min_width: 280.0, min_height: 220.0, ..Default::default() };
+        let window = Window { title: "taut gallery", width: wide, height: high - decorations::HIGH as f32, min_width: 280.0, min_height: 220.0, ..Default::default() };
         let mut kept = gallery::app();
         let app = Box::new(move |ui: &mut Ui| gallery::describe(&mut kept, ui)) as Box<dyn FnMut(&mut Ui)>;
         let mut host = Host::open(link, outputs, SystemText::new().unwrap(), Session::on(None), window, app).unwrap();
         // Parts are found by what screen readers are told: as if one listened, once the host
         // found none does.
         host.turn();
-        host.ui.listen(true);
+        host.ui.set_screen_reader(true);
         host.rerun = true;
         let shows = |host: &Windows| host.windows[0].sheet.buffers.iter().any(|buffer| buffer.missing.is_empty()) && part(host, None, "Count one").is_some();
         assert!(waits(&mut host, shows), "the gallery is drawn");
@@ -3861,7 +3862,7 @@ mod tests {
         let filter = part(&host, Some(crate::Role::TextBox), "Filter").expect("the filter");
         click(&mut host, &mut desk, corner, middle(filter));
         types(&mut host, &mut desk, "wayland");
-        let typed = host.ui.said().iter().any(|said| said.role == crate::Role::TextBox && said.value == "wayland");
+        let typed = host.ui.visible_access_nodes().iter().any(|said| said.role == crate::Role::TextBox && said.value == "wayland");
         assert!(typed, "the word was typed into the filter");
         desk.shoot("gallery-typed");
         // Its View menu and its dropdown: each opens where it belongs, under its opener.
@@ -3872,7 +3873,7 @@ mod tests {
         assert!((menu.y - view.bottom()).abs() < 8.0 && (menu.x - view.x).abs() < 8.0, "the menu opens under its button: {menu:?} under {view:?}");
         desk.shoot("gallery-menu");
         press(&mut host, &mut desk, 1, &[]);
-        let select = part(&host, Some(crate::Role::Select), "").expect("the list to choose from");
+        let select = part(&host, Some(crate::Role::ComboBox), "").expect("the list to choose from");
         click(&mut host, &mut desk, corner, middle(select));
         lets(&mut host, 300);
         shown_as_drawn(&mut host, &mut desk, "gallery-list", corner);
@@ -3883,8 +3884,8 @@ mod tests {
     /// Takes a screenshot and writes it under this name. At an integer scale, the window's part
     /// is its own pixels as last drawn: retaken until it is, for up to three seconds (a
     /// compositor shows what it was given at its next composite: Mutter shows a new window's
-    /// client a while after its strip). Where the compositor gives no screenshots (KWin without
-    /// a backend), nothing.
+    /// client a while after its title bar). Where the compositor gives no screenshots (KWin
+    /// without a backend), nothing.
     fn shown_as_drawn(host: &mut Windows, desk: &mut Desk, name: &str, corner: Point) {
         let (scale, until) = (host.windows[0].scale, Instant::now() + Duration::from_secs(3));
         loop {
@@ -3918,20 +3919,20 @@ mod tests {
     /// SIGPIPE, signal 13.)
     #[test]
     fn a_program_that_stops_reading_a_copy_does_not_end_this_one() {
-        crate::wire::tests::by_itself("wayland::tests::a_program_that_stops_reading_a_copy_alone");
+        crate::wayland_wire::tests::by_itself("wayland::tests::a_program_that_stops_reading_a_copy_alone");
     }
 
     #[test]
     #[ignore = "run by the test before it, in a program of its own"]
     fn a_program_that_stops_reading_a_copy_alone() {
-        if std::env::var_os(crate::wire::tests::ALONE).is_none() {
+        if std::env::var_os(crate::wayland_wire::tests::ALONE).is_none() {
             return;
         }
-        crate::wire::tests::as_in_c();
+        crate::wayland_wire::tests::as_in_c();
         let (_compositor, link) = offering(&SHOWS_WINDOWS);
         let (link, _) = link.unwrap();
         link.set(vec![(TEXT[0], vec![b'x'; 1 << 20].into())]);
-        let (out, into) = crate::wire::pipe().unwrap();
+        let (out, into) = crate::wayland_wire::pipe().unwrap();
         drop(out);
         link.hand_over(TEXT[0], Some(into));
         // The copy is written by its own thread at once: it has long failed by then.

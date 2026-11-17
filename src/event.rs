@@ -55,7 +55,7 @@ pub enum Key {
 
 /// Parses a shortcut as a menu shows it: "Ctrl+S", "F2", "Ctrl+Shift+Z". Case-insensitive;
 /// `None` if it names no key.
-pub fn keys(written: &str) -> Option<(Key, Mods)> {
+pub fn parse_keys(written: &str) -> Option<(Key, Mods)> {
     let (held, last) = written.rsplit_once('+').unwrap_or(("", written));
     let mut mods = Mods::NONE;
     for word in held.split('+').map(str::trim).filter(|word| !word.is_empty()) {
@@ -142,18 +142,18 @@ pub enum Event {
     /// Text typed, or committed by an input method.
     Text(String),
     /// Shift, Ctrl or Alt went down or up: these are held now.
-    Held(Mods),
+    ModifiersChanged(Mods),
     /// The window gained (`true`) or lost keyboard focus.
-    Focus(bool),
+    Focused(bool),
     /// The window was minimized (`true`) or restored.
-    Hidden(bool),
+    Minimized(bool),
     /// Files from another program are dragged over the window (`true`), or left or were
     /// dropped. `Move` gives the pointer meanwhile.
-    Carry(bool),
+    FilesHovered(bool),
     /// Files from another program were dropped at the pointer.
-    Files(Vec<std::path::PathBuf>),
+    FilesDropped(Vec<std::path::PathBuf>),
     /// Text from another program is dragged over the window (`true`), or no longer is.
-    CarryText(bool),
+    TextHovered(bool),
     /// Text from another program was dropped at the pointer.
     TextDropped(String),
 }
@@ -190,16 +190,16 @@ mod tests {
     fn keys_are_read_the_way_a_menu_writes_them() {
         let (ctrl, shift) = (Mods::CTRL, Mods::SHIFT);
         let both = Mods { ctrl: true, shift: true, alt: false };
-        assert_eq!([keys("Ctrl+S"), keys("ctrl + s"), keys("Control+S")], [Some((Key::Char('s'), ctrl)); 3]);
-        assert_eq!([keys("Ctrl+Shift+Z"), keys("Shift+Ctrl+z")], [Some((Key::Char('z'), both)); 2]);
-        assert_eq!([keys("F2"), keys("f12"), keys("Alt+F4")], [Some((Key::F(2), Mods::NONE)), Some((Key::F(12), Mods::NONE)), Some((Key::F(4), Mods { alt: true, ..Mods::NONE }))]);
-        assert_eq!([keys("F"), keys("/"), keys("Shift+Tab")], [Some((Key::Char('f'), Mods::NONE)), Some((Key::Char('/'), Mods::NONE)), Some((Key::Tab, shift))]);
+        assert_eq!([parse_keys("Ctrl+S"), parse_keys("ctrl + s"), parse_keys("Control+S")], [Some((Key::Char('s'), ctrl)); 3]);
+        assert_eq!([parse_keys("Ctrl+Shift+Z"), parse_keys("Shift+Ctrl+z")], [Some((Key::Char('z'), both)); 2]);
+        assert_eq!([parse_keys("F2"), parse_keys("f12"), parse_keys("Alt+F4")], [Some((Key::F(2), Mods::NONE)), Some((Key::F(12), Mods::NONE)), Some((Key::F(4), Mods { alt: true, ..Mods::NONE }))]);
+        assert_eq!([parse_keys("F"), parse_keys("/"), parse_keys("Shift+Tab")], [Some((Key::Char('f'), Mods::NONE)), Some((Key::Char('/'), Mods::NONE)), Some((Key::Tab, shift))]);
         let named =
             [("Enter", Key::Enter), ("Esc", Key::Escape), ("Delete", Key::Delete), ("Page Down", Key::PageDown), ("PgUp", Key::PageUp), ("Space", Key::Space), ("Left", Key::Left), ("End", Key::End)];
         for (written, key) in named {
-            assert_eq!(keys(written), Some((key, Mods::NONE)), "{written}");
+            assert_eq!(parse_keys(written), Some((key, Mods::NONE)), "{written}");
         }
         // No key, or an unknown modifier.
-        assert_eq!([keys(""), keys("Ctrl+"), keys("F13"), keys("Hyper+S"), keys("Save")], [None; 5]);
+        assert_eq!([parse_keys(""), parse_keys("Ctrl+"), parse_keys("F13"), parse_keys("Hyper+S"), parse_keys("Save")], [None; 5]);
     }
 }

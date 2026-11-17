@@ -12,13 +12,13 @@
 //! again. Text that may still become one ("-", "1.") is waited for silently. The number is
 //! written with the person's decimal mark ([`ui.locale`](Ui::locale)) and read back with it or
 //! with a point.
+use crate::accessibility::Role;
 use crate::color::Color;
-use crate::edit::Kind;
 use crate::event::{Key, Mods};
 use crate::id::Id;
 use crate::layout::{Align, Flow, Length};
 use crate::locale::Locale;
-use crate::told::Role;
+use crate::text_edit::Kind;
 use crate::ui::{Anchor, Response, Ui};
 use std::fmt::{Arguments, Display, Write};
 use std::ops::RangeInclusive;
@@ -108,7 +108,7 @@ impl Ui {
             *value = T::from_f64(to);
         }
         let [least, most] = bounds.unwrap_or([f64::MIN, f64::MAX]);
-        self.tell_stands(&state, Role::Spin, [value.to_f64(), least, most].map(|part| part.clamp(f32::MIN as f64, f32::MAX as f64) as f32));
+        self.retell_as_value(&state, Role::SpinButton, [value.to_f64(), least, most].map(|part| part.clamp(f32::MIN as f64, f32::MAX as f64) as f32));
         self.tell_step(step.to_f64() as f32);
         if let Some(refused) = refused {
             // The end it is beyond, written as its type writes it.
@@ -135,15 +135,15 @@ impl Ui {
         let (t, locale) = (self.theme, self.locale_in_use());
         let [least, most] = range.unwrap_or([f64::MIN, f64::MAX]);
         // The unit lies over the box's end, which keeps that much clear of the text.
-        self.el().flow(Flow::Layers).w(Length::Grow(1.0)).max(WIDEST, f32::INFINITY).open();
+        self.el().flow(Flow::Stack).w(Length::Grow(1.0)).max(WIDEST, f32::INFINITY).open();
         if !unit.is_empty() {
             let wide = self.text_width(unit, t.font);
-            self.text_room(0.0, wide + 6.0);
+            self.text_margin(0.0, wide + 6.0);
         }
         // Up and Down are taken before the text box sees them: there they would move within its
         // line.
         let keys = if self.focus == self.next_id() { self.number_keys() } else { 0.0 };
-        let state = self.entry_box(written, locale.point, "");
+        let state = self.entry_box(written, locale.decimal_point, "");
         if !unit.is_empty() {
             self.el().grow().pad((0.0, 0.0, 8.0, 0.0)).text(unit, t.font, t.text_dim).text_align(Align::End).show();
         }
@@ -207,8 +207,8 @@ impl Ui {
             self.announce(&said);
         }
         self.layer(of.id ^ REFUSED, Anchor::Under(of.rect, false), false, Color::NONE);
-        self.el().pad((8.0, 4.0)).fill(t.raise).border(t.red, 1.0).radius(5.0).shadow(8.0).open();
-        self.el().text(&said, t.small, t.text).show();
+        self.el().pad((8.0, 4.0)).fill(t.raised).border(t.red, 1.0).radius(5.0).shadow(8.0).open();
+        self.el().text(&said, t.small_font, t.text).show();
         self.close();
     }
 

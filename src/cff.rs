@@ -3,13 +3,13 @@
 //! subroutine calls and returns, arithmetic). Hints are skipped. The table stores things in
 //! INDEXes (offset arrays) and locates them through DICTs (operands followed by their key).
 //!
-//! `CFF2` is the same for variable fonts (see `vary.rs`): an operand may come with deltas per
-//! variation region, and `blend` resolves them at the font's instance. Its INDEX counts are 4
-//! bytes, not 2; charstrings have no widths; glyphs have no names; there is always an FDArray;
-//! and the operand stack holds 513, not 48.
-use crate::font::{Bytes, FontFile, Placing, Sketch, first_not};
+//! `CFF2` is the same for variable fonts (see `variable_fonts.rs`): an operand may come with
+//! deltas per variation region, and `blend` resolves them at the font's instance. Its INDEX
+//! counts are 4 bytes, not 2; charstrings have no widths; glyphs have no names; there is always
+//! an FDArray; and the operand stack holds 513, not 48.
+use crate::font_file::{Bytes, FontFile, Placing, Sketch, first_not};
 use crate::geom::{Point, pt};
-use crate::vary::Regions;
+use crate::variable_fonts::Regions;
 use std::ops::Range;
 
 /// A parsed `CFF ` or `CFF2` table, where each glyph is a charstring.
@@ -46,28 +46,28 @@ impl Programs {
         let shared = List::read(cff, words.end(cff)?)?;
         let font = fonts.item(cff, 0)?;
         // Type 1 charstrings (CharstringType 1) are not read.
-        if said(font, 0x0c06).is_some_and(|kind| kind[1] != 2) {
+        if dict_operands(font, 0x0c06).is_some_and(|kind| kind[1] != 2) {
             return None;
         }
-        let glyphs = List::read(cff, said(font, 17)?[1])?;
+        let glyphs = List::read(cff, dict_operands(font, 17)?[1])?;
         // A Private DICT (key 18: size and offset) locates its local subroutines (key 19,
         // relative to the DICT). A font has one, or several in an FDArray (key 12 36) with an
         // FDSelect (12 37).
         let own = |dictionary: Bytes| {
-            let Some([long, at]) = said(dictionary, 18) else { return Some((List::default(), 0)) };
-            match said(cff.part(at, long)?, 19) {
+            let Some([long, at]) = dict_operands(dictionary, 18) else { return Some((List::default(), 0)) };
+            match dict_operands(cff.part(at, long)?, 19) {
                 Some([_, pieces]) => Some((List::read(cff, at.checked_add(pieces)?)?, 0)),
                 None => Some((List::default(), 0)),
             }
         };
-        let Some([_, several]) = said(font, 0x0c24) else {
+        let Some([_, several]) = dict_operands(font, 0x0c24) else {
             // The charset is under key 15: without it, a predefined one.
-            let names = said(font, 15).map_or(0, |[_, names]| names);
+            let names = dict_operands(font, 15).map_or(0, |[_, names]| names);
             return Some(Programs { at, glyphs, shared, own: vec![own(font)?], which: None, names: Some(names), newer: false, store: 0 });
         };
         let dictionaries = List::read(cff, several)?;
         let own = (0..dictionaries.count.min(256)).map(|n| own(dictionaries.item(cff, n)?)).collect::<Option<_>>()?;
-        let which = said(font, 0x0c25)?[1];
+        let which = dict_operands(font, 0x0c25)?[1];
         (which < cff.0.len()).then_some(Programs { at, glyphs, shared, own, which: Some(which), names: None, newer: false, store: 0 })
     }
 
@@ -79,20 +79,20 @@ impl Programs {
         let cff = all.within(&at);
         let (start, long) = (cff.u8(2)? as usize, cff.u16(3)? as usize);
         let font = cff.part(start, long)?;
-        let (shared, glyphs) = (List::newer(cff, start + long)?, List::newer(cff, said(font, 17)?[1])?);
+        let (shared, glyphs) = (List::newer(cff, start + long)?, List::newer(cff, dict_operands(font, 17)?[1])?);
         let own = |dictionary: Bytes| {
-            let Some([long, at]) = said(dictionary, 18) else { return Some((List::default(), 0)) };
+            let Some([long, at]) = dict_operands(dictionary, 18) else { return Some((List::default(), 0)) };
             let private = cff.part(at, long)?;
-            let blends = said(private, 22).map_or(0, |[_, list]| list.min(u16::MAX as usize) as u16);
-            match said(private, 19) {
+            let blends = dict_operands(private, 22).map_or(0, |[_, list]| list.min(u16::MAX as usize) as u16);
+            match dict_operands(private, 19) {
                 Some([_, pieces]) => Some((List::newer(cff, at.checked_add(pieces)?)?, blends)),
                 None => Some((List::default(), blends)),
             }
         };
-        let dictionaries = List::newer(cff, said(font, 0x0c24)?[1])?;
+        let dictionaries = List::newer(cff, dict_operands(font, 0x0c24)?[1])?;
         let own = (0..dictionaries.count.min(256)).map(|n| own(dictionaries.item(cff, n)?)).collect::<Option<_>>()?;
-        let which = said(font, 0x0c25).map(|[_, which]| which).filter(|which| *which < cff.0.len());
-        let store = said(font, 24).map_or(0, |[_, store]| store.saturating_add(2));
+        let which = dict_operands(font, 0x0c25).map(|[_, which]| which).filter(|which| *which < cff.0.len());
+        let store = dict_operands(font, 24).map_or(0, |[_, store]| store.saturating_add(2));
         Some(Programs { at, glyphs, shared, own, which, names: None, newer: true, store })
     }
 
@@ -130,18 +130,18 @@ impl Programs {
         Some(())
     }
 
-    /// Runs one glyph's charstring for a font instance at `axes` (see `vary.rs`). Returns the
-    /// four seac operands, if it had them.
+    /// Runs one glyph's charstring for a font instance at `axes` (see `variable_fonts.rs`).
+    /// Returns the four seac operands, if it had them.
     fn run(&self, cff: Bytes, glyph: u16, (place, axes): (Placing, &[i32]), sketch: &mut Sketch) -> Option<Option<[f32; 4]>> {
         let (own, blends) = *self.own.get(self.dictionary(cff, glyph as usize)?)?;
         let code = self.glyphs.item(cff, glyph as usize)?;
         // The operand stack holds 48; in `CFF2`, 513.
-        let (callers, mut numbers, kept) = ([(code, 0); 16], [0.0; 513], [0.0; 32]);
+        let (callers, mut numbers, transient) = ([(code, 0); 16], [0.0; 513], [0.0; 32]);
         let numbers = &mut numbers[..if self.newer { 513 } else { 48 }];
         let store = Bytes(cff.0.get(self.store..).filter(|_| self.store != 0).unwrap_or(&[]));
         let blending = Blending { newer: self.newer, store, list: blends, axes };
         let mut run =
-            Run { cff, lists: [own, self.shared], code, at: 0, callers, depth: 0, numbers, count: 0, kept, hints: 0, pen: pt(0.0, 0.0), drawing: false, asked: None, place, sketch, blending };
+            Run { cff, lists: [own, self.shared], code, at: 0, callers, depth: 0, numbers, count: 0, transient, hints: 0, pen: pt(0.0, 0.0), drawing: false, asked: None, place, sketch, blending };
         while run.step()? {}
         run.lift();
         Some(run.asked)
@@ -259,7 +259,7 @@ impl List {
 
 /// A DICT's last two operands before `key`. Operands precede their operator; an operator is a
 /// byte below 28, or 12 and one more byte (asked for here as `0x0c00` plus that byte).
-fn said(dictionary: Bytes, key: u16) -> Option<[usize; 2]> {
+fn dict_operands(dictionary: Bytes, key: u16) -> Option<[usize; 2]> {
     let (mut at, mut numbers) = (0, [0; 2]);
     while let Some(first) = dictionary.u8(at) {
         let second = dictionary.u8(at + 1);
@@ -308,7 +308,7 @@ struct Run<'a> {
     /// The operands since the last operator, and the transient array.
     numbers: &'a mut [f32],
     count: usize,
-    kept: [f32; 32],
+    transient: [f32; 32],
     /// Stem hints declared: a `hintmask` that follows has a bit for each.
     hints: usize,
     /// The pen position in font units, and whether it has drawn since it moved.
@@ -409,7 +409,7 @@ impl Run<'_> {
         let ([a, b, ..], whole) = (taken, |number: f32| usize::try_from(number as i32).ok());
         // `put` stores a value at an index;
         if kind == 20 {
-            *self.kept.get_mut(whole(b)?)? = a;
+            *self.transient.get_mut(whole(b)?)? = a;
         }
         // `roll` rotates the last so many operands by so many places.
         if kind == 30 {
@@ -420,7 +420,7 @@ impl Run<'_> {
             0 | 18 | 20 | 30 => ([0.0; 2], 0),
             // `get` fetches a stored value; `dup` repeats the last; `exch` swaps the last two;
             // `index` copies one further down (the last, for a negative index).
-            21 => ([*self.kept.get(whole(a)?)?, 0.0], 1),
+            21 => ([*self.transient.get(whole(a)?)?, 0.0], 1),
             27 => ([a, a], 2),
             28 => ([b, a], 2),
             29 => ([*self.numbers[..self.count].iter().rev().nth((a as i32).max(0) as usize)?, 0.0], 1),
@@ -437,7 +437,7 @@ impl Run<'_> {
     /// draws, then put back.)
     fn command(&mut self, command: u8) -> Option<()> {
         let (numbers, count) = (std::mem::take(&mut self.numbers), std::mem::take(&mut self.count));
-        let told = &numbers[..count];
+        let operands = &numbers[..count];
         match command {
             // Hints come in pairs of operands. A mask has a bit per hint so far, and may have
             // the last hints right before it.
@@ -445,28 +445,28 @@ impl Run<'_> {
             19 | 20 => (self.hints, self.at) = (self.hints + count / 2, self.at + (self.hints + count / 2).div_ceil(8)),
             // `rmoveto`, `hmoveto`, `vmoveto`. (A glyph's first move may be preceded by a
             // width, which isn't needed.)
-            21 => self.go(*told.get(count.wrapping_sub(2))?, *told.last()?),
-            22 => self.go(*told.last()?, 0.0),
-            4 => self.go(0.0, *told.last()?),
+            21 => self.go(*operands.get(count.wrapping_sub(2))?, *operands.last()?),
+            22 => self.go(*operands.last()?, 0.0),
+            4 => self.go(0.0, *operands.last()?),
             // `rlineto`; or `hlineto`/`vlineto`, alternating horizontal and vertical.
-            5 => told.as_chunks().0.iter().for_each(|&[dx, dy]| self.line(dx, dy)),
-            6 | 7 => told.iter().enumerate().for_each(|(n, by)| if (n % 2 == 0) == (command == 6) { self.line(*by, 0.0) } else { self.line(0.0, *by) }),
+            5 => operands.as_chunks().0.iter().for_each(|&[dx, dy]| self.line(dx, dy)),
+            6 | 7 => operands.iter().enumerate().for_each(|(n, by)| if (n % 2 == 0) == (command == 6) { self.line(*by, 0.0) } else { self.line(0.0, *by) }),
             // `rrcurveto`, six operands each: with a line after them (`rcurveline`), or lines
             // before one (`rlinecurve`).
-            8 => told.as_chunks().0.iter().for_each(|by| self.curve(*by)),
+            8 => operands.as_chunks().0.iter().for_each(|by| self.curve(*by)),
             24 => {
-                let (curves, line) = told.as_chunks();
+                let (curves, line) = operands.as_chunks();
                 curves.iter().for_each(|by| self.curve(*by));
                 self.line(*line.first()?, *line.get(1)?);
             }
             25 => {
-                let (lines, curve) = told.split_at(count.checked_sub(6)?);
+                let (lines, curve) = operands.split_at(count.checked_sub(6)?);
                 lines.as_chunks().0.iter().for_each(|&[dx, dy]| self.line(dx, dy));
                 self.curve(curve.try_into().ok()?);
             }
             // Shorter curves, for ones starting or ending horizontal or vertical.
-            26 | 27 => self.leaning(told, command == 27),
-            30 | 31 => self.turning(told, command == 31),
+            26 | 27 => self.leaning(operands, command == 27),
+            30 | 31 => self.turning(operands, command == 31),
             _ => return None,
         }
         self.numbers = numbers;
@@ -482,7 +482,7 @@ impl Run<'_> {
 
     /// `blend`, in a `CFF2` charstring. The last operand is how many operands are blended.
     /// Before it are their default values, then for each, its deltas per region (see
-    /// `vary.rs`). What remains is each operand at the font's instance.
+    /// `variable_fonts.rs`). What remains is each operand at the font's instance.
     fn blend(&mut self) -> Option<()> {
         self.count = self.count.checked_sub(1)?;
         let many = usize::try_from(self.numbers[self.count] as i32).ok()?;
@@ -540,8 +540,8 @@ impl Run<'_> {
 
     /// Curves starting and ending in the same direction, `across` or up: four operands each.
     /// The first may start off-axis, by an extra operand before the others.
-    fn leaning(&mut self, told: &[f32], across: bool) {
-        let (aside, curves) = told.as_rchunks::<4>();
+    fn leaning(&mut self, operands: &[f32], across: bool) {
+        let (aside, curves) = operands.as_rchunks::<4>();
         let mut aside = aside.first().copied().unwrap_or(0.0);
         for by in curves {
             self.curve(if across { [by[0], aside, by[1], by[2], by[3], 0.0] } else { [aside, by[0], by[1], by[2], 0.0, by[3]] });
@@ -551,8 +551,8 @@ impl Run<'_> {
 
     /// Curves alternately starting `across` and ending vertical, and the reverse: four operands
     /// each. The last may end off-axis, by an extra operand after the others.
-    fn turning(&mut self, told: &[f32], mut across: bool) {
-        let (curves, aside) = told.as_chunks::<4>();
+    fn turning(&mut self, operands: &[f32], mut across: bool) {
+        let (curves, aside) = operands.as_chunks::<4>();
         for (n, by) in curves.iter().enumerate() {
             let aside = if n + 1 == curves.len() { aside.first().copied().unwrap_or(0.0) } else { 0.0 };
             self.curve(if across { [by[0], 0.0, by[1], by[2], aside, by[3]] } else { [0.0, by[0], by[1], by[2], by[3], aside] });
@@ -562,8 +562,8 @@ impl Run<'_> {
 
     /// Two curves in one operator, in four encodings omitting zeros. (Meant to flatten to a
     /// line at small sizes; here always curves.)
-    fn flex(&mut self, kind: u8, told: &[f32]) -> Option<()> {
-        let (first, second) = match (kind, told) {
+    fn flex(&mut self, kind: u8, operands: &[f32]) -> Option<()> {
+        let (first, second) = match (kind, operands) {
             (34, &[.., a, b, c, d, e, f, g]) => ([a, 0.0, b, c, d, 0.0], [e, 0.0, f, -c, g, 0.0]),
             (35, &[.., a, b, c, d, e, f, g, h, i, j, k, l, _]) => ([a, b, c, d, e, f], [g, h, i, j, k, l]),
             (36, &[.., a, b, c, d, e, f, g, h, i]) => ([a, b, c, d, e, 0.0], [f, 0.0, g, h, i, -(b + d + h)]),
@@ -612,8 +612,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::canvas::Canvas;
     use crate::color::Color;
-    use crate::font::OwnFonts;
-    use crate::font::tests::{file, ink, words};
+    use crate::font_file::AppFonts;
+    use crate::font_file::tests::{file, ink, words};
     use crate::path::Path;
     use crate::text::{Font, Metrics, TextSystem};
 
@@ -774,7 +774,7 @@ pub(crate) mod tests {
     #[cfg(feature = "cff")]
     fn programs_of_a_cff_table_draw_lines_and_curves() {
         let font = FontFile::read(curved(None)).expect("the font is read");
-        assert_eq!((font.metrics(1000.0), font.advance('A', 1000.0), font.advance('B', 10.0)), (Metrics { ascent: 800.0, descent: 200.0, cap: 0.0, small: 0.0 }, 600.0, 7.0));
+        assert_eq!((font.metrics(1000.0), font.advance('A', 1000.0), font.advance('B', 10.0)), (Metrics { ascent: 800.0, descent: 200.0, cap_height: 0.0, x_height: 0.0 }, 600.0, 7.0));
         assert_eq!(font.outline('@', 1000.0), Path::svg("M100 800 100 300 400 300 400 800Z"), "the missing glyph");
         assert_eq!(font.outline('A', 1000.0), Path::svg(DRAWN));
         let curves = "M0 500C10 480 40 440 40 390C100 385 170 305 260 305C260 295 280 265 320 265C370 265 430 195 435 115ZM335 115C345 115 365 85 365 45L1365 1045 865 545 865.5 544.75Z\
@@ -783,7 +783,7 @@ pub(crate) mod tests {
         assert_eq!(font.outline('B', 1000.0), Path::svg(curves));
         // Rasterized, it has soft edges and stays inside its glyph's box.
         let mut px = vec![0u32; 24 * 24];
-        OwnFonts::new(font).draw(&mut Canvas::new(&mut px, 24, 24, (0, 0), 1.0), "A", 4.0, 2.0, Font::new(20.0), Color::WHITE);
+        AppFonts::new(font).draw(&mut Canvas::new(&mut px, 24, 24, (0, 0), 1.0), "A", 4.0, 2.0, Font::new(20.0), Color::WHITE);
         let (lit, whole) = ink(&px, 24);
         assert!(!whole && lit.len() > 10 && lit.iter().all(|at| (6..9).contains(&at.0) && (8..14).contains(&at.1)), "{lit:?}");
     }

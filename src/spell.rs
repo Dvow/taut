@@ -23,12 +23,12 @@
 //! for drawings.
 use crate::canvas::Canvas;
 use crate::color::Color;
-use crate::edit::{Edit, in_word, step};
 use crate::geom::{Point, Rect, rect};
 use crate::id::{Id, fold, hash};
 use crate::layout::{Align, Content};
 use crate::path::Path;
 use crate::text::{Font, Line};
+use crate::text_edit::{Edit, in_word, step};
 use crate::ui::{Response, Ui};
 use std::any::Any;
 use std::collections::HashMap;
@@ -609,7 +609,7 @@ impl Kept {
     /// A checked box's visible content and the window area it covers: reused where nothing it
     /// depends on changed. Nothing for a box out of view.
     fn find(&mut self, ui: &mut Ui, checked: &Checked) -> Option<(Rect, Found)> {
-        let seen = ui.survey.seen.iter().find(|seen| seen.at == checked.at && !seen.leaving)?;
+        let seen = ui.visible_boxes.boxes.iter().find(|seen| seen.at == checked.at && !seen.leaving)?;
         let (r, area) = (seen.rect, seen.area);
         let view = View::of(ui, checked.at, r, area)?;
         // The word being written, if in this box: unchecked until ended.
@@ -692,7 +692,7 @@ impl View {
     fn line_start(&self, ui: &Ui, line: &Line) -> (bool, f32) {
         let strings = &ui.tree.strings;
         let paragraph = strings[self.start..line.start].rfind('\n').map_or(self.start, |at| self.start + at + 1);
-        let leftward = crate::order::leftward(&strings[paragraph..self.end]);
+        let leftward = crate::bidi::leftward(&strings[paragraph..self.end]);
         let x = self.inside.x + ((self.inside.w - line.width).max(0.0) * if leftward { 1.0 - self.side } else { self.side }).round();
         (leftward, x)
     }
@@ -701,7 +701,7 @@ impl View {
     fn across(&self, ui: &mut Ui, line: &Line) -> Option<Range<usize>> {
         let (leftward, x) = self.line_start(ui, line);
         let text = &ui.tree.strings[line.start..line.end];
-        if leftward || !crate::order::plain(text) {
+        if leftward || !crate::bidi::plain(text) {
             return None;
         }
         let mut stops = Vec::new();
@@ -725,7 +725,7 @@ impl View {
         // (Text without right-to-left characters is measured once, each character after the
         // previous. Other text a word at a time, as displayed.)
         let text = &ui.tree.strings[line.start..line.end];
-        let (plain, mut stops, mut pieces) = (!leftward && crate::order::plain(text), Vec::new(), Vec::new());
+        let (plain, mut stops, mut pieces) = (!leftward && crate::bidi::plain(text), Vec::new(), Vec::new());
         if plain {
             ui.text.measure(text, self.font, ui.scale, Some(&mut stops));
         }
@@ -1068,9 +1068,9 @@ impl Drop for Speller {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::accessibility::Role;
     use crate::geom::pt;
     use crate::testing::Trial;
-    use crate::told::Role;
     use crate::{LocalClipboard, Size, Surface, text::BuiltInFont};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1173,14 +1173,14 @@ pub(crate) mod tests {
         // The same text as a screen reader is told: each misspelling by character offsets
         // across both lines ("ovr" is 27th to 29th).
         let mut trial = trial("the quikc brown fox\njumps ovr the lazy dog");
-        assert_eq!(trial.find(Role::TextBox, "Notes").spelt_wrong, [[4, 9], [26, 29]]);
+        assert_eq!(trial.find(Role::TextBox, "Notes").misspelled, [[4, 9], [26, 29]]);
         // Corrected, nothing is; and in an unchecked box, nothing ever is.
         trial.app.text = "the quick brown fox".into();
         trial.run();
-        assert!(trial.find(Role::TextBox, "Notes").spelt_wrong.is_empty());
+        assert!(trial.find(Role::TextBox, "Notes").misspelled.is_empty());
         trial.app = Page { text: "the quikc brown fox".into(), checked: false };
         trial.run();
-        assert!(trial.find(Role::TextBox, "Notes").spelt_wrong.is_empty());
+        assert!(trial.find(Role::TextBox, "Notes").misspelled.is_empty());
     }
 
     #[test]
@@ -1223,7 +1223,7 @@ pub(crate) mod tests {
 
     /// The open menu's rows, as a screen reader is told.
     fn menu(trial: &Trial<Page>) -> Vec<String> {
-        trial.said().iter().filter(|said| said.role == Role::MenuItem).map(|said| said.name.clone()).collect()
+        trial.visible_access_nodes().iter().filter(|said| said.role == Role::MenuItem).map(|said| said.name.clone()).collect()
     }
 
     #[test]
@@ -1291,7 +1291,7 @@ pub(crate) mod tests {
             ui.spell_with(None, stand_in, true);
             ui.text_box(&mut app.0, "Hint wrods");
             ui.spell_with(None, stand_in, true);
-            ui.secret_box(&mut app.1, "Secret");
+            ui.password_box(&mut app.1, "Secret");
             ui.spell_with(Some("none"), stand_in, true);
             ui.text_box(&mut app.2, "Elsewhere");
         });
@@ -1302,7 +1302,7 @@ pub(crate) mod tests {
     #[test]
     fn a_program_that_never_asks_carries_nothing_of_it() {
         let mut trial = Trial::new(Page { text: "the quikc fox".into(), checked: false }, page);
-        trial.right_click(trial.spot(Role::TextBox, "Notes"));
+        trial.right_click(trial.center_of(Role::TextBox, "Notes"));
         assert!(trial.ui.asks.spelling.hooks().is_none());
         assert_eq!(menu(&trial), ["Cut", "Copy", "Paste", "Select all"]);
     }
@@ -1347,11 +1347,11 @@ pub(crate) mod tests {
         assert!((23..=25).contains(&asked), "{asked} words were asked about");
         assert_eq!(wrong(&trial.ui).len(), asked * 3);
         // Scrolled a little, only the lines that came into view are checked.
-        trial.wheel(trial.spot(Role::TextBox, "Long"), 0.0, 200.0);
+        trial.wheel(trial.center_of(Role::TextBox, "Long"), 0.0, 200.0);
         let more = ASKED.load(Ordering::SeqCst) - asked;
         assert!((9..=11).contains(&more), "{more} more words were asked about");
         // And back up, nothing.
-        trial.wheel(trial.spot(Role::TextBox, "Long"), 0.0, -200.0);
+        trial.wheel(trial.center_of(Role::TextBox, "Long"), 0.0, -200.0);
         assert_eq!(ASKED.load(Ordering::SeqCst) - asked, more);
     }
 
@@ -1402,7 +1402,7 @@ pub(crate) mod tests {
         for (ui, app) in &mut boxes {
             ui.resize(Size { w: 640.0, h: 480.0 }, 1.0);
             ui.run(&mut |ui| long_away(app, ui));
-            ui.set_focus(ui.said().iter().find(|said| said.role == Role::TextBox).map_or(0, |said| said.id));
+            ui.set_focus(ui.visible_access_nodes().iter().find(|said| said.role == Role::TextBox).map_or(0, |said| said.id));
             ui.run(&mut |ui| long_away(app, ui));
         }
         let mut least = [f64::MAX; 2];
@@ -1578,7 +1578,7 @@ pub(crate) mod tests {
             }
             let screen = Surface::draw(&mut ui, 64);
             std::fs::create_dir_all(&folder).unwrap();
-            std::fs::write(std::path::Path::new(&folder).join(name), screen.png()).unwrap();
+            std::fs::write(std::path::Path::new(&folder).join(name), screen.to_png()).unwrap();
             println!("{name}: {} words marked", wrong(&ui).len());
         }
     }

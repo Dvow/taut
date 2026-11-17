@@ -44,7 +44,7 @@ impl Ui {
         // Above every other layer.
         let layer = self.layers.len() - 1;
         self.layers[layer].height = u64::MAX;
-        self.el().flow(Flow::Layers).size(SQUARE, SQUARE).open();
+        self.el().flow(Flow::Stack).size(SQUARE, SQUARE).open();
         self.el().icon(Icon { path, view: SQUARE, stroke: 0.0 }, SQUARE, Color::WHITE).show();
         self.el().icon(Icon { path, view: SQUARE, stroke: 1.2 }, SQUARE, Color::rgb(0x101216)).show();
         self.close();

@@ -2,7 +2,7 @@
 //! failed before its fix.
 use std::time::{Duration, Instant};
 use taut::text::{Font, TextSystem};
-use taut::{FontFile, Ordered, OwnFonts};
+use taut::{AppFonts, BidiText, FontFile};
 
 /// A table of a font: its name and its bytes.
 type Table = ([u8; 4], Vec<u8>);
@@ -122,7 +122,7 @@ fn gsub_of_lookups_with_lists_that_are_not_there(lookups: u16) -> Vec<u8> {
 #[test]
 fn a_font_whose_lookups_say_they_have_thousands_of_lists_does_not_take_seconds_a_line() {
     let file = hebrew_font(gsub_of_lookups_with_lists_that_are_not_there(20));
-    let mut text = Ordered::around(Box::new(OwnFonts::new(FontFile::read(file).expect("the font is read"))));
+    let mut text = BidiText::around(Box::new(AppFonts::new(FontFile::read(file).expect("the font is read"))));
     let line = "שלום עולם ".repeat(10);
     let clock = Instant::now();
     let wide = text.measure(&line, Font::new(16.0), 1.0, None);

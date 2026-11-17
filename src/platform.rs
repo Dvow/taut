@@ -18,7 +18,7 @@ pub struct Window<'a> {
     /// Where the top left of its frame goes, in screen pixels: on the screen at that place, or
     /// if none is there any more, the nearest one. The whole window is put on its screen as far
     /// as it fits. Left to the system when `None`.
-    pub at: Option<(i32, i32)>,
+    pub position: Option<(i32, i32)>,
     /// The screen it opens centred on while `at` is `None`: its index in
     /// [`Ui::screens`](crate::Ui::screens), the main screen being 0.
     pub screen: Option<usize>,
@@ -33,17 +33,19 @@ pub struct Window<'a> {
     /// first icon in the program's file.
     pub icons: &'a [(usize, &'a [u32])],
     /// No system frame: no title bar or border. The app draws its own and says which box moves
-    /// the window ([`Ui::window_strip`](crate::Ui::window_strip)); the person resizes it by its
-    /// edges and corners, and the app's own buttons minimize, maximize and close it
+    /// the window ([`Ui::set_title_bar`](crate::Ui::set_title_bar)); the person resizes it by
+    /// its edges and corners, and the app's own buttons minimize, maximize and close it
     /// ([`Ui::minimize`](crate::Ui::minimize), [`Ui::set_maximized`](crate::Ui::set_maximized),
     /// [`Ui::quit`](crate::Ui::quit)). Its size and place above then include all of it.
-    pub bare: bool,
+    pub frameless: bool,
     /// See-through wherever its interface is: where nothing is drawn (it opens on a page of
     /// [`Color::NONE`](crate::Color::NONE)), and through what is drawn as far as that is
     /// transparent. For a desktop widget, or a shaped splash picture. It has no system frame
     /// either, and keeps its opening size unless also `bare`, which makes it resizable by its
     /// edges.
-    pub clear: bool,
+    pub transparent: bool,
+    /// What shows its pixels: a GPU path or the CPU. Same pixels either way.
+    pub renderer: Renderer,
 }
 
 impl std::fmt::Debug for Window<'_> {
@@ -51,32 +53,127 @@ impl std::fmt::Debug for Window<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut said = f.debug_struct("Window");
         said.field("title", &self.title).field("width", &self.width).field("height", &self.height).field("min_width", &self.min_width).field("min_height", &self.min_height);
-        said.field("at", &self.at).field("screen", &self.screen).field("maximized", &self.maximized).field("minimized", &self.minimized);
-        said.field("icons", &self.icons.len()).field("bare", &self.bare).field("clear", &self.clear).finish()
+        said.field("position", &self.position).field("screen", &self.screen).field("maximized", &self.maximized).field("minimized", &self.minimized);
+        said.field("icons", &self.icons.len()).field("frameless", &self.frameless).field("transparent", &self.transparent).field("renderer", &self.renderer).finish()
     }
 }
 
 impl Default for Window<'_> {
     fn default() -> Self {
-        Window { title: "", width: 900.0, height: 600.0, min_width: 200.0, min_height: 120.0, at: None, screen: None, maximized: false, minimized: false, icons: &[], bare: false, clear: false }
+        Window {
+            title: "",
+            width: 900.0,
+            height: 600.0,
+            min_width: 200.0,
+            min_height: 120.0,
+            position: None,
+            screen: None,
+            maximized: false,
+            minimized: false,
+            icons: &[],
+            frameless: false,
+            transparent: false,
+            renderer: Renderer::Auto,
+        }
+    }
+}
+
+/// What shows a window's pixels. The CPU draws them either way, so a window looks the same,
+/// byte for byte; the GPU only shows them. `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl`
+/// overrides the app's choice.
+///
+/// | | GPU, best first | CPU |
+/// | --- | --- | --- |
+/// | Windows | Direct3D 11, Direct3D 12, Vulkan, OpenGL (WGL) | GDI |
+/// | Linux (X11) | OpenGL (EGL), Vulkan | X11 images |
+/// | Linux (Wayland) | none | shared memory |
+///
+/// A path that is missing falls back along that order, then to the CPU. The GPU paths need the
+/// feature `gpu`; without it the CPU shows every window, and none of their code is compiled in.
+/// They present whole frames in step with the screen, and upload only what changed. The device
+/// is made on a thread of its own: the CPU shows the first frames. A window opens cloaked until
+/// its first frame. See-through windows ([`Window::transparent`]) stay on the CPU.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Renderer {
+    /// The best GPU path where the feature `gpu` is on and the computer has a GPU of its own (not
+    /// a software adapter, not over a remote desktop); else the CPU.
+    #[default]
+    Auto,
+    /// Always the CPU.
+    Cpu,
+    /// The best GPU path where the feature `gpu` is on and there is a GPU, over a remote desktop
+    /// too; else the CPU.
+    Gpu,
+    /// Direct3D 11 and a DXGI flip-model swap chain (Windows).
+    Direct3D11,
+    /// Direct3D 12 and a DXGI flip-model swap chain (Windows).
+    Direct3D12,
+    /// Vulkan, through the system's loader.
+    Vulkan,
+    /// OpenGL: WGL on Windows, EGL on Linux.
+    OpenGL,
+}
+
+/// The GPU paths this system has, best first.
+#[cfg(all(windows, feature = "gpu"))]
+const BEST: [Renderer; 4] = [Renderer::Direct3D11, Renderer::Direct3D12, Renderer::Vulkan, Renderer::OpenGL];
+#[cfg(all(unix, feature = "gpu"))]
+#[allow(dead_code)] // (X11 has one path so far.)
+const BEST: [Renderer; 2] = [Renderer::OpenGL, Renderer::Vulkan];
+
+impl Renderer {
+    /// What the user `said` (`TAUT_RENDERER`, in any case) over the app's choice.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn chosen(self, said: Option<&str>) -> Renderer {
+        match said.map(str::to_ascii_lowercase).as_deref() {
+            Some("cpu") => Renderer::Cpu,
+            Some("gpu") => Renderer::Gpu,
+            Some("d3d11") => Renderer::Direct3D11,
+            Some("d3d12") => Renderer::Direct3D12,
+            Some("vulkan") => Renderer::Vulkan,
+            Some("opengl") => Renderer::OpenGL,
+            _ => self,
+        }
+    }
+
+    /// The GPU paths a window asking for this tries, in turn: the one named, then the system's,
+    /// best first. None for the CPU.
+    #[cfg(feature = "gpu")]
+    #[cfg_attr(unix, allow(dead_code))] // (X11 has one path so far.)
+    pub(crate) fn tried(self) -> impl Iterator<Item = Renderer> {
+        let named = BEST.into_iter().filter(move |path| *path == self);
+        named.chain(BEST.into_iter().filter(move |path| *path != self && self != Renderer::Cpu))
+    }
+}
+
+/// Whether windows asking for `asked` ask the GPU, as `TAUT_RENDERER` says if set: nothing
+/// for the CPU, else whether any device will do (`Gpu`, or a path named) or only one that shows
+/// frames directly (`Auto`).
+#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+pub(crate) fn wants_gpu(asked: Renderer) -> Option<bool> {
+    match asked.chosen(std::env::var("TAUT_RENDERER").ok().as_deref()) {
+        Renderer::Cpu => None,
+        Renderer::Auto => Some(false),
+        _ => Some(true),
     }
 }
 
 impl Window<'_> {
-    /// The same window, opened where [`Ui::placed`](crate::Ui::placed) said it was (if
-    /// anything): what an app keeps on closing and opens with next time.
-    pub fn placed(self, place: Option<Placed>) -> Self {
-        let Some(Placed { at, width, height, maximized }) = place else { return self };
-        Window { at: Some(at), width, height, maximized, ..self }
+    /// The same window, opened where [`Ui::window_placement`](crate::Ui::window_placement) said
+    /// it was (if anything): what an app keeps on closing and opens with next time.
+    pub fn with_placement(self, place: Option<WindowPlacement>) -> Self {
+        let Some(WindowPlacement { position: at, width, height, maximized }) = place else { return self };
+        Window { position: Some(at), width, height, maximized, ..self }
     }
 }
 
 /// Where a window is on the screen, as the person left it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Placed {
+pub struct WindowPlacement {
     /// The top left of its frame in screen pixels, and its client size in units, as when not
     /// maximized.
-    pub at: (i32, i32),
+    pub position: (i32, i32),
     /// Client width.
     pub width: f32,
     /// Client height.
@@ -148,10 +245,11 @@ pub(crate) fn hand_pictures_and_files() {
 
 /// Hands the windows their drop handling (files and text dragged in from other programs), on
 /// this thread: the first time an app asks about drops
-/// ([`Ui::files_over`](crate::Ui::files_over), [`Ui::files_dropped`](crate::Ui::files_dropped),
-/// [`Ui::text_over`](crate::Ui::text_over), [`Ui::text_dropped`](crate::Ui::text_dropped)).
-/// Reached no other way, so a program that never asks is built without it, and its windows
-/// accept no drops.
+/// ([`Ui::files_hovered`](crate::Ui::files_hovered),
+/// [`Ui::files_dropped`](crate::Ui::files_dropped),
+/// [`Ui::text_hovered`](crate::Ui::text_hovered),
+/// [`Ui::text_dropped`](crate::Ui::text_dropped)). Reached no other way, so a program that
+/// never asks is built without it, and its windows accept no drops.
 pub(crate) fn hand_drops() {
     #[cfg(windows)]
     crate::windows::hand_drops();
@@ -162,9 +260,9 @@ pub(crate) fn hand_drops() {
 }
 
 /// Hands the windows their drag-out code, on this thread: the first time an app hands something
-/// out ([`Ui::hand_out`](crate::Ui::hand_out)). Reached no other way, so a program that never
-/// does is built without it. (On Windows OLE hands it to the system, see `ole::Outward`; on X11
-/// the windows speak XDND themselves.)
+/// out ([`Ui::drag_out`](crate::Ui::drag_out)). Reached no other way, so a program that never
+/// does is built without it. (On Windows OLE hands it to the system, see `ole_drag::Outward`;
+/// on X11 the windows speak XDND themselves.)
 pub(crate) fn hands_out() {
     #[cfg(windows)]
     crate::windows::hands_out();
@@ -173,9 +271,9 @@ pub(crate) fn hands_out() {
 }
 
 /// Hands the windows their way to ask for the system's file dialog, on this thread: the first
-/// time an app asks for it ([`Files::system`](crate::Files::system)). Reached no other way, so
-/// a program that never asks is built without it. (On Linux the desktop portal is asked, on
-/// Windows the system itself.)
+/// time an app asks for it ([`FileDialog::native`](crate::FileDialog::native)). Reached no
+/// other way, so a program that never asks is built without it. (On Linux the desktop portal is
+/// asked, on Windows the system itself.)
 pub(crate) fn hand_file_dialog() {
     #[cfg(windows)]
     crate::windows::hand_file_dialog();
@@ -188,9 +286,9 @@ pub(crate) fn hand_file_dialog() {
 /// ([`Ui::system_notification`](crate::Ui::system_notification)), a global hotkey
 /// ([`Ui::hotkey`](crate::Ui::hotkey)), to hide its window
 /// ([`Ui::hide_window`](crate::Ui::hide_window)), or to be the single running instance
-/// (`first_copy`). Reached no other way, so a program that never asks is built without it. (On
-/// Windows through the shell, in `shell`; on Linux through D-Bus, in `freedesktop`, and X for
-/// hotkeys.)
+/// (`single_instance`). Reached no other way, so a program that never asks is built without it.
+/// (On Windows through the shell, in `shell`; on Linux through D-Bus, in `freedesktop`, and X
+/// for hotkeys.)
 pub(crate) fn hand_desktop() {
     #[cfg(windows)]
     crate::windows::hand_desktop();

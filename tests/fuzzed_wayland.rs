@@ -106,10 +106,10 @@ impl Compositor {
         let made = match (of, opcode) {
             ("wl_display", 1) => {
                 for (n, (name, version)) in OFFERED.iter().enumerate() {
-                    let mut said = vec![n as u32 + 1];
-                    Compositor::text(&mut said, name);
-                    said.push(*version);
-                    self.send(at(0), 0, &said);
+                    let mut args = vec![n as u32 + 1];
+                    Compositor::text(&mut args, name);
+                    args.push(*version);
+                    self.send(at(0), 0, &args);
                 }
                 Some("wl_registry")
             }
@@ -239,8 +239,8 @@ fn alone(name: &str) -> (bool, String) {
 /// but the program should not take all the computer's memory for it.
 #[test]
 fn a_scale_that_no_screen_has_does_not_take_all_the_memory() {
-    let (passed, said) = alone("a_scale_that_no_screen_has_by_itself");
-    assert!(passed, "{said}");
+    let (passed, output) = alone("a_scale_that_no_screen_has_by_itself");
+    assert!(passed, "{output}");
 }
 
 #[test]
@@ -256,8 +256,8 @@ fn a_scale_that_no_screen_has_by_itself() {
 /// row of screens, is near that: a window can be held to 16,384 units a side.
 #[test]
 fn a_window_larger_than_any_screen_is_not_made_so() {
-    let (passed, said) = alone("a_window_larger_than_any_screen_by_itself");
-    assert!(passed, "{said}");
+    let (passed, output) = alone("a_window_larger_than_any_screen_by_itself");
+    assert!(passed, "{output}");
 }
 
 #[test]

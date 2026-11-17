@@ -81,7 +81,7 @@ fn values(app: &mut Values, ui: &mut Ui) {
     ui.label("Copied");
     ui.progress_with_percent(app.done);
     ui.label("Count");
-    ui.drag_in(&mut app.count, 0..=10, 0.1);
+    ui.drag_value_in(&mut app.count, 0..=10, 0.1);
     ui.close();
 }
 
@@ -89,27 +89,27 @@ fn values(app: &mut Values, ui: &mut Ui) {
 fn a_slider_and_a_bar_write_their_value_and_a_dragged_number_keeps_to_its_range() {
     let mut trial = trial(Values { level: 50.0, done: 0.42, count: 8 }, values);
     // The slider's value is written beside it, with its unit, and changes as it moves.
-    assert!(trial.has(Role::Text, "50.0 %"), "{}", trial.listed());
-    let level = trial.spot(Role::Slider, "Level");
+    assert!(trial.has(Role::Text, "50.0 %"), "{}", trial.dump());
+    let level = trial.center_of(Role::Slider, "Level");
     trial.click(level);
     trial.key("End");
     assert_eq!(trial.app.level, 100.0);
-    assert!(trial.has(Role::Text, "100 %"), "{}", trial.listed());
+    assert!(trial.has(Role::Text, "100 %"), "{}", trial.dump());
     // The bar says how much is done, in whole parts of a hundred.
-    assert_eq!(trial.find(Role::Progress, "Copied").amount, Some([0.42, 0.0, 1.0]));
+    assert_eq!(trial.find(Role::Progress, "Copied").value_range, Some([0.42, 0.0, 1.0]));
     assert!(trial.has(Role::Text, "42 %"));
     trial.app.done = 0.999;
     trial.run();
     assert!(trial.has(Role::Text, "100 %") && !trial.has(Role::Text, "42 %"));
     // The number goes up ten steps of 0.1 for each press of an arrow, and no further than
-    // its range: a screen reader is told both ends.
-    let count = trial.spot(Role::Slider, "Count");
+    // its range: a screen reader hears both ends.
+    let count = trial.center_of(Role::Slider, "Count");
     trial.click(count);
     trial.key("Right");
     assert_eq!(trial.app.count, 9);
     (0..3).for_each(|_| trial.key("Right"));
     assert_eq!(trial.app.count, 10);
-    assert_eq!(trial.find(Role::Slider, "Count").amount, Some([10.0, 0.0, 10.0]));
+    assert_eq!(trial.find(Role::Slider, "Count").value_range, Some([10.0, 0.0, 10.0]));
     (0..12).for_each(|_| trial.key("Left"));
     assert_eq!(trial.app.count, 0);
     // Dragged a hundred units to the right, ten on: no further than 10.
@@ -136,14 +136,14 @@ fn sizes(size: &mut Size, ui: &mut Ui) {
 #[test]
 fn a_select_picks_among_the_apps_own_values() {
     let mut trial = trial(Size::Medium, sizes);
-    assert_eq!(trial.find(Role::Select, "Size").value, "Medium");
-    trial.press(Role::Select, "Size");
+    assert_eq!(trial.find(Role::ComboBox, "Size").value, "Medium");
+    trial.press(Role::ComboBox, "Size");
     trial.press(Role::MenuItem, "Large");
     assert_eq!(trial.app, Size::Large);
-    assert_eq!(trial.find(Role::Select, "Size").value, "Large");
+    assert_eq!(trial.find(Role::ComboBox, "Size").value, "Large");
     // By the keys too: the keyboard is back on it; Enter opens it with the keyboard on the
-    // one picked, and Up goes to the one before.
-    assert_eq!(trial.ui.focus(), trial.find(Role::Select, "Size").id);
+    // one selected, and Up goes to the one before.
+    assert_eq!(trial.ui.focus(), trial.find(Role::ComboBox, "Size").id);
     for key in ["Enter", "Up", "Enter"] {
         trial.key(key);
     }
@@ -222,11 +222,11 @@ fn a_group_is_drawn_see_through_as_one_picture() {
 #[test]
 fn a_hidden_box_keeps_its_room_and_nothing_reaches_it() {
     let mut trial = on_white(Faded { solid: 1.0, hidden: false, pressed: 0 }, faded);
-    let (shown, after) = (trial.spot(Role::Button, "Hidden"), trial.find(Role::Button, "After").rect);
+    let (shown, after) = (trial.center_of(Role::Button, "Hidden"), trial.find(Role::Button, "After").rect);
     trial.app.hidden = true;
     trial.run();
     // Not drawn, not told, not pressed; the button after it stays where it was.
-    assert!(!trial.has(Role::Button, "Hidden"), "{}", trial.listed());
+    assert!(!trial.has(Role::Button, "Hidden"), "{}", trial.dump());
     assert_eq!(trial.find(Role::Button, "After").rect, after);
     assert_eq!(pixel(&trial, shown.x, shown.y), 0xffffff);
     trial.click(shown);
@@ -251,7 +251,7 @@ fn a_link_before_a_slider_or_a_select_names_it() {
         ui.select(size, &["Small", "Large"]);
         ui.close();
     });
-    assert!(trial.has(Role::Slider, "Speed") && trial.has(Role::Select, "Size"), "{}", trial.listed());
+    assert!(trial.has(Role::Slider, "Speed") && trial.has(Role::ComboBox, "Size"), "{}", trial.dump());
     // A button before one does not name it: it has words of its own, for what it does.
     trial = self::trial((20.0f32, 0usize), |(level, _), ui| {
         ui.row().pad(10.0).open();
@@ -259,7 +259,7 @@ fn a_link_before_a_slider_or_a_select_names_it() {
         ui.slider(level, 0.0..=100.0);
         ui.close();
     });
-    assert!(trial.has(Role::Slider, ""), "{}", trial.listed());
+    assert!(trial.has(Role::Slider, ""), "{}", trial.dump());
 }
 
 #[test]
@@ -288,16 +288,16 @@ fn a_box_that_scrolls_with_no_height_takes_the_height_it_is_given() {
 #[test]
 fn a_box_left_open_is_named_by_the_line_that_opened_it() {
     // (The panics below are expected; what they say is checked.)
-    let said = |describe: fn(&mut Ui)| {
+    let panic_message = |describe: fn(&mut Ui)| {
         let mut ui = Ui::new(Box::new(taut::text::BuiltInFont), Box::new(taut::LocalClipboard::default()));
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ui.run(&mut |ui| describe(ui)))).expect_err("it panics");
         panic.downcast_ref::<String>().cloned().unwrap_or_default()
     };
     let opened = line!() + 1;
-    let open = said(|ui| _ = ui.row().open());
+    let open = panic_message(|ui| _ = ui.row().open());
     assert!(open.contains(&format!("the row opened at {}:{opened}:", file!())), "{open}");
     let closed = line!() + 4;
-    let twice = said(|ui| {
+    let twice = panic_message(|ui| {
         ui.column().open();
         ui.close();
         ui.close();
@@ -305,7 +305,7 @@ fn a_box_left_open_is_named_by_the_line_that_opened_it() {
     assert!(twice.contains(&format!("ui.close() at {}:{closed}:", file!())), "{twice}");
     // Parts that leave a box open for the app to close are named by the app's line too.
     let menu = line!() + 1;
-    let left = said(|ui| _ = ui.card());
+    let left = panic_message(|ui| _ = ui.card());
     assert!(left.contains(&format!("opened at {}:{menu}:", file!())), "{left}");
 }
 
@@ -318,8 +318,8 @@ fn a_trial_takes_a_closure_that_keeps_what_it_needs() {
     trial.press(Role::Button, "Press");
     assert_eq!(presses.get(), 2);
     // What it says of itself is short, and names its interface.
-    let said = format!("{trial:?}");
-    assert!(said.starts_with("Trial { ui: Ui { size: Size { w: 640.0, h: 480.0 }, scale: 1.0, boxes: ") && said.len() < 400, "{said}");
+    let debug = format!("{trial:?}");
+    assert!(debug.starts_with("Trial { ui: Ui { size: Size { w: 640.0, h: 480.0 }, scale: 1.0, boxes: ") && debug.len() < 400, "{debug}");
 }
 
 #[test]
@@ -332,8 +332,8 @@ fn the_pictures_of_two_failures_are_named_apart() {
             let mut trial = Trial::new(0u32, |count, ui| _ = (ui.label(&count.to_string()), *count += 1));
             trial.run();
         });
-        let said = step.expect_err("a picture left stale fails").downcast_ref::<String>().cloned().unwrap_or_default();
-        said.split("as shown: ").nth(1).and_then(|rest| rest.split(',').next()).unwrap_or_default().to_string()
+        let message = step.expect_err("a picture left stale fails").downcast_ref::<String>().cloned().unwrap_or_default();
+        message.split("as shown: ").nth(1).and_then(|rest| rest.split(',').next()).unwrap_or_default().to_string()
     };
     let (first, second) = (failed(), failed());
     assert!(first.contains("taut-trial") && first.contains(&std::process::id().to_string()), "{first}");
@@ -345,7 +345,7 @@ fn the_pictures_of_two_failures_are_named_apart() {
 #[test]
 fn the_systems_letters_come_in_a_box_that_any_interface_takes() {
     let mut ui = Ui::new(taut::platform::system_text(), Box::new(taut::LocalClipboard::default()));
-    ui.set_text(taut::platform::system_text());
+    ui.set_text_system(taut::platform::system_text());
     ui.resize(taut::geom::Size { w: 200.0, h: 100.0 }, 1.0);
     (0..2).for_each(|_| _ = ui.run(&mut |ui| _ = ui.label("Letters")));
     // On Windows and on Linux with its fonts, they are the system's own: not the built-in

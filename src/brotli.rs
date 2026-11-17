@@ -1964,7 +1964,7 @@ pub(crate) mod tests {
         let text = include_str!("../GUIDE.md").as_bytes().to_vec();
         let languages = "Привет, мир! 你好，世界。 こんにちは世界 مرحبا بالعالم नमस्ते दुनिया Γειά σου Κόσμε ".repeat(40).into_bytes();
         let picture = include_bytes!("../docs/windows.png").to_vec();
-        let font = crate::font::tests::file(&[0, 1, 0, 0], &crate::font::tests::tables());
+        let font = crate::font_file::tests::file(&[0, 1, 0, 0], &crate::font_file::tests::tables());
         let pattern = b"abcabcabd".repeat(3000);
         let signed: Vec<u8> = (0..20_000i32).flat_map(|n| ((n % 300 - 150) as i16).to_be_bytes()).collect();
         let mixed = [&text[..text.len().min(30_000)], &noise[..20_000], &signed[..], &languages].concat();

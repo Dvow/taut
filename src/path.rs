@@ -369,9 +369,9 @@ impl Path {
         all
     }
     /// The point `length` along the outline, and its direction there in degrees as
-    /// [`Transform::turn`] takes them (0 right, 90 down): so an arrowhead is placed at a line's
-    /// end by rotating it that much and moving it there. Negative is the start, past the end
-    /// the end. Nothing for an empty shape.
+    /// [`Transform::rotate`] takes them (0 right, 90 down): so an arrowhead is placed at a
+    /// line's end by rotating it that much and moving it there. Negative is the start, past the
+    /// end the end. Nothing for an empty shape.
     pub fn point_at(&self, length: f32) -> Option<(Point, f32)> {
         let (mut gone, mut first, mut found) = (0.0, None, None);
         self.cut(false, FINELY, |a, b, (piece, [t0, t1])| {
@@ -907,7 +907,7 @@ mod tests {
         // Transformed, a shape is the one through its transformed points: a square turned an
         // eighth stands on a corner; a circle scaled one way is an ellipse.
         let mut square = Path::new();
-        square.rect(-1.0, -1.0, 2.0, 2.0).transform(Transform::new().turn(45.0).move_by(5.0, 5.0));
+        square.rect(-1.0, -1.0, 2.0, 2.0).transform(Transform::new().rotate(45.0).translate(5.0, 5.0));
         let half = std::f32::consts::SQRT_2;
         assert!(near_rect(square.bounds(), 5.0 - half, 5.0 - half, 2.0 * half, 2.0 * half), "{:?}", square.bounds());
         // (Up to the last few bits, where the two computations round differently.)

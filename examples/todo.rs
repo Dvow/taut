@@ -4,7 +4,7 @@
 //! together with where the window was.
 //!   cargo run -p taut --example todo
 use std::path::PathBuf;
-use taut::{Align, Icon, Key, Mods, Placed, Theme, Ui, Window};
+use taut::{Align, Icon, Key, Mods, Theme, Ui, Window, WindowPlacement};
 
 const PEN: Icon = Icon::line("M3.5 12.5 4 10 10.5 3.5 12.5 5.5 6 12zM9 5l2 2");
 const CROSS: Icon = Icon::line("M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5");
@@ -31,14 +31,14 @@ struct App {
     /// The number the next new task is known by.
     next: u64,
     /// Where the window is, as it last said.
-    placed: Option<Placed>,
+    placed: Option<WindowPlacement>,
     /// The file the list is kept in.
     file: PathBuf,
 }
 
 fn describe(app: &mut App, ui: &mut Ui) {
     ui.theme = if ui.system_dark() { Theme::dark() } else { Theme::light() };
-    app.placed = ui.placed().or(app.placed);
+    app.placed = ui.window_placement().or(app.placed);
     let mut changed = adding(app, ui);
     showing(app, ui);
     changed |= list(app, ui);
@@ -170,5 +170,5 @@ fn file() -> PathBuf {
 fn main() {
     let mut app = App::load(file());
     let window = Window { title: "To do", width: 400.0, height: 480.0, min_width: 280.0, min_height: 220.0, ..Default::default() };
-    taut::run(window.placed(app.placed), move |ui| describe(&mut app, ui));
+    taut::run(window.with_placement(app.placed), move |ui| describe(&mut app, ui));
 }

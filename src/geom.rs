@@ -110,7 +110,7 @@ impl Rect {
     /// Grown just enough for its edges to lie on whole pixels at `scale` pixels per unit: the
     /// area to redraw.
     #[must_use]
-    pub fn on_pixels(&self, scale: f32) -> Rect {
+    pub fn snap_to_pixels(&self, scale: f32) -> Rect {
         let (x, y) = ((self.x * scale).floor() / scale, (self.y * scale).floor() / scale);
         rect(x, y, (self.right() * scale).ceil() / scale - x, (self.bottom() * scale).ceil() / scale - y)
     }
@@ -215,7 +215,7 @@ impl Transform {
         Transform([p * a + r * b, q * a + s * b, p * c + r * d, q * c + s * d, p * e + r * f + t, q * e + s * f + u])
     }
     /// This, then rotated `degrees` clockwise (y grows down) about the origin.
-    pub fn turn(self, degrees: f32) -> Self {
+    pub fn rotate(self, degrees: f32) -> Self {
         let (sin, cos) = degrees.to_radians().sin_cos();
         self.then(Transform([cos, sin, -sin, cos, 0.0, 0.0]))
     }
@@ -224,16 +224,16 @@ impl Transform {
         self.then(Transform([x, 0.0, 0.0, y, 0.0, 0.0]))
     }
     /// This, then moved right `x` and down `y`.
-    pub fn move_by(self, x: f32, y: f32) -> Self {
+    pub fn translate(self, x: f32, y: f32) -> Self {
         self.then(Transform([1.0, 0.0, 0.0, 1.0, x, y]))
     }
     /// This, then skewed: verticals lean `x` degrees, horizontals `y` degrees, as CSS
     /// `skew(x, y)`.
-    pub fn slant(self, x: f32, y: f32) -> Self {
+    pub fn skew(self, x: f32, y: f32) -> Self {
         self.then(Transform([1.0, y.to_radians().tan(), x.to_radians().tan(), 1.0, 0.0, 0.0]))
     }
     /// The inverse; `None` if it flattens everything onto a line or point.
-    pub fn undone(self) -> Option<Self> {
+    pub fn inverse(self) -> Option<Self> {
         let [a, b, c, d, e, f] = self.0;
         let area = a * d - b * c;
         area.is_normal().then(|| Transform([d / area, -b / area, -c / area, a / area, (c * f - d * e) / area, (b * e - a * f) / area]))
@@ -258,26 +258,26 @@ mod tests {
     fn a_transform_does_its_steps_in_the_order_they_are_said() {
         let p = pt(3.0, 1.0);
         // A quarter turn clockwise takes right to down.
-        assert!(near(Transform::new().turn(90.0).apply(pt(1.0, 0.0)), pt(0.0, 1.0)));
-        assert!(near(Transform::new().turn(90.0).apply(pt(0.0, 1.0)), pt(-1.0, 0.0)));
+        assert!(near(Transform::new().rotate(90.0).apply(pt(1.0, 0.0)), pt(0.0, 1.0)));
+        assert!(near(Transform::new().rotate(90.0).apply(pt(0.0, 1.0)), pt(-1.0, 0.0)));
         // Move-then-scale differs from scale-then-move.
-        assert!(near(Transform::new().move_by(1.0, 2.0).scale(2.0, 2.0).apply(p), pt(8.0, 6.0)));
-        assert!(near(Transform::new().scale(2.0, 2.0).move_by(1.0, 2.0).apply(p), pt(7.0, 4.0)));
+        assert!(near(Transform::new().translate(1.0, 2.0).scale(2.0, 2.0).apply(p), pt(8.0, 6.0)));
+        assert!(near(Transform::new().scale(2.0, 2.0).translate(1.0, 2.0).apply(p), pt(7.0, 4.0)));
         // Turned about a point: move there, turn, move back.
-        let round_middle = Transform::new().move_by(-5.0, -5.0).turn(180.0).move_by(5.0, 5.0);
+        let round_middle = Transform::new().translate(-5.0, -5.0).rotate(180.0).translate(5.0, 5.0);
         assert!(near(round_middle.apply(pt(6.0, 5.0)), pt(4.0, 5.0)) && near(round_middle.apply(pt(5.0, 5.0)), pt(5.0, 5.0)));
         // Skewed 45 degrees: a point moves right as far as it is down.
-        assert!(near(Transform::new().slant(45.0, 0.0).apply(pt(0.0, 2.0)), pt(2.0, 2.0)));
-        assert!(near(Transform::new().slant(0.0, 45.0).apply(pt(2.0, 0.0)), pt(2.0, 2.0)));
+        assert!(near(Transform::new().skew(45.0, 0.0).apply(pt(0.0, 2.0)), pt(2.0, 2.0)));
+        assert!(near(Transform::new().skew(0.0, 45.0).apply(pt(2.0, 0.0)), pt(2.0, 2.0)));
         // `then` equals the steps in sequence.
-        let (one, two) = (Transform::new().turn(30.0).scale(2.0, 0.5), Transform::new().slant(10.0, 0.0).move_by(4.0, -1.0));
+        let (one, two) = (Transform::new().rotate(30.0).scale(2.0, 0.5), Transform::new().skew(10.0, 0.0).translate(4.0, -1.0));
         let joined = one.then(two);
-        let stepped = Transform::new().turn(30.0).scale(2.0, 0.5).slant(10.0, 0.0).move_by(4.0, -1.0);
+        let stepped = Transform::new().rotate(30.0).scale(2.0, 0.5).skew(10.0, 0.0).translate(4.0, -1.0);
         assert!(near(joined.apply(p), two.apply(one.apply(p))) && near(stepped.apply(p), joined.apply(p)));
         // Inverted, every point comes back; a flattening transform has no inverse.
-        let back = joined.undone().unwrap();
+        let back = joined.inverse().unwrap();
         assert!([pt(0.0, 0.0), p, pt(-7.0, 12.5)].iter().all(|q| near(back.apply(joined.apply(*q)), *q)));
-        assert_eq!(Transform::new().scale(1.0, 0.0).undone(), None);
+        assert_eq!(Transform::new().scale(1.0, 0.0).inverse(), None);
         assert_eq!(Transform::default(), Transform::new());
     }
 

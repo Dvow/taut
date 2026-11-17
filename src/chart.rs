@@ -18,13 +18,13 @@
 use crate::color::Color;
 use crate::date::{Date, ahead_of_greenwich};
 
+use crate::accessibility::Role;
 use crate::event::{Key, Mods};
 use crate::geom::{Point, Rect, pt, rect};
 use crate::id::{Id, hash};
 use crate::layout::{Align, Flow};
 use crate::path::Path;
 use crate::theme::Theme;
-use crate::told::Role;
 use crate::ui::{Anchor, Response, Stroke, Ui};
 use std::f32::consts::TAU;
 
@@ -144,16 +144,16 @@ impl<'a> Chart<'a> {
     }
     /// Category names along the x axis instead of numbers: each series' first value is over the
     /// first name, and so on. (For a pie, its slice names.)
-    pub const fn names(self, names: &'a [&'a str]) -> Self {
+    pub const fn categories(self, names: &'a [&'a str]) -> Self {
         Chart { names, ..self }
     }
     /// The x values of the first and last value (default 0 and count minus one): sixty values
-    /// for the last minute go [`across(-59.0, 0.0)`](Self::across).
-    pub const fn across(self, first: f32, last: f32) -> Self {
+    /// for the last minute go [`x_range(-59.0, 0.0)`](Self::x_range).
+    pub const fn x_range(self, first: f32, last: f32) -> Self {
         Chart { across: Some([first, last]), ..self }
     }
     /// Fixed y axis bounds instead of the data's: a percentage always shown 0 to 100.
-    pub const fn up(self, least: f32, most: f32) -> Self {
+    pub const fn y_range(self, least: f32, most: f32) -> Self {
         Chart { up: Some([least, most]), ..self }
     }
     /// Stacks bar series instead of grouping them: each total is as high as their sum.
@@ -208,9 +208,9 @@ impl<'a> Chart<'a> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChartView {
     /// The x span shown, if not all.
-    pub across: Option<[f32; 2]>,
+    pub x_range: Option<[f32; 2]>,
     /// The y span shown, if not all.
-    pub up: Option<[f32; 2]>,
+    pub y_range: Option<[f32; 2]>,
     /// Hidden series (or slices), by index.
     pub hidden: Vec<usize>,
 }
@@ -235,7 +235,7 @@ fn color_of(theme: &Theme, series: &Series, nth: usize) -> Color {
 
 /// The theme's colour for series or slice `nth`: five, then the same five paler.
 fn palette(theme: &Theme, nth: usize) -> Color {
-    [theme.accent, theme.green, theme.amber, theme.red, theme.blue][nth % 5].alpha([1.0, 0.6][nth / 5 % 2])
+    [theme.accent, theme.green, theme.amber, theme.red, theme.blue][nth % 5].with_alpha([1.0, 0.6][nth / 5 % 2])
 }
 
 /// A round tick step (1, 2 or 5 times a power of ten) for about `count` ticks over `span`.
@@ -652,7 +652,7 @@ impl Ui {
     /// Shows a chart in a `width` by `height` box: series over labelled axes, a legend, and the
     /// value under the pointer. With focus, Left/Right step through values, Home/End to the
     /// ends, and screen readers read them. `changed` is set when another position is read;
-    /// [`chart_at`](Self::chart_at) says which.
+    /// [`chart_cursor`](Self::chart_cursor) says which.
     pub fn chart(&mut self, chart: &Chart, width: f32, height: f32) -> Response {
         self.chart_in(chart, None, width, height)
     }
@@ -668,8 +668,8 @@ impl Ui {
     /// The position read on chart `of` now: under the pointer, or where the keys went. A
     /// value's index in the longest series; a slice's in its pie; a scatter dot's among all
     /// dots, series after series. (To act on a clicked bar:
-    /// `if chart.clicked { open(ui.chart_at(&chart)) }`.)
-    pub fn chart_at(&self, of: &Response) -> Option<usize> {
+    /// `if chart.clicked { open(ui.chart_cursor(&chart)) }`.)
+    pub fn chart_cursor(&self, of: &Response) -> Option<usize> {
         self.chart_read.filter(|(chart, _)| *chart == of.id).map(|(_, nth)| nth)
     }
 
@@ -704,15 +704,8 @@ impl Ui {
         if state.hovered {
             self.follow_pointer();
         }
-        self.el().flow(Flow::Layers).size(width, height).sense().open();
-        // Reported as a figure named by its series; inside it, the focus point: a slider over
-        // the positions, named the same.
-        let names: Vec<&str> = chart.series.iter().map(|series| series.name).filter(|name| !name.is_empty()).collect();
-        self.tell(&state, Role::Group, None, &names.join(", "));
-        let along = self.el().key(KEYS).size(width, height).focusable().show();
-        let last = drawn.lead().map_or(0, |lead| if way == Way::Scatter { drawn.series.iter().map(|series| series.values.len()).sum() } else { lead.values.len() }).saturating_sub(1);
-        self.tell_amount_named(&along, Role::Slider, [read.unwrap_or(0) as f32, 0.0, last as f32], &names.join(", "));
-        self.tell_step(1.0);
+        self.el().flow(Flow::Stack).size(width, height).sense().open();
+        self.chart_focus_point(chart, &drawn, &state, read, [width, height]);
         match way {
             Way::Pie => self.chart_pie(&drawn, &frame, &off, read),
             _ => {
@@ -731,10 +724,23 @@ impl Ui {
         state
     }
 
+    /// The chart's focus point, a box over all of it; told to screen readers as a slider over
+    /// the positions, at `read`, inside the chart `state`, a group. Both are named by the
+    /// series.
+    fn chart_focus_point(&mut self, chart: &Chart, drawn: &Chart, state: &Response, read: Option<usize>, [width, height]: [f32; 2]) {
+        let names: Vec<&str> = chart.series.iter().map(|series| series.name).filter(|name| !name.is_empty()).collect();
+        self.tell(state, Role::Group, None, &names.join(", "));
+        let along = self.el().key(KEYS).size(width, height).focusable().show();
+        let positions = |lead: &Series| if chart.way() == Way::Scatter { drawn.series.iter().map(|series| series.values.len()).sum() } else { lead.values.len() };
+        let last = drawn.lead().map_or(0, positions).saturating_sub(1);
+        self.tell_value_named(&along, Role::Slider, [read.unwrap_or(0) as f32, 0.0, last as f32], &names.join(", "));
+        self.tell_step(1.0);
+    }
+
     /// Lays out a chart of this size: room for y labels, legend and x labels, and the axis
     /// ranges (or the `view`'s zoom).
     fn chart_frame(&mut self, chart: &Chart, view: Option<&ChartView>, width: f32, height: f32) -> Frame {
-        let (small, way) = (self.theme.small, chart.way());
+        let (small, way) = (self.theme.small_font, chart.way());
         let line = self.text.metrics(small, self.scale).height().ceil();
         let longest = chart.series.iter().map(|series| series.values.len()).max().unwrap_or(0);
         let slots = if matches!(way, Way::Slots | Way::Pie) { longest.max(chart.names.len()).max(1) } else { 0 };
@@ -746,21 +752,21 @@ impl Ui {
             return Frame { wide: width, line, plot, up: [0.0, 1.0, 1.0], across: [0.0, 1.0, 1.0], ends, slots, way, time };
         }
         // Y axis: as asked, or the data's span, out to the next tick.
-        let [low, high] = view.and_then(|view| view.up).or(chart.up).unwrap_or_else(|| chart.span());
+        let [low, high] = view.and_then(|view| view.y_range).or(chart.up).unwrap_or_else(|| chart.span());
         // Identical values span nothing, and a step that small is lost in them: pad a tenth of
         // their size either side.
         let size = low.abs().max(high.abs());
         let near = if size > 0.0 { size / 10.0 } else { 1.0 };
         let [low, high] = if high - low > size * 1e-5 { [low, high] } else { [low - near, high + near] };
         let step = step_for((high - low).max(1e-6), (height / 45.0).clamp(2.0, 8.0));
-        let fixed = chart.up.is_some() || view.is_some_and(|view| view.up.is_some());
+        let fixed = chart.up.is_some() || view.is_some_and(|view| view.y_range.is_some());
         let [low, high] = if fixed { [low, high] } else { [(low / step).floor() * step, (high / step).ceil() * step] };
         let high = if high > low { high } else { low + step };
         // X axis: from the first to the last position.
         let even = chart.series.is_empty() || chart.series.iter().any(|series| series.at.is_empty());
         let start = if even { [ends[0].min(ends[1]), ends[0].max(ends[1])] } else { [f32::MAX, f32::MIN] };
         let stands = chart.series.iter().flat_map(|series| series.at).filter(|at| at.is_finite());
-        let [from, to] = view.and_then(|view| view.across).unwrap_or_else(|| stands.fold(start, |[from, to], at| [from.min(*at), to.max(*at)]));
+        let [from, to] = view.and_then(|view| view.x_range).unwrap_or_else(|| stands.fold(start, |[from, to], at| [from.min(*at), to.max(*at)]));
         let to = if to > from { to } else { from + 1.0 };
         // Room for the widest y label, and for the legend.
         let gutter = marks(low, high, step).map(|mark| self.text_width(&written(mark, step), small)).fold(0.0, f32::max).ceil() + 8.0;
@@ -789,7 +795,7 @@ impl Ui {
             let keys = [Key::Left, Key::Right, Key::Up, Key::Down].map(|key| self.key(key, Mods::SHIFT) as u8 as f32 * 0.1);
             moved = [moved[0] + keys[1] - keys[0], moved[1] + keys[2] - keys[3]];
             if typed.contains('0') {
-                (view.across, view.up) = (None, None);
+                (view.x_range, view.y_range) = (None, None);
                 return;
             }
         }
@@ -798,7 +804,7 @@ impl Ui {
         let mut across = [x - (x - from) * zoom, x + (to - x) * zoom];
         let mut up = [y - (y - low) * zoom, y + (high - y) * zoom];
         // A drag pans with the pointer, from where it was grabbed.
-        if let Some((gone, was)) = self.held(state, [from, to, low, high]) {
+        if let Some((gone, was)) = self.drag_delta(state, [from, to, low, high]) {
             let [from, to, low, high] = was;
             across = [from - gone.x / plot.w * (to - from), to - gone.x / plot.w * (to - from)];
             up = [low + gone.y / plot.h * (high - low), high + gone.y / plot.h * (high - low)];
@@ -808,10 +814,10 @@ impl Ui {
         let [wide, tall] = [across[1] - across[0], up[1] - up[0]];
         (across, up) = ([across[0] + moved[0] * wide, across[1] + moved[0] * wide], [up[0] + moved[1] * tall, up[1] + moved[1] * tall]);
         if zoom != 1.0 || moved != [0.0; 2] || state.pressed && (across[0] != from || up[0] != low) {
-            (view.across, view.up, self.again) = (Some(across), Some(up), true);
+            (view.x_range, view.y_range, self.again) = (Some(across), Some(up), true);
         }
         if state.double_clicked {
-            (view.across, view.up, self.again) = (None, None, true);
+            (view.x_range, view.y_range, self.again) = (None, None, true);
         }
     }
 
@@ -850,7 +856,7 @@ impl Ui {
     /// A position in words: its label, then each series with its value; for a pie, the slice's
     /// name, value and share; for a scatter, the dot's series and coordinates.
     fn chart_words(&self, chart: &Chart, frame: &Frame, lead: &Series, nth: usize, off: &[usize]) -> String {
-        let (months, small) = (&self.calendar.months, frame.up[2] / 10.0);
+        let (months, small) = (&self.calendar_words.months, frame.up[2] / 10.0);
         if frame.way == Way::Pie {
             let name = chart.names.get(nth).map_or_else(|| (nth + 1).to_string(), |name| name.to_string());
             return format!("{name}: {}", slice_written(lead, nth, off));
@@ -872,9 +878,9 @@ impl Ui {
         for mark in marks(low, high, step) {
             let y = frame.y(mark).round();
             lines.move_to(0.0, y + 0.5).line_to(plot.w, y + 0.5);
-            self.el().at(0.0, plot.y + y - frame.line / 2.0).size(plot.x - 6.0, frame.line).text(&written(mark, step), t.small, t.text_faint).text_align(Align::End).show();
+            self.el().offset(0.0, plot.y + y - frame.line / 2.0).size(plot.x - 6.0, frame.line).text(&written(mark, step), t.small_font, t.text_faint).text_align(Align::End).show();
         }
-        self.el().at(plot.x, plot.y).size(plot.w, plot.h + 1.0).outline(&lines, 1.0, t.line).show();
+        self.el().offset(plot.x, plot.y).size(plot.w, plot.h + 1.0).outline(&lines, 1.0, t.line).show();
     }
 
     /// A chart's series, each in plot strips, a box per strip (first series lowest): when a few
@@ -920,15 +926,15 @@ impl Ui {
                 Some(near) => smooth_area_of(&places[near.clone()], &slopes[near.clone()], ground, by),
                 None => area_of(&part, ground, by),
             };
-            let strip = self.el().at(plot.x + left, plot.y - EDGE).size(right - left, plot.h + 2.0 * EDGE).clip();
+            let strip = self.el().offset(plot.x + left, plot.y - EDGE).size(right - left, plot.h + 2.0 * EDGE).clip();
             match series.kind {
                 Kind::Line => strip.outline(&line(), 1.5, color).show(),
-                Kind::Area => strip.shape(&area(), color.alpha(0.25)).show(),
+                Kind::Area => strip.shape(&area(), color.with_alpha(0.25)).show(),
                 Kind::Points => strip.shape(&dots_of(&part, by), color).show(),
                 _ => strip.shape(&bars_of(&mine, by), color).show(),
             };
             if series.kind == Kind::Area {
-                self.el().at(plot.x + left, plot.y - EDGE).size(right - left, plot.h + 2.0 * EDGE).clip().outline(&line(), 1.5, color).show();
+                self.el().offset(plot.x + left, plot.y - EDGE).size(right - left, plot.h + 2.0 * EDGE).clip().outline(&line(), 1.5, color).show();
             }
         }
     }
@@ -944,8 +950,8 @@ impl Ui {
             // The slice being read reaches a little further out, drawn over the others.
             let out = if read == Some(nth) { EDGE } else { 0.0 };
             let shape = wedge([r + EDGE, r + EDGE, r + out], inner, slice);
-            self.el().at(plot.x - EDGE, plot.y - EDGE).size(plot.w + 2.0 * EDGE, plot.h + 2.0 * EDGE).shape(&shape, palette(&t, nth)).show();
-            self.el().at(plot.x - EDGE, plot.y - EDGE).size(plot.w + 2.0 * EDGE, plot.h + 2.0 * EDGE).outline(&shape, 1.0, t.bg).show();
+            self.el().offset(plot.x - EDGE, plot.y - EDGE).size(plot.w + 2.0 * EDGE, plot.h + 2.0 * EDGE).shape(&shape, palette(&t, nth)).show();
+            self.el().offset(plot.x - EDGE, plot.y - EDGE).size(plot.w + 2.0 * EDGE, plot.h + 2.0 * EDGE).outline(&shape, 1.0, t.bg).show();
         }
     }
 
@@ -969,8 +975,8 @@ impl Ui {
         }
         // Keyed: what comes before it in the chart comes and goes.
         let names_box = match pie {
-            Some(_) => self.column().key("names").place((Align::Start, Align::Start)).at(plot.right() + 16.0, plot.y).gap(4.0),
-            None => self.row().key("names").place((Align::Start, Align::Start)).at(plot.x, 0.0).gap(12.0),
+            Some(_) => self.column().key("names").place((Align::Start, Align::Start)).offset(plot.right() + 16.0, plot.y).gap(4.0),
+            None => self.row().key("names").place((Align::Start, Align::Start)).offset(plot.x, 0.0).gap(12.0),
         };
         names_box.open();
         let mut flipped = None;
@@ -984,10 +990,10 @@ impl Ui {
                 false => entry.open(),
             };
             if switches {
-                self.tell(&state, Role::Tick, Some(shown), name);
+                self.tell(&state, Role::CheckBox, Some(shown), name);
             }
-            self.el().size(9.0, 9.0).radius(2.0).fill(if shown { color } else { color.alpha(0.25) }).border(color, 1.0).show();
-            self.text(name, t.small, if shown { t.text_dim } else { t.text_faint });
+            self.el().size(9.0, 9.0).radius(2.0).fill(if shown { color } else { color.with_alpha(0.25) }).border(color, 1.0).show();
+            self.text(name, t.small_font, if shown { t.text_dim } else { t.text_faint });
             self.close();
             flipped = flipped.or(state.clicked.then_some(nth));
         }
@@ -1005,11 +1011,11 @@ impl Ui {
     fn chart_bottom(&mut self, chart: &Chart, frame: &Frame) {
         let (t, plot, [from, to, step]) = (self.theme, frame.plot, frame.across);
         let lead = chart.lead();
-        let months = self.calendar.months;
+        let months = self.calendar_words.months;
         // In slots, a name under each slot with room; else a number (or time) at each tick.
         let slot = plot.w / frame.slots.max(1) as f32;
         let longest = (0..frame.slots).filter_map(|nth| lead.map(|lead| frame.named(chart, lead, nth, &months))).max_by_key(|name| name.len()).unwrap_or_default();
-        let every = ((self.text_width(&longest, t.small) + 10.0) / slot).ceil().max(1.0) as usize;
+        let every = ((self.text_width(&longest, t.small_font) + 10.0) / slot).ceil().max(1.0) as usize;
         let named = (0..frame.slots).step_by(every).filter_map(|nth| lead.map(|lead| (frame.named(chart, lead, nth, &months), (nth as f32 + 0.5) * slot)));
         let numbered = marks(from, to, step).filter(|_| frame.slots == 0 && frame.time.is_none()).map(|mark| (written(mark, step), (mark - from) / (to - from) * plot.w));
         let timed = frame.time.filter(|_| frame.slots == 0).map_or(Vec::new(), |(origin, ahead)| moments(origin + from as f64, origin + to as f64, step as f64, ahead));
@@ -1017,9 +1023,9 @@ impl Ui {
             .iter()
             .map(|at| (moment_written(*at, step as f64, frame.time.map_or(0, |time| time.1), &months), ((at - frame.time.map_or(0.0, |time| time.0)) as f32 - from) / (to - from) * plot.w));
         for (word, middle) in named.chain(numbered).chain(moments).collect::<Vec<_>>() {
-            let wide = self.text_width(&word, t.small).ceil();
+            let wide = self.text_width(&word, t.small_font).ceil();
             let left = (plot.x + middle - wide / 2.0).min(frame.wide - wide).max(0.0);
-            self.el().at(left.round(), plot.bottom() + 4.0).size(wide, frame.line).text(&word, t.small, t.text_faint).show();
+            self.el().offset(left.round(), plot.bottom() + 4.0).size(wide, frame.line).text(&word, t.small_font, t.text_faint).show();
         }
     }
 
@@ -1027,7 +1033,7 @@ impl Ui {
     /// vertical line through the plot with a ring where it crosses each line (a ring around the
     /// dot), and beside it a tooltip with the position's label and each series' value.
     fn chart_reading(&mut self, chart: &Chart, frame: &Frame, lead: &Series, nth: usize, state: &Response, off: &[usize]) {
-        let (t, plot, months) = (self.theme, frame.plot, self.calendar.months);
+        let (t, plot, months) = (self.theme, frame.plot, self.calendar_words.months);
         let mut lines: Vec<(Color, String, String)> = Vec::new();
         let mut x = frame.x(lead, nth);
         let title = match frame.way {
@@ -1041,7 +1047,7 @@ impl Ui {
                 let Some((series, at)) = dot_of(chart, nth) else { return };
                 x = frame.x(series, at);
                 let (cx, cy) = (plot.x + x, plot.y + frame.y(series.values[at]));
-                self.el().at(cx - 5.0, cy - 5.0).size(10.0, 10.0).radius(5.0).border(series.color.unwrap_or(t.accent), 2.0).show();
+                self.el().offset(cx - 5.0, cy - 5.0).size(10.0, 10.0).radius(5.0).border(series.color.unwrap_or(t.accent), 2.0).show();
                 lines.push((series.color.unwrap_or(t.accent), series.name.to_string(), written(series.values[at], frame.up[2] / 10.0)));
             }
             _ => self.chart_crossing(chart, frame, lead, nth, &mut lines),
@@ -1052,14 +1058,14 @@ impl Ui {
         // Beside the line, at the pointer's height while it is over the chart.
         let down = self.pointer().filter(|_| state.hovered).map_or(state.rect.y + plot.y, |at| at.y - 12.0);
         self.layer(state.id ^ READ, Anchor::Beside(rect(state.rect.x + plot.x + x - 10.0, down, 20.0, 0.0)), false, Color::NONE);
-        self.column().pad((8.0, 6.0)).gap(3.0).fill(t.raise).border(t.line_strong, 1.0).radius(5.0).shadow(8.0).open();
-        self.text(&title, t.small, t.text_dim);
+        self.column().pad((8.0, 6.0)).gap(3.0).fill(t.raised).border(t.line_strong, 1.0).radius(5.0).shadow(8.0).open();
+        self.text(&title, t.small_font, t.text_dim);
         for (color, name, value) in lines {
             self.row().gap(6.0).align(Align::Start, Align::Center).open();
             self.el().size(9.0, 9.0).radius(2.0).fill(color).show();
-            self.text(&name, t.small, t.text_dim);
+            self.text(&name, t.small_font, t.text_dim);
             self.spacer();
-            self.text(&value, t.small, t.text);
+            self.text(&value, t.small_font, t.text);
             self.close();
         }
         self.close();
@@ -1070,13 +1076,13 @@ impl Ui {
     fn chart_crossing(&mut self, chart: &Chart, frame: &Frame, lead: &Series, nth: usize, lines: &mut Vec<(Color, String, String)>) {
         let (t, plot, x) = (self.theme, frame.plot, frame.x(lead, nth));
         if (0.0..=plot.w).contains(&x) {
-            self.el().at(plot.x + x.round(), plot.y).size(1.0, plot.h).fill(t.line_strong).show();
+            self.el().offset(plot.x + x.round(), plot.y).size(1.0, plot.h).fill(t.line_strong).show();
         }
         for series in chart.series {
             let Some(at) = frame.beside(series, lead, nth).filter(|at| series.values[*at].is_finite()) else { continue };
             let (cx, cy, color) = (plot.x + frame.x(series, at), plot.y + frame.y(series.values[at]), series.color.unwrap_or(t.accent));
             if series.kind != Kind::Bars && plot.grow(1.0).contains(pt(cx, cy)) {
-                self.el().at(cx - 4.0, cy - 4.0).size(8.0, 8.0).radius(4.0).fill(color).border(t.bg, 1.5).show();
+                self.el().offset(cx - 4.0, cy - 4.0).size(8.0, 8.0).radius(4.0).fill(color).border(t.bg, 1.5).show();
             }
             lines.push((color, series.name.to_string(), written(series.values[at], frame.up[2] / 10.0)));
         }
@@ -1145,7 +1151,7 @@ mod tests {
         let (even, said) = (Series::line("", &values), Series::points("", &values).at(&at));
         let rows = [even, said];
         let chart = Chart::of(&rows);
-        let months = crate::date::Calendar::default().months;
+        let months = crate::date::CalendarWords::default().months;
         // Evenly from end to end, or as given: a quarter of the way for 1 of 4.
         let free = frame(&chart, 0, [0.0, 4.0]);
         assert_eq!([0, 1, 2].map(|nth| free.x(&even, nth)), [0.0, 50.0, 100.0]);
@@ -1157,11 +1163,11 @@ mod tests {
         let placed = frame(&chart, 4, [0.0, 3.0]);
         assert_eq!([0, 1, 3].map(|nth| placed.x(&said, nth)), [12.5, 37.5, 87.5]);
         assert_eq!([placed.beside(&even, &said, 2), placed.beside(&even, &said, 3)], [Some(2), None]);
-        assert_eq!([placed.named(&chart.names(&["Mon", "Tue"]), &even, 1, &months), placed.named(&chart, &even, 2, &months)], ["Tue", "3.0"]);
+        assert_eq!([placed.named(&chart.categories(&["Mon", "Tue"]), &even, 1, &months), placed.named(&chart, &even, 2, &months)], ["Tue", "3.0"]);
         // How each kind of chart reads off.
         let (pie, bars) = ([Series::pie("", &values)], [Series::bars("", &values)]);
         assert_eq!(
-            [chart.way(), Chart::of(&rows[1..]).way(), Chart::of(&pie).way(), Chart::of(&bars).way(), chart.names(&["a"]).way()],
+            [chart.way(), Chart::of(&rows[1..]).way(), Chart::of(&pie).way(), Chart::of(&bars).way(), chart.categories(&["a"]).way()],
             [Way::Numbers, Way::Scatter, Way::Pie, Way::Slots, Way::Slots]
         );
     }
@@ -1205,7 +1211,7 @@ mod tests {
 
     #[test]
     fn moments_are_written_as_people_read_them_at_steps_that_are_good_to_read() {
-        let months = crate::date::Calendar::default().months;
+        let months = crate::date::CalendarWords::default().months;
         // 2026-11-13 14:05:30 UTC, read where clocks are an hour ahead.
         let at = Date::new(2026, 11, 13).days() as f64 * 86_400.0 + 14.0 * 3600.0 + 5.0 * 60.0 + 30.0;
         assert_eq!([1.0, 60.0, 3600.0, 86_400.0, MONTH, YEAR].map(|step| moment_written(at, step, 3600, &months)), ["15:05:30", "15:05", "15:05", "13 Nov", "Nov", "2026"]);

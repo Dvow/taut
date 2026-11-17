@@ -5,7 +5,7 @@
 //!   cargo run -p taut --example editor [-- <file> ...]
 #![windows_subsystem = "windows"]
 use std::path::PathBuf;
-use taut::{Align, Files, Id, Key, Length, Mods, TextCommand, Ui, Window};
+use taut::{Align, FileDialog, Id, Key, Length, Mods, TextCommand, Ui, Window};
 
 /// What the editor can be asked to do: from its menus, and by keys.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,9 +97,9 @@ pub struct Editor {
     asking: Option<Asking>,
     /// The box the paper in front is typed into, as of the last run.
     typed: Id,
-    /// The dialog that picks a file to open, or says where to save; and which paper it is
+    /// The dialog that selects a file to open, or says where to save; and which paper it is
     /// saving, while it is.
-    dialog: Files,
+    dialog: FileDialog,
     saving: Option<u64>,
     /// The number of the next paper.
     ids: u64,
@@ -110,7 +110,7 @@ pub struct Editor {
 impl Editor {
     /// An editor with these files open; with none, an empty paper.
     pub fn new(files: &[PathBuf]) -> Editor {
-        let (find, replace, dialog) = (String::new(), String::new(), Files::default());
+        let (find, replace, dialog) = (String::new(), String::new(), FileDialog::default());
         let mut editor = Editor {
             papers: Vec::new(),
             tabs: Vec::new(),
@@ -266,7 +266,7 @@ pub fn describe(app: &mut Editor, ui: &mut Ui) {
 
     // The line at the bottom: where the cursor is, how long the text is, and whether it is
     // saved.
-    let typing = ui.typing(app.typed);
+    let typing = ui.text_edit_state(app.typed);
     let text = &app.paper(id).text;
     let (lines, words, letters) = (text.lines().count().max(1), text.split_whitespace().count(), text.chars().count());
     let at = typing.map_or(String::new(), |typing| format!("Line {}, column {}   ", typing.line_column(text).0, typing.line_column(text).1));
@@ -314,10 +314,10 @@ fn menus(typed: Id, ui: &mut Ui) -> Option<Command> {
     }
     if ui.menu_button("Edit") {
         // (What there is nothing to do for is switched off: nothing to undo, nothing selected.)
-        let typing = ui.typing(typed).unwrap_or_default();
+        let typing = ui.text_edit_state(typed).unwrap_or_default();
         let can = |command: Command| match command {
-            Undo => typing.undo,
-            Redo => typing.redo,
+            Undo => typing.can_undo,
+            Redo => typing.can_redo,
             Cut | Copy => !typing.range().is_empty(),
             _ => true,
         };
@@ -343,7 +343,7 @@ fn find_bar(app: &mut Editor, ui: &mut Ui) {
     }
     let places = app.places();
     app.found = app.found.min(places.len().saturating_sub(1));
-    ui.grid(4).pad(6.0).gap(6.0).fill(t.raise).open();
+    ui.grid(4).pad(6.0).gap(6.0).fill(t.raised).open();
     let find = ui.text_box(&mut app.find, "Find");
     // (Enter goes to the place found: the keyboard goes into the paper, with it selected.)
     let enter = find.focused && ui.key(Key::Enter, Mods::NONE);
@@ -451,11 +451,11 @@ mod tests {
         assert!(page.h > 300.0, "{page:?}");
 
         // Typed into, the paper is no longer saved; Ctrl+S saves it where it is kept.
-        let text = trial.spot(Role::TextBox, "");
+        let text = trial.center_of(Role::TextBox, "");
         trial.click(text);
         trial.key("Ctrl+End");
         trial.type_text("The end.");
-        assert!(trial.has(Role::Text, "Not saved") && trial.has(Role::Text, "Line 3, column 9   Lines: 3   Words: 8   Characters: 34"), "{}", trial.listed());
+        assert!(trial.has(Role::Text, "Not saved") && trial.has(Role::Text, "Line 3, column 9   Lines: 3   Words: 8   Characters: 34"), "{}", trial.dump());
         trial.key("Ctrl+S");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "The cat sat.\nThe cat ran.\nThe end.");
         assert!(trial.has(Role::Text, "Saved"));
@@ -463,11 +463,11 @@ mod tests {
         // Found and replaced: one at a time, and all at once.
         trial.key("Ctrl+H");
         trial.type_text("cat");
-        assert!(trial.has(Role::Text, "1 of 2"), "{}", trial.listed());
+        assert!(trial.has(Role::Text, "1 of 2"), "{}", trial.dump());
         trial.key("F3");
         assert!(trial.has(Role::Text, "2 of 2"));
         // What was found is selected in the paper (the second "cat").
-        assert_eq!(trial.ui.typing(trial.app.typed).map(|typing| typing.range()), Some(17..20));
+        assert_eq!(trial.ui.text_edit_state(trial.app.typed).map(|typing| typing.range()), Some(17..20));
         trial.fill("Replace with", "dog");
         trial.press(Role::Button, "Replace");
         assert_eq!(trial.app.papers[0].text, "The cat sat.\nThe dog ran.\nThe end.");
@@ -498,7 +498,7 @@ mod tests {
         trial.click(text);
         trial.type_text("one two");
         trial.press(Role::Fold, "Edit");
-        assert!(!trial.find(Role::MenuItem, "Cut").usable && trial.find(Role::MenuItem, "Undo").usable, "nothing to cut, something to undo");
+        assert!(!trial.find(Role::MenuItem, "Cut").enabled && trial.find(Role::MenuItem, "Undo").enabled, "nothing to cut, something to undo");
         trial.press(Role::MenuItem, "Select all");
         trial.type_text("three");
         assert_eq!(trial.app.papers[0].text, "three");
@@ -525,7 +525,7 @@ mod tests {
         trial.type_text("more");
         let tab = trial.find(Role::Tab, "Untitled 3").rect;
         trial.click(taut::geom::pt(tab.right() - 12.0, tab.y + 14.0));
-        assert!(trial.has(Role::Text, "Save the changes to Untitled 3 before it is closed?"), "{}", trial.listed());
+        assert!(trial.has(Role::Text, "Save the changes to Untitled 3 before it is closed?"), "{}", trial.dump());
         trial.press(Role::Button, "Don't save");
         assert_eq!(trial.app.tabs.len(), 1);
         _ = std::fs::remove_dir_all(&folder);

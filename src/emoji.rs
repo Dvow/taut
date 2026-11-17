@@ -3,9 +3,9 @@
 //! No text system here draws them: the system engines draw their outlines in the text colour,
 //! or nothing. So [`Emoji`] wraps any text system. Text without emoji passes straight through,
 //! at the cost of a scan of its bytes. A line with some is split: plain runs still go to the
-//! inner system, and each emoji is drawn here from an emoji font that `font.rs` reads. That
-//! font is the system's (or one the app supplies), looked up only when the first emoji appears:
-//! a program that shows none never opens it.
+//! inner system, and each emoji is drawn here from an emoji font that `font_file.rs` reads.
+//! That font is the system's (or one the app supplies), looked up only when the first emoji
+//! appears: a program that shows none never opens it.
 //!
 //! An emoji is often several characters: a flag is two letters, a family is people with
 //! joiners, a hand has a skin tone after it. Which characters belong together follows the
@@ -18,7 +18,7 @@
 //! it; the colour's alpha fades it.
 use crate::canvas::Canvas;
 use crate::color::Color;
-use crate::font::{Bitmap, FontFile, Set};
+use crate::font_file::{Bitmap, FontFile, Set};
 use crate::geom::rect;
 use crate::png;
 use crate::text::{Font, Metrics, TextSystem, among, cluster, pictured};
@@ -28,7 +28,7 @@ use std::ops::Range;
 type Full = fn(&FontFile, u16, f32, [f32; 2], Color) -> Option<crate::colr::Drawn>;
 
 /// Approximate cache size in bytes. Beyond it all are dropped and redrawn as needed.
-const KEPT: usize = 4 << 20;
+const CACHE_LIMIT: usize = 4 << 20;
 /// Bitmaps with more pixels than this are not drawn: no text is that large.
 const LARGEST: usize = 1 << 22;
 
@@ -154,8 +154,8 @@ impl Part {
 
 /// Colour emoji: a text system wrapping another, which draws everything else. With the feature
 /// `emoji`, a [`Ui`](crate::Ui) wraps its text system in one by itself; an app that supplies
-/// its own text system ([`Ui::set_text`](crate::Ui::set_text)) wraps it the same way to keep
-/// emoji: [`Emoji::around(Box::new(own))`](Emoji::around).
+/// its own text system ([`Ui::set_text_system`](crate::Ui::set_text_system)) wraps it the same
+/// way to keep emoji: [`Emoji::around(Box::new(own))`](Emoji::around).
 pub struct Emoji {
     text: Box<dyn TextSystem>,
     source: Source,
@@ -165,7 +165,7 @@ pub struct Emoji {
     /// bitmap, or `None` if the font lacks it (then drawn as text).
     met: Vec<(u32, Box<str>, Option<Met>)>,
     /// Approximate bytes all of that takes.
-    kept: usize,
+    cache_bytes: usize,
     // Kept between lines only to reuse their memory: a line's pieces (byte range, and an
     // emoji's width), a sequence's glyphs, and a faded bitmap.
     pieces: Vec<(Range<usize>, Option<f32>)>,
@@ -196,7 +196,7 @@ impl Emoji {
     /// Emoji from the system's emoji font, around a text system that draws the rest. (Without
     /// such a font, the inner system draws everything.)
     pub fn around(text: Box<dyn TextSystem>) -> Self {
-        Emoji { text, source: Source::Unasked, full: None, met: Vec::new(), kept: 0, pieces: Vec::new(), glyphs: Vec::new(), pale: Vec::new() }
+        Emoji { text, source: Source::Unasked, full: None, met: Vec::new(), cache_bytes: 0, pieces: Vec::new(), glyphs: Vec::new(), pale: Vec::new() }
     }
 
     /// Emoji from this font, supplied by the app: the same on every system, in every format the
@@ -215,13 +215,13 @@ impl Emoji {
             Source::Nowhere => Source::Unasked,
             source => source,
         };
-        Emoji { source, full: Some(crate::colr::drawn), met: Vec::new(), kept: 0, ..self }
+        Emoji { source, full: Some(crate::colr::drawn), met: Vec::new(), cache_bytes: 0, ..self }
     }
 
     /// A sequence's width at a size, in pixels, if the font has it. The first time, the font is
     /// asked for its glyphs (and the very first time, the font is found).
     fn wide(&mut self, sequence: &str, pixels: f32) -> Option<f32> {
-        let Emoji { source, met, kept, glyphs, full, .. } = self;
+        let Emoji { source, met, cache_bytes, glyphs, full, .. } = self;
         let at = match place(met, sequence, pixels) {
             Ok(at) => return met[at].2.as_ref().map(|met| met.wide),
             Err(at) => at,
@@ -231,7 +231,7 @@ impl Emoji {
         }
         let Source::Font(font) = source else { return None };
         let wide = font.set(sequence, glyphs).map(|wide| (wide * font.unit(pixels)).round());
-        *kept += sequence.len() + size_of::<(u32, Box<str>, Option<Met>)>();
+        *cache_bytes += sequence.len() + size_of::<(u32, Box<str>, Option<Met>)>();
         met.insert(at, (pixels.to_bits(), sequence.into(), wide.map(|wide| Met { wide, drawn: None })));
         wide
     }
@@ -239,9 +239,9 @@ impl Emoji {
     /// Splits a line into pieces: each emoji alone, with its width, and the plain runs between.
     /// Returns whether there is an emoji.
     fn cut(&mut self, text: &str, pixels: f32) -> bool {
-        if self.kept > KEPT {
+        if self.cache_bytes > CACHE_LIMIT {
             self.met.clear();
-            self.kept = 0;
+            self.cache_bytes = 0;
         }
         self.pieces.clear();
         // Sizes of zero or NaN have no emoji.
@@ -267,14 +267,14 @@ impl Emoji {
     /// `color`'s alpha. Rasterized first if never drawn, or drawn for another text colour it
     /// uses.
     fn lay(&mut self, canvas: &mut Canvas, sequence: &str, pixels: f32, [x, line]: [i32; 2], color: Color) {
-        let Emoji { source: Source::Font(font), met, kept, glyphs, pale, full, .. } = self else { return };
+        let Emoji { source: Source::Font(font), met, cache_bytes, glyphs, pale, full, .. } = self else { return };
         let Some((.., Some(met))) = place(met, sequence, pixels).ok().map(|at| &mut met[at]) else { return };
         let ink = color.solid();
         if met.drawn.as_ref().is_none_or(|drawn| drawn.ink.is_some_and(|was| was != ink)) {
             let _ = font.set(sequence, glyphs);
-            *kept -= met.drawn.as_ref().map_or(0, |drawn| drawn.pixels.len() * 4);
+            *cache_bytes -= met.drawn.as_ref().map_or(0, |drawn| drawn.pixels.len() * 4);
             let drawn = met.drawn.insert(painted(font, glyphs, pixels, ink, *full));
-            *kept += drawn.pixels.len() * 4;
+            *cache_bytes += drawn.pixels.len() * 4;
         }
         let Some(drawn) = met.drawn.as_ref().filter(|drawn| drawn.width > 0) else { return };
         let (at, solid) = ([x + drawn.at[0], line + drawn.at[1]], color.a() as u32);
@@ -465,8 +465,8 @@ fn coloured(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::font::OwnFonts;
-    use crate::font::tests::{coloured, emoji_font, file, picture_font};
+    use crate::font_file::AppFonts;
+    use crate::font_file::tests::{coloured, emoji_font, file, picture_font};
     use crate::geom::Size;
     use crate::platform::LocalClipboard;
     use crate::surface::Surface;
@@ -515,7 +515,7 @@ mod tests {
         // default: a heart, a digit, ©.
         let texts = ["", "plain words", "caf\u{e9} na\u{ef}ve", "wait\u{2026} \u{2013} \u{201c}so\u{201d}", "\u{4e2d}\u{6587}", "e\u{301}", "\u{2764} 1 \u{a9} \u{2122}"];
         // Both kinds of inner system: the built-in font, and an app's font.
-        let letters = || OwnFonts::new(FontFile::read(file(&[0, 1, 0, 0], &coloured(&[]))).unwrap());
+        let letters = || AppFonts::new(FontFile::read(file(&[0, 1, 0, 0], &coloured(&[]))).unwrap());
         let mut pairs: [(Box<dyn TextSystem>, Emoji); 2] = [(Box::new(BuiltInFont), own()), (Box::new(letters()), Emoji::around(Box::new(letters())).with(emoji_font()))];
         for (alone, around) in &mut pairs {
             for text in texts {
@@ -574,17 +574,17 @@ mod tests {
         let green = drawn(&mut emoji, "a\u{1f600}b", Color::rgb(0x00ff00), 0);
         assert_eq!((reach(&green, 64, |pixel| pixel == YELLOW), reach(&green, 64, |pixel| pixel == BLACK)), (([15, 11, 18, 18], 17), ([15, 16, 17, 18], 4)));
         // The text's alpha fades it: half transparent over black, its yellow is half.
-        let pale = drawn(&mut emoji, "\u{1f600}", Color::WHITE.alpha(0.5), BLACK);
+        let pale = drawn(&mut emoji, "\u{1f600}", Color::WHITE.with_alpha(0.5), BLACK);
         let [red, green, blue] = [16, 8, 0].map(|part| pale[11 * 64 + 3] >> part & 255);
         assert!((127..=129).contains(&red) && (101..=103).contains(&green) && blue == 0 && pale[11 * 64 + 3] >> 24 == 255, "{:08x}", pale[11 * 64 + 3]);
         // A layer the font leaves in the text colour takes it: the flag is a red square with a
         // hole, 6 wide, and the small box at its foot. For another text colour it is redrawn;
         // an emoji without such a layer is not.
-        let kept = (drawn(&mut emoji, "\u{1f1e6}\u{1f1e7}", Color::WHITE, 0), emoji.kept).1;
+        let kept = (drawn(&mut emoji, "\u{1f1e6}\u{1f1e7}", Color::WHITE, 0), emoji.cache_bytes).1;
         for ink in [Color::WHITE, Color::rgb(0x00ff00), Color::WHITE] {
             let flag = drawn(&mut emoji, "\u{1f1e6}\u{1f1e7}", ink, 0);
             assert_eq!((reach(&flag, 64, |pixel| pixel == RED), reach(&flag, 64, |pixel| pixel == ink.0)), (([2, 12, 8, 18], 36 - 4 - 4), ([3, 16, 5, 18], 4)), "{ink}");
-            assert_eq!(emoji.kept, kept);
+            assert_eq!(emoji.cache_bytes, kept);
         }
         // A glyph with no colours at all is its outline in the text colour: a hand is the small
         // box, 6 wide.
@@ -689,27 +689,27 @@ mod tests {
     #[test]
     fn pictures_are_drawn_once_and_kept_up_to_a_limit() {
         let mut emoji = own();
-        assert_eq!(emoji.kept, 0);
+        assert_eq!(emoji.cache_bytes, 0);
         // Measuring caches the width, drawing the bitmap; neither is done twice.
-        let measured = (emoji.measure("\u{1f600}\u{1f1e6}\u{1f1e7}", FONT, 1.0, None), emoji.kept).1;
-        let kept = (drawn(&mut emoji, "\u{1f600}\u{1f1e6}\u{1f1e7}", Color::WHITE, 0), emoji.kept).1;
+        let measured = (emoji.measure("\u{1f600}\u{1f1e6}\u{1f1e7}", FONT, 1.0, None), emoji.cache_bytes).1;
+        let kept = (drawn(&mut emoji, "\u{1f600}\u{1f1e6}\u{1f1e7}", Color::WHITE, 0), emoji.cache_bytes).1;
         assert!(measured > 0 && kept >= measured + (3 * 7 + 6 * 6) * 4 && kept < 1000, "{measured} {kept}");
         for _ in 0..3 {
             let _ = (emoji.measure("a\u{1f600}\u{1f1e6}\u{1f1e7}", FONT, 1.0, None), drawn(&mut emoji, "\u{1f1e6}\u{1f1e7} \u{1f600}", Color::WHITE, 0));
         }
-        assert_eq!((emoji.kept, emoji.met.len()), (kept, 2));
+        assert_eq!((emoji.cache_bytes, emoji.met.len()), (kept, 2));
         // A sequence the font lacks is remembered as such and not asked again.
-        let lacking = (emoji.measure("\u{1f601}", FONT, 1.0, None), emoji.kept).1;
-        assert_eq!((emoji.measure("\u{1f601}\u{1f601}", FONT, 1.0, None), emoji.kept), (24.0, lacking));
+        let lacking = (emoji.measure("\u{1f601}", FONT, 1.0, None), emoji.cache_bytes).1;
+        assert_eq!((emoji.measure("\u{1f601}\u{1f601}", FONT, 1.0, None), emoji.cache_bytes), (24.0, lacking));
         // Emoji at ever new sizes don't pile up without end: a face 900 pixels high or more is
         // a third of a megabyte.
         let mut most = 0;
         for size in 0..40 {
             let mut pixels = vec![0u32; 16 * 16];
             emoji.draw(&mut Canvas::new(&mut pixels, 16, 16, (0, 0), 1.0), "\u{1f600}", 0.0, 0.0, Font::new(900.0 + size as f32), Color::WHITE);
-            most = most.max(emoji.kept);
+            most = most.max(emoji.cache_bytes);
         }
-        assert!(most > KEPT && most < KEPT + 500_000 && emoji.kept < most, "{most} {}", emoji.kept);
+        assert!(most > CACHE_LIMIT && most < CACHE_LIMIT + 500_000 && emoji.cache_bytes < most, "{most} {}", emoji.cache_bytes);
     }
 
     #[test]
@@ -718,7 +718,7 @@ mod tests {
         // an emoji all the same, digit included, and so is a flag of letters the font maps
         // elsewhere.
         let letters = FontFile::read(file(&[0, 1, 0, 0], &coloured(&[]))).unwrap();
-        let mut fonts = OwnFonts::new(letters).or(Box::new(own()));
+        let mut fonts = AppFonts::new(letters).fallback(Box::new(own()));
         assert_eq!(measured(&mut fonts, "AB"), (14.0, vec![7.0, 14.0]));
         assert_eq!(measured(&mut fonts, "A1B"), (22.0, vec![7.0, 13.0, 22.0]));
         assert_eq!(measured(&mut fonts, "A1\u{fe0f}\u{20e3}B"), (22.0, vec![7.0, 13.0, 13.0, 13.0, 22.0]));

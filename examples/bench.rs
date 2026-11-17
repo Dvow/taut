@@ -5,7 +5,7 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 use taut::geom::{Size, pt};
 use taut::text::BuiltInFont;
-use taut::{Button, Color, Event, Icon, LocalClipboard, Mods, Rect, Shown, Surface, Ui, View};
+use taut::{Button, Camera, Color, Event, Icon, LocalClipboard, MeshInstance, Mods, Rect, Surface, Ui};
 
 const STAR: Icon = Icon::line("M8 2.2 9.8 5.9 13.8 6.4 10.9 9.2 11.6 13.2 8 11.3 4.4 13.2 5.1 9.2 2.2 6.4 6.2 5.9z");
 
@@ -65,12 +65,12 @@ a scene of {} triangles in a window of 1920 by 1080, the eye moving",
     );
     let body = ui.add_mesh(points, triangles);
     let (ground, fill, line) = (Color::rgb(0x10141a), Color::rgb(0x4080c0), Color::rgb(0xd8e4f0));
-    let looks = [("filled, in light", body.filled(fill)), ("filled, with outlines", body.filled(fill).outlined(line.alpha(0.5))), ("outlines alone", body.outlined(line))];
+    let looks = [("filled, in light", body.filled(fill)), ("filled, with outlines", body.filled(fill).outlined(line.with_alpha(0.5))), ("outlines alone", body.outlined(line))];
     for (name, shown) in looks {
         let mut frame = 0;
         let describe = |ui: &mut Ui, frame: i32| {
-            let view = View::look([frame as f32 * 0.25 - 4.0, 40.0, -90.0], [0.0, 0.0, 0.0]);
-            ui.el().grow().fill(ground).scene(&view, &[shown as Shown]).show();
+            let view = Camera::look_at([frame as f32 * 0.25 - 4.0, 40.0, -90.0], [0.0, 0.0, 0.0]);
+            ui.el().grow().fill(ground).scene(&view, &[shown as MeshInstance]).show();
         };
         ui.run(&mut |ui| describe(ui, 0));
         let mut screen = Surface::draw(&mut ui, 64);
@@ -81,7 +81,7 @@ a scene of {} triangles in a window of 1920 by 1080, the eye moving",
         });
         println!("{name:>24} {:>7.2} ms a frame", took / 1000.0);
         if let Some(file) = std::env::var_os("TAUT_BENCH_SHOT").filter(|_| name.contains("with")) {
-            std::fs::write(file, screen.png()).expect("the picture could not be written");
+            std::fs::write(file, screen.to_png()).expect("the picture could not be written");
         }
     }
 }

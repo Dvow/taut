@@ -29,14 +29,14 @@
 //! inspected value, and the initial state, to compare those rows with the first; and walks the
 //! first again to describe them. What the user does to a row (edit, reset, add, undo) is then
 //! applied to each value, walking straight down to that row only.
+use crate::accessibility::Role;
 use crate::color::Color;
 use crate::date::Date;
 use crate::event::{Cursor, Key, Mods};
-use crate::files::Files;
+use crate::file_dialog::FileDialog;
 use crate::id::{ById, Id, fold, hash};
 use crate::layout::{Align, Flow, Length};
 use crate::number::Number;
-use crate::told::Role;
 use crate::ui::{Icon, Measure, Response, Ui};
 use crate::widgets::{Before, CROSS, DOWN, RIGHT};
 use std::any::Any;
@@ -79,9 +79,9 @@ pub struct Field<'a> {
     /// A number's unit, shown after it ("W", "m/s"); empty for none.
     pub unit: &'a str,
     /// A number's minimum. With a maximum too, a slider shows beside it.
-    pub least: f64,
+    pub min: f64,
     /// A number's maximum.
-    pub most: f64,
+    pub max: f64,
     /// What Up and Down add or subtract; 0 for one.
     pub step: f64,
     /// Shown disabled: not editable here.
@@ -97,23 +97,23 @@ pub struct Field<'a> {
 impl<'a> Field<'a> {
     /// A field named `name`, with defaults.
     pub const fn new(name: &'a str) -> Self {
-        Field { name, unit: "", least: f64::NEG_INFINITY, most: f64::INFINITY, step: 0.0, read_only: false, note: "", only: &[], folder: false }
+        Field { name, unit: "", min: f64::NEG_INFINITY, max: f64::INFINITY, step: 0.0, read_only: false, note: "", only: &[], folder: false }
     }
     /// Its number's unit.
     pub const fn unit(self, unit: &'a str) -> Self {
         Field { unit, ..self }
     }
     /// Its number's minimum.
-    pub const fn least(self, least: f64) -> Self {
-        Field { least, ..self }
+    pub const fn min(self, least: f64) -> Self {
+        Field { min: least, ..self }
     }
     /// Its number's maximum.
-    pub const fn most(self, most: f64) -> Self {
-        Field { most, ..self }
+    pub const fn max(self, most: f64) -> Self {
+        Field { max: most, ..self }
     }
     /// Its number's range: a slider shows between the two.
-    pub const fn within(self, least: f64, most: f64) -> Self {
-        Field { least, most, ..self }
+    pub const fn range(self, least: f64, most: f64) -> Self {
+        Field { min: least, max: most, ..self }
     }
     /// What Up and Down add or subtract.
     pub const fn step(self, step: f64) -> Self {
@@ -171,14 +171,14 @@ pub trait Inspect: Clone + 'static {
     }
     /// For a single-row value: its editor, described beside the name; `changed` is set when the
     /// user edits it. For a heading: what shows beside its name (a list shows its length).
-    fn part(&mut self, row: &mut Row) -> Response {
+    fn part(&mut self, row: &mut InspectorRow) -> Response {
         let _ = row;
         Response::default()
     }
     /// The same where the inspected values differ: an editor showing that they do; when edited
     /// (`changed`), every value is set as the first then is. By default, a "—" box that does
     /// that when pressed.
-    fn mixed(&mut self, row: &mut Row) -> Response {
+    fn mixed(&mut self, row: &mut InspectorRow) -> Response {
         row.differs()
     }
     /// A hash of the value: different values give different hashes. With several values
@@ -190,7 +190,7 @@ pub trait Inspect: Clone + 'static {
 }
 
 /// Where an inspector row's editor is described: the UI, and the field's options.
-pub struct Row<'a> {
+pub struct InspectorRow<'a> {
     /// The UI: the editor is described with it.
     pub ui: &'a mut Ui,
     /// The field's options.
@@ -206,10 +206,10 @@ pub struct Inspector {
     /// The divider position, as a fraction of the inspector's width. The user drags it.
     pub split: f32,
     /// Search text: only rows whose names contain it show, with their headings.
-    pub find: String,
+    pub search: String,
     /// The dialog a path row opens to pick a file or folder
-    /// ([`Files::of_the_system()`](Files::of_the_system) for the system's).
-    pub files: Files,
+    /// ([`FileDialog::native()`](FileDialog::native) for the system's).
+    pub file_dialog: FileDialog,
     /// The inspector's own words, for localization: "Put back", "Add one", "Take out", "items",
     /// "Pick", "New key".
     pub words: [&'static str; 6],
@@ -227,14 +227,14 @@ pub struct Inspector {
 impl Default for Inspector {
     fn default() -> Self {
         let words = ["Put back", "Add one", "Take out", "items", "Pick", "New key"];
-        Inspector { split: 0.4, find: String::new(), files: Files::default(), words, opened: Vec::new(), start: None, steps: Vec::new(), undone: Vec::new(), walk: Walk::default() }
+        Inspector { split: 0.4, search: String::new(), file_dialog: FileDialog::default(), words, opened: Vec::new(), start: None, steps: Vec::new(), undone: Vec::new(), walk: Walk::default() }
     }
 }
 
 impl std::fmt::Debug for Inspector {
     /// Its divider, search text, and undo and redo counts.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Inspector").field("split", &self.split).field("find", &self.find).field("undo", &self.steps.len()).field("redo", &self.undone.len()).finish_non_exhaustive()
+        f.debug_struct("Inspector").field("split", &self.split).field("search", &self.search).field("undo", &self.steps.len()).field("redo", &self.undone.len()).finish_non_exhaustive()
     }
 }
 
@@ -274,7 +274,7 @@ impl Inspector {
         (walk.line, walk.names_wide) = (line, (read[0] * self.split.clamp(0.1, 0.9)).round());
         walk.view = (offset / line).max(0.0) as usize..((offset + read[1]) / line).ceil().max(0.0) as usize;
         walk.finding.clear();
-        walk.finding.extend(self.find.trim().chars().flat_map(char::to_lowercase));
+        walk.finding.extend(self.search.trim().chars().flat_map(char::to_lowercase));
         walk.holding = things.len() > 1 || self.start.is_some();
         // Other values than last time: the history was theirs.
         let who = things.iter().fold(things.len() as u64, |so_far, thing| fold(so_far, &**thing as *const T as u64));
@@ -382,7 +382,7 @@ struct Walk {
     /// A map key being typed: for which map, and the text.
     key: (Id, String),
     /// A list row being dragged: the list's path, from where, to where.
-    carry: Option<(Way, usize, usize)>,
+    dragged_row: Option<(Way, usize, usize)>,
     /// The row focus goes to once described: which, which of its boxes, and whether this run or
     /// retried from the last.
     refocus: Option<(Id, usize, bool)>,
@@ -680,8 +680,8 @@ impl Fields<'_> {
         let (kind, len) = walk.frames.last().map_or((Kind::Fixed, 0), |frame| (frame.kind, frame.len));
         walk.here = (id, index);
         // A list row being dragged, and where it would go.
-        let carry = walk.carry.as_ref().filter(|(way, ..)| way.last().map_or(0, |(list, _)| *list) == walk.parent() && index != NAMED);
-        let fill = match carry {
+        let dragged = walk.dragged_row.as_ref().filter(|(way, ..)| way.last().map_or(0, |(list, _)| *list) == walk.parent() && index != NAMED);
+        let fill = match dragged {
             Some((_, from, _)) if *from == index => t.selected,
             Some((_, _, to)) if *to == index => t.hover,
             _ => Color::NONE,
@@ -694,7 +694,7 @@ impl Fields<'_> {
             self.ui.again = true;
         }
         if kind == Kind::List && index != NAMED {
-            self.carried(&name, index, len);
+            self.drag_row(&name, index, len);
         }
         self.part_cell(field, value, index, marks, kind);
         self.ui.close();
@@ -717,7 +717,7 @@ impl Fields<'_> {
         }
         walk.scratch.clear();
         let _ = if field.name.is_empty() { write!(walk.scratch, "{index}") } else { walk.scratch.write_str(field.name) };
-        ui.el().text(&walk.scratch, t.font, if changed { t.accent } else { t.text }).gives_way(1).show();
+        ui.el().text(&walk.scratch, t.font, if changed { t.accent } else { t.text }).shrink(1).show();
         ui.close();
         if item && (state.hovered || state.pressed) {
             ui.set_cursor(Cursor::Move);
@@ -731,7 +731,7 @@ impl Fields<'_> {
         let t = ui.theme;
         ui.row().key(walk.frames[at].id).h(Length::Px(walk.line)).pad((6.0 + at as f32 * STEP_IN, 0.0, 6.0, 0.0)).gap(4.0).open();
         ui.el().icon(DOWN, 12.0, t.text_faint).show();
-        ui.el().text(&walk.names[name[0] as usize..name[1] as usize], t.font, t.text_dim).gives_way(1).show();
+        ui.el().text(&walk.names[name[0] as usize..name[1] as usize], t.font, t.text_dim).shrink(1).show();
         ui.close();
     }
     /// A row's editor: per its type, disabled if read-only; and the reset and remove buttons.
@@ -740,7 +740,7 @@ impl Fields<'_> {
         self.ui.row().w(Length::Grow(1.0)).h(Length::Px(line)).pad((6.0, 0.0, 4.0, 0.0)).gap(6.0).clip().open();
         let before = T::ROW.then(|| value.clone());
         self.ui.set_enabled(enabled && !field.read_only);
-        let mut row = Row { ui: &mut *self.ui, field, mixed: marks & MIXED != 0, ins: &mut *self.ins };
+        let mut row = InspectorRow { ui: &mut *self.ui, field, mixed: marks & MIXED != 0, ins: &mut *self.ins };
         let state = if row.mixed { value.mixed(&mut row) } else { value.part(&mut row) };
         // A list item is named by its index, formatted only for a listening screen reader.
         let mut named = String::new();
@@ -781,12 +781,12 @@ impl Fields<'_> {
         self.ins.walk.asks.push((way, ask));
     }
     /// A list item grabbed by its name: while dragged, where it would go.
-    fn carried(&mut self, name: &Response, index: usize, len: usize) {
-        let Some((gone, _)) = self.ui.held(name, [0.0; 4]) else { return };
+    fn drag_row(&mut self, name: &Response, index: usize, len: usize) {
+        let Some((gone, _)) = self.ui.drag_delta(name, [0.0; 4]) else { return };
         let walk = &mut self.ins.walk;
         let to = (index as f32 + (gone.y / walk.line).round()).clamp(0.0, len.saturating_sub(1) as f32) as usize;
-        if gone.y.abs() >= 4.0 && walk.carry.as_ref().is_none_or(|(_, _, was)| *was != to) {
-            (walk.carry, self.ui.again) = (Some((walk.way(false), index, to)), true);
+        if gone.y.abs() >= 4.0 && walk.dragged_row.as_ref().is_none_or(|(_, _, was)| *was != to) {
+            (walk.dragged_row, self.ui.again) = (Some((walk.way(false), index, to)), true);
         }
     }
     /// Keys on a described row: focus moves to it where a row was moved there; and Alt+Up/Down
@@ -810,30 +810,30 @@ impl Fields<'_> {
     }
 }
 
-impl std::fmt::Debug for Row<'_> {
+impl std::fmt::Debug for InspectorRow<'_> {
     /// The row's field, and whether the inspected values differ in it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Row").field("field", &self.field).field("mixed", &self.mixed).finish_non_exhaustive()
+        f.debug_struct("InspectorRow").field("field", &self.field).field("mixed", &self.mixed).finish_non_exhaustive()
     }
 }
 
-impl Row<'_> {
+impl InspectorRow<'_> {
     /// A number of any type, per its field: typed, stepped by Up and Down, clamped to its range
     /// (with a slider if both ends are set), and its unit after it. (What every number type
     /// shows.)
     pub fn number<N: Number>(&mut self, value: &mut N) -> Response {
         let (ui, field, was) = (&mut *self.ui, self.field, *value);
-        let ranged = field.least.is_finite() && field.most.is_finite();
+        let ranged = field.min.is_finite() && field.max.is_finite();
         let mut slid = false;
         if ranged && !self.mixed {
             let mut at = value.to_f64() as f32;
-            let slider = ui.slider(&mut at, field.least as f32..=field.most as f32);
+            let slider = ui.slider(&mut at, field.min as f32..=field.max as f32);
             ui.tell_name(&slider, field.name);
             (*value, slid) = if slider.changed { (N::from_f64(at as f64), true) } else { (*value, false) };
         }
         ui.el().w(Length::Px(if ranged { 72.0 } else { 120.0 })).open();
         let step = N::from_f64(if field.step > 0.0 { field.step } else { 1.0 });
-        let mut state = if self.mixed { ui.entry_box(format_args!("\u{2014}"), ui.locale_in_use().point, "") } else { ui.number(value, step) };
+        let mut state = if self.mixed { ui.entry_box(format_args!("\u{2014}"), ui.locale_in_use().decimal_point, "") } else { ui.number(value, step) };
         // Where values differ, text typed after the dash applies as soon as it is a number; the
         // box then shows it as the number of all of them.
         let typed = self.mixed && state.changed;
@@ -843,8 +843,8 @@ impl Row<'_> {
         }
         ui.close();
         let at = value.to_f64();
-        if at < field.least || at > field.most {
-            *value = N::from_f64(at.clamp(field.least, field.most));
+        if at < field.min || at > field.max {
+            *value = N::from_f64(at.clamp(field.min, field.max));
         }
         if !field.unit.is_empty() {
             ui.note(field.unit);
@@ -878,7 +878,7 @@ impl Row<'_> {
         ui.row().size(16.0, 16.0).fill(t.panel).border(edge, 1.0).radius(4.0).align(Align::Center, Align::Center).sense().focusable().open();
         ui.el().size(8.0, 2.0).fill(t.text_dim).show();
         ui.close();
-        ui.tell(&state, Role::Tick, None, "");
+        ui.tell(&state, Role::CheckBox, None, "");
         *value |= state.clicked;
         state.changed = state.clicked;
         state
@@ -900,10 +900,10 @@ impl Row<'_> {
         let from = folder.filter(|folder| folder.is_dir()).map_or(PathBuf::from("."), PathBuf::from);
         let (field, ins) = (self.field, &mut *self.ins);
         match field.folder {
-            true => ins.files.pick_folder(from),
+            true => ins.file_dialog.pick_folder(from),
             false => {
-                ins.files.only(field.only);
-                ins.files.pick(from);
+                ins.file_dialog.only(field.only);
+                ins.file_dialog.pick(from);
             }
         }
         ins.walk.asking = Some(ins.walk.way(true));
@@ -914,7 +914,7 @@ impl Row<'_> {
         let (t, ins) = (self.ui.theme, &mut *self.ins);
         ins.walk.scratch.clear();
         let _ = write!(ins.walk.scratch, "{len} {}", ins.words[3]);
-        self.ui.text(&ins.walk.scratch, t.small, t.text_dim);
+        self.ui.text(&ins.walk.scratch, t.small_font, t.text_dim);
         if !adds {
             return Response::default();
         }
@@ -961,11 +961,11 @@ impl Ui {
     /// The same for several values at once (a multi-selection): the first one's rows, with "—"
     /// where the others differ, and an edit sets all.
     pub fn inspect_all<T: Inspect>(&mut self, state: &mut Inspector, things: &mut [&mut T]) -> Response {
-        let (line, word) = (self.theme.control + 4.0, self.search_word);
+        let (line, word) = (self.theme.control_height + 4.0, self.search_word);
         let mut all = self.column().grow().gap(6.0).sense().open();
         let reach = self.reachable.len();
-        self.text_box(&mut state.find, word);
-        self.el().key("body").flow(Flow::Layers).grow().open();
+        self.text_box(&mut state.search, word);
+        self.el().key("body").flow(Flow::Stack).grow().open();
         let rows = self.id("rows");
         let read = self.rooms.get(&rows).copied().unwrap_or([self.size().w, self.size().h, 0.0]);
         let offset = self.scrolls.get(&rows).map_or(0.0, |offset| offset[1]);
@@ -987,7 +987,7 @@ impl Ui {
         self.close();
         self.divider(state, read[0]);
         self.close();
-        all.changed = self.answer_all(state, things, reach, all.over);
+        all.changed = self.answer_all(state, things, reach, all.contains_pointer);
         self.close();
         all
     }
@@ -1022,13 +1022,13 @@ impl Ui {
         if grip.hovered || grip.pressed {
             self.set_cursor(Cursor::ResizeX);
         }
-        if let Some((gone, was)) = self.held(&grip, [state.split, 0.0, 0.0, 0.0]) {
+        if let Some((gone, was)) = self.drag_delta(&grip, [state.split, 0.0, 0.0, 0.0]) {
             let split = (was[0] + gone.x / wide.max(1.0)).clamp(0.1, 0.9);
             self.again |= split != state.split;
             state.split = split;
         }
         let line = if grip.hovered || grip.pressed { t.accent } else { t.line };
-        self.row().key("divider").at(state.walk.names_wide - 3.0, 0.0).w(Length::Px(7.0)).h(Length::Grow(1.0)).align(Align::Center, Align::Spread).sense().open();
+        self.row().key("divider").offset(state.walk.names_wide - 3.0, 0.0).w(Length::Px(7.0)).h(Length::Grow(1.0)).align(Align::Center, Align::Spread).sense().open();
         self.el().w(Length::Px(1.0)).fill(line).show();
         self.close();
     }
@@ -1038,11 +1038,11 @@ impl Ui {
     /// while the pointer is `over` it). Returns whether anything was done.
     fn answer_all<T: Inspect>(&mut self, state: &mut Inspector, things: &mut [&mut T], reach: usize, over: bool) -> bool {
         let walk = &mut state.walk;
-        let picked = self.file_dialog(&mut state.files).map(|path| (walk.asking.take(), path));
+        let picked = self.file_dialog(&mut state.file_dialog).map(|path| (walk.asking.take(), path));
         if let Some((Some(way), path)) = picked {
             walk.asks.push((way, Ask::Put(Box::new(path))));
         }
-        if let Some((way, from, to)) = walk.carry.take_if(|_| !self.input.down[0]).filter(|(_, from, to)| from != to) {
+        if let Some((way, from, to)) = walk.dragged_row.take_if(|_| !self.input.down[0]).filter(|(_, from, to)| from != to) {
             walk.asks.push((way, Ask::Change(Change::Move(from, to))));
         }
         let mine = self.reachable[reach..].iter().any(|(_, on, _)| *on == self.focus) || self.focus == 0 && over;
@@ -1133,10 +1133,10 @@ macro_rules! numbers {
     ($($kind:ty)*) => {$(
         impl Inspect for $kind {
             const ROW: bool = true;
-            fn part(&mut self, row: &mut Row) -> Response {
+            fn part(&mut self, row: &mut InspectorRow) -> Response {
                 row.number(self)
             }
-            fn mixed(&mut self, row: &mut Row) -> Response {
+            fn mixed(&mut self, row: &mut InspectorRow) -> Response {
                 row.number(self)
             }
             fn hashed(&self) -> u64 {
@@ -1149,10 +1149,10 @@ numbers!(i8 i16 i32 i64 isize u8 u16 u32 u64 usize f32 f64);
 
 impl Inspect for bool {
     const ROW: bool = true;
-    fn part(&mut self, row: &mut Row) -> Response {
+    fn part(&mut self, row: &mut InspectorRow) -> Response {
         row.ui.checkbox(self, "")
     }
-    fn mixed(&mut self, row: &mut Row) -> Response {
+    fn mixed(&mut self, row: &mut InspectorRow) -> Response {
         row.tick_differs(self)
     }
     fn hashed(&self) -> u64 {
@@ -1162,11 +1162,11 @@ impl Inspect for bool {
 
 impl Inspect for String {
     const ROW: bool = true;
-    fn part(&mut self, row: &mut Row) -> Response {
+    fn part(&mut self, row: &mut InspectorRow) -> Response {
         row.ui.text_box(self, "")
     }
     /// A box showing "—" until something is typed, which every value then gets.
-    fn mixed(&mut self, row: &mut Row) -> Response {
+    fn mixed(&mut self, row: &mut InspectorRow) -> Response {
         let mut typed = String::new();
         let state = row.ui.text_box(&mut typed, "\u{2014}");
         if state.changed {
@@ -1181,8 +1181,8 @@ impl Inspect for String {
 
 impl Inspect for Color {
     const ROW: bool = true;
-    fn part(&mut self, row: &mut Row) -> Response {
-        row.ui.color(self)
+    fn part(&mut self, row: &mut InspectorRow) -> Response {
+        row.ui.color_picker(self)
     }
     fn hashed(&self) -> u64 {
         self.0 as u64
@@ -1191,7 +1191,7 @@ impl Inspect for Color {
 
 impl Inspect for Date {
     const ROW: bool = true;
-    fn part(&mut self, row: &mut Row) -> Response {
+    fn part(&mut self, row: &mut InspectorRow) -> Response {
         row.ui.date(self)
     }
     fn hashed(&self) -> u64 {
@@ -1201,7 +1201,7 @@ impl Inspect for Date {
 
 impl Inspect for PathBuf {
     const ROW: bool = true;
-    fn part(&mut self, row: &mut Row) -> Response {
+    fn part(&mut self, row: &mut InspectorRow) -> Response {
         row.path(self)
     }
     fn hashed(&self) -> u64 {
@@ -1228,7 +1228,7 @@ impl<T: Inspect + Default> Inspect for Vec<T> {
             next = at + 1;
         }
     }
-    fn part(&mut self, row: &mut Row) -> Response {
+    fn part(&mut self, row: &mut InspectorRow) -> Response {
         row.count(self.len(), true)
     }
     fn hashed(&self) -> u64 {
@@ -1260,7 +1260,7 @@ impl<T: Inspect + Default> Inspect for BTreeMap<String, T> {
             fields.visit(Field::new(key), value, NAMED);
         }
     }
-    fn part(&mut self, row: &mut Row) -> Response {
+    fn part(&mut self, row: &mut InspectorRow) -> Response {
         row.new_key(self.len(), &|key| self.contains_key(key))
     }
     fn hashed(&self) -> u64 {
@@ -1283,7 +1283,7 @@ macro_rules! inspect {
     (enum $name:ident { $($case:ident: $label:expr),* $(,)? }) => {
         impl $crate::Inspect for $name {
             const ROW: bool = true;
-            fn part(&mut self, row: &mut $crate::Row) -> $crate::Response {
+            fn part(&mut self, row: &mut $crate::InspectorRow) -> $crate::Response {
                 row.cases(self, &[$($name::$case),*], &[$($label),*])
             }
             fn hashed(&self) -> u64 {

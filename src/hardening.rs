@@ -1,5 +1,5 @@
-//! Tests of hostile or out-of-range input to `crisp.rs`, `copies.rs` and `freedesktop.rs`.
-//! Each section belongs in the `tests` module of the file it names.
+//! Tests of hostile or out-of-range input to `hinting.rs`, `single_instance.rs` and
+//! `freedesktop.rs`. Each section belongs in the `tests` module of the file it names.
 
 use crate::path::Path;
 
@@ -27,14 +27,14 @@ fn alone(test: &str, seconds: u64, env: &[(&str, &str)]) -> Result<String, Strin
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let ran = child.wait_with_output().unwrap();
-    let said = format!("{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
-    match ran.status.success() && said.contains("1 passed") {
-        true => Ok(said),
-        false => Err(format!("{test} ended with {:?}:\n{said}", ran.status)),
+    let output = format!("{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));
+    match ran.status.success() && output.contains("1 passed") {
+        true => Ok(output),
+        false => Err(format!("{test} ended with {:?}:\n{output}", ran.status)),
     }
 }
 
-// ---- crisp.rs ----
+// ---- hinting.rs ----
 
 #[test]
 fn a_letter_of_very_many_points_takes_little_time_to_set_on_whole_pixels() {
@@ -46,15 +46,15 @@ fn a_letter_of_very_many_points_takes_little_time_to_set_on_whole_pixels() {
         path.move_to(x, y).line_to(x + 30.0, y).line_to(x + 30.0, y - 0.05).line_to(x, y - 0.05).close();
     }
     let since = std::time::Instant::now();
-    _ = crate::crisp::set(&path, &font, 12.0 / font.units());
+    _ = crate::hinting::set(&path, &font, 12.0 / font.units());
     let took = since.elapsed();
     assert!(took < std::time::Duration::from_secs(1), "set in {took:?}");
 }
 
-// ---- copies.rs, on Linux ----
+// ---- single_instance.rs, on Linux ----
 
 #[cfg(all(unix, not(target_os = "macos")))]
-mod copies {
+mod single_instance {
     use super::{ALONE, alone};
 
     /// The runtime folder the test's programs share.
@@ -72,7 +72,7 @@ mod copies {
         let env = [("XDG_RUNTIME_DIR", place.as_str())];
         let notes = std::thread::spawn({
             let place = place.clone();
-            move || alone("hardening::copies::notes_runs_for_a_while", 30, &[("XDG_RUNTIME_DIR", place.as_str())])
+            move || alone("hardening::single_instance::notes_runs_for_a_while", 30, &[("XDG_RUNTIME_DIR", place.as_str())])
         });
         // Notes is the first copy once its lock is there.
         let since = std::time::Instant::now();
@@ -80,7 +80,7 @@ mod copies {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
-        let mail = alone("hardening::copies::mail_starts", 30, &env);
+        let mail = alone("hardening::single_instance::mail_starts", 30, &env);
         let notes = notes.join().unwrap();
         _ = std::fs::remove_dir_all(&folder);
         mail.unwrap();
@@ -94,10 +94,10 @@ mod copies {
         if std::env::var_os(ALONE).is_none() {
             return;
         }
-        assert!(crate::copies::first_copy("org.example.Notes"));
+        assert!(crate::single_instance::single_instance("org.example.Notes"));
         let since = std::time::Instant::now();
         while since.elapsed() < std::time::Duration::from_secs(4) {
-            if crate::copies::forward().is_some() {
+            if crate::single_instance::forward().is_some() {
                 println!("heard a start");
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -110,7 +110,7 @@ mod copies {
         if std::env::var_os(ALONE).is_none() {
             return;
         }
-        assert!(crate::copies::first_copy("org.example.Mail"), "Mail is a program of its own: its first copy");
+        assert!(crate::single_instance::single_instance("org.example.Mail"), "Mail is a program of its own: its first copy");
     }
 }
 
@@ -137,7 +137,7 @@ mod bus {
     fn called(bus: &mut Bus, peer: &mut Peer, [path, interface, member, kinds]: [&str; 4], body: &Pack) -> Vec<Vec<u8>> {
         let fields = [(1, "o", path), (2, "s", interface), (3, "s", member), (7, "s", ":1.66"), (8, "g", kinds)];
         let mut message = packed(CALL, 9, &fields, body).into_iter();
-        let mut said = Vec::new();
+        let mut output = Vec::new();
         for _ in 0..10_000 {
             // The socket takes so much at a time.
             let piece: Vec<u8> = message.by_ref().take(16_384).collect();
@@ -145,12 +145,12 @@ mod bus {
                 peer.send(&piece);
             }
             bus.turn(&mut |bus, message| _ = crate::freedesktop::heard(bus, message));
-            said.extend(peer.messages());
-            if said.iter().any(|bytes| Message::read(bytes).is_some_and(|message| message.answers == 9)) {
+            output.extend(peer.messages());
+            if output.iter().any(|bytes| Message::read(bytes).is_some_and(|message| message.answers == 9)) {
                 break;
             }
         }
-        said
+        output
     }
 
     #[test]
@@ -169,8 +169,8 @@ mod bus {
         // A list of one byte where row numbers (four bytes each) are read.
         let mut list = Pack::default();
         list.open(1).byte(7).close();
-        let said = called(&mut bus, &mut peer, ["/MenuBar", "com.canonical.dbusmenu", "GetGroupProperties", "ay"], &list);
-        assert!(said.iter().any(|bytes| Message::read(bytes).is_some_and(|message| message.answers == 9)), "the call is answered");
+        let output = called(&mut bus, &mut peer, ["/MenuBar", "com.canonical.dbusmenu", "GetGroupProperties", "ay"], &list);
+        assert!(output.iter().any(|bytes| Message::read(bytes).is_some_and(|message| message.answers == 9)), "the call is answered");
     }
 
     #[test]
@@ -184,8 +184,8 @@ mod bus {
             list.u32(0);
         }
         list.close();
-        let said = called(&mut bus, &mut peer, ["/MenuBar", "com.canonical.dbusmenu", "GetGroupProperties", "ai"], &list);
-        let answer = said.iter().find(|bytes| Message::read(bytes).is_some_and(|message| message.answers == 9)).expect("an answer");
+        let output = called(&mut bus, &mut peer, ["/MenuBar", "com.canonical.dbusmenu", "GetGroupProperties", "ai"], &list);
+        let answer = output.iter().find(|bytes| Message::read(bytes).is_some_and(|message| message.answers == 9)).expect("an answer");
         assert!(answer.len() < 4096, "an answer of {} bytes", answer.len());
     }
 

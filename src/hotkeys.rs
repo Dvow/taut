@@ -1,7 +1,7 @@
 //! Global hotkeys: a key with Ctrl, Alt, Shift or the logo key that reaches the program while
 //! another has focus. The app names the ones it wants every run ([`Ui::hotkey`]): each is
 //! registered after the first run naming it, and released after the first run that doesn't. A
-//! key the system refuses never fires; [`Ui::hotkey_taken`] says so, to tell the user.
+//! key the system refuses never fires; [`Ui::hotkey_refused`] says so, to tell the user.
 //!
 //! - **Windows:** `RegisterHotKey` (in `shell`).
 //! - **X11:** a passive grab on the root window (in `x11`). A key another program grabbed is
@@ -84,17 +84,17 @@ const NAMES: [(&str, Named); 25] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Combo {
     pub key: Named,
-    pub held: u8,
+    pub modifiers: u8,
 }
 
 /// Parses "Ctrl+Alt+N" and the like. `None` if it names no key, or a key with no modifier
 /// (which would steal it from typing everywhere: only F1 to F24 and media keys may stand
 /// alone).
 pub(crate) fn combo(written: &str) -> Option<Combo> {
-    let (held_words, last) = written.rsplit_once('+').unwrap_or(("", written));
-    let mut held = 0;
-    for word in held_words.split('+').map(str::trim).filter(|word| !word.is_empty()) {
-        held |= match word.to_ascii_lowercase().as_str() {
+    let (modifier_words, last) = written.rsplit_once('+').unwrap_or(("", written));
+    let mut modifiers = 0;
+    for word in modifier_words.split('+').map(str::trim).filter(|word| !word.is_empty()) {
+        modifiers |= match word.to_ascii_lowercase().as_str() {
             "ctrl" | "control" => CTRL,
             "alt" => ALT,
             "shift" => SHIFT,
@@ -110,7 +110,7 @@ pub(crate) fn combo(written: &str) -> Option<Combo> {
         _ => NAMES.iter().find(|(called, _)| *called == name)?.1,
     };
     let alone = matches!(key, Named::F(_) | Named::Play | Named::Stop | Named::Next | Named::Previous);
-    (held != 0 || alone).then_some(Combo { key, held })
+    (modifiers != 0 || alone).then_some(Combo { key, modifiers })
 }
 
 impl Named {
@@ -183,7 +183,7 @@ impl Combo {
     pub(crate) fn trigger(self) -> String {
         let mut written = String::new();
         for (bit, word) in [(CTRL, "CTRL+"), (ALT, "ALT+"), (SHIFT, "SHIFT+"), (LOGO, "LOGO+")] {
-            if self.held & bit != 0 {
+            if self.modifiers & bit != 0 {
                 written.push_str(word);
             }
         }
@@ -191,15 +191,15 @@ impl Combo {
     }
 }
 
-/// A wanted key's registration state: to register, requested and pending, held, or refused.
+/// A wanted key's registration state: to register, pending, registered, or refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Stand {
+pub(crate) enum Registration {
     New,
     // Only the portal answers later.
     #[cfg_attr(windows, allow(dead_code))]
-    Asked,
-    Held,
-    Taken,
+    Pending,
+    Registered,
+    Refused,
 }
 
 /// A key the app wants, and its state.
@@ -207,9 +207,9 @@ pub(crate) struct Wanted {
     pub combo: Combo,
     /// Its own id, for the system to report it by (Windows), or the portal (as text).
     pub number: u32,
-    pub stand: Stand,
+    pub state: Registration,
     /// Named this run; pressed since a run last asked.
-    pub said: bool,
+    pub requested: bool,
     pub pressed: bool,
 }
 
@@ -229,15 +229,15 @@ impl Hotkeys {
     /// After a run: keys not named are dropped (released through `give_back`, if held), and
     /// those named must be named again next run.
     pub(crate) fn settle(&mut self, mut give_back: impl FnMut(&Wanted)) {
-        self.keys.iter().filter(|wanted| !wanted.said).for_each(&mut give_back);
-        self.keys.retain(|wanted| wanted.said);
-        self.keys.iter_mut().for_each(|wanted| (wanted.said, wanted.pressed) = (false, false));
+        self.keys.iter().filter(|wanted| !wanted.requested).for_each(&mut give_back);
+        self.keys.retain(|wanted| wanted.requested);
+        self.keys.iter_mut().for_each(|wanted| (wanted.requested, wanted.pressed) = (false, false));
     }
 
     /// A key was pressed, as the system reports it by id: the next run that asks hears it.
     /// Returns whether it is one of the app's.
     pub(crate) fn pressed(&mut self, number: u32) -> bool {
-        let found = self.keys.iter_mut().find(|wanted| wanted.number == number && wanted.stand == Stand::Held);
+        let found = self.keys.iter_mut().find(|wanted| wanted.number == number && wanted.state == Registration::Registered);
         found.map(|wanted| wanted.pressed = true).is_some()
     }
 }
@@ -256,10 +256,10 @@ impl Ui {
             let Some(wanted) = hotkeys.keys.iter_mut().find(|wanted| wanted.combo == combo) else {
                 hotkeys.count += 1;
                 let number = hotkeys.count;
-                hotkeys.keys.push(Wanted { combo, number, stand: Stand::New, said: true, pressed: false });
+                hotkeys.keys.push(Wanted { combo, number, state: Registration::New, requested: true, pressed: false });
                 return false;
             };
-            wanted.said = true;
+            wanted.requested = true;
             std::mem::take(&mut wanted.pressed)
         });
         self.again |= pressed;
@@ -269,9 +269,9 @@ impl Ui {
     /// Whether the system refused a global hotkey asked for with [`hotkey`](Self::hotkey):
     /// another program has it, the user declined, or this system has no global hotkeys (text
     /// naming no key is never held either). `false` while the system has not answered.
-    pub fn hotkey_taken(&self, keys: &str) -> bool {
+    pub fn hotkey_refused(&self, keys: &str) -> bool {
         let Some(combo) = combo(keys) else { return true };
-        HOTKEYS.with_borrow(|hotkeys| hotkeys.keys.iter().any(|wanted| wanted.combo == combo && wanted.stand == Stand::Taken))
+        HOTKEYS.with_borrow(|hotkeys| hotkeys.keys.iter().any(|wanted| wanted.combo == combo && wanted.state == Registration::Refused))
     }
 }
 
@@ -282,16 +282,16 @@ mod tests {
     #[test]
     fn keys_of_the_whole_system_are_read_the_way_a_menu_writes_them() {
         let both = CTRL | ALT;
-        assert_eq!(combo("Ctrl+Alt+N"), Some(Combo { key: Named::Char(b'n'), held: both }));
+        assert_eq!(combo("Ctrl+Alt+N"), Some(Combo { key: Named::Char(b'n'), modifiers: both }));
         assert_eq!(combo("alt + control + n"), combo("Ctrl+Alt+N"));
-        assert_eq!(combo("Super+Shift+F12"), Some(Combo { key: Named::F(12), held: LOGO | SHIFT }));
-        assert_eq!(combo("Win+F24").map(|combo| combo.held), Some(LOGO));
-        assert_eq!(combo("Ctrl+Alt+Shift+Win+F24"), Some(Combo { key: Named::F(24), held: CTRL | ALT | SHIFT | LOGO }));
-        assert_eq!(combo("Ctrl+Page Down"), Some(Combo { key: Named::PageDown, held: CTRL }));
-        assert_eq!(combo("Ctrl+7"), Some(Combo { key: Named::Char(b'7'), held: CTRL }));
+        assert_eq!(combo("Super+Shift+F12"), Some(Combo { key: Named::F(12), modifiers: LOGO | SHIFT }));
+        assert_eq!(combo("Win+F24").map(|combo| combo.modifiers), Some(LOGO));
+        assert_eq!(combo("Ctrl+Alt+Shift+Win+F24"), Some(Combo { key: Named::F(24), modifiers: CTRL | ALT | SHIFT | LOGO }));
+        assert_eq!(combo("Ctrl+Page Down"), Some(Combo { key: Named::PageDown, modifiers: CTRL }));
+        assert_eq!(combo("Ctrl+7"), Some(Combo { key: Named::Char(b'7'), modifiers: CTRL }));
         // F1 to F24 and media keys may stand alone; nothing else may.
-        assert_eq!(combo("F13"), Some(Combo { key: Named::F(13), held: 0 }));
-        assert_eq!(combo("Play"), Some(Combo { key: Named::Play, held: 0 }));
+        assert_eq!(combo("F13"), Some(Combo { key: Named::F(13), modifiers: 0 }));
+        assert_eq!(combo("Play"), Some(Combo { key: Named::Play, modifiers: 0 }));
         assert_eq!([combo("N"), combo("Space"), combo("Ctrl+F25"), combo("Hyper+N"), combo("Ctrl+"), combo("Ctrl+Save")], [None; 6]);
     }
 
@@ -324,7 +324,7 @@ mod tests {
         });
         // Not held yet, it is not pressed; held, it fires once.
         HOTKEYS.with_borrow_mut(|hotkeys| assert!(!hotkeys.pressed(number)));
-        HOTKEYS.with_borrow_mut(|hotkeys| hotkeys.keys[0].stand = Stand::Held);
+        HOTKEYS.with_borrow_mut(|hotkeys| hotkeys.keys[0].state = Registration::Registered);
         HOTKEYS.with_borrow_mut(|hotkeys| assert!(hotkeys.pressed(number) && !hotkeys.pressed(number + 1)));
         assert!(ui.hotkey("ctrl+alt+n") && !ui.hotkey("Ctrl+Alt+N"));
         // A run that doesn't name it releases it to the system.
@@ -336,8 +336,8 @@ mod tests {
         assert!(HOTKEYS.with_borrow(|hotkeys| hotkeys.keys.is_empty()));
         // A refused one says so.
         ui.hotkey("Ctrl+Alt+M");
-        assert!(!ui.hotkey_taken("Ctrl+Alt+M"));
-        HOTKEYS.with_borrow_mut(|hotkeys| hotkeys.keys[0].stand = Stand::Taken);
-        assert!(ui.hotkey_taken("Ctrl+Alt+M") && ui.hotkey_taken("Nonsense") && !ui.hotkey_taken("Ctrl+Alt+L"));
+        assert!(!ui.hotkey_refused("Ctrl+Alt+M"));
+        HOTKEYS.with_borrow_mut(|hotkeys| hotkeys.keys[0].state = Registration::Refused);
+        assert!(ui.hotkey_refused("Ctrl+Alt+M") && ui.hotkey_refused("Nonsense") && !ui.hotkey_refused("Ctrl+Alt+L"));
     }
 }

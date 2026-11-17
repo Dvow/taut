@@ -4,7 +4,7 @@ mod common;
 use common::{click, settle, window};
 use std::time::{Duration, Instant};
 use taut::geom::pt;
-use taut::{Code, Rules, Ui};
+use taut::{CodeEditor, Syntax, Ui};
 
 /// One long line, as a file that was made smaller for the web has it (or a log, or data
 /// written on one line): every piece of one colour is put where it goes by working out how
@@ -17,10 +17,10 @@ use taut::{Code, Rules, Ui};
 fn a_long_line_costs_no_more_than_its_length_every_run() {
     let line = "let café = [1, 2, 3]; ".repeat(1500);
     let mut ui = window(1.0);
-    let mut code = Code::new(line, &Rules::RUST);
+    let mut code = CodeEditor::new(line, &Syntax::RUST);
     let mut build = |ui: &mut Ui| {
         ui.column().grow().open();
-        ui.code_box(&mut code, "Code");
+        ui.code_editor(&mut code, "Code");
         ui.close();
     };
     ui.run(&mut build);
@@ -39,12 +39,12 @@ fn a_long_line_costs_no_more_than_its_length_every_run() {
 /// gallery's page of more parts, where the box for a number lies above a code box.)
 #[test]
 fn a_code_box_without_the_keyboard_leaves_the_blinking_to_the_box_typed_in() {
-    let (mut name, mut code) = (String::from("Ada"), Code::new("let x = 1;", &Rules::RUST));
+    let (mut name, mut code) = (String::from("Ada"), CodeEditor::new("let x = 1;", &Syntax::RUST));
     let mut ui = window(1.0);
     let mut build = |ui: &mut Ui| {
         ui.column().grow().open();
         ui.text_box(&mut name, "Name");
-        ui.code_box(&mut code, "Code");
+        ui.code_editor(&mut code, "Code");
         ui.close();
     };
     settle(&mut ui, &mut build);

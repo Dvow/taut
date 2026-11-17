@@ -24,8 +24,8 @@
 pub(crate) mod tests {
     use crate::atspi::{ANSWER, Bus, FAILED, NEWS, PROPERTIES, Pack, Value};
     use crate::geom::{Point, pt};
-    use crate::touch::Phase;
-    use crate::wire::{Arg, Interface, Message, Shared, Wire};
+    use crate::touch::TouchPhase;
+    use crate::wayland_wire::{Arg, Interface, Message, Shared, Wire};
     use crate::x11::{PollFd, dlclose, dlopen, library, poll, symbol};
     use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
     use std::os::fd::AsRawFd;
@@ -210,8 +210,8 @@ pub(crate) mod tests {
             // Nor has Mutter's seat touch until a first touch: one lands in an empty corner,
             // and windows hear the seat has touch.
             let corner = pt(1.0, desk.units()[1] - 1.0);
-            if desk.touch(9, corner, Phase::Down) {
-                desk.touch(9, corner, Phase::Up);
+            if desk.touch(9, corner, TouchPhase::Down) {
+                desk.touch(9, corner, TouchPhase::Up);
             }
             desk.sync();
             Some(desk)
@@ -436,25 +436,25 @@ pub(crate) mod tests {
 
         /// A finger lands, moves or lifts at a screen point, in units. Returns whether input
         /// can touch.
-        pub(crate) fn touch(&mut self, finger: u32, at: Point, phase: Phase) -> bool {
+        pub(crate) fn touch(&mut self, finger: u32, at: Point, phase: TouchPhase) -> bool {
             let scale = self.scale;
             match &mut self.hands {
                 Hands::Kwin(fake) => {
                     let place = [Arg::Uint(finger), Arg::Fixed(at.x as f64), Arg::Fixed(at.y as f64)];
                     match phase {
-                        Phase::Down => self.wire.send(*fake, 4, &place),
-                        Phase::Move => self.wire.send(*fake, 5, &place),
-                        Phase::Up => self.wire.send(*fake, 6, &[Arg::Uint(finger)]),
-                        Phase::Cancel => self.wire.send(*fake, 7, &[]),
+                        TouchPhase::Down => self.wire.send(*fake, 4, &place),
+                        TouchPhase::Move => self.wire.send(*fake, 5, &place),
+                        TouchPhase::Up => self.wire.send(*fake, 6, &[Arg::Uint(finger)]),
+                        TouchPhase::Cancel => self.wire.send(*fake, 7, &[]),
                     }
                     self.wire.send(*fake, 8, &[]);
                 }
                 Hands::Mutter(remote) => {
                     let place = [Said::Stream, Said::Number(finger), Said::Real(at.x * scale), Said::Real(at.y * scale)];
                     match phase {
-                        Phase::Down => remote.notify("NotifyTouchDown", "sudd", &place),
-                        Phase::Move => remote.notify("NotifyTouchMotion", "sudd", &place),
-                        Phase::Up | Phase::Cancel => remote.notify("NotifyTouchUp", "u", &[Said::Number(finger)]),
+                        TouchPhase::Down => remote.notify("NotifyTouchDown", "sudd", &place),
+                        TouchPhase::Move => remote.notify("NotifyTouchMotion", "sudd", &place),
+                        TouchPhase::Up | TouchPhase::Cancel => remote.notify("NotifyTouchUp", "u", &[Said::Number(finger)]),
                     }
                 }
                 _ => return false,

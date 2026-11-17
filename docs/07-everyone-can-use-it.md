@@ -51,12 +51,12 @@ The app must provide:
 
 1. **Names for wordless parts:** `ui.icon_button(icon, "Add a song")` (the hint is the name);
    `ui.tell` for custom boxes.
-2. **Roles for custom parts:** `ui.tell(&response, Role::Tick, Some(on), "")`; more with
-   `ui.tell_text`, `ui.tell_amount`, `ui.tell_keys`, `ui.tell_place`, `ui.tell_step`. Call right
+2. **Roles for custom parts:** `ui.tell(&response, Role::CheckBox, Some(on), "")`; more with
+   `ui.tell_text`, `ui.tell_value`, `ui.tell_shortcut`, `ui.tell_position`, `ui.tell_step`. Call right
    after the box.
 3. **Announcements for unseen changes:** `ui.announce("Saved")`; `ui.notice(..)` announces too.
 
-Test it without a reader: `ui.listen(true)` records what a reader would get; `ui.said()` returns
+Test it without a reader: `ui.set_screen_reader(true)` records what a reader would get; `ui.visible_access_nodes()` returns
 it.
 
 ```rust
@@ -79,21 +79,21 @@ fn describe(loud: &mut bool, ui: &mut Ui) {
 
 let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
 ui.resize(Size { w: 400.0, h: 100.0 }, 1.0);
-ui.listen(true);
+ui.set_screen_reader(true);
 let mut loud = true;
 // (What a run says is put together after it: so a second run, which hears the first.)
 ui.run(&mut |ui| describe(&mut loud, ui));
 ui.run(&mut |ui| describe(&mut loud, ui));
-let told: Vec<(Role, &str, Option<bool>)> = ui.said().iter().map(|said| (said.role, said.name.as_str(), said.on)).collect();
+let told: Vec<(Role, &str, Option<bool>)> = ui.visible_access_nodes().iter().map(|said| (said.role, said.name.as_str(), said.on)).collect();
 assert_eq!(told, [(Role::Button, "Add a song", None), (Role::Switch, "Loud", Some(true)), (Role::Text, "Connected", None)]);
 ```
 
-- Each `Said` also has `rect`, focus, enabled state, and the rest a reader gets. Chapter 8 finds
+- Each `AccessNode` also has `rect`, focus, enabled state, and the rest a reader gets. Chapter 8 finds
   parts by name this way.
-- `ui.said()` is what is visible; `ui.told()` includes what is scrolled out of view (`shown`
+- `ui.visible_access_nodes()` is what is visible; `ui.access_nodes()` includes what is scrolled out of view (`shown`
   says which). Readers can reach the whole page and scroll to what they read.
 - A part inside something told as one (a button in a `Role::Row`) is exposed separately with
-  `ui.tell_on_its_own(&part)`.
+  `ui.tell_separately(&part)`.
 
 ## Dark, light and high contrast
 
@@ -166,7 +166,7 @@ Don't rely on colour alone: say it in words or tell it, as the dot in the test a
 ## Checklist
 
 1. Tab reaches everything, in reading order, with a visible ring.
-2. Icon-only buttons have hints; custom parts are told (`ui.listen(true)`, `ui.said()`).
+2. Icon-only buttons have hints; custom parts are told (`ui.set_screen_reader(true)`, `ui.visible_access_nodes()`).
 3. Off-screen changes are announced.
 4. Custom colours reach 4.5:1 for text and 3:1 for edges.
 5. Works dark, light, high contrast, at 150% and 200%, and with larger text.

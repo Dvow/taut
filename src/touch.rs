@@ -20,12 +20,13 @@
 //!
 //! A pen is the mouse, and also reports pressure, tilt, and its barrel button or eraser
 //! (`stylus`). Ctrl+wheel, which is also what a touchpad pinch is on Windows, zooms as two
-//! fingers do. A board (`board`) takes all of these as a zooming box does.
+//! fingers do. A pan-zoom area (`pan_zoom`) takes all of these as a zooming box does.
 //!
 //! Gestures are recognized here from the interface's clock (hold durations, velocities), so
 //! every gesture replays exactly. Windows' pointer records are read into [`Touch`], [`Stylus`]
-//! and [`Event::Zoom`] by `contacts`, X's XInput 2 touch, pen and pinch events by `xinput`, and
-//! a Wayland compositor's (`wl_touch`, `tablet`, `pointer-gestures`) by `wayland`.
+//! and [`Event::Zoom`] by `touch_windows`, X's XInput 2 touch, pen and pinch events by
+//! `xinput`, and a Wayland compositor's (`wl_touch`, `tablet`, `pointer-gestures`) by
+//! `wayland`.
 //!
 //! Fingers and pens are the feature `touch`, which a program enables when it wants them.
 //! Without it, only the system's mouse emulation exists: a tap clicks, a finger drag drags, a
@@ -69,17 +70,17 @@ pub(crate) fn wheel_zoom(notches: f32) -> f32 {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Touch {
     /// The system's id for the finger, stable from down to up.
-    pub finger: u32,
+    pub id: u32,
     /// Its position, in units from the window's top-left.
-    pub at: Point,
+    pub position: Point,
     /// What it did.
-    pub phase: Phase,
+    pub phase: TouchPhase,
 }
 
 /// A finger event phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Phase {
+pub enum TouchPhase {
     /// It touched down.
     Down,
     /// It moved.
@@ -115,11 +116,11 @@ pub struct Stylus {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Zoom {
     /// The scale factor for the box's content: over 1 to grow, under to shrink.
-    pub by: f32,
+    pub factor: f32,
     /// The window point it scales about: what is there now stays there.
-    pub at: Point,
+    pub center: Point,
     /// How far the fingers panned it meanwhile, in units: right and down.
-    pub moved: Point,
+    pub pan: Point,
 }
 
 /// What the fingers are doing together.
@@ -220,9 +221,9 @@ impl Ui {
             return false;
         }
         match touch.phase {
-            Phase::Down => self.finger_down(touch.finger, touch.at),
-            Phase::Move => self.finger_moved(touch.finger, touch.at),
-            Phase::Up | Phase::Cancel => self.finger_up(touch.finger, touch.phase == Phase::Up),
+            TouchPhase::Down => self.finger_down(touch.id, touch.position),
+            TouchPhase::Move => self.finger_moved(touch.id, touch.position),
+            TouchPhase::Up | TouchPhase::Cancel => self.finger_up(touch.id, touch.phase == TouchPhase::Up),
         }
     }
 
@@ -245,7 +246,7 @@ impl Ui {
         self.event(Event::Move(landed));
         self.find_hot();
         // (A finger holds a scroll bar as the mouse does: its id is no box's.)
-        let dragged = self.hot != 0 && (self.touch.dragged.contains(&self.hot) || !self.survey.rects.contains_key(&self.hot));
+        let dragged = self.hot != 0 && (self.touch.dragged.contains(&self.hot) || !self.visible_boxes.rects.contains_key(&self.hot));
         if dragged || !stopped && self.scroller_under(landed, 0).or(self.scroller_under(landed, 1)).is_none() {
             self.press_by_finger();
         } else {
@@ -264,7 +265,7 @@ impl Ui {
     /// nothing, or on a menu's or dialog's background) on the nearest part within reach above
     /// that background, at its point nearest the finger.
     fn within_reach(&self, at: Point) -> Point {
-        let (hits, floors) = (&self.survey.hits, &self.survey.layers);
+        let (hits, floors) = (&self.visible_boxes.hits, &self.visible_boxes.layers);
         let top = hits.iter().rposition(|(_, r)| r.contains(at));
         if top.is_some_and(|top| !floors.iter().any(|(_, floor)| *floor == hits[top].0)) {
             return at;
@@ -277,8 +278,8 @@ impl Ui {
     /// The innermost box under `p` with more content along `axis` than it shows, not covered by
     /// a menu or dialog: what the wheel would scroll.
     fn scroller_under(&self, p: Point, axis: usize) -> Option<u32> {
-        let in_reach = &self.survey.scrollers[self.survey.covered.min(self.survey.scrollers.len())..];
-        in_reach.iter().rev().find(|s| s.seen.contains(p) && self.tree.overflows(s.at, axis)).map(|s| s.at)
+        let in_reach = &self.visible_boxes.scrollers[self.visible_boxes.covered.min(self.visible_boxes.scrollers.len())..];
+        in_reach.iter().rev().find(|s| s.visible.contains(p) && self.tree.overflows(s.at, axis)).map(|s| s.at)
     }
 
     /// A second finger landed: the first one's action comes to nothing (its press clicks
@@ -357,7 +358,7 @@ impl Ui {
     /// The fingers scroll box `id` to where they have taken it, clamped to its range. (Where it
     /// stops at an end, it moves back as soon as the fingers do.)
     fn scroll_with(&mut self, id: Id, mut from: [f32; 2], mut start: Point, axes: [bool; 2]) -> bool {
-        let Some(at) = self.survey.scrollers.iter().map(|s| s.at).find(|at| self.tree.specs[*at as usize].id == id) else { return false };
+        let Some(at) = self.visible_boxes.scrollers.iter().map(|s| s.at).find(|at| self.tree.specs[*at as usize].id == id) else { return false };
         let (middle, _) = self.touch.middle();
         let (now, mut to) = ([middle.x, middle.y], self.scrolls.get(&id).copied().unwrap_or(from));
         for axis in (0..2).filter(|axis| axes[*axis]) {
@@ -379,14 +380,14 @@ impl Ui {
         let (middle, now_apart) = self.touch.middle();
         self.touch.doing = Doing::Pinching { id, apart: now_apart, middle };
         let by = if apart > 0.0 && now_apart > 0.0 { now_apart / apart } else { 1.0 };
-        self.zoom_by(id, Zoom { by, at: middle, moved: pt(middle.x - was.x, middle.y - was.y) })
+        self.zoom_by(id, Zoom { factor: by, center: middle, pan: pt(middle.x - was.x, middle.y - was.y) })
     }
 
     /// Box `id` zooms like this, on top of what was already pending.
     fn zoom_by(&mut self, id: Id, zoom: Zoom) -> bool {
-        let Zoom { by, moved, .. } = zoom;
+        let Zoom { factor: by, pan: moved, .. } = zoom;
         self.touch.zoom = Some(match self.touch.zoom {
-            Some((was, before)) if was == id => (id, Zoom { by: before.by * by, moved: pt(before.moved.x + moved.x, before.moved.y + moved.y), ..zoom }),
+            Some((was, before)) if was == id => (id, Zoom { factor: before.factor * by, pan: pt(before.pan.x + moved.x, before.pan.y + moved.y), ..zoom }),
             _ => (id, zoom),
         });
         true
@@ -465,7 +466,7 @@ impl Ui {
         }
         let Some(coast) = self.touch.coast else { return };
         let ((to, going), id) = (coast.at(self.now), coast.id);
-        let Some(at) = self.survey.scrollers.iter().map(|s| s.at).find(|at| self.tree.specs[*at as usize].id == id) else {
+        let Some(at) = self.visible_boxes.scrollers.iter().map(|s| s.at).find(|at| self.tree.specs[*at as usize].id == id) else {
             self.touch.coast = None;
             return;
         };
@@ -508,7 +509,7 @@ impl Ui {
         let Some(at) = self.input.pointer else { return false };
         let zooms = self.touch.zooms.iter().filter(|(_, r)| r.contains(at));
         let Some(id) = zooms.min_by(|a, b| (a.1.w * a.1.h).total_cmp(&(b.1.w * b.1.h))).map(|(id, _)| *id) else { return false };
-        self.zoom_by(id, Zoom { by, at, moved: Point::default() })
+        self.zoom_by(id, Zoom { factor: by, center: at, pan: Point::default() })
     }
 
     /// The pen came into proximity or its state changed; or it left (`None`).
@@ -517,8 +518,8 @@ impl Ui {
         news && self.active != 0
     }
 
-    /// Box `of` zooms: what was done to it since the last run, taken. (A board, which takes it
-    /// before describing its content, needs no extra run for it.)
+    /// Box `of` zooms: what was done to it since the last run, taken. (A pan-and-zoom area,
+    /// which takes it before describing its content, needs no extra run for it.)
     pub(crate) fn zoom_taken(&mut self, of: &Response) -> Option<Zoom> {
         self.touch.zooms.push((of.id, of.rect));
         let (_, zoom) = self.touch.zoom.filter(|(id, _)| *id == of.id)?;
@@ -535,7 +536,7 @@ impl Ui {
     /// ```ignore
     /// let map = ui.el().grow().sense().show();
     /// if let Some(zoom) = ui.zoom(&map) {
-    ///     app.scale *= zoom.by; // and move what is drawn so that `zoom.at` stays put
+    ///     app.scale *= zoom.factor; // and move what is drawn so that `zoom.center` stays put
     /// }
     /// ```
     pub fn zoom(&mut self, of: &Response) -> Option<Zoom> {
@@ -552,7 +553,7 @@ impl Ui {
     }
     /// Whether the last press was a finger's: for an app giving touch users more room, taller
     /// rows and easier-to-hit buttons.
-    pub fn fingers(&self) -> bool {
+    pub fn is_touch(&self) -> bool {
         self.touch.finger
     }
 }
@@ -593,15 +594,15 @@ mod tests {
         ui.run(&mut |ui| describe(&mut seen, ui));
         let (button, map) = (seen.button, seen.map);
         let on = pt(button.x + button.w / 2.0, button.y + button.h / 2.0);
-        for phase in [Phase::Down, Phase::Up] {
-            assert!(!ui.event(Event::Touch(Touch { finger: 1, at: on, phase })));
+        for phase in [TouchPhase::Down, TouchPhase::Up] {
+            assert!(!ui.event(Event::Touch(Touch { id: 1, position: on, phase })));
             ui.run(&mut |ui| describe(&mut seen, ui));
         }
-        assert_eq!((seen.clicks, ui.fingers(), ui.stylus()), (0, false, None));
+        assert_eq!((seen.clicks, ui.is_touch(), ui.stylus()), (0, false, None));
         let over = pt(map.x + map.w / 2.0, map.y + map.h / 2.0);
         ui.event(Event::Move(over));
         assert!(ui.event(Event::Zoom(1.25)));
         ui.run(&mut |ui| describe(&mut seen, ui));
-        assert_eq!(seen.zooms, vec![Zoom { by: 1.25, at: over, moved: Point::default() }]);
+        assert_eq!(seen.zooms, vec![Zoom { factor: 1.25, center: over, pan: Point::default() }]);
     }
 }

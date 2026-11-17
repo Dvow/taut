@@ -13,12 +13,12 @@
 //! brings it in front of the other panels. Moved or resized to within a few units of a window
 //! edge or another panel, it snaps to that edge; when the window shrinks, a panel that was
 //! inside stays inside.
+use crate::accessibility::Role;
 use crate::color::Color;
 use crate::event::{Cursor, Key, Mods};
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::id::Id;
 use crate::layout::{Flow, Length};
-use crate::told::Role;
 use crate::ui::{Anchor, Ui};
 use crate::widgets::{Before, CROSS, DOWN, RIGHT};
 
@@ -182,7 +182,7 @@ impl Ui {
         }
         let wide = if state.rect.w > 0.0 { Length::Px(state.rect.w + 2.0 * RING) } else { Length::Fit };
         let high = if sized { Length::Px(state.rect.h + 2.0 * RING) } else { Length::Fit };
-        let ring = self.el().flow(Flow::Layers).pad(RING).w(wide).h(high);
+        let ring = self.el().flow(Flow::Stack).pad(RING).w(wide).h(high);
         if sized {
             ring.sense().open()
         } else {
@@ -247,7 +247,7 @@ impl Ui {
         let ring = self.interact(self.next_id());
         let Some(at) = self.pointer().filter(|_| ring.hovered || ring.pressed) else { return };
         let r = state.rect;
-        let held = self.held(&ring, [r.x, r.y, r.w, r.h]);
+        let held = self.drag_delta(&ring, [r.x, r.y, r.w, r.h]);
         // The edges caught, for as long as it is held; else the ones it is at now.
         let (from, was) = held.map_or((at, r), |(gone, was)| (pt(at.x - gone.x, at.y - gone.y), rect(was[0], was[1], was[2], was[3])));
         let edges = edges_at(from, was);
@@ -268,10 +268,10 @@ impl Ui {
     fn panel_title(&mut self, state: &mut Panel, title: &str, id: Id, folds: bool) {
         let t = self.theme;
         let bar = self.interact(self.next_id());
-        if let Some((gone, was)) = self.held(&bar, [state.rect.x, state.rect.y, 0.0, 0.0]) {
+        if let Some((gone, was)) = self.drag_delta(&bar, [state.rect.x, state.rect.y, 0.0, 0.0]) {
             self.panel_held = true;
             // Never so far out of the window that it cannot be grabbed again.
-            let (left, right, low) = (40.0 - state.rect.w.max(40.0), self.size().w - 40.0, self.size().h - t.control);
+            let (left, right, low) = (40.0 - state.rect.w.max(40.0), self.size().w - 40.0, self.size().h - t.control_height);
             let at = pt((was[0] + gone.x).min(right).max(left).round(), (was[1] + gone.y).min(low).max(0.0).round());
             let lies = self.frame.panels[0].iter().find(|(panel, _)| *panel == id).map_or(state.rect, |(_, lies)| *lies);
             let against = moved_against(Rect { x: at.x, y: at.y, ..lies }, &self.other_panels(id), self.size());
@@ -281,12 +281,12 @@ impl Ui {
             true => state.folded ^= bar.double_clicked,
             false => self.frame.title_twice |= bar.double_clicked,
         }
-        self.row().h(Length::Px(t.control)).pad((2.0, 0.0)).gap(2.0).fill(t.raise).sense().open();
+        self.row().h(Length::Px(t.control_height)).pad((2.0, 0.0)).gap(2.0).fill(t.raised).sense().open();
         let fold = self.button_like(Before::Icon(if state.folded { RIGHT } else { DOWN }), "", None, false);
         self.tell(&fold, Role::Fold, Some(!state.folded), title);
         state.folded ^= fold.clicked;
         // In a panel too narrow for it, the title gives way: the buttons stay in the panel.
-        self.el().text(title, t.font.bold(), t.text).gives_way(1).show();
+        self.el().text(title, t.font.bold(), t.text).shrink(1).show();
         self.spacer();
         let cross = self.button_like(Before::Icon(CROSS), "", None, false);
         let words = self.frame_words.close;
@@ -307,7 +307,7 @@ impl Ui {
             [(right - left) * KEYED, (down - up) * KEYED]
         };
         let ([dx, dy], [dw, dh]) = (way(self, Mods { shift: true, alt: true, ctrl: false }), way(self, Mods::CTRL));
-        let (room, was, low) = (self.size(), state.rect, self.theme.control);
+        let (room, was, low) = (self.size(), state.rect, self.theme.control_height);
         state.rect.x = (was.x + dx).min(room.w - 40.0).max(40.0 - was.w.max(40.0));
         state.rect.y = (was.y + dy).min(room.h - low).max(0.0);
         state.rect.w = if was.w > 0.0 { (was.w + dw).max(LEAST[0]) } else { 0.0 };

@@ -1,6 +1,6 @@
 //! Touch, pen and touchpad pinch input on X, through the X Input Extension (XI 2.2 and later):
-//! read into the interface's events ([`Touch`], [`Stylus`] and [`Event::Zoom`]), as `contacts`
-//! reads Windows' pointer records.
+//! read into the interface's events ([`Touch`], [`Stylus`] and [`Event::Zoom`]), as
+//! `touch_windows` reads Windows' pointer records.
 //!
 //! By default X emulates a mouse from all of these: a touchscreen's first finger presses the
 //! left button and the others are ignored, a pen is a mouse without pressure, and a touchpad
@@ -26,7 +26,7 @@
 //! without the feature.
 use crate::event::Event;
 use crate::geom::pt;
-use crate::touch::{Phase, Stylus, Touch};
+use crate::touch::{Stylus, Touch, TouchPhase};
 use crate::x11::{dlclose, dlopen, library, symbol};
 use std::ffi::{CStr, c_char, c_int, c_uchar, c_uint, c_ulong, c_void};
 
@@ -221,7 +221,7 @@ struct Pen {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Near {
     device: c_int,
-    said: [f64; 3],
+    values_now: [f64; 3],
     stylus: Stylus,
 }
 
@@ -358,7 +358,7 @@ impl Hearing {
             false => unsafe { std::slice::from_raw_parts(e.values, axes.iter().map(|byte| byte.count_ones() as usize).sum()) },
         };
         let news = match pen {
-            Some(pen) => self.pen_said(e.source, pen, after(e.evtype, e.detail, held), axes, values),
+            Some(pen) => self.pen_event(e.source, pen, after(e.evtype, e.detail, held), axes, values),
             None => self.pen_gone(),
         };
         let whole = |at: f64| at.floor() as c_int;
@@ -370,19 +370,19 @@ impl Hearing {
     /// Pen `device`'s current state, with the buttons `held` after its event (a bit each, the
     /// first for its tip), and the values of the valuators the `axes` mask names: news if it
     /// changed. (Tip pressed, it touches; with a barrel button, that is held.)
-    fn pen_said(&mut self, device: c_int, pen: Pen, held: u32, axes: &[u8], values: &[f64]) -> Option<Event> {
-        let mut said = self.near.filter(|near| near.device == device).map_or([0.0; 3], |near| near.said);
+    fn pen_event(&mut self, device: c_int, pen: Pen, held: u32, axes: &[u8], values: &[f64]) -> Option<Event> {
+        let mut values_now = self.near.filter(|near| near.device == device).map_or([0.0; 3], |near| near.values_now);
         for (which, axis) in pen.axes.iter().enumerate() {
             if let Some(value) = axis.and_then(|(number, ..)| value_of(axes, values, number)) {
-                said[which] = value;
+                values_now[which] = value;
             }
         }
-        let share = |(_, least, most): (usize, f64, f64)| if most > least { ((said[0] - least) / (most - least)).clamp(0.0, 1.0) as f32 } else { 0.5 };
+        let share = |(_, least, most): (usize, f64, f64)| if most > least { ((values_now[0] - least) / (most - least)).clamp(0.0, 1.0) as f32 } else { 0.5 };
         let touching = held & 1 != 0;
         let pressure = if touching { pen.axes[0].map_or(0.5, share) } else { 0.0 };
-        let tilt = [1, 2].map(|which| pen.axes[which].map_or(0.0, |_| said[which].clamp(-90.0, 90.0) as f32));
+        let tilt = [1, 2].map(|which| pen.axes[which].map_or(0.0, |_| values_now[which].clamp(-90.0, 90.0) as f32));
         let stylus = Stylus { pressure, tilt, twist: 0.0, barrel: held & 6 != 0, eraser: pen.eraser, touching };
-        let was = self.near.replace(Near { device, said, stylus });
+        let was = self.near.replace(Near { device, values_now, stylus });
         (was.map(|was| was.stylus) != Some(stylus)).then_some(Event::Stylus(Some(stylus)))
     }
 
@@ -454,8 +454,8 @@ fn value_of(axes: &[u8], values: &[f64], number: usize) -> Option<f64> {
 
 /// A touch began, moved or ended in a window, at a fractional pixel position.
 fn finger(e: &DeviceEvent, scale: f32) -> Heard {
-    let phase = [Phase::Down, Phase::Move, Phase::Up][(e.evtype - TOUCH_BEGIN) as usize];
-    Heard::Said(e.window, Event::Touch(Touch { finger: e.detail as u32, at: pt(e.x as f32 / scale, e.y as f32 / scale), phase }))
+    let phase = [TouchPhase::Down, TouchPhase::Move, TouchPhase::Up][(e.evtype - TOUCH_BEGIN) as usize];
+    Heard::Said(e.window, Event::Touch(Touch { id: e.detail as u32, position: pt(e.x as f32 / scale, e.y as f32 / scale), phase }))
 }
 
 #[cfg(test)]
@@ -608,8 +608,8 @@ pub(crate) mod tests {
     #[test]
     fn a_fingers_events_say_where_it_lands_moves_and_lifts() {
         let said = |kind: c_int| finger(&event(kind, 3, [100.0, 50.5], &[], &[], &[]), 2.0);
-        let touch = |phase| Heard::Said(7, Event::Touch(Touch { finger: 3, at: pt(50.0, 25.25), phase }));
-        assert_eq!([TOUCH_BEGIN, TOUCH_BEGIN + 1, TOUCH_END].map(said), [touch(Phase::Down), touch(Phase::Move), touch(Phase::Up)]);
+        let touch = |phase| Heard::Said(7, Event::Touch(Touch { id: 3, position: pt(50.0, 25.25), phase }));
+        assert_eq!([TOUCH_BEGIN, TOUCH_BEGIN + 1, TOUCH_END].map(said), [touch(TouchPhase::Down), touch(TouchPhase::Move), touch(TouchPhase::Up)]);
     }
 
     #[test]

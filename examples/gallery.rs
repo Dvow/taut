@@ -3,8 +3,8 @@
 //!   cargo run -p taut --example gallery
 #![windows_subsystem = "windows"]
 use taut::{
-    Align, Branch, Branches, Cap, Chart, ChartView, Code, Color, Column, Contrast, Date, Dock, Drawing, Entry, Field, Files, Film, Flow, FontFile, Icon, Ink, Inspector, Join, Key, Length, Markdown,
-    Mods, OwnFonts, Panel, Path, Pen, Picks, Picture, Piece, Point, Role, Rules, Second, Series, Table, Theme, Time, Tone, Transform, Ui, Value, Window,
+    Align, Animation, AppFonts, Cap, CellEditor, CellValue, Chart, ChartView, CodeEditor, Color, Column, ContrastColors, Date, Dock, Drawing, Field, FileDialog, Flow, FontFile, Icon, Inspector, Join,
+    Key, Length, Markdown, Mods, Paint, Panel, Path, Pen, Picture, Point, Role, SecondWindow, Selection, Series, Severity, Span, Syntax, Table, Theme, Time, Transform, TreeItem, TreeView, Ui, Window,
 };
 
 const PAGES: [&str; 9] = ["List", "Table", "Parts", "Drawing", "More", "Dock", "Familiar", "Charts", "Writing"];
@@ -24,12 +24,12 @@ const COMMANDS: [&str; 11] = [
     "Light colours, or dark",
     "Rename this window\u{2026}\tF2",
 ];
-/// The kinds of file in the table, which a cell of its third column is picked from.
+/// The kinds of file in the table, which a cell of its third column is selected from.
 const KINDS: [&str; 4] = ["text", "picture", "sound", "folder"];
 const COLUMNS: [Column; 4] = [
-    Column::new("Name").px(240.0).edited(Entry::Text),
-    Column::new("Size").px(90.0).align(Align::End).edited(Entry::Number),
-    Column::new("Kind").px(110.0).edited(Entry::Choice(&KINDS)),
+    Column::new("Name").px(240.0).editable(CellEditor::Text),
+    Column::new("Size").px(90.0).align(Align::End).editable(CellEditor::Number),
+    Column::new("Kind").px(110.0).editable(CellEditor::Choice(&KINDS)),
     Column::new("Note").px(560.0).unsorted(),
 ];
 const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -90,7 +90,7 @@ const COLOURS: [&str; 40] = [
     "White",
 ];
 
-/// A lamp of the More page's own, shown in an inspector, as a tool shows what is picked.
+/// A lamp of the More page's own, shown in an inspector, as a tool shows what is selected.
 #[derive(Clone)]
 pub struct Lamp {
     name: String,
@@ -109,7 +109,7 @@ pub enum LampKind {
     Strip,
 }
 taut::inspect!(enum LampKind { Spot: "Spot", Flood: "Flood", Strip: "Strip" });
-taut::inspect!(Lamp { name: "Name", power: Field::new("Power").unit("W").within(0.0, 2000.0), on: "On", kind: "Kind", tint: "Colour", rooms: "Rooms" });
+taut::inspect!(Lamp { name: "Name", power: Field::new("Power").unit("W").range(0.0, 2000.0), on: "On", kind: "Kind", tint: "Colour", rooms: "Rooms" });
 
 pub struct App {
     name: String,
@@ -149,7 +149,7 @@ pub struct App {
     picture: Option<Picture>,
     photo: Option<Picture>,
     drawings: Option<(Drawing, Drawing)>,
-    film: Option<Film>,
+    animation: Option<Animation>,
     /// The moving picture is asked to play.
     playing: bool,
     /// A font file to write everything with, when the program was started with one.
@@ -158,8 +158,8 @@ pub struct App {
     /// Which of the shapes drawn on the Drawing page was clicked last.
     shape: Option<usize>,
     // The page of more parts:
-    picked: usize,
-    branches: [bool; 2],
+    selected_row: usize,
+    tree_open: [bool; 2],
     amount: f32,
     off: bool,
     count: i32,
@@ -171,11 +171,11 @@ pub struct App {
     /// A slider that stops at steps, and one that goes by a curve.
     marked: f32,
     zoom: f32,
-    /// The colour that stands out, which the person picks.
+    /// The colour that stands out, which the person selects.
     tint: Color,
     /// Two boxes of things that are carried from one to the other.
-    shelves: [Vec<&'static str>; 2],
-    /// A number dragged within a range, a fruit picked by name, a group drawn faint, and a
+    drag_lists: [Vec<&'static str>; 2],
+    /// A number dragged within a range, a fruit selected by name, a group drawn faint, and a
     /// button hidden that keeps its room.
     within: f32,
     fruit: &'static str,
@@ -183,30 +183,29 @@ pub struct App {
     hide: bool,
     // The page with the table: its files by name, size and kind.
     table: Table,
-    picks: Picks,
+    selection: Selection,
     files: Vec<(String, u32, &'static str)>,
     /// The panel that floats over the page, and the window beside the first.
     tools: Panel,
     /// A box to edit code in, with this program's own source in it.
-    code: Code,
+    code: CodeEditor,
     /// A lamp, and what its inspector keeps: how wide the names are, what is folded.
     lamp: Lamp,
     inspector: Inspector,
-    beside: Second,
-    /// The dialog that picks a file.
-    picking: Files,
+    beside: SecondWindow,
+    /// The dialog that selects a file.
+    file_dialog: FileDialog,
     /// How the panels of the last page lie, and the tree of files in the first of them.
     dock: Dock,
-    // The page of charts: what the person did to the pie and to the scatter, the scatter's
-    // dots, and the chart that is fed values ten times a second while it is asked to (the
-    // last minute of them, and the moment the last one came).
+    // The page of charts: the pie's and the scatter's views, the scatter's dots, and the
+    // live chart (its last minute of values, and when the last came).
     slices: ChartView,
     view: ChartView,
     dots: [Vec<f32>; 4],
     live: bool,
     load: Vec<f32>,
     fed: f64,
-    folders: Branches,
+    folders: TreeView,
     // The page of parts known from web pages and phone apps:
     step: usize,
     results: usize,
@@ -227,14 +226,34 @@ pub struct App {
 }
 
 pub fn describe(app: &mut App, ui: &mut Ui) {
-    ui.theme = looks(app, ui);
-    let t = ui.theme;
+    ui.theme = theme(app, ui);
     if let Some(letters) = app.letters.take() {
-        ui.set_text(Box::new(OwnFonts::new(letters)));
+        ui.set_text_system(Box::new(AppFonts::new(letters)));
     }
+    menu_bar(app, ui);
+    shortcuts(app, ui);
+    top_bar(app, ui);
+    pages(app, ui);
+    tools_panel(app, ui);
+    second_window(app, ui);
+    rename_dialog(app, ui);
+    // Any of the commands, found by typing a part of its name: the pages first.
+    match ui.command_palette(&mut app.finding, &COMMANDS) {
+        // (And said in a corner for a few seconds, where it went.)
+        Some(page) if page < PAGES.len() => (app.page, _) = (page, ui.notice(&format!("This is the page \u{201c}{}\u{201d}", PAGES[page]))),
+        Some(9) => app.light = !app.light,
+        Some(_) => app.renaming = Some(app.name.clone()),
+        None => {}
+    }
+    // The file that is selected gives the window its name.
+    if let Some(file) = ui.file_dialog(&mut app.file_dialog) {
+        app.name = file.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    }
+}
 
-    // The menus across the top. (After a "&" comes the letter that picks a menu or a row
-    // from the keyboard: Alt+F opens File, and there R renames.)
+/// The menus across the top. (After a "&" comes the letter that selects a menu or a row from
+/// the keyboard: Alt+F opens File, and there R renames.)
+fn menu_bar(app: &mut App, ui: &mut Ui) {
     ui.menu_bar();
     if ui.menu_button("&File") {
         if ui.menu_item("&Rename this window…\tF2").clicked {
@@ -249,7 +268,7 @@ pub fn describe(app: &mut App, ui: &mut Ui) {
             ui.close();
         }
         if ui.menu_item("&Open a file…").clicked {
-            app.picking.pick(std::env::home_dir().unwrap_or_else(|| ".".into()));
+            app.file_dialog.pick(std::env::home_dir().unwrap_or_else(|| ".".into()));
         }
         ui.separator();
         if ui.menu_item("&Close the window").clicked {
@@ -258,16 +277,16 @@ pub fn describe(app: &mut App, ui: &mut Ui) {
         ui.close();
     }
     if ui.menu_button("&View") {
-        ui.menu_check(&mut app.light, "&Light colours");
-        ui.menu_check(&mut app.tools.open, "The &Tools panel");
-        ui.menu_check(&mut app.beside.open, "A &second window");
+        ui.menu_checkbox(&mut app.light, "&Light colours");
+        ui.menu_checkbox(&mut app.tools.open, "The &Tools panel");
+        ui.menu_checkbox(&mut app.beside.open, "A &second window");
         app.finding |= ui.menu_item("&Find a command\u{2026}\tCtrl+K").clicked;
         // (The window over all of its screen, and back: ticked while it is.)
         let mut whole = ui.full_screen();
-        if ui.menu_check(&mut whole, "&Over all of the screen\tF11").changed {
+        if ui.menu_checkbox(&mut whole, "&Over all of the screen\tF11").changed {
             ui.set_full_screen(whole);
         }
-        // One of several, with a dot by the one that is picked; and the dock's panels that
+        // One of several, with a dot by the one that is selected; and the dock's panels that
         // may be closed, ticked while they are open.
         ui.separator();
         ui.menu_radio(&mut app.room, 0, "Roo&my rows");
@@ -275,23 +294,26 @@ pub fn describe(app: &mut App, ui: &mut Ui) {
         ui.separator();
         for (name, _) in PANELS.iter().filter(|(_, closes)| *closes) {
             let mut open = app.dock.is_open(name);
-            if ui.menu_check(&mut open, name).changed {
+            if ui.menu_checkbox(&mut open, name).changed {
                 app.dock.set_open(name, open);
             }
         }
         ui.separator();
-        ui.menu_check(&mut app.contrast, "High contrast");
-        ui.menu_check(&mut app.system, "As the system has it");
+        ui.menu_checkbox(&mut app.contrast, "High contrast");
+        ui.menu_checkbox(&mut app.system, "As the system has it");
         if ui.submenu("Spacing") {
             for (number, name) in SPACINGS.iter().enumerate() {
-                app.spacing = if ui.menu_check(&mut (app.spacing == number), name).clicked { number } else { app.spacing };
+                app.spacing = if ui.menu_checkbox(&mut (app.spacing == number), name).clicked { number } else { app.spacing };
             }
             ui.close();
         }
         ui.close();
     }
     ui.close();
-    // (The keys, written as the menus show them.)
+}
+
+/// The keys, written as the menus show them.
+fn shortcuts(app: &mut App, ui: &mut Ui) {
     if ui.keys("F2") {
         app.renaming = Some(app.name.clone());
     }
@@ -304,9 +326,12 @@ pub fn describe(app: &mut App, ui: &mut Ui) {
         ui.notice("An item was added");
     }
     app.starred ^= ui.keys("Ctrl+D");
+}
 
-    // The bar under them: words, then a tool bar in the room that is left. A tool's hint
-    // shows its keys; what does not fit goes into the menu at the end of the tool bar.
+/// The bar under the menus: words, then a tool bar in the room that is left. A tool's hint
+/// shows its keys; what does not fit goes into the menu at the end of the tool bar.
+fn top_bar(app: &mut App, ui: &mut Ui) {
+    let t = ui.theme;
     ui.row().pad((10.0, 8.0)).gap(8.0).fill(t.panel).open();
     ui.label(&format!("{}: 60 items, {} presses counted", app.name, app.presses));
     tool_bar(app, ui);
@@ -339,8 +364,10 @@ pub fn describe(app: &mut App, ui: &mut Ui) {
     }
     ui.close();
     ui.separator();
+}
 
-    // The pages, picked by tabs.
+/// The pages, selected by tabs.
+fn pages(app: &mut App, ui: &mut Ui) {
     ui.row().pad((10.0, 4.0, 10.0, 0.0)).open();
     ui.tabs(&mut app.page, &PAGES);
     ui.close();
@@ -352,24 +379,9 @@ pub fn describe(app: &mut App, ui: &mut Ui) {
         3 => drawing(app, ui),
         4 => more_parts(app, ui),
         5 => docks(app, ui),
-        6 => familiar(app, ui),
+        6 => web_widgets(app, ui),
         7 => charts(app, ui),
         _ => writing(app, ui),
-    }
-    tools(app, ui);
-    second(app, ui);
-    rename(app, ui);
-    // Any of the commands, found by typing a part of its name: the pages first.
-    match ui.palette(&mut app.finding, &COMMANDS) {
-        // (And said in a corner for a few seconds, where it went.)
-        Some(page) if page < PAGES.len() => (app.page, _) = (page, ui.notice(&format!("This is the page \u{201c}{}\u{201d}", PAGES[page]))),
-        Some(9) => app.light = !app.light,
-        Some(_) => app.renaming = Some(app.name.clone()),
-        None => {}
-    }
-    // The file that is picked gives the window its name.
-    if let Some(file) = ui.file_dialog(&mut app.picking) {
-        app.name = file.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     }
 }
 
@@ -391,36 +403,34 @@ fn tool_bar(app: &mut App, ui: &mut Ui) {
     }
     ui.tool(GRID, "A tool that does nothing");
     ui.close();
-    // (Picked from the menu of what did not fit, the tool is nowhere to point at: the
-    // popover points at the bar.)
+    // (Opened from the overflow menu, it points at the bar.)
     if tint.clicked {
         ui.open_popup(tint.id, if tint.rect.is_empty() { bar.rect } else { tint.rect });
     }
     if ui.popover(tint.id) {
         ui.label("The colour that stands out");
-        ui.color(&mut app.tint);
+        ui.color_picker(&mut app.tint);
         ui.close();
     }
 }
 
 /// A table of five thousand files: headings that sort, columns that are dragged wider, rows
-/// that are picked one or many at a time, by the pointer or the keys, and cells that are
+/// that are selected one or many at a time, by the pointer or the keys, and cells that are
 /// changed in place. Only the rows in view are described. It is wider than the window, and
 /// scrolled sideways it keeps its first column in view.
 fn table(app: &mut App, ui: &mut Ui) {
     let t = ui.theme;
     ui.row().pad((14.0, 8.0)).gap(12.0).open();
-    // (The words take what the tick box leaves, and wrap in it: a tick box squeezed out by
-    // a line too long would wrap its own words a letter to a line.)
-    let said = format!(
+    // (The words wrap in what the tick box leaves.)
+    let summary = format!(
         "{} files, {} picked. Click a heading to sort by it and drag its edge; the arrows, Control and Shift pick rows; F2 or two clicks change a cell; Control+C copies.",
         app.files.len(),
-        app.picks.len()
+        app.selection.len()
     );
-    ui.el().w(Length::Grow(1.0)).text(&said, t.small, t.text_dim).wrap().show();
-    let mut keeps = app.table.kept > 0;
-    if ui.checkbox(&mut keeps, "Keep the first column in view").changed {
-        app.table.kept = keeps as usize;
+    ui.el().w(Length::Grow(1.0)).text(&summary, t.small_font, t.text_dim).wrap().show();
+    let mut freeze_first = app.table.frozen > 0;
+    if ui.checkbox(&mut freeze_first, "Keep the first column in view").changed {
+        app.table.frozen = freeze_first as usize;
     }
     ui.close();
     let table = ui.table(&mut app.table, &COLUMNS);
@@ -428,20 +438,20 @@ fn table(app: &mut App, ui: &mut Ui) {
         sort(app);
     }
     // A cell the person changed: the app puts it into its own files.
-    if let Some(change) = ui.edited(&table) {
+    if let Some(change) = ui.edited_cell(&table) {
         let file = &mut app.files[change.row];
         match change.value {
-            Value::Text(name) => file.0 = name,
-            Value::Number(size) => file.1 = size.clamp(0.0, u32::MAX as f64) as u32,
-            Value::Choice(kind) => file.2 = KINDS[kind],
+            CellValue::Text(name) => file.0 = name,
+            CellValue::Number(size) => file.1 = size.clamp(0.0, u32::MAX as f64) as u32,
+            CellValue::Choice(kind) => file.2 = KINDS[kind],
         }
     }
-    // Control+C on the table: the picked rows, as text a spreadsheet takes.
-    let (files, picks) = (&app.files, &app.picks);
-    ui.copy_rows(&table, picks.iter().map(|row| [files[row].0.clone(), files[row].1.to_string(), files[row].2.to_string()]));
+    // Control+C on the table: the selected rows, as text a spreadsheet takes.
+    let (files, selection) = (&app.files, &app.selection);
+    ui.copy_rows(&table, selection.iter().map(|row| [files[row].0.clone(), files[row].1.to_string(), files[row].2.to_string()]));
     for row in ui.rows(app.files.len(), 24.0) {
-        if ui.pick_row(row, app.picks.has(row)).clicked {
-            app.picks.click(row, ui.mods());
+        if ui.selectable_row(row, app.selection.contains(row)).clicked {
+            app.selection.click(row, ui.mods());
         }
         let (name, size, kind) = &app.files[row];
         ui.cell(name);
@@ -464,19 +474,17 @@ fn sort(app: &mut App) {
     };
     let order = |a: &(String, u32, &str), b: &(String, u32, &str)| by.iter().map(|(column, down)| if *down { one(b, a, *column) } else { one(a, b, *column) }).find(|way| way.is_ne());
     app.files.sort_by(|a, b| order(a, b).unwrap_or(std::cmp::Ordering::Equal));
-    app.picks.clear();
+    app.selection.clear();
 }
 
-/// A panel that floats over every page: the person moves it, stretches it, folds it, closes
-/// it (the View menu brings it back).
 /// A window of its own beside the first: described here like everything else, and it works
 /// on the same things. Its own close button closes it, and so does its button.
-fn second(app: &mut App, ui: &mut Ui) {
+fn second_window(app: &mut App, ui: &mut Ui) {
     if !ui.window(&mut app.beside, "taut gallery: a second window") {
         return;
     }
     ui.column().pad(14.0).gap(10.0).open();
-    quiet(ui, "A second window. What is set here is set in the first one too.");
+    dim_text(ui, "A second window. What is set here is set in the first one too.");
     ui.switch(&mut app.light, "Light colours");
     ui.slider(&mut app.level, 50.0..=100.0);
     ui.text_box(&mut app.name, "The name of the first window");
@@ -487,15 +495,17 @@ fn second(app: &mut App, ui: &mut Ui) {
     ui.close();
 }
 
-fn tools(app: &mut App, ui: &mut Ui) {
+/// A panel that floats over every page: the person moves it, stretches it, folds it, closes
+/// it (the View menu brings it back).
+fn tools_panel(app: &mut App, ui: &mut Ui) {
     if !ui.panel(&mut app.tools, "Tools") {
         return;
     }
-    quiet(ui, "Moved by its title, stretched by its edges.");
+    dim_text(ui, "Moved by its title, stretched by its edges.");
     ui.switch(&mut app.light, "Light colours");
     ui.row().gap(10.0).open();
     ui.label("The colour that stands out");
-    ui.color(&mut app.tint);
+    ui.color_picker(&mut app.tint);
     ui.close();
     ui.slider(&mut app.level, 50.0..=100.0);
     ui.close();
@@ -512,7 +522,7 @@ fn list(app: &mut App, ui: &mut Ui) {
     for i in (0..60).filter(|i| format!("item {i}").contains(app.filter.as_str())) {
         if i % 10 == 0 || !format!("item {}", i - 1).contains(app.filter.as_str()) {
             ui.row().key(("heading", i / 10)).pad((4.0, 4.0)).fill(t.bg).sticky().open();
-            ui.el().text(&format!("Items {} to {}", i / 10 * 10, i / 10 * 10 + 9), t.small, t.text_dim).show();
+            ui.el().text(&format!("Items {} to {}", i / 10 * 10, i / 10 * 10 + 9), t.small_font, t.text_dim).show();
             ui.close();
         }
         ui.row().key(i).gap(8.0).pad((10.0, room)).fill(t.panel).radius(6.0).open();
@@ -574,7 +584,7 @@ fn parts(app: &mut App, ui: &mut Ui) {
     // 10 between its lines.
     ui.wrapping_row().w(Length::Px(420.0)).gap(6.0).line_gap(10.0).open();
     for tag in ["layout", "drawing", "text", "tables", "menus", "docks", "scenes", "screen readers", "fonts", "pictures"] {
-        ui.el().text(tag, t.small, t.text_dim).pad((8.0, 3.0)).fill(t.raise).border(t.line, 1.0).radius(10.0).show();
+        ui.el().text(tag, t.small_font, t.text_dim).pad((8.0, 3.0)).fill(t.raised).border(t.line, 1.0).radius(10.0).show();
     }
     ui.close();
     // Picture letters in colour, among any others: each one character to the cursor.
@@ -585,14 +595,14 @@ fn parts(app: &mut App, ui: &mut Ui) {
     ui.combo(&mut app.colour, &COLOURS);
     ui.close();
     ui.el().w(Length::Px(200.0)).open();
-    ui.suggest(&mut app.wanted, "Any colour, by name", &COLOURS);
+    ui.autocomplete(&mut app.wanted, "Any colour, by name", &COLOURS);
     ui.close();
     ui.close();
     // How the window looks: high contrast, or as the person's system has it; and how far
     // apart things are.
     ui.switch(&mut app.contrast, "High contrast");
     ui.switch(&mut app.system, "As the system has it");
-    quiet(ui, &asked_of_the_system(ui));
+    dim_text(ui, &system_preferences(ui));
     ui.segmented(&mut app.spacing, &SPACINGS);
     ui.close();
 }
@@ -602,40 +612,21 @@ fn drawing(app: &mut App, ui: &mut Ui) {
     let t = ui.theme;
     ui.column().grow().scroll().pad(14.0).gap(12.0).open();
     ui.note("A chart drawn by the app: a filled shape with a line over it. The slider on the Parts page changes it.");
-    // The wave as a line, and as the area under that line.
-    let (wide, high, waves) = (600.0, 150.0, (app.level - 40.0) / 10.0);
-    let (mut line, mut area) = (Path::new(), Path::new());
-    area.move_to(0.0, high);
-    for step in 0..=120 {
-        let x = step as f32 * wide / 120.0;
-        let y = high / 2.0 - (x / wide * waves * std::f32::consts::TAU).sin() * (high / 2.0 - 12.0) * (1.0 - x / wide * 0.6);
-        area.line_to(x, y);
-        if step == 0 {
-            line.move_to(x, y)
-        } else {
-            line.line_to(x, y)
-        };
-    }
-    area.line_to(wide, high).close();
-    ui.el().flow(Flow::Layers).size(wide, high).fill(t.panel).radius(6.0).clip().open();
-    ui.el().size(wide, high).shape(&area, t.accent.alpha(0.2)).show();
-    ui.el().size(wide, high).outline(&line, 2.0, t.accent).show();
-    ui.el().size(10.0, 10.0).radius(5.0).fill(t.amber).at(wide - 30.0, 14.0).show();
-    ui.close();
+    wave_chart(app, ui);
     shapes(app, ui);
 
     ui.note("Fills that go from one colour into others: across, down, along any line, outwards. And text too long for its box.");
     ui.row().gap(12.0).open();
     ui.el().size(120.0, 28.0).radius(6.0).gradient_across(t.accent, t.green).show();
-    ui.el().size(120.0, 28.0).radius(6.0).gradient(t.raise, t.accent.alpha(0.6)).show();
+    ui.el().size(120.0, 28.0).radius(6.0).gradient(t.raised, t.accent.with_alpha(0.6)).show();
     ui.el().size(120.0, 28.0).radius(6.0).gradient_along(60.0, &[(0.0, t.red), (0.5, t.amber), (1.0, t.green)]).show();
-    ui.el().size(28.0, 28.0).radius(14.0).gradient_around(&[(0.0, t.text), (0.6, t.accent), (1.0, t.accent.alpha(0.0))]).show();
+    ui.el().size(28.0, 28.0).radius(14.0).gradient_around(&[(0.0, t.text), (0.6, t.accent), (1.0, t.accent.with_alpha(0.0))]).show();
     ui.el().w(Length::Px(180.0)).clip().text("Text that is too long for its box ends in dots", t.font, t.text).show();
     ui.close();
     ui.note("Drawings read from SVG files, sharp at any size: one in its own colours, and an icon of lines in the colour it is given. And a moving picture, read from a GIF file, which plays while it is asked to.");
     if app.drawings.is_none() {
         app.drawings = ui.add_drawing(include_str!("../tests/pictures/logo.svg")).zip(ui.add_drawing(include_str!("../tests/pictures/lines.svg")));
-        app.film = ui.add_film(include_bytes!("../tests/pictures/moving.gif"));
+        app.animation = ui.add_animation(include_bytes!("../tests/pictures/moving.gif"));
     }
     ui.row().gap(16.0).open();
     if let Some((logo, lines)) = app.drawings {
@@ -646,8 +637,8 @@ fn drawing(app: &mut App, ui: &mut Ui) {
     }
     // (It moves while it is asked to: a window in which nothing is asked for is at rest.)
     ui.toggle(&mut app.playing, "Play");
-    if let Some(film) = app.film.filter(|_| app.playing) {
-        ui.el().film(film).size(96.0, 64.0).show();
+    if let Some(animation) = app.animation.filter(|_| app.playing) {
+        ui.el().animation(animation).size(96.0, 64.0).show();
     }
     ui.close();
     ui.note("A picture made of pixels, shown larger than it is; and a grid, whose columns line up.");
@@ -673,8 +664,33 @@ fn drawing(app: &mut App, ui: &mut Ui) {
     ui.close();
 }
 
+/// A wave drawn by the app as a line and as the area under it: as many waves as the slider
+/// on the Parts page says.
+fn wave_chart(app: &App, ui: &mut Ui) {
+    let t = ui.theme;
+    let (wide, high, waves) = (600.0, 150.0, (app.level - 40.0) / 10.0);
+    let (mut line, mut area) = (Path::new(), Path::new());
+    area.move_to(0.0, high);
+    for step in 0..=120 {
+        let x = step as f32 * wide / 120.0;
+        let y = high / 2.0 - (x / wide * waves * std::f32::consts::TAU).sin() * (high / 2.0 - 12.0) * (1.0 - x / wide * 0.6);
+        area.line_to(x, y);
+        if step == 0 {
+            line.move_to(x, y)
+        } else {
+            line.line_to(x, y)
+        };
+    }
+    area.line_to(wide, high).close();
+    ui.el().flow(Flow::Stack).size(wide, high).fill(t.panel).radius(6.0).clip().open();
+    ui.el().size(wide, high).shape(&area, t.accent.with_alpha(0.2)).show();
+    ui.el().size(wide, high).outline(&line, 2.0, t.accent).show();
+    ui.el().size(10.0, 10.0).radius(5.0).fill(t.amber).offset(wide - 30.0, 14.0).show();
+    ui.close();
+}
+
 /// Lines as people draw them, shapes put together, turned and filled with colours across
-/// them, and a click that picks the shape it falls on.
+/// them, and a click that selects the shape it falls on.
 fn shapes(app: &mut App, ui: &mut Ui) {
     let t = ui.theme;
     ui.note("Lines under pens of every kind: ends cut off, square or round, corners to a point, cut across or round, dashes and dots. Below, shapes of the app's own: a pie, a star the slider on the Parts page turns, a ring, a box with corners of their own, and a line between them with an arrow at its end. A click picks the shape it falls on.");
@@ -692,25 +708,25 @@ fn shapes(app: &mut App, ui: &mut Ui) {
     }
     ui.close();
     // The shapes, each in units from the corner of the box they are drawn in.
-    let mut drawn: Vec<(Path, Ink)> = Vec::new();
+    let mut drawn: Vec<(Path, Paint)> = Vec::new();
     let slices = [0.4, 0.25, 0.2, 0.15];
     let mut from = -90.0;
     for share in slices {
-        drawn.push((Path::new().move_to(80.0, 80.0).arc(80.0, 80.0, 60.0, from, share * 360.0).close().clone(), Ink::Color(Color::series(drawn.len(), t.panel))));
+        drawn.push((Path::new().move_to(80.0, 80.0).arc(80.0, 80.0, 60.0, from, share * 360.0).close().clone(), Paint::Color(Color::series(drawn.len(), t.panel))));
         from += share * 360.0;
     }
-    let turn = Transform::new().turn(app.level * 3.6).move_by(240.0, 80.0);
+    let turn = Transform::new().rotate(app.level * 3.6).translate(240.0, 80.0);
     let star = Path::new().star(0.0, 0.0, 55.0, 22.0, 5).transform(turn).clone();
     let (along, around) = ([(0.0, t.accent), (1.0, t.green)], [(0.0, t.amber), (1.0, t.red)]);
-    drawn.push((star, Ink::Along(90.0, &along)));
-    drawn.push((Path::new().circle(390.0, 80.0, 50.0).add(Path::new().circle(390.0, 80.0, 24.0).reverse()).clone(), Ink::Around(&around)));
-    drawn.push((Path::new().rounded_rect(470.0, 30.0, 110.0, 100.0, (28.0, 4.0, 28.0, 4.0)).clone(), Ink::Color(t.raise)));
+    drawn.push((star, Paint::Linear(90.0, &along)));
+    drawn.push((Path::new().circle(390.0, 80.0, 50.0).add(Path::new().circle(390.0, 80.0, 24.0).reverse()).clone(), Paint::Radial(&around)));
+    drawn.push((Path::new().rounded_rect(470.0, 30.0, 110.0, 100.0, (28.0, 4.0, 28.0, 4.0)).clone(), Paint::Color(t.raised)));
     let wire = Path::new().move_to(140.0, 145.0).cubic_to(260.0, 175.0, 420.0, 120.0, 520.0, 140.0).clone();
     let (end, way) = wire.point_at(wire.length()).unwrap_or((Point::default(), 0.0));
-    let arrow = Path::svg("M0 0-12-6-12 6Z").transform(Transform::new().turn(way).move_by(end.x, end.y)).clone();
-    // A click picks the shape it falls in, or the line it falls near: the last drawn first.
+    let arrow = Path::svg("M0 0-12-6-12 6Z").transform(Transform::new().rotate(way).translate(end.x, end.y)).clone();
+    // A click selects the shape it falls in, or the line it falls near: the last drawn first.
     let (wide, high) = (600.0, 170.0);
-    let area = ui.el().flow(Flow::Layers).size(wide, high).fill(t.panel).radius(6.0).clip().sense().open();
+    let area = ui.el().flow(Flow::Stack).size(wide, high).fill(t.panel).radius(6.0).clip().sense().open();
     if let Some(at) = ui.pointer().filter(|_| area.clicked) {
         let at = Point { x: at.x - area.rect.x, y: at.y - area.rect.y };
         let on_wire = wire.distance(at) <= 6.0;
@@ -719,10 +735,10 @@ fn shapes(app: &mut App, ui: &mut Ui) {
     for (shape, ink) in &drawn {
         ui.el().size(wide, high).shape(shape, *ink).show();
     }
-    let picked = app.shape == Some(drawn.len());
-    ui.el().size(wide, high).outline(&wire, if picked { 4.0 } else { 2.0 }, t.text_dim).show();
+    let selected = app.shape == Some(drawn.len());
+    ui.el().size(wide, high).outline(&wire, if selected { 4.0 } else { 2.0 }, t.text_dim).show();
     ui.el().size(wide, high).shape(&arrow, t.text_dim).show();
-    // The shape picked: a dashed line round it.
+    // The shape selected: a dashed line round it.
     if let Some((shape, _)) = app.shape.and_then(|nth| drawn.get(nth)) {
         ui.el().size(wide, high).outline(shape, Pen::new(2.0).cap(Cap::Flat).dashes(&[6.0, 4.0], 0.0), t.text).show();
     }
@@ -743,11 +759,11 @@ fn docks(app: &mut App, ui: &mut Ui) {
             folders(app, ui);
         } else {
             ui.label(name);
-            quiet(
+            dim_text(
                 ui,
                 "Carry a tab along its strip to put it elsewhere among the tabs, or away to another place, and let it go on a mark. Let go anywhere else, the panel floats; a double press on a tab does that too, and one on the title of a panel that floats puts it back.",
             );
-            quiet(ui, "The button at the end of the tabs has the panel fill the dock. Control+Tab goes to the next tab, Control+F6 to the next place.");
+            dim_text(ui, "The button at the end of the tabs has the panel fill the dock. Control+Tab goes to the next tab, Control+F6 to the next place.");
             ui.button("Something to press");
         }
         ui.close();
@@ -758,8 +774,8 @@ fn docks(app: &mut App, ui: &mut Ui) {
 /// A tree of 111,000 files in folders. What is under a folder is handed over when it is
 /// opened, and only the rows in view are described.
 fn folders(app: &mut App, ui: &mut Ui) {
-    for row in ui.branches(&mut app.folders, 22.0, folders_under) {
-        ui.branch(&mut app.folders, row);
+    for row in ui.tree_view(&mut app.folders, 22.0, folders_under) {
+        ui.tree_row(&mut app.folders, row);
         ui.close();
     }
     ui.close();
@@ -772,13 +788,13 @@ fn charts(app: &mut App, ui: &mut Ui) {
     let kinds = KINDS.map(|kind| app.files.iter().filter(|file| file.2 == kind).count() as f32);
     ui.column().grow().scroll().pad(14.0).gap(14.0).open();
     ui.row().gap(16.0).align(Align::Start, Align::Start).open();
-    ui.chart_view(&mut app.slices, &Chart::of(&[Series::pie("Files", &kinds)]).names(&KINDS), 300.0, 160.0);
-    ui.chart(&Chart::of(&[Series::ring("Files", &kinds)]).names(&KINDS), 230.0, 160.0);
+    ui.chart_view(&mut app.slices, &Chart::of(&[Series::pie("Files", &kinds)]).categories(&KINDS), 300.0, 160.0);
+    ui.chart(&Chart::of(&[Series::ring("Files", &kinds)]).categories(&KINDS), 230.0, 160.0);
     ui.close();
     ui.row().gap(16.0).align(Align::Start, Align::Start).open();
     let (read, written) = ([3.0, 5.0, 2.0, 6.0, 4.0, 1.0, 2.0], [1.0, 2.0, 4.0, 1.0, 3.0, 2.0, 0.5]);
-    ui.chart(&Chart::of(&[Series::bars("Read", &read), Series::bars("Written", &written)]).names(&DAYS).stacked(), 300.0, 190.0);
-    quiet(ui, "The wheel zooms the scatter, dragging moves it, two clicks show all of it again; its names switch its rows off and on.");
+    ui.chart(&Chart::of(&[Series::bars("Read", &read), Series::bars("Written", &written)]).categories(&DAYS).stacked(), 300.0, 190.0);
+    dim_text(ui, "The wheel zooms the scatter, dragging moves it, two clicks show all of it again; its names switch its rows off and on.");
     ui.close();
     let [small_at, small, large_at, large] = &app.dots;
     // (Each dot's height goes with where it stands across, and a little by chance.)
@@ -798,36 +814,41 @@ fn charts(app: &mut App, ui: &mut Ui) {
     if app.live {
         ui.wake_after(std::time::Duration::from_millis(100));
     }
-    ui.chart(&Chart::of(&[Series::area("Load", &app.load)]).across(-59.9, 0.0).up(0.0, 1.0).time(app.fed), 560.0, 160.0);
+    ui.chart(&Chart::of(&[Series::area("Load", &app.load)]).x_range(-59.9, 0.0).y_range(0.0, 1.0).time(app.fed), 560.0, 160.0);
     ui.close();
 }
 
 /// What is under an item of the tree of files (`None`: what is at the top): a thousand
 /// folders; in each, two folders and 98 files; in each of those, five files. Each item's
 /// number says where it is.
-fn folders_under(under: Option<usize>) -> Vec<Branch> {
+fn folders_under(under: Option<usize>) -> Vec<TreeItem> {
     match under {
-        None => (0..1000).map(|n| Branch::opening(n, format!("Folder {n:03}"))).collect(),
+        None => (0..1000).map(|n| TreeItem::with_children(n, format!("Folder {n:03}"))).collect(),
         Some(top) if top < 1000 => {
-            let inner = (0..2).map(|n| Branch::opening(1000 + top * 2 + n, format!("Inner {n}")));
-            inner.chain((0..98).map(|n| Branch::new(10_000 + top * 100 + n, format!("file {n:02}.txt")))).collect()
+            let inner = (0..2).map(|n| TreeItem::with_children(1000 + top * 2 + n, format!("Inner {n}")));
+            inner.chain((0..98).map(|n| TreeItem::new(10_000 + top * 100 + n, format!("file {n:02}.txt")))).collect()
         }
-        Some(inner) if inner < 10_000 => (0..5).map(|n| Branch::new(1_000_000 + inner * 5 + n, format!("deep {n}.txt"))).collect(),
+        Some(inner) if inner < 10_000 => (0..5).map(|n| TreeItem::new(1_000_000 + inner * 5 + n, format!("deep {n}.txt"))).collect(),
         Some(_) => Vec::new(),
     }
 }
 
-/// The parts every web page and phone app has: a banner, a path of places, the steps of a
-/// task, pages of results, a box to search with, a button with a menu of other ways, tags,
-/// stars, people, cards, what stands in for what is loading, and keys written as keys. And,
-/// as an app writes them itself, a row of buttons that stay down in one frame, a count over
-/// an icon, sections of which one is open at a time, and what shows where nothing is yet.
-fn familiar(app: &mut App, ui: &mut Ui) {
-    let t = ui.theme;
+/// The parts every web page and phone app has.
+fn web_widgets(app: &mut App, ui: &mut Ui) {
     ui.column().grow().pad(14.0).scroll().open();
     ui.column().max(640.0, f32::INFINITY).gap(14.0).open();
+    navigation(app, ui);
+    tags_and_people(app, ui);
+    cards_and_groups(app, ui);
+    ui.close();
+    ui.close();
+}
+
+/// A banner, a path of places, the steps of a task with the app's own buttons, pages of
+/// results, a box to search with and a button with a menu of other ways.
+fn navigation(app: &mut App, ui: &mut Ui) {
     if app.banner {
-        app.banner = !ui.banner(Tone::Info, "The parts every web page and phone app has. This strip goes with its cross.").clicked;
+        app.banner = !ui.banner(Severity::Info, "The parts every web page and phone app has. This strip goes with its cross.").clicked;
         ui.close();
     }
     if let Some(place) = ui.breadcrumbs(&["Home", "Pictures", "Holidays", "2026", "Mountains"]) {
@@ -842,7 +863,7 @@ fn familiar(app: &mut App, ui: &mut Ui) {
     app.step += ui.primary_button("Next").clicked as usize;
     ui.set_enabled(true);
     ui.close();
-    ui.pages(&mut app.results, 24);
+    ui.pagination(&mut app.results, 24);
     ui.row().gap(8.0).open();
     ui.search(&mut app.query, "Search the pictures");
     let save = ui.split_button("Save");
@@ -859,7 +880,12 @@ fn familiar(app: &mut App, ui: &mut Ui) {
         ui.close();
     }
     ui.close();
-    ui.tokens(&mut app.topics, &mut app.topic, "Topics: Enter or a comma after each");
+}
+
+/// Tags, what shows where there are none yet, stars, and people with a count over an icon.
+fn tags_and_people(app: &mut App, ui: &mut Ui) {
+    let t = ui.theme;
+    ui.tag_input(&mut app.topics, &mut app.topic, "Topics: Enter or a comma after each");
     // What shows where there is nothing yet: a picture, a sentence and a way on.
     if app.topics.is_empty() {
         ui.column().pad(16.0).gap(8.0).align(Align::Start, Align::Center).open();
@@ -882,18 +908,24 @@ fn familiar(app: &mut App, ui: &mut Ui) {
         ui.avatar(name, None, 36.0);
     }
     ui.el().w(Length::Px(8.0)).show();
-    ui.el().flow(Flow::Layers).open();
+    ui.el().flow(Flow::Stack).open();
     ui.icon_button(BELL, "Notices, 3 new");
-    let badge = ui.el().place((Align::End, Align::Start)).at(6.0, -6.0).min(16.0, 16.0).pad((4.0, 0.0)).radius(8.0).fill(t.red);
-    badge.text("3", t.small, t.on_accent).text_align(Align::Center).show();
+    let badge = ui.el().place((Align::End, Align::Start)).offset(6.0, -6.0).min(16.0, 16.0).pad((4.0, 0.0)).radius(8.0).fill(t.red);
+    badge.text("3", t.small_font, t.on_accent).text_align(Align::Center).show();
     ui.close();
     ui.close();
+}
+
+/// Cards, what stands in while something loads, buttons that stay down in one frame,
+/// sections of which one is open at a time, and keys written as keys.
+fn cards_and_groups(app: &mut App, ui: &mut Ui) {
+    let t = ui.theme;
     // Cards side by side, each pressed as one; their own buttons are pressed by themselves.
     ui.row().gap(10.0).align(Align::Start, Align::Start).open();
     for (number, (name, words)) in [("Mountains", "A walk of four hours, with a lake at the top."), ("The sea", "Two days along the coast, from bay to bay.")].into_iter().enumerate() {
         let card = ui.card();
         ui.text(name, t.font.bold(), t.text);
-        quiet(ui, words);
+        dim_text(ui, words);
         ui.toggle(&mut app.liked[number], "Liked");
         ui.close();
         if card.clicked {
@@ -904,10 +936,10 @@ fn familiar(app: &mut App, ui: &mut Ui) {
     ui.switch(&mut app.loading, "Show what stands in while something loads");
     if app.loading {
         ui.row().gap(10.0).open();
-        ui.placeholder().size(40.0, 40.0).radius(20.0).show();
+        ui.skeleton().size(40.0, 40.0).radius(20.0).show();
         ui.column().w(Length::Grow(1.0)).gap(8.0).open();
-        ui.placeholder().show();
-        ui.placeholder().w(Length::Px(160.0)).show();
+        ui.skeleton().show();
+        ui.skeleton().w(Length::Px(160.0)).show();
         ui.close();
         ui.close();
     }
@@ -922,7 +954,7 @@ fn familiar(app: &mut App, ui: &mut Ui) {
     for (number, (title, words)) in [("What it is", "A page of the parts people know."), ("How it goes", "Each part is one call.")].into_iter().enumerate() {
         let mut open = app.section == Some(number);
         if ui.fold(&mut open, title) {
-            quiet(ui, words);
+            dim_text(ui, words);
         }
         app.section = if open { Some(number) } else { app.section.filter(|was| *was != number) };
     }
@@ -936,65 +968,72 @@ fn familiar(app: &mut App, ui: &mut Ui) {
     if !app.banner && ui.link("Show the banner again").clicked {
         app.banner = true;
     }
-    ui.close();
-    ui.close();
 }
 
 /// A quiet line that breaks where the room for it ends.
-fn quiet(ui: &mut Ui, text: &str) {
+fn dim_text(ui: &mut Ui, text: &str) {
     let t = ui.theme;
-    ui.el().w(Length::Grow(1.0)).text(text, t.small, t.text_dim).wrap().show();
+    ui.el().w(Length::Grow(1.0)).text(text, t.small_font, t.text_dim).wrap().show();
 }
 
-/// Rows that are picked, a menu at the pointer, a tree, a number that is dragged, plots,
-/// parts that are switched off, sliders that say more, and the parts of a form: a number with
-/// a unit, a colour, a day, a time, a day and a time, a span of days. And the parts other
-/// libraries have by names of their own: a button with a picture, a value said beside its
-/// slider or bar, a select of the app's own values, stripes, a faint group, a hidden button.
+/// The page of more parts: three columns, the parts other libraries name, and a code editor.
 fn more_parts(app: &mut App, ui: &mut Ui) {
     let wave: Vec<f32> = (0..48).map(|i| (i as f32 * 0.35).sin() * app.amount).collect();
     ui.column().grow().scroll().open();
     ui.row().pad(14.0).gap(28.0).align(Align::Start, Align::Start).open();
+    rows_tree_and_chart(app, ui, &wave);
+    numbers_and_plots(app, ui, &wave);
+    form_parts(app, ui);
+    ui.close();
+    parts_by_other_names(app, ui);
+    code_and_inspector(app, ui);
+    ui.close();
+}
 
+/// Rows to pick, each with a menu; a tree; and the wave in a chart.
+fn rows_tree_and_chart(app: &mut App, ui: &mut Ui, wave: &[f32]) {
     ui.column().w(Length::Px(240.0)).gap(2.0).open();
-    quiet(ui, "Rows to pick. Right-click one for a menu.");
+    dim_text(ui, "Rows to pick. Right-click one for a menu.");
     for (number, name) in ["Inbox", "Drafts", "Sent", "Archive"].iter().enumerate() {
-        let row = ui.selectable(app.picked == number, name);
+        let row = ui.selectable(app.selected_row == number, name);
         if row.clicked {
-            app.picked = number;
+            app.selected_row = number;
         }
         if ui.context_menu(&row) {
             if ui.menu_item("Pick this one").clicked {
-                app.picked = number;
+                app.selected_row = number;
             }
             ui.menu_item("Leave it");
             ui.close();
         }
     }
-    ui.tree(&mut app.branches[0], "A tree");
-    if app.branches[0] {
+    ui.tree(&mut app.tree_open[0], "A tree");
+    if app.tree_open[0] {
         ui.label("A leaf");
-        ui.tree(&mut app.branches[1], "A branch");
-        if app.branches[1] {
+        ui.tree(&mut app.tree_open[1], "A branch");
+        if app.tree_open[1] {
             ui.label("A leaf, a step further in");
             ui.close();
         }
         ui.close();
     }
-    // The wave of the next column in a chart, and half of it as a smooth line: numbers along
-    // its axes, its rows named, and what is under the pointer read off.
+    // The wave in a chart, and half of it as a smooth line.
     let half: Vec<f32> = wave.iter().map(|value| value / 2.0).collect();
     ui.el().h(Length::Px(10.0)).show();
-    ui.chart(&Chart::of(&[Series::area("Wave", &wave), Series::line("Half", &half).smooth()]), 240.0, 150.0);
+    ui.chart(&Chart::of(&[Series::area("Wave", wave), Series::line("Half", &half).smooth()]), 240.0, 150.0);
     ui.close();
+}
 
+/// A number dragged sideways, the wave it makes as a line and as bars, parts switched off,
+/// and sliders that stop at steps or go by a curve.
+fn numbers_and_plots(app: &mut App, ui: &mut Ui, wave: &[f32]) {
     ui.column().w(Length::Px(290.0)).gap(10.0).open();
     ui.row().gap(10.0).open();
     ui.label("A number to drag sideways");
-    ui.drag(&mut app.amount, 0.1);
+    ui.drag_value(&mut app.amount, 0.1);
     ui.close();
-    quiet(ui, "A wave as tall as that number, as a line and as bars.");
-    ui.plot_lines(&wave, 290.0, 60.0);
+    dim_text(ui, "A wave as tall as that number, as a line and as bars.");
+    ui.plot_lines(wave, 290.0, 60.0);
     ui.plot_bars(&wave[..18], 290.0, 60.0);
     ui.checkbox(&mut app.off, "Switch the two parts under this off");
     ui.set_enabled(!app.off);
@@ -1003,11 +1042,15 @@ fn more_parts(app: &mut App, ui: &mut Ui) {
     ui.switch(&mut app.on, "A switch");
     ui.close();
     ui.set_enabled(true);
-    quiet(ui, "A slider that stops at steps, and one that goes by a curve: half way is 100%.");
+    dim_text(ui, "A slider that stops at steps, and one that goes by a curve: half way is 100%.");
     ui.slider_marked(&mut app.marked, 0.0..=10.0, 1.0, "");
     ui.slider_curved(&mut app.zoom, 25.0..=400.0, "%");
     ui.close();
+}
 
+/// The parts of a form: a number with a unit, a colour, a day, two boxes to carry things
+/// between, a time, a day and a time, a span of days.
+fn form_parts(app: &mut App, ui: &mut Ui) {
     ui.column().w(Length::Px(250.0)).gap(10.0).open();
     ui.row().gap(10.0).open();
     ui.label("A number to type");
@@ -1015,18 +1058,18 @@ fn more_parts(app: &mut App, ui: &mut Ui) {
     ui.close();
     ui.row().gap(10.0).open();
     ui.label("A colour to pick");
-    ui.color(&mut app.tint);
+    ui.color_picker(&mut app.tint);
     ui.close();
     ui.row().gap(10.0).open();
     ui.label("A day to pick");
     ui.date(&mut app.day);
     ui.close();
-    quiet(ui, "Things to carry from one box to the other.");
+    dim_text(ui, "Things to carry from one box to the other.");
     ui.row().gap(10.0).align(Align::Start, Align::Start).open();
-    shelf(app, ui, 0);
-    shelf(app, ui, 1);
+    drag_list(app, ui, 0);
+    drag_list(app, ui, 1);
     ui.close();
-    quiet(ui, "A time, a day and a time, and a span of days picked in one calendar.");
+    dim_text(ui, "A time, a day and a time, and a span of days picked in one calendar.");
     ui.row().gap(10.0).open();
     ui.time(&mut app.alarm, false);
     ui.close();
@@ -1037,11 +1080,12 @@ fn more_parts(app: &mut App, ui: &mut Ui) {
     ui.date_range(&mut app.away.0, &mut app.away.1);
     ui.close();
     ui.close();
+}
 
-    ui.close();
-    // What other libraries have by these names: a button with a picture, a slider and a bar
-    // that say their value, a number dragged between two ends, a select of the app's own
-    // values; a grid with stripes, a group drawn faint, a button hidden that keeps its room.
+/// What other libraries have by these names: a button with a picture, a slider and a bar
+/// that say their value, a number dragged between two ends, a select of the app's own
+/// values; a grid with stripes, a group drawn faint, a button hidden that keeps its room.
+fn parts_by_other_names(app: &mut App, ui: &mut Ui) {
     ui.row().pad((14.0, 0.0, 14.0, 14.0)).gap(28.0).align(Align::Start, Align::Start).open();
     ui.column().w(Length::Px(290.0)).gap(10.0).open();
     ui.row().gap(10.0).open();
@@ -1053,7 +1097,7 @@ fn more_parts(app: &mut App, ui: &mut Ui) {
     ui.progress_with_percent((app.level - 50.0) / 50.0);
     ui.grid(2).gap(10.0).align(Align::Start, Align::Center).open();
     ui.label("From 0 to 10");
-    ui.drag_in(&mut app.within, 0.0..=10.0, 0.05);
+    ui.drag_value_in(&mut app.within, 0.0..=10.0, 0.05);
     ui.label("A fruit");
     ui.select_value(&mut app.fruit, &[("apple", "Apple"), ("pear", "Pear"), ("plum", "Plum")]);
     ui.close();
@@ -1081,16 +1125,17 @@ fn more_parts(app: &mut App, ui: &mut Ui) {
     ui.close();
     ui.close();
     ui.close();
+}
 
-    // A box to edit code in, with this program's own source in it; and an inspector, with a
-    // lamp of this page's own in it.
+/// A box to edit code in, with this program's own source in it; and an inspector, with a
+/// lamp of this page's own in it.
+fn code_and_inspector(app: &mut App, ui: &mut Ui) {
     ui.row().h(Length::Px(320.0)).pad((14.0, 0.0, 14.0, 14.0)).gap(14.0).open();
     ui.column().grow().open();
-    ui.code_box(&mut app.code, "The gallery's source");
+    ui.code_editor(&mut app.code, "The gallery's source");
     ui.close();
     ui.column().w(Length::Px(300.0)).h(Length::Grow(1.0)).open();
     ui.inspect(&mut app.inspector, &mut app.lamp);
-    ui.close();
     ui.close();
     ui.close();
 }
@@ -1100,27 +1145,26 @@ fn face(app: &mut App, ui: &mut Ui) -> Picture {
     *app.face.get_or_insert_with(|| ui.add_picture(32, (0..32 * 32).map(|at| 0xff00_0000 | (150 + at % 32 * 3) << 16 | (110 + at / 32 * 3) << 8 | 140).collect()))
 }
 
-/// One of two boxes of things. A thing is carried by the pointer, and let go over the other
-/// box it moves there. (What is carried is a number: the box it came from, and which thing.)
-fn shelf(app: &mut App, ui: &mut Ui, side: usize) {
+/// One of two boxes whose things are dragged to the other. (The payload: box * 100 + index.)
+fn drag_list(app: &mut App, ui: &mut Ui, side: usize) {
     let t = ui.theme;
-    let wanted = ui.carrying().is_some_and(|what| what as usize / 100 != side);
+    let wanted = ui.drag_payload().is_some_and(|what| what as usize / 100 != side);
     let around = ui.column().key(side).w(Length::Px(118.0)).min(0.0, 124.0).pad(4.0).gap(2.0).fill(t.panel).border(if wanted { t.accent } else { t.line }, 1.0).radius(6.0).sense().open();
-    for (number, &name) in app.shelves[side].iter().enumerate() {
+    for (number, &name) in app.drag_lists[side].iter().enumerate() {
         let thing = ui.selectable(false, name);
-        if ui.carried(&thing, (side * 100 + number) as u64) {
+        if ui.drag_source(&thing, (side * 100 + number) as u64) {
             ui.label(name);
             ui.close();
         }
     }
     ui.close();
     let Some(what) = ui.dropped(&around).map(|what| what as usize).filter(|what| what / 100 != side) else { return };
-    let thing = app.shelves[what / 100].remove(what % 100);
-    app.shelves[side].push(thing);
+    let thing = app.drag_lists[what / 100].remove(what % 100);
+    app.drag_lists[side].push(thing);
 }
 
 /// The dialog that asks for a new name, while it is open.
-fn rename(app: &mut App, ui: &mut Ui) {
+fn rename_dialog(app: &mut App, ui: &mut Ui) {
     let t = ui.theme;
     let Some(name) = &mut app.renaming else { return };
     let beside = ui.dialog();
@@ -1145,21 +1189,19 @@ fn rename(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// A number from 0 to 100 that looks as if it came by chance, the same for the same `n`: the
-/// dots of a scatter, spread as if measured. (A small hash of `n`, the one PCG has.)
+/// A number from 0 to 100 that looks random, the same for the same `n` (PCG's hash).
 fn chance(n: u32) -> f32 {
     let x = n.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
     let x = ((x >> ((x >> 28) + 4)) ^ x).wrapping_mul(277_803_737);
     ((x >> 22) ^ x) as f32 / u32::MAX as f32 * 100.0
 }
 
-/// The theme the window is drawn with: the one that follows what the person asked the
-/// system for; or the app's own, dark or light, in high contrast or around the colour
-/// picked; set as close together or as far apart as asked.
-fn looks(app: &App, ui: &Ui) -> Theme {
+/// The theme: the system's, or the app's own (dark or light, high contrast or accented), at
+/// the spacing asked for.
+fn theme(app: &App, ui: &Ui) -> Theme {
     let theme = match (app.system, app.contrast, app.light) {
         (true, ..) => ui.system_theme(),
-        (false, true, light) => Theme::high_contrast(if light { Contrast::LIGHT } else { Contrast::DARK }),
+        (false, true, light) => Theme::high_contrast(if light { ContrastColors::LIGHT } else { ContrastColors::DARK }),
         (false, false, true) => Theme::light().accented(app.tint),
         (false, false, false) => Theme::dark().accented(app.tint),
     };
@@ -1167,7 +1209,7 @@ fn looks(app: &App, ui: &Ui) -> Theme {
 }
 
 /// What the person asked the system for, said in a line.
-fn asked_of_the_system(ui: &Ui) -> String {
+fn system_preferences(ui: &Ui) -> String {
     let colour = ui.system_accent().map_or("no colour of its own".into(), |colour| format!("the colour {colour}"));
     let (contrast, motion) = (if ui.high_contrast() { "high contrast" } else { "no high contrast" }, if ui.reduced_motion() { "less movement" } else { "movement" });
     format!("The system asks for {} windows, {colour}, {contrast}, {motion}, text \u{d7}{}.", if ui.system_dark() { "dark" } else { "light" }, ui.text_scale())
@@ -1205,14 +1247,14 @@ pub fn app() -> App {
         picture: None,
         photo: None,
         drawings: None,
-        film: None,
+        animation: None,
         playing: false,
         // `TAUT_FONT=some.ttf` writes the whole window with that font, in place of the system's.
         letters: std::env::var_os("TAUT_FONT").and_then(|file| std::fs::read(file).ok()).and_then(FontFile::read),
         place: String::new(),
         shape: None,
-        picked: 1,
-        branches: [true, true],
+        selected_row: 1,
+        tree_open: [true, true],
         amount: 4.0,
         off: true,
         count: 12,
@@ -1227,16 +1269,16 @@ pub fn app() -> App {
         faint: true,
         hide: false,
         tint: Theme::dark().accent,
-        shelves: [vec!["Apples", "Pears", "Plums"], vec!["Bread"]],
-        table: Table { kept: 1, ..Default::default() },
-        picks: Picks::default(),
+        drag_lists: [vec!["Apples", "Pears", "Plums"], vec!["Bread"]],
+        table: Table { frozen: 1, ..Default::default() },
+        selection: Selection::default(),
         files: (0..5000u32).map(|n| (format!("file {n:04}"), n * 7919 % 4096 + 1, ["text", "picture", "sound", "folder"][n as usize * 5 % 4])).collect(),
         tools: Panel { open: false, ..Panel::new(520.0, 150.0, 300.0, 220.0) },
-        code: Code::new(include_str!("gallery.rs"), &Rules::RUST),
+        code: CodeEditor::new(include_str!("gallery.rs"), &Syntax::RUST),
         lamp: Lamp { name: "Desk".into(), power: 40.0, on: true, kind: LampKind::Spot, tint: Color::rgb(0xffcf7a), rooms: vec!["Study".into(), "Hall".into()] },
         inspector: Inspector::default(),
-        beside: Second { open: false, ..Second::new(380.0, 240.0) },
-        picking: Files::default(),
+        beside: SecondWindow { open: false, ..SecondWindow::new(380.0, 240.0) },
+        file_dialog: FileDialog::default(),
         dock: Dock::of(&["Files"]).beside(Dock::of(&["Editor", "Preview"]).above(Dock::of(&["Log"]), 0.7), 0.25),
         step: 2,
         results: 0,
@@ -1256,8 +1298,8 @@ pub fn app() -> App {
         live: false,
         load: (0..600).map(|nth| 0.5 + (nth as f32 / 40.0).sin() * 0.2).collect(),
         fed: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64()),
-        folders: Branches::default(),
-        writing: Markdown::read(WRITING),
+        folders: TreeView::default(),
+        writing: Markdown::parse(WRITING),
     }
 }
 
@@ -1301,23 +1343,23 @@ fn writing(app: &mut App, ui: &mut Ui) {
     ui.column().grow().scroll().pad(14.0).open();
     ui.column().max(680.0, f32::INFINITY).gap(14.0).open();
     let pieces = [
-        Piece::words("A paragraph of rich text: "),
-        Piece::words("bold").bold(),
-        Piece::words(", "),
-        Piece::words("slanted").italic(),
-        Piece::words(", "),
-        Piece::words("larger").size(t.font.size * 1.4),
-        Piece::words(", in "),
-        Piece::words("colour").color(t.green),
-        Piece::words(", "),
-        Piece::words("marked").back(t.amber.alpha(0.35)),
-        Piece::words(", "),
-        Piece::words("code").code(),
-        Piece::words(", "),
-        Piece::icon(STAR),
-        Piece::words(" an icon, and "),
-        Piece::words("a link").link(),
-        Piece::words("."),
+        Span::text("A paragraph of rich text: "),
+        Span::text("bold").bold(),
+        Span::text(", "),
+        Span::text("slanted").italic(),
+        Span::text(", "),
+        Span::text("larger").size(t.font.size * 1.4),
+        Span::text(", in "),
+        Span::text("colour").color(t.green),
+        Span::text(", "),
+        Span::text("marked").background(t.amber.with_alpha(0.35)),
+        Span::text(", "),
+        Span::text("code").code(),
+        Span::text(", "),
+        Span::icon(STAR),
+        Span::text(" an icon, and "),
+        Span::text("a link").link(),
+        Span::text("."),
     ];
     if ui.rich(&pieces).is_some() {
         ui.notice("The link was pressed");

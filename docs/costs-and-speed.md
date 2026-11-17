@@ -46,6 +46,7 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | `cff` | CFF and CFF2 fonts (most `.otf`) | not read | nothing; 17 KB | nothing; 17 KB |
 | `color-profiles` | colour profiles in picture files | colours as stored | nothing; 7 KB | nothing; 7 KB |
 | `woff2` | WOFF2 fonts (with a Brotli decoder) | not read | nothing; 95 KB | nothing; 99 KB |
+| `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | |
 
 - Each cost is the feature alone, in `hello` and in the gallery (which reads fonts and
   pictures). `brahmic` adds 77 KB (Linux 86 KB) to `hello` with `right-to-left` already on.
@@ -56,6 +57,46 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 Same window, same profile (Windows, 2026-11-15): egui 0.37 (eframe, wgpu) 8.3 MB, 179 crates;
 iced 0.14 (wgpu, tiny-skia) 5.9 MB, 159 crates; Slint 1.18 (femtovg, software) 7.8 MB, 245
 crates. Private memory (2026-11-11): egui 126.7 MB, iced 17.2 MB, Slint 7.3 MB.
+
+## GPU or CPU
+
+The CPU draws every pixel on every path; with `gpu` the GPU shows them. Windows 11, RTX 2080 Ti,
+2026-11-16, while a game ran on the GPU; each case a program of its own on a private desktop,
+200 frames, best of 2 (memory: range). CPU per frame, µs:
+
+| | CPU (GDI) | Direct3D 11 | Direct3D 12 | Vulkan | OpenGL |
+| --- | --- | --- | --- | --- | --- |
+| 1200×800, all changed | 929 | 884 | 1,028 | 1,191 | 1,282 |
+| 1200×800, one label changed | 273 | 507 | 731 | 898 | 756 |
+| 3840×2160, all changed | 4,002 | 3,535 | 3,406 | 3,428 | 5,506 |
+| 3840×2160, one label changed | 343 | 598 | 811 | 1,029 | 881 |
+| First frame after start | 82–95 ms | 82–100 ms | 87–101 ms | 84–102 ms | 100–222 ms |
+| GPU shows it from | | 0.4–0.5 s | 0.5–0.6 s | 0.8–0.9 s | 0.3–1.4 s |
+| Private memory, 1200×800 | 2.1 MB | 58–62 MB | 104–105 MB | 142 MB | 84–96 MB |
+| Private memory, 3840×2160 | 2.1 MB | 95–114 MB | 158 MB | 198 MB | 218–277 MB |
+
+- A frame's CPU time includes running the app and its 10 ms timer, the same on every path.
+- Each present costs CPU in the driver, whatever changed: about 230 µs (Direct3D 11), 460 µs
+  (12), 630 µs (Vulkan, half on driver threads), 480 µs (OpenGL).
+- First frames are the CPU's on every path. OpenGL's come later: its driver loads meanwhile, the
+  likely cause.
+- OpenGL uploads over 256 KB through a pixel buffer: straight from the program's memory, NVIDIA's
+  driver took 15 ms a 4K frame.
+- The memory is the GPU driver's and the window-sized textures.
+- Gains: whole frames in step with the screen (the CPU path's strips can show half-drawn), no
+  frame of nothing at start. Not a gain here: CPU time.
+
+Linux (Ubuntu in WSL, Xvfb, gallery, 1200×800; app CPU + X server CPU per frame):
+
+| | CPU path | GPU, llvmpipe | GPU, d3d12 (RTX 2080 Ti) |
+| --- | --- | --- | --- |
+| All changed | 1.6–1.8 + 1.3–1.7 ms | 11.0–11.3 + 3.0–3.3 ms | 2.6–2.7 + 3.0 ms |
+| One small change | 0.03–0.04 + ~0 ms | 1.7–2.0 + 3.1–4.5 ms | 1.5–1.6 + 2.7–3.5 ms |
+| Start | 96–290 ms | 169–193 ms | 432–474 ms |
+| Memory | +9 MB | +108 MB | +150 MB |
+
+- Xvfb has no DRI3, so Mesa sends every whole frame through X: that is why `Auto` keeps the CPU
+  there. A real desktop with DRI3 was not measured.
 
 ## How fast it is
 

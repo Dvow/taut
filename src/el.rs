@@ -10,10 +10,10 @@
 use crate::color::Color;
 use crate::geom::Insets;
 use crate::id::{Id, fold, hash, mix};
-use crate::layout::{Align, Content, Flow, Frame, Length, NONE, Part, Spec, Spot};
+use crate::layout::{Align, Content, Flow, Frame, Length, NONE, Part, Placement, Spec};
 use crate::path::Path;
-use crate::pen::{self, Ink, Inked, Pen};
-use crate::scene::{Shown, View};
+use crate::pen::{self, Inked, Paint, Pen};
+use crate::scene::{Camera, MeshInstance};
 use crate::text::Font;
 use crate::ui::{Icon, Open, Picture, Response, Ui};
 use std::hash::Hash;
@@ -99,12 +99,12 @@ impl Ui {
         // While this run repeats the last one's text in the same places, it is there already:
         // nothing is written, and its width is known. From the first piece that differs, the
         // rest is written again.
-        let said = self.same_text && self.tree.strings.as_bytes().get(start..end) == Some(text.as_bytes());
-        if !said {
+        let same = self.same_text && self.tree.strings.as_bytes().get(start..end) == Some(text.as_bytes());
+        if !same {
             self.tree.strings.truncate(start);
             self.tree.strings.push_str(text);
         }
-        (self.same_text, self.text_said) = (said, end);
+        (self.same_text, self.text_said) = (same, end);
         // Piece boundaries matter to layout too: "1" and "23" are other boxes than "12" and
         // "3".
         self.layout_key = fold(self.layout_key, text.len() as u64);
@@ -153,7 +153,7 @@ impl Ui {
             sum ^= crate::layout::grow_where_it_scrolls(&mut spec.frame);
         }
         // One that had a scroll bar keeps its gutter free: see `Ui::strip`.
-        if scrolls && self.strips.get(&spec.id).is_some_and(|strip| strip.kept) {
+        if scrolls && self.gutters.get(&spec.id).is_some_and(|gutter| gutter.reserved) {
             let was = spec.frame.part(Part::Scroll);
             spec.frame.strip = true;
             sum ^= mix(Part::Scroll as u64, was) ^ mix(Part::Scroll as u64, spec.frame.part(Part::Scroll));
@@ -217,7 +217,7 @@ impl Ui {
         // reported.
         if let Some(around) = self.open.last().filter(|_| row > 0.0 && self.listening) {
             let place = [around.children - 1, around.count];
-            self.rows_told.push((self.tree.specs.len() as u32, place));
+            self.access_rows.push((self.tree.specs.len() as u32, place));
         }
         // Cells only exist in a table, which has set what it does with them. It gets a copy of
         // the box, for the reason above.
@@ -227,7 +227,7 @@ impl Ui {
             *spec = seated;
         }
         if !self.enabled {
-            (spec.frame.focus, spec.fill, spec.border) = (false, spec.fill.alpha(0.5), spec.border.alpha(0.5));
+            (spec.frame.focus, spec.fill, spec.border) = (false, spec.fill.with_alpha(0.5), spec.border.with_alpha(0.5));
         }
         if let (false, Content::Text { color, .. } | Content::Icon { color, .. } | Content::Drawing { color, .. }) = (self.enabled, &mut spec.content) {
             *color = self.theme.text_faint;
@@ -236,10 +236,10 @@ impl Ui {
             self.shapes[shape as usize].fade(self.theme.text_faint);
         }
         if let (false, Content::Stripes { color }) = (self.enabled, &mut spec.content) {
-            *color = color.alpha(0.5);
+            *color = color.with_alpha(0.5);
         }
         if let (false, Content::Gradient { stops: [from, to], .. }) = (self.enabled, spec.content) {
-            self.blends[from as usize..to as usize].iter_mut().for_each(|stop| stop.1 = stop.1.alpha(0.5));
+            self.blends[from as usize..to as usize].iter_mut().for_each(|stop| stop.1 = stop.1.with_alpha(0.5));
         }
         spec.sum()
     }
@@ -371,14 +371,14 @@ impl El<'_> {
     /// each, so a button strip at a row's end is `.place((Align::End, Align::Center))`: right,
     /// and vertically centred, whatever either's height.
     #[inline]
-    pub fn place(self, place: impl Into<Spot>) -> Self {
+    pub fn place(self, place: impl Into<Placement>) -> Self {
         let place = place.into();
         self.frame(Part::Place, |frame| frame.place = Some(place))
     }
     /// Offsets it from where layout puts it, without moving what follows. In a stack, this puts
     /// it anywhere.
     #[inline]
-    pub fn at(self, x: f32, y: f32) -> Self {
+    pub fn offset(self, x: f32, y: f32) -> Self {
         self.frame(Part::Nudge, |frame| frame.nudge = [x, y])
     }
     /// Fill colour.
@@ -440,14 +440,14 @@ impl El<'_> {
         self.frame(Part::Shadow, |frame| frame.shadow = reach)
     }
     /// Draws it, with its content, as one layer at this opacity: 1 opaque, 0.5 half transparent
-    /// (a part not ready yet, one fading with [`Ui::glide`]). At 0 it is hidden, as `hidden`
+    /// (a part not ready yet, one fading with [`Ui::animate`]). At 0 it is hidden, as `hidden`
     /// does. Layout and input are unchanged.
     pub fn opacity(self, solid: f32) -> Self {
         let solid = if solid.is_nan() { 1.0 } else { solid.clamp(0.0, 1.0) };
         let fade = 255 - (solid * 255.0).round() as u8;
         if fade != 0 && fade != 255 {
             self.ui.shows.fade = Some(|painter, step, canvas| painter.fade(step, canvas));
-            self.ui.survey.fades = Some(crate::survey::Survey::fade);
+            self.ui.visible_boxes.fades = Some(crate::visible_boxes::VisibleBoxes::fade);
         }
         self.fade(fade)
     }
@@ -475,15 +475,15 @@ impl El<'_> {
     /// "…"). `readiness` is 1, 2 or 3: higher numbers give all they can before lower ones give
     /// any; equal ones share by how much each can give. (In a column, its height shrinks.)
     #[inline]
-    pub fn gives_way(self, readiness: u8) -> Self {
-        self.frame(Part::Gives, |frame| frame.gives = readiness.clamp(1, 3)).clip()
+    pub fn shrink(self, readiness: u8) -> Self {
+        self.frame(Part::Shrink, |frame| frame.shrink = readiness.clamp(1, 3)).clip()
     }
-    /// Like `gives_way`, but in rows only: in a column short of room it keeps its height
+    /// Like `shrink`, but in rows only: in a column short of room it keeps its height
     /// (overflow runs out at the bottom). For a part whose text can wrap onto more lines and
     /// must never be squeezed away, such as a check box.
     #[inline]
-    pub fn narrows(self, readiness: u8) -> Self {
-        self.frame(Part::Gives, |frame| frame.gives = readiness.clamp(1, 3) | crate::layout::NARROWS).clip()
+    pub fn shrink_width(self, readiness: u8) -> Self {
+        self.frame(Part::Shrink, |frame| frame.shrink = readiness.clamp(1, 3) | crate::layout::SHRINK_WIDTH).clip()
     }
     /// Content may be taller than the box, and scrolls with the wheel or scroll bar. With no
     /// height (no `h`, no `max` height) and not shrinking, it takes the height it is given, as
@@ -502,14 +502,14 @@ impl El<'_> {
     /// everything that scrolls in the parent, at the bottom if after (a table's header rows, a
     /// totals row, a list's heading). Content scrolls between; horizontally it scrolls along.
     /// Ignored in a box that does not scroll vertically.
-    pub fn kept(self) -> Self {
+    pub fn frozen(self) -> Self {
         let specs = &self.ui.tree.specs;
         let Some(around) = self.ui.open.last().map(|around| around.at).filter(|at| specs[*at as usize].frame.scroll[1]) else { return self };
         // At the top, while everything before it in that box is kept too. (Checked only here,
         // so unkept boxes cost nothing.)
         let before = std::iter::successors(Some(around + 1), |at| specs.get(*at as usize).map(|spec| spec.end)).take_while(|at| (*at as usize) < specs.len());
-        let first = before.filter(|at| specs[*at as usize].frame.parent == around).all(|at| specs[at as usize].frame.kept != 0);
-        self.frame(Part::Kept, |frame| frame.kept = if first { 1 } else { 2 })
+        let first = before.filter(|at| specs[*at as usize].frame.parent == around).all(|at| specs[at as usize].frame.pinned != 0);
+        self.frame(Part::Pinned, |frame| frame.pinned = if first { 1 } else { 2 })
     }
     /// Sticks to the top of the nearest vertical scroll box while what follows it in its parent
     /// scrolls under it: a list's group heading, as CSS `position: sticky`. It scrolls away
@@ -538,7 +538,7 @@ impl El<'_> {
     #[inline]
     pub fn sticky(self) -> Self {
         self.ui.tree.sticks = Some(&crate::layout::STICKING);
-        self.frame(Part::Kept, |frame| frame.kept = crate::layout::STICKS)
+        self.frame(Part::Pinned, |frame| frame.pinned = crate::layout::STICKY)
     }
     /// Draws its content this far left and up of where layout puts it: for a box following
     /// another's scrolling.
@@ -600,22 +600,22 @@ impl El<'_> {
         self.holds(Content::Icon { icon, color }).size(size, size)
     }
     /// Holds the app's own filled shape: a chart's area, a drawing. Filled with a colour or a
-    /// gradient ([`Ink::Along`], [`Ink::Around`]). The shape is in units from the box's top
-    /// left, clipped to the box.
+    /// gradient ([`Paint::Linear`], [`Paint::Radial`]). The shape is in units from the box's
+    /// top left, clipped to the box.
     #[inline]
-    pub fn shape<'a>(self, shape: &Path, ink: impl Into<Ink<'a>>) -> Self {
+    pub fn shape<'a>(self, shape: &Path, ink: impl Into<Paint<'a>>) -> Self {
         let ink = ink.into();
         self.inked(shape, None, ink, pen::fully(None, &ink))
     }
     /// Holds the app's own shape, stroked: with a number, that width with round caps and joins;
     /// with a [`Pen`], its caps, joins and dashes. In a colour or a gradient.
     #[inline]
-    pub fn outline<'a, 'b>(self, shape: &Path, pen: impl Into<Pen<'a>>, ink: impl Into<Ink<'b>>) -> Self {
+    pub fn outline<'a, 'b>(self, shape: &Path, pen: impl Into<Pen<'a>>, ink: impl Into<Paint<'b>>) -> Self {
         let (pen, ink) = (pen.into(), ink.into());
         self.inked(shape, Some(pen), ink, pen::fully(Some(&pen), &ink))
     }
     /// Holds a shape with its paint, and the code that draws it where the canvas cannot alone.
-    fn inked(self, shape: &Path, pen: Option<Pen>, ink: Ink, full: Option<pen::Full>) -> Self {
+    fn inked(self, shape: &Path, pen: Option<Pen>, ink: Paint, full: Option<pen::Full>) -> Self {
         let ui = &mut *self.ui;
         ui.shows.shape = Some(Inked::draw);
         let at = ui.shapes_used;
@@ -628,7 +628,7 @@ impl El<'_> {
     }
     /// Holds a 3D scene: triangle meshes ([`Ui::add_mesh`]), each placed as `shown` says, seen
     /// from `view`. It fills the box at any size, and redraws only when something changed.
-    pub fn scene(self, view: &View, shown: &[Shown]) -> Self {
+    pub fn scene(self, view: &Camera, shown: &[MeshInstance]) -> Self {
         let scene = self.ui.scenes.note(view, shown);
         self.holds(Content::Scene { scene })
     }
@@ -648,16 +648,16 @@ impl El<'_> {
         let ([wide, high], color) = self.ui.drawings.get(drawing.0).map_or(([0.0; 2], color), |kept| (kept.size(), kept.takes(color)));
         self.holds(Content::Drawing { drawing: drawing.0, color, keep: false }).size(wide, high)
     }
-    /// Holds an animation ([`Ui::add_film`]), at its pixel size unless a size is set after
+    /// Holds an animation ([`Ui::add_animation`]), at its pixel size unless a size is set after
     /// this. It shows the current frame and asks for a rerun when the next is due: only this
     /// box is redrawn then. (Paused while the window is minimized.)
-    pub fn film(self, film: crate::film::Film) -> Self {
+    pub fn animation(self, film: crate::animation::Animation) -> Self {
         let ui = &mut *self.ui;
         ui.shows.picture = Some(|canvas, pixels, width, r, radius| canvas.rounded_picture(pixels, width, r, radius));
         // A released animation takes no room and shows nothing.
-        let Some(reel) = ui.films.get(film.0) else { return self.holds(Content::Film { film: film.0, frame: 0, keep: false }).size(0.0, 0.0) };
+        let Some(reel) = ui.animations.get(film.0) else { return self.holds(Content::Film { film: film.0, frame: 0, keep: false }).size(0.0, 0.0) };
         let ([wide, high], (frame, wait)) = (reel.size(), reel.due(ui.now.saturating_sub(reel.since)));
-        if let Some(wait) = wait.filter(|_| !ui.window_hidden()) {
+        if let Some(wait) = wait.filter(|_| !ui.window_minimized()) {
             ui.wake_after(wait);
         }
         self.holds(Content::Film { film: film.0, frame: frame as u32, keep: false }).size(wide as f32, high as f32)
@@ -667,7 +667,7 @@ impl El<'_> {
     /// fill its room as large as it fits whole. (Ignored before the content, or on other
     /// content.)
     #[inline]
-    pub fn keep_shape(mut self) -> Self {
+    pub fn keep_aspect(mut self) -> Self {
         if let Content::Picture { keep, .. } | Content::Drawing { keep, .. } | Content::Film { keep, .. } = &mut self.spec.content {
             *keep = true;
         }

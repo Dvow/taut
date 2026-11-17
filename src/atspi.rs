@@ -7,18 +7,19 @@
 //! pass its messages here; the portal is reached over it too, in `portal`.) Only while someone
 //! listens is this program on the accessibility bus. There it registers with the registry and
 //! answers queries about its windows: one object for the application, one per window, and one
-//! per entry of the UI's accessibility list ([`Ui::said`]). It answers from a copy of that list
-//! taken after every run, needing nothing of the window. Requested actions (press, type, set a
-//! slider) are performed as keyboard input would. After each run it sends the events a screen
-//! reader needs: focus moves, changed names or states, children added and removed.
+//! per entry of the UI's accessibility list ([`Ui::visible_access_nodes`]). It answers from a
+//! copy of that list taken after every run, needing nothing of the window. Requested actions
+//! (press, type, set a slider) are performed as keyboard input would. After each run it sends
+//! the events a screen reader needs: focus moves, changed names or states, children added and
+//! removed.
 //!
 //! Nothing blocks. Sockets are only read for what has arrived, a partial message is kept until
 //! the rest arrives, and a dead bus is dropped: then nobody listens, that's all. A program
 //! nobody listens to has one socket to the session bus and no state; without a session bus,
 //! nothing.
+use crate::accessibility::{self, AccessNode, Role};
 use crate::geom::pt;
 use crate::id::Id;
-use crate::told::{self, Role, Said};
 use crate::ui::Ui;
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
@@ -255,7 +256,7 @@ impl<'a> Unpack<'a> {
         let mut left = vec![kinds.as_bytes()];
         while let Some(kinds) = left.pop() {
             let Some((kind, rest)) = kinds.split_first() else { continue };
-            let said = if *kind == b'v' { self.kinds()? } else { "" };
+            let variant = if *kind == b'v' { self.kinds()? } else { "" };
             let rest = if *kind == b'a' { self.skip_list(rest)? } else { rest };
             match kind {
                 b'a' | b'v' | b')' | b'}' => {}
@@ -265,7 +266,7 @@ impl<'a> Unpack<'a> {
                 b'y' | b'n' | b'q' | b'b' | b'i' | b'u' | b'h' | b'x' | b't' | b'd' => _ = self.take(lined_up(*kind), lined_up(*kind))?,
                 _ => return None,
             }
-            left.extend([rest, said.as_bytes()]);
+            left.extend([rest, variant.as_bytes()]);
         }
         Some(())
     }
@@ -601,24 +602,24 @@ impl Bus {
 }
 
 /// The AT-SPI role of an element: its value in `atspi-constants.h`, and its name.
-fn role_of(said: &Said) -> (u32, &'static str) {
-    match (said.role, said.on) {
+fn role_of(node: &AccessNode) -> (u32, &'static str) {
+    match (node.role, node.on) {
         (Role::Text, _) => (29, "label"),
         (Role::Button, None) | (Role::Fold, _) => (43, "button"),
         (Role::Button, Some(_)) => (62, "toggle button"),
-        (Role::Tick, _) => (7, "check box"),
+        (Role::CheckBox, _) => (7, "check box"),
         (Role::Switch, _) => (130, "switch"),
-        (Role::Choice, _) => (44, "radio button"),
+        (Role::RadioButton, _) => (44, "radio button"),
         (Role::Tab, _) => (37, "page tab"),
         (Role::Row, _) => (32, "list item"),
         (Role::Slider, _) => (51, "slider"),
-        (Role::Spin, _) => (52, "spin button"),
+        (Role::SpinButton, _) => (52, "spin button"),
         (Role::TextBox, _) => (79, "entry"),
-        (Role::Secret, _) => (40, "password text"),
-        (Role::Select, _) => (11, "combo box"),
+        (Role::PasswordBox, _) => (40, "password text"),
+        (Role::ComboBox, _) => (11, "combo box"),
         (Role::MenuItem, None) => (35, "menu item"),
         (Role::MenuItem, Some(_)) => (8, "check menu item"),
-        (Role::Heading, _) => (10, "column header"),
+        (Role::ColumnHeader, _) => (10, "column header"),
         (Role::Progress, _) => (42, "progress bar"),
         (Role::Group, _) => (39, "panel"),
         (Role::Dialog, _) => (16, "dialog"),
@@ -630,13 +631,13 @@ fn role_of(said: &Said) -> (u32, &'static str) {
         (Role::Cell, _) => (56, "table cell"),
         (Role::TableRow, _) => (90, "table row"),
         (Role::Document, _) => (94, "document text"),
-        (Role::Title, _) => (83, "heading"),
+        (Role::Heading, _) => (83, "heading"),
         (Role::Paragraph, _) => (73, "paragraph"),
         (Role::List, _) => (31, "list"),
-        (Role::Item, _) => (32, "list item"),
+        (Role::ListItem, _) => (32, "list item"),
         (Role::Code, _) => (85, "section"),
         (Role::Quote, _) => (105, "block quote"),
-        (Role::MenuChoice, _) => (45, "radio menu item"),
+        (Role::MenuItemRadio, _) => (45, "radio menu item"),
         (Role::Submenu, _) => (33, "menu"),
         (Role::ToolBar, _) => (63, "tool bar"),
         (Role::Tree, _) => (65, "tree"),
@@ -648,16 +649,16 @@ fn role_of(said: &Said) -> (u32, &'static str) {
 /// An element's key bindings as AT-SPI writes them: three parts separated by ";", the last
 /// being the global shortcut, modifiers in angle brackets ("Ctrl+O" is ";;<Control>O"). Empty
 /// if none.
-fn keys_of(said: &Said) -> String {
-    let (held, last) = said.keys.rsplit_once('+').map_or(("", said.keys.as_str()), |(held, last)| (held, last));
+fn keys_of(node: &AccessNode) -> String {
+    let (held, last) = node.shortcut.rsplit_once('+').map_or(("", node.shortcut.as_str()), |(held, last)| (held, last));
     let held = held.split('+').filter(|key| !key.is_empty()).map(|key| format!("<{}>", if key.trim() == "Ctrl" { "Control" } else { key.trim() }));
-    if said.keys.is_empty() { String::new() } else { format!(";;{}{}", held.collect::<String>(), last.trim()) }
+    if node.shortcut.is_empty() { String::new() } else { format!(";;{}{}", held.collect::<String>(), last.trim()) }
 }
 
 /// The actions of a pressable element, by AT-SPI names: "click"; and for a tree item with
 /// children, expand or collapse, named as on the web while collapsed and while expanded.
-fn ways_of(said: &Said) -> &'static [&'static str] {
-    match (said.role, said.open) {
+fn ways_of(node: &AccessNode) -> &'static [&'static str] {
+    match (node.role, node.expanded) {
         (Role::TreeItem, Some(false)) => &["click", "expand"],
         (Role::TreeItem, Some(true)) => &["click", "collapse"],
         _ => &["click"],
@@ -665,48 +666,48 @@ fn ways_of(said: &Said) -> &'static [&'static str] {
 }
 
 /// Whether an element is pressable: a pressable role, or a selectable table row.
-fn pressed(said: &Said) -> bool {
+fn pressed(node: &AccessNode) -> bool {
     let kinds = matches!(
-        said.role,
+        node.role,
         Role::Button
-            | Role::Tick
+            | Role::CheckBox
             | Role::Switch
-            | Role::Choice
+            | Role::RadioButton
             | Role::Tab
             | Role::Row
             | Role::Fold
-            | Role::Select
+            | Role::ComboBox
             | Role::MenuItem
-            | Role::MenuChoice
+            | Role::MenuItemRadio
             | Role::Submenu
-            | Role::Heading
+            | Role::ColumnHeader
             | Role::Link
             | Role::TreeItem
     );
-    kinds || said.role == Role::TableRow && said.on.is_some()
+    kinds || node.role == Role::TableRow && node.on.is_some()
 }
 
 /// An element's AT-SPI state set: a bit per state. `active` says its window has keyboard focus.
-fn states_of(said: &Said, active: bool) -> u64 {
+fn states_of(node: &AccessNode, active: bool) -> u64 {
     let bit = |state: u32, set: bool| (set as u64) << state;
-    let on = said.on == Some(true);
+    let on = node.on == Some(true);
     // Scrolled out of view, it is not showing but still visible, as AT-SPI has it.
-    let common = bit(VISIBLE, true) | bit(SHOWING, said.shown) | bit(ENABLED, said.usable) | bit(SENSITIVE, said.usable);
-    let keyboard = bit(FOCUSABLE, said.takes_keyboard()) | bit(FOCUSED, said.focused && active);
-    let own = match said.role {
-        Role::Tick | Role::Switch | Role::Choice | Role::MenuItem | Role::MenuChoice => bit(CHECKABLE, said.on.is_some()) | bit(CHECKED, on),
+    let common = bit(VISIBLE, true) | bit(SHOWING, node.visible) | bit(ENABLED, node.enabled) | bit(SENSITIVE, node.enabled);
+    let keyboard = bit(FOCUSABLE, node.takes_keyboard()) | bit(FOCUSED, node.focused && active);
+    let own = match node.role {
+        Role::CheckBox | Role::Switch | Role::RadioButton | Role::MenuItem | Role::MenuItemRadio => bit(CHECKABLE, node.on.is_some()) | bit(CHECKED, on),
         Role::Tab | Role::Row => bit(SELECTABLE, true) | bit(SELECTED, on),
-        Role::TableRow => bit(SELECTABLE, said.on.is_some()) | bit(SELECTED, on),
+        Role::TableRow => bit(SELECTABLE, node.on.is_some()) | bit(SELECTED, on),
         // A tree item is selectable and expandable, each where it can be.
         Role::TreeItem => {
-            let opens = said.open.is_some();
-            bit(SELECTABLE, said.on.is_some()) | bit(SELECTED, on) | bit(EXPANDABLE, opens) | bit(EXPANDED, said.open == Some(true)) | bit(COLLAPSED, said.open == Some(false))
+            let opens = node.expanded.is_some();
+            bit(SELECTABLE, node.on.is_some()) | bit(SELECTED, on) | bit(EXPANDABLE, opens) | bit(EXPANDED, node.expanded == Some(true)) | bit(COLLAPSED, node.expanded == Some(false))
         }
         Role::Tree => bit(MULTISELECTABLE, on),
-        Role::Fold | Role::Select | Role::Submenu => bit(EXPANDABLE, true) | bit(EXPANDED, on) | bit(COLLAPSED, !on),
+        Role::Fold | Role::ComboBox | Role::Submenu => bit(EXPANDABLE, true) | bit(EXPANDED, on) | bit(COLLAPSED, !on),
         Role::Button => bit(PRESSED, on),
         // A text box with a suggestion list expands as the list opens.
-        Role::TextBox | Role::Secret => bit(EDITABLE_NOW, said.usable) | bit(EXPANDABLE, said.on.is_some()) | bit(EXPANDED, on) | bit(COLLAPSED, said.on == Some(false)),
+        Role::TextBox | Role::PasswordBox => bit(EDITABLE_NOW, node.enabled) | bit(EXPANDABLE, node.on.is_some()) | bit(EXPANDED, on) | bit(COLLAPSED, node.on == Some(false)),
         Role::Progress => bit(READ_ONLY, true),
         Role::Dialog => bit(MODAL, true),
         _ => 0,
@@ -807,10 +808,10 @@ struct Frame {
     active: bool,
     /// Reported this run. (One not reported was closed.)
     seen: bool,
-    /// Its elements as of the last run, and which list they were (`Ui::told_turn`); and each
-    /// element's path number, kept while it exists.
-    said: Vec<Said>,
-    turn: u64,
+    /// Its elements as of the last run, and which list they were (`Ui::access_version`); and
+    /// each element's path number, kept while it exists.
+    nodes: Vec<AccessNode>,
+    version: u64,
     numbers: Vec<u32>,
 }
 
@@ -847,7 +848,7 @@ fn new_number(last: &mut u32) -> u32 {
 
 /// The events of what changed about an element between two runs. (Focus is reported after
 /// everything else: see `differ`.)
-fn changes(of: &str, [was, now]: [&Said; 2], [was_on_it, on_it]: [bool; 2], news: &mut Vec<News>) {
+fn changes(of: &str, [was, now]: [&AccessNode; 2], [was_on_it, on_it]: [bool; 2], news: &mut Vec<News>) {
     let mut tell = |kind, numbers, value| news.push(News { of: of.into(), kind, numbers, value });
     if was.name != now.name {
         tell("Object:PropertyChange:accessible-name", [0; 2], Any::Text(now.name.clone()));
@@ -856,32 +857,32 @@ fn changes(of: &str, [was, now]: [&Said; 2], [was_on_it, on_it]: [bool; 2], news
         tell("Object:PropertyChange:accessible-role", [0; 2], Any::Number(role_of(now).0 as i32));
     }
     let state = match now.role {
-        Role::Tick | Role::Switch | Role::Choice | Role::MenuItem | Role::MenuChoice => "Object:StateChanged:checked",
+        Role::CheckBox | Role::Switch | Role::RadioButton | Role::MenuItem | Role::MenuItemRadio => "Object:StateChanged:checked",
         Role::Tab | Role::Row | Role::TableRow | Role::TreeItem => "Object:StateChanged:selected",
-        Role::Fold | Role::Select | Role::Submenu | Role::TextBox => "Object:StateChanged:expanded",
+        Role::Fold | Role::ComboBox | Role::Submenu | Role::TextBox => "Object:StateChanged:expanded",
         _ => "Object:StateChanged:pressed",
     };
     if was.on != now.on {
         tell(state, [(now.on == Some(true)) as i32, 0], Any::Number(0));
     }
     // A tree item's expanded state, besides its selection.
-    if was.open != now.open {
-        tell("Object:StateChanged:expanded", [(now.open == Some(true)) as i32, 0], Any::Number(0));
+    if was.expanded != now.expanded {
+        tell("Object:StateChanged:expanded", [(now.expanded == Some(true)) as i32, 0], Any::Number(0));
     }
     // Its sort annotation changed: the rows are sorted differently by its column.
     if was.sorted != now.sorted {
         tell("Object:AttributesChanged:", [0; 2], Any::Number(0));
     }
-    if was.usable != now.usable {
-        tell("Object:StateChanged:enabled", [now.usable as i32, 0], Any::Number(0));
-        tell("Object:StateChanged:sensitive", [now.usable as i32, 0], Any::Number(0));
+    if was.enabled != now.enabled {
+        tell("Object:StateChanged:enabled", [now.enabled as i32, 0], Any::Number(0));
+        tell("Object:StateChanged:sensitive", [now.enabled as i32, 0], Any::Number(0));
     }
     // It scrolled into or out of view: screen readers track what is showing.
-    if was.shown != now.shown {
-        tell("Object:StateChanged:showing", [now.shown as i32, 0], Any::Number(0));
+    if was.visible != now.visible {
+        tell("Object:StateChanged:showing", [now.visible as i32, 0], Any::Number(0));
     }
-    if was.amount != now.amount {
-        tell("Object:PropertyChange:accessible-value", [0; 2], Any::Real(now.amount.map_or(0.0, |amount| amount[0] as f64)));
+    if was.value_range != now.value_range {
+        tell("Object:PropertyChange:accessible-value", [0; 2], Any::Real(now.value_range.map_or(0.0, |amount| amount[0] as f64)));
     }
     if was.value != now.value {
         let (from, gone, come) = retyped(&was.value, &now.value);
@@ -892,11 +893,11 @@ fn changes(of: &str, [was, now]: [&Said; 2], [was_on_it, on_it]: [bool; 2], news
         }
     }
     // A text box's caret moved, or its selection is another range.
-    let (cursor, picked) = (|said: &Said| said.caret.map(|caret| caret[1]), |said: &Said| said.caret.filter(|[from, to]| from != to));
+    let (cursor, selected) = (|node: &AccessNode| node.caret.map(|caret| caret[1]), |node: &AccessNode| node.caret.filter(|[from, to]| from != to));
     if let Some(at) = cursor(now).filter(|at| cursor(was) != Some(*at)) {
         tell("Object:TextCaretMoved:", [at as i32, 0], Any::Number(0));
     }
-    if picked(was) != picked(now) {
+    if selected(was) != selected(now) {
         tell("Object:TextSelectionChanged:", [0; 2], Any::Number(0));
     }
     if was_on_it && !on_it {
@@ -904,45 +905,51 @@ fn changes(of: &str, [was, now]: [&Said; 2], [was_on_it, on_it]: [bool; 2], news
     }
 }
 
-/// What changed in a window between runs: its elements' path numbers now, and the events for a
-/// screen reader. An element is the same while it has the same id in the same group; anything
-/// else was removed or added.
-fn differ(frame: &Frame, now: &[Said], active: bool, last: &mut u32) -> (Vec<u32>, Vec<News>) {
-    let (was, mut news) = (&frame.said, Vec::new());
-    let group = |list: &[Said], at: usize| list[at].within.and_then(|group| list.get(group)).map_or(0, |group| group.id);
-    // Which old element each is; and which old ones remain. (Most are where they were in the
-    // list or a little further: each is searched from where the previous one was found.)
+/// Which old node each new one is, and which old ones remain: a node is the same while it has
+/// the same id in the same group. (Most are where they were in the list or a little further:
+/// each is searched from where the previous one was found.)
+fn matched(was: &[AccessNode], now: &[AccessNode]) -> (Vec<Option<usize>>, Vec<bool>) {
+    let group = |list: &[AccessNode], at: usize| list[at].parent.and_then(|group| list.get(group)).map_or(0, |group| group.id);
     let (mut same, mut stays, mut near) = (Vec::with_capacity(now.len()), vec![false; was.len()], 0);
-    for (at, said) in now.iter().enumerate() {
-        let in_new = said.within.is_some_and(|group| same.get(group).is_none_or(|same: &Option<usize>| same.is_none()));
-        let found = (near..was.len()).chain(0..near).find(|old| was[*old].id == said.id);
+    for (at, node) in now.iter().enumerate() {
+        let in_new = node.parent.is_some_and(|group| same.get(group).is_none_or(|same: &Option<usize>| same.is_none()));
+        let found = (near..was.len()).chain(0..near).find(|old| was[*old].id == node.id);
         let old = found.filter(|old| !in_new && group(was, *old) == group(now, at));
         near = found.map_or(near, |old| old + 1);
         old.into_iter().for_each(|old| stays[old] = true);
         same.push(old);
     }
+    (same, stays)
+}
+
+/// What changed in a window between runs: its elements' path numbers now, and the events for a
+/// screen reader. An element is the same while it has the same id in the same group; anything
+/// else was removed or added.
+fn differ(frame: &Frame, now: &[AccessNode], active: bool, last: &mut u32) -> (Vec<u32>, Vec<News>) {
+    let (was, mut news) = (&frame.nodes, Vec::new());
+    let (same, stays) = matched(was, now);
     let mut number = |old: &Option<usize>| old.map_or_else(|| new_number(last), |old| frame.numbers[old]);
     let numbers: Vec<u32> = same.iter().map(&mut number).collect();
     let path = |numbers: &[u32], at: Option<usize>| path_of(frame.number, at.map(|at| numbers[at]));
     // Of what was removed or added, a screen reader hears the outermost: it queries what is
     // inside.
-    for (at, said) in was.iter().enumerate() {
-        if !stays[at] && said.within.is_none_or(|group| stays[group]) {
-            news.push(News { of: path(&frame.numbers, said.within), kind: "Object:ChildrenChanged:remove", numbers: [0; 2], value: Any::Object(path(&frame.numbers, Some(at))) });
+    for (at, node) in was.iter().enumerate() {
+        if !stays[at] && node.parent.is_none_or(|group| stays[group]) {
+            news.push(News { of: path(&frame.numbers, node.parent), kind: "Object:ChildrenChanged:remove", numbers: [0; 2], value: Any::Object(path(&frame.numbers, Some(at))) });
         }
     }
-    for (at, said) in now.iter().enumerate() {
-        if same[at].is_none() && said.within.is_none_or(|group| same[group].is_some()) {
-            let place = now[..at].iter().filter(|other| other.within == said.within).count() as i32;
-            news.push(News { of: path(&numbers, said.within), kind: "Object:ChildrenChanged:add", numbers: [place, 0], value: Any::Object(path(&numbers, Some(at))) });
+    for (at, node) in now.iter().enumerate() {
+        if same[at].is_none() && node.parent.is_none_or(|group| same[group].is_some()) {
+            let place = now[..at].iter().filter(|other| other.parent == node.parent).count() as i32;
+            news.push(News { of: path(&numbers, node.parent), kind: "Object:ChildrenChanged:add", numbers: [place, 0], value: Any::Object(path(&numbers, Some(at))) });
         }
     }
     // Then changed states; and last, the focus.
     let mut onto = None;
-    for (at, said) in now.iter().enumerate() {
-        let (of, old, on_it) = (path(&numbers, Some(at)), same[at].map(|old| &was[old]), said.focused && active);
+    for (at, node) in now.iter().enumerate() {
+        let (of, old, on_it) = (path(&numbers, Some(at)), same[at].map(|old| &was[old]), node.focused && active);
         let was_on_it = old.is_some_and(|old| old.focused && frame.active);
-        old.into_iter().for_each(|old| changes(&of, [old, said], [was_on_it, on_it], &mut news));
+        old.into_iter().for_each(|old| changes(&of, [old, node], [was_on_it, on_it], &mut news));
         onto = onto.or((on_it && !was_on_it).then_some(of));
     }
     news.extend(onto.map(|of| News { of, kind: "Object:StateChanged:focused", numbers: [1, 0], value: Any::Number(0) }));
@@ -989,7 +996,7 @@ struct Reach {
 
 /// The desktop's screen readers, as far as this program deals with them.
 pub(crate) struct Readers {
-    /// The accessibility bus, while someone listens. (Whether anyone does is said on the
+    /// The accessibility bus, while someone listens. (Whether anyone does is node on the
     /// session bus, which the windows own.)
     desk: Option<Bus>,
     /// Pending call serials: on the session bus, whether anyone listens and the accessibility
@@ -1003,7 +1010,7 @@ pub(crate) struct Readers {
     /// Registered with the registry.
     embedded: bool,
     /// Event listeners: a bus name and an event type. Unknown until the registry says.
-    hearers: Option<Vec<[String; 2]>>,
+    listeners: Option<Vec<[String; 2]>>,
     /// The id the registry assigned the application; it only wants it kept.
     id: i32,
     frames: Vec<Frame>,
@@ -1016,7 +1023,7 @@ impl Readers {
     /// Starts asking, over the session bus, whether anyone listens, and subscribes to changes.
     /// Nothing waits: the reply comes when it comes, and without a session bus, never.
     pub(crate) fn new(session: Option<&mut Bus>) -> Self {
-        let mut readers = Readers { desk: None, asked: [0; 4], name: String::new(), desktop: Default::default(), embedded: false, hearers: None, id: 0, frames: Vec::new(), last: 0, reach: None };
+        let mut readers = Readers { desk: None, asked: [0; 4], name: String::new(), desktop: Default::default(), embedded: false, listeners: None, id: 0, frames: Vec::new(), last: 0, reach: None };
         let Some(bus) = session else { return readers };
         bus.ask("AddMatch", &format!("type='signal',sender='{LAUNCHER}',path='{LAUNCHER_PATH}',interface='{PROPERTIES}',member='PropertiesChanged'"));
         bus.ask("AddMatch", &format!("type='signal',sender='{BUS}',interface='{BUS}',member='NameOwnerChanged',arg0='{LAUNCHER}'"));
@@ -1062,7 +1069,7 @@ impl Readers {
             self.desk = None;
         }
         if self.desk.is_none() {
-            (self.name, self.embedded, self.hearers, self.frames, self.reach) = (String::new(), false, None, Vec::new(), None);
+            (self.name, self.embedded, self.listeners, self.frames, self.reach) = (String::new(), false, None, Vec::new(), None);
             self.asked[2..].fill(0);
         }
     }
@@ -1077,7 +1084,7 @@ impl Readers {
             // Only liveness is asked of this program here.
             CALL => session.answer(message, peer(message.member, &mut values).filter(|_| message.interface == PEER).ok_or(UNKNOWN), &values),
             NEWS if ours => self.ask_whether(session),
-            ANSWER | FAILED if message.answers == self.asked[0] => self.heard_whether(session, message.kind == ANSWER && someone_listens(body) == Some(true)),
+            ANSWER | FAILED if message.answers == self.asked[0] => self.listening_changed(session, message.kind == ANSWER && someone_listens(body) == Some(true)),
             ANSWER if message.answers == self.asked[1] && self.desk.is_none() => self.join(body.text().unwrap_or_default()),
             _ => {}
         }
@@ -1085,9 +1092,9 @@ impl Readers {
 
     /// Someone listens, or nobody does any more: the accessibility bus is found (the desktop
     /// may give its address directly, else the service is asked), or left.
-    fn heard_whether(&mut self, session: &mut Bus, someone: bool) {
-        let said = std::env::var("AT_SPI_BUS_ADDRESS").ok().filter(|address| !address.is_empty());
-        match (someone, said) {
+    fn listening_changed(&mut self, session: &mut Bus, someone: bool) {
+        let given = std::env::var("AT_SPI_BUS_ADDRESS").ok().filter(|address| !address.is_empty());
+        match (someone, given) {
             (false, _) => self.desk = None,
             (true, Some(address)) if self.desk.is_none() => self.join(&address),
             (true, None) if self.desk.is_none() => self.asked[1] = session.call(LAUNCHER, LAUNCHER_PATH, LAUNCHER, "GetAddress", "", &Pack::default()),
@@ -1118,7 +1125,7 @@ impl Readers {
             // `Hello` was the first call: its reply is this program's unique name.
             ANSWER if message.answers == 1 => self.name = body.text().unwrap_or_default().into(),
             ANSWER if message.answers == self.asked[2] => self.desktop = body.take(8, 0).and(body.text()).zip(body.text()).map(|(name, path)| (name.into(), path.into())).unwrap_or_default(),
-            ANSWER if message.answers == self.asked[3] => self.hearers = Some(hearers(body).unwrap_or_default()),
+            ANSWER if message.answers == self.asked[3] => self.listeners = Some(listeners_in(body).unwrap_or_default()),
             _ => {}
         }
     }
@@ -1132,10 +1139,10 @@ impl Readers {
         let (Some(first), Some(second)) = (body.text(), body.text()) else { return };
         // Until the registry has listed the listeners, its listener signals are ignored: they
         // are reflected in the list when it arrives.
-        match (news.member, &mut self.hearers) {
-            ("EventListenerRegistered", Some(hearers)) => hearers.push([first.into(), plainly(second)]),
-            ("EventListenerDeregistered", Some(hearers)) => hearers.retain(|[name, kind]| name != first || !covers(&plainly(second), kind)),
-            ("NameOwnerChanged", _) if first == REGISTRY && body.text() == Some("") => (self.embedded, self.hearers) = (false, None),
+        match (news.member, &mut self.listeners) {
+            ("EventListenerRegistered", Some(listeners)) => listeners.push([first.into(), plainly(second)]),
+            ("EventListenerDeregistered", Some(listeners)) => listeners.retain(|[name, kind]| name != first || !covers(&plainly(second), kind)),
+            ("NameOwnerChanged", _) if first == REGISTRY && body.text() == Some("") => (self.embedded, self.listeners) = (false, None),
             ("NameOwnerChanged", _) if first == REGISTRY && !self.embedded => self.embed(),
             _ => {}
         }
@@ -1146,15 +1153,15 @@ impl Readers {
         let (Some(bus), mut me) = (self.desk.as_mut().filter(|_| !self.name.is_empty()), Pack::default()) else { return };
         self.asked[2] = bus.call(REGISTRY, ROOT, "org.a11y.atspi.Socket", "Embed", "(so)", me.object(&self.name, ROOT));
         self.asked[3] = bus.call(REGISTRY, REGISTRY_PATH, REGISTRY, "GetRegisteredEvents", "", &Pack::default());
-        (self.embedded, self.hearers) = (true, None);
+        (self.embedded, self.listeners) = (true, None);
     }
 
     /// Whether an event type is sent: what someone subscribed to, and the always-sent ones.
     /// While nobody subscribed to anything, nothing is; until the registry has listed
     /// listeners, everything is.
     fn wanted(&self, kind: &str) -> bool {
-        let (Some(hearers), kind) = (&self.hearers, plainly(kind)) else { return true };
-        !hearers.is_empty() && (ALWAYS.iter().any(|always| kind.starts_with(always)) || hearers.iter().any(|[_, asked]| covers(asked, &kind)))
+        let (Some(listeners), kind) = (&self.listeners, plainly(kind)) else { return true };
+        !listeners.is_empty() && (ALWAYS.iter().any(|always| kind.starts_with(always)) || listeners.iter().any(|[_, asked]| covers(asked, &kind)))
     }
 
     /// Sends an event, if anyone wants it.
@@ -1191,14 +1198,14 @@ impl Readers {
             news.push(News { of, kind: "Object:StateChanged:active", numbers: [active as i32, 0], value: Any::Number(0) });
         }
         // (A list of the same turn is not even compared.)
-        let turn = ui.told_turn();
-        let kept = std::mem::replace(&mut frame.turn, turn) == turn;
-        if turned || !kept && frame.said != ui.told() {
-            let (numbers, changed) = differ(frame, ui.told(), active, &mut self.last);
+        let version = ui.access_version();
+        let kept = std::mem::replace(&mut frame.version, version) == version;
+        if turned || !kept && frame.nodes != ui.access_nodes() {
+            let (numbers, changed) = differ(frame, ui.access_nodes(), active, &mut self.last);
             news.extend(changed);
             frame.numbers = numbers;
-            frame.said.clear();
-            frame.said.extend_from_slice(ui.told());
+            frame.nodes.clear();
+            frame.nodes.extend_from_slice(ui.access_nodes());
         }
         (frame.seen, frame.size, frame.scale, frame.active) = (true, size, scale, active);
         if renamed {
@@ -1215,7 +1222,7 @@ impl Readers {
     /// A window not reported before: a child of the application from now on.
     fn opened(&mut self, known: Id, title: &str) -> usize {
         let (number, at) = (new_number(&mut self.last), self.frames.len());
-        self.frames.push(Frame { known, number, title: title.into(), size: [0; 2], scale: 1.0, active: false, seen: true, said: Vec::new(), turn: 0, numbers: Vec::new() });
+        self.frames.push(Frame { known, number, title: title.into(), size: [0; 2], scale: 1.0, active: false, seen: true, nodes: Vec::new(), version: 0, numbers: Vec::new() });
         let of = path_of(number, None);
         self.tell(News { of: ROOT.into(), kind: "Object:ChildrenChanged:add", numbers: [at as i32, 0], value: Any::Object(of.clone()) });
         self.tell(News { of, kind: "Window:Create:", numbers: [0; 2], value: Any::Text(title.into()) });
@@ -1259,7 +1266,7 @@ impl Readers {
     /// overshoots further than it was is undone. Returns whether it stepped: the UI runs again.
     fn step(&mut self, ui: &mut Ui, window: Id) -> bool {
         let Some(reach) = self.reach.as_mut().filter(|reach| reach.window == window) else { return false };
-        let stands = ui.told().iter().find(|said| said.id == reach.thing).and_then(|said| said.amount);
+        let stands = ui.access_nodes().iter().find(|node| node.id == reach.thing).and_then(|node| node.value_range);
         let off = stands.map_or(0.0, |stands| reach.to - stands[0]);
         // A step that changed nothing hit the slider's end; a slider at its target, or gone,
         // stops.
@@ -1299,9 +1306,9 @@ impl Readers {
     }
 
     /// An object's element, if it is one; and the window an object is, or is in.
-    fn said(&self, which: Which) -> Option<&Said> {
+    fn node(&self, which: Which) -> Option<&AccessNode> {
         match which {
-            Which::Thing(at, thing) => self.frames[at].said.get(thing),
+            Which::Thing(at, thing) => self.frames[at].nodes.get(thing),
             _ => None,
         }
     }
@@ -1315,14 +1322,14 @@ impl Readers {
     /// An object's parent. (The application's is the desktop, not its own.)
     fn parent(&self, which: Which) -> Which {
         match which {
-            Which::Thing(at, thing) => self.frames[at].said[thing].within.map_or(Which::Window(at), |group| Which::Thing(at, group)),
+            Which::Thing(at, thing) => self.frames[at].nodes[thing].parent.map_or(Which::Window(at), |group| Which::Thing(at, group)),
             _ => Which::Program,
         }
     }
 
     /// An object's children, in order.
     fn children(&self, which: Which) -> Vec<Which> {
-        let things = |at: usize, group: Option<usize>| self.frames[at].said.iter().enumerate().filter(move |(_, said)| said.within == group).map(move |(thing, _)| Which::Thing(at, thing));
+        let things = |at: usize, group: Option<usize>| self.frames[at].nodes.iter().enumerate().filter(move |(_, node)| node.parent == group).map(move |(thing, _)| Which::Thing(at, thing));
         match which {
             Which::Program => (0..self.frames.len()).map(Which::Window).collect(),
             Which::Window(at) => things(at, None).collect(),
@@ -1333,10 +1340,10 @@ impl Readers {
     /// An object's descendants at any depth, as indices in its window's list. (A group precedes
     /// its contents, with nothing else between.)
     fn below(&self, which: Which) -> std::ops::Range<usize> {
-        let Which::Thing(at, group) = which else { return 0..self.frame(which).map_or(0, |frame| frame.said.len()) };
-        let said = &self.frames[at].said;
-        let after = (group + 1..said.len()).find(|thing| said[*thing].within.is_none_or(|within| within < group));
-        group + 1..after.unwrap_or(said.len())
+        let Which::Thing(at, group) = which else { return 0..self.frame(which).map_or(0, |frame| frame.nodes.len()) };
+        let nodes = &self.frames[at].nodes;
+        let after = (group + 1..nodes.len()).find(|thing| nodes[*thing].parent.is_none_or(|within| within < group));
+        group + 1..after.unwrap_or(nodes.len())
     }
 
     /// An object's AT-SPI role and state.
@@ -1344,7 +1351,7 @@ impl Readers {
         match which {
             Which::Program => (75, "application"),
             Which::Window(_) => (23, "frame"),
-            Which::Thing(at, thing) => role_of(&self.frames[at].said[thing]),
+            Which::Thing(at, thing) => role_of(&self.frames[at].nodes[thing]),
         }
     }
 
@@ -1352,16 +1359,16 @@ impl Readers {
         match which {
             Which::Program => 0,
             Which::Window(at) => (self.frames[at].active as u64) << ACTIVE | 1 << ENABLED | 1 << SENSITIVE | 1 << SHOWING | 1 << VISIBLE | 1 << RESIZABLE,
-            Which::Thing(at, thing) => states_of(&self.frames[at].said[thing], self.frames[at].active),
+            Which::Thing(at, thing) => states_of(&self.frames[at].nodes[thing], self.frames[at].active),
         }
     }
 
     /// The interfaces an object implements.
     fn interfaces(&self, which: Which) -> Vec<&'static str> {
-        let Some(said) = self.said(which) else { return vec![ACCESSIBLE, if which == Which::Program { APPLICATION } else { COMPONENT }] };
-        let (types, moves) = (matches!(said.role, Role::TextBox | Role::Secret), said.amount.is_some());
+        let Some(node) = self.node(which) else { return vec![ACCESSIBLE, if which == Which::Program { APPLICATION } else { COMPONENT }] };
+        let (types, moves) = (matches!(node.role, Role::TextBox | Role::PasswordBox), node.value_range.is_some());
         let also =
-            [(pressed(said), ACTION), (moves, VALUE), (types, TEXT), (types, EDITABLE), (said.role == Role::Table, TABLE), (said.role == Role::Cell, TABLE_CELL), (said.role == Role::Tree, SELECTION)];
+            [(pressed(node), ACTION), (moves, VALUE), (types, TEXT), (types, EDITABLE), (node.role == Role::Table, TABLE), (node.role == Role::Cell, TABLE_CELL), (node.role == Role::Tree, SELECTION)];
         [ACCESSIBLE, COMPONENT].into_iter().chain(also.into_iter().filter_map(|(has, name)| has.then_some(name))).collect()
     }
 
@@ -1371,7 +1378,7 @@ impl Readers {
         match which {
             Which::Program => file().unwrap_or_default(),
             Which::Window(at) => self.frames[at].title.clone(),
-            Which::Thing(at, thing) => self.frames[at].said[thing].name.clone(),
+            Which::Thing(at, thing) => self.frames[at].nodes[thing].name.clone(),
         }
     }
 
@@ -1380,7 +1387,7 @@ impl Readers {
     fn extent(&self, which: Which) -> Option<[i32; 4]> {
         let frame = self.frame(which)?;
         let Which::Thing(_, thing) = which else { return Some([0, 0, frame.size[0], frame.size[1]]) };
-        let seen = told::view(&frame.said, thing);
+        let seen = accessibility::view(&frame.nodes, thing);
         Some([seen.x, seen.y, seen.w, seen.h].map(|units| (units * frame.scale).round() as i32))
     }
 
@@ -1457,8 +1464,8 @@ impl Readers {
         if !self.interfaces(which).contains(&interface) {
             return None;
         }
-        let (said, within) = (self.said(which), self.parent(which));
-        let amount = said.and_then(|said| said.amount).unwrap_or_default().map(f64::from);
+        let (node, within) = (self.node(which), self.parent(which));
+        let amount = node.and_then(|node| node.value_range).unwrap_or_default().map(f64::from);
         match (interface, name) {
             (ACCESSIBLE, "Name") => values.kinds("s").text(&self.called(which)),
             (ACCESSIBLE, "Description" | "HelpText") | (VALUE, "Text") => values.kinds("s").text(""),
@@ -1466,32 +1473,32 @@ impl Readers {
             (ACCESSIBLE, "Parent") => values.kinds("(so)").object(&self.name, &self.path(within)),
             (ACCESSIBLE, "ChildCount") => values.kinds("i").i32(self.children(which).len() as i32),
             (ACCESSIBLE, "Locale") => values.kinds("s").text(&locale("MESSAGES")),
-            (ACCESSIBLE, "AccessibleId") => values.kinds("s").text(&said.map_or(String::new(), |said| format!("{:016x}", said.id))),
+            (ACCESSIBLE, "AccessibleId") => values.kinds("s").text(&node.map_or(String::new(), |node| format!("{:016x}", node.id))),
             (APPLICATION, "ToolkitName") => values.kinds("s").text("taut"),
             (APPLICATION, "Version" | "ToolkitVersion") => values.kinds("s").text(env!("CARGO_PKG_VERSION")),
             (APPLICATION, "AtspiVersion") => values.kinds("s").text("2.1"),
             (APPLICATION, "Id") => values.kinds("i").i32(self.id),
-            (ACTION, "NActions") => values.kinds("i").i32(said.map_or(1, |said| ways_of(said).len()) as i32),
+            (ACTION, "NActions") => values.kinds("i").i32(node.map_or(1, |node| ways_of(node).len()) as i32),
             (VALUE, "CurrentValue") => values.kinds("d").f64(amount[0]),
             (VALUE, "MinimumValue") => values.kinds("d").f64(amount[1]),
             (VALUE, "MaximumValue") => values.kinds("d").f64(amount[2]),
             // The step size: zero for values without steps.
-            (VALUE, "MinimumIncrement") => values.kinds("d").f64(said?.step as f64),
-            (TEXT, "CharacterCount") => values.kinds("i").i32(said?.value.chars().count() as i32),
+            (VALUE, "MinimumIncrement") => values.kinds("d").f64(node?.step as f64),
+            (TEXT, "CharacterCount") => values.kinds("i").i32(node?.value.chars().count() as i32),
             // The caret position in the text, while focused: else -1.
-            (TEXT, "CaretOffset") => values.kinds("i").i32(said?.caret.map_or(-1, |caret| caret[1] as i32)),
+            (TEXT, "CaretOffset") => values.kinds("i").i32(node?.caret.map_or(-1, |caret| caret[1] as i32)),
             // A table: its total rows and visible columns, its selected row count; no caption,
             // no summary, no selected column.
-            (TABLE, "NRows" | "NColumns") => values.kinds("i").i32(said?.grid.unwrap_or_default()[(name == "NColumns") as usize] as i32),
-            (TABLE, "NSelectedRows") => values.kinds("i").i32(self.picked_rows(which).len() as i32),
+            (TABLE, "NRows" | "NColumns") => values.kinds("i").i32(node?.grid.unwrap_or_default()[(name == "NColumns") as usize] as i32),
+            (TABLE, "NSelectedRows") => values.kinds("i").i32(self.selected_rows(which).len() as i32),
             (TABLE, "NSelectedColumns") => values.kinds("i").i32(0),
             (TABLE, "Caption" | "Summary") => values.kinds("(so)").object(&self.name, NOTHING),
             // A cell: its row and column, spanning one each, and its table.
-            (TABLE_CELL, "Position") => values.kinds("(ii)").pad(8).i32s(&said?.grid.unwrap_or_default().map(|number| number as i32)),
+            (TABLE_CELL, "Position") => values.kinds("(ii)").pad(8).i32s(&node?.grid.unwrap_or_default().map(|number| number as i32)),
             (TABLE_CELL, "RowSpan" | "ColumnSpan") => values.kinds("i").i32(1),
             (TABLE_CELL, "Table") => values.kinds("(so)").object(&self.name, &self.table_of(which).map_or(NOTHING.into(), |table| self.path(table))),
             // A tree: how many of its reported items are selected.
-            (SELECTION, "NSelectedChildren") => values.kinds("i").i32(self.picked_children(which).len() as i32),
+            (SELECTION, "NSelectedChildren") => values.kinds("i").i32(self.selected_children(which).len() as i32),
             _ => return None,
         };
         Some(())
@@ -1500,13 +1507,13 @@ impl Readers {
     /// The table a cell is in.
     fn table_of(&self, which: Which) -> Option<Which> {
         let (Which::Thing(at, thing), Some(frame)) = (which, self.frame(which)) else { return None };
-        told::table_of(&frame.said, thing).map(|table| Which::Thing(at, table))
+        accessibility::table_of(&frame.nodes, thing).map(|table| Which::Thing(at, table))
     }
     /// A table's selected rows among those reported, each by its index among all its rows, from
     /// 0.
-    fn picked_rows(&self, which: Which) -> Vec<i32> {
+    fn selected_rows(&self, which: Which) -> Vec<i32> {
         let (Which::Thing(_, table), Some(frame)) = (which, self.frame(which)) else { return Vec::new() };
-        told::rows_of(&frame.said, table).filter(|(row, _)| frame.said[*row].on == Some(true)).map(|(_, number)| number as i32).collect()
+        accessibility::rows_of(&frame.nodes, table).filter(|(row, _)| frame.nodes[*row].on == Some(true)).map(|(_, number)| number as i32).collect()
     }
 
     /// The table interface: the cell at a row and column, cell indices, a column's header, the
@@ -1515,13 +1522,13 @@ impl Readers {
     /// or deselected through it.
     fn table(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack) -> Option<&'static str> {
         let (Which::Thing(at, table), frame) = (which, self.frame(which)?) else { return None };
-        let [rows, columns] = self.said(which).filter(|said| said.role == Role::Table)?.grid.unwrap_or_default().map(|number| number as i32);
+        let [rows, columns] = self.node(which).filter(|node| node.role == Role::Table)?.grid.unwrap_or_default().map(|number| number as i32);
         let object = |thing: Option<usize>| thing.map_or(NOTHING.into(), |thing| self.path(Which::Thing(at, thing)));
         // A cell by row and column, and by index (counting along rows).
         let in_table = |row: i32, column: i32| row >= 0 && column >= 0 && row < rows && column < columns;
-        let cell = |row: i32, column: i32| in_table(row, column).then(|| told::cell_at(&frame.said, table, [row as u32, column as u32])).flatten();
-        let (picked, place) = (self.picked_rows(which), |index: i32| [index.div_euclid(columns.max(1)), index.rem_euclid(columns.max(1))]);
-        let heading = |column: i32| (column >= 0).then(|| told::heading_at(&frame.said, table, column as u32)).flatten();
+        let cell = |row: i32, column: i32| in_table(row, column).then(|| accessibility::cell_at(&frame.nodes, table, [row as u32, column as u32])).flatten();
+        let (selected, place) = (self.selected_rows(which), |index: i32| [index.div_euclid(columns.max(1)), index.rem_euclid(columns.max(1))]);
+        let heading = |column: i32| (column >= 0).then(|| accessibility::heading_at(&frame.nodes, table, column as u32)).flatten();
         let answer = match member {
             "GetAccessibleAt" => ("(so)", values.object(&self.name, &object(cell(asked.i32()?, asked.i32()?)))),
             "GetIndexAt" => ("i", values.i32(Some([asked.i32()?, asked.i32()?]).filter(|[row, column]| in_table(*row, *column)).map_or(-1, |[row, column]| row * columns + column))),
@@ -1529,20 +1536,20 @@ impl Readers {
                 ("i", values.i32(Some(asked.i32()?).filter(|index| (0..rows * columns).contains(index)).map_or(-1, |index| place(index)[(member == "GetColumnAtIndex") as usize])))
             }
             "GetRowDescription" => ("s", values.text("")),
-            "GetColumnDescription" => ("s", values.text(&heading(asked.i32()?).map_or(String::new(), |heading| frame.said[heading].name.clone()))),
+            "GetColumnDescription" => ("s", values.text(&heading(asked.i32()?).map_or(String::new(), |heading| frame.nodes[heading].name.clone()))),
             "GetRowExtentAt" | "GetColumnExtentAt" => ("i", values.i32(in_table(asked.i32()?, asked.i32()?) as i32)),
             "GetRowHeader" => ("(so)", values.object(&self.name, NOTHING)),
             "GetColumnHeader" => ("(so)", values.object(&self.name, &object(heading(asked.i32()?)))),
-            "GetSelectedRows" => ("ai", values.open(4).i32s(&picked).close()),
+            "GetSelectedRows" => ("ai", values.open(4).i32s(&selected).close()),
             "GetSelectedColumns" => ("ai", values.open(4).close()),
-            "IsRowSelected" => ("b", values.u32(picked.contains(&asked.i32()?) as u32)),
+            "IsRowSelected" => ("b", values.u32(selected.contains(&asked.i32()?) as u32)),
             "IsColumnSelected" => ("b", values.u32(0)),
-            "IsSelected" => ("b", values.u32(Some((asked.i32()?, asked.i32()?)).is_some_and(|(row, column)| in_table(row, column) && picked.contains(&row)) as u32)),
+            "IsSelected" => ("b", values.u32(Some((asked.i32()?, asked.i32()?)).is_some_and(|(row, column)| in_table(row, column) && selected.contains(&row)) as u32)),
             "AddRowSelection" | "AddColumnSelection" | "RemoveRowSelection" | "RemoveColumnSelection" => ("b", values.u32(0)),
             "GetRowColumnExtentsAtIndex" => {
                 let index = asked.i32()?;
                 let ([row, column], fits) = (place(index), (0..rows * columns).contains(&index));
-                ("biiiib", values.u32(fits as u32).i32s(&[row, column, 1, 1].map(|number| if fits { number } else { 0 })).u32((fits && picked.contains(&row)) as u32))
+                ("biiiib", values.u32(fits as u32).i32s(&[row, column, 1, 1].map(|number| if fits { number } else { 0 })).u32((fits && selected.contains(&row)) as u32))
             }
             _ => return None,
         };
@@ -1553,8 +1560,8 @@ impl Readers {
     /// row and column with their spans.
     fn cell(&self, which: Which, member: &str, values: &mut Pack) -> Option<&'static str> {
         let (Which::Thing(at, thing), frame) = (which, self.frame(which)?) else { return None };
-        let [row, column] = self.said(which).filter(|said| said.role == Role::Cell)?.grid.unwrap_or_default();
-        let heading = told::table_of(&frame.said, thing).and_then(|table| told::heading_at(&frame.said, table, column));
+        let [row, column] = self.node(which).filter(|node| node.role == Role::Cell)?.grid.unwrap_or_default();
+        let heading = accessibility::table_of(&frame.nodes, thing).and_then(|table| accessibility::heading_at(&frame.nodes, table, column));
         let answer = match member {
             "GetRowHeaderCells" => ("a(so)", values.open(8).close()),
             "GetColumnHeaderCells" => ("a(so)", heading.into_iter().fold(values.open(8), |values, heading| values.object(&self.name, &self.path(Which::Thing(at, heading)))).close()),
@@ -1565,23 +1572,23 @@ impl Readers {
     }
 
     /// A tree's selected children, in order.
-    fn picked_children(&self, which: Which) -> Vec<Which> {
-        self.children(which).into_iter().filter(|child| self.said(*child).is_some_and(|said| said.on == Some(true))).collect()
+    fn selected_children(&self, which: Which) -> Vec<Which> {
+        self.children(which).into_iter().filter(|child| self.node(*child).is_some_and(|node| node.on == Some(true))).collect()
     }
     /// The selection interface of a tree, by child index (as counted when its children are
     /// listed), or among the selected ones: which, and whether one is; select one alone, or
     /// deselect one, as the keys do. (Select all and clear are not supported.)
     fn selection(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack, deeds: &mut Vec<Deed>) -> Option<&'static str> {
-        let frame = self.frame(which).filter(|_| self.said(which).is_some_and(|said| said.role == Role::Tree))?;
-        let (children, picked) = (self.children(which), self.picked_children(which));
-        let deed = |child: Option<&Which>, act: Act| child.and_then(|child| self.said(*child)).filter(|said| said.usable).map(|said| Deed { window: frame.known, thing: said.id, act });
+        let frame = self.frame(which).filter(|_| self.node(which).is_some_and(|node| node.role == Role::Tree))?;
+        let (children, selected) = (self.children(which), self.selected_children(which));
+        let deed = |child: Option<&Which>, act: Act| child.and_then(|child| self.node(*child)).filter(|node| node.enabled).map(|node| Deed { window: frame.known, thing: node.id, act });
         let mut done = |wanted: Option<Deed>| (wanted.is_some() as u32, deeds.extend(wanted)).0;
         let answer = match member {
-            "GetSelectedChild" => ("(so)", values.object(&self.name, &picked.get(asked.i32()? as usize).map_or(NOTHING.into(), |child| self.path(*child)))),
-            "IsChildSelected" => ("b", values.u32(children.get(asked.i32()? as usize).is_some_and(|child| picked.contains(child)) as u32)),
+            "GetSelectedChild" => ("(so)", values.object(&self.name, &selected.get(asked.i32()? as usize).map_or(NOTHING.into(), |child| self.path(*child)))),
+            "IsChildSelected" => ("b", values.u32(children.get(asked.i32()? as usize).is_some_and(|child| selected.contains(child)) as u32)),
             "SelectChild" => ("b", values.u32(done(deed(children.get(asked.i32()? as usize), Act::Press)))),
-            "DeselectChild" => ("b", values.u32(done(deed(children.get(asked.i32()? as usize).filter(|child| picked.contains(child)), Act::Pick)))),
-            "DeselectSelectedChild" => ("b", values.u32(done(deed(picked.get(asked.i32()? as usize), Act::Pick)))),
+            "DeselectChild" => ("b", values.u32(done(deed(children.get(asked.i32()? as usize).filter(|child| selected.contains(child)), Act::Pick)))),
+            "DeselectSelectedChild" => ("b", values.u32(done(deed(selected.get(asked.i32()? as usize), Act::Pick)))),
             "SelectAll" | "ClearSelection" => ("b", values.u32(0)),
             _ => return None,
         };
@@ -1591,10 +1598,10 @@ impl Readers {
     /// Sets a property: the id the registry assigns the application, which it keeps; or a
     /// slider's value, which it then moves to.
     fn set(&mut self, which: Which, interface: &str, name: &str, value: Value, deeds: &mut Vec<Deed>) -> Option<()> {
-        match (interface, name, value, self.said(which), self.frame(which)) {
+        match (interface, name, value, self.node(which), self.frame(which)) {
             (APPLICATION, "Id", Value::Number(id), ..) if which == Which::Program => self.id = id as i32,
-            (VALUE, "CurrentValue", Value::Number(to), Some(said), Some(frame)) if said.role == Role::Slider && said.usable => {
-                deeds.push(Deed { window: frame.known, thing: said.id, act: Act::Reach(to as f32) })
+            (VALUE, "CurrentValue", Value::Number(to), Some(node), Some(frame)) if node.role == Role::Slider && node.enabled => {
+                deeds.push(Deed { window: frame.known, thing: node.id, act: Act::Reach(to as f32) })
             }
             _ => return None,
         }
@@ -1621,9 +1628,9 @@ impl Readers {
             // gets its sort direction, as on the web; a tree item its level from 1, as on the
             // web and as Orca reads it.
             "GetAttributes" => {
-                let place = self.said(which).and_then(|said| said.of).map(|of| of.map(|number| number.to_string()));
-                let sort = self.said(which).and_then(Said::sort_word).map(String::from);
-                let level = self.said(which).map(|said| said.level).filter(|level| *level > 0).map(|level| level.to_string());
+                let place = self.node(which).and_then(|node| node.position).map(|of| of.map(|number| number.to_string()));
+                let sort = self.node(which).and_then(AccessNode::sort_word).map(String::from);
+                let level = self.node(which).map(|node| node.level).filter(|level| *level > 0).map(|level| level.to_string());
                 let noted = place.iter().flat_map(|[nth, count]| [("posinset", nth), ("setsize", count)]).chain(sort.iter().map(|way| ("sort", way))).chain(level.iter().map(|level| ("level", level)));
                 ("a{ss}", noted.fold(values.open(8), |values, (what, number)| values.pad(8).text(what).text(number)).close())
             }
@@ -1634,16 +1641,16 @@ impl Readers {
 
     /// The component interface of windows and elements: extents, hit testing, and focus.
     fn component(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack, origin: &dyn Fn(Id) -> [i32; 2], deeds: &mut Vec<Deed>) -> Option<&'static str> {
-        let ([x, y, w, h], frame, said) = (self.extent(which)?, self.frame(which)?, self.said(which));
+        let ([x, y, w, h], frame, node) = (self.extent(which)?, self.frame(which)?, self.node(which));
         let from = |asked: &mut Unpack| asked.u32().map(|kind| self.counted_from(which, kind, origin));
         let corner = |asked: &mut Unpack| from(asked).map(|[left, top]| [x - left, y - top]);
         // A queried point, relative to the window's corner; whether it is on this object; and
         // the innermost element at it.
         let place = |asked: &mut Unpack| Some([asked.i32()?, asked.i32()?]).zip(from(asked)).map(|([px, py], [left, top])| [px + left, py + top]);
         let on = |[px, py]: [i32; 2]| px >= x && px < x + w && py >= y && py < y + h;
-        let under = |[px, py]: [i32; 2]| self.below(which).rev().find(|thing| told::view(&frame.said, *thing).contains(pt(px as f32 / frame.scale, py as f32 / frame.scale)));
+        let under = |[px, py]: [i32; 2]| self.below(which).rev().find(|thing| accessibility::view(&frame.nodes, *thing).contains(pt(px as f32 / frame.scale, py as f32 / frame.scale)));
         let found = |place: [i32; 2]| under(place).filter(|_| on(place)).map_or(NOTHING.into(), |thing| path_of(frame.number, Some(frame.numbers[thing])));
-        let taken = said.filter(|said| said.usable && said.takes_keyboard());
+        let taken = node.filter(|node| node.enabled && node.takes_keyboard());
         let answer = match member {
             "GetExtents" => ("(iiii)", values.pad(8).i32s(&corner(asked)?).i32s(&[w, h])),
             "GetPosition" => ("ii", values.i32s(&corner(asked)?)),
@@ -1652,17 +1659,17 @@ impl Readers {
             "GetAccessibleAtPoint" => ("(so)", values.object(&self.name, &found(place(asked)?))),
             // AT-SPI layers: 3 for a window's widgets, 7 for a window. Neither in the MDI
             // layer.
-            "GetLayer" => ("u", values.u32(if said.is_some() { 3 } else { 7 })),
+            "GetLayer" => ("u", values.u32(if node.is_some() { 3 } else { 7 })),
             "GetMDIZOrder" => ("n", values.pad(2).byte(0xff).byte(0xff)),
             "GetAlpha" => ("d", values.f64(1.0)),
             // Scrolled into view, however the alignment was requested: its container scrolls
             // until it shows. A window is in view as is.
             "ScrollTo" | "ScrollToPoint" => {
-                deeds.extend(said.map(|said| Deed { window: frame.known, thing: said.id, act: Act::Show }));
-                ("b", values.u32(said.is_some() as u32))
+                deeds.extend(node.map(|node| Deed { window: frame.known, thing: node.id, act: Act::Show }));
+                ("b", values.u32(node.is_some() as u32))
             }
             "GrabFocus" => {
-                deeds.extend(taken.map(|said| Deed { window: frame.known, thing: said.id, act: Act::Focus }));
+                deeds.extend(taken.map(|node| Deed { window: frame.known, thing: node.id, act: Act::Focus }));
                 ("b", values.u32(taken.is_some() as u32))
             }
             _ => return None,
@@ -1672,8 +1679,8 @@ impl Readers {
 
     /// The action interface of a pressable element: its actions (see `ways_of`), and doing one.
     fn action(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack, deeds: &mut Vec<Deed>) -> Option<&'static str> {
-        let (said, frame) = (self.said(which).filter(|said| pressed(said))?, self.frame(which)?);
-        let (ways, keys) = (ways_of(said), keys_of(said));
+        let (node, frame) = (self.node(which).filter(|node| pressed(node))?, self.frame(which)?);
+        let (ways, keys) = (ways_of(node), keys_of(node));
         let answer = match member {
             "GetName" | "GetLocalizedName" => ("s", values.text(ways.get(asked.i32()? as usize).copied().unwrap_or(""))),
             "GetDescription" => ("s", values.text("")),
@@ -1681,10 +1688,10 @@ impl Readers {
             "GetActions" => ("a(sss)", ways.iter().fold(values.open(8), |values, way| values.text(way).text("").text(if *way == ways[0] { &keys } else { "" })).close()),
             "DoAction" => {
                 // The second, for an expandable tree item: expand, or collapse.
-                let acts = [Some(Act::Press), (ways.len() > 1).then_some(Act::Open(said.open == Some(false)))];
-                let act = acts.into_iter().nth(asked.i32()? as usize).flatten().filter(|_| said.usable);
+                let acts = [Some(Act::Press), (ways.len() > 1).then_some(Act::Open(node.expanded == Some(false)))];
+                let act = acts.into_iter().nth(asked.i32()? as usize).flatten().filter(|_| node.enabled);
                 let done = act.is_some();
-                deeds.extend(act.map(|act| Deed { window: frame.known, thing: said.id, act }));
+                deeds.extend(act.map(|act| Deed { window: frame.known, thing: node.id, act }));
                 ("b", values.u32(done as u32))
             }
             _ => return None,
@@ -1695,16 +1702,16 @@ impl Readers {
     /// The text interface of a text box: all text, the unit around a character, one character,
     /// or the selection. (Character extents aren't known here: those queries aren't answered.)
     fn text(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack) -> Option<&'static str> {
-        let letters: Vec<char> = self.said(which).filter(|said| matches!(said.role, Role::TextBox | Role::Secret))?.value.chars().collect();
+        let letters: Vec<char> = self.node(which).filter(|node| matches!(node.role, Role::TextBox | Role::PasswordBox))?.value.chars().collect();
         let (count, read) = (letters.len() as i32, |from: usize, to: usize| letters[from.min(to)..to].iter().collect::<String>());
         let within = |at: i32| if at < 0 { count } else { at.min(count) } as usize;
         let answer = match member {
             "GetText" => ("s", values.text(&read(within(asked.i32()?), within(asked.i32()?)))),
             "GetCharacterAtOffset" => ("i", values.i32(letters.get(asked.i32()? as usize).map_or(0, |letter| *letter as i32))),
             // The selection, while focused: one range, or none.
-            "GetNSelections" => ("i", values.i32(self.said(which)?.caret.is_some_and(|[from, to]| from != to) as i32)),
+            "GetNSelections" => ("i", values.i32(self.node(which)?.caret.is_some_and(|[from, to]| from != to) as i32)),
             "GetSelection" => {
-                let [from, to] = self.said(which)?.caret.filter(|[from, to]| from != to && asked.i32() == Some(0))?;
+                let [from, to] = self.node(which)?.caret.filter(|[from, to]| from != to && asked.i32() == Some(0))?;
                 ("ii", values.i32s(&[from.min(to) as i32, from.max(to) as i32]))
             }
             // A unit around a character, by granularity (five kinds) or, the older way, by
@@ -1717,14 +1724,14 @@ impl Readers {
             // Attributes around a character, as a run: a misspelled word is "invalid: spelling"
             // (as on the web and in GTK); the rest has none.
             "GetAttributes" | "GetAttributeRun" => {
-                let ([from, to], wrong) = looks(&self.said(which)?.spelt_wrong, asked.i32()?, count);
+                let ([from, to], wrong) = looks(&self.node(which)?.misspelled, asked.i32()?, count);
                 let marks = values.open(8);
                 let marks = if wrong { marks.pad(8).text("invalid").text("spelling") } else { marks };
                 ("a{ss}ii", marks.close().i32s(&[from, to]))
             }
             "GetAttributeValue" => {
                 let (at, name) = (asked.i32()?, asked.text()?);
-                let wrong = name == "invalid" && looks(&self.said(which)?.spelt_wrong, at, count).1;
+                let wrong = name == "invalid" && looks(&self.node(which)?.misspelled, at, count).1;
                 ("s", values.text(if wrong { "spelling" } else { "" }))
             }
             "GetDefaultAttributes" | "GetDefaultAttributeSet" => ("a{ss}", values.open(8).close()),
@@ -1736,17 +1743,17 @@ impl Readers {
     /// The editable text interface: the whole text replaced, with the requested insertion or
     /// deletion.
     fn editable(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack, deeds: &mut Vec<Deed>) -> Option<&'static str> {
-        let (said, frame) = (self.said(which).filter(|said| matches!(said.role, Role::TextBox | Role::Secret) && said.usable)?, self.frame(which)?);
+        let (node, frame) = (self.node(which).filter(|node| matches!(node.role, Role::TextBox | Role::PasswordBox) && node.enabled)?, self.frame(which)?);
         let text = match member {
             "SetTextContents" => asked.text()?.to_string(),
             "InsertText" => {
                 let (at, text, most) = (asked.i32()?, asked.text()?, asked.i32()?);
-                spliced(&said.value, at, at, &text[..byte_at(text, most)])
+                spliced(&node.value, at, at, &text[..byte_at(text, most)])
             }
-            "DeleteText" => spliced(&said.value, asked.i32()?, asked.i32()?, ""),
+            "DeleteText" => spliced(&node.value, asked.i32()?, asked.i32()?, ""),
             _ => return None,
         };
-        deeds.push(Deed { window: frame.known, thing: said.id, act: Act::Type(text) });
+        deeds.push(Deed { window: frame.known, thing: node.id, act: Act::Type(text) });
         values.u32(1);
         Some("b")
     }
@@ -1780,22 +1787,22 @@ fn peer(member: &str, values: &mut Pack) -> Option<&'static str> {
 
 /// Whether the service's properties say someone listens: either of its two flags, the old one
 /// and the newer.
-fn someone_listens(mut said: Unpack) -> Option<bool> {
-    let (end, mut someone) = (said.list(8)?, false);
-    while said.at < end {
-        let (name, value) = (said.take(8, 0).and(said.text())?, said.value()?);
+fn someone_listens(mut body: Unpack) -> Option<bool> {
+    let (end, mut someone) = (body.list(8)?, false);
+    while body.at < end {
+        let (name, value) = (body.take(8, 0).and(body.text())?, body.value()?);
         someone |= matches!(name, "IsEnabled" | "ScreenReaderEnabled") && value == Value::Number(1.0);
     }
     Some(someone)
 }
 
 /// The event listeners as the registry lists them: bus name and event type pairs.
-fn hearers(mut listed: Unpack) -> Option<Vec<[String; 2]>> {
-    let (end, mut hearers) = (listed.list(8)?, Vec::new());
+fn listeners_in(mut listed: Unpack) -> Option<Vec<[String; 2]>> {
+    let (end, mut listeners) = (listed.list(8)?, Vec::new());
     while listed.at < end {
-        hearers.push([listed.take(8, 0).and(listed.text())?.into(), plainly(listed.text()?)]);
+        listeners.push([listed.take(8, 0).and(listed.text())?.into(), plainly(listed.text()?)]);
     }
-    Some(hearers)
+    Some(listeners)
 }
 
 #[cfg(test)]
@@ -1986,13 +1993,13 @@ pub(crate) mod tests {
         use crate::{Align, Column};
         const COLUMNS: [Column; 3] = [Column::new("Name"), Column::new("Size").px(80.0).align(Align::End), Column::new("Do").px(90.0).unsorted()];
         ui.table(table, &COLUMNS);
-        ui.table_row().kept().open();
+        ui.table_row().frozen().open();
         ui.label("All");
         ui.label("600");
         ui.label("");
         ui.close();
         for row in ui.rows(300, 24.0) {
-            ui.pick_row(row, row == picked);
+            ui.selectable_row(row, row == picked);
             ui.label(&format!("file {row}"));
             ui.label(&format!("{}", row * 2));
             ui.button("Open");
@@ -2025,14 +2032,14 @@ pub(crate) mod tests {
     fn a_table_is_told_as_a_table_of_rows_and_cells_under_headings() {
         let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
         ui.resize(Size { w: 420.0, h: 300.0 }, 1.0);
-        ui.listen(true);
+        ui.set_screen_reader(true);
         let mut kept = crate::Table { sort: vec![(1, true)], ..Default::default() };
         (0..2).for_each(|_| _ = ui.run(&mut |ui| accounts(ui, &mut kept, 2)));
         let (mut readers, mut peer) = told_of(&mut ui);
         let r = &mut readers;
-        let place = |r: &Readers, role: Role, name: &str| r.frames[0].said.iter().position(|said| said.role == role && said.name == name).unwrap_or_else(|| panic!("no {role:?} {name:?}"));
+        let place = |r: &Readers, role: Role, name: &str| r.frames[0].nodes.iter().position(|node| node.role == role && node.name == name).unwrap_or_else(|| panic!("no {role:?} {name:?}"));
         let path = |r: &Readers, role: Role, name: &str| r.path(Which::Thing(0, place(r, role, name)));
-        let (table, size, row, cell) = (path(r, Role::Table, ""), path(r, Role::Heading, "Size"), path(r, Role::TableRow, "file 2, 4, Open"), path(r, Role::Cell, "4"));
+        let (table, size, row, cell) = (path(r, Role::Table, ""), path(r, Role::ColumnHeader, "Size"), path(r, Role::TableRow, "file 2, 4, Open"), path(r, Role::Cell, "4"));
         // Each one's role, and its interfaces.
         let role = |r: &mut Readers, peer: &mut Peer, path: &str| body(&peer.get(r, path, ACCESSIBLE, "GetRole", &[]).1).u32();
         assert_eq!([&table, &size, &row, &cell].map(|path| role(r, &mut peer, path)), [Some(55), Some(10), Some(90), Some(56)]);
@@ -2093,7 +2100,7 @@ pub(crate) mod tests {
         (0..2).for_each(|_| _ = ui.run(&mut |ui| accounts(ui, &mut kept, 3)));
         readers.keep(&mut ui, 0, "Settings window", [420, 300], 1.0);
         readers.settle();
-        let name_of = |readers: &Readers, of: &str| readers.which(of).and_then(|which| readers.said(which)).map_or(String::new(), |said| said.name.clone());
+        let name_of = |readers: &Readers, of: &str| readers.which(of).and_then(|which| readers.node(which)).map_or(String::new(), |node| node.name.clone());
         let news: Vec<(String, String, i32)> = peer.news().into_iter().map(|(of, kind, numbers)| (name_of(&readers, &of), kind, numbers[0])).collect();
         let heard = |name: &str, kind: &str, number: i32| news.contains(&(name.to_string(), kind.to_string(), number));
         assert!(heard("file 2, 4, Open", "Object:StateChanged:selected", 0) && heard("file 3, 6, Open", "Object:StateChanged:selected", 1), "{news:?}");
@@ -2110,12 +2117,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_tree_is_told_as_a_tree_of_items_that_open_close_and_are_picked() {
-        use crate::branches::tests::{grove, grown};
+        use crate::tree_view::tests::{grove, grown};
         let (mut ui, mut tree) = grown();
         let (mut readers, mut peer) = told_of(&mut ui);
         let r = &mut readers;
         let path = |r: &Readers, name: &str| path_of(r, name);
-        let whole = r.path(Which::Thing(0, r.frames[0].said.iter().position(|said| said.role == Role::Tree).unwrap()));
+        let whole = r.path(Which::Thing(0, r.frames[0].nodes.iter().position(|node| node.role == Role::Tree).unwrap()));
         let [closed, open, note, picked] = ["folder 0", "folder 1", "note 10", "note 11"].map(|name| path(r, name));
         // Each one's role and interfaces: a multi-selectable tree, and its items, which are
         // pressable.
@@ -2156,7 +2163,7 @@ pub(crate) mod tests {
         assert_eq!(number_in(&peer.property(r, &whole, SELECTION, "NSelectedChildren")), 1.0);
         assert_eq!(path_in(&peer.get(r, &whole, SELECTION, "GetSelectedChild", &[0]).1, false), picked);
         assert_eq!([ask(r, &mut peer, "IsChildSelected", &[3]).1, ask(r, &mut peer, "IsChildSelected", &[2]).1], [Some(1), Some(0)]);
-        let id = |r: &Readers, name: &str| r.frames[0].said.iter().find(|said| said.name == name).unwrap().id;
+        let id = |r: &Readers, name: &str| r.frames[0].nodes.iter().find(|node| node.name == name).unwrap().id;
         let (note_id, picked_id) = (id(r, "note 10"), id(r, "note 11"));
         // Selected alone, deselected (as the keys do); an unselected one needs nothing; select
         // all and clear aren't supported.
@@ -2175,7 +2182,7 @@ pub(crate) mod tests {
         let news = peer.news();
         assert!(news.contains(&(open.clone(), "Object:StateChanged:expanded".into(), [0, 0])), "{news:?}");
         assert!(news.iter().any(|(of, kind, _)| *of == whole && kind == "Object:ChildrenChanged:remove"), "{news:?}");
-        assert!(r.frames[0].said.iter().all(|said| !said.name.starts_with("note")));
+        assert!(r.frames[0].nodes.iter().all(|node| !node.name.starts_with("note")));
     }
 
     /// The test app's state.
@@ -2217,7 +2224,7 @@ pub(crate) mod tests {
     fn window(app: &mut App) -> Ui {
         let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
         ui.resize(Size { w: 420.0, h: 300.0 }, 1.0);
-        ui.listen(true);
+        ui.set_screen_reader(true);
         run(&mut ui, app);
         run(&mut ui, app);
         ui
@@ -2270,7 +2277,7 @@ pub(crate) mod tests {
 
     /// The path of the element named `name` in the first window.
     fn path_of(readers: &Readers, name: &str) -> String {
-        let at = readers.frames[0].said.iter().position(|said| said.name == name).unwrap_or_else(|| panic!("nothing is called {name}"));
+        let at = readers.frames[0].nodes.iter().position(|node| node.name == name).unwrap_or_else(|| panic!("nothing is called {name}"));
         readers.path(Which::Thing(0, at))
     }
 
@@ -2433,7 +2440,7 @@ pub(crate) mod tests {
         let read_all = |bytes: &[u8]| {
             let Some(message) = Message::read(bytes) else { return };
             let mut body = message.body;
-            std::hint::black_box((body.text(), someone_listens(body), hearers(message.body), body.value(), body.f64(), body.kinds()));
+            std::hint::black_box((body.text(), someone_listens(body), listeners_in(message.body), body.value(), body.f64(), body.kinds()));
         };
         for len in 0..whole.len() {
             assert!(Message::read(&whole[..len]).is_none(), "cut short after {len} bytes");
@@ -2595,7 +2602,7 @@ pub(crate) mod tests {
         assert!(readers.listening() && !readers.frames.is_empty());
         drop(peer);
         readers.turn(&|_| [0; 2]);
-        assert!(!readers.listening() && readers.frames.is_empty() && readers.hearers.is_none(), "nobody listens, and nothing is kept");
+        assert!(!readers.listening() && readers.frames.is_empty() && readers.listeners.is_none(), "nobody listens, and nothing is kept");
         assert_eq!(readers.waits(), (-1, 0));
         // Reporting the window anyway comes to nothing, harmlessly.
         readers.keep(&mut ui, 0, "Settings window", [420, 300], 1.0);
@@ -2798,7 +2805,7 @@ pub(crate) mod tests {
             children.take(8, 0).and(children.text()).unwrap();
             paths.push(children.text().unwrap().to_string());
         }
-        let said = ui.said().to_vec();
+        let said = ui.visible_access_nodes().to_vec();
         assert_eq!((paths.len(), said.len()), (8, 8));
         let common = 1 << ENABLED | 1 << SENSITIVE | 1 << SHOWING | 1 << VISIBLE;
         let expected = [
@@ -2935,7 +2942,7 @@ pub(crate) mod tests {
         let (mut open, mut dark) = (crate::Panel::default(), false);
         let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
         ui.resize(Size { w: 420.0, h: 300.0 }, 2.0);
-        ui.listen(true);
+        ui.set_screen_reader(true);
         let mut describe = |ui: &mut Ui| {
             ui.label("Outside");
             if ui.panel(&mut open, "Options") {
@@ -2946,9 +2953,9 @@ pub(crate) mod tests {
         ui.run(&mut describe);
         ui.run(&mut describe);
         let (mut readers, mut peer) = told_of(&mut ui);
-        let said = ui.said().to_vec();
-        let (group, tick) = (said.iter().position(|said| said.role == Role::Group).expect("a panel"), said.iter().position(|said| said.role == Role::Tick).unwrap());
-        assert_eq!(said[tick].within, Some(group));
+        let said = ui.visible_access_nodes().to_vec();
+        let (group, tick) = (said.iter().position(|said| said.role == Role::Group).expect("a panel"), said.iter().position(|said| said.role == Role::CheckBox).unwrap());
+        assert_eq!(said[tick].parent, Some(group));
         let [panel, inside] = [group, tick].map(|at| readers.path(Which::Thing(0, at)));
         let r = &mut readers;
         let (_, answer) = peer.get(r, &panel, ACCESSIBLE, "GetRole", &[]);
@@ -2956,9 +2963,9 @@ pub(crate) mod tests {
         let parent = peer.property(r, &inside, ACCESSIBLE, "Parent");
         let mut parent = body(&parent);
         assert_eq!((parent.kinds(), parent.take(8, 0).and(parent.text()), parent.text()), (Some("(so)"), Some(":1.42"), Some(panel.as_str())));
-        let count = said.iter().filter(|said| said.within == Some(group)).count();
+        let count = said.iter().filter(|said| said.parent == Some(group)).count();
         assert_eq!(number_in(&peer.property(r, &panel, ACCESSIBLE, "ChildCount")), count as f64);
-        let place = said.iter().filter(|said| said.within == Some(group)).position(|said| said.role == Role::Tick).unwrap();
+        let place = said.iter().filter(|said| said.parent == Some(group)).position(|said| said.role == Role::CheckBox).unwrap();
         let (_, answer) = peer.get(r, &inside, ACCESSIBLE, "GetIndexInParent", &[]);
         assert_eq!(body(&answer).i32(), Some(place as i32));
         // Its extents relative to its group, in pixels (two per unit here); and found by hit
@@ -2974,7 +2981,7 @@ pub(crate) mod tests {
             let mut found = body(&answer);
             assert_eq!((found.take(8, 0).and(found.text()), found.text()), (Some(":1.42"), Some(inside.as_str())));
         }
-        assert_eq!(readers.below(Which::Thing(0, group)), group + 1..group + 1 + said.iter().skip(group + 1).take_while(|said| said.within.is_some_and(|within| within >= group)).count());
+        assert_eq!(readers.below(Which::Thing(0, group)), group + 1..group + 1 + said.iter().skip(group + 1).take_while(|said| said.parent.is_some_and(|within| within >= group)).count());
     }
 
     #[test]
@@ -3009,7 +3016,7 @@ pub(crate) mod tests {
             run(ui, app);
             readers.keep(ui, 0, "Settings window", [420, 300], 1.0);
             readers.settle();
-            peer.news().into_iter().map(|(of, kind, numbers)| (readers.which(&of).and_then(|which| readers.said(which)).map_or(of, |said| said.name.clone()), kind, numbers)).collect::<Vec<_>>()
+            peer.news().into_iter().map(|(of, kind, numbers)| (readers.which(&of).and_then(|which| readers.node(which)).map_or(of, |node| node.name.clone()), kind, numbers)).collect::<Vec<_>>()
         };
         let one = |name: &str, kind: &str, numbers: [i32; 2]| (name.to_string(), kind.to_string(), numbers);
         app.dark = true;
@@ -3034,12 +3041,12 @@ pub(crate) mod tests {
         // The window loses focus: no element is focused in it. When it regains it, the same
         // element is focused again.
         let window_name = window.clone();
-        ui.event(crate::Event::Focus(false));
+        ui.event(crate::Event::Focused(false));
         assert_eq!(
             told(&mut ui, &mut app, &mut readers, &mut peer),
             [one(&window_name, "Window:Deactivate:", [0, 0]), one(&window_name, "Object:StateChanged:active", [0, 0]), one("Dark", "Object:StateChanged:focused", [0, 0])]
         );
-        ui.event(crate::Event::Focus(true));
+        ui.event(crate::Event::Focused(true));
         assert_eq!(
             told(&mut ui, &mut app, &mut readers, &mut peer),
             [one(&window_name, "Window:Activate:", [0, 0]), one(&window_name, "Object:StateChanged:active", [1, 0]), one("Dark", "Object:StateChanged:focused", [1, 0])]
@@ -3117,7 +3124,11 @@ pub(crate) mod tests {
         // The listeners the registry lists from before this program appeared are taken alike,
         // in either spelling.
         assert_eq!(
-            hearers(Unpack { bytes: &Pack::default().open(8).pad(8).text(":1.7").text("Window:Activate:").pad(8).text(":1.8").text("object:text-caret-moved").close().bytes, at: 0, little: true }),
+            listeners_in(Unpack {
+                bytes: &Pack::default().open(8).pad(8).text(":1.7").text("Window:Activate:").pad(8).text(":1.8").text("object:text-caret-moved").close().bytes,
+                at: 0,
+                little: true
+            }),
             Some(vec![[":1.7".to_string(), "window:activate:".to_string()], [":1.8".to_string(), "object:textcaretmoved".to_string()]])
         );
         for (asked, kind, covered) in [
@@ -3175,7 +3186,7 @@ pub(crate) mod tests {
         let (deeds, _, _, answer) = peer.ask(&mut readers, &paths[3], COMPONENT, "GrabFocus", "", &Pack::default());
         assert_eq!(body(&answer).u32(), Some(1));
         does(&mut ui, &mut readers, &mut app, deeds);
-        assert!(ui.said().iter().find(|said| said.name == "Name").unwrap().focused);
+        assert!(ui.visible_access_nodes().iter().find(|said| said.name == "Name").unwrap().focused);
         let (deeds, _, _, answer) = peer.ask(&mut readers, &paths[4], COMPONENT, "GrabFocus", "", &Pack::default());
         assert_eq!((deeds.len(), body(&answer).u32()), (0, Some(0)), "it cannot be on a text");
 
@@ -3429,26 +3440,26 @@ pub(crate) mod tests {
     fn roles_and_states_are_told_by_the_numbers_at_spi_gives_them() {
         let said = |role, on, usable, focused| {
             let (name, rect) = (String::new(), crate::Rect::EMPTY);
-            Said { on, focused, usable, ..Said::plain(1, role, name, rect, None) }
+            AccessNode { on, focused, enabled: usable, ..AccessNode::plain(1, role, name, rect, None) }
         };
         let roles = [
             (Role::Text, None, 29),
             (Role::Button, None, 43),
             (Role::Button, Some(true), 62),
-            (Role::Tick, Some(false), 7),
+            (Role::CheckBox, Some(false), 7),
             (Role::Switch, Some(true), 130),
-            (Role::Choice, Some(true), 44),
+            (Role::RadioButton, Some(true), 44),
             (Role::Tab, Some(true), 37),
             (Role::Row, Some(false), 32),
             (Role::Slider, None, 51),
-            (Role::Spin, None, 52),
+            (Role::SpinButton, None, 52),
             (Role::TextBox, None, 79),
-            (Role::Secret, None, 40),
-            (Role::Select, Some(false), 11),
+            (Role::PasswordBox, None, 40),
+            (Role::ComboBox, Some(false), 11),
             (Role::Fold, Some(true), 43),
             (Role::MenuItem, None, 35),
             (Role::MenuItem, Some(true), 8),
-            (Role::Heading, None, 10),
+            (Role::ColumnHeader, None, 10),
             (Role::Progress, None, 42),
             (Role::Group, None, 39),
             (Role::Dialog, None, 16),
@@ -3457,10 +3468,10 @@ pub(crate) mod tests {
             (Role::Tabs, None, 38),
             (Role::Link, None, 88),
             (Role::Document, None, 94),
-            (Role::Title, None, 83),
+            (Role::Heading, None, 83),
             (Role::Paragraph, None, 73),
             (Role::List, None, 31),
-            (Role::Item, None, 32),
+            (Role::ListItem, None, 32),
             (Role::Code, None, 85),
             (Role::Quote, None, 105),
         ];
@@ -3470,9 +3481,9 @@ pub(crate) mod tests {
         let shown = 1u64 << 25 | 1 << 30;
         assert_eq!(states_of(&said(Role::Text, None, true, false), true), shown | 1 << 8 | 1 << 24);
         assert_eq!(states_of(&said(Role::Text, None, false, false), true), shown, "switched off: neither enabled nor sensitive");
-        assert_eq!(states_of(&said(Role::Tick, Some(true), true, true), true), shown | 1 << 8 | 1 << 24 | 1 << 11 | 1 << 12 | 1 << 41 | 1 << 4);
+        assert_eq!(states_of(&said(Role::CheckBox, Some(true), true, true), true), shown | 1 << 8 | 1 << 24 | 1 << 11 | 1 << 12 | 1 << 41 | 1 << 4);
         assert_eq!(
-            states_of(&said(Role::Tick, Some(true), true, true), false),
+            states_of(&said(Role::CheckBox, Some(true), true, true), false),
             shown | 1 << 8 | 1 << 24 | 1 << 11 | 1 << 41 | 1 << 4,
             "in a window that is not typed into, the keyboard is on nothing"
         );

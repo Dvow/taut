@@ -30,7 +30,7 @@ pub struct Overlay {
 
 fn describe(settings: &mut Settings, ui: &mut Ui) {
     let t = ui.theme;
-    ui.column().w(Length::Px(220.0)).at(16.0, 16.0).pad(14.0).gap(10.0).fill(t.panel.alpha(0.92)).border(t.line_strong, 1.0).radius(10.0).shadow(12.0).open();
+    ui.column().w(Length::Px(220.0)).offset(16.0, 16.0).pad(14.0).gap(10.0).fill(t.panel.with_alpha(0.92)).border(t.line_strong, 1.0).radius(10.0).shadow(12.0).open();
     ui.text("Overlay", t.font.bold(), t.text);
     ui.switch(&mut settings.names, "Show names");
     ui.slider(&mut settings.range, 0.0..=100.0);
@@ -121,7 +121,7 @@ pub unsafe extern "C" fn overlay_frame(overlay: *mut Overlay, changed: *mut [i32
     let due = ui.wake_in() == Some(Duration::ZERO);
     let mut area = [0; 4];
     if std::mem::take(waiting) || due {
-        let part = ui.run(&mut |ui| describe(settings, ui)).on_pixels(ui.scale());
+        let part = ui.run(&mut |ui| describe(settings, ui)).snap_to_pixels(ui.scale());
         surface.redraw(ui, part);
         let scale = ui.scale();
         area = [(part.x * scale) as i32, (part.y * scale) as i32, (part.right() * scale) as i32, (part.bottom() * scale) as i32];

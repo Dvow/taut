@@ -26,26 +26,26 @@
 //! and right-clicking a header lists the columns to hide and show.
 //!
 //! A table too wide for its room scrolls horizontally, headers included. The first columns can
-//! stay frozen meanwhile ([`Table::kept`]): the others scroll under them. That too is numbers:
-//! a frozen column is offset by the scroll, and one partly under the frozen ones becomes a
-//! narrower cell whose content starts before its edge.
+//! stay frozen meanwhile ([`Table::frozen`]): the others scroll under them. That too is
+//! numbers: a frozen column is offset by the scroll, and one partly under the frozen ones
+//! becomes a narrower cell whose content starts before its edge.
 //!
-//! Rows freeze like any box in a scroll box: `ui.table_row().kept()` described before the
+//! Rows freeze like any box in a scroll box: `ui.table_row().frozen()` described before the
 //! scrolling rows stays under the headers; after them (a totals row), at the bottom. The rest
 //! scroll between.
 //!
-//! Screen readers hear all this as a table, from the parts themselves (see `told`): the table
-//! gives its visible column count and counts rows as described, including those `rows` skips; a
-//! header gives its position among the visible ones and its sort direction; a row its index and
-//! selection. The app has nothing to do.
-use crate::cells::Entry;
+//! Screen readers hear all this as a table, from the parts themselves (see `access_nodes`): the
+//! table gives its visible column count and counts rows as described, including those `rows`
+//! skips; a header gives its position among the visible ones and its sort direction; a row its
+//! index and selection. The app has nothing to do.
+use crate::accessibility::Role;
+use crate::cells::CellEditor;
 use crate::color::Color;
 use crate::el::El;
 use crate::event::{Cursor, Key, Mods};
 use crate::geom::Rect;
 use crate::id::Id;
 use crate::layout::{Align, Content, Flow, Length, NONE, Spec};
-use crate::told::Role;
 use crate::ui::{Icon, Measure, Response, Ui};
 use std::hash::Hash;
 use std::ops::Range;
@@ -83,20 +83,20 @@ pub struct Column<'a> {
     /// numbers are.
     pub align: Align,
     /// Clicking its header sorts by it.
-    pub sorts: bool,
+    pub sortable: bool,
     /// How its cells are edited in place, where they can be.
-    pub entry: Entry<'a>,
+    pub editor: CellEditor<'a>,
 }
 
 impl<'a> Column<'a> {
     /// A column sharing the remaining room, sortable.
     pub const fn new(name: &'a str) -> Self {
-        Column { name, width: Length::Grow(1.0), align: Align::Start, sorts: true, entry: Entry::None }
+        Column { name, width: Length::Grow(1.0), align: Align::Start, sortable: true, editor: CellEditor::None }
     }
     /// Its cells are edited in place (each a [`ui.cell`](Ui::cell)): typed as text or a number,
     /// or chosen from a list.
-    pub const fn edited(self, entry: Entry<'a>) -> Self {
-        Column { entry, ..self }
+    pub const fn editable(self, entry: CellEditor<'a>) -> Self {
+        Column { editor: entry, ..self }
     }
     /// This many units wide.
     pub const fn px(self, width: f32) -> Self {
@@ -112,7 +112,7 @@ impl<'a> Column<'a> {
     }
     /// Clicking its header does nothing.
     pub const fn unsorted(self) -> Self {
-        Column { sorts: false, ..self }
+        Column { sortable: false, ..self }
     }
 }
 
@@ -131,11 +131,11 @@ pub struct Table {
     /// How many of the first visible columns stay frozen while scrolling horizontally: the
     /// others scroll under them. (A column dragged among them takes the place of the one it
     /// pushes out.)
-    pub kept: usize,
+    pub frozen: usize,
     /// The cell holding keyboard focus in the table: its row (as `rows` counts them) and its
     /// column (by the app's index). None until the user first enters the table; the app may set
     /// it anywhere. (Not persisted: focus is not saved between app runs.)
-    pub cell: Option<[usize; 2]>,
+    pub focused_cell: Option<[usize; 2]>,
 }
 
 impl Table {
@@ -259,7 +259,7 @@ impl Ui {
     /// column; and right-clicking a header lists the columns to hide and show.
     ///
     /// A table too wide for its room scrolls horizontally, by its bar or the wheel; the first
-    /// `state.kept` columns stay frozen meanwhile.
+    /// `state.frozen` columns stay frozen meanwhile.
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn table(&mut self, state: &mut Table, columns: &[Column]) -> Response {
         self.table_of(state, columns, true)
@@ -272,7 +272,6 @@ impl Ui {
     /// A table, with focus on a cell of it (`cells`) or on its rows.
     #[cfg_attr(debug_assertions, track_caller)]
     fn table_of(&mut self, state: &mut Table, columns: &[Column], cells: bool) -> Response {
-        let t = self.theme;
         let mut all = self.column().grow().open();
         let (body, keys) = (self.id(BODY), self.id(KEYS));
         let read = self.rooms.get(&body).copied().unwrap_or([self.size().w, 0.0, 0.0]);
@@ -291,16 +290,7 @@ impl Ui {
         if self.listening {
             self.tell_table(&all, self.tracks[first as usize..].iter().filter(|track| track.shows).count());
         }
-        let headings = self.el().flow(Flow::Layers).h(Length::Px(t.control)).pad((EDGE, 0.0)).fill(t.panel).clip().shifted(across, 0.0).open();
-        self.follows.push((headings.id, body));
-        for place in 0..columns.len() {
-            let number = state.column_at(place, columns.len());
-            if state.shows(number) {
-                all.changed |= self.heading(state, columns, number, first);
-                self.column_grip(state, number, first);
-            }
-        }
-        self.close();
+        all.changed |= self.column_headers(state, columns, first, body, across);
         self.separator();
         // Focus sits on this while it is on the table: an empty, zero-size box, so what it
         // focuses is the table's cell, outlined by the table.
@@ -326,7 +316,7 @@ impl Ui {
     /// horizontally, frozen columns are offset by that, and the others are told how much of
     /// them lies under those.
     fn lay_columns(&mut self, state: &Table, columns: &[Column], room: f32, across: f32) {
-        let (first, font, count) = (self.tracks.len(), self.theme.small.bold(), columns.len());
+        let (first, font, count) = (self.tracks.len(), self.theme.small_font.bold(), columns.len());
         let (mut taken, mut eager) = (2.0 * EDGE, f32::MIN_POSITIVE);
         for (number, column) in columns.iter().enumerate() {
             let asks = match (state.dragged(number), column.width) {
@@ -340,7 +330,7 @@ impl Ui {
         }
         // Along the row: how many more columns are frozen, where the unfrozen ones start to
         // show, and how many columns have shown so far.
-        let (spare, mut x, mut keep, mut clear, mut shown) = ((room - taken).max(0.0), 0.0, state.kept, 0.0, 0);
+        let (spare, mut x, mut keep, mut clear, mut shown) = ((room - taken).max(0.0), 0.0, state.frozen, 0.0, 0);
         for place in 0..count {
             let track = &mut self.tracks[first + state.column_at(place, count)];
             let width = if track.shows { (track.width + spare * track.eager / eager).floor().max(NARROWEST) } else { 0.0 };
@@ -350,42 +340,60 @@ impl Ui {
         }
     }
 
+    /// The row of column headers, each with its resize grip: scrolled `across` with the body
+    /// `body`, not vertically. Says whether a click just changed the sort.
+    fn column_headers(&mut self, state: &mut Table, columns: &[Column], first: u32, body: Id, across: f32) -> bool {
+        let t = self.theme;
+        let headers = self.el().flow(Flow::Stack).h(Length::Px(t.control_height)).pad((EDGE, 0.0)).fill(t.panel).clip().shifted(across, 0.0).open();
+        self.follows.push((headers.id, body));
+        let mut sorted = false;
+        for place in 0..columns.len() {
+            let number = state.column_at(place, columns.len());
+            if state.shows(number) {
+                sorted |= self.column_header(state, columns, number, first);
+                self.column_resizer(state, number, first);
+            }
+        }
+        self.close();
+        sorted
+    }
+
     /// One column's header: its name and sort direction. A click sorts by it; dragged sideways
     /// it moves its column; a right click lists the columns. Says whether a click just changed
     /// the sort.
-    fn heading(&mut self, state: &mut Table, columns: &[Column], number: usize, first: u32) -> bool {
+    fn column_header(&mut self, state: &mut Table, columns: &[Column], number: usize, first: u32) -> bool {
         let (t, column, track) = (self.theme, &columns[number], self.tracks[first as usize + number]);
         let [x, width, cut] = track.part(0.0, track.width);
         let press = self.press(self.id(number));
         // A header being dragged is not clicked.
-        let taken = self.held(&press, [0.0; 4]).is_some_and(|(gone, _)| gone.x.abs() > 4.0);
+        let taken = self.drag_delta(&press, [0.0; 4]).is_some_and(|(gone, _)| gone.x.abs() > 4.0);
         if taken {
-            self.move_heading(state, columns.len(), number, &press);
+            self.move_column_header(state, columns.len(), number, &press);
         }
         // A click sorts by it (Shift adds it as a key); so do Enter and Shift+Enter. (Enter's
         // click comes with no pointer release: the held modifiers are its own.)
-        let more = press.focused && column.sorts && self.key(Key::Enter, Mods::SHIFT);
-        let clicked = (press.clicked || more) && column.sorts && self.gone().x.abs() <= 4.0;
+        let more = press.focused && column.sortable && self.key(Key::Enter, Mods::SHIFT);
+        let clicked = (press.clicked || more) && column.sortable && self.gone().x.abs() <= 4.0;
         if clicked {
             state.sort_by(number, more || self.input.mods.shift && self.input.released[0]);
         }
         if press.focused {
-            self.heading_keys(state, columns.len(), number, track.width);
+            self.column_header_keys(state, columns.len(), number, track.width);
         }
         let sorted = state.sort.iter().find(|(by, _)| *by == number).map(|(_, down)| *down);
         let lit = sorted.is_some() || press.hovered || press.pressed;
-        let cell = self.row().key(number).at(x, 0.0).w(Length::Px(width)).h(Length::Grow(1.0)).pad((-cut, 0.0, 0.0, 0.0)).gap(4.0).align(column.align, Align::Center).clip().sense();
-        if column.sorts {
+        let cell = self.row().key(number).offset(x, 0.0).w(Length::Px(width)).h(Length::Grow(1.0)).pad((-cut, 0.0, 0.0, 0.0)).gap(4.0).align(column.align, Align::Center).clip().sense();
+        if column.sortable {
             cell.focusable().open()
         } else {
             cell.open()
         };
-        self.tell(&press, Role::Heading, None, "");
+        self.tell(&press, Role::ColumnHeader, None, "");
         if self.listening {
-            self.tell_place(track.place as usize + 1, self.tracks[first as usize..].iter().filter(|track| track.shows).count());
+            self.tell_position(track.place as usize + 1, self.tracks[first as usize..].iter().filter(|track| track.shows).count());
             self.tell_sorted(sorted);
         }
-        self.text(column.name, t.small.bold(), if lit { t.text } else { t.text_dim });
+        self.text(column.name, t.small_font.bold(), if lit { t.text } else { t.text_dim });
         if let Some(down) = sorted {
             self.el().icon(if down { DOWN } else { UP }, 12.0, t.text_dim).show();
         }
@@ -396,7 +404,7 @@ impl Ui {
 
     /// Moves the dragged header's column into its neighbour's position once the pointer passes
     /// the middle of that header.
-    fn move_heading(&mut self, state: &mut Table, count: usize, number: usize, held: &Response) {
+    fn move_column_header(&mut self, state: &mut Table, count: usize, number: usize, held: &Response) {
         let Some(at) = self.pointer() else { return };
         let place = (0..count).position(|place| state.column_at(place, count) == number).unwrap_or(0);
         // The nearest visible header on the side the pointer moved to.
@@ -425,7 +433,7 @@ impl Ui {
         }
         for (number, column) in columns.iter().enumerate() {
             let mut shown = state.shows(number);
-            if self.menu_check(&mut shown, column.name).changed {
+            if self.menu_checkbox(&mut shown, column.name).changed {
                 state.show(number, shown, columns.len());
             }
         }
@@ -434,7 +442,7 @@ impl Ui {
 
     /// Keys on a focused header of a column `width` wide: Control+Shift with Left or Right move
     /// it a place; Alt with Left or Right narrow or widen it.
-    fn heading_keys(&mut self, state: &mut Table, count: usize, number: usize, width: f32) {
+    fn column_header_keys(&mut self, state: &mut Table, count: usize, number: usize, width: f32) {
         let [back, on, narrower, wider] = [(Key::Left, MOVES), (Key::Right, MOVES), (Key::Left, WIDENS), (Key::Right, WIDENS)].map(|(key, mods)| self.key(key, mods));
         let place = (0..count).position(|place| state.column_at(place, count) == number).unwrap_or(0);
         // The nearest visible column on that side.
@@ -455,21 +463,21 @@ impl Ui {
 
     /// The resize grip after a column's header: dragged, it resizes the column; double-clicked,
     /// it restores its specified width.
-    fn column_grip(&mut self, state: &mut Table, number: usize, first: u32) {
+    fn column_resizer(&mut self, state: &mut Table, number: usize, first: u32) {
         let (t, track) = (self.theme, self.tracks[first as usize + number]);
         let (width, [x, wide, cut]) = (track.width, track.part(track.width, BETWEEN));
         let hold = self.interact(self.id((number, "edge")));
         if hold.hovered || hold.pressed {
             self.set_cursor(Cursor::ResizeX);
         }
-        let dragged = self.held(&hold, [width, 0.0, 0.0, 0.0]).map(|(gone, was)| (was[0] + gone.x).round().max(NARROWEST));
+        let dragged = self.drag_delta(&hold, [width, 0.0, 0.0, 0.0]).map(|(gone, was)| (was[0] + gone.x).round().max(NARROWEST));
         let to = if hold.double_clicked { Some(0.0) } else { dragged.filter(|to| *to != width) };
         if let Some(to) = to {
             state.widths.resize(state.widths.len().max(number + 1), 0.0);
             (state.widths[number], self.again) = (to, true);
         }
         let line = if hold.hovered || hold.pressed { t.accent } else { t.line };
-        self.row().key((number, "edge")).at(x, 0.0).w(Length::Px(wide)).h(Length::Grow(1.0)).pad((-cut, 0.0, 0.0, 0.0)).align(Align::Center, Align::Spread).clip().sense().open();
+        self.row().key((number, "edge")).offset(x, 0.0).w(Length::Px(wide)).h(Length::Grow(1.0)).pad((-cut, 0.0, 0.0, 0.0)).align(Align::Center, Align::Spread).clip().sense().open();
         self.el().w(Length::Px(1.0)).fill(line).show();
         self.close();
     }
@@ -487,7 +495,7 @@ impl Ui {
         }
         // (Its cells lie at their columns' positions, whatever order they are described in. In
         // a table it takes the pointer: a press there moves the focus cell to it.)
-        let row = self.el().flow(Flow::Layers).align(Align::Start, Align::Center).pad((EDGE, 0.0)).min(wide, 0.0);
+        let row = self.el().flow(Flow::Stack).align(Align::Start, Align::Center).pad((EDGE, 0.0)).min(wide, 0.0);
         if first == NONE { row } else { row.sense() }
     }
 
@@ -507,7 +515,7 @@ impl Ui {
     fn count_row(&mut self, columns: [u32; 2]) {
         let Some(around) = self.open.last() else { return };
         let (among, place) = (if around.row > 0.0 { around.count } else { 0 }, around.children);
-        let Some((table, rows)) = self.table_told().and_then(|table| Some((table, self.rows_told(table)?))) else { return };
+        let Some((table, rows)) = self.table_told().and_then(|table| Some((table, self.table_row_count(table)?))) else { return };
         let row = if among > 0 { (*rows + place).saturating_sub(among + 1) } else { (*rows += 1, *rows - 1).1 };
         self.tell_row(row, columns, table);
     }
@@ -515,9 +523,9 @@ impl Ui {
     /// A selectable table row. It shows hover and whether it is `picked`; the result's
     /// `clicked` says when the user selects it. `key` identifies it among the rows. Describe
     /// its cells, then close it.
-    pub fn pick_row(&mut self, key: impl Hash, picked: bool) -> Response {
+    pub fn selectable_row(&mut self, key: impl Hash, picked: bool) -> Response {
         let (t, id, columns) = (self.theme, self.id(&key), self.open.last().map_or([NONE; 2], |open| open.columns));
-        let mut state = self.press_to_pick(id);
+        let mut state = self.press_to_select(id);
         // In a table, focus is on the table's cell, not on each row; a row the keys move the
         // cell onto is selected as a click would.
         let keyed = self.table_now(columns).is_some();
@@ -537,14 +545,14 @@ impl Ui {
         // (In a table it was told as a row of that, and reports its selection. Elsewhere it is
         // told as a selected row, and no more.)
         if self.notes.len() > told {
-            self.tell_picked(picked);
+            self.tell_selected(picked);
             return state;
         }
         self.tell(&state, Role::Row, Some(picked), "");
         // (Its position of how many: its list knows. It counted this row already, and before
         // the first, the spacer above the visible rows.)
         let place = self.open.iter().rev().nth(1).filter(|around| around.row > 0.0).map(|around| (around.children as usize - 1, around.count as usize));
-        place.into_iter().for_each(|(nth, count)| self.tell_place(nth, count));
+        place.into_iter().for_each(|(nth, count)| self.tell_position(nth, count));
         state
     }
 
@@ -558,7 +566,7 @@ impl Ui {
         let row = if row > 0.0 { row.max(self.text.metrics(self.theme.font, self.scale).height().ceil()) } else { row };
         // (In a table told to a screen reader, these are so many more of its rows, described or
         // not.)
-        if let Some(rows) = self.table_told().and_then(|table| self.rows_told(table)) {
+        if let Some(rows) = self.table_told().and_then(|table| self.table_row_count(table)) {
             *rows += count as u32;
         }
         let (id, page) = (self.next_id(), self.open.first().map_or(0, |open| open.at));
@@ -568,7 +576,7 @@ impl Ui {
         // (Zero-height rows show none of themselves.)
         let (left_out, mut above) = self.rows_left_out(within, id, count, row, read);
         let high = row as f64;
-        // (A row the app asked to see is scrolled into view: `show_row`.)
+        // (A row the app asked to see is scrolled into view: `scroll_to_row`.)
         if let Some(asked) = self.row_asked().filter(|asked| *asked < count && row > 0.0) {
             above = self.list_into_view(within, above, read[1], asked as f64 * high, high);
         }

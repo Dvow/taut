@@ -8,9 +8,9 @@
 //! in [`ui.locale`](Ui::locale).
 //!
 //! Not read, to stay small: month and day names and AM/PM words (the app's, in
-//! [`ui.calendar`](Ui::calendar)); single-digit days and months (two digits always, four for
-//! the year); the time separator (always ":"); non-ASCII digits; groups other than three; and
-//! settings changed while the program runs.
+//! [`ui.calendar_words`](Ui::calendar_words)); single-digit days and months (two digits always,
+//! four for the year); the time separator (always ":"); non-ASCII digits; groups other than
+//! three; and settings changed while the program runs.
 use crate::date::Date;
 use crate::number::Number;
 use crate::ui::Ui;
@@ -18,7 +18,7 @@ use std::fmt::Write;
 
 /// The order of a date's day, month and year.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Order {
+pub enum DateOrder {
     /// Year first, which sorts: 2026-11-30.
     YearMonthDay,
     /// Day first: 30.11.2026.
@@ -32,19 +32,19 @@ pub enum Order {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Locale {
     /// Date order.
-    pub order: Order,
+    pub date_order: DateOrder,
     /// Date separator: '-', '.' or '/'.
-    pub between: char,
+    pub date_separator: char,
     /// First day of the week: 0 Monday to 6 Sunday.
-    pub first_day: u8,
-    /// A 12-hour clock, from 12 to 11 with AM/PM after it (`ui.calendar.halves`), instead of 0
-    /// to 23.
-    pub twelve_hours: bool,
+    pub first_weekday: u8,
+    /// A 12-hour clock, from 12 to 11 with AM/PM after it (`ui.calendar_words.halves`), instead
+    /// of 0 to 23.
+    pub twelve_hour_clock: bool,
     /// The thousands separator in numbers written for reading ("1,234,567"); `None` if none.
     /// (Text boxes write none.)
-    pub thousands: Option<char>,
+    pub thousands_separator: Option<char>,
     /// The decimal separator: '.' or ','.
-    pub point: char,
+    pub decimal_point: char,
 }
 
 impl Default for Locale {
@@ -55,7 +55,7 @@ impl Default for Locale {
 
 impl Locale {
     /// The library's own, the same everywhere: 2026-11-30, 14:05, 1234.5, weeks from Monday.
-    pub const PLAIN: Locale = Locale { order: Order::YearMonthDay, between: '-', first_day: 0, twelve_hours: false, thousands: None, point: '.' };
+    pub const PLAIN: Locale = Locale { date_order: DateOrder::YearMonthDay, date_separator: '-', first_weekday: 0, twelve_hour_clock: false, thousands_separator: None, decimal_point: '.' };
 
     /// The system's formats for the user. Read once, when first asked for.
     pub fn of_the_system() -> Locale {
@@ -65,11 +65,11 @@ impl Locale {
 
     /// Writes a date in digits, in this order and with this separator.
     pub(crate) fn write_date(self, into: &mut String, date: Date) {
-        let (day, month, year, between) = (date.day, date.month, date.year, self.between);
-        let _ = match self.order {
-            Order::YearMonthDay => write!(into, "{year:04}{between}{month:02}{between}{day:02}"),
-            Order::DayMonthYear => write!(into, "{day:02}{between}{month:02}{between}{year:04}"),
-            Order::MonthDayYear => write!(into, "{month:02}{between}{day:02}{between}{year:04}"),
+        let (day, month, year, between) = (date.day, date.month, date.year, self.date_separator);
+        let _ = match self.date_order {
+            DateOrder::YearMonthDay => write!(into, "{year:04}{between}{month:02}{between}{day:02}"),
+            DateOrder::DayMonthYear => write!(into, "{day:02}{between}{month:02}{between}{year:04}"),
+            DateOrder::MonthDayYear => write!(into, "{month:02}{between}{day:02}{between}{year:04}"),
         };
     }
 
@@ -79,7 +79,7 @@ impl Locale {
         let (whole, fraction) = rust.split_once('.').map_or((rust, None), |(whole, fraction)| (whole, Some(fraction)));
         let digits = whole.trim_start_matches('-');
         into.push_str(&whole[..whole.len() - digits.len()]);
-        let mark = self.thousands.filter(|_| grouped && digits.bytes().all(|digit| digit.is_ascii_digit()));
+        let mark = self.thousands_separator.filter(|_| grouped && digits.bytes().all(|digit| digit.is_ascii_digit()));
         for (at, digit) in digits.char_indices() {
             if let Some(mark) = mark.filter(|_| at > 0 && (digits.len() - at).is_multiple_of(3)) {
                 into.push(mark);
@@ -87,7 +87,7 @@ impl Locale {
             into.push(digit);
         }
         if let Some(fraction) = fraction {
-            into.push(self.point);
+            into.push(self.decimal_point);
             into.push_str(fraction);
         }
     }
@@ -107,8 +107,8 @@ impl Locale {
         for (at, letter) in letters.iter().enumerate() {
             let three = letters[at + 1..].iter().take_while(|next| next.is_ascii_digit()).count() == 3;
             match *letter {
-                letter if Some(letter) == self.thousands && three => {}
-                letter if letter == self.point => plain.push('.'),
+                letter if Some(letter) == self.thousands_separator && three => {}
+                letter if letter == self.decimal_point => plain.push('.'),
                 letter => plain.push(letter),
             }
         }
@@ -125,14 +125,14 @@ impl Ui {
     }
     /// A date in this window's format: "30.11.2026" where the system puts the day first.
     /// (`date.to_string()` writes the sortable form.)
-    pub fn written_date(&self, date: Date) -> String {
+    pub fn format_date(&self, date: Date) -> String {
         let mut written = String::new();
         self.locale_in_use().write_date(&mut written, date);
         written
     }
     /// A number for reading in the user's format, with this many decimals: "1,234.5", "1.234,5"
     /// or "1 234,5".
-    pub fn written_number(&self, value: f64, decimals: usize) -> String {
+    pub fn format_number(&self, value: f64, decimals: usize) -> String {
         let (mut written, rust) = (String::new(), format!("{value:.decimals$}"));
         self.locale_in_use().write_number(&mut written, &rust, true);
         written
@@ -142,15 +142,15 @@ impl Ui {
 /// Date order and separator from a pattern where `d` is the day, `M` the month, `y` the year,
 /// and quoted text is literal (Windows' format). `ddd` and longer is the weekday name, not the
 /// day. `None` if one of the three is missing.
-fn date_order(pattern: &str) -> Option<(Order, char)> {
+fn date_order(pattern: &str) -> Option<(DateOrder, char)> {
     // Quoted text is removed first; then the first of each.
     let plain: String = pattern.split('\'').step_by(2).collect();
     let day = plain.match_indices('d').map(|(at, _)| at).find(|at| plain[*at..].bytes().take_while(|letter| *letter == b'd').count() < 3 && (*at == 0 || plain.as_bytes()[at - 1] != b'd'))?;
     let (month, year) = (plain.find('M')?, plain.find('y')?);
     let order = match (year < month, day < month) {
-        (true, _) => Order::YearMonthDay,
-        (false, true) => Order::DayMonthYear,
-        (false, false) => Order::MonthDayYear,
+        (true, _) => DateOrder::YearMonthDay,
+        (false, true) => DateOrder::DayMonthYear,
+        (false, false) => DateOrder::MonthDayYear,
     };
     // A date written with words (Japanese, Chinese, Korean) gets the separator most of them use
     // in digits: a slash.
@@ -208,11 +208,18 @@ fn from_windows(name: *const u16) -> Locale {
         let wrote = unsafe { GetLocaleInfoEx(name, what, into.as_mut_ptr(), into.len() as i32) };
         String::from_utf16_lossy(&into[..wrote.max(1) as usize - 1])
     });
-    let (order, between) = date_order(&date).unwrap_or((Locale::PLAIN.order, Locale::PLAIN.between));
+    let (order, between) = date_order(&date).unwrap_or((Locale::PLAIN.date_order, Locale::PLAIN.date_separator));
     // Quoted text in a time pattern is literal: "HH 'h' mm" is a 24-hour clock.
     let twelve_hours = time.split('\'').step_by(2).any(|plain| plain.contains('h'));
     let first_day = first_day.trim().parse::<u8>().ok().filter(|day| *day < 7).unwrap_or(0);
-    Locale { order, between, first_day, twelve_hours, thousands: first(&thousands), point: first(&point).unwrap_or('.') }
+    Locale {
+        date_order: order,
+        date_separator: between,
+        first_weekday: first_day,
+        twelve_hour_clock: twelve_hours,
+        thousands_separator: first(&thousands),
+        decimal_point: first(&point).unwrap_or('.'),
+    }
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -263,17 +270,17 @@ fn from_glibc(name: &std::ffi::CStr, [dates, numbers]: [bool; 2]) -> Locale {
     unsafe { freelocale(locale) };
     let mut locale = Locale::PLAIN;
     if dates {
-        (locale.order, locale.between) = date_order(&glibc_pattern(&date)).unwrap_or((locale.order, locale.between));
-        locale.twelve_hours = ["%I", "%l", "%r", "%p", "%P"].iter().any(|twelve| time.replace("%%", "").contains(twelve));
+        (locale.date_order, locale.date_separator) = date_order(&glibc_pattern(&date)).unwrap_or((locale.date_order, locale.date_separator));
+        locale.twelve_hour_clock = ["%I", "%l", "%r", "%p", "%P"].iter().any(|twelve| time.replace("%%", "").contains(twelve));
         // The week origin as days after a Sunday; and the week's first day, counted from 1 for
         // that one.
         let counted_from = said[4] as usize as u32;
         let counted_from = Date::new((counted_from / 10_000) as i32, (counted_from / 100 % 100) as u8, (counted_from % 100) as u8);
         let after_sunday = (counted_from.weekday() as i32 + 1) % 7 + first_weekday.bytes().next().map_or(1, i32::from) - 1;
-        locale.first_day = (after_sunday + 6).rem_euclid(7) as u8;
+        locale.first_weekday = (after_sunday + 6).rem_euclid(7) as u8;
     }
     if numbers {
-        (locale.point, locale.thousands) = (first(&point).unwrap_or('.'), first(&thousands));
+        (locale.decimal_point, locale.thousands_separator) = (first(&point).unwrap_or('.'), first(&thousands));
     }
     locale
 }
@@ -294,7 +301,7 @@ mod tests {
         // with the weekday name.
         let windows = ["M/d/yyyy", "dd.MM.yyyy", "yyyy-MM-dd", "yyyy/MM/dd", "d. M. yyyy", "dddd, dd-MM-yyyy", "yyyy'年'M'月'd'日'"];
         let read: Vec<_> = windows.iter().map(|pattern| date_order(pattern)).collect();
-        let (ymd, dmy, mdy) = (Order::YearMonthDay, Order::DayMonthYear, Order::MonthDayYear);
+        let (ymd, dmy, mdy) = (DateOrder::YearMonthDay, DateOrder::DayMonthYear, DateOrder::MonthDayYear);
         assert_eq!(read, [Some((mdy, '/')), Some((dmy, '.')), Some((ymd, '-')), Some((ymd, '/')), Some((dmy, '.')), Some((dmy, '-')), Some((ymd, '/'))]);
         assert_eq!(date_order("HH:mm"), None, "no date in it");
         // As glibc writes them (en_US, de_DE, en_GB, nb_NO, ja_JP, hi_IN, and whole dates).
@@ -306,9 +313,9 @@ mod tests {
 
     #[test]
     fn numbers_are_written_and_read_with_the_marks_of_the_place() {
-        let german = Locale { thousands: Some('.'), point: ',', ..Locale::PLAIN };
-        let american = Locale { thousands: Some(','), ..Locale::PLAIN };
-        let french = Locale { thousands: Some('\u{202f}'), point: ',', ..Locale::PLAIN };
+        let german = Locale { thousands_separator: Some('.'), decimal_point: ',', ..Locale::PLAIN };
+        let american = Locale { thousands_separator: Some(','), ..Locale::PLAIN };
+        let french = Locale { thousands_separator: Some('\u{202f}'), decimal_point: ',', ..Locale::PLAIN };
         let written = |locale: Locale, rust: &str, grouped: bool| {
             let mut into = String::new();
             locale.write_number(&mut into, rust, grouped);
@@ -327,7 +334,9 @@ mod tests {
         assert_eq!([Locale::PLAIN.read_number::<f32>("inf"), Locale::PLAIN.read_number("NaN")], [None, None]);
         assert_eq!(Locale::PLAIN.read_number::<u8>("-1"), None);
         let mut date = String::new();
-        for locale in [Locale::PLAIN, Locale { order: Order::DayMonthYear, between: '.', ..Locale::PLAIN }, Locale { order: Order::MonthDayYear, between: '/', ..Locale::PLAIN }] {
+        for locale in
+            [Locale::PLAIN, Locale { date_order: DateOrder::DayMonthYear, date_separator: '.', ..Locale::PLAIN }, Locale { date_order: DateOrder::MonthDayYear, date_separator: '/', ..Locale::PLAIN }]
+        {
             locale.write_date(&mut date, Date::new(2026, 3, 7));
             date.push(' ');
         }
@@ -341,14 +350,14 @@ mod tests {
     #[test]
     fn glibc_says_how_places_write_dates_times_and_numbers() {
         let us = from_glibc(c"en_US.UTF-8", [true, true]);
-        assert_eq!(us, Locale { order: Order::MonthDayYear, between: '/', first_day: 6, twelve_hours: true, thousands: Some(','), point: '.' });
+        assert_eq!(us, Locale { date_order: DateOrder::MonthDayYear, date_separator: '/', first_weekday: 6, twelve_hour_clock: true, thousands_separator: Some(','), decimal_point: '.' });
         assert_eq!(from_glibc(c"xx_NOWHERE.UTF-8", [true, true]), Locale::PLAIN, "a locale that is not there");
-        assert_eq!(from_glibc(c"en_US.UTF-8", [false, true]), Locale { thousands: Some(','), ..Locale::PLAIN });
+        assert_eq!(from_glibc(c"en_US.UTF-8", [false, true]), Locale { thousands_separator: Some(','), ..Locale::PLAIN });
         if std::env::var_os("LOCPATH").is_some() {
-            let germany = Locale { order: Order::DayMonthYear, between: '.', first_day: 0, twelve_hours: false, thousands: Some('.'), point: ',' };
+            let germany = Locale { date_order: DateOrder::DayMonthYear, date_separator: '.', first_weekday: 0, twelve_hour_clock: false, thousands_separator: Some('.'), decimal_point: ',' };
             assert_eq!(from_glibc(c"de_DE.UTF-8", [true, true]), germany);
             let sweden = from_glibc(c"sv_SE.UTF-8", [true, true]);
-            assert_eq!((sweden.order, sweden.between, sweden.first_day, sweden.twelve_hours, sweden.point), (Order::YearMonthDay, '-', 0, false, ','));
+            assert_eq!((sweden.date_order, sweden.date_separator, sweden.first_weekday, sweden.twelve_hour_clock, sweden.decimal_point), (DateOrder::YearMonthDay, '-', 0, false, ','));
         }
     }
 
@@ -368,10 +377,10 @@ mod tests {
         assert!(asked(&[("LANG", "en_US.UTF-8"), ("LC_ALL", "POSIX")]).contains(&plain), "LC_ALL comes first");
         assert!(asked(&[]).contains(&plain), "none named");
         let american = asked(&[("LANG", "en_US.UTF-8")]);
-        assert!(american.contains("MonthDayYear") && american.contains("twelve_hours: true"), "{american}");
+        assert!(american.contains("MonthDayYear") && american.contains("twelve_hour_clock: true"), "{american}");
         // Dates as C writes them, numbers as the US does.
         let mixed = asked(&[("LANG", "en_US.UTF-8"), ("LC_TIME", "C.UTF-8")]);
-        assert!(mixed.contains("YearMonthDay") && mixed.contains("thousands: Some(',')"), "{mixed}");
+        assert!(mixed.contains("YearMonthDay") && mixed.contains("thousands_separator: Some(',')"), "{mixed}");
     }
 
     /// The child of the test above: prints what the system said.
@@ -388,12 +397,12 @@ mod tests {
     fn windows_says_how_places_write_dates_times_and_numbers() {
         let of = |name: &str| from_windows(name.encode_utf16().chain([0]).collect::<Vec<u16>>().as_ptr());
         let (us, germany, sweden, japan) = (of("en-US"), of("de-DE"), of("sv-SE"), of("ja-JP"));
-        assert_eq!(us, Locale { order: Order::MonthDayYear, between: '/', first_day: 6, twelve_hours: true, thousands: Some(','), point: '.' });
-        assert_eq!(germany, Locale { order: Order::DayMonthYear, between: '.', first_day: 0, twelve_hours: false, thousands: Some('.'), point: ',' });
-        assert_eq!((sweden.order, sweden.between, sweden.first_day, sweden.twelve_hours, sweden.point), (Order::YearMonthDay, '-', 0, false, ','));
-        assert_eq!((japan.order, japan.between, japan.first_day, japan.twelve_hours), (Order::YearMonthDay, '/', 6, false));
+        assert_eq!(us, Locale { date_order: DateOrder::MonthDayYear, date_separator: '/', first_weekday: 6, twelve_hour_clock: true, thousands_separator: Some(','), decimal_point: '.' });
+        assert_eq!(germany, Locale { date_order: DateOrder::DayMonthYear, date_separator: '.', first_weekday: 0, twelve_hour_clock: false, thousands_separator: Some('.'), decimal_point: ',' });
+        assert_eq!((sweden.date_order, sweden.date_separator, sweden.first_weekday, sweden.twelve_hour_clock, sweden.decimal_point), (DateOrder::YearMonthDay, '-', 0, false, ','));
+        assert_eq!((japan.date_order, japan.date_separator, japan.first_weekday, japan.twelve_hour_clock), (DateOrder::YearMonthDay, '/', 6, false));
         // And the user's own reads without trouble, whatever it is.
         let own = Locale::of_the_system();
-        assert!(own.first_day < 7 && own.point != '\0', "{own:?}");
+        assert!(own.first_weekday < 7 && own.decimal_point != '\0', "{own:?}");
     }
 }

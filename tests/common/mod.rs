@@ -2,7 +2,7 @@
 #![allow(dead_code)] // each file of tests uses its own part of this
 use taut::geom::{Point, Size, pt};
 use taut::text::BuiltInFont;
-use taut::{Button, Event, Key, LocalClipboard, Mods, Rect, Surface, Ui};
+use taut::{AccessNode, Button, Color, Event, Key, LocalClipboard, Mods, Rect, Role, Surface, Ui};
 
 /// It keeps the picture a real window would be showing: after every run only the part that
 /// is said to have changed is drawn again, and the picture is then held against one of the
@@ -23,16 +23,16 @@ impl Window {
         self.screen.redraw(&mut self.ui, changed);
         let afresh = Surface::draw(&mut self.ui, 64);
         if self.screen.pixels != afresh.pixels {
-            panic!("drawing only what changed ({changed:?}) left the window different from drawing all of it, in pixels {:?}", self.differs(&afresh));
+            panic!("drawing only what changed ({changed:?}) left the window different from drawing all of it, in pixels {:?}", self.diff_bounds(&afresh));
         }
         changed
     }
     /// The smallest block of pixels that holds every pixel in which the picture differs from
     /// `other`: left, top, right, bottom.
-    fn differs(&self, other: &Surface) -> [usize; 4] {
-        let wide = self.screen.width.max(1);
-        let places = self.screen.pixels.iter().zip(&other.pixels).enumerate().filter(|(_, (a, b))| a != b).map(|(at, _)| (at % wide, at / wide));
-        places.fold([usize::MAX, usize::MAX, 0, 0], |[left, top, right, bottom], (x, y)| [left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1)])
+    fn diff_bounds(&self, other: &Surface) -> [usize; 4] {
+        let width = self.screen.width.max(1);
+        let differing = self.screen.pixels.iter().zip(&other.pixels).enumerate().filter(|(_, (a, b))| a != b).map(|(at, _)| (at % width, at / width));
+        differing.fold([usize::MAX, usize::MAX, 0, 0], |[left, top, right, bottom], (x, y)| [left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1)])
     }
 }
 impl std::ops::Deref for Window {
@@ -84,4 +84,38 @@ pub fn key(ui: &mut Window, key: Key, mods: Mods, build: impl FnMut(&mut Ui)) {
 }
 pub fn typed(ui: &mut Window, text: &str, build: impl FnMut(&mut Ui)) {
     does(ui, Event::Text(text.into()), build);
+}
+
+/// How many pixels of the window's picture inside `area` (clipped to the window) are not
+/// `background`.
+pub fn painted_pixels(ui: &Window, area: Rect, background: Color) -> usize {
+    let (width, height) = (ui.screen.width, ui.screen.pixels.len() / ui.screen.width.max(1));
+    let columns = area.x.max(0.0) as usize..(area.right() as usize).min(width);
+    let rows = area.y.max(0.0) as usize..(area.bottom() as usize).min(height);
+    rows.flat_map(|y| &ui.screen.pixels[y * width..][columns.clone()]).filter(|pixel| **pixel != background.0).count()
+}
+
+/// The first node a screen reader is given under this name.
+pub fn find_node(ui: &Ui, name: &str) -> Option<AccessNode> {
+    ui.visible_access_nodes().iter().find(|node| node.name == name).cloned()
+}
+/// The first node of this role under this name.
+pub fn find_node_as(ui: &Ui, role: Role, name: &str) -> Option<AccessNode> {
+    ui.visible_access_nodes().iter().find(|node| node.role == role && node.name == name).cloned()
+}
+/// The first node under this name; panics with the names there are.
+pub fn expect_node(ui: &Ui, name: &str) -> AccessNode {
+    find_node(ui, name).unwrap_or_else(|| panic!("nothing is called {name:?} in {:?}", node_names(ui)))
+}
+/// The first node of this role under this name; panics with the names there are.
+pub fn expect_node_as(ui: &Ui, role: Role, name: &str) -> AccessNode {
+    find_node_as(ui, role, name).unwrap_or_else(|| panic!("no {role:?} is called {name:?} in {:?}", node_names(ui)))
+}
+/// The node the keyboard is on.
+pub fn focused_node(ui: &Ui) -> Option<AccessNode> {
+    ui.visible_access_nodes().iter().find(|node| node.focused).cloned()
+}
+/// The names of the nodes, in order.
+pub fn node_names(ui: &Ui) -> Vec<String> {
+    ui.visible_access_nodes().iter().map(|node| node.name.clone()).collect()
 }

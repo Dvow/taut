@@ -27,8 +27,8 @@ fn describe(settings: &mut Settings, ui: &mut Ui) {
 }
 ```
 
-Larger parts take library values the app keeps: `Table`, `Panel`, `Dock`, `Second`, `Picks`,
-`Files`. `Table`, `Panel`, `Dock` and `Second` round-trip through one line of text
+Larger parts take library values the app keeps: `Table`, `Panel`, `Dock`, `SecondWindow`, `Selection`,
+`FileDialog`. `Table`, `Panel`, `Dock` and `SecondWindow` round-trip through one line of text
 (`to_string()`, `parse()`).
 
 ## What the library keeps
@@ -92,7 +92,7 @@ assert_eq!(typed_after_the_first_goes(true), ["bX", "c"]);
 index.
 
 - Key rows of lists whose items are added, removed or reordered. Keys are unique among siblings.
-- `ui.pick_row(key, ..)` takes its key directly.
+- `ui.selectable_row(key, ..)` takes its key directly.
 - `ui.rows` and `ui.list` number rows from the first overall, so scrolling keeps row state.
 - `ui.id(key)` and `ui.next_id()` give an id before the box exists.
 
@@ -103,7 +103,7 @@ index.
 | `clicked` | Pressed and released on it this run; Enter and Space click the focused part. |
 | `changed` | The user changed its value. |
 | `hovered` | Pointer over it, and over nothing on top of it. |
-| `over` | Pointer over it or over something inside it. |
+| `contains_pointer` | Pointer over it or over something inside it. |
 | `pressed` | Left button went down on it and is still down. |
 | `right_clicked`, `double_clicked` | As named. |
 | `focused` | It has keyboard focus. |
@@ -133,10 +133,10 @@ fn chip(ui: &mut Ui, on: &mut bool, name: &str) -> Response {
     let (fill, ink) = match (*on, state.hovered) {
         (true, _) => (t.accent, t.on_accent),
         (false, true) => (t.hover, t.text),
-        (false, false) => (t.raise, t.text_dim),
+        (false, false) => (t.raised, t.text_dim),
     };
     ui.el().text(name, t.font, ink).pad((12.0, 5.0)).fill(fill).border(t.line, 1.0).radius(14.0).sense().focusable().show();
-    ui.tell(&state, Role::Tick, Some(*on), "");
+    ui.tell(&state, Role::CheckBox, Some(*on), "");
     state
 }
 
@@ -180,10 +180,10 @@ fn card(ui: &mut Ui, title: &str) -> bool {
 
 | Part | Close it |
 | --- | --- |
-| `ui.menu(..)`, `ui.menu_button(..)`, `ui.submenu(..)`, `ui.context_menu(..)`, `ui.popup(..)`, `ui.popover(..)`, `ui.panel(..)`, `ui.window(..)`, `ui.bare_window(..)`, `ui.docked(..)`, `ui.docked_closable(..)`, `ui.carried(..)` | when it returns `true` |
-| `ui.tree(&mut open, ..)`, `ui.picked_tree(&mut open, ..)` | when `open` is true after it |
+| `ui.menu(..)`, `ui.menu_button(..)`, `ui.submenu(..)`, `ui.context_menu(..)`, `ui.popup(..)`, `ui.popover(..)`, `ui.panel(..)`, `ui.window(..)`, `ui.frameless_window(..)`, `ui.docked(..)`, `ui.docked_closable(..)`, `ui.drag_source(..)` | when it returns `true` |
+| `ui.tree(&mut open, ..)`, `ui.selectable_tree(&mut open, ..)` | when `open` is true after it |
 | `ui.graph(..)` | after each node it yields |
-| `ui.menu_bar()`, `ui.tool_bar()`, `ui.dialog()`, `ui.card()`, `ui.banner(..)`, `ui.dock(..)`, `ui.board(..)`, `ui.table(..)`, `ui.rows(..)`, `ui.list(..)`, `ui.uneven_rows(..)`, `ui.branches(..)`, `ui.branch(..)`, `ui.pick_row(..)`, `ui.notices(..)` | always |
+| `ui.menu_bar()`, `ui.tool_bar()`, `ui.dialog()`, `ui.card()`, `ui.banner(..)`, `ui.dock(..)`, `ui.pan_zoom(..)`, `ui.table(..)`, `ui.rows(..)`, `ui.list(..)`, `ui.variable_rows(..)`, `ui.tree_view(..)`, `ui.tree_row(..)`, `ui.selectable_row(..)`, `ui.notices(..)` | always |
 
 In debug builds an unbalanced run panics, naming the line that opened the unclosed box, or the
 `ui.close()` with nothing to close.
@@ -240,7 +240,7 @@ From outside the window:
 
 - `ui.wake_after(duration)`: run again later.
 - `taut::Waker.wake()`: run soon, from any thread.
-- `ui.glide(id, target, duration)`: an animated value.
+- `ui.animate(id, target, duration)`: an animated value.
 
 ```rust,no_run
 use std::sync::mpsc::{Receiver, channel};

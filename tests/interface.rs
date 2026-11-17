@@ -85,9 +85,9 @@ fn the_page_takes_the_colour_of_the_theme_at_once() {
 fn a_box_among_boxes_on_top_of_each_other_is_placed_across_and_down() {
     let mut ui = window(1.0);
     let mut found = [Rect::EMPTY; 5];
-    let spots: [taut::layout::Spot; 5] = [Align::End.into(), (Align::End, Align::Center).into(), (Align::Start, Align::End).into(), Align::Center.into(), (Align::Center, Align::Start).into()];
+    let spots: [taut::layout::Placement; 5] = [Align::End.into(), (Align::End, Align::Center).into(), (Align::Start, Align::End).into(), Align::Center.into(), (Align::Center, Align::Start).into()];
     settle(&mut ui, |ui| {
-        ui.el().flow(Flow::Layers).size(200.0, 100.0).open();
+        ui.el().flow(Flow::Stack).size(200.0, 100.0).open();
         for (spot, found) in spots.iter().zip(&mut found) {
             *found = ui.el().size(40.0, 20.0).place(*spot).sense().show().rect;
         }
@@ -110,17 +110,17 @@ fn a_box_among_boxes_on_top_of_each_other_is_placed_across_and_down() {
 fn a_box_alone_in_its_window_hears_of_the_pointer_like_any_other() {
     // One box that senses the pointer, and nothing else that asks about anything: what it
     // is told is as of this run, not of the one before.
-    let (mut ui, mut told) = (window(1.0), (Rect::EMPTY, false));
-    let build = |ui: &mut Ui, told: &mut (Rect, bool)| {
+    let (mut ui, mut response) = (window(1.0), (Rect::EMPTY, false));
+    let build = |ui: &mut Ui, response: &mut (Rect, bool)| {
         let only = ui.el().size(50.0, 40.0).sense().show();
-        *told = (only.rect, only.hovered);
+        *response = (only.rect, only.hovered);
     };
-    settle(&mut ui, |ui| build(ui, &mut told));
-    assert_eq!(told, (rect(0.0, 0.0, 50.0, 40.0), false));
-    does(&mut ui, Event::Move(pt(10.0, 10.0)), |ui| build(ui, &mut told));
-    assert!(told.1, "the pointer is over it");
-    does(&mut ui, Event::Move(pt(100.0, 10.0)), |ui| build(ui, &mut told));
-    assert!(!told.1, "and has left it");
+    settle(&mut ui, |ui| build(ui, &mut response));
+    assert_eq!(response, (rect(0.0, 0.0, 50.0, 40.0), false));
+    does(&mut ui, Event::Move(pt(10.0, 10.0)), |ui| build(ui, &mut response));
+    assert!(response.1, "the pointer is over it");
+    does(&mut ui, Event::Move(pt(100.0, 10.0)), |ui| build(ui, &mut response));
+    assert!(!response.1, "and has left it");
 }
 
 #[test]
@@ -146,28 +146,28 @@ fn a_screen_reader_is_told_what_is_in_the_window_and_works_it() {
     let (mut ui, mut app) = (window(1.0), Form { level: 4.0, ..Default::default() });
     // Nobody listens: nothing is kept.
     settle(&mut ui, |ui| form(&mut app, ui));
-    assert!(ui.said().is_empty());
+    assert!(ui.visible_access_nodes().is_empty());
 
     // Somebody does: every thing in the window, with what it is, what it is called and how
     // it stands. (The text in a tick box is its name, not a thing of its own.)
-    ui.listen(true);
+    ui.set_screen_reader(true);
     settle(&mut ui, |ui| form(&mut app, ui));
-    let told = |ui: &Window| ui.said().iter().map(|said| (said.role, said.name.clone(), said.value.clone(), said.on, said.amount)).collect::<Vec<_>>();
+    let given = |ui: &Window| ui.visible_access_nodes().iter().map(|node| (node.role, node.name.clone(), node.value.clone(), node.on, node.value_range)).collect::<Vec<_>>();
     let none = String::new;
     let expected = vec![
         (Role::Text, "Sound".to_string(), none(), None, None),
-        (Role::Tick, "Loud".to_string(), none(), Some(false), None),
+        (Role::CheckBox, "Loud".to_string(), none(), Some(false), None),
         (Role::Slider, none(), none(), None, Some([4.0, 0.0, 10.0])),
         (Role::TextBox, "Your name".to_string(), none(), None, None),
         (Role::Button, "Save".to_string(), none(), None, None),
         (Role::Button, "Add one".to_string(), none(), None, None),
     ];
-    assert_eq!(told(&ui), expected);
-    assert!(ui.said().iter().all(|said| said.usable && !said.focused && said.rect.w > 0.0 && said.within.is_none()));
+    assert_eq!(given(&ui), expected);
+    assert!(ui.visible_access_nodes().iter().all(|node| node.enabled && !node.focused && node.rect.w > 0.0 && node.parent.is_none()));
 
     // It presses the tick box, moves the slider on, types a name and presses the button,
     // each known by its id; and is told how things stand after.
-    let ids: Vec<u64> = ui.said().iter().map(|said| said.id).collect();
+    let ids: Vec<u64> = ui.visible_access_nodes().iter().map(|node| node.id).collect();
     ui.press_for_reader(ids[1]);
     ui.run(&mut |ui| form(&mut app, ui));
     ui.step_for_reader(ids[2], true);
@@ -182,16 +182,16 @@ fn a_screen_reader_is_told_what_is_in_the_window_and_works_it() {
     assert_eq!(ui.announced(), ["Saved"]);
     ui.run(&mut |ui| form(&mut app, ui));
     assert!(ui.announced().is_empty());
-    let now = told(&ui);
+    let now = given(&ui);
     assert_eq!((now[1].3, now[2].4, now[3].2.as_str()), (Some(true), Some([4.5, 0.0, 10.0]), "Ada"));
-    assert!(ui.said()[4].focused, "the keyboard is on what was pressed last");
-    assert_eq!(ui.said().iter().map(|said| said.id).collect::<Vec<_>>(), ids, "each thing is known as before");
+    assert!(ui.visible_access_nodes()[4].focused, "the keyboard is on what was pressed last");
+    assert_eq!(ui.visible_access_nodes().iter().map(|node| node.id).collect::<Vec<_>>(), ids, "each thing is known as before");
     // It has the slider stand where it says, in one go: also between the steps the keyboard
     // takes it by, and no further than its end. The slider says how far a step takes it.
-    for (asked, stands) in [(7.2, 7.2), (99.0, 10.0)] {
+    for (asked, clamped) in [(7.2, 7.2), (99.0, 10.0)] {
         ui.set_for_reader(ids[2], asked);
         ui.run(&mut |ui| form(&mut app, ui));
-        assert_eq!((app.level, ui.said()[2].amount, ui.said()[2].step), (stands, Some([stands, 0.0, 10.0]), 0.5));
+        assert_eq!((app.level, ui.visible_access_nodes()[2].value_range, ui.visible_access_nodes()[2].step), (clamped, Some([clamped, 0.0, 10.0]), 0.5));
     }
 }
 
@@ -224,7 +224,7 @@ fn strips_of_any_height_draw_the_same_window() {
         }
         // Kept where it can be looked at: target/tmp/window-<scale>.png
         let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("window-{scale}.png"));
-        std::fs::write(&file, whole.png()).unwrap();
+        std::fs::write(&file, whole.to_png()).unwrap();
         assert_eq!(whole.width, (420.0 * scale) as usize);
     }
 }
@@ -328,7 +328,7 @@ fn a_long_line_scrolls_to_keep_the_cursor_in_view() {
 struct Bar {
     clicks: [u32; 2],
     on: bool,
-    picked: Option<&'static str>,
+    selected: Option<&'static str>,
     more: Rect,
     other: Rect,
     item: Rect,
@@ -348,12 +348,12 @@ fn bar(app: &mut Bar, ui: &mut Ui) {
     }
     if ui.menu(more.id) {
         if ui.menu_item("Rename").clicked {
-            app.picked = Some("Rename");
+            app.selected = Some("Rename");
         }
         let remove = ui.menu_item("Remove");
         app.item = remove.rect;
         if remove.clicked {
-            app.picked = Some("Remove");
+            app.selected = Some("Remove");
         }
         ui.close();
     }
@@ -403,26 +403,26 @@ fn the_arrow_keys_take_the_keyboard_to_the_nearest_thing_that_way() {
 
     // In a long list only the rows in view are there. The keyboard goes down it all the
     // same: the list is scrolled on, a row at a time, and back.
-    let (mut ui, mut on, mut seen) = (window(1.0), 0, 0..0);
-    let list = |ui: &mut Ui, on: &mut usize, seen: &mut std::ops::Range<usize>| {
-        *seen = ui.list(1000, 20.0);
-        for row in seen.clone() {
+    let (mut ui, mut on, mut visible) = (window(1.0), 0, 0..0);
+    let list = |ui: &mut Ui, on: &mut usize, visible: &mut std::ops::Range<usize>| {
+        *visible = ui.list(1000, 20.0);
+        for row in visible.clone() {
             let state = ui.selectable(false, &format!("row {row}"));
             *on = if state.focused { row } else { *on };
         }
         ui.close();
         ui.button("under the list");
     };
-    settle(&mut ui, |ui| list(ui, &mut on, &mut seen));
-    key(&mut ui, Key::Tab, Mods::NONE, |ui| list(ui, &mut on, &mut seen));
+    settle(&mut ui, |ui| list(ui, &mut on, &mut visible));
+    key(&mut ui, Key::Tab, Mods::NONE, |ui| list(ui, &mut on, &mut visible));
     for row in 1..=40 {
-        key(&mut ui, Key::Down, Mods::NONE, |ui| list(ui, &mut on, &mut seen));
-        assert!(on == row && seen.contains(&row), "after {row} times down, the keyboard is on row {on} and rows {seen:?} show");
+        key(&mut ui, Key::Down, Mods::NONE, |ui| list(ui, &mut on, &mut visible));
+        assert!(on == row && visible.contains(&row), "after {row} times down, the keyboard is on row {on} and rows {visible:?} show");
         assert!(ui.passes <= 3, "which took {} goes", ui.passes);
     }
     for row in (0..40).rev() {
-        key(&mut ui, Key::Up, Mods::NONE, |ui| list(ui, &mut on, &mut seen));
-        assert!(on == row && seen.contains(&row), "back up to row {row}: on {on}, {seen:?} show");
+        key(&mut ui, Key::Up, Mods::NONE, |ui| list(ui, &mut on, &mut visible));
+        assert!(on == row && visible.contains(&row), "back up to row {row}: on {on}, {visible:?} show");
     }
 }
 
@@ -435,7 +435,7 @@ fn a_menu_opens_is_picked_from_and_closes() {
         click(&mut ui, middle(app.more), |ui| bar(&mut app, ui));
         assert!(app.item.w >= 162.0 && app.item.y > app.more.bottom(), "the menu is open under its button: {:?}", app.item);
         click(&mut ui, middle(app.item), |ui| bar(&mut app, ui));
-        assert_eq!(app.picked, Some("Remove"));
+        assert_eq!(app.selected, Some("Remove"));
 
         // Open again: a press beside it closes it, and goes no further.
         click(&mut ui, middle(app.more), |ui| bar(&mut app, ui));
@@ -444,11 +444,12 @@ fn a_menu_opens_is_picked_from_and_closes() {
         click(&mut ui, middle(app.other), |ui| bar(&mut app, ui));
         assert_eq!(app.clicks[1], 1, "with the menu closed, it is");
 
-        // Open again: the keyboard goes into it, on its first row; Enter picks, Escape closes.
-        app.picked = None;
+        // Open again: the keyboard goes into it, on its first row; Enter selects, Escape
+        // closes.
+        app.selected = None;
         click(&mut ui, middle(app.more), |ui| bar(&mut app, ui));
         key(&mut ui, Key::Enter, Mods::NONE, |ui| bar(&mut app, ui));
-        assert_eq!(app.picked, Some("Rename"));
+        assert_eq!(app.selected, Some("Rename"));
         click(&mut ui, middle(app.more), |ui| bar(&mut app, ui));
         let open = Surface::draw(&mut ui, 64).pixels;
         key(&mut ui, Key::Escape, Mods::NONE, |ui| bar(&mut app, ui));
@@ -500,25 +501,25 @@ fn a_dialog_keeps_what_is_under_it_out_of_reach() {
 #[test]
 fn a_long_list_describes_only_the_rows_in_view_and_its_bar_is_dragged() {
     let mut ui = window(1.0);
-    let mut seen = Vec::new();
-    let build = |ui: &mut Ui, seen: &mut Vec<usize>| {
-        *seen = ui.list(100_000, 20.0).collect();
-        for row in seen.iter() {
+    let mut visible = Vec::new();
+    let build = |ui: &mut Ui, visible: &mut Vec<usize>| {
+        *visible = ui.list(100_000, 20.0).collect();
+        for row in visible.iter() {
             ui.row().key(row).h(Length::Px(20.0)).open();
             ui.label(&format!("line {row}"));
             ui.close();
         }
         ui.close();
     };
-    settle(&mut ui, |ui| build(ui, &mut seen));
-    assert_eq!(seen, (0..15).collect::<Vec<_>>(), "300 high, rows of 20: fifteen of the hundred thousand");
+    settle(&mut ui, |ui| build(ui, &mut visible));
+    assert_eq!(visible, (0..15).collect::<Vec<_>>(), "300 high, rows of 20: fifteen of the hundred thousand");
 
     // The bar runs down the right edge. Caught at its top and taken half way down, it shows the middle.
     for event in [Event::Move(pt(415.0, 5.0)), Event::Press(Button::Left, Mods::NONE), Event::Move(pt(415.0, 5.0 + (300.0 - 24.0) / 2.0)), Event::Release(Button::Left)] {
         ui.event(event);
-        ui.run(&mut |ui| build(ui, &mut seen));
+        ui.run(&mut |ui| build(ui, &mut visible));
     }
-    assert!((49_900..50_100).contains(&seen[0]) && seen.len() <= 16, "{seen:?}");
+    assert!((49_900..50_100).contains(&visible[0]) && visible.len() <= 16, "{visible:?}");
 }
 
 #[test]
@@ -609,9 +610,9 @@ fn an_app_draws_its_own_shapes_and_pictures_where_it_likes_and_closes_its_window
     let mut line = Path::new();
     line.move_to(10.0, 10.0).line_to(90.0, 10.0);
     let build = |ui: &mut Ui, line: &Path| {
-        ui.el().flow(Flow::Layers).grow().open();
-        ui.el().size(100.0, 40.0).at(50.0, 100.0).outline(line, 4.0, Color::rgb(0xff0000)).show();
-        ui.el().picture(four).size(40.0, 40.0).at(200.0, 30.0).show();
+        ui.el().flow(Flow::Stack).grow().open();
+        ui.el().size(100.0, 40.0).offset(50.0, 100.0).outline(line, 4.0, Color::rgb(0xff0000)).show();
+        ui.el().picture(four).size(40.0, 40.0).offset(200.0, 30.0).show();
         ui.close();
     };
     ui.run(&mut |ui| build(ui, &line));
@@ -635,7 +636,7 @@ fn an_app_draws_its_own_shapes_and_pictures_where_it_likes_and_closes_its_window
 /// Parts that people coming from Dear ImGui look for, and where they ended up.
 #[derive(Default)]
 struct More {
-    picked: usize,
+    selected: usize,
     doubles: u32,
     removed: bool,
     open: bool,
@@ -651,10 +652,10 @@ struct More {
 fn more(app: &mut More, ui: &mut Ui) {
     ui.column().pad(10.0).gap(6.0).open();
     for (i, name) in ["First", "Second", "Third"].iter().enumerate() {
-        let row = ui.selectable(app.picked == i, name);
+        let row = ui.selectable(app.selected == i, name);
         (app.rows[i], app.doubles) = (row.rect, app.doubles + row.double_clicked as u32);
         if row.clicked {
-            app.picked = i;
+            app.selected = i;
         }
         if ui.context_menu(&row) {
             let item = ui.menu_item("Remove");
@@ -667,7 +668,7 @@ fn more(app: &mut More, ui: &mut Ui) {
         app.leaf = ui.selectable(false, "a file").rect;
         ui.close();
     }
-    app.number = ui.drag(&mut app.amount, 0.5).rect;
+    app.number = ui.drag_value(&mut app.amount, 0.5).rect;
     ui.plot_lines(&[1.0, 3.0, 2.0, 5.0], 120.0, 40.0);
     ui.plot_bars(&[1.0, 3.0, 2.0, 5.0], 120.0, 40.0);
     ui.set_enabled(!app.off);
@@ -684,15 +685,15 @@ fn rows_are_picked_trees_open_numbers_are_dragged_and_parts_are_switched_off() {
     ui.resize(taut::geom::Size { w: 420.0, h: 360.0 }, 1.0);
     settle(&mut ui, |ui| more(&mut app, ui));
     click(&mut ui, middle(app.rows[1]), |ui| more(&mut app, ui));
-    assert_eq!((app.picked, app.doubles), (1, 0));
+    assert_eq!((app.selected, app.doubles), (1, 0));
     // Two clicks close together are a double click.
     ui.set_time(Duration::from_secs(5));
     click(&mut ui, middle(app.rows[2]), |ui| more(&mut app, ui));
     ui.set_time(Duration::from_millis(5100));
     click(&mut ui, middle(app.rows[2]), |ui| more(&mut app, ui));
-    assert_eq!((app.picked, app.doubles), (2, 1));
+    assert_eq!((app.selected, app.doubles), (2, 1));
 
-    // The right button opens a menu where the pointer is; picking from it closes it.
+    // The right button opens a menu where the pointer is; selecting from it closes it.
     for event in [Event::Move(middle(app.rows[0])), Event::Press(Button::Right, Mods::NONE), Event::Release(Button::Right)] {
         ui.event(event);
         ui.run(&mut |ui| more(&mut app, ui));
@@ -810,14 +811,14 @@ fn a_screen_reader_is_told_each_part_as_the_kind_of_thing_it_is() {
         ui.menu_bar();
         if ui.menu_button("File") {
             ui.menu_item("Open\tCtrl+O");
-            ui.menu_check(&mut app.dark, "Dark");
+            ui.menu_checkbox(&mut app.dark, "Dark");
             ui.close();
         }
         ui.close();
         ui.switch(&mut app.loud, "Loud");
         ui.tabs(&mut app.tab, &["One", "Two", "Three"]);
         ui.select(&mut app.size, &["Roomy", "Tight"]);
-        ui.secret_box(&mut app.password, "Password");
+        ui.password_box(&mut app.password, "Password");
         for row in ui.list(500, 20.0) {
             if ui.selectable(app.row == row, &format!("row {row}")).clicked {
                 app.row = row;
@@ -832,11 +833,11 @@ fn a_screen_reader_is_told_each_part_as_the_kind_of_thing_it_is() {
         }
     };
     let (mut ui, mut app) = (window(1.0), Parts::default());
-    ui.listen(true);
+    ui.set_screen_reader(true);
     settle(&mut ui, |ui| parts(&mut app, ui));
     // Each thing with its kind, its name, how it stands, and what it is in (by number).
-    let told = |ui: &Window| ui.said().iter().map(|said| (said.role, said.name.clone(), said.on, said.within)).collect::<Vec<_>>();
-    let page = told(&ui);
+    let given = |ui: &Window| ui.visible_access_nodes().iter().map(|node| (node.role, node.name.clone(), node.on, node.parent)).collect::<Vec<_>>();
+    let page = given(&ui);
     let expected = [
         (Role::MenuBar, "", None, None),
         (Role::Fold, "File", Some(false), Some(0)),
@@ -845,53 +846,53 @@ fn a_screen_reader_is_told_each_part_as_the_kind_of_thing_it_is() {
         (Role::Tab, "One", Some(true), Some(3)),
         (Role::Tab, "Two", Some(false), Some(3)),
         (Role::Tab, "Three", Some(false), Some(3)),
-        (Role::Select, "", Some(false), None),
-        (Role::Secret, "Password", None, None),
+        (Role::ComboBox, "", Some(false), None),
+        (Role::PasswordBox, "Password", None, None),
         (Role::Row, "row 0", Some(true), None),
         (Role::Row, "row 1", Some(false), None),
     ];
     assert_eq!(page[..11], expected.map(|(role, name, on, within)| (role, name.to_string(), on, within)));
     // A tab says which one of how many it is, and so does a row of a long list, of which
     // only the rows in view are there; and the box that opens a list says what is chosen.
-    let of = |ui: &Window, name: &str| ui.said().iter().find(|said| said.name == name).and_then(|said| said.of);
-    assert_eq!((of(&ui, "Two"), of(&ui, "row 1"), of(&ui, "Loud"), ui.said()[7].value.as_str()), (Some([2, 3]), Some([2, 500]), None, "Roomy"));
-    assert!(ui.said().len() < 30, "of five hundred rows, the few in view are told");
+    let of = |ui: &Window, name: &str| ui.visible_access_nodes().iter().find(|node| node.name == name).and_then(|node| node.position);
+    assert_eq!((of(&ui, "Two"), of(&ui, "row 1"), of(&ui, "Loud"), ui.visible_access_nodes()[7].value.as_str()), (Some([2, 3]), Some([2, 500]), None, "Roomy"));
+    assert!(ui.visible_access_nodes().len() < 30, "of five hundred rows, the few in view are told");
 
-    // The menu is opened: it is told as a menu, after everything in the window it lies
+    // The menu is opened: it is reported as a menu, after everything in the window it lies
     // over, and its rows are called by their names, with the keys that do the same apart.
-    // The button that opened it says that it is open, and everything else is told as
+    // The button that opened it says that it is open, and everything else is reported as
     // before, each thing still known as the same thing.
-    let ids = |ui: &Window| ui.said().iter().filter(|said| !matches!(said.role, Role::Menu | Role::MenuItem)).map(|said| said.id).collect::<Vec<_>>();
-    let (file, before) = (ui.said()[1].id, ids(&ui));
+    let ids = |ui: &Window| ui.visible_access_nodes().iter().filter(|node| !matches!(node.role, Role::Menu | Role::MenuItem)).map(|node| node.id).collect::<Vec<_>>();
+    let (file, before) = (ui.visible_access_nodes()[1].id, ids(&ui));
     ui.press_for_reader(file);
     settle(&mut ui, |ui| parts(&mut app, ui));
-    let at = ui.said().iter().position(|said| said.role == Role::Menu).expect("a menu");
-    let menu: Vec<_> = ui.said()[at..at + 3].iter().map(|said| (said.role, said.name.as_str(), said.keys.as_str(), said.on, said.within)).collect();
+    let at = ui.visible_access_nodes().iter().position(|node| node.role == Role::Menu).expect("a menu");
+    let menu: Vec<_> = ui.visible_access_nodes()[at..at + 3].iter().map(|node| (node.role, node.name.as_str(), node.shortcut.as_str(), node.on, node.parent)).collect();
     assert_eq!(menu, [(Role::Menu, "", "", None, None), (Role::MenuItem, "Open", "Ctrl+O", None, Some(at)), (Role::MenuItem, "Dark", "", Some(false), Some(at))]);
-    assert_eq!((ui.said()[1].on, ids(&ui)), (Some(true), before.clone()));
+    assert_eq!((ui.visible_access_nodes()[1].on, ids(&ui)), (Some(true), before.clone()));
     // Escape closes it, and the window is told of as it was.
     key(&mut ui, Key::Escape, Mods::NONE, |ui| parts(&mut app, ui));
     ui.run(&mut |ui| parts(&mut app, ui));
-    assert_eq!((&told(&ui)[..9], ids(&ui)), (&page[..9], before));
+    assert_eq!((&given(&ui)[..9], ids(&ui)), (&page[..9], before));
 
-    // What is typed into the box for a password is told as its dots, with where the cursor
+    // What is typed into the box for a password is reported as its dots, with where the cursor
     // is among them.
-    let secret = ui.said()[8].id;
+    let secret = ui.visible_access_nodes()[8].id;
     ui.type_for_reader(secret, "abc");
     settle(&mut ui, |ui| parts(&mut app, ui));
-    let secret = &ui.said()[8];
+    let secret = &ui.visible_access_nodes()[8];
     assert_eq!((app.password.as_str(), secret.value.as_str(), secret.caret, secret.focused), ("abc", "•••", Some([3, 3]), true));
 
     // A dialog has to be answered first: nothing under it is told. It is called by what
     // stands at its top.
     app.asking = true;
     settle(&mut ui, |ui| parts(&mut app, ui));
-    let dialog: Vec<_> = ui.said().iter().map(|said| (said.role, said.name.as_str(), said.within)).collect();
+    let dialog: Vec<_> = ui.visible_access_nodes().iter().map(|node| (node.role, node.name.as_str(), node.parent)).collect();
     assert_eq!(dialog, [(Role::Dialog, "Are you sure?", None), (Role::Text, "Are you sure?", Some(0)), (Role::Button, "Yes", Some(0))]);
 
     // Nobody listens any more: nothing is kept.
-    ui.listen(false);
-    assert!(ui.said().is_empty());
+    ui.set_screen_reader(false);
+    assert!(ui.visible_access_nodes().is_empty());
 }
 
 #[test]
@@ -900,7 +901,7 @@ fn a_box_that_is_typed_into_keeps_room_clear_at_its_ends_when_it_is_asked_to() {
     let (mut text, mut room, mut boxes) = (String::new(), [0.0f32; 2], [0, 0]);
     let build = |ui: &mut Ui, text: &mut String, room: [f32; 2], boxes: &mut [u64; 2]| {
         ui.column().pad(10.0).gap(10.0).open();
-        ui.text_room(room[0], room[1]);
+        ui.text_margin(room[0], room[1]);
         boxes[0] = ui.text_area(text, "", (1, 4)).id;
         // (Asked for once, it is for one box: the next has none.)
         boxes[1] = ui.text_box(&mut String::new(), "").id;
@@ -910,20 +911,20 @@ fn a_box_that_is_typed_into_keeps_room_clear_at_its_ends_when_it_is_asked_to() {
     ui.set_focus(boxes[0]);
     settle(&mut ui, |ui| build(ui, &mut text, room, &mut boxes));
     // The cursor of the empty box stands 8 units in from the box's edge, which is 10 in.
-    assert_eq!(ui.typing_at().map(|at| at.x), Some(18.0));
+    assert_eq!(ui.ime_area().map(|at| at.x), Some(18.0));
     room = [20.0, 290.0];
     settle(&mut ui, |ui| build(ui, &mut text, room, &mut boxes));
-    assert_eq!(ui.typing_at().map(|at| at.x), Some(38.0));
+    assert_eq!(ui.ime_area().map(|at| at.x), Some(38.0));
     // Of the 400 units the box is wide, 290 and 20 and the two eights are kept clear: of the 74 left,
     // six letters of 12 take 72, and the seventh starts the next line.
     typed(&mut ui, "abcdefg", |ui| build(ui, &mut text, room, &mut boxes));
     ui.run(&mut |ui| build(ui, &mut text, room, &mut boxes));
-    let cursor = ui.typing_at().expect("the box is typed into");
+    let cursor = ui.ime_area().expect("the box is typed into");
     assert_eq!((cursor.x, cursor.y > 30.0), (38.0 + 12.0, true), "the seventh letter stands in the second line");
     // The box under it kept nothing clear.
     ui.set_focus(boxes[1]);
     settle(&mut ui, |ui| build(ui, &mut text, room, &mut boxes));
-    assert_eq!(ui.typing_at().map(|at| at.x), Some(18.0));
+    assert_eq!(ui.ime_area().map(|at| at.x), Some(18.0));
 }
 
 #[test]
@@ -931,19 +932,19 @@ fn an_app_hears_of_its_window_and_asks_things_of_it() {
     let mut ui = window(1.0);
     // What the window says of itself: minimized, and back; the active one, or not; and
     // whether the person asked the system for dark windows.
-    assert!(ui.window_active() && !ui.window_hidden() && !ui.system_dark());
-    assert!(ui.event(Event::Hidden(true)) && ui.window_hidden());
-    assert!(ui.event(Event::Focus(false)) && !ui.window_active());
-    assert!(ui.event(Event::Hidden(false)) && !ui.window_hidden());
-    let dark = taut::Wishes { dark: true, ..Default::default() };
-    assert!(ui.set_wishes(dark) && ui.system_dark() && !ui.set_wishes(dark));
+    assert!(ui.window_focused() && !ui.window_minimized() && !ui.system_dark());
+    assert!(ui.event(Event::Minimized(true)) && ui.window_minimized());
+    assert!(ui.event(Event::Focused(false)) && !ui.window_focused());
+    assert!(ui.event(Event::Minimized(false)) && !ui.window_minimized());
+    let dark = taut::Preferences { dark: true, ..Default::default() };
+    assert!(ui.set_preferences(dark) && ui.system_dark() && !ui.set_preferences(dark));
     // What the app asks of its window is handed on once.
     ui.run(&mut |ui| {
         ui.set_on_top(true);
-        ui.come_forward();
+        ui.bring_to_front();
     });
-    assert_eq!((ui.take_on_top(), ui.take_forward()), (Some(true), true));
-    assert_eq!((ui.take_on_top(), ui.take_forward()), (None, false));
+    assert_eq!((ui.take_on_top(), ui.take_bring_to_front()), (Some(true), true));
+    assert_eq!((ui.take_on_top(), ui.take_bring_to_front()), (None, false));
     assert!(Color::rgb(0x0f1115).is_dark() && !Color::rgb(0xf5f6f8).is_dark() && Color::rgb(0x0000ff).is_dark() && !Color::rgb(0x00ff00).is_dark());
 }
 
@@ -952,8 +953,8 @@ fn notices_lie_in_a_corner_over_a_dialog_and_keep_only_their_own_place_from_it()
     let mut ui = window(1.0);
     // What was clicked: the notice, the dialog's button, beside the dialog. And where the
     // notice and the dialog's button are.
-    let mut seen = ([0u32; 3], Rect::EMPTY, Rect::EMPTY);
-    let build = |ui: &mut Ui, seen: &mut ([u32; 3], Rect, Rect)| {
+    let mut got = ([0u32; 3], Rect::EMPTY, Rect::EMPTY);
+    let build = |ui: &mut Ui, got: &mut ([u32; 3], Rect, Rect)| {
         ui.label("The page");
         let beside = ui.dialog();
         let fine = ui.button("Fine");
@@ -961,20 +962,20 @@ fn notices_lie_in_a_corner_over_a_dialog_and_keep_only_their_own_place_from_it()
         ui.notices(taut::Align::End, taut::Align::End);
         let undo = ui.button("Undo");
         ui.close();
-        seen.0 = [seen.0[0] + undo.clicked as u32, seen.0[1] + fine.clicked as u32, seen.0[2] + beside.clicked as u32];
-        (seen.1, seen.2) = (undo.rect, fine.rect);
+        got.0 = [got.0[0] + undo.clicked as u32, got.0[1] + fine.clicked as u32, got.0[2] + beside.clicked as u32];
+        (got.1, got.2) = (undo.rect, fine.rect);
     };
-    settle(&mut ui, |ui| build(ui, &mut seen));
+    settle(&mut ui, |ui| build(ui, &mut got));
     // The notice ends 12 units from the right and the bottom edge of the 420 by 300 window.
-    assert_eq!((seen.1.right(), seen.1.bottom()), (408.0, 288.0));
+    assert_eq!((got.1.right(), got.1.bottom()), (408.0, 288.0));
     // It is pressed though a dialog is up; the dialog's own button still is; and right
     // beside the notice, the press is one beside the dialog, as it would be without it.
-    click(&mut ui, middle(seen.1), |ui| build(ui, &mut seen));
-    assert_eq!(seen.0, [1, 0, 0]);
-    click(&mut ui, middle(seen.2), |ui| build(ui, &mut seen));
-    assert_eq!(seen.0, [1, 1, 0]);
-    click(&mut ui, pt(seen.1.x - 6.0, seen.1.y + 4.0), |ui| build(ui, &mut seen));
-    assert_eq!(seen.0, [1, 1, 1]);
+    click(&mut ui, middle(got.1), |ui| build(ui, &mut got));
+    assert_eq!(got.0, [1, 0, 0]);
+    click(&mut ui, middle(got.2), |ui| build(ui, &mut got));
+    assert_eq!(got.0, [1, 1, 0]);
+    click(&mut ui, pt(got.1.x - 6.0, got.1.y + 4.0), |ui| build(ui, &mut got));
+    assert_eq!(got.0, [1, 1, 1]);
 }
 
 /// What an overlay holds: a text box's text, whether its dialog is up, and where its button
@@ -989,12 +990,12 @@ struct Overlay {
 /// An overlay: a page that can be seen through, with a panel, a filled box and bare text.
 fn overlay(state: &mut Overlay, ui: &mut Ui) {
     let t = ui.theme;
-    ui.el().flow(Flow::Layers).grow().open();
-    ui.column().place(Align::Start).at(16.0, 16.0).w(Length::Px(180.0)).pad(10.0).gap(8.0).fill(t.panel).open();
+    ui.el().flow(Flow::Stack).grow().open();
+    ui.column().place(Align::Start).offset(16.0, 16.0).w(Length::Px(180.0)).pad(10.0).gap(8.0).fill(t.panel).open();
     state.rects = [ui.button("Press").rect, ui.text_box(&mut state.name, "Name").rect];
     ui.close();
-    ui.el().place(Align::Start).at(260.0, 20.0).size(60.0, 30.0).fill(t.accent).show();
-    ui.el().place(Align::Start).at(260.0, 120.0).text("bare text", t.font, t.text).show();
+    ui.el().place(Align::Start).offset(260.0, 20.0).size(60.0, 30.0).fill(t.accent).show();
+    ui.el().place(Align::Start).offset(260.0, 120.0).text("bare text", t.font, t.text).show();
     ui.close();
     if state.asking {
         ui.dialog();
@@ -1075,13 +1076,13 @@ fn renaming(app: &mut Renaming, ui: &mut Ui) {
 fn bare_ui() -> Ui {
     let mut ui = Ui::new(Box::new(taut::text::BuiltInFont), Box::new(taut::LocalClipboard::default()));
     ui.resize(taut::geom::Size { w: 400.0, h: 300.0 }, 1.0);
-    ui.listen(true);
+    ui.set_screen_reader(true);
     ui
 }
 
 /// Presses the button that is told by this name, running `describe` after each event.
 fn press_named(ui: &mut Ui, name: &str, describe: &mut dyn FnMut(&mut Ui)) {
-    let button = ui.said().iter().find(|said| said.name == name).expect("the button").rect;
+    let button = ui.visible_access_nodes().iter().find(|node| node.name == name).expect("the button").rect;
     let at = pt(button.x + button.w / 2.0, button.y + button.h / 2.0);
     for event in [Event::Move(at), Event::Press(Button::Left, Mods::NONE), Event::Release(Button::Left)] {
         ui.event(event);
@@ -1096,7 +1097,7 @@ fn a_dialog_opens_with_the_name_in_its_box_selected() {
     press_named(&mut ui, "Rename", &mut |ui| renaming(&mut app, ui));
     (0..3).for_each(|_| _ = ui.run(&mut |ui| renaming(&mut app, ui)));
     assert_eq!(ui.focus(), app.field, "the keyboard is in the dialog's box");
-    assert_eq!(ui.typing(app.field).map(|typing| typing.selected), Some([0, 9]), "all of the old name is selected");
+    assert_eq!(ui.text_edit_state(app.field).map(|typing| typing.selection), Some([0, 9]), "all of the old name is selected");
 }
 
 #[test]
@@ -1114,5 +1115,5 @@ fn a_box_that_was_there_already_has_all_its_text_selected() {
     press_named(&mut ui, "Select", &mut plain);
     ui.run(&mut plain);
     assert_eq!(ui.focus(), field);
-    assert_eq!(ui.typing(field).map(|typing| typing.selected), Some([0, 9]));
+    assert_eq!(ui.text_edit_state(field).map(|typing| typing.selection), Some([0, 9]));
 }

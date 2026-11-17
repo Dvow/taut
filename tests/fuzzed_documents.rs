@@ -20,16 +20,16 @@ fn shown(ui: &mut common::Window, doc: &Markdown) {
 /// ("1.") is still drawn, a row high, below the end of the document's box: a window that
 /// draws in strips cuts it off at the next strip, a document in a box that scrolls cannot
 /// be scrolled down to it, and a screen reader is not told of the list at all. (The
-/// document's height comes from `close_ended` in document.rs: a block that holds others is
+/// document's height comes from `close_ended` in markdown_view.rs: a block that holds others is
 /// as high as what is in it, and an empty item holds nothing.)
 #[test]
 fn an_empty_item_of_a_list_is_as_high_as_its_mark() {
     let mut ui = window(1.0);
-    ui.listen(true);
-    shown(&mut ui, &Markdown::read("Some words\n\n1."));
-    let told = |role: Role| ui.said().iter().find(|said| said.role == role).map(|said| said.rect);
-    let (document, words) = (told(Role::Document).unwrap(), told(Role::Paragraph).unwrap());
-    assert!(told(Role::List).is_some(), "the list was not told of");
+    ui.set_screen_reader(true);
+    shown(&mut ui, &Markdown::parse("Some words\n\n1."));
+    let rect_of = |role: Role| ui.visible_access_nodes().iter().find(|node| node.role == role).map(|node| node.rect);
+    let (document, words) = (rect_of(Role::Document).unwrap(), rect_of(Role::Paragraph).unwrap());
+    assert!(rect_of(Role::List).is_some(), "the list was not told of");
     assert!(document.h >= words.h * 2.0, "the document is {} high, its first paragraph {}: the list after it has no height", document.h, words.h);
 }
 
@@ -40,7 +40,7 @@ fn an_empty_item_of_a_list_is_as_high_as_its_mark() {
 #[test]
 fn a_list_of_empty_items_after_a_long_paragraph_is_drawn_the_same_in_strips_and_whole() {
     let text = format!("{}\n\n` {}\n1. 0.", "0".repeat(72), "0".repeat(211));
-    let doc = Markdown::read(&text);
+    let doc = Markdown::parse(&text);
     let mut ui = window(1.0);
     shown(&mut ui, &doc);
 }
@@ -56,7 +56,7 @@ fn a_list_of_empty_items_after_a_long_paragraph_is_drawn_the_same_in_strips_and_
 fn lists_nested_thousands_deep_are_read_and_laid_out_in_time() {
     let text = format!("{}x\n", "- ".repeat(8_000));
     let clock = Instant::now();
-    let doc = Markdown::read(&text);
+    let doc = Markdown::parse(&text);
     let mut ui = window(1.0);
     shown(&mut ui, &doc);
     let took = clock.elapsed();

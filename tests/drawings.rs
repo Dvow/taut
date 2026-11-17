@@ -93,8 +93,8 @@ fn drawings_come_out_as_librsvg_draws_them() {
     // pictures come nearest to that: of 16 by 16 pixels, most lie on an edge.) Colours
     // themselves come out to the level: see the picture of all of them. (Filters and pictures in
     // a drawing are drawn in a program that asks for them.)
-    svg::read_pictures();
-    svg::read_filters();
+    svg::enable_images();
+    svg::enable_filters();
     for (name, sizes, each_pixel) in DRAWINGS {
         let text = std::fs::read_to_string(pictures().join(format!("{name}.svg"))).unwrap();
         for [wide, high] in sizes.iter().copied() {

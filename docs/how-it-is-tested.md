@@ -10,12 +10,12 @@ cargo test -p taut --all-features
 | Tests | What they check |
 | --- | --- |
 | unit and doc tests | the library, and every code block in the README, guide and book |
-| `tests/interface.rs`, `tests/parts.rs` | click, type, drag and scroll a window with no screen; after every step the partial redraw must equal a full redraw, pixel for pixel; the layout-unchanged shortcut must agree with a full comparison; drags describe at most twice per move |
-| `tests/drawings.rs`, `tests/films.rs` | SVG drawings and animations read from files |
+| `tests/interface.rs`, `tests/larger_widgets.rs` | click, type, drag and scroll a window with no screen; after every step the partial redraw must equal a full redraw, pixel for pixel; the layout-unchanged shortcut must agree with a full comparison; drags describe at most twice per move |
+| `tests/drawings.rs`, `tests/animations.rs` | SVG drawings and animations read from files |
 | `tests/logic.rs` | fixed core logic bugs stay fixed |
-| `tests/reach.rs` | every part by keyboard alone, and as a screen reader is told of it |
+| `tests/accessibility.rs` | every part by keyboard alone, and as a screen reader is told of it |
 | `tests/book.rs` | each book picture is drawn by `examples/book.rs` from its chapter's code, letter for letter |
-| `tests/asked.rs` | behaviour apps rely on: keys that show their effect at once, page scrolling, programmatic scrolling, uneven lists, app Edit menus, pictures fitted to their room |
+| `tests/app_requests.rs` | behaviour apps rely on: keys that show their effect at once, page scrolling, programmatic scrolling, variable-height lists, app Edit menus, pictures fitted to their room |
 | `tests/fuzzed*.rs`, `tests/drawing_costs.rs` | inputs found by coverage-guided fuzzing of every parser of outside data (pictures, fonts, documents, saved layouts, Wayland messages) and of the example apps under random input; each failed before its fix |
 | `tests/dll.rs` | loads the `overlay` example as a DLL and drives it through its C functions |
 | `tests/flat.rs` | no library line indented past 16 spaces; no folders in `src` |

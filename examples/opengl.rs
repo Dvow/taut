@@ -49,7 +49,7 @@ struct App {
 
 fn describe(app: &mut App, ui: &mut Ui) {
     let t = ui.theme;
-    ui.column().w(Length::Px(260.0)).at(16.0, 16.0).pad(14.0).gap(10.0).fill(t.panel.alpha(0.9)).border(t.line_strong, 1.0).radius(10.0).shadow(12.0).open();
+    ui.column().w(Length::Px(260.0)).offset(16.0, 16.0).pad(14.0).gap(10.0).fill(t.panel.with_alpha(0.9)).border(t.line_strong, 1.0).radius(10.0).shadow(12.0).open();
     ui.text("Over OpenGL", t.font.bold(), t.text);
     ui.switch(&mut app.still, "Hold the colour still");
     ui.slider(&mut app.speed, 0.0..=4.0);
@@ -511,7 +511,7 @@ pub mod egl {
             (4, None) if (4..=7).contains(&input.detail) => [at, wheel].into_iter().for_each(&mut each),
             (6, _) => each(at),
             (8, _) => each(Event::Leave),
-            (9 | 10, _) => each(Event::Focus(kind == 9)),
+            (9 | 10, _) => each(Event::Focused(kind == 9)),
             _ => {}
         }
         let (mut typed, mut name) = ([0u8; 16], 0);
@@ -533,8 +533,8 @@ pub mod egl {
         while unsafe { (x.XPending)(display) } > 0 {
             let mut event = XEvent { room: [0; 24] };
             unsafe { (x.XNextEvent)(display, &mut event) };
-            let (kind, configure, said) = unsafe { (event.kind, event.configure, event.room[7] as c_ulong) };
-            if kind == 33 && said == closing {
+            let (kind, configure, message) = unsafe { (event.kind, event.configure, event.room[7] as c_ulong) };
+            if kind == 33 && message == closing {
                 return false;
             }
             if kind == 22 {

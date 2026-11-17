@@ -1,6 +1,7 @@
 //! A settings window: sections listed on the left, the selected section's form on the right.
-//! The window follows the system's light or dark mode unless the user picks one; accent colour,
-//! text size and density are theirs to choose too, and the whole window applies them at once.
+//! The window follows the system's light or dark mode unless the user selects one; accent
+//! colour, text size and density are theirs to choose too, and the whole window applies them at
+//! once.
 //!   cargo run -p taut --example settings
 #![windows_subsystem = "windows"]
 use taut::{Align, Color, Font, Length, Theme, Ui, Window};
@@ -55,9 +56,9 @@ impl Default for Settings {
 fn theme(app: &Settings, system_dark: bool) -> Theme {
     let dark = [system_dark, false, true][app.look];
     let base = if dark { Theme::dark() } else { Theme::light() };
-    let (control, gap) = if app.close { (24.0, 5.0) } else { (base.control, base.gap) };
+    let (control, gap) = if app.close { (24.0, 5.0) } else { (base.control_height, base.gap) };
     let letters = app.letters.round();
-    Theme { accent: app.accent, font: Font::new(letters), small: Font::new(letters - 1.5), control, gap, ..base }
+    Theme { accent: app.accent, font: Font::new(letters), small_font: Font::new(letters - 1.5), control_height: control, gap, ..base }
 }
 
 pub fn describe(app: &mut Settings, ui: &mut Ui) {
@@ -74,7 +75,7 @@ pub fn describe(app: &mut Settings, ui: &mut Ui) {
     }
     ui.close();
 
-    // The form of the section that is picked: a heading, then each setting, its name
+    // The form of the section that is selected: a heading, then each setting, its name
     // over what sets it (so the form holds at any width).
     ui.column().grow().scroll().pad((24.0, 16.0)).gap(t.gap * 2.0).open();
     ui.text(SECTIONS[app.section], t.font.bold(), t.text);
@@ -93,7 +94,7 @@ pub fn describe(app: &mut Settings, ui: &mut Ui) {
 fn setting(ui: &mut Ui, name: &str) {
     let t = ui.theme;
     ui.column().gap(4.0).open();
-    ui.text(name, t.small, t.text_dim);
+    ui.text(name, t.small_font, t.text_dim);
 }
 
 fn appearance(app: &mut Settings, ui: &mut Ui) {
@@ -106,7 +107,7 @@ fn appearance(app: &mut Settings, ui: &mut Ui) {
     if ui.segmented(&mut named, &ACCENTS.map(|(name, _)| name)).changed {
         app.accent = Color::rgb(ACCENTS[named].1);
     }
-    ui.color(&mut app.accent);
+    ui.color_picker(&mut app.accent);
     ui.close();
     ui.close();
     setting(ui, &format!("Size of letters: {}", app.letters.round()));
@@ -188,7 +189,7 @@ mod tests {
         trial.resize(720.0, 400.0, 1.0);
         // As the system asks: light, then dark when the system asks for dark.
         assert_eq!(trial.ui.theme.bg, Theme::light().bg);
-        trial.ui.set_wishes(taut::Wishes { dark: true, ..Default::default() });
+        trial.ui.set_preferences(taut::Preferences { dark: true, ..Default::default() });
         trial.run();
         assert_eq!(trial.ui.theme.bg, Theme::dark().bg);
         trial.looks_like("tests/looks/settings-dark.png");
@@ -200,16 +201,16 @@ mod tests {
         (0..10).for_each(|_| trial.key("Right"));
         assert_eq!((trial.app.letters, trial.ui.theme.font.size), (18.0, 18.0));
         trial.press(Role::Switch, "Closer together");
-        assert_eq!(trial.ui.theme.control, 24.0);
+        assert_eq!(trial.ui.theme.control_height, 24.0);
         trial.looks_like("tests/looks/settings-light.png");
 
         // What only matters while notifications are shown is switched off with them.
         trial.press(Role::Row, "Notifications");
-        assert!(trial.find(Role::Tick, "With a sound").usable);
+        assert!(trial.find(Role::CheckBox, "With a sound").enabled);
         trial.press(Role::Switch, "Show them");
-        assert!(!trial.find(Role::Tick, "With a sound").usable);
+        assert!(!trial.find(Role::CheckBox, "With a sound").enabled);
         trial.press(Role::Switch, "Show them");
-        trial.press(Role::Select, "Gather them");
+        trial.press(Role::ComboBox, "Gather them");
         trial.press(Role::MenuItem, "Once a day");
         assert_eq!(trial.app.gather, 2);
         trial.press(Role::Button, "Send one to try");
@@ -220,8 +221,8 @@ mod tests {
         // The account's boxes and numbers.
         trial.press(Role::Row, "Account");
         trial.fill("Your name", "Ada Lovelace");
-        // (A box for a number is told as a spin button, by the words in front of it.)
-        trial.press(Role::Spin, "Days of history to keep");
+        // (A box for a number is reported as a spin button, by the words in front of it.)
+        trial.press(Role::SpinButton, "Days of history to keep");
         trial.key("Ctrl+A");
         trial.type_text("400");
         trial.key("Enter");

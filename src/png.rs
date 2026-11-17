@@ -5,7 +5,7 @@
 const START: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 /// Encodes a picture as PNG. `width` is its width, `pixels` its pixels in rows from the top,
-/// each `0xRRGGBB` (the alpha byte is ignored: see [`encode_clear`] to keep it). It is as many
+/// each `0xRRGGBB` (the alpha byte is ignored: see [`encode_rgba`] to keep it). It is as many
 /// rows high as `pixels` has whole rows. Nothing for no pixels, or a size PNG cannot hold
 /// (2,147,483,647 pixels).
 pub fn encode(width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
@@ -14,7 +14,7 @@ pub fn encode(width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
 }
 /// The same with alpha: each pixel `0xAARRGGBB`, not premultiplied (what [`decode`] returns and
 /// [`Ui::add_picture`](crate::Ui::add_picture) takes).
-pub fn encode_clear(width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
+pub fn encode_rgba(width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
     let height = high(width, pixels)?;
     Some(file(width, height, [8, 6], &[], &rows::<4>(width, &pixels[..width * height])))
 }
@@ -65,15 +65,15 @@ pub(crate) fn chunk(name: &[u8; 4], body: &[u8]) -> Vec<u8> {
 const BLOCK: usize = 1 << 15;
 
 /// Compresses any bytes as a zlib stream, as PNG does its rows: an installer's payload, a file
-/// to keep small. `unpack` restores them.
-pub fn pack(bytes: &[u8]) -> Vec<u8> {
+/// to keep small. `zlib_decompress` restores them.
+pub fn zlib_compress(bytes: &[u8]) -> Vec<u8> {
     deflate(bytes)
 }
 
-/// Decompresses a zlib stream (from `pack`, or anything writing one). Nothing if damaged, or if
-/// it inflates to more than `most` bytes: the caller gives a limit, since a few bytes can
-/// inflate a thousandfold.
-pub fn unpack(packed: &[u8], most: usize) -> Option<Vec<u8>> {
+/// Decompresses a zlib stream (from `zlib_compress`, or anything writing one). Nothing if
+/// damaged, or if it inflates to more than `most` bytes: the caller gives a limit, since a few
+/// bytes can inflate a thousandfold.
+pub fn zlib_decompress(packed: &[u8], most: usize) -> Option<Vec<u8>> {
     inflate(packed, most)
 }
 
@@ -145,27 +145,27 @@ impl Packed {
 /// Writes one block: its dynamic codes by their lengths, then its symbols in them.
 fn write_block(out: &mut Packed, symbols: &[u32], last: bool) {
     // The table entry covering a number: the last that does not start above it.
-    let which = |table: &[u16], number: u32| table.partition_point(|from| *from as u32 <= number) - 1;
+    let range_of = |table: &[u16], number: u32| table.partition_point(|from| *from as u32 <= number) - 1;
     // Symbol frequencies: literals, end of block and lengths in one alphabet; distances in
     // another.
-    let (mut often, mut backs) = ([0u32; 286], [0u32; 30]);
-    often[256] = 1;
+    let (mut literals, mut distances) = ([0u32; 286], [0u32; 30]);
+    literals[256] = 1;
     for symbol in symbols {
         let (long, back) = (symbol >> 16, symbol & 0xffff);
         if long == 0 {
-            often[back as usize] += 1;
+            literals[back as usize] += 1;
             continue;
         }
-        often[257 + which(&LONG, long)] += 1;
-        backs[which(&BACK, back)] += 1;
+        literals[257 + range_of(&LONG, long)] += 1;
+        distances[range_of(&BACK, back)] += 1;
     }
-    let lengths = [lengths_of(&often, 15), lengths_of(&backs, 15)].concat();
+    let lengths = [lengths_of(&literals, 15), lengths_of(&distances, 15)].concat();
     // The code lengths are coded in a third alphabet, where 17 and 18 stand for runs of zeros
     // (3 to 10, and 11 to 138): a symbol, then the count above the minimum.
-    let (mut told, mut at) = (Vec::new(), 0);
+    let (mut coded, mut at) = (Vec::new(), 0);
     while at < lengths.len() {
         let run = lengths[at..].iter().take_while(|length| **length == 0).count().min(138);
-        told.push(match run {
+        coded.push(match run {
             11.. => (18, run - 11, 7),
             3.. => (17, run - 3, 3),
             _ => (lengths[at] as usize, 0, 0),
@@ -173,14 +173,14 @@ fn write_block(out: &mut Packed, symbols: &[u32], last: bool) {
         at += if run < 3 { 1 } else { run };
     }
     let mut third = [0u32; 19];
-    told.iter().for_each(|(symbol, _, _)| third[*symbol] += 1);
+    coded.iter().for_each(|(symbol, _, _)| third[*symbol] += 1);
     let third = lengths_of(&third, 7);
     // BFINAL; BTYPE 2 (dynamic); HLIT, HDIST, HCLEN (above their minimums); then the
     // code-length code lengths in their own order.
     out.put(last as u32 | 2 << 1 | 29 << 3 | 29 << 8 | 15 << 13, 17);
     ORDER.iter().for_each(|symbol| out.put(third[*symbol] as u32, 3));
     let third = written(&third);
-    for (symbol, more, bits) in told {
+    for (symbol, more, bits) in coded {
         out.code(third[symbol]);
         out.put(more as u32, bits);
     }
@@ -191,7 +191,7 @@ fn write_block(out: &mut Packed, symbols: &[u32], last: bool) {
             out.code(codes[back as usize]);
             continue;
         }
-        let (so_many, so_far) = (which(&LONG, long), which(&BACK, back));
+        let (so_many, so_far) = (range_of(&LONG, long), range_of(&BACK, back));
         out.code(codes[257 + so_many]);
         out.put(long - LONG[so_many] as u32, LONG_MORE[so_many] as u32);
         out.code(back_codes[so_far]);
@@ -320,7 +320,7 @@ pub fn decode(png: &[u8]) -> Option<(usize, Vec<u32>)> {
     }
     let (size, stored) = Stored::of(&chunks)?;
     let pixels = stored.frame(size, &packed)?;
-    Some(crate::upright::turned(notes.and_then(crate::upright::turn), size[0], pixels))
+    Some(crate::exif_orientation::turned(notes.and_then(crate::exif_orientation::turn), size[0], pixels))
 }
 
 /// A PNG chunk as read: its four-letter name and its data.
@@ -357,7 +357,7 @@ pub(crate) struct Stored {
     passes: bool,
     colours: [u32; 256],
     named: Vec<u8>,
-    change: Option<crate::profile::Change>,
+    change: Option<crate::color_profiles::Change>,
 }
 
 impl Stored {
@@ -443,32 +443,32 @@ fn pixels(stored: &Stored, [width, height]: [usize; 2], packed: &[u8]) -> Option
 /// How a picture's colours convert for the screen, per its chunks: not at all where they say
 /// sRGB (`sRGB`) or nothing; else per its embedded profile (`iCCP`, zlib-compressed), or its
 /// gamma (`gAMA`) and primaries (`cHRM`).
-fn colours_of(chunks: &[(&[u8], &[u8])]) -> Option<crate::profile::Change> {
+fn colours_of(chunks: &[(&[u8], &[u8])]) -> Option<crate::color_profiles::Change> {
     if chunks.iter().any(|(name, _)| *name == b"sRGB") {
         return None;
     }
     // (A profile chunk: a name, a NUL, a compression byte, and the profile.)
     let profile = first(chunks, b"iCCP");
     let packed = profile.iter().position(|byte| *byte == 0).and_then(|end| profile.get(end + 2..));
-    if let Some(profile) = packed.and_then(|packed| inflate(packed, crate::profile::LONGEST)) {
-        return crate::profile::Change::of_profile(&profile);
+    if let Some(profile) = packed.and_then(|packed| inflate(packed, crate::color_profiles::LONGEST)) {
+        return crate::color_profiles::Change::of_profile(&profile);
     }
     let number = |body: &[u8], at: usize| body.get(at..at + 4).map(|four| u32::from_be_bytes([four[0], four[1], four[2], four[3]]) as f32 / 100_000.0);
     let gamma = number(first(chunks, b"gAMA"), 0).filter(|gamma| *gamma > 0.0);
     // (The chunk lists white first, then red, green and blue.)
     let chroma: Option<Vec<f32>> = [2, 3, 4, 5, 6, 7, 0, 1].iter().map(|at| number(first(chunks, b"cHRM"), at * 4)).collect();
-    crate::profile::Change::of_light(gamma, chroma.and_then(|chroma| chroma.try_into().ok()))
+    crate::color_profiles::Change::of_light(gamma, chroma.and_then(|chroma| chroma.try_into().ok()))
 }
 
-/// Reads an APNG as a film: its first `most` frames at most. A still PNG is a one-frame film.
-/// Nothing if no PNG, or no frame is whole. (A film ignores `eXIf` orientation.)
+/// Reads an APNG as an animation: its first `most` frames at most. A still PNG is a one-frame
+/// animation. Nothing if no PNG, or no frame is whole. (It ignores `eXIf` orientation.)
 ///
 /// An APNG is a PNG with extra frames: `acTL` marks it animated with its loop count, an `fcTL`
 /// before each frame gives its region and how it is shown, and frame data goes in `fdAT`
 /// chunks, each with a sequence number first. The default image is the first frame where an
 /// `fcTL` precedes it, else no frame.
-pub(crate) fn film(png: &[u8], most: usize) -> Option<crate::film::Reel> {
-    use crate::film::{After, Frame, Kind, Laid, Reel};
+pub(crate) fn read_animation(png: &[u8], most: usize) -> Option<crate::animation::Reel> {
+    use crate::animation::{After, Frame, Kind, Laid, Reel};
     let (chunks, _) = chunks(png)?;
     let (size, stored) = Stored::of(&chunks)?;
     // (Every PNG holds its default image, canvas-sized, frame or not: a canvas larger than its
@@ -514,8 +514,8 @@ pub(crate) fn film(png: &[u8], most: usize) -> Option<crate::film::Reel> {
 /// An APNG frame per its `fcTL`, on a `size` canvas: its region, duration (a fraction of a
 /// second; a 0 denominator means a hundredth), dispose and blend ops. Nothing for a frame off
 /// the canvas, or an op that does not exist.
-fn frame_of(control: &[u8], size: [usize; 2], packed: [usize; 2]) -> Option<crate::film::Frame> {
-    use crate::film::{After, Frame, Laid};
+fn frame_of(control: &[u8], size: [usize; 2], packed: [usize; 2]) -> Option<crate::animation::Frame> {
+    use crate::animation::{After, Frame, Laid};
     let said = control.first_chunk::<26>()?;
     let long = |at: usize| u32::from_be_bytes([said[at], said[at + 1], said[at + 2], said[at + 3]]) as usize;
     let place = [long(12), long(16), long(4), long(8)];
@@ -1065,7 +1065,7 @@ mod tests {
             let pixels = &pixels[..width * height];
             assert_eq!(decode(&encode(width, pixels).unwrap()), Some((width, solid(pixels))), "{width} by {height}");
             // And with alpha, the high byte of the same noise.
-            assert_eq!(decode(&encode_clear(width, pixels).unwrap()), Some((width, pixels.to_vec())), "{width} by {height}, seen through");
+            assert_eq!(decode(&encode_rgba(width, pixels).unwrap()), Some((width, pixels.to_vec())), "{width} by {height}, seen through");
         }
         // A one-colour picture comes to almost nothing, and a window-like one (bands, boxes in
         // them) to a small part of its three bytes per pixel.
@@ -1085,10 +1085,10 @@ mod tests {
         // is as high as its whole rows (the remainder is dropped).
         for (width, count) in [(0, 0), (0, 12), (4, 0), (4, 3)] {
             assert_eq!(encode(width, &vec![0; count]), None, "{width} wide, {count} pixels");
-            assert_eq!(encode_clear(width, &vec![0; count]), None, "{width} wide, {count} pixels, seen through");
+            assert_eq!(encode_rgba(width, &vec![0; count]), None, "{width} wide, {count} pixels, seen through");
         }
         let pixels: Vec<u32> = (0..14).map(|at| 0xff00_0000 | (at * 0x0a_0b0c)).collect();
-        assert_eq!(decode(&encode_clear(4, &pixels).unwrap()), Some((4, pixels[..12].to_vec())), "three rows of four");
+        assert_eq!(decode(&encode_rgba(4, &pixels).unwrap()), Some((4, pixels[..12].to_vec())), "three rows of four");
     }
 
     #[test]
@@ -1373,8 +1373,8 @@ mod tests {
         }
     }
 
-    use crate::film::tests::{frames, pattern, playable, seen};
-    use crate::film::{After, Laid, Reel};
+    use crate::animation::tests::{frames, pattern, playable, seen};
+    use crate::animation::{After, Laid, Reel};
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
 
@@ -1462,7 +1462,7 @@ mod tests {
         assert_eq!(hand, (8, vec![0xff33_6699; 48]));
         let mut reel = Reel::read(MOVING[2].1, 1).unwrap();
         assert_eq!(first, (reel.size[0], reel.shown(0).0.to_vec()));
-        // And a still PNG is a one-frame film: its picture.
+        // And a still PNG is a one-frame animation: its picture.
         let still = include_bytes!("../tests/pictures/plain.png");
         let mut reel = Reel::read(still, usize::MAX).unwrap();
         assert_eq!((reel.frames.len(), (reel.shown(0).0.to_vec(), reel.size[0])), (1, (decode(still).unwrap().1, decode(still).unwrap().0)));
@@ -1487,8 +1487,8 @@ mod tests {
         let two = [listed([0, 0, 5, 1], &[0, 0x1b, 0]), listed([3, 0, 2, 1], &[0, 0x90])];
         let mut reel = Reel::read(&moving([5, 1], [2, 3, 0], &palette, 0, None, &two), usize::MAX).unwrap();
         assert_eq!(frames(&mut reel), [[red, green, blue, 0xffff_ffff, red], [red, green, blue, blue, green]].concat());
-        // A frame off the canvas ends the film before it, as do one with a dispose or blend op
-        // that does not exist, and a damaged one.
+        // A frame off the canvas ends the animation before it, as do one with a dispose or
+        // blend op that does not exist, and a damaged one.
         let off = [made([0, 0, 4, 1], 0, 0, &[red; 4]), made([2, 0, 3, 1], 0, 0, &[green; 3])];
         assert_eq!(Reel::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &off), usize::MAX).map(|reel| reel.frames.len()), Some(1));
         let odd = [made([0, 0, 4, 1], 0, 0, &[red; 4]), made([0, 0, 4, 1], 3, 0, &[red; 4]), made([0, 0, 4, 1], 0, 2, &[red; 4])];
@@ -1522,7 +1522,7 @@ mod tests {
         };
         let at = |name: &str| pictures.join(name).to_str().unwrap().to_string();
         for step in 0..5 {
-            std::fs::write(work.join(format!("f{step}.png")), encode_clear(24, &pattern(step)).unwrap()).unwrap();
+            std::fs::write(work.join(format!("f{step}.png")), encode_rgba(24, &pattern(step)).unwrap()).unwrap();
         }
         run(&["-framerate", "5", "-i", "f%d.png", "-plays", "0", "-f", "apng", &at("moving.apng.png")]);
         // Hand-made, on an 8×6 canvas.
@@ -1570,7 +1570,7 @@ mod tests {
             frames.sort();
             let read: Vec<(usize, Vec<u32>)> = frames.iter().map(|frame| decode(&std::fs::read(frame).unwrap()).unwrap()).collect();
             let all: Vec<u32> = read.iter().flat_map(|(_, pixels)| pixels.clone()).collect();
-            std::fs::write(at(&format!("{name}.apng.frames.png")), encode_clear(read[0].0, &all).unwrap()).unwrap();
+            std::fs::write(at(&format!("{name}.apng.frames.png")), encode_rgba(read[0].0, &all).unwrap()).unwrap();
             println!("{name}: {} frames", read.len());
         }
         std::fs::remove_dir_all(work).unwrap();
@@ -1582,7 +1582,7 @@ mod tests {
         let pixels: Vec<u32> = (0..width * height).map(|at| 0xff00_0000 | (at as u32).wrapping_mul(2_654_435_761) >> 8).collect();
         let png = encode(width, &pixels).unwrap();
         let rows = png.windows(4).position(|name| name == b"IDAT").unwrap() - 4;
-        let notes = chunk(b"eXIf", &crate::upright::tests::notes(turn, low_first)[6..]);
+        let notes = chunk(b"eXIf", &crate::exif_orientation::tests::notes(turn, low_first)[6..]);
         ([&png[..rows], &notes, &png[rows..]].concat(), pixels)
     }
 
@@ -1593,7 +1593,7 @@ mod tests {
             let (png, stored) = noted(width, height, turn, low_first);
             let (across, shown) = decode(&png).expect("is read with a note in it");
             assert_eq!(across, if turn < 5 { width } else { height }, "turn {turn}: its width");
-            let from = |at: usize| crate::upright::tests::from(turn as usize, [width, height], at % across, at / across);
+            let from = |at: usize| crate::exif_orientation::tests::from(turn as usize, [width, height], at % across, at / across);
             assert!(shown.iter().copied().eq((0..stored.len()).map(from).map(|(x, y)| stored[y * width + x])), "turn {turn}, low end first: {low_first}");
         }
         // An orientation value that does not exist turns nothing.

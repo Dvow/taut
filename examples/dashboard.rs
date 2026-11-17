@@ -122,11 +122,11 @@ fn numbers(shown: &[Second], last: Second, ui: &mut Ui) {
     let ends = (-(shown.len() as f32 - 1.0), 0.0);
     let [requests, answers, failed] = [|second: &Second| second.requests, |second: &Second| second.answer, |second: &Second| second.failed].map(|of| shown.iter().map(of).collect::<Vec<f32>>());
     ui.wrapping_row().gap(12.0).open();
-    let wide = ((ui.room().w - 24.0) / 3.0).floor().max(240.0);
-    chart(ui, "Requests a second", &Chart::of(&[Series::area("", &requests)]).across(ends.0, ends.1), wide);
-    chart(ui, "Answer time, ms", &Chart::of(&[Series::line("", &answers)]).across(ends.0, ends.1), wide);
+    let wide = ((ui.available_size().w - 24.0) / 3.0).floor().max(240.0);
+    chart(ui, "Requests a second", &Chart::of(&[Series::area("", &requests)]).x_range(ends.0, ends.1), wide);
+    chart(ui, "Answer time, ms", &Chart::of(&[Series::line("", &answers)]).x_range(ends.0, ends.1), wide);
     let most = failed.iter().fold(5.0f32, |most, failed| most.max(*failed));
-    chart(ui, "Failed requests", &Chart::of(&[Series::bars("", &failed).color(t.red)]).up(0.0, most), wide);
+    chart(ui, "Failed requests", &Chart::of(&[Series::bars("", &failed).color(t.red)]).y_range(0.0, most), wide);
     ui.close();
 }
 
@@ -134,9 +134,9 @@ fn numbers(shown: &[Second], last: Second, ui: &mut Ui) {
 fn tile(ui: &mut Ui, name: &str, number: &str, beside: &str) {
     let t = ui.theme;
     ui.column().w(Length::Px(200.0)).pad(12.0).gap(4.0).fill(t.panel).border(t.line, 1.0).radius(8.0).open();
-    ui.text(name, t.small, t.text_dim);
+    ui.text(name, t.small_font, t.text_dim);
     ui.text(number, taut::Font::new(t.font.size * 2.0).bold(), t.text);
-    ui.text(beside, t.small, t.text_faint);
+    ui.text(beside, t.small_font, t.text_faint);
     ui.close();
 }
 
@@ -144,7 +144,7 @@ fn tile(ui: &mut Ui, name: &str, number: &str, beside: &str) {
 fn chart(ui: &mut Ui, name: &str, chart: &Chart, wide: f32) {
     let t = ui.theme;
     ui.column().pad(12.0).gap(6.0).fill(t.panel).border(t.line, 1.0).radius(8.0).open();
-    ui.text(name, t.small, t.text_dim);
+    ui.text(name, t.small_font, t.text_dim);
     ui.chart(chart, wide - 24.0, 160.0);
     ui.close();
 }
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn new_numbers_come_every_second_until_it_is_paused() {
         let mut trial = Trial::new(Dashboard::default(), describe);
-        trial.tell_time(|board, now| board.now = now);
+        trial.set_time(|dashboard, now| dashboard.now = now);
         trial.resize(900.0, 700.0, 1.0);
         assert!(trial.has(Role::Text, "Waiting for the first numbers\u{2026}"));
 
@@ -229,10 +229,10 @@ mod tests {
         assert_eq!(trial.app.seconds.len(), 93);
 
         // The table sorts by what is failing most, and by requests the other way round.
-        trial.press(Role::Heading, "Requests a second");
-        let first = |trial: &Trial<Dashboard>| trial.said().iter().find(|said| said.role == Role::Cell && said.grid == Some([0, 0])).map(|said| said.name.clone());
+        trial.press(Role::ColumnHeader, "Requests a second");
+        let first = |trial: &Trial<Dashboard>| trial.visible_access_nodes().iter().find(|node| node.role == Role::Cell && node.grid == Some([0, 0])).map(|node| node.name.clone());
         assert_eq!(first(&trial).as_deref(), Some("/reports"), "the least first");
-        trial.press(Role::Heading, "Requests a second");
+        trial.press(Role::ColumnHeader, "Requests a second");
         assert_eq!(first(&trial).as_deref(), Some("/search"));
     }
 }

@@ -116,20 +116,20 @@ impl From<f32> for Pen<'static> {
 /// ([`El::gradient_along`](crate::El::gradient_along)). Each stop is an offset from 0 to 1 and
 /// a colour, in order. The gradient spans the shape's bounds ([`Path::bounds`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Ink<'a> {
+pub enum Paint<'a> {
     /// One colour.
     Color(Color),
     /// Linear, along a line through the centre at so many degrees clockwise from up: 90 left to
     /// right, 180 top to bottom.
-    Along(f32, &'a [(f32, Color)]),
+    Linear(f32, &'a [(f32, Color)]),
     /// Radial from the centre: the first colour at the centre, the last at the bounds' edges.
-    Around(&'a [(f32, Color)]),
+    Radial(&'a [(f32, Color)]),
 }
 
 /// One colour.
-impl From<Color> for Ink<'static> {
+impl From<Color> for Paint<'static> {
     fn from(color: Color) -> Self {
-        Ink::Color(color)
+        Paint::Color(color)
     }
 }
 
@@ -150,8 +150,8 @@ pub(crate) type Full = fn(&Inked, &mut Canvas, Point);
 /// call passes a colour and a plain number, the answer is known at compile time, and the
 /// general code is left out.)
 #[inline(always)]
-pub(crate) fn fully(pen: Option<&Pen>, ink: &Ink) -> Option<Full> {
-    let plain = matches!(ink, Ink::Color(_)) && pen.is_none_or(Pen::is_round);
+pub(crate) fn fully(pen: Option<&Pen>, ink: &Paint) -> Option<Full> {
+    let plain = matches!(ink, Paint::Color(_)) && pen.is_none_or(Pen::is_round);
     if plain { None } else { Some(Inked::draw_fully) }
 }
 
@@ -173,22 +173,22 @@ pub(crate) struct Inked {
 impl Inked {
     /// Becomes this shape, drawn so: by `full` where the canvas cannot draw it alone (see
     /// `fully`).
-    pub(crate) fn set(&mut self, path: &Path, pen: Option<Pen>, ink: Ink, full: Option<Full>) {
+    pub(crate) fn set(&mut self, path: &Path, pen: Option<Pen>, ink: Paint, full: Option<Full>) {
         self.path.set(path);
         self.full = full;
         self.pen = pen.map(|pen| Pen { width: pen.width, cap: pen.cap, join: pen.join, dashes: &[], offset: pen.offset });
         self.dashes.clear();
         self.dashes.extend_from_slice(pen.map_or(&[], |pen| pen.dashes));
         let (color, way, stops) = match ink {
-            Ink::Color(color) => (color, Way::None, &[][..]),
-            Ink::Along(turn, stops) => (Color::NONE, Way::Along(turn), stops),
-            Ink::Around(stops) => (Color::NONE, Way::Around, stops),
+            Paint::Color(color) => (color, Way::None, &[][..]),
+            Paint::Linear(turn, stops) => (Color::NONE, Way::Along(turn), stops),
+            Paint::Radial(stops) => (Color::NONE, Way::Around, stops),
         };
         (self.color, self.way) = (color, way);
         self.stops.clear();
         self.stops.extend_from_slice(stops);
     }
-    /// Scales by `by`: its path, and its pen with its dashes. (For zoomed board content.)
+    /// Scales by `by`: its path, and its pen with its dashes. (For zoomed content.)
     pub(crate) fn scale_by(&mut self, by: f32) {
         self.path.transform(Transform::new().scale(by, by));
         if let Some(pen) = &mut self.pen {
@@ -241,10 +241,10 @@ impl Inked {
         let mut work = Work::default();
         match pen {
             Some(pen) => {
-                let back = Transform::new().scale(1.0 / FINER, 1.0 / FINER).move_by(at.x * s, at.y * s);
+                let back = Transform::new().scale(1.0 / FINER, 1.0 / FINER).translate(at.x * s, at.y * s);
                 work.line(canvas, &self.path, &pen, [s * FINER, s * FINER, FINER / 2.0], [Transform::new(), back], ink);
             }
-            None => work.fill(canvas, &self.path, s, Transform::new().move_by(at.x * s, at.y * s), false, ink),
+            None => work.fill(canvas, &self.path, s, Transform::new().translate(at.x * s, at.y * s), false, ink),
         }
     }
 }
@@ -563,13 +563,13 @@ mod tests {
     const RED: Color = Color::rgb(0xff0000);
 
     /// Stores a shape, drawn so, as `El::shape` and `El::outline` do.
-    fn set(shape: &mut Inked, path: &Path, pen: Option<Pen>, ink: Ink) {
+    fn set(shape: &mut Inked, path: &Path, pen: Option<Pen>, ink: Paint) {
         shape.set(path, pen, ink, fully(pen.as_ref(), &ink));
     }
 
     /// The coverage of a `side`×`side` pixel block by a stroke along `d` with `pen` in red,
     /// each pixel 0 to 255.
-    fn drawn(side: usize, d: &str, pen: Pen, ink: Ink) -> Vec<u32> {
+    fn drawn(side: usize, d: &str, pen: Pen, ink: Paint) -> Vec<u32> {
         let (mut pixels, mut shape) = (vec![0u32; side * side], Inked::default());
         set(&mut shape, &Path::svg(d), Some(pen), ink);
         shape.draw(&mut Canvas::new(&mut pixels, side, side, (0, 0), 1.0), pt(0.0, 0.0));
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn a_shape_is_filled_with_colours_across_it() {
         let (black, red) = (Color::BLACK, RED);
-        let fill = |d: &str, ink: Ink| {
+        let fill = |d: &str, ink: Paint| {
             let (mut pixels, mut shape) = (vec![0u32; 40 * 40], Inked::default());
             set(&mut shape, &Path::svg(d), None, ink);
             shape.draw(&mut Canvas::new(&mut pixels, 40, 40, (0, 0), 1.0), pt(0.0, 0.0));
@@ -660,26 +660,26 @@ mod tests {
         };
         // Left to right across a triangle's bounds: black at its leftmost pixels, red at its
         // rightmost, halfway between in the middle.
-        let along = fill("M10 30 30 10v20z", Ink::Along(90.0, &[(0.0, black), (1.0, red)]));
+        let along = fill("M10 30 30 10v20z", Paint::Linear(90.0, &[(0.0, black), (1.0, red)]));
         let red_at = |pixels: &[u32], x: usize, y: usize| pixels[y * 40 + x] >> 16 & 255;
         assert_eq!((red_at(&along, 10, 29), red_at(&along, 29, 29)), (0, 255));
         assert!((red_at(&along, 19, 29) + red_at(&along, 20, 29)).abs_diff(255) <= 3, "{} {}", red_at(&along, 19, 29), red_at(&along, 20, 29));
         // Radial from the centre to a circle's bounds: black at the centre.
-        let around = fill("M4 20a16 16 0 1 0 32 0a16 16 0 1 0-32 0z", Ink::Around(&[(0.0, black), (1.0, red)]));
+        let around = fill("M4 20a16 16 0 1 0 32 0a16 16 0 1 0-32 0z", Paint::Radial(&[(0.0, black), (1.0, red)]));
         assert!(red_at(&around, 20, 20) <= 10 && red_at(&around, 35, 20) >= 240 && red_at(&around, 28, 20).abs_diff(128) <= 12, "{:?}", [20, 35, 28].map(|x| red_at(&around, x, 20)));
         // One colour fills every inside pixel; and an open shape is closed.
         let flat = fill("M10 10h20v20h-20", red.into());
         assert_eq!(flat.iter().filter(|pixel| **pixel == 0xffff_0000).count(), 400, "{:x?}", &flat[20 * 40..21 * 40]);
         // A gradient stroke, dashed: each dash coloured by its position across the stroke.
         let (mut pixels, mut shape) = (vec![0u32; 40 * 40], Inked::default());
-        set(&mut shape, &Path::svg("M2 20h36"), Some(Pen::new(4.0).dashes(&[4.0, 2.0], 0.0)), Ink::Along(90.0, &[(0.0, black), (1.0, red)]));
+        set(&mut shape, &Path::svg("M2 20h36"), Some(Pen::new(4.0).dashes(&[4.0, 2.0], 0.0)), Paint::Linear(90.0, &[(0.0, black), (1.0, red)]));
         shape.draw(&mut Canvas::new(&mut pixels, 40, 40, (0, 0), 1.0), pt(0.0, 0.0));
         assert!(red_at(&pixels, 3, 20) < 20 && red_at(&pixels, 35, 20) > 235 && pixels[20 * 40 + 35] >> 24 == 255, "{:x}", pixels[20 * 40 + 35]);
     }
 
     #[test]
     fn a_kept_shape_knows_when_it_is_drawn_differently() {
-        let key = |pen: Option<Pen>, ink: Ink| {
+        let key = |pen: Option<Pen>, ink: Paint| {
             let mut shape = Inked::default();
             set(&mut shape, Path::new().rect(0.0, 0.0, 4.0, 4.0), pen, ink);
             shape.key()
@@ -688,9 +688,9 @@ mod tests {
         let all = [
             key(None, RED.into()),
             key(None, Color::BLACK.into()),
-            key(None, Ink::Along(90.0, &stops)),
-            key(None, Ink::Along(0.0, &stops)),
-            key(None, Ink::Around(&stops)),
+            key(None, Paint::Linear(90.0, &stops)),
+            key(None, Paint::Linear(0.0, &stops)),
+            key(None, Paint::Radial(&stops)),
             key(Some(Pen::new(1.0)), RED.into()),
             key(Some(Pen::new(2.0)), RED.into()),
             key(Some(Pen::new(1.0).cap(Cap::Flat)), RED.into()),
@@ -703,7 +703,7 @@ mod tests {
         assert_eq!(key(Some(Pen::new(1.0).dashes(&[1.0, 2.0], 0.0)), RED.into()), all[10]);
         // Disabled, it draws in one colour, whatever its ink.
         let mut shape = Inked::default();
-        set(&mut shape, Path::new().rect(0.0, 0.0, 4.0, 4.0), None, Ink::Along(90.0, &stops));
+        set(&mut shape, Path::new().rect(0.0, 0.0, 4.0, 4.0), None, Paint::Linear(90.0, &stops));
         shape.fade(Color::WHITE);
         let mut pixels = vec![0u32; 16];
         shape.draw(&mut Canvas::new(&mut pixels, 4, 4, (0, 0), 1.0), pt(0.0, 0.0));

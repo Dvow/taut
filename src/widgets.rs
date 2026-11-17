@@ -1,6 +1,7 @@
 //! The built-in parts placed in the page: text, buttons, check boxes, sliders, tabs, plots.
-//! Each is a few boxes in the theme's colours. (Text boxes are in `edit`, overlays in `menus`
-//! and `panel`, tables and long lists in `table`.)
+//! Each is a few boxes in the theme's colours. (Text boxes are in `text_edit`, overlays in
+//! `popups` and `panel`, tables and long lists in `table`.)
+use crate::accessibility::Role;
 use crate::color::Color;
 use crate::event::{Cursor, Key, Mods};
 use crate::geom::{Insets, Rect};
@@ -9,7 +10,6 @@ use crate::layout::{Align, Flow, Length, NONE};
 use crate::number::Number;
 use crate::path::Path;
 use crate::text::Font;
-use crate::told::Role;
 use crate::ui::{FRAME, Icon, Picture, Response, Rover, Stroke, Ui};
 use std::ops::RangeInclusive;
 use std::time::Duration;
@@ -43,7 +43,7 @@ impl Ui {
     }
     /// A line of muted, smaller text.
     pub fn note(&mut self, text: &str) -> Response {
-        self.text(text, self.theme.small, self.theme.text_dim)
+        self.text(text, self.theme.small_font, self.theme.text_dim)
     }
     /// A line of text.
     pub fn text(&mut self, text: &str, font: Font, color: Color) -> Response {
@@ -150,9 +150,9 @@ impl Ui {
         let (fill, ink, edge) = match (*on, state.hovered) {
             (true, _) => (t.selected, t.text, t.accent),
             (false, true) => (t.hover, t.text, t.line_strong),
-            (false, false) => (t.raise, t.text_dim, t.line),
+            (false, false) => (t.raised, t.text_dim, t.line),
         };
-        let frame = self.el().h(Length::Px(t.control)).min(t.control, 0.0).fill(fill).border(edge, 1.0).radius(t.radius).sense().focusable();
+        let frame = self.el().h(Length::Px(t.control_height)).min(t.control_height, 0.0).fill(fill).border(edge, 1.0).radius(t.radius).sense().focusable();
         let Some(icon) = icon else {
             frame.text(name, t.font, ink).text_align(Align::Center).pad((11.0, 0.0)).show();
             self.tell(&state, Role::Button, Some(*on), "");
@@ -168,25 +168,36 @@ impl Ui {
     /// What every button is: a pressable row with a leading icon, a label and a trailing icon,
     /// whichever there are.
     pub(crate) fn button_like(&mut self, lead: Before, label: &str, trail: Option<Icon>, primary: bool) -> Response {
-        let (t, bare) = (self.theme, label.is_empty());
+        let (t, icon_only) = (self.theme, label.is_empty());
         let state = self.press(self.next_id());
         if state.hovered {
             self.set_cursor(Cursor::Hand);
         }
         let (fill, ink, edge) = match (primary, state.pressed, state.hovered) {
-            (true, true, _) => (t.accent.alpha(0.8), t.on_accent, Color::NONE),
-            (true, false, true) => (t.accent.alpha(0.9), t.on_accent, Color::NONE),
+            (true, true, _) => (t.accent.with_alpha(0.8), t.on_accent, Color::NONE),
+            (true, false, true) => (t.accent.with_alpha(0.9), t.on_accent, Color::NONE),
             (true, false, false) => (t.accent, t.on_accent, Color::NONE),
             (false, true, _) => (t.selected, t.text, t.line_strong),
             (false, false, true) => (t.hover, t.text, t.line_strong),
-            (false, false, false) if bare => (Color::NONE, t.text_dim, Color::NONE),
-            (false, false, false) => (t.raise, t.text, t.line),
+            (false, false, false) if icon_only => (Color::NONE, t.text_dim, Color::NONE),
+            (false, false, false) => (t.raised, t.text, t.line),
         };
-        let pad = if bare { Insets::ZERO } else { Insets::xy(11.0, 0.0) };
+        let pad = if icon_only { Insets::ZERO } else { Insets::xy(11.0, 0.0) };
         // A label-only button is one box, the label centred.
-        if let (Before::None, None, false) = (lead, trail, bare) {
+        if let (Before::None, None, false) = (lead, trail, icon_only) {
             let font = if primary { t.font.bold() } else { t.font };
-            self.el().text(label, font, ink).text_align(Align::Center).h(Length::Px(t.control)).min(t.control, 0.0).pad(pad).fill(fill).border(edge, 1.0).radius(t.radius).sense().focusable().show();
+            self.el()
+                .text(label, font, ink)
+                .text_align(Align::Center)
+                .h(Length::Px(t.control_height))
+                .min(t.control_height, 0.0)
+                .pad(pad)
+                .fill(fill)
+                .border(edge, 1.0)
+                .radius(t.radius)
+                .sense()
+                .focusable()
+                .show();
             // (Told as a button, also while disabled: one that cannot be used then. A part that
             // is something else says so after this.)
             self.tell(&state, Role::Button, None, "");
@@ -195,8 +206,8 @@ impl Ui {
         self.el()
             .flow(Flow::Row)
             .align(Align::Center, Align::Center)
-            .h(Length::Px(t.control))
-            .min(t.control, 0.0)
+            .h(Length::Px(t.control_height))
+            .min(t.control_height, 0.0)
             .pad(pad)
             .gap(6.0)
             .fill(fill)
@@ -210,7 +221,7 @@ impl Ui {
             Before::Picture(picture, show) => show(self, picture),
             Before::None => {}
         }
-        if !bare {
+        if !icon_only {
             self.text(label, if primary { t.font.bold() } else { t.font }, ink);
         }
         if let Some(icon) = trail {
@@ -238,13 +249,13 @@ impl Ui {
         }
         // (Narrower in an overfull row, its label wrapping onto more lines; never shorter in an
         // overfull column: a check box is not squeezed away.)
-        self.row().gap(8.0).radius(4.0).align(Align::Start, Align::Start).narrows(1).sense().focusable().open();
+        self.row().gap(8.0).radius(4.0).align(Align::Start, Align::Start).shrink_width(1).sense().focusable().open();
         state
     }
     /// The label beside such a mark: on as many lines as its width needs.
     fn choice_label(&mut self, label: &str) {
         let (font, color) = (self.theme.font, self.theme.text);
-        self.el().text(label, font, color).wrap().gives_way(1).show();
+        self.el().text(label, font, color).wrap().shrink(1).show();
     }
 
     /// A check box with a label. Flips `on` when clicked; `changed` says it did.
@@ -252,7 +263,7 @@ impl Ui {
         let t = self.theme;
         let mut state = self.choice();
         (*on, state.changed) = (*on != state.clicked, state.clicked);
-        self.tell(&state, Role::Tick, Some(*on), "");
+        self.tell(&state, Role::CheckBox, Some(*on), "");
         let (fill, edge) = if *on { (t.accent, t.accent) } else { (t.panel, if state.hovered { t.text_faint } else { t.line_strong }) };
         self.row().size(16.0, 16.0).fill(fill).border(edge, 1.0).radius(4.0).align(Align::Center, Align::Center).open();
         if *on {
@@ -270,7 +281,7 @@ impl Ui {
         let mut state = self.choice();
         (*on, state.changed) = (*on != state.clicked, state.clicked);
         self.tell(&state, Role::Switch, Some(*on), "");
-        let over = self.glide(state.id, if *on { 1.0 } else { 0.0 }, SLIDE);
+        let over = self.animate(state.id, if *on { 1.0 } else { 0.0 }, SLIDE);
         self.row().size(30.0, 16.0).pad(2.0).radius(8.0).fill(if *on { t.accent } else { t.line_strong }).open();
         self.el().w(Length::Px(14.0 * over)).show();
         self.el().size(12.0, 12.0).radius(6.0).fill(if *on { t.on_accent } else { t.text }).show();
@@ -291,16 +302,16 @@ impl Ui {
         state.changed = (state.clicked || arrived) && *choice != value;
         // (Selected so, it informs the others of its choice, already described.)
         self.again |= state.changed;
-        let picked = state.changed || *choice == value;
+        let selected = state.changed || *choice == value;
         if self.enabled {
             let group = hash(("radio", choice as *const T as usize));
-            self.rovers.push(Rover { group, id: state.id, stop: picked, picks: true });
+            self.rovers.push(Rover { group, id: state.id, stop: selected, selects: true });
         }
         if state.changed {
             *choice = value;
         }
-        self.tell(&state, Role::Choice, Some(picked), "");
-        let edge = if picked {
+        self.tell(&state, Role::RadioButton, Some(selected), "");
+        let edge = if selected {
             t.accent
         } else if state.hovered {
             t.text_faint
@@ -308,7 +319,7 @@ impl Ui {
             t.line_strong
         };
         self.row().size(16.0, 16.0).fill(t.panel).border(edge, 1.0).radius(8.0).align(Align::Center, Align::Center).open();
-        if picked {
+        if selected {
             self.el().size(8.0, 8.0).radius(4.0).fill(t.accent).show();
         }
         self.close();
@@ -339,8 +350,8 @@ impl Ui {
         self.again |= state.changed;
         // The track before and after the knob share the width by its position.
         let along = ((*value - low) / span).clamp(0.0, 1.0);
-        self.row().w(Length::Grow(1.0)).h(Length::Px(t.control)).radius(4.0).sense().focusable().open();
-        self.tell_amount(&state, Role::Slider, [*value, low, low + span]);
+        self.row().w(Length::Grow(1.0)).h(Length::Px(t.control_height)).radius(4.0).sense().focusable().open();
+        self.tell_value(&state, Role::Slider, [*value, low, low + span]);
         self.tell_step(span / 20.0);
         self.el().w(Length::Grow(along)).h(Length::Px(4.0)).radius(2.0).fill(t.accent).show();
         self.el().size(knob, knob).radius(knob / 2.0).fill(if state.hovered || state.pressed { t.text } else { t.text_dim }).show();
@@ -360,17 +371,17 @@ impl Ui {
         // two at one spot, the one on the pointer's side).
         let at = self.pointer().map(|p| least + span * ((p.x - state.rect.x - knob) / (state.rect.w - 2.0 * knob).max(1.0)).clamp(0.0, 1.0));
         let nearer = at.is_some_and(|at| (at - *high).abs() < (at - *low).abs() || *low == *high && at > *high);
-        let taken = self.held(&state, [nearer as u8 as f32, 0.0, 0.0, 0.0]).map(|(_, caught)| caught[0] > 0.0);
+        let taken = self.drag_delta(&state, [nearer as u8 as f32, 0.0, 0.0, 0.0]).map(|(_, caught)| caught[0] > 0.0);
         match (taken, at) {
             (Some(true), Some(at)) => *high = at.max(*low),
             (Some(false), Some(at)) => *low = at.min(*high),
             _ => {}
         }
-        self.row().w(Length::Grow(1.0)).h(Length::Px(t.control)).radius(4.0).sense().open();
+        self.row().w(Length::Grow(1.0)).h(Length::Px(t.control_height)).radius(4.0).sense().open();
         // (Each knob is named by the span's label and its end: "Price, low end".)
         let line = self.open.last().map_or(0, |open| open.at);
         let names: [String; 2] = match self.listening {
-            true => [self.part_words.low, self.part_words.high].map(|end| [crate::told::label_before(&self.tree, &self.notes, line), end].join(", ").trim_start_matches(", ").to_string()),
+            true => [self.widget_words.low, self.widget_words.high].map(|end| [crate::accessibility::label_before(&self.tree, &self.notes, line), end].join(", ").trim_start_matches(", ").to_string()),
             false => Default::default(),
         };
         // The knobs are queried before the track is made, so it reflects the keys. And the
@@ -387,11 +398,11 @@ impl Ui {
         let lit = |of: &Response, held: bool| if of.focused || state.pressed && taken == Some(held) { t.text } else { t.text_dim };
         self.el().w(Length::Grow(along(*low))).h(Length::Px(4.0)).radius(2.0).fill(t.line_strong).show();
         self.el().key("low").size(knob, knob).radius(knob / 2.0).fill(lit(&first, false)).focusable().show();
-        self.tell_amount_named(&first, Role::Slider, [*low, least, *high], &names[0]);
+        self.tell_value_named(&first, Role::Slider, [*low, least, *high], &names[0]);
         self.tell_step(step);
         self.el().w(Length::Grow(along(*high) - along(*low))).h(Length::Px(4.0)).fill(t.accent).show();
         self.el().key("high").size(knob, knob).radius(knob / 2.0).fill(lit(&second, true)).focusable().show();
-        self.tell_amount_named(&second, Role::Slider, [*high, *low, least + span], &names[1]);
+        self.tell_value_named(&second, Role::Slider, [*high, *low, least + span], &names[1]);
         self.tell_step(step);
         self.el().w(Length::Grow(1.0 - along(*high))).h(Length::Px(4.0)).radius(2.0).fill(t.line_strong).show();
         self.close();
@@ -418,7 +429,7 @@ impl Ui {
     pub fn progress(&mut self, part: f32) -> Response {
         let (t, part) = (self.theme, part.clamp(0.0, 1.0));
         let bar = self.row().w(Length::Grow(1.0)).h(Length::Px(6.0)).radius(3.0).fill(t.line_strong).clip().open();
-        self.tell_amount(&bar, Role::Progress, [part, 0.0, 1.0]);
+        self.tell_value(&bar, Role::Progress, [part, 0.0, 1.0]);
         self.el().w(Length::Grow(part)).h(Length::Grow(1.0)).radius(3.0).fill(t.accent).show();
         self.el().w(Length::Grow(1.0 - part)).show();
         self.close();
@@ -452,7 +463,7 @@ impl Ui {
         self.wake_after(if still { FRAME * 3 } else { FRAME });
         // (Opened and closed though empty: an opened box has a name, by which screen readers
         // hear it.)
-        let shown = self.el().size(size, size).outline(&ring, 2.0, t.accent.alpha(solid)).open();
+        let shown = self.el().size(size, size).outline(&ring, 2.0, t.accent.with_alpha(solid)).open();
         self.close();
         self.tell(&shown, Role::Progress, None, "");
         shown
@@ -474,9 +485,9 @@ impl Ui {
                 (false, true) => (t.hover, t.text),
                 (false, false) => (Color::NONE, t.text_dim),
             };
-            self.el().text(name, t.font, ink).text_align(Align::Center).h(Length::Px(t.control - 6.0)).pad((10.0, 0.0)).fill(fill).radius((t.radius - 2.0).max(0.0)).sense().focusable().show();
+            self.el().text(name, t.font, ink).text_align(Align::Center).h(Length::Px(t.control_height - 6.0)).pad((10.0, 0.0)).fill(fill).radius((t.radius - 2.0).max(0.0)).sense().focusable().show();
             self.tell(&state, Role::Tab, Some(*choice == number), "");
-            self.tell_place(number + 1, names.len());
+            self.tell_position(number + 1, names.len());
             self.tab_stop(all.id, state.id, *choice == number);
         }
         self.close();
@@ -497,13 +508,13 @@ impl Ui {
             if state.clicked {
                 *choice = number;
             }
-            let picked = *choice == number;
+            let selected = *choice == number;
             self.column().pad((10.0, 6.0, 10.0, 0.0)).gap(5.0).sense().focusable().open();
-            self.tell(&state, Role::Tab, Some(picked), "");
-            self.tell_place(number + 1, names.len());
-            self.tab_stop(all.id, state.id, picked);
-            self.text(name, t.font, if picked || state.hovered { t.text } else { t.text_dim });
-            self.el().h(Length::Px(2.0)).radius(1.0).fill(if picked { t.accent } else { Color::NONE }).show();
+            self.tell(&state, Role::Tab, Some(selected), "");
+            self.tell_position(number + 1, names.len());
+            self.tab_stop(all.id, state.id, selected);
+            self.text(name, t.font, if selected || state.hovered { t.text } else { t.text_dim });
+            self.el().h(Length::Px(2.0)).radius(1.0).fill(if selected { t.accent } else { Color::NONE }).show();
             self.close();
         }
         self.close();
@@ -523,9 +534,9 @@ impl Ui {
         let (mut closed, mut moved, mut after) = (None, None, 0);
         for number in 0..items.len() {
             let beside = [number.checked_sub(1), Some(number + 1).filter(|after| *after < items.len())].map(|at| at.map(|at| name(&items[at])));
-            let [picked, shut, back, on, keyed] = self.closing_tab(name(&items[number]), *choice == number, beside, all.id);
-            self.tell_place(number + 1, items.len());
-            *choice = if picked { number } else { *choice };
+            let [selected, shut, back, on, keyed] = self.closing_tab(name(&items[number]), *choice == number, beside, all.id);
+            self.tell_position(number + 1, items.len());
+            *choice = if selected { number } else { *choice };
             closed = closed.or(shut.then_some(number));
             moved = moved.or(back.then(|| (number, number - 1))).or(on.then_some((number, number + 1)));
             // (A tab closed by keyboard passes focus to the next tab, or the previous.)
@@ -556,13 +567,13 @@ impl Ui {
     /// whether to close it (close clicked, or Delete on it); whether it is dragged past the
     /// middle of the previous or next tab (or moved there by keys); and whether the keyboard
     /// did it.
-    fn closing_tab(&mut self, name: &str, picked: bool, beside: [Option<&str>; 2], row: Id) -> [bool; 5] {
+    fn closing_tab(&mut self, name: &str, selected: bool, beside: [Option<&str>; 2], row: Id) -> [bool; 5] {
         let t = self.theme;
         let tab = self.press(self.id(name));
-        let carried = self.held(&tab, [0.0; 4]).is_some_and(|(gone, _)| gone.x.abs() > 4.0);
+        let dragged = self.drag_delta(&tab, [0.0; 4]).is_some_and(|(gone, _)| gone.x.abs() > 4.0);
         // The pointer while dragging the tab, and the neighbours' middles; a missing one
         // compares against nothing.
-        let at = self.pointer().filter(|_| carried).map_or(f32::NAN, |at| at.x);
+        let at = self.pointer().filter(|_| dragged).map_or(f32::NAN, |at| at.x);
         let middle = |of: Rect| if of.is_empty() { f32::NAN } else { of.x + of.w / 2.0 };
         let [before, after] = beside.map(|name| name.map_or(f32::NAN, |name| middle(self.seen(self.id(name)))));
         // A closable tab's keys: Delete closes it (as ARIA has it), Control+Shift with Left or
@@ -572,29 +583,29 @@ impl Ui {
         let deleted = tab.focused && self.key(Key::Delete, Mods::NONE);
         self.column().key(name).pad((10.0, 4.0, 6.0, 0.0)).gap(3.0).sense().focusable().open();
         self.row().gap(6.0).open();
-        self.text(name, t.font, if picked || tab.hovered { t.text } else { t.text_dim });
+        self.text(name, t.font, if selected || tab.hovered { t.text } else { t.text_dim });
         let cross = self.press(self.next_id());
         self.el().icon(CROSS, 12.0, if cross.hovered { t.text } else { t.text_faint }).sense().show();
         // (The close button is told as a button of its own inside the tab, named by its action
         // and tab: "Close a.txt".)
         if self.listening {
             self.tell(&cross, Role::Button, None, &format!("{} {name}", self.frame_words.close));
-            self.tell_on_its_own(&cross);
+            self.tell_separately(&cross);
         }
         self.close();
-        self.el().h(Length::Px(2.0)).radius(1.0).fill(if picked { t.accent } else { Color::NONE }).show();
+        self.el().h(Length::Px(2.0)).radius(1.0).fill(if selected { t.accent } else { Color::NONE }).show();
         self.close();
         // (Told last, so its position of how many can be added after this.)
-        self.tell(&tab, Role::Tab, Some(picked), "");
-        self.tab_stop(row, tab.id, picked);
+        self.tell(&tab, Role::Tab, Some(selected), "");
+        self.tab_stop(row, tab.id, selected);
         let keyed = deleted || back || on;
         [tab.clicked && self.gone().x.abs() <= 4.0, cross.clicked || deleted, at < before || back, at >= after || on, keyed]
     }
     /// Makes a tab of tab row `row` part of a roving group, its Tab stop at the active one,
-    /// `picked`.
-    fn tab_stop(&mut self, row: Id, tab: Id, picked: bool) {
+    /// `selected`.
+    fn tab_stop(&mut self, row: Id, tab: Id, selected: bool) {
         if self.enabled {
-            self.rovers.push(Rover { group: row, id: tab, stop: picked, picks: false });
+            self.rovers.push(Rover { group: row, id: tab, stop: selected, selects: false });
         }
     }
 
@@ -616,7 +627,7 @@ impl Ui {
         if state.hovered {
             self.set_cursor(Cursor::Hand);
         }
-        self.row().gap(4.0).h(Length::Px(t.control)).radius(4.0).fill(fill).sense().focusable().open();
+        self.row().gap(4.0).h(Length::Px(t.control_height)).radius(4.0).fill(fill).sense().focusable().open();
         self.el().icon(if open { DOWN } else { RIGHT }, 12.0, t.text_dim).show();
         self.text(title, t.font.bold(), t.text);
         self.close();
@@ -626,7 +637,7 @@ impl Ui {
     /// selects it; the app keeps which is selected.
     pub fn selectable(&mut self, picked: bool, label: &str) -> Response {
         let t = self.theme;
-        let state = self.press_to_pick(self.next_id());
+        let state = self.press_to_select(self.next_id());
         let fill = if picked {
             t.selected
         } else if state.hovered {
@@ -634,12 +645,12 @@ impl Ui {
         } else {
             Color::NONE
         };
-        self.el().text(label, t.font, t.text).h(Length::Px(t.control)).pad((10.0, 0.0)).fill(fill).radius(4.0).sense().focusable().show();
+        self.el().text(label, t.font, t.text).h(Length::Px(t.control_height)).pad((10.0, 0.0)).fill(fill).radius(4.0).sense().focusable().show();
         self.tell(&state, Role::Row, Some(picked), "");
         // (Its position of how many in a long list: the list has counted this row already, and
         // before the first, the spacer above the visible rows.)
         let place = self.open.last().filter(|around| around.row > 0.0).map(|around| (around.children as usize - 1, around.count as usize));
-        place.into_iter().for_each(|(nth, count)| self.tell_place(nth, count));
+        place.into_iter().for_each(|(nth, count)| self.tell_position(nth, count));
         state
     }
 
@@ -649,7 +660,7 @@ impl Ui {
     /// first child) and Left collapses it (or, collapsed, moves to its parent). The result says
     /// what the user did: `clicked` that it was pressed (pointer, Enter or Space), which also
     /// toggles it; `changed` that it expanded or collapsed, by press or arrows. For a tree of
-    /// many items, see `branches`.
+    /// many items, see `tree_view`.
     ///
     /// ```ignore
     /// let music = ui.tree(&mut app.open, "Music");
@@ -669,12 +680,12 @@ impl Ui {
     /// section visited): a `picked` one shows it, and screen readers hear it. The app keeps
     /// which is selected (a press sets `clicked`).
     #[cfg_attr(debug_assertions, track_caller)]
-    pub fn picked_tree(&mut self, open: &mut bool, title: &str, picked: bool) -> Response {
+    pub fn selectable_tree(&mut self, open: &mut bool, title: &str, picked: bool) -> Response {
         self.tree_heading(open, title, Some(picked))
     }
     /// A tree heading, selected or not, or (`None`) in a tree without selection.
     #[cfg_attr(debug_assertions, track_caller)]
-    fn tree_heading(&mut self, open: &mut bool, title: &str, picked: Option<bool>) -> Response {
+    fn tree_heading(&mut self, open: &mut bool, title: &str, selected: Option<bool>) -> Response {
         let (mut state, was) = (self.press(self.next_id()), *open);
         // (Its place in the tree is computed only when needed: to tell, or to navigate.)
         let (level, above) = if state.focused || self.listening { self.tree_around() } else { (1, 0) };
@@ -683,10 +694,10 @@ impl Ui {
         }
         *open ^= state.clicked;
         state.changed = *open != was;
-        let fill = if picked == Some(true) { self.theme.selected } else { Color::NONE };
+        let fill = if selected == Some(true) { self.theme.selected } else { Color::NONE };
         self.folding(&state, *open, title, fill);
-        self.tell(&state, Role::TreeItem, picked, "");
-        self.tell_branch(level, Some(*open));
+        self.tell(&state, Role::TreeItem, selected, "");
+        self.tell_tree_item(level, Some(*open));
         if *open {
             self.column().key(BRANCH).pad((16.0, 0.0, 0.0, 0.0)).open();
         }
@@ -720,13 +731,13 @@ impl Ui {
     /// A number of any type changed by dragging horizontally: by `per_unit` per unit of pointer
     /// movement. It shows as many decimals as that step needs. It is focusable, and slider keys
     /// move it ten steps (Page Up and Page Down four times that); screen readers hear a slider.
-    pub fn drag<T: Number>(&mut self, value: &mut T, per_unit: f64) -> Response {
+    pub fn drag_value<T: Number>(&mut self, value: &mut T, per_unit: f64) -> Response {
         self.dragged(value, None, per_unit)
     }
     /// The same, clamped to `range`: dragged or stepped past an end, it stops there, and screen
     /// readers hear both ends. (An app value outside it shows as is, until the user changes
     /// it.)
-    pub fn drag_in<T: Number>(&mut self, value: &mut T, range: RangeInclusive<T>, per_unit: f64) -> Response {
+    pub fn drag_value_in<T: Number>(&mut self, value: &mut T, range: RangeInclusive<T>, per_unit: f64) -> Response {
         let (low, high) = (range.start().to_f64(), range.end().to_f64());
         self.dragged(value, Some([low.min(high), high.max(low)]), per_unit)
     }
@@ -741,7 +752,7 @@ impl Ui {
         }
         // (The number is held as two smaller ones, so a large one loses nothing.)
         let whole = was.to_f64() as f32;
-        if let Some((gone, caught)) = self.held(&state, [whole, (was.to_f64() - whole as f64) as f32, 0.0, 0.0]) {
+        if let Some((gone, caught)) = self.drag_delta(&state, [whole, (was.to_f64() - whole as f64) as f32, 0.0, 0.0]) {
             *value = within(caught[0] as f64 + caught[1] as f64 + gone.x as f64 * per_unit);
         }
         if state.focused {
@@ -756,10 +767,10 @@ impl Ui {
         self.again |= state.changed;
         let decimals = (-per_unit.abs().max(1e-6).log10()).ceil().clamp(0.0, 6.0) as usize;
         let edge = if state.hovered || state.pressed { t.text_faint } else { t.line_strong };
-        self.row().h(Length::Px(t.control)).min(64.0, 0.0).pad((8.0, 0.0)).align(Align::Center, Align::Center).fill(t.panel).border(edge, 1.0).radius(t.radius).sense().focusable().open();
+        self.row().h(Length::Px(t.control_height)).min(64.0, 0.0).pad((8.0, 0.0)).align(Align::Center, Align::Center).fill(t.panel).border(edge, 1.0).radius(t.radius).sense().focusable().open();
         self.label(&format!("{:.*}", decimals, value.to_f64()));
         self.close();
-        self.tell_amount(&state, Role::Slider, [value.to_f64() as f32, low.max(f32::MIN as f64) as f32, high.min(f32::MAX as f64) as f32]);
+        self.tell_value(&state, Role::Slider, [value.to_f64() as f32, low.max(f32::MIN as f64) as f32, high.min(f32::MAX as f64) as f32]);
         self.tell_step((per_unit * 10.0) as f32);
         state
     }
@@ -808,7 +819,7 @@ impl Ui {
         if state.hovered || state.pressed {
             self.set_cursor(Cursor::ResizeX);
         }
-        if let Some((gone, caught)) = self.held(&state, [was, 0.0, 0.0, 0.0]) {
+        if let Some((gone, caught)) = self.drag_delta(&state, [was, 0.0, 0.0, 0.0]) {
             *width = (caught[0] + gone.x).clamp(least, most);
         }
         if state.focused {
@@ -825,8 +836,8 @@ impl Ui {
         self.row().w(Length::Px(5.0)).h(Length::Grow(1.0)).align(Align::Center, Align::Spread).sense().focusable().open();
         if self.listening {
             let at = self.open.last().map_or(0, |open| open.at);
-            let name = crate::told::words_before(&self.tree, at).unwrap_or(self.frame_words.splitter).to_string();
-            self.tell_amount_named(&state, Role::Slider, [*width, least, most], &name);
+            let name = crate::accessibility::words_before(&self.tree, at).unwrap_or(self.frame_words.splitter).to_string();
+            self.tell_value_named(&state, Role::Slider, [*width, least, most], &name);
             self.tell_step(step);
         }
         self.el().w(Length::Px(1.0)).fill(line).show();
@@ -837,14 +848,14 @@ impl Ui {
 
 #[cfg(test)]
 mod tests {
+    use crate::accessibility::{AccessNode, Role};
     use crate::layout::Length;
     use crate::testing::Trial;
-    use crate::told::{Role, Said};
     use crate::ui::Ui;
 
     /// The focused element as screen readers hear it: role and name.
     fn on<A>(trial: &Trial<A>) -> Option<(Role, String)> {
-        trial.said().iter().find(|said| said.focused).map(|said| (said.role, said.name.clone()))
+        trial.visible_access_nodes().iter().find(|said| said.focused).map(|said| (said.role, said.name.clone()))
     }
     /// Where Tab goes, from nothing, so many times.
     fn tab_stops<A>(trial: &mut Trial<A>, times: usize) -> Vec<String> {
@@ -881,20 +892,20 @@ mod tests {
         assert_eq!(tab_stops(&mut trial, 5), ["Before", "Medium", "Warm", "After", "Before"]);
         trial.key("Shift+Tab");
         trial.key("Shift+Tab");
-        assert_eq!(on(&trial), Some((Role::Choice, "Warm".into())), "Shift and Tab come back to the choice before");
+        assert_eq!(on(&trial), Some((Role::RadioButton, "Warm".into())), "Shift and Tab come back to the choice before");
         trial.key("Shift+Tab");
-        assert_eq!(on(&trial), Some((Role::Choice, "Medium".into())));
+        assert_eq!(on(&trial), Some((Role::RadioButton, "Medium".into())));
         // Each tells its position of how many, in its own group.
-        let places: Vec<Option<[u32; 2]>> = trial.said().iter().filter(|said| said.role == Role::Choice).map(|said| said.of).collect();
+        let places: Vec<Option<[u32; 2]>> = trial.visible_access_nodes().iter().filter(|said| said.role == Role::RadioButton).map(|said| said.position).collect();
         assert_eq!(places, [Some([1, 3]), Some([2, 3]), Some([3, 3]), Some([1, 2]), Some([2, 2])]);
         // Arrows cycle the group and select: past the last, to the first.
         trial.key("Down");
-        assert_eq!((trial.app.size, on(&trial)), (2, Some((Role::Choice, "Large".into()))));
+        assert_eq!((trial.app.size, on(&trial)), (2, Some((Role::RadioButton, "Large".into()))));
         trial.key("Right");
-        assert_eq!((trial.app.size, on(&trial)), (0, Some((Role::Choice, "Small".into()))));
+        assert_eq!((trial.app.size, on(&trial)), (0, Some((Role::RadioButton, "Small".into()))));
         trial.key("Up");
         assert_eq!((trial.app.size, trial.app.tone), (2, 0), "Up from the first goes round to the last, and the other choice is left as it was");
-        assert!(trial.find(Role::Choice, "Large").on == Some(true));
+        assert!(trial.find(Role::RadioButton, "Large").on == Some(true));
     }
 
     struct Paging {
@@ -937,7 +948,7 @@ mod tests {
     fn tabs_that_close_are_closed_and_moved_with_keys_and_their_cross_is_told() {
         let mut trial = Trial::new(Paging { page: 0, span: 0, paper: 1, papers: vec!["a.txt", "b.txt", "c.txt"] }, paging);
         let cross = trial.find(Role::Button, "Close b.txt").clone();
-        assert_eq!(trial.said()[cross.within.unwrap()].role, Role::Tabs, "the cross is told in the row of tabs");
+        assert_eq!(trial.visible_access_nodes()[cross.parent.unwrap()].role, Role::Tabs, "the cross is told in the row of tabs");
         let stops = tab_stops(&mut trial, 3);
         assert_eq!(stops[2], "b.txt", "the row stops at the tab in front");
         // Control+Shift+Right moves the tab on: the selection follows it.
@@ -963,7 +974,7 @@ mod tests {
         let mut trial = Trial::new(Paging { page: 0, span: 0, paper: 0, papers: vec!["a.txt", "b.txt", "c.txt"] }, paging);
         trial.ui.theme = trial.ui.theme.text_scaled(2.5);
         trial.resize(300.0, 400.0, 1.0);
-        let tabs: Vec<&Said> = trial.said().iter().filter(|said| said.role == Role::Tab).collect();
+        let tabs: Vec<&AccessNode> = trial.visible_access_nodes().iter().filter(|said| said.role == Role::Tab).collect();
         assert!(tabs.iter().all(|said| said.rect.right() <= 300.0), "{:?}", tabs.iter().map(|said| said.rect).collect::<Vec<_>>());
         assert!(tabs.windows(2).any(|pair| pair[1].rect.y > pair[0].rect.y), "on more than one line");
     }
@@ -990,7 +1001,7 @@ mod tests {
         let mut trial = Trial::new(Splitting { side: 100.0, named: true }, splitting);
         trial.key("Tab");
         let told = trial.find(Role::Slider, "Folders").clone();
-        assert!(told.focused && told.amount == Some([100.0, 60.0, 200.0]) && told.step == 10.0, "{told:?}");
+        assert!(told.focused && told.value_range == Some([100.0, 60.0, 200.0]) && told.step == 10.0, "{told:?}");
         for (key, to) in [("Right", 110.0), ("Left", 100.0), ("End", 200.0), ("Right", 200.0), ("Home", 60.0)] {
             trial.key(key);
             assert_eq!(trial.app.side, to, "{key}");
@@ -1034,11 +1045,11 @@ mod tests {
     #[test]
     fn a_part_with_no_words_of_its_own_is_called_by_the_label_in_front_of_it() {
         let trial = Trial::new(Form { copies: 3, ..Form::default() }, form);
-        let names: Vec<(Role, &str)> = trial.said().iter().filter(|said| said.role != Role::Text).map(|said| (said.role, said.name.as_str())).collect();
+        let names: Vec<(Role, &str)> = trial.visible_access_nodes().iter().filter(|said| said.role != Role::Text).map(|said| (said.role, said.name.as_str())).collect();
         let wanted = [
             (Role::Slider, "Volume"),
-            (Role::Select, "Size"),
-            (Role::Spin, "Copies"),
+            (Role::ComboBox, "Size"),
+            (Role::SpinButton, "Copies"),
             (Role::TextBox, "Town"),
             (Role::Slider, "Price, low end"),
             (Role::Slider, "Price, high end"),
@@ -1047,8 +1058,8 @@ mod tests {
         ];
         assert_eq!(names, wanted, "(a button's words are no label: the slider after it has no name)");
         // (What parts say of themselves stays: what is selected, how many.)
-        assert_eq!(trial.find(Role::Select, "Size").value, "Small");
-        assert_eq!(trial.find(Role::Spin, "Copies").value, "3");
+        assert_eq!(trial.find(Role::ComboBox, "Size").value, "Small");
+        assert_eq!(trial.find(Role::SpinButton, "Copies").value, "3");
     }
 
     struct Long {

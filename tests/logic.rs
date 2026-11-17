@@ -4,9 +4,9 @@ mod common;
 
 use common::*;
 use std::time::Duration;
-use taut::{Chart, Color, Column, Dock, Event, Icon, Key, Length, Mods, Place, Rect, Role, Second, Series, Surface, Table, Ui};
+use taut::{Chart, Color, Column, Dock, DockNode, Event, Icon, Key, Length, Mods, Rect, Role, SecondWindow, Series, Surface, Table, Ui};
 
-/// A star, as an app shows it: a line while it is not picked, filled while it is. (One path,
+/// A star, as an app shows it: a line while it is not selected, filled while it is. (One path,
 /// kept once, as an app keeps its icons.)
 static STAR: &str = "M8 1.5 9.9 5.8 14.5 6.2 11 9.3 12.1 13.8 8 11.4 3.9 13.8 5 9.3 1.5 6.2 6.1 5.8z";
 
@@ -28,19 +28,19 @@ fn an_icon_that_turns_from_a_line_into_a_filled_shape_is_drawn_again() {
 fn the_panel_in_front_stays_in_front_when_a_tab_before_it_goes() {
     let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
     let mut dock = Dock::of(&["a", "b", "c"]);
-    dock.places[0] = Place::Tabs { names: names(&["a", "b", "c"]), front: 1 };
+    dock.nodes[0] = DockNode::Tabs { names: names(&["a", "b", "c"]), front: 1 };
     // "b" was in front; "a" goes (an app that no longer has it, or a tab carried away).
     let dock = dock.only(&["b", "c"]);
-    assert_eq!(dock.places[0], Place::Tabs { names: names(&["b", "c"]), front: 0 }, "another panel came to the front");
+    assert_eq!(dock.nodes[0], DockNode::Tabs { names: names(&["b", "c"]), front: 0 }, "another panel came to the front");
 }
 
 #[test]
 fn a_notice_that_is_to_stay_for_ever_does_not_overflow_the_clock() {
     let mut w = window(1.0);
     w.set_time(Duration::from_secs(5));
-    let mut told = false;
+    let mut posted = false;
     w.run(&mut |ui| {
-        if !std::mem::replace(&mut told, true) {
+        if !std::mem::replace(&mut posted, true) {
             ui.notice_for("Kept until it is pressed", Duration::MAX);
         }
     });
@@ -123,7 +123,7 @@ const SQUARE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" heig
 fn a_drawing_the_app_handed_over_shows_in_a_second_window_too() {
     let mut w = window(1.0);
     let drawing = w.add_drawing(SQUARE).expect("a drawing");
-    let mut prefs = Second::new(200.0, 100.0);
+    let mut prefs = SecondWindow::new(200.0, 100.0);
     let (mut here, mut there) = (Rect::EMPTY, Rect::EMPTY);
     for _ in 0..3 {
         w.run(&mut |ui| {
@@ -147,7 +147,7 @@ fn a_glide_to_no_number_does_not_keep_the_window_running() {
         w.set_time(Duration::from_millis(step * 100));
         w.run(&mut |ui| {
             // (Written, not laid out: a size that is no number has a mistake of its own.)
-            let wide = ui.glide(7, 200.0 * done / all, Duration::from_millis(150));
+            let wide = ui.animate(7, 200.0 * done / all, Duration::from_millis(150));
             ui.label(&format!("{wide}"));
         });
     }
@@ -200,16 +200,16 @@ fn a_click_that_brings_up_a_table_is_settled_by_the_run_that_sees_it() {
 /// A box that suggests what its text might become, with a screen reader listening: gives
 /// what it suggests.
 fn suggested(w: &mut Window) -> Vec<String> {
-    w.said().iter().filter(|said| said.role == Role::MenuItem).map(|said| said.name.clone()).collect()
+    w.visible_access_nodes().iter().filter(|node| node.role == Role::MenuItem).map(|node| node.name.clone()).collect()
 }
 
 #[test]
 fn what_is_suggested_follows_options_that_changed() {
     let mut w = window(1.0);
-    w.listen(true);
+    w.set_screen_reader(true);
     let (fruit, nuts) = (["apple", "apricot", "banana"], ["almond", "cashew", "pecan"]);
     let mut text = String::new();
-    let mut build = |ui: &mut Ui, options: &[&str]| _ = ui.suggest(&mut text, "Food", options);
+    let mut build = |ui: &mut Ui, options: &[&str]| _ = ui.autocomplete(&mut text, "Food", options);
     settle(&mut w, |ui| build(ui, &fruit));
     key(&mut w, Key::Tab, Mods::NONE, |ui| build(ui, &fruit));
     typed(&mut w, "ap", |ui| build(ui, &fruit));
@@ -228,12 +228,12 @@ fn a_table_of_many_columns_shows_each_column_once_whatever_order_was_kept() {
     order[1] = 0;
     let mut state = Table { order, ..Table::default() };
     let mut w = window(1.0);
-    w.listen(true);
+    w.set_screen_reader(true);
     settle(&mut w, |ui| {
         ui.table(&mut state, &columns);
         ui.close();
     });
-    let headings: Vec<String> = w.said().iter().filter(|said| said.role == Role::Heading).map(|said| said.name.clone()).collect();
+    let headings: Vec<String> = w.visible_access_nodes().iter().filter(|node| node.role == Role::ColumnHeader).map(|node| node.name.clone()).collect();
     assert!(headings.iter().filter(|name| *name == "c0").count() == 1 && headings.contains(&"c1".to_string()), "{headings:?}");
 }
 
@@ -286,13 +286,13 @@ fn what_one_box_that_grows_cannot_take_goes_to_the_others() {
 #[test]
 fn what_an_app_tells_of_a_part_is_what_a_screen_reader_hears() {
     let mut w = window(1.0);
-    w.listen(true);
+    w.set_screen_reader(true);
     // A part that tells of itself (a button called by its hint), and an app that says more
     // of it, right after it is made, as `tell` asks: it is a tick, and it is on.
     settle(&mut w, |ui| {
         let star = ui.icon_button(Icon::line(STAR), "Star");
-        ui.tell(&star, Role::Tick, Some(true), "Starred");
+        ui.tell(&star, Role::CheckBox, Some(true), "Starred");
     });
-    let said: Vec<(Role, String, Option<bool>)> = w.said().iter().map(|said| (said.role, said.name.clone(), said.on)).collect();
-    assert!(said.contains(&(Role::Tick, "Starred".into(), Some(true))), "the app's word went unheard: {said:?}");
+    let given: Vec<(Role, String, Option<bool>)> = w.visible_access_nodes().iter().map(|node| (node.role, node.name.clone(), node.on)).collect();
+    assert!(given.contains(&(Role::CheckBox, "Starred".into(), Some(true))), "the app's word went unheard: {given:?}");
 }

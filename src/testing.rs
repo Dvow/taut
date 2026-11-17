@@ -34,20 +34,21 @@
 //!
 //! Text uses the built-in font (each glyph 12 units wide and 20 high, in the theme's font), so
 //! images are identical on every system: one saved on Windows holds on Linux. A test wanting
-//! system text says so (`trial.ui.set_text(..)`), and its images are then that system's only.
+//! system text says so (`trial.ui.set_text_system(..)`), and its images are then that system's
+//! only.
 //!
 //! A trial listens as a screen reader does, which is how it finds elements: so what a part does
 //! only for a listening reader ([`select_for_reader`](Ui::select_for_reader)) it does in a
 //! trial too, not in an unread window.
 //!
 //! None of this is in a program that does not use it.
-use crate::event::{Button, Event, Mods, keys};
+use crate::accessibility::{AccessNode, Role};
+use crate::event::{Button, Event, Mods, parse_keys};
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::id::Id;
 use crate::platform::LocalClipboard;
 use crate::surface::Surface;
 use crate::text::BuiltInFont;
-use crate::told::{Role, Said};
 use crate::ui::Ui;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -101,7 +102,7 @@ impl<A> Trial<A> {
     /// once.
     pub fn new(app: A, describe: impl FnMut(&mut A, &mut Ui) + 'static) -> Self {
         let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
-        ui.listen(true);
+        ui.set_screen_reader(true);
         ui.resize(Size { w: 640.0, h: 480.0 }, 1.0);
         let screen = Surface::draw(&mut ui, 64);
         let mut trial = Trial { app, ui, screen, passes: 0, describe: Box::new(describe), clock: None, now: Duration::ZERO, pointer: pt(-1.0, -1.0), pressed: None };
@@ -112,7 +113,7 @@ impl<A> Trial<A> {
     /// Tells the app the time before every run, as its `main` does from a clock: for an app
     /// acting on elapsed time (new numbers every second). The time is the trial's, which
     /// advances only by steps and `wait`.
-    pub fn tell_time(&mut self, to: impl FnMut(&mut A, Duration) + 'static) {
+    pub fn set_time(&mut self, to: impl FnMut(&mut A, Duration) + 'static) {
         self.clock = Some(Box::new(to));
         self.run();
     }
@@ -166,7 +167,7 @@ impl<A> Trial<A> {
         // two, do not overwrite each other's images.)
         let (folder, number) = (std::env::temp_dir().join("taut-trial"), FAILED.fetch_add(1, Ordering::Relaxed));
         let [shown, should] = names.map(|name| folder.join(format!("{}-{number}-{name}.png", std::process::id())));
-        let saved = std::fs::create_dir_all(&folder).and(std::fs::write(&shown, self.screen.png())).and(std::fs::write(&should, other.png()));
+        let saved = std::fs::create_dir_all(&folder).and(std::fs::write(&shown, self.screen.to_png())).and(std::fs::write(&should, other.to_png()));
         let pictures = saved.map_or_else(|why| format!("(the pictures could not be saved: {why})"), |_| format!("as shown: {}, as it should be: {}", shown.display(), should.display()));
         panic!("{what}; {pictures}");
     }
@@ -252,9 +253,9 @@ impl<A> Trial<A> {
     }
     /// Files from another program are dragged over the window and dropped at `at`.
     pub fn drop_files(&mut self, at: Point, files: &[PathBuf]) {
-        self.event(Event::Carry(true));
+        self.event(Event::FilesHovered(true));
         self.move_to(at);
-        self.event(Event::Files(files.to_vec()));
+        self.event(Event::FilesDropped(files.to_vec()));
     }
 
     /// Types text at the keyboard focus.
@@ -264,58 +265,59 @@ impl<A> Trial<A> {
     /// Presses a key, as menus write it: "Enter", "Ctrl+S", "Shift+Tab", "F2", "Down". (A typed
     /// letter is text: [`type_text`](Self::type_text). Panics on text naming no key.)
     pub fn key(&mut self, written: &str) {
-        let Some((key, mods)) = keys(written) else { panic!("{written:?} names no key") };
+        let Some((key, mods)) = parse_keys(written) else { panic!("{written:?} names no key") };
         self.event(Event::Key(key, mods));
     }
 
     /// Everything visible in the window, as screen readers are told now: each element's role,
     /// name, value, state and rectangle. (Elements scrolled out of view are told too, as
-    /// offscreen: `told` has those.)
-    pub fn said(&self) -> &[Said] {
-        self.ui.said()
+    /// offscreen: `access_nodes` has those.)
+    pub fn visible_access_nodes(&self) -> &[AccessNode] {
+        self.ui.visible_access_nodes()
     }
-    /// Everything screen readers are told now, visible or not: `said`'s elements plus those
-    /// scrolled out of view, each saying which ([`Said::shown`]).
-    pub fn told(&self) -> &[Said] {
-        self.ui.told()
+    /// Everything screen readers are told now, visible or not: the elements of
+    /// [`visible_access_nodes`](Self::visible_access_nodes) plus those scrolled out of view,
+    /// each saying which ([`AccessNode::visible`]).
+    pub fn access_nodes(&self) -> &[AccessNode] {
+        self.ui.access_nodes()
     }
     /// The element of this role named `name` (by its text, or its part's name: a text box by
     /// its placeholder). Fails, listing everything there is, when none exists.
-    pub fn find(&self, role: Role, name: &str) -> &Said {
-        &self.said()[self.place_of(role, name)]
+    pub fn find(&self, role: Role, name: &str) -> &AccessNode {
+        &self.visible_access_nodes()[self.place_of(role, name)]
     }
-    /// The index in `said` of the element of this role named `name`.
+    /// The index in `visible_access_nodes` of the element of this role named `name`.
     fn place_of(&self, role: Role, name: &str) -> usize {
-        let found = self.said().iter().position(|said| said.role == role && said.name == name);
-        found.unwrap_or_else(|| panic!("nothing in the window is a {role:?} called {name:?}; what there is:\n{}", self.listed()))
+        let found = self.visible_access_nodes().iter().position(|node| node.role == role && node.name == name);
+        found.unwrap_or_else(|| panic!("nothing in the window is a {role:?} called {name:?}; what there is:\n{}", self.dump()))
     }
     /// Whether an element of this role named `name` exists.
     pub fn has(&self, role: Role, name: &str) -> bool {
-        self.said().iter().any(|said| said.role == role && said.name == name)
+        self.visible_access_nodes().iter().any(|node| node.role == role && node.name == name)
     }
     /// Everything in the window, a line each: what a test reports when it finds nothing.
-    pub fn listed(&self) -> String {
-        let line = |said: &Said| {
-            let value = if said.value.is_empty() { String::new() } else { format!(" = {:?}", said.value) };
-            let on = said.on.map_or("", |on| if on { " (on)" } else { " (off)" });
-            format!("  {:?} {:?}{value}{on}", said.role, said.name)
+    pub fn dump(&self) -> String {
+        let line = |node: &AccessNode| {
+            let value = if node.value.is_empty() { String::new() } else { format!(" = {:?}", node.value) };
+            let on = node.on.map_or("", |on| if on { " (on)" } else { " (off)" });
+            format!("  {:?} {:?}{value}{on}", node.role, node.name)
         };
-        self.said().iter().map(line).collect::<Vec<_>>().join("\n")
+        self.visible_access_nodes().iter().map(line).collect::<Vec<_>>().join("\n")
     }
     /// Where a click on the element of this role named `name` lands: the centre of its visible
     /// part, where nothing covers it (a corner notice, a panel); else the uncovered point
     /// nearest the centre. Fails when no part is visible, or all of its visible part is
     /// covered, saying by what.
-    pub fn spot(&self, role: Role, name: &str) -> Point {
-        let thing = &self.said()[self.place_of(role, name)];
-        let seen = thing.seen.intersect(rect(0.0, 0.0, self.ui.size().w, self.ui.size().h));
+    pub fn center_of(&self, role: Role, name: &str) -> Point {
+        let node = &self.visible_access_nodes()[self.place_of(role, name)];
+        let seen = node.seen.intersect(rect(0.0, 0.0, self.ui.size().w, self.ui.size().h));
         if seen.is_empty() {
-            panic!("the {role:?} called {name:?} is not in view: it lies at {:?}", thing.rect);
+            panic!("the {role:?} called {name:?} is not in view: it lies at {:?}", node.rect);
         }
         // The candidate points, from the centre out: on a grid over its visible part, at most
         // 33×33, never closer than a unit apart.
         let middle = pt(seen.x + seen.w / 2.0, seen.y + seen.h / 2.0);
-        if self.over(thing.at, middle).is_none() {
+        if self.over(node.at, middle).is_none() {
             return middle;
         }
         let steps = [seen.w, seen.h].map(|side| (side as usize).clamp(1, 32));
@@ -323,15 +325,15 @@ impl<A> Trial<A> {
             (0..=steps[0]).flat_map(|x| (0..=steps[1]).map(move |y| (x, y))).map(|(x, y)| pt(seen.x + seen.w * x as f32 / steps[0] as f32, seen.y + seen.h * y as f32 / steps[1] as f32)).collect();
         places.retain(|place| seen.contains(*place));
         let far = |place: &Point| (place.x - middle.x).powi(2) + (place.y - middle.y).powi(2);
-        let free = places.iter().filter(|place| self.over(thing.at, **place).is_none()).min_by(|a, b| far(a).total_cmp(&far(b)));
+        let free = places.iter().filter(|place| self.over(node.at, **place).is_none()).min_by(|a, b| far(a).total_cmp(&far(b)));
         free.copied().unwrap_or_else(|| {
-            panic!("the {role:?} called {name:?} is covered where it shows, in {seen:?}: {} lies over it", self.over(thing.at, middle).map_or(String::new(), |cover| self.named(cover)))
+            panic!("the {role:?} called {name:?} is covered where it shows, in {seen:?}: {} lies over it", self.over(node.at, middle).map_or(String::new(), |cover| self.named(cover)))
         })
     }
     /// What takes a click at `at` that box `of` would not: the topmost pointer-sensing box
     /// there that is neither the box, nor inside it, nor one of its ancestors. (Its id.)
     fn over(&self, of: u32, at: Point) -> Option<Id> {
-        let (tree, top) = (&self.ui.tree, self.ui.survey.hits.iter().rev().find(|(_, seen)| seen.contains(at))?.0);
+        let (tree, top) = (&self.ui.tree, self.ui.visible_boxes.hits.iter().rev().find(|(_, seen)| seen.contains(at))?.0);
         let mine = |box_at: usize| box_at >= of as usize && box_at < tree.specs[of as usize].end as usize || box_at < of as usize && tree.specs[box_at].end > of;
         let found = tree.specs.iter().position(|spec| spec.id == top);
         found.is_none_or(|box_at| !mine(box_at)).then_some(top)
@@ -339,18 +341,18 @@ impl<A> Trial<A> {
     /// A pointer-sensing box described by id, as a test reports it: the innermost screen reader
     /// element it is or is inside; a scroll bar; or failing these, its id.
     fn named(&self, id: Id) -> String {
-        let (tree, told) = (&self.ui.tree, self.told());
+        let (tree, nodes) = (&self.ui.tree, self.access_nodes());
         let Some(at) = tree.specs.iter().position(|spec| spec.id == id) else {
             let bar = tree.specs.iter().find(|spec| [0, 1].iter().any(|axis| crate::paint::bar_id(spec.id, *axis) == id));
             return bar.map_or(format!("a box that takes the pointer (id {id:x})"), |spec| format!("the scroll bar of the box {:x}", spec.id));
         };
-        let around = told.iter().rev().find(|thing| thing.at as usize <= at && tree.specs[thing.at as usize].end as usize > at);
+        let around = nodes.iter().rev().find(|thing| thing.at as usize <= at && tree.specs[thing.at as usize].end as usize > at);
         around.map_or(format!("a box that takes the pointer (id {id:x})"), |thing| format!("the {:?} called {:?}", thing.role, thing.name))
     }
     /// Clicks the element of this role named `name`, at its visible centre, or as near as
     /// nothing covers (see `spot`).
     pub fn press(&mut self, role: Role, name: &str) {
-        let at = self.spot(role, name);
+        let at = self.center_of(role, name);
         self.click(at);
     }
     /// Clicks the text box named `name` (by placeholder), selects all of it, and types `text`
@@ -362,12 +364,12 @@ impl<A> Trial<A> {
     }
 
     /// Saves the window's current image as a PNG file, for inspection.
-    pub fn picture(&self, file: impl AsRef<Path>) {
+    pub fn save_png(&self, file: impl AsRef<Path>) {
         let file = file.as_ref();
         if let Some(folder) = file.parent() {
             std::fs::create_dir_all(folder).unwrap_or_else(|why| panic!("{} could not be made: {why}", folder.display()));
         }
-        std::fs::write(file, self.screen.png()).unwrap_or_else(|why| panic!("{} could not be written: {why}", file.display()));
+        std::fs::write(file, self.screen.to_png()).unwrap_or_else(|why| panic!("{} could not be written: {why}", file.display()));
     }
     /// Compares the window's current image with the PNG at `file`, pixel for pixel. Where none
     /// exists yet, this one is saved there as the reference. Where they differ, this one is
@@ -377,14 +379,14 @@ impl<A> Trial<A> {
         let file = file.as_ref();
         let differing = file.with_extension("differs.png");
         let Some((width, saved)) = std::fs::read(file).ok().and_then(|bytes| crate::png::decode(&bytes)) else {
-            return self.picture(file);
+            return self.save_png(file);
         };
-        let (_, now) = crate::png::decode(&self.screen.png()).expect("a picture of the library's own reads back");
+        let (_, now) = crate::png::decode(&self.screen.to_png()).expect("a picture of the library's own reads back");
         if (width, saved.len()) == (self.screen.width, now.len()) && saved == now {
             _ = std::fs::remove_file(&differing);
             return;
         }
-        self.picture(&differing);
+        self.save_png(&differing);
         let size = |width: usize, pixels: &[u32]| format!("{width} by {}", pixels.len() / width.max(1));
         if width != self.screen.width || saved.len() != now.len() {
             panic!("the window is {}, the picture in {} {}; this one is in {}", size(self.screen.width, &now), file.display(), size(width, &saved), differing.display());
@@ -438,7 +440,7 @@ mod tests {
             ui.close();
         }
         ui.switch(&mut app.on, "Slide");
-        app.slid = ui.glide(ui.id("slid"), if app.on { 200.0 } else { 0.0 }, Duration::from_millis(200));
+        app.slid = ui.animate(ui.id("slid"), if app.on { 200.0 } else { 0.0 }, Duration::from_millis(200));
         ui.label(&format!("counted {}", app.counted));
         ui.close();
         ui.text_box(&mut app.name, "Name");
@@ -468,7 +470,7 @@ mod tests {
         trial.press(Role::Button, "Press");
         trial.press(Role::Button, "Press");
         assert_eq!((trial.app.presses, trial.app.doubles), (2, 0), "two clicks in a row are two clicks");
-        let at = trial.spot(Role::Button, "Press");
+        let at = trial.center_of(Role::Button, "Press");
         trial.double_click(at);
         assert_eq!((trial.app.presses, trial.app.doubles), (4, 1));
         trial.right_click(at);
@@ -485,7 +487,7 @@ mod tests {
     #[test]
     fn time_passes_for_tool_tips_notices_and_glides() {
         let mut trial = Trial::new(Probe::default(), probe);
-        let at = trial.spot(Role::Button, "Press");
+        let at = trial.center_of(Role::Button, "Press");
         trial.move_to(at);
         assert!(!trial.has(Role::Text, "Presses once"));
         trial.wait(Duration::from_millis(600));
@@ -524,7 +526,7 @@ mod tests {
         assert!(!trial.has(Role::Text, "row 0") && trial.has(Role::Text, "row 10"));
         // A long list tells only its visible rows: each gives its position among all, so a
         // screen reader knows the list's length.
-        assert_eq!((trial.find(Role::Text, "row 10").of, trial.find(Role::Text, "row 12").of), (Some([11, 1000]), Some([13, 1000])));
+        assert_eq!((trial.find(Role::Text, "row 10").position, trial.find(Role::Text, "row 12").position), (Some([11, 1000]), Some([13, 1000])));
     }
 
     #[test]
@@ -572,7 +574,7 @@ mod tests {
     fn groups(app: &mut Groups, ui: &mut Ui) {
         use crate::layout::{Align, Flow};
         let t = ui.theme;
-        ui.el().flow(Flow::Layers).grow().open();
+        ui.el().flow(Flow::Stack).grow().open();
         ui.column().grow().pad(10.0).open();
         ui.column().w(Length::Px(300.0)).h(Length::Px(200.0)).scroll().open();
         for group in 1..=3 {
@@ -592,7 +594,7 @@ mod tests {
         ui.close();
         if app.notice {
             let (at, wide) = if app.notice_over_all { (0.0, 400.0) } else { (150.0, 200.0) };
-            let notice = ui.column().place((Align::Start, Align::Start)).at(at, 10.0).w(Length::Px(wide)).h(Length::Px(250.0)).fill(t.raise).sense().open();
+            let notice = ui.column().place((Align::Start, Align::Start)).offset(at, 10.0).w(Length::Px(wide)).h(Length::Px(250.0)).fill(t.raised).sense().open();
             ui.tell(&notice, Role::Group, None, "Notice");
             ui.label("Saved");
             ui.close();
@@ -603,7 +605,7 @@ mod tests {
     #[test]
     fn a_heading_that_sticks_stays_at_the_top_until_the_next_one_comes() {
         let mut trial = Trial::new(Groups::default(), groups);
-        let top = |trial: &Trial<Groups>, name: &str| trial.told().iter().find(|said| said.name == name).map(|said| said.rect.y).unwrap();
+        let top = |trial: &Trial<Groups>, name: &str| trial.access_nodes().iter().find(|said| said.name == name).map(|said| said.rect.y).unwrap();
         // (The first heading's text position, and the first row's, right under the heading at
         // the list's top.)
         let (label, first, row) = (top(&trial, "Group 1"), top(&trial, "Row 1.1"), top(&trial, "Row 1.2") - top(&trial, "Row 1.1"));
@@ -612,7 +614,7 @@ mod tests {
         // are hidden there (the first row entirely).
         trial.wheel(pt(100.0, 100.0), 0.0, 40.0);
         assert_eq!((top(&trial, "Group 1"), top(&trial, "Row 1.1")), (label, first - 40.0));
-        assert!(!trial.has(Role::Button, "Row 1.1") && trial.told().iter().any(|said| said.name == "Row 1.1" && !said.shown));
+        assert!(!trial.has(Role::Button, "Row 1.1") && trial.access_nodes().iter().any(|said| said.name == "Row 1.1" && !said.visible));
         // A row half under the heading is pressed where it shows, below it.
         trial.press(Role::Button, "Row 1.2");
         assert_eq!(trial.app.pressed, ["Row 1.2"]);
@@ -628,7 +630,7 @@ mod tests {
         trial.press(Role::Button, "Row 2.3");
         trial.key("Up");
         trial.key("Up");
-        let focused = trial.said().iter().find(|said| said.focused).map(|said| (said.name.clone(), said.rect.y)).unwrap();
+        let focused = trial.visible_access_nodes().iter().find(|said| said.focused).map(|said| (said.name.clone(), said.rect.y)).unwrap();
         assert_eq!(focused, ("Row 2.1".to_string(), first));
     }
 
@@ -637,8 +639,8 @@ mod tests {
         let mut trial = Trial::new(Groups::default(), groups);
         // All rows are told; those below the list's edge as not visible, and absent from what
         // shows.
-        let told = |trial: &Trial<Groups>, name: &str| trial.told().iter().find(|said| said.name == name).map(|said| (said.shown, said.id)).unwrap();
-        assert_eq!((told(&trial, "Row 1.1").0, told(&trial, "Row 3.8").0, trial.told().len() > trial.said().len()), (true, false, true));
+        let told = |trial: &Trial<Groups>, name: &str| trial.access_nodes().iter().find(|said| said.name == name).map(|said| (said.visible, said.id)).unwrap();
+        assert_eq!((told(&trial, "Row 1.1").0, told(&trial, "Row 3.8").0, trial.access_nodes().len() > trial.visible_access_nodes().len()), (true, false, true));
         assert!(!trial.has(Role::Button, "Row 3.8"));
         // At a screen reader's request, the list scrolls it into view.
         trial.ui.show_for_reader(told(&trial, "Row 3.8").1);
@@ -652,7 +654,7 @@ mod tests {
         // The notice covers the rows' right half, including their centres: a row is pressed on
         // its left, where it shows.
         let row = trial.find(Role::Button, "Row 1.3").rect;
-        assert!(row.x + row.w / 2.0 > 150.0 && trial.spot(Role::Button, "Row 1.3").x < 150.0);
+        assert!(row.x + row.w / 2.0 > 150.0 && trial.center_of(Role::Button, "Row 1.3").x < 150.0);
         trial.press(Role::Button, "Row 1.3");
         assert_eq!(trial.app.pressed, ["Row 1.3"]);
         // An element entirely covered cannot be pressed, and the test says what covers it.
@@ -690,9 +692,9 @@ mod tests {
             app.counted = now.as_millis() as u32;
         }
         let mut trial = Trial::new(Probe::default(), probe);
-        trial.tell_time(clock);
+        trial.set_time(clock);
         trial.wait(Duration::from_secs(2));
         trial.run();
-        assert!(trial.has(Role::Text, "counted 2000"), "{}", trial.listed());
+        assert!(trial.has(Role::Text, "counted 2000"), "{}", trial.dump());
     }
 }

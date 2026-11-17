@@ -67,9 +67,9 @@ impl Rect {
     }
 }
 
-/// One thing a window tells of.
+/// One node of what a window tells screen readers.
 #[derive(Clone, Debug)]
-struct Told {
+struct Node {
     kind: Kind,
     name: String,
     at: Rect,
@@ -87,10 +87,10 @@ enum Key {
     Letter(char),
 }
 
-/// What each system does for the walk.
-trait Hands {
-    /// What the program's windows tell, of the things that show, in tree order.
-    fn told(&mut self) -> Vec<Told>;
+/// What each system does for the walk: its input, pictures and accessibility tree.
+trait Driver {
+    /// The nodes of the program's windows that show, in tree order.
+    fn nodes(&mut self) -> Vec<Node>;
     /// How many windows the program has open.
     fn windows(&mut self) -> usize;
     fn point(&mut self, at: (f64, f64));
@@ -120,32 +120,32 @@ fn the_demo_beside() -> PathBuf {
     this.with_file_name(format!("gallery{}", std::env::consts::EXE_SUFFIX))
 }
 
-/// The walk as it goes: the system's hands, and what failed.
-struct Walk<H: Hands> {
-    hands: H,
+/// The walk as it goes: the system's driver, and what failed.
+struct Walk<D: Driver> {
+    driver: D,
     failed: Vec<String>,
     tell: bool,
 }
 
-impl<H: Hands> Walk<H> {
+impl<D: Driver> Walk<D> {
     /// The first thing that shows with this name (and kind, unless `Any`), waiting up to two
     /// seconds for it. A failure is noted with what the window told instead.
-    fn find(&mut self, kind: Kind, name: &str) -> Option<Told> {
+    fn find(&mut self, kind: Kind, name: &str) -> Option<Node> {
         self.find_nth(kind, name, 0)
     }
 
     /// The `nth` such thing (from 0; `usize::MAX`: the last), as `find`.
-    fn find_nth(&mut self, kind: Kind, name: &str, nth: usize) -> Option<Told> {
+    fn find_nth(&mut self, kind: Kind, name: &str, nth: usize) -> Option<Node> {
         let since = Instant::now();
         loop {
-            let told = self.hands.told();
-            let mut fits = told.iter().filter(|thing| thing.name == name && (kind == Kind::Any || thing.kind == kind));
+            let nodes = self.driver.nodes();
+            let mut fits = nodes.iter().filter(|thing| thing.name == name && (kind == Kind::Any || thing.kind == kind));
             let found = if nth == usize::MAX { fits.next_back() } else { fits.nth(nth) };
             if let Some(found) = found {
                 return Some(found.clone());
             }
             if since.elapsed() > Duration::from_secs(2) {
-                let names: Vec<String> = told.iter().filter(|thing| !thing.name.is_empty()).map(|thing| format!("{:?} {:?}", thing.kind, thing.name)).collect();
+                let names: Vec<String> = nodes.iter().filter(|thing| !thing.name.is_empty()).map(|thing| format!("{:?} {:?}", thing.kind, thing.name)).collect();
                 self.failed.push(format!("not found: {kind:?} {name:?}; told: {}", names.join(", ")));
                 return None;
             }
@@ -153,27 +153,27 @@ impl<H: Hands> Walk<H> {
         }
     }
 
-    /// The thing told right after the first with this kind and name.
-    fn after(&mut self, kind: Kind, name: &str) -> Option<Told> {
-        let told = self.hands.told();
-        let at = told.iter().position(|thing| thing.name == name && thing.kind == kind)?;
-        told.get(at + 1).cloned()
+    /// The node right after the first with this kind and name.
+    fn after(&mut self, kind: Kind, name: &str) -> Option<Node> {
+        let nodes = self.driver.nodes();
+        let at = nodes.iter().position(|thing| thing.name == name && thing.kind == kind)?;
+        nodes.get(at + 1).cloned()
     }
 
     /// Whether a thing with this name shows, now.
     fn shows(&mut self, name: &str) -> bool {
-        self.hands.told().iter().any(|thing| thing.name == name)
+        self.driver.nodes().iter().any(|thing| thing.name == name)
     }
 
     /// Whether a thing whose name starts so shows, now.
     fn shows_start(&mut self, start: &str) -> bool {
-        self.hands.told().iter().any(|thing| thing.name.starts_with(start))
+        self.driver.nodes().iter().any(|thing| thing.name.starts_with(start))
     }
 
     /// Clicks at a fraction of the way across and down a thing found by name.
-    fn press_at(&mut self, kind: Kind, name: &str, across: f64, down: f64) -> Option<Told> {
+    fn press_at(&mut self, kind: Kind, name: &str, across: f64, down: f64) -> Option<Node> {
         let found = self.find(kind, name)?;
-        self.hands.click(found.at.at(across, down));
+        self.driver.click(found.at.at(across, down));
         if kind == Kind::Tab {
             // (A new page glides in.)
             rest(300);
@@ -181,13 +181,13 @@ impl<H: Hands> Walk<H> {
         Some(found)
     }
 
-    fn press(&mut self, kind: Kind, name: &str) -> Option<Told> {
+    fn press(&mut self, kind: Kind, name: &str) -> Option<Node> {
         self.press_at(kind, name, 0.5, 0.5)
     }
 
     fn point_to(&mut self, kind: Kind, name: &str) {
         if let Some(found) = self.find(kind, name) {
-            self.hands.point(found.at.mid());
+            self.driver.point(found.at.mid());
         }
     }
 
@@ -202,19 +202,19 @@ impl<H: Hands> Walk<H> {
     fn shot(&mut self, name: &str) {
         if self.tell {
             println!("-- {name}");
-            for thing in self.hands.told() {
+            for thing in self.driver.nodes() {
                 println!("   {:?} {:?} at {:.0},{:.0} {:.0}x{:.0}{}", thing.kind, thing.name, thing.at.x, thing.at.y, thing.at.w, thing.at.h, if thing.on { " on" } else { "" });
             }
         }
-        self.hands.shot(name);
+        self.driver.shot(name);
     }
 
     /// The numbers of the cells under a heading, top to bottom.
     fn column(&mut self, heading: &str) -> Vec<f64> {
-        let told = self.hands.told();
-        let Some(head) = told.iter().find(|thing| thing.kind == Kind::Heading && thing.name == heading) else { return Vec::new() };
-        let under = |thing: &&Told| thing.kind == Kind::Cell && thing.at.y > head.at.y && (head.at.x..head.at.x + head.at.w).contains(&thing.at.mid().0);
-        told.iter().filter(under).filter_map(|cell| cell.name.split(' ').next()?.parse().ok()).collect()
+        let nodes = self.driver.nodes();
+        let Some(head) = nodes.iter().find(|thing| thing.kind == Kind::Heading && thing.name == heading) else { return Vec::new() };
+        let under = |thing: &&Node| thing.kind == Kind::Cell && thing.at.y > head.at.y && (head.at.x..head.at.x + head.at.w).contains(&thing.at.mid().0);
+        nodes.iter().filter(under).filter_map(|cell| cell.name.split(' ').next()?.parse().ok()).collect()
     }
 }
 
@@ -229,16 +229,16 @@ fn main() {
     std::fs::create_dir_all(&folder).expect("the folder for the pictures could not be made");
     let tell = std::env::var_os("TAUT_WALK_TELL").is_some();
     #[cfg(windows)]
-    let hands = windows::start(&folder, &program);
+    let driver = windows::start(&folder, &program);
     #[cfg(all(unix, not(target_os = "macos")))]
-    let hands = x11::start(&folder, &program);
+    let driver = x11::start(&folder, &program);
     #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
     return println!("there is no walk for this system yet");
     #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
     {
-        let mut walk = Walk { hands, failed: Vec::new(), tell };
+        let mut walk = Walk { driver, failed: Vec::new(), tell };
         steps(&mut walk);
-        println!("{}", walk.hands.end());
+        println!("{}", walk.driver.end());
         println!("pictures are in {}", folder.display());
         if !walk.failed.is_empty() {
             println!("FAILED:\n  {}", walk.failed.join("\n  "));
@@ -249,44 +249,44 @@ fn main() {
 }
 
 /// The steps, each checked against what the window tells.
-fn steps<H: Hands>(walk: &mut Walk<H>) {
-    walk.hands.memory("at start");
+fn steps<D: Driver>(walk: &mut Walk<D>) {
+    walk.driver.memory("at start");
     walk.shot("01-start");
-    println!("{:.0} ms of processor in 3 s with nothing happening", walk.hands.processor(3));
+    println!("{:.0} ms of processor in 3 s with nothing happening", walk.driver.processor(3));
 
     // The filter box: the list keeps the items that hold what is typed.
     walk.press(Kind::Entry, "Filter items");
-    walk.hands.typed("item 1");
+    walk.driver.typed("item 1");
     let filtered = walk.shows("item 12") && !walk.shows("item 2");
     walk.holds("02-typed", "the list is filtered", filtered);
     walk.shot("02-typed");
     rest(530);
     walk.shot("02-typed-b");
-    println!("{:.0} ms of processor in 3 s with the cursor blinking", walk.hands.processor(3));
+    println!("{:.0} ms of processor in 3 s with the cursor blinking", walk.driver.processor(3));
     // Selected by dragging across the box, then copied.
     if let Some(filter) = walk.find(Kind::Entry, "Filter items") {
-        walk.hands.drag(filter.at.at(0.9, 0.5), (filter.at.x + 2.0, filter.at.mid().1));
+        walk.driver.drag(filter.at.at(0.9, 0.5), (filter.at.x + 2.0, filter.at.mid().1));
     }
-    walk.hands.key(Key::Letter('c'), true);
+    walk.driver.key(Key::Letter('c'), true);
     walk.shot("03-selected");
-    if let Some(read) = walk.hands.clipboard() {
+    if let Some(read) = walk.driver.clipboard() {
         walk.holds("03-selected", &format!("another program reads what was copied ({read:?})"), read == "item 1");
     }
 
     // The menu of the second "More" (the first is the tool bar's), and its dialog.
     if let Some(more) = walk.find_nth(Kind::Button, "More", 1) {
-        walk.hands.click(more.at.mid());
+        walk.driver.click(more.at.mid());
     }
     walk.point_to(Kind::MenuItem, "Rename this window…");
     let menu = walk.shows("Rename this window…");
     walk.holds("04-menu", "the menu is open", menu);
     walk.shot("04-menu");
     walk.press(Kind::MenuItem, "Rename this window…");
-    walk.hands.typed("Taut");
+    walk.driver.typed("Taut");
     let dialog = walk.find(Kind::Dialog, "Rename this window").is_some();
     walk.holds("05-dialog", "the dialog is open", dialog);
     walk.shot("05-dialog");
-    walk.hands.key(Key::Enter, false);
+    walk.driver.key(Key::Enter, false);
 
     // The menu bar: with one menu open, pointing at another opens that one.
     walk.press(Kind::Any, "File");
@@ -308,7 +308,7 @@ fn steps<H: Hands>(walk: &mut Walk<H>) {
     walk.shot("08-table");
 
     // The table: sorted by "Size" one way and the other; "Name" made wider by the grip after
-    // its heading; a row picked, and the rows scrolled.
+    // its heading; a row selected, and the rows scrolled.
     walk.press(Kind::Heading, "Size");
     let up = walk.column("Size");
     walk.press(Kind::Heading, "Size");
@@ -317,35 +317,35 @@ fn steps<H: Hands>(walk: &mut Walk<H>) {
     walk.holds("09-table", &format!("the sizes are sorted both ways ({up:?}, {down:?})"), sorted);
     if let (Some(name), Some(size)) = (walk.find(Kind::Heading, "Name"), walk.find(Kind::Heading, "Size")) {
         let grip = ((name.at.x + name.at.w + size.at.x) / 2.0, name.at.mid().1);
-        walk.hands.drag(grip, (grip.0 + 100.0, grip.1));
+        walk.driver.drag(grip, (grip.0 + 100.0, grip.1));
         let wider = walk.find(Kind::Heading, "Name").is_some_and(|after| after.at.w > name.at.w + 50.0);
         walk.holds("09-table", "the column \"Name\" is wider", wider);
     }
-    let first_file = |told: Vec<Told>| told.into_iter().find(|thing| thing.kind == Kind::Cell && thing.name.starts_with("file "));
-    let top = first_file(walk.hands.told());
+    let first_file = |nodes: Vec<Node>| nodes.into_iter().find(|thing| thing.kind == Kind::Cell && thing.name.starts_with("file "));
+    let top = first_file(walk.driver.nodes());
     if let Some(cell) = &top {
-        walk.hands.click(cell.at.mid());
-        walk.hands.wheel(cell.at.mid(), 3);
+        walk.driver.click(cell.at.mid());
+        walk.driver.wheel(cell.at.mid(), 3);
     }
-    let now = first_file(walk.hands.told());
+    let now = first_file(walk.driver.nodes());
     let picked = walk.shows_start("5000 files, 1 picked") && top.is_some() && now.map(|cell| cell.name) != top.map(|cell| cell.name);
     walk.holds("09-table", "a row is picked and the rows are scrolled", picked);
     walk.shot("09-table");
 
-    // The parts: a switch flipped (told as wide as its row, it is clicked at its start), a slider moved.
+    // The parts: a switch flipped (reported as wide as its row, it is clicked at its start), a slider moved.
     walk.press(Kind::Tab, "Parts");
     let switch = "A switch slides over when it is flipped";
     let was = walk.find(Kind::Any, switch);
     if let Some(found) = &was {
-        walk.hands.click((found.at.x + 16.0, found.at.mid().1));
+        walk.driver.click((found.at.x + 16.0, found.at.mid().1));
     }
-    let before = walk.after(Kind::Slider, "A slider").map(|told| told.name);
+    let before = walk.after(Kind::Slider, "A slider").map(|nodes| nodes.name);
     if let Some(slider) = walk.find(Kind::Slider, "A slider") {
-        walk.hands.click(slider.at.at(0.85, 0.5));
+        walk.driver.click(slider.at.at(0.85, 0.5));
     }
     rest(300);
     let flipped = was.is_some_and(|was| walk.find(Kind::Any, switch).is_some_and(|now| now.on != was.on));
-    let after = walk.after(Kind::Slider, "A slider").map(|told| told.name);
+    let after = walk.after(Kind::Slider, "A slider").map(|nodes| nodes.name);
     walk.holds("10-parts", &format!("the switch flipped and the slider moved ({before:?} to {after:?})"), flipped && before.is_some() && after != before);
     walk.shot("10-parts");
     walk.press(Kind::Tab, "Drawing");
@@ -353,35 +353,35 @@ fn steps<H: Hands>(walk: &mut Walk<H>) {
     walk.holds("11-drawing", "the page of drawings shows", drawing);
     walk.shot("11-drawing");
 
-    // More parts: a number stepped up, a colour and a day picked, a thing carried.
+    // More parts: a number stepped up, a colour and a day selected, a thing carried.
     walk.press(Kind::Tab, "More");
     walk.press(Kind::Spin, "A number to type");
     for _ in 0..3 {
-        walk.hands.key(Key::Up, false);
+        walk.driver.key(Key::Up, false);
     }
     let colour = walk.after(Kind::Text, "A colour to pick");
     if let Some(swatch) = &colour {
-        walk.hands.click(swatch.at.mid());
+        walk.driver.click(swatch.at.mid());
     }
     if let (Some(square), Some(hues)) = (walk.find(Kind::Slider, "S"), walk.find(Kind::Slider, "H")) {
-        walk.hands.click(square.at.at(0.7, 0.3));
-        walk.hands.click(hues.at.at(0.5, 0.6));
+        walk.driver.click(square.at.at(0.7, 0.3));
+        walk.driver.click(hues.at.at(0.5, 0.6));
     }
     let picked = walk.after(Kind::Text, "A colour to pick").map(|swatch| swatch.name);
     let changed = colour.is_some_and(|colour| picked.is_some_and(|picked| picked != colour.name && picked.starts_with('#')));
     let picker = walk.shows("#rrggbb");
     walk.holds("12-colour", "a colour is picked", picker && changed);
     walk.shot("12-colour");
-    walk.hands.key(Key::Escape, false);
+    walk.driver.key(Key::Escape, false);
     if let Some(day) = walk.after(Kind::Text, "A day to pick") {
-        walk.hands.click(day.at.mid());
+        walk.driver.click(day.at.mid());
     }
     let calendar = walk.shows("The month after");
     walk.holds("12b-calendar", "the calendar is open", calendar);
     walk.shot("12b-calendar");
-    walk.hands.key(Key::Escape, false);
+    walk.driver.key(Key::Escape, false);
     if let (Some(apples), Some(bread)) = (walk.find(Kind::Any, "Apples"), walk.find(Kind::Any, "Bread")) {
-        walk.hands.drag(apples.at.mid(), (bread.at.mid().0, bread.at.y + bread.at.h * 1.5));
+        walk.driver.drag(apples.at.mid(), (bread.at.mid().0, bread.at.y + bread.at.h * 1.5));
         let carried = walk.find(Kind::Any, "Apples").is_some_and(|now| (now.at.x - bread.at.x).abs() < 2.0);
         walk.holds("13-carried", "the apples are in the second box", carried);
     }
@@ -392,18 +392,18 @@ fn steps<H: Hands>(walk: &mut Walk<H>) {
     walk.press(Kind::Any, "The Tools panel");
     if let Some(panel) = walk.find(Kind::Group, "Tools") {
         let title = (panel.at.x + panel.at.w / 2.0, panel.at.y + 14.0);
-        walk.hands.drag(title, (title.0 - 220.0, title.1 + 76.0));
+        walk.driver.drag(title, (title.0 - 220.0, title.1 + 76.0));
         // (The grip of a corner lies just outside it.)
         let corner = (panel.at.x + panel.at.w - 220.0 + 2.0, panel.at.y + panel.at.h + 76.0 + 2.0);
-        walk.hands.drag(corner, (corner.0 + 58.0, corner.1 + 52.0));
+        walk.driver.drag(corner, (corner.0 + 58.0, corner.1 + 52.0));
         let moved = walk.find(Kind::Group, "Tools").is_some_and(|now| (now.at.x - (panel.at.x - 220.0)).abs() < 2.0 && now.at.w > panel.at.w + 40.0);
         walk.holds("14-panel", "the panel is moved and stretched", moved);
     }
     walk.shot("14-panel");
-    let told = walk.hands.told();
-    let panel = told.iter().find(|thing| thing.kind == Kind::Group && thing.name == "Tools").map(|panel| panel.at);
-    if let Some(close) = told.iter().find(|thing| thing.name == "Close" && panel.is_some_and(|panel| panel.holds(thing.at.mid()))) {
-        walk.hands.click(close.at.mid());
+    let nodes = walk.driver.nodes();
+    let panel = nodes.iter().find(|thing| thing.kind == Kind::Group && thing.name == "Tools").map(|panel| panel.at);
+    if let Some(close) = nodes.iter().find(|thing| thing.name == "Close" && panel.is_some_and(|panel| panel.holds(thing.at.mid()))) {
+        walk.driver.click(close.at.mid());
     }
 
     // The dock: a tab carried onto the middle mark of another place.
@@ -414,32 +414,32 @@ fn steps<H: Hands>(walk: &mut Walk<H>) {
     walk.shot("14a-dock");
     // A tab carried by itself onto the middle of the other place.
     if let (Some(tab), Some(folder), Some(files)) = (walk.find(Kind::Tab, "Preview"), walk.find(Kind::Any, "Folder 000"), dock.clone()) {
-        walk.hands.drag(tab.at.mid(), (folder.at.mid().0, files.at.mid().1));
+        walk.driver.drag(tab.at.mid(), (folder.at.mid().0, files.at.mid().1));
     }
     let moved = dock.is_some_and(|dock| walk.find(Kind::Text, "Preview").is_some_and(|preview| preview.at.x < dock.at.x)) && !walk.shows("Folder 000");
     walk.holds("14b-dock-moved", "the tab is in front in the other place", moved);
     walk.shot("14b-dock-moved");
 
-    // The dialog that picks a file.
+    // The dialog that selects a file.
     walk.press(Kind::Any, "File");
     walk.press(Kind::Any, "Open a file…");
     rest(400);
     let files = walk.find(Kind::Dialog, "Open a file").is_some();
     walk.holds("15-files", "the file dialog is open", files);
     walk.shot("15-files");
-    walk.hands.key(Key::Escape, false);
+    walk.driver.key(Key::Escape, false);
 
     // Back to the list: the filter emptied, what was copied pasted into the notes, the page scrolled.
     walk.press(Kind::Tab, "List");
     walk.press_at(Kind::Entry, "Filter items", 0.95, 0.5);
     for _ in 0.."item 1".len() {
-        walk.hands.key(Key::Backspace, false);
+        walk.driver.key(Key::Backspace, false);
     }
     walk.press(Kind::Entry, "Notes");
-    walk.hands.key(Key::Letter('v'), true);
-    walk.hands.typed(" pasted");
+    walk.driver.key(Key::Letter('v'), true);
+    walk.driver.typed(" pasted");
     if let Some(list) = walk.find(Kind::Text, "item 0") {
-        walk.hands.wheel(list.at.mid(), 3);
+        walk.driver.wheel(list.at.mid(), 3);
     }
     let scrolled = walk.shows("item 9") && !walk.shows("Notes");
     walk.holds("16-scrolled", "the page is scrolled", scrolled);
@@ -449,30 +449,30 @@ fn steps<H: Hands>(walk: &mut Walk<H>) {
     walk.press(Kind::Any, "View");
     walk.press(Kind::Any, "A second window");
     rest(400);
-    let two = walk.hands.windows() == 2;
+    let two = walk.driver.windows() == 2;
     walk.holds("17-second-window", "a second window is open", two);
     walk.shot("17-second-window");
     if let Some(light) = walk.find_nth(Kind::Any, "Light colours", usize::MAX) {
-        walk.hands.click((light.at.x + 16.0, light.at.mid().1));
+        walk.driver.click((light.at.x + 16.0, light.at.mid().1));
     }
     if let Some(slider) = walk.find_nth(Kind::Slider, "", usize::MAX) {
-        walk.hands.drag(slider.at.at(0.2, 0.5), slider.at.at(0.6, 0.5));
+        walk.driver.drag(slider.at.at(0.2, 0.5), slider.at.at(0.6, 0.5));
     }
-    let light = walk.find_nth(Kind::Any, "Light colours", usize::MAX).is_some_and(|told| told.on);
+    let light = walk.find_nth(Kind::Any, "Light colours", usize::MAX).is_some_and(|nodes| nodes.on);
     walk.holds("17b-second-used", "light colours are on", light);
     walk.shot("17b-second-used");
     walk.press(Kind::Any, "Close this window");
     rest(300);
-    let one = walk.hands.windows() == 1;
+    let one = walk.driver.windows() == 1;
     walk.holds("18-second-closed", "the second window is gone", one);
     walk.shot("18-second-closed");
-    walk.hands.memory("after use");
+    walk.driver.memory("after use");
 }
 
 /// Windows: posted messages, UI Automation, `PrintWindow`.
 #[cfg(windows)]
 mod windows {
-    use super::{Hands, Key, Kind, Rect, Told, rest};
+    use super::{Driver, Key, Kind, Node, Rect, rest};
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
@@ -799,7 +799,7 @@ mod windows {
         }
 
         /// What one window tells: every thing under it that is on the screen.
-        fn told_by(&self, window: Handle, told: &mut Vec<Told>) {
+        fn told_by(&self, window: Handle, nodes: &mut Vec<Node>) {
             let (mut element, mut condition, mut found) = (null_mut(), null_mut(), null_mut());
             type Get = unsafe extern "system" fn(*mut c_void, *mut c_void, *mut *mut c_void) -> i32;
             type Make = unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> i32;
@@ -814,13 +814,13 @@ mod windows {
                 }
             }
             if !found.is_null() {
-                self.read_all(found, told);
+                self.read_all(found, nodes);
             }
             [found, condition, element].into_iter().for_each(release);
         }
 
         /// Reads each element of an array UI Automation found.
-        fn read_all(&self, found: *mut c_void, told: &mut Vec<Told>) {
+        fn read_all(&self, found: *mut c_void, nodes: &mut Vec<Node>) {
             let mut count = 0;
             type Length = unsafe extern "system" fn(*mut c_void, *mut i32) -> i32;
             type Element = unsafe extern "system" fn(*mut c_void, i32, *mut *mut c_void) -> i32;
@@ -831,7 +831,7 @@ mod windows {
                 // SAFETY: as in `told_by`; the element is let go of after it is read.
                 unsafe { slot::<Element>(found, GET_ELEMENT)(found, at, &mut element) };
                 if !element.is_null() {
-                    told.extend(read(element));
+                    nodes.extend(read(element));
                     release(element);
                 }
             }
@@ -839,7 +839,7 @@ mod windows {
     }
 
     /// An element's kind, name and place, if it is on the screen.
-    fn read(element: *mut c_void) -> Option<Told> {
+    fn read(element: *mut c_void) -> Option<Node> {
         let (mut control, mut offscreen, mut name, mut place, mut toggle) = (0, 0, null_mut::<u16>(), [0i32; 4], [0u64; 3]);
         type Number = unsafe extern "system" fn(*mut c_void, *mut i32) -> i32;
         type Text = unsafe extern "system" fn(*mut c_void, *mut *mut u16) -> i32;
@@ -861,16 +861,16 @@ mod windows {
         let at = Rect { x: place[0] as f64, y: place[1] as f64, w: (place[2] - place[0]) as f64, h: (place[3] - place[1]) as f64 };
         // VT_I4 (3), ToggleState_On (1).
         let on = toggle[0] as u16 == 3 && toggle[1] as i32 == 1;
-        (offscreen == 0 && at.w > 0.0 && at.h > 0.0).then_some(Told { kind: kind(control), name, at, on })
+        (offscreen == 0 && at.w > 0.0 && at.h > 0.0).then_some(Node { kind: kind(control), name, at, on })
     }
 
-    impl Hands for Demo {
-        fn told(&mut self) -> Vec<Told> {
-            let mut told = Vec::new();
+    impl Driver for Demo {
+        fn nodes(&mut self) -> Vec<Node> {
+            let mut nodes = Vec::new();
             for window in windows_of(self.id) {
-                self.told_by(window, &mut told);
+                self.told_by(window, &mut nodes);
             }
-            told
+            nodes
         }
 
         fn windows(&mut self) -> usize {
@@ -1032,7 +1032,7 @@ mod windows {
 /// Linux: XTest, AT-SPI, and pictures of the screen.
 #[cfg(all(unix, not(target_os = "macos")))]
 mod x11 {
-    use super::{Hands, Key, Kind, Rect, Told, rest};
+    use super::{Driver, Key, Kind, Node, Rect, rest};
     use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_void};
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
@@ -1263,8 +1263,8 @@ mod x11 {
     /// The processes a process started, and theirs, deepest last.
     fn descendants(of: u32) -> Vec<u32> {
         let parent = |process: u32| {
-            let told = std::fs::read_to_string(format!("/proc/{process}/stat")).unwrap_or_default();
-            told.rsplit_once(')').and_then(|(_, after)| after.split_whitespace().nth(1)?.parse::<u32>().ok())
+            let nodes = std::fs::read_to_string(format!("/proc/{process}/stat")).unwrap_or_default();
+            nodes.rsplit_once(')').and_then(|(_, after)| after.split_whitespace().nth(1)?.parse::<u32>().ok())
         };
         let all: Vec<u32> = std::fs::read_dir("/proc").into_iter().flatten().flatten().filter_map(|entry| entry.file_name().to_str()?.parse().ok()).collect();
         let mut found = vec![of];
@@ -1444,8 +1444,8 @@ mod x11 {
         /// Milliseconds of processor the demo has used, in itself and the system (counted in
         /// hundredths of a second, fields 14 and 15 of /proc/<pid>/stat).
         fn processor_so_far(&self) -> u64 {
-            let told = std::fs::read_to_string(format!("/proc/{}/stat", self.demo.id())).unwrap_or_default();
-            let counted = told.rsplit_once(')').map_or("", |(_, counted)| counted);
+            let nodes = std::fs::read_to_string(format!("/proc/{}/stat", self.demo.id())).unwrap_or_default();
+            let counted = nodes.rsplit_once(')').map_or("", |(_, counted)| counted);
             counted.split_whitespace().skip(11).take(2).filter_map(|ticks| ticks.parse::<u64>().ok()).sum::<u64>() * 10
         }
 
@@ -1526,17 +1526,17 @@ mod x11 {
         }
     }
 
-    impl Hands for Walk {
-        fn told(&mut self) -> Vec<Told> {
+    impl Driver for Walk {
+        fn nodes(&mut self) -> Vec<Node> {
             let mut todo: Vec<Thing> = self.frames().into_iter().rev().collect();
-            let mut told = Vec::new();
+            let mut nodes = Vec::new();
             while let Some(thing) = todo.pop() {
                 let name = self.ask(self.x.atspi_accessible_get_name, thing).map(|name| self.words(name)).unwrap_or_default();
                 let role = self.ask(self.x.atspi_accessible_get_role, thing).unwrap_or(0);
-                told.push(Told { kind: kind(role), name, at: self.place(thing), on: self.is(thing, CHECKED) });
+                nodes.push(Node { kind: kind(role), name, at: self.place(thing), on: self.is(thing, CHECKED) });
                 todo.extend(self.children(thing).into_iter().filter(|child| self.is(*child, SHOWING)).rev());
             }
-            told
+            nodes
         }
 
         fn windows(&mut self) -> usize {
@@ -1623,9 +1623,9 @@ mod x11 {
             // Nobody listens while memory is measured: what is kept for screen readers is let go.
             listening(false);
             rest(500);
-            let told = std::fs::read_to_string(format!("/proc/{}/smaps_rollup", self.demo.id())).unwrap_or_default();
+            let nodes = std::fs::read_to_string(format!("/proc/{}/smaps_rollup", self.demo.id())).unwrap_or_default();
             let megabytes = |kind: &str| {
-                let line = told.lines().find(|line| line.split(':').next() == Some(kind));
+                let line = nodes.lines().find(|line| line.split(':').next() == Some(kind));
                 line.and_then(|line| line.split_whitespace().nth(1)).and_then(|kilobytes| kilobytes.parse::<f64>().ok()).unwrap_or(0.0) / 1024.0
             };
             println!("{when}: {:.1} MB in use, {:.1} MB of its own", megabytes("Rss"), megabytes("Private_Dirty"));

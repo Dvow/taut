@@ -19,10 +19,10 @@ use crate::ui::Ui;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Screen {
     /// Where it lies on the desktop and its size, in desktop pixels.
-    pub all: Rect,
+    pub rect: Rect,
     /// Its work area, in the same pixels: all but what the system keeps for its bars (task bar,
     /// dock, panel).
-    pub work: Rect,
+    pub work_area: Rect,
     /// Pixels per unit: 1 at 100%, 1.5 at 150%. A window moved onto it is drawn at this scale
     /// and keeps its size in units.
     pub scale: f32,
@@ -50,13 +50,13 @@ const TITLE: Rect = rect(0.0, 0.0, 160.0, 30.0);
 /// nearest. Nothing if there are no screens.
 pub(crate) fn nearest(screens: &[Screen], area: Rect) -> Option<usize> {
     let covered = |screen: &Screen| {
-        let part = screen.all.intersect(area);
+        let part = screen.rect.intersect(area);
         part.w * part.h
     };
     // How far an area is from a screen: along each axis, the gap between their edges.
     let apart = |screen: &Screen| {
         let gap = |from: f32, to: f32, start: f32, end: f32| (start - to).max(from - end).max(0.0);
-        gap(area.x, area.right(), screen.all.x, screen.all.right()).hypot(gap(area.y, area.bottom(), screen.all.y, screen.all.bottom()))
+        gap(area.x, area.right(), screen.rect.x, screen.rect.right()).hypot(gap(area.y, area.bottom(), screen.rect.y, screen.rect.bottom()))
     };
     let most = (0..screens.len()).max_by(|a, b| covered(&screens[*a]).total_cmp(&covered(&screens[*b])).then(b.cmp(a)))?;
     if covered(&screens[most]) > 0.0 {
@@ -78,14 +78,14 @@ pub(crate) fn spot(screens: &[Screen], asked: Spot, size: impl Fn(f32) -> [f32; 
     };
     let screen = *screens.get(on)?;
     let [wide, high] = size(screen.scale);
-    let work = screen.work;
+    let work = screen.work_area;
     let middle = middle.unwrap_or(pt(work.x + work.w / 2.0, work.y + work.h / 2.0));
     let corner = match asked {
         Spot::At(x, y) => pt(x as f32, y as f32),
         _ => pt((middle.x - wide / 2.0).round(), (middle.y - high / 2.0).round()),
     };
     // A window over an owner on no screen stays with it, out of sight too.
-    if matches!(asked, Spot::Over(owner) if screen.all.intersect(owner).is_empty()) {
+    if matches!(asked, Spot::Over(owner) if screen.rect.intersect(owner).is_empty()) {
         return Some((on, corner));
     }
     let x = corner.x.min(work.right() - wide).max(work.x);
@@ -105,7 +105,7 @@ impl Ui {
     /// or the nearest. Nothing until the system has said where the window is.
     pub fn screen(&self) -> Option<usize> {
         let place = self.place?;
-        nearest(&self.screens, rect(place.at.0 as f32, place.at.1 as f32, place.width * self.scale, place.height * self.scale))
+        nearest(&self.screens, rect(place.position.0 as f32, place.position.1 as f32, place.width * self.scale, place.height * self.scale))
     }
 
     /// For the code that runs windows: the person's screens as the system has them, main one
@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::LocalClipboard;
     use crate::geom::Size;
-    use crate::platform::Placed;
+    use crate::platform::WindowPlacement;
     use crate::text::BuiltInFont;
 
     /// Three screens: the main one, 1,920 by 1,080 at 100%, a 40-pixel task bar along its
@@ -130,9 +130,9 @@ mod tests {
     /// the main one's left, 300 higher, with a 30-pixel bar down its left side.
     fn desk() -> Vec<Screen> {
         vec![
-            Screen { all: rect(0.0, 0.0, 1920.0, 1080.0), work: rect(0.0, 0.0, 1920.0, 1040.0), scale: 1.0 },
-            Screen { all: rect(1920.0, 200.0, 2560.0, 1440.0), work: rect(1920.0, 200.0, 2560.0, 1440.0), scale: 1.5 },
-            Screen { all: rect(-1280.0, -300.0, 1280.0, 1024.0), work: rect(-1250.0, -300.0, 1250.0, 1024.0), scale: 1.0 },
+            Screen { rect: rect(0.0, 0.0, 1920.0, 1080.0), work_area: rect(0.0, 0.0, 1920.0, 1040.0), scale: 1.0 },
+            Screen { rect: rect(1920.0, 200.0, 2560.0, 1440.0), work_area: rect(1920.0, 200.0, 2560.0, 1440.0), scale: 1.5 },
+            Screen { rect: rect(-1280.0, -300.0, 1280.0, 1024.0), work_area: rect(-1250.0, -300.0, 1250.0, 1024.0), scale: 1.0 },
         ]
     }
 
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!((ui.screens().len(), ui.screen()), (3, None));
         // At 150% the window is 600 by 450 pixels: with its corner at 1,700, most of it is on
         // the 150% screen.
-        let placed = |ui: &mut Ui, x, y| _ = ui.set_placed(Placed { at: (x, y), width: 400.0, height: 300.0, maximized: false });
+        let placed = |ui: &mut Ui, x, y| _ = ui.set_window_placement(WindowPlacement { position: (x, y), width: 400.0, height: 300.0, maximized: false });
         placed(&mut ui, 1700, 300);
         assert_eq!(ui.screen(), Some(1));
         placed(&mut ui, 1000, 300);

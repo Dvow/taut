@@ -44,7 +44,7 @@ trial.fill("A name", "Alan");
 trial.key("Enter");
 assert_eq!(trial.app.names, ["Ada", "Alan"]);
 // The box is empty again at once: a key the app takes has the window described once more.
-assert!(trial.said().iter().any(|said| said.role == Role::TextBox && said.name == "A name" && said.value.is_empty()));
+assert!(trial.visible_access_nodes().iter().any(|said| said.role == Role::TextBox && said.name == "A name" && said.value.is_empty()));
 // And the window shows both: a screen reader would be told of them.
 assert!(trial.has(Role::Text, "Ada") && trial.has(Role::Text, "Alan"));
 ```
@@ -53,8 +53,8 @@ assert!(trial.has(Role::Text, "Ada") && trial.has(Role::Text, "Alan"));
 - `trial.looks_like("tests/looks/guests.png")` compares with a saved picture (saved on first
   run); built-in letters make it identical on every system.
 - Put an app's tests in `mod tests` in `main.rs` and drive its own `describe` (hence chapter 4's
-  file field). The examples `files`, `editor`, `settings`, `chat`, `viewer`, `dashboard`,
-  `nodes` and `report` test themselves this way.
+  file field). The examples `file_browser`, `editor`, `settings`, `chat`, `viewer`, `dashboard`,
+  `node_editor` and `report` test themselves this way.
 
 ## Trial reference
 
@@ -62,19 +62,19 @@ assert!(trial.has(Role::Text, "Ada") && trial.has(Role::Text, "Alan"));
 | --- | --- |
 | Open the app's window, 640×480 units at scale 1 | `Trial::new(app, describe)` |
 | Resize or rescale | `trial.resize(800.0, 600.0, 1.5)` |
-| Use system letters instead of built-in ones | `trial.ui.set_text(taut::platform::system_text())` (pictures then vary by system) |
+| Use system letters instead of built-in ones | `trial.ui.set_text_system(taut::platform::system_text())` (pictures then vary by system) |
 | Press a part by role and name | `trial.press(Role::Button, "Save")` |
 | Type into a box by its hint | `trial.fill("Name", "Ada")` |
 | Type at the focus, or press keys | `trial.type_text("Ada")`, `trial.key("Ctrl+S")` |
 | Click at a point (right, double, with modifiers) | `trial.click(at)`, `trial.right_click(at)`, `trial.double_click(at)`, `trial.click_with(at, Button::Left, Mods::CTRL)` |
-| Find a part's position | `trial.spot(Role::Row, "notes.txt")` |
+| Find a part's position | `trial.center_of(Role::Row, "notes.txt")` |
 | Drag, scroll | `trial.drag(from, to)`, `trial.wheel(at, 0.0, 40.0)` |
 | Drop files on it | `trial.drop_files(at, &paths)` |
-| Let time pass | `trial.wait(Duration::from_secs(1))`; `trial.tell_time(..)` passes the time to the app |
-| Check for a part, or get it | `trial.has(Role::Text, "Saved")`, `trial.find(Role::Tick, "Loud")` |
-| Read what a screen reader gets | `trial.said()` (visible), `trial.told()` (all) |
-| List everything, one line each | `trial.listed()` (printed when `find` fails) |
-| Save a picture | `trial.picture("shot.png")` |
+| Let time pass | `trial.wait(Duration::from_secs(1))`; `trial.set_time(..)` passes the time to the app |
+| Check for a part, or get it | `trial.has(Role::Text, "Saved")`, `trial.find(Role::CheckBox, "Loud")` |
+| Read what a screen reader gets | `trial.visible_access_nodes()` (visible), `trial.access_nodes()` (all) |
+| List everything, one line each | `trial.dump()` (printed when `find` fails) |
+| Save a picture | `trial.save_png("shot.png")` |
 | Compare with a saved picture | `trial.looks_like("tests/looks/main.png")` |
 | Read or change app state | `trial.app` |
 
@@ -84,23 +84,23 @@ Parts are found by `Role`, which may not match other libraries' words:
 | --- | --- | --- |
 | label, text | `ui.label`, `ui.note`, `ui.paragraph`, `ui.text` | `Role::Text` |
 | button, toggle button | `ui.button`, `ui.primary_button`, `ui.icon_button`, `ui.toggle`, `ui.tool` | `Role::Button` (a toggle with `on`) |
-| checkbox | `ui.checkbox` | `Role::Tick` |
+| checkbox | `ui.checkbox` | `Role::CheckBox` |
 | switch | `ui.switch` | `Role::Switch` |
-| radio button | `ui.radio` | `Role::Choice` |
-| slider, drag value, rating | `ui.slider`, `ui.range` (one per knob), `ui.drag`, `ui.rating`, `ui.splitter` | `Role::Slider` |
-| spin box | `ui.number`, `ui.number_in`, each field of `ui.time` | `Role::Spin` |
-| drop-down, combo box | `ui.select`, `ui.combo`, the button of `ui.color` | `Role::Select` |
-| text field | `ui.text_box`, `ui.text_area`, `ui.search`, `ui.suggest` | `Role::TextBox` |
-| password field | `ui.secret_box` | `Role::Secret` |
+| radio button | `ui.radio` | `Role::RadioButton` |
+| slider, drag value, rating | `ui.slider`, `ui.range` (one per knob), `ui.drag_value`, `ui.rating`, `ui.splitter` | `Role::Slider` |
+| spin box | `ui.number`, `ui.number_in`, each field of `ui.time` | `Role::SpinButton` |
+| drop-down, combo box | `ui.select`, `ui.combo`, the button of `ui.color_picker` | `Role::ComboBox` |
+| text field | `ui.text_box`, `ui.text_area`, `ui.search`, `ui.autocomplete` | `Role::TextBox` |
+| password field | `ui.password_box` | `Role::PasswordBox` |
 | collapsing header, date picker, menu button | `ui.fold`, `ui.date`, `ui.date_range`, `ui.menu_button`, a panel's heading | `Role::Fold` |
 | progress bar, spinner | `ui.progress`, `ui.spinner` | `Role::Progress` |
-| tab bar, segmented control, steps, pages | `ui.tabs`, `ui.segmented`, `ui.steps`, `ui.pages` | `Role::Tabs`, each tab `Role::Tab` |
+| tab bar, segmented control, steps, pages | `ui.tabs`, `ui.segmented`, `ui.steps`, `ui.pagination` | `Role::Tabs`, each tab `Role::Tab` |
 | link | `ui.link`, a place in `ui.breadcrumbs` | `Role::Link` |
 | selectable item | `ui.selectable` | `Role::Row` |
-| tree and items | `ui.branches` and `ui.branch`; `ui.tree` | `Role::Tree`, each item `Role::TreeItem` |
-| menu bar, menu, items | `ui.menu_bar`, a menu, `ui.menu_item`, `ui.menu_check`, `ui.menu_radio`, `ui.submenu` | `Role::MenuBar`, `Role::Menu`, `Role::MenuItem` (a check with `on`), `Role::MenuChoice`, `Role::Submenu` |
+| tree and items | `ui.tree_view` and `ui.tree_row`; `ui.tree` | `Role::Tree`, each item `Role::TreeItem` |
+| menu bar, menu, items | `ui.menu_bar`, a menu, `ui.menu_item`, `ui.menu_checkbox`, `ui.menu_radio`, `ui.submenu` | `Role::MenuBar`, `Role::Menu`, `Role::MenuItem` (a check with `on`), `Role::MenuItemRadio`, `Role::Submenu` |
 | toolbar | `ui.tool_bar` | `Role::ToolBar` |
-| table | `ui.table`, its headings, rows, `ui.cell` | `Role::Table`, `Role::Heading`, `Role::TableRow`, `Role::Cell` |
+| table | `ui.table`, its headings, rows, `ui.cell` | `Role::Table`, `Role::ColumnHeader`, `Role::TableRow`, `Role::Cell` |
 | inner window, card, time picker | `ui.panel`, `ui.card`, `ui.time` | `Role::Group` |
 | modal dialog | `ui.dialog` | `Role::Dialog` |
 | document | `ui.markdown` | `Role::Document` |
@@ -146,8 +146,8 @@ assert_eq!((picture.width, picture.height, picture.pixels.len()), (200, 60, 12_0
   `LocalClipboard` stays in-process.
 - `ui.resize(size, scale)`; `ui.run(&mut describe)` returns the changed rect; `ui.event(event)`
   feeds one input and returns whether a run is needed; `Surface::draw(&mut ui, 64)` draws it all
-  (`surface.png()` encodes it).
-- Find parts by name, not coordinates: `ui.listen(true)`, then `ui.said()` (chapter 7).
+  (`surface.to_png()` encodes it).
+- Find parts by name, not coordinates: `ui.set_screen_reader(true)`, then `ui.visible_access_nodes()` (chapter 7).
 - Run twice at the start (input is resolved against the previous layout), and after every event.
 - Focus follows clicks: type into a box after clicking it or setting focus.
 - Time stands still unless set: `ui.set_time(duration)`. `ui.wake_in()` says when the interface
@@ -202,7 +202,7 @@ assert_eq!(ui.wake_in(), None);
 assert!(screen.pixels == Surface::draw(&mut ui, 64).pixels);
 ```
 
-To compare against a saved picture (`surface.png()` to write, `taut::png::decode` to read), use
+To compare against a saved picture (`surface.to_png()` to write, `taut::png::decode` to read), use
 `BuiltInFont`: system fonts differ between machines and versions.
 
 ## System letters

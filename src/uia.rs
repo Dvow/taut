@@ -2,20 +2,21 @@
 //!
 //! A client asks the window for its provider (`WM_GETOBJECT`), and that for others: children,
 //! the element at a point, the focused one. Each `Provider` is a hand-written COM object: one
-//! for the window and one per entry of [`Ui::said`]. Providers answer from a copy of that list
-//! taken after every run, so they need nothing of the window and keep answering ("element not
-//! available") once their element or window is gone. Actions (invoke, toggle, set value) reach
-//! the window as a message, as mouse and keyboard input do. After every run, Windows gets the
-//! events: focus moved, a name, value or state changed, elements came or went.
+//! for the window and one per entry of [`Ui::visible_access_nodes`]. Providers answer from a
+//! copy of that list taken after every run, so they need nothing of the window and keep
+//! answering ("element not available") once their element or window is gone. Actions (invoke,
+//! toggle, set value) reach the window as a message, as mouse and keyboard input do. After
+//! every run, Windows gets the events: focus moved, a name, value or state changed, elements
+//! came or went.
 //!
 //! Windows calls providers only on their window's thread, which is made single-threaded
 //! apartment on first ask: nothing is shared or locked.
 //!
 //! A program nobody asks pays nothing: the two libraries load on the first ask, the list is
 //! kept from then on, and dropped once no provider is held and Windows says no client listens.
+use crate::accessibility::{self, AccessNode, Role};
 use crate::geom::{Rect, pt};
 use crate::id::Id;
-use crate::told::{self, Role, Said};
 use crate::ui::Ui;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
@@ -259,7 +260,7 @@ unsafe fn found<F: Copy>(library: HANDLE, name: &CStr) -> Option<F> {
 
 /// What Windows was last told of one window. Kept by the window's thread while the window
 /// lives, and by every provider for it while held.
-struct Told {
+struct WindowTree {
     automation: &'static Automation,
     thread: u32,
     /// The window; 0 once it is gone.
@@ -268,9 +269,9 @@ struct Told {
     scale: Cell<f32>,
     keyboard: Cell<bool>,
     /// Whether nothing has been told of it yet; and its elements as of the last run, and which
-    /// list they were (`Ui::told_turn`).
+    /// list they were (`Ui::access_version`).
     fresh: Cell<bool>,
-    said: RefCell<Vec<Said>>,
+    nodes: RefCell<Vec<AccessNode>>,
     turn: Cell<u64>,
     /// The providers handed out for it that are still held.
     out: RefCell<Vec<*mut Provider>>,
@@ -299,7 +300,7 @@ enum Ask {
 /// list because of that (not because the app asked).
 #[derive(Default)]
 struct Reading {
-    windows: Vec<Rc<Told>>,
+    windows: Vec<Rc<WindowTree>>,
     ours: bool,
 }
 
@@ -307,7 +308,7 @@ thread_local! {
     static READING: RefCell<Reading> = RefCell::new(Reading::default());
 }
 
-impl Told {
+impl WindowTree {
     /// The window's client corner on screen (for a gone window, the screen's).
     fn corner(&self) -> Pixel {
         let mut corner = Pixel::default();
@@ -319,14 +320,15 @@ impl Told {
 }
 
 /// What Windows was told of this window, if it ever asked.
-fn told_of(hwnd: HANDLE) -> Option<Rc<Told>> {
-    READING.with_borrow(|reading| reading.windows.iter().find(|told| told.hwnd.get() == hwnd).cloned())
+fn window_tree(hwnd: HANDLE) -> Option<Rc<WindowTree>> {
+    READING.with_borrow(|reading| reading.windows.iter().find(|tree| tree.hwnd.get() == hwnd).cloned())
 }
 
 /// Answers `WM_GETOBJECT`: the window's provider goes to Windows. On a window's first ask,
-/// `listen` makes the interface keep its list and run, which tells of the window (`listening`:
-/// the list is kept already). Nothing where Windows lacks UI Automation, or where the thread's
-/// COM setup would have providers called from other threads: Windows answers by itself then.
+/// `set_screen_reader` makes the interface keep its list and run, which tells of the window
+/// (`listening`: the list is kept already). Nothing where Windows lacks UI Automation, or where
+/// the thread's COM setup would have providers called from other threads: Windows answers by
+/// itself then.
 ///
 /// And nothing for an MSAA ask with no screen reader running: Windows asks that way now and
 /// then with no reader anywhere (the caret, for the touch keyboard). So a window nobody reads
@@ -339,14 +341,14 @@ pub(crate) fn give(hwnd: HANDLE, w: usize, l: isize, listening: bool, listen: im
         _ => false,
     };
     let automation = meant.then(automation)??;
-    let known = told_of(hwnd);
-    let told = match &known {
-        Some(told) => told.clone(),
+    let known = window_tree(hwnd);
+    let tree = match &known {
+        Some(tree) => tree.clone(),
         None => register(hwnd, automation)?,
     };
     // (The provider exists before the run: a run ends by asking whether anybody is left, and
     // somebody is.)
-    let root = Provider::of(&told, 0, THING);
+    let root = Provider::of(&tree, 0, THING);
     if known.is_none() || !listening {
         READING.with_borrow_mut(|reading| reading.ours |= !listening);
         listen();
@@ -363,7 +365,7 @@ pub(crate) fn give(hwnd: HANDLE, w: usize, l: isize, listening: bool, listen: im
 /// Starts keeping what Windows is told of a window. With a thread's first window, the thread
 /// becomes a single-threaded apartment (2), so Windows calls providers there. Nothing where the
 /// thread is set up otherwise already.
-fn register(hwnd: HANDLE, automation: &'static Automation) -> Option<Rc<Told>> {
+fn register(hwnd: HANDLE, automation: &'static Automation) -> Option<Rc<WindowTree>> {
     let first = READING.with_borrow(|reading| reading.windows.is_empty());
     // SAFETY: initializes COM on this thread; uninitialized when the last asked window is gone
     // (`gone`).
@@ -372,20 +374,20 @@ fn register(hwnd: HANDLE, automation: &'static Automation) -> Option<Rc<Told>> {
     }
     // SAFETY: asks the current thread's id.
     let thread = unsafe { GetCurrentThreadId() };
-    let told = Rc::new(Told {
+    let tree = Rc::new(WindowTree {
         automation,
         thread,
         hwnd: Cell::new(hwnd),
         scale: Cell::new(1.0),
         keyboard: Cell::new(false),
         fresh: Cell::new(true),
-        said: RefCell::default(),
+        nodes: RefCell::default(),
         turn: Cell::new(0),
         out: RefCell::default(),
         asked: RefCell::default(),
     });
-    READING.with_borrow_mut(|reading| reading.windows.push(told.clone()));
-    Some(told)
+    READING.with_borrow_mut(|reading| reading.windows.push(tree.clone()));
+    Some(tree)
 }
 
 /// After a run: Windows' copy of the window's elements is updated, and listeners hear what
@@ -395,17 +397,17 @@ pub(crate) fn tell(hwnd: HANDLE, ui: &Ui) {
     if !ui.listening {
         return;
     }
-    let Some(told) = told_of(hwnd) else { return };
-    let (news, keyboard) = (ui.told(), ui.window_focused);
-    let had_keyboard = told.keyboard.replace(keyboard);
-    told.scale.set(ui.scale());
-    let mut was = told.said.borrow_mut();
+    let Some(tree) = window_tree(hwnd) else { return };
+    let (news, keyboard) = (ui.access_nodes(), ui.window_focused);
+    let had_keyboard = tree.keyboard.replace(keyboard);
+    tree.scale.set(ui.scale());
+    let mut was = tree.nodes.borrow_mut();
     // (A first telling changes nothing anybody could have known. And the copy is made only
     // where it differs: copying a long page is most of the cost. A list of the same turn is
     // not even compared.)
-    let turn = ui.told_turn();
-    let kept = told.turn.replace(turn) == turn && was.len() == news.len();
-    let (fresh, unchanged) = (told.fresh.replace(false), kept || *was == news);
+    let turn = ui.access_version();
+    let kept = tree.turn.replace(turn) == turn && was.len() == news.len();
+    let (fresh, unchanged) = (tree.fresh.replace(false), kept || *was == news);
     let same = fresh || (unchanged && had_keyboard == keyboard);
     let changes = if same { Vec::new() } else { changes(&was, had_keyboard, news, keyboard) };
     if !unchanged {
@@ -414,24 +416,24 @@ pub(crate) fn tell(hwnd: HANDLE, ui: &Ui) {
     }
     drop(was);
     // SAFETY: a call without arguments. (Nobody listens: nobody is told.)
-    if changes.is_empty() || unsafe { (told.automation.listening)() } == 0 {
+    if changes.is_empty() || unsafe { (tree.automation.listening)() } == 0 {
         return;
     }
-    changes.into_iter().for_each(|change| raise(&told, change));
+    changes.into_iter().for_each(|change| raise(&tree, change));
 }
 
 /// After a run: listeners say what the app announced, as a notification of the window (4: other
 /// kind; 2: all, queued). Returns Windows' answer to the last one: 0 on success.
 pub(crate) fn announce(hwnd: HANDLE, ui: &Ui) -> i32 {
-    let Some((told, say)) = told_of(hwnd).and_then(|told| Some((told.clone(), told.automation.say?))) else { return 0 };
+    let Some((tree, say)) = window_tree(hwnd).and_then(|tree| Some((tree.clone(), tree.automation.say?))) else { return 0 };
     let mut answer = 0;
     for words in ui.announced() {
-        let (about, [said, by]) = (Provider::of(&told, 0, THING), [words.as_str(), "taut"].map(|text| told.automation.text(text)));
+        let (about, [spoken, by]) = (Provider::of(&tree, 0, THING), [words.as_str(), "taut"].map(|text| tree.automation.text(text)));
         // SAFETY: Windows is shown the window's provider, held meanwhile, and two `BSTR`s this
         // function frees after.
         unsafe {
-            answer = say(about, 4, 2, said, by);
-            [said, by].into_iter().for_each(|text| (told.automation.free_text)(text));
+            answer = say(about, 4, 2, spoken, by);
+            [spoken, by].into_iter().for_each(|text| (tree.automation.free_text)(text));
             Provider::release(about);
         }
     }
@@ -455,25 +457,25 @@ enum Change {
 }
 
 /// What changed between what Windows was told of a window (`was`) and what it holds `now`.
-fn changes(was: &[Said], had_keyboard: bool, now: &[Said], keyboard: bool) -> Vec<Change> {
+fn changes(was: &[AccessNode], had_keyboard: bool, now: &[AccessNode], keyboard: bool) -> Vec<Change> {
     let mut changes = Vec::new();
     // Each element (id and role) with its parent (0: the window): equal lists mean nothing came
     // or went.
-    let lineage = |list: &[Said]| list.iter().map(|said| (said.within.map_or(0, |group| list[group].id), (said.id, said.role))).collect::<Vec<_>>();
+    let lineage = |list: &[AccessNode]| list.iter().map(|node| (node.parent.map_or(0, |group| list[group].id), (node.id, node.role))).collect::<Vec<_>>();
     let (before, after) = (lineage(was), lineage(now));
     let inside = |lineage: &[(Id, (Id, Role))], group: Id| lineage.iter().filter(|(within, _)| *within == group).map(|(_, thing)| *thing).collect::<Vec<_>>();
     // (A new group is reported by its parent.)
-    let groups = now.iter().filter(|said| said.role.holds() && before.iter().any(|(_, thing)| *thing == (said.id, said.role))).map(|said| said.id);
+    let groups = now.iter().filter(|node| node.role.is_container() && before.iter().any(|(_, thing)| *thing == (node.id, node.role))).map(|node| node.id);
     let altered = std::iter::once(0).chain(groups).filter(|group| before != after && inside(&before, *group) != inside(&after, *group));
     changes.extend(altered.map(Change::Children));
-    for (at, said) in now.iter().enumerate() {
-        let same = |old: &&Said| (old.id, old.role) == (said.id, said.role);
+    for (at, node) in now.iter().enumerate() {
+        let same = |old: &&AccessNode| (old.id, old.role) == (node.id, node.role);
         let old = was.get(at).filter(same).or_else(|| was.iter().find(same));
-        if let Some(old) = old.filter(|old| *old != said) {
-            compare(old, said, &mut changes);
+        if let Some(old) = old.filter(|old| *old != node) {
+            compare(old, node, &mut changes);
         }
     }
-    let on = |list: &[Said], keyboard: bool| list.iter().find(|said| said.focused && keyboard).map(|said| said.id);
+    let on = |list: &[AccessNode], keyboard: bool| list.iter().find(|node| node.focused && keyboard).map(|node| node.id);
     match (on(was, had_keyboard), on(now, keyboard)) {
         (before, Some(id)) if before != Some(id) => changes.push(Change::Focus(id)),
         (Some(_), None) if keyboard => changes.push(Change::Focus(0)),
@@ -483,17 +485,17 @@ fn changes(was: &[Said], had_keyboard: bool, now: &[Said], keyboard: bool) -> Ve
 }
 
 /// What of one element differs from what Windows was told.
-fn compare(old: &Said, new: &Said, changes: &mut Vec<Change>) {
+fn compare(old: &AccessNode, new: &AccessNode, changes: &mut Vec<Change>) {
     let text = |text: &String| Value::Text(text.clone());
-    let amount = |said: &Said| said.amount.map_or(Value::None, |amount| Value::Real(amount[0] as f64));
-    let on = |said: &Said| said.on == Some(true);
-    let counts = |said: &Said, which: usize| said.grid.filter(|_| said.role == Role::Table).map_or(Value::None, |grid| Value::Number(grid[which] as i32));
+    let amount = |node: &AccessNode| node.value_range.map_or(Value::None, |amount| Value::Real(amount[0] as f64));
+    let on = |node: &AccessNode| node.on == Some(true);
+    let counts = |node: &AccessNode, which: usize| node.grid.filter(|_| node.role == Role::Table).map_or(Value::None, |grid| Value::Number(grid[which] as i32));
     // (A tree item's expand state, which it has besides selection.)
-    let opened = |said: &Said| said.open.filter(|_| said.role == Role::TreeItem).map_or(Value::None, |open| Value::Number(open as i32));
+    let opened = |node: &AccessNode| node.expanded.filter(|_| node.role == Role::TreeItem).map_or(Value::None, |open| Value::Number(open as i32));
     // State is reported as the property its role has for it.
     let (state, stands): (i32, fn(bool) -> Value) = match new.role {
-        Role::Tick | Role::Switch | Role::MenuItem | Role::Button => (TICKED, |on| Value::Number(on as i32)),
-        Role::Fold | Role::Select | Role::Submenu => (UNFOLDED, |on| Value::Number(on as i32)),
+        Role::CheckBox | Role::Switch | Role::MenuItem | Role::Button => (TICKED, |on| Value::Number(on as i32)),
+        Role::Fold | Role::ComboBox | Role::Submenu => (UNFOLDED, |on| Value::Number(on as i32)),
         _ => (PICKED, Value::Truth),
     };
     let properties = [
@@ -502,18 +504,18 @@ fn compare(old: &Said, new: &Said, changes: &mut Vec<Change>) {
         (AMOUNT, amount(old), amount(new)),
         (state, stands(on(old)), stands(on(new))),
         (UNFOLDED, opened(old), opened(new)),
-        (ENABLED, Value::Truth(old.usable), Value::Truth(new.usable)),
+        (ENABLED, Value::Truth(old.enabled), Value::Truth(new.enabled)),
         (STATUS, sort_status(old), sort_status(new)),
         (ROW_COUNT, counts(old, 0), counts(new, 0)),
         (COLUMN_COUNT, counts(old, 1), counts(new, 1)),
     ];
     let id = new.id;
     changes.extend(properties.into_iter().filter(|(_, was, is)| was != is).map(|(property, was, is)| Change::Property(id, property, was, is)));
-    if matches!(new.role, Role::Choice | Role::Tab | Role::Row | Role::TableRow | Role::MenuChoice | Role::TreeItem) && on(new) && !on(old) {
+    if matches!(new.role, Role::RadioButton | Role::Tab | Role::Row | Role::TableRow | Role::MenuItemRadio | Role::TreeItem) && on(new) && !on(old) {
         changes.push(Change::Picked(id));
     }
     // A text box is read through the text pattern: its text, and its caret.
-    if matches!(new.role, Role::TextBox | Role::Secret) {
+    if matches!(new.role, Role::TextBox | Role::PasswordBox) {
         changes.extend((old.value != new.value).then_some(Change::Text(id)));
         changes.extend((old.caret != new.caret).then_some(Change::Caret(id)));
     }
@@ -521,15 +523,15 @@ fn compare(old: &Said, new: &Said, changes: &mut Vec<Change>) {
 
 /// For the column heading the rows are sorted by, the direction in words a screen reader says;
 /// nothing for anything else.
-fn sort_status(said: &Said) -> Value {
-    said.sort_word().map_or(Value::None, |way| Value::Text(format!("sorted {way}")))
+fn sort_status(node: &AccessNode) -> Value {
+    node.sort_word().map_or(Value::None, |way| Value::Text(format!("sorted {way}")))
 }
 
 /// Raises one change to listeners.
-fn raise(told: &Rc<Told>, change: Change) {
-    let automation = told.automation;
+fn raise(tree: &Rc<WindowTree>, change: Change) {
+    let automation = tree.automation;
     let (Change::Children(id) | Change::Property(id, ..) | Change::Picked(id) | Change::Focus(id) | Change::Text(id) | Change::Caret(id)) = &change;
-    let about = Provider::of(told, *id, THING);
+    let about = Provider::of(tree, *id, THING);
     // SAFETY: Windows is shown the provider concerned, held meanwhile, and for a property the
     // old and new values, which this function frees (`VT_BSTR` ones, 8). Then the reference
     // ends. (Whether anyone listened is Windows' affair.)
@@ -542,9 +544,9 @@ fn raise(told: &Rc<Told>, change: Change) {
             Change::Caret(_) => (automation.raise)(about, SELECTION_MOVED),
             Change::Property(_, property, was, is) => {
                 let (was, is) = (automation.variant(was), automation.variant(is));
-                let told = (automation.raise_change)(about, *property, was, is);
+                let result = (automation.raise_change)(about, *property, was, is);
                 [was, is].into_iter().filter(|value| value.kind == 8).for_each(|value| (automation.free_text)(value.held.text));
-                told
+                result
             }
         };
         Provider::release(about);
@@ -554,7 +556,7 @@ fn raise(told: &Rc<Told>, change: Change) {
 /// Does to a window's interface what a provider asked for (the window got `WM_READER`); then
 /// the interface runs.
 pub(crate) fn work(hwnd: HANDLE, ui: &mut Ui) {
-    match told_of(hwnd).and_then(|told| told.asked.take()) {
+    match window_tree(hwnd).and_then(|tree| tree.asked.take()) {
         Some(Ask::Press(id)) => ui.press_for_reader(id),
         Some(Ask::Set(id, to)) => ui.set_for_reader(id, to),
         Some(Ask::Type(id, text)) => ui.type_for_reader(id, &text),
@@ -572,9 +574,9 @@ impl Reading {
     /// no provider is held, and no client `listens`. Then the windows stop keeping it, and the
     /// copies go.
     fn left(&mut self, listens: impl FnOnce() -> bool) -> bool {
-        let left = self.ours && self.windows.iter().all(|told| told.out.borrow().is_empty()) && !listens();
+        let left = self.ours && self.windows.iter().all(|tree| tree.out.borrow().is_empty()) && !listens();
         if left {
-            self.windows.iter().for_each(|told| (*told.said.borrow_mut(), _) = (Vec::new(), told.fresh.set(true)));
+            self.windows.iter().for_each(|tree| (*tree.nodes.borrow_mut(), _) = (Vec::new(), tree.fresh.set(true)));
             self.ours = false;
         }
         left
@@ -592,26 +594,26 @@ pub(crate) fn nobody_left() -> bool {
 /// A window is being destroyed: Windows releases what it holds of it, and any provider still
 /// held knows its window is gone.
 pub(crate) fn gone(hwnd: HANDLE) {
-    let Some(told) = told_of(hwnd) else { return };
+    let Some(tree) = window_tree(hwnd) else { return };
     let last = READING.with_borrow_mut(|reading| {
-        reading.windows.retain(|other| !Rc::ptr_eq(other, &told));
+        reading.windows.retain(|other| !Rc::ptr_eq(other, &tree));
         reading.windows.is_empty()
     });
     // SAFETY: each provider out is alive, and all are referenced here before Windows releases
     // the first. (That call lets others in, and one may release the last reference to a
     // provider further down: referenced, it stays.)
-    let out: Vec<*mut Face> = told.out.borrow().iter().map(|provider| unsafe { (**provider).held(THING) }).collect();
+    let out: Vec<*mut Face> = tree.out.borrow().iter().map(|provider| unsafe { (**provider).held(THING) }).collect();
     // SAFETY: Windows disconnects each while it still answers for its window, and the reference
     // ends. Then Windows is told the window has no providers (handing it none says so); and COM
     // is uninitialized with the last asked window.
     unsafe {
         for face in out {
-            (told.automation.disconnect)(face);
+            (tree.automation.disconnect)(face);
             Provider::release(face);
         }
-        (told.automation.give)(hwnd, 0, 0, std::ptr::null_mut());
-        told.hwnd.set(0);
-        *told.said.borrow_mut() = Vec::new();
+        (tree.automation.give)(hwnd, 0, 0, std::ptr::null_mut());
+        tree.hwnd.set(0);
+        *tree.nodes.borrow_mut() = Vec::new();
         if last {
             CoUninitialize();
         }
@@ -862,7 +864,7 @@ static AS_TEXT: TextTable = TextTable {
 struct Provider {
     faces: [Face; FACES],
     held: Cell<u32>,
-    told: Rc<Told>,
+    tree: Rc<WindowTree>,
     id: Id,
     role: Option<Role>,
 }
@@ -877,16 +879,16 @@ fn control(role: Role) -> i32 {
     match role {
         Role::Text => 50020,
         Role::Button | Role::Fold | Role::Switch => 50000,
-        Role::Tick => 50002,
-        Role::Choice => 50013,
+        Role::CheckBox => 50002,
+        Role::RadioButton => 50013,
         Role::Tab => 50019,
         Role::Row => 50007,
         Role::Slider => 50015,
-        Role::Spin => 50016,
-        Role::TextBox | Role::Secret => 50004,
-        Role::Select => 50003,
-        Role::MenuItem | Role::MenuChoice | Role::Submenu => 50011,
-        Role::Heading => 50035,
+        Role::SpinButton => 50016,
+        Role::TextBox | Role::PasswordBox => 50004,
+        Role::ComboBox => 50003,
+        Role::MenuItem | Role::MenuItemRadio | Role::Submenu => 50011,
+        Role::ColumnHeader => 50035,
         Role::Progress => 50012,
         Role::Group => 50026,
         Role::Dialog => 50033,
@@ -897,9 +899,9 @@ fn control(role: Role) -> i32 {
         Role::Table => 50036,
         Role::TableRow | Role::Cell => 50029,
         Role::Document => 50030,
-        Role::Title | Role::Paragraph | Role::Code => 50020,
+        Role::Heading | Role::Paragraph | Role::Code => 50020,
         Role::List => 50008,
-        Role::Item => 50007,
+        Role::ListItem => 50007,
         Role::Quote => 50026,
         Role::ToolBar => 50021,
         Role::Tree => 50023,
@@ -914,26 +916,26 @@ fn control(role: Role) -> i32 {
 /// item (10013); for a tree selection (10001); and for anything scroll item (10017). A tree
 /// item expands where it has children and is selectable where it can be. Nothing for what its
 /// role does not support.
-fn way(said: &Said, pattern: i32) -> Option<usize> {
-    match (pattern, said.role) {
-        (10000, Role::Button | Role::MenuItem | Role::MenuChoice | Role::Submenu | Role::Heading | Role::Link) => Some(PRESS),
-        (10002, Role::TextBox | Role::Secret | Role::Select | Role::Spin) => Some(TYPED),
-        (10003, Role::Slider | Role::Progress | Role::Spin) => Some(SLIDE),
-        (10005, Role::Fold | Role::Select | Role::Submenu) => Some(FOLD),
-        (10005, Role::TreeItem) if said.open.is_some() => Some(FOLD),
-        (10010, Role::TreeItem) if said.on.is_some() => Some(CHOICE),
+fn way(node: &AccessNode, pattern: i32) -> Option<usize> {
+    match (pattern, node.role) {
+        (10000, Role::Button | Role::MenuItem | Role::MenuItemRadio | Role::Submenu | Role::ColumnHeader | Role::Link) => Some(PRESS),
+        (10002, Role::TextBox | Role::PasswordBox | Role::ComboBox | Role::SpinButton) => Some(TYPED),
+        (10003, Role::Slider | Role::Progress | Role::SpinButton) => Some(SLIDE),
+        (10005, Role::Fold | Role::ComboBox | Role::Submenu) => Some(FOLD),
+        (10005, Role::TreeItem) if node.expanded.is_some() => Some(FOLD),
+        (10010, Role::TreeItem) if node.on.is_some() => Some(CHOICE),
         (10001, Role::Tree) => Some(SELECTION),
-        (10010, Role::Choice | Role::Tab | Role::Row | Role::MenuChoice) => Some(CHOICE),
-        (10010, Role::TableRow) if said.on.is_some() => Some(CHOICE),
+        (10010, Role::RadioButton | Role::Tab | Role::Row | Role::MenuItemRadio) => Some(CHOICE),
+        (10010, Role::TableRow) if node.on.is_some() => Some(CHOICE),
         (10006, Role::Table) => Some(GRID),
         (10012, Role::Table) => Some(HEADED),
         (10007, Role::Cell) => Some(IN_GRID),
         (10013, Role::Cell) => Some(UNDER_HEADING),
         (10017, _) => Some(SCROLL_ITEM),
-        (10015, Role::Tick | Role::Switch) => Some(TICK),
-        (10015, Role::Button) if said.on.is_some() => Some(TICK),
-        (10015, Role::MenuItem) if said.on.is_some() => Some(TICK),
-        (10014, Role::TextBox | Role::Secret) => Some(TEXT),
+        (10015, Role::CheckBox | Role::Switch) => Some(TICK),
+        (10015, Role::Button) if node.on.is_some() => Some(TICK),
+        (10015, Role::MenuItem) if node.on.is_some() => Some(TICK),
+        (10014, Role::TextBox | Role::PasswordBox) => Some(TEXT),
         _ => None,
     }
 }
@@ -942,11 +944,11 @@ impl Provider {
     /// A face of the provider for an element of a window (0: the window), with one more
     /// reference for the caller. One provider per element at a time: made on first ask, found
     /// again while anybody holds it.
-    fn of(told: &Rc<Told>, id: Id, face: usize) -> *mut Face {
-        let role = told.said.borrow().iter().find(|said| said.id == id).map(|said| said.role);
+    fn of(tree: &Rc<WindowTree>, id: Id, face: usize) -> *mut Face {
+        let role = tree.nodes.borrow().iter().find(|node| node.id == id).map(|node| node.role);
         // SAFETY: the providers out are alive: each removes itself from the list before it is
         // freed.
-        let known = told.out.borrow().iter().copied().find(|provider| unsafe { ((**provider).id, (**provider).role) } == (id, role));
+        let known = tree.out.borrow().iter().copied().find(|provider| unsafe { ((**provider).id, (**provider).role) } == (id, role));
         let provider = known.unwrap_or_else(|| {
             let tables: [*const c_void; FACES] = [
                 (&raw const AS_THING).cast(),
@@ -966,10 +968,10 @@ impl Provider {
                 (&raw const AS_SELECTION).cast(),
                 (&raw const AS_SCROLL_ITEM).cast(),
             ];
-            let provider = Box::into_raw(Box::new(Provider { faces: tables.map(|table| Face { table, of: std::ptr::null() }), held: Cell::new(0), told: told.clone(), id, role }));
+            let provider = Box::into_raw(Box::new(Provider { faces: tables.map(|table| Face { table, of: std::ptr::null() }), held: Cell::new(0), tree: tree.clone(), id, role }));
             // SAFETY: the provider was just made and nothing else knows it.
             unsafe { (*provider).faces.iter_mut().for_each(|face| face.of = provider) };
-            told.out.borrow_mut().push(provider);
+            tree.out.borrow_mut().push(provider);
             provider
         });
         // SAFETY: as above.
@@ -984,54 +986,54 @@ impl Provider {
 
     /// Where this provider's element is in its window's list; nothing for the window. (An error
     /// once the element or window is gone.)
-    fn at(&self, said: &[Said]) -> Result<Option<usize>, i32> {
-        if self.told.hwnd.get() == 0 {
+    fn at(&self, nodes: &[AccessNode]) -> Result<Option<usize>, i32> {
+        if self.tree.hwnd.get() == 0 {
             return Err(GONE);
         }
         if self.id == 0 {
             return Ok(None);
         }
-        said.iter().position(|said| (said.id, Some(said.role)) == (self.id, self.role)).map(Some).ok_or(GONE)
+        nodes.iter().position(|node| (node.id, Some(node.role)) == (self.id, self.role)).map(Some).ok_or(GONE)
     }
 
     /// The visible part of this provider's element: all of it, but in a table only as far as
     /// the table shows. (A row is told whole, however far the table is scrolled sideways.)
     fn seen(&self) -> Result<Rect, i32> {
-        let said = self.told.said.borrow();
-        let at = self.at(&said)?.ok_or(NO_SUCH)?;
-        Ok(told::view(&said, at))
+        let nodes = self.tree.nodes.borrow();
+        let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
+        Ok(accessibility::view(&nodes, at))
     }
     /// The element of this provider's table that `find` picks from the window's list and the
     /// table's index in it: its id. (Nothing where none; an error for an element not in a
     /// table.)
-    fn in_table(&self, find: impl FnOnce(&[Said], usize) -> Option<usize>) -> Result<Option<Id>, i32> {
-        let said = self.told.said.borrow();
-        let at = self.at(&said)?.ok_or(NO_SUCH)?;
-        let table = if said[at].role == Role::Table { Some(at) } else { told::table_of(&said, at) };
+    fn in_table(&self, find: impl FnOnce(&[AccessNode], usize) -> Option<usize>) -> Result<Option<Id>, i32> {
+        let nodes = self.tree.nodes.borrow();
+        let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
+        let table = if nodes[at].role == Role::Table { Some(at) } else { accessibility::table_of(&nodes, at) };
         let table = table.ok_or(NOT_DONE)?;
-        Ok(find(&said, table).map(|found| said[found].id))
+        Ok(find(&nodes, table).map(|found| nodes[found].id))
     }
     /// The provider of this table's cell at a row and column, from 0. None for a row out of
     /// view (a long table tells only visible rows); an error for a row or column the table
     /// lacks.
     fn cell(&self, row: i32, column: i32) -> Result<*mut Face, i32> {
-        let [rows, columns] = self.thing(|said| said.grid.unwrap_or_default())?;
+        let [rows, columns] = self.thing(|node| node.grid.unwrap_or_default())?;
         let place = [row as u32, column as u32];
         if row < 0 || column < 0 || place[0] >= rows || place[1] >= columns {
             return Err(NO_SUCH);
         }
-        let cell = self.in_table(|said, table| told::cell_at(said, table, place))?;
-        Ok(cell.map_or(std::ptr::null_mut(), |id| Provider::of(&self.told, id, THING)))
+        let cell = self.in_table(|nodes, table| accessibility::cell_at(nodes, table, place))?;
+        Ok(cell.map_or(std::ptr::null_mut(), |id| Provider::of(&self.tree, id, THING)))
     }
     /// A `SAFEARRAY` of the column headings: for a table, all in order; for a cell, its
     /// column's.
     fn headings_over(&self) -> Result<*mut c_void, i32> {
-        let column = self.thing(|said| (said.role == Role::Cell).then(|| said.grid.unwrap_or_default()[1]))?;
+        let column = self.thing(|node| (node.role == Role::Cell).then(|| node.grid.unwrap_or_default()[1]))?;
         let mut ids = Vec::new();
-        self.in_table(|said, table| {
-            let heads = |at: &usize| said[*at].role == Role::Heading && said[*at].within == Some(table);
-            ids.extend((table + 1..said.len()).filter(heads).map(|at| said[at].id).filter(|_| column.is_none()));
-            ids.extend(column.and_then(|column| told::heading_at(said, table, column)).map(|at| said[at].id));
+        self.in_table(|nodes, table| {
+            let heads = |at: &usize| nodes[*at].role == Role::ColumnHeader && nodes[*at].parent == Some(table);
+            ids.extend((table + 1..nodes.len()).filter(heads).map(|at| nodes[at].id).filter(|_| column.is_none()));
+            ids.extend(column.and_then(|column| accessibility::heading_at(nodes, table, column)).map(|at| nodes[at].id));
             None
         })?;
         Ok(self.providers(&ids))
@@ -1039,13 +1041,13 @@ impl Provider {
     /// A `SAFEARRAY` of the providers of some elements, by id. (The array holds a reference to
     /// each.)
     fn providers(&self, ids: &[Id]) -> *mut c_void {
-        let automation = self.told.automation;
+        let automation = self.tree.automation;
         // SAFETY: Windows makes an array of so many `VT_UNKNOWN` (13) and adds its own
         // reference to each element put in; the creation reference ends.
         unsafe {
             let row = (automation.numbers)(13, 0, ids.len() as u32);
             for (at, id) in (0..).zip(ids) {
-                let face = Provider::of(&self.told, *id, THING);
+                let face = Provider::of(&self.tree, *id, THING);
                 (automation.put)(row, &at, face.cast());
                 Provider::release(face);
             }
@@ -1054,25 +1056,25 @@ impl Provider {
     }
 
     /// Reads something of this provider's element.
-    fn thing<T>(&self, read: impl FnOnce(&Said) -> T) -> Result<T, i32> {
-        let said = self.told.said.borrow();
-        let at = self.at(&said)?.ok_or(NO_SUCH)?;
-        Ok(read(&said[at]))
+    fn thing<T>(&self, read: impl FnOnce(&AccessNode) -> T) -> Result<T, i32> {
+        let nodes = self.tree.nodes.borrow();
+        let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
+        Ok(read(&nodes[at]))
     }
 
     /// Asks the window to act on this provider's element, which must exist and be enabled: the
     /// window gets a message, and has done it when the message returns.
     fn ask(&self, ask: Ask) -> Result<(), i32> {
-        if !self.thing(|said| said.usable)? {
+        if !self.thing(|node| node.enabled)? {
             return Err(NOT_NOW);
         }
-        self.told.ask(ask)
+        self.tree.ask(ask)
     }
 
     /// A `SAFEARRAY` holding one range of this box's text, between two characters. (The array
     /// holds a reference.)
     fn stretches(&self, ends: [u32; 2]) -> *mut c_void {
-        let (automation, stretch) = (self.told.automation, Stretch::made(&self.told, self.id, ends));
+        let (automation, stretch) = (self.tree.automation, Stretch::made(&self.tree, self.id, ends));
         // SAFETY: Windows makes an array of one `VT_UNKNOWN` (13) and adds its own reference to
         // the range put in; the creation reference ends.
         unsafe {
@@ -1085,36 +1087,36 @@ impl Provider {
     /// The selection in this box, in characters: both at the caret where nothing is selected,
     /// and at the start while unfocused.
     fn selected(&self) -> Result<[u32; 2], i32> {
-        self.thing(|said| said.caret.map_or([0, 0], |[from, to]| [from.min(to), from.max(to)]))
+        self.thing(|node| node.caret.map_or([0, 0], |[from, to]| [from.min(to), from.max(to)]))
     }
     /// How many characters the box holds.
     fn length(&self) -> Result<u32, i32> {
-        self.thing(|said| said.value.chars().count() as u32)
+        self.thing(|node| node.value.chars().count() as u32)
     }
 
     /// A property of the element, by id. (The window's own come from Windows' host provider.)
     fn value_of(&self, property: i32) -> Result<Value, i32> {
-        let said = self.told.said.borrow();
-        let Some(at) = self.at(&said)? else { return Ok(Value::None) };
-        let said = &said[at];
+        let nodes = self.tree.nodes.borrow();
+        let Some(at) = self.at(&nodes)? else { return Ok(Value::None) };
+        let node = &nodes[at];
         Ok(match property {
-            CONTROL_TYPE => Value::Number(control(said.role)),
-            NAME => Value::Text(said.name.clone()),
-            HAS_KEYBOARD => Value::Truth(said.focused && self.told.keyboard.get()),
-            TAKES_KEYBOARD => Value::Truth(said.usable && said.takes_keyboard()),
-            ENABLED => Value::Truth(said.usable),
-            AUTOMATION_ID => Value::Text(format!("{:016x}", said.id)),
-            KEYS if !said.keys.is_empty() => Value::Text(said.keys.clone()),
-            HIDES_TEXT => Value::Truth(said.role == Role::Secret),
-            OFF_THE_SCREEN => Value::Truth(!said.shown),
-            IS_DIALOG => Value::Truth(said.role == Role::Dialog),
-            HEADING_LEVEL if said.role == Role::Title => Value::Number(80050 + said.level.min(9) as i32),
-            LEVEL if said.level > 0 => Value::Number(said.level as i32),
-            NTH | OF_SO_MANY => said.of.map_or(Value::None, |of| Value::Number(of[(property == OF_SO_MANY) as usize] as i32)),
+            CONTROL_TYPE => Value::Number(control(node.role)),
+            NAME => Value::Text(node.name.clone()),
+            HAS_KEYBOARD => Value::Truth(node.focused && self.tree.keyboard.get()),
+            TAKES_KEYBOARD => Value::Truth(node.enabled && node.takes_keyboard()),
+            ENABLED => Value::Truth(node.enabled),
+            AUTOMATION_ID => Value::Text(format!("{:016x}", node.id)),
+            KEYS if !node.shortcut.is_empty() => Value::Text(node.shortcut.clone()),
+            HIDES_TEXT => Value::Truth(node.role == Role::PasswordBox),
+            OFF_THE_SCREEN => Value::Truth(!node.visible),
+            IS_DIALOG => Value::Truth(node.role == Role::Dialog),
+            HEADING_LEVEL if node.role == Role::Heading => Value::Number(80050 + node.level.min(9) as i32),
+            LEVEL if node.level > 0 => Value::Number(node.level as i32),
+            NTH | OF_SO_MANY => node.position.map_or(Value::None, |of| Value::Number(of[(property == OF_SO_MANY) as usize] as i32)),
             // (The sorted column's heading says so, and the direction: in words, and as ARIA
             // has it.)
-            STATUS => sort_status(said),
-            ARIA if said.sorted.is_some() => Value::Text(format!("sort={}", said.sort_word().unwrap_or_default())),
+            STATUS => sort_status(node),
+            ARIA if node.sorted.is_some() => Value::Text(format!("sort={}", node.sort_word().unwrap_or_default())),
             _ => Value::None,
         })
     }
@@ -1122,25 +1124,25 @@ impl Provider {
     /// The element in a navigate direction: parent (0), next sibling (1), previous sibling (2),
     /// first child (3), last child (4). Its id (0: the window), or nothing where none.
     fn beside(&self, direction: i32) -> Result<Option<Id>, i32> {
-        let said = self.told.said.borrow();
-        let me = self.at(&said)?;
-        let within = |at: usize| said[at].within;
-        let mut all = 0..said.len();
+        let nodes = self.tree.nodes.borrow();
+        let me = self.at(&nodes)?;
+        let within = |at: usize| nodes[at].parent;
+        let mut all = 0..nodes.len();
         let found = match (direction, me) {
-            (0, Some(at)) => return Ok(Some(within(at).map_or(0, |group| said[group].id))),
-            (1, Some(at)) => (at + 1..said.len()).find(|other| within(*other) == within(at)),
+            (0, Some(at)) => return Ok(Some(within(at).map_or(0, |group| nodes[group].id))),
+            (1, Some(at)) => (at + 1..nodes.len()).find(|other| within(*other) == within(at)),
             (2, Some(at)) => (0..at).rev().find(|other| within(*other) == within(at)),
             (3, _) => all.find(|other| within(*other) == me),
             (4, _) => all.rev().find(|other| within(*other) == me),
             _ => None,
         };
-        Ok(found.map(|at| said[at].id))
+        Ok(found.map(|at| nodes[at].id))
     }
 
     /// Sets a slider to a value it can take. (Left alone where it is there already.)
     fn slide_to(&self, to: f64) -> Result<(), i32> {
-        let [at, least, most] = self.thing(|said| said.amount.unwrap_or_default().map(f64::from))?;
-        if !matches!(self.thing(|said| said.role)?, Role::Slider | Role::Spin) {
+        let [at, least, most] = self.thing(|node| node.value_range.unwrap_or_default().map(f64::from))?;
+        if !matches!(self.thing(|node| node.role)?, Role::Slider | Role::SpinButton) {
             return Err(NOT_DONE);
         }
         if !(least..=most).contains(&to) {
@@ -1152,18 +1154,18 @@ impl Provider {
     /// The face through which this element supports a pattern (see `way`); none for unsupported
     /// ones, and for the window.
     fn face_for(&self, pattern: i32) -> Result<*mut Face, i32> {
-        let said = self.told.said.borrow();
-        let face = self.at(&said)?.and_then(|at| way(&said[at], pattern));
+        let nodes = self.tree.nodes.borrow();
+        let face = self.at(&nodes)?.and_then(|at| way(&nodes[at], pattern));
         Ok(face.map_or(std::ptr::null_mut(), |face| self.held(face)))
     }
 
     /// Windows' own provider for the window, on which the window's provider builds: it knows
     /// the title, frame and place among windows. (None for an element.)
     fn windows_own(&self) -> *mut Face {
-        let (hwnd, mut own) = (self.told.hwnd.get(), std::ptr::null_mut());
+        let (hwnd, mut own) = (self.tree.hwnd.get(), std::ptr::null_mut());
         if self.id == 0 && hwnd != 0 {
             // SAFETY: asks Windows' provider for an existing window, with room for it.
-            unsafe { (self.told.automation.host)(hwnd, &mut own) };
+            unsafe { (self.tree.automation.host)(hwnd, &mut own) };
         }
         own
     }
@@ -1171,7 +1173,7 @@ impl Provider {
     /// The runtime id that tells this element from all others: `UiaAppendRuntimeId` (3), the
     /// id's two halves, and the role. (The window uses Windows': no array.)
     fn told_apart_by(&self) -> *mut c_void {
-        let (automation, numbers) = (self.told.automation, [3, self.id as i32, (self.id >> 32) as i32, self.role.map_or(0, |role| role as i32)]);
+        let (automation, numbers) = (self.tree.automation, [3, self.id as i32, (self.id >> 32) as i32, self.role.map_or(0, |role| role as i32)]);
         if self.id == 0 {
             return std::ptr::null_mut();
         }
@@ -1190,30 +1192,30 @@ impl Provider {
         if self.id == 0 {
             return Ok([0.0; 4]);
         }
-        let (rect, scale, corner) = (self.seen()?, self.told.scale.get(), self.told.corner());
+        let (rect, scale, corner) = (self.seen()?, self.tree.scale.get(), self.tree.corner());
         Ok([corner.x as f32 + rect.x * scale, corner.y as f32 + rect.y * scale, rect.w * scale, rect.h * scale].map(f64::from))
     }
 
     /// The element at a screen point: the topmost there (the last in the list: what lies over
     /// the page comes after it, a group's content after the group), or the window.
     fn thing_at(&self, x: f64, y: f64) -> Result<*mut Face, i32> {
-        let (said, scale, corner) = (self.told.said.borrow(), self.told.scale.get() as f64, self.told.corner());
-        self.at(&said)?;
+        let (nodes, scale, corner) = (self.tree.nodes.borrow(), self.tree.scale.get() as f64, self.tree.corner());
+        self.at(&nodes)?;
         let at = pt(((x - corner.x as f64) / scale) as f32, ((y - corner.y as f64) / scale) as f32);
-        let id = (0..said.len()).rev().find(|n| told::view(&said, *n).contains(at)).map_or(0, |n| said[n].id);
-        Ok(Provider::of(&self.told, id, PLACE))
+        let id = (0..nodes.len()).rev().find(|n| accessibility::view(&nodes, *n).contains(at)).map_or(0, |n| nodes[n].id);
+        Ok(Provider::of(&self.tree, id, PLACE))
     }
 
     /// The focused element, if any.
     fn with_keyboard(&self) -> *mut Face {
-        let on = self.told.said.borrow().iter().find(|said| said.focused).map(|said| said.id);
-        on.map_or(std::ptr::null_mut(), |id| Provider::of(&self.told, id, PLACE))
+        let on = self.tree.nodes.borrow().iter().find(|node| node.focused).map(|node| node.id);
+        on.map_or(std::ptr::null_mut(), |id| Provider::of(&self.tree, id, PLACE))
     }
 
     /// Selects the element alone: a tree item as a click does, whatever else is selected;
     /// anything else as a click, unless selected already.
     fn pick_alone(&self) -> Result<(), i32> {
-        match self.thing(|said| (said.role, said.on == Some(true)))? {
+        match self.thing(|node| (node.role, node.on == Some(true)))? {
             (Role::TreeItem, _) => self.ask(Ask::Press(self.id)),
             (_, true) => Ok(()),
             (_, false) => self.ask(Ask::Press(self.id)),
@@ -1223,7 +1225,7 @@ impl Provider {
     /// tree item as Control+Space does, anything else as a click. (One of a single-selection
     /// set cannot be unselected: another is selected instead.)
     fn pick_too(&self, more: bool) -> Result<(), i32> {
-        match self.thing(|said| (said.role, said.on == Some(true)))? {
+        match self.thing(|node| (node.role, node.on == Some(true)))? {
             (_, on) if on == more => Ok(()),
             (Role::TreeItem, _) => self.ask(Ask::Pick(self.id)),
             _ if more => self.ask(Ask::Press(self.id)),
@@ -1233,7 +1235,7 @@ impl Provider {
     /// Expands (`open`) or collapses the element, unless it is so already: a tree item as the
     /// arrow keys do, anything else as a click. (An element with nothing to expand cannot.)
     fn open_to(&self, open: bool) -> Result<(), i32> {
-        match self.thing(|said| (said.role, said.unfolded()))? {
+        match self.thing(|node| (node.role, node.unfolded()))? {
             (_, Some(now)) if now == open => Ok(()),
             (_, None) => Err(NOT_DONE),
             (Role::TreeItem, _) => self.ask(Ask::Open(self.id, open)),
@@ -1241,16 +1243,16 @@ impl Provider {
         }
     }
     /// The provider of a tree item's tree. (None for anything else.)
-    fn tree(&self) -> Result<*mut Face, i32> {
-        let said = self.told.said.borrow();
-        let at = self.at(&said)?.ok_or(NO_SUCH)?;
-        Ok(told::tree_of(&said, at).map_or(std::ptr::null_mut(), |tree| Provider::of(&self.told, said[tree].id, THING)))
+    fn item_tree(&self) -> Result<*mut Face, i32> {
+        let nodes = self.tree.nodes.borrow();
+        let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
+        Ok(accessibility::tree_of(&nodes, at).map_or(std::ptr::null_mut(), |tree| Provider::of(&self.tree, nodes[tree].id, THING)))
     }
     /// A `SAFEARRAY` of the providers of this tree's selected items, among those told.
     fn picked_in(&self) -> Result<*mut c_void, i32> {
-        let said = self.told.said.borrow();
-        let at = self.at(&said)?.ok_or(NO_SUCH)?;
-        let ids: Vec<Id> = said.iter().filter(|item| item.within == Some(at) && item.on == Some(true)).map(|item| item.id).collect();
+        let nodes = self.tree.nodes.borrow();
+        let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
+        let ids: Vec<Id> = nodes.iter().filter(|item| item.parent == Some(at) && item.on == Some(true)).map(|item| item.id).collect();
         Ok(self.providers(&ids))
     }
 
@@ -1276,7 +1278,7 @@ impl Provider {
         // SAFETY: as the caller promises; a face points back at its provider, alive while held.
         // (And the current thread is asked.)
         let provider = unsafe { &*(*this).of };
-        debug_assert_eq!(unsafe { GetCurrentThreadId() }, provider.told.thread, "a provider was called from a thread that is not its window's");
+        debug_assert_eq!(unsafe { GetCurrentThreadId() }, provider.tree.thread, "a provider was called from a thread that is not its window's");
         provider
     }
 
@@ -1298,7 +1300,7 @@ impl Provider {
             let left = provider.held.get() - 1;
             provider.held.set(left);
             if left == 0 {
-                provider.told.out.borrow_mut().retain(|out| !std::ptr::eq(*out, at));
+                provider.tree.out.borrow_mut().retain(|out| !std::ptr::eq(*out, at));
                 drop(Box::from_raw(at.cast_mut()));
             }
             left
@@ -1317,7 +1319,7 @@ impl Provider {
     }
     unsafe extern "system" fn property(this: *mut Face, property: i32, out: *mut Variant) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(provider.told.automation.variant(&provider.value_of(property)?))) }
+        unsafe { answer(this, out, |provider| Ok(provider.tree.automation.variant(&provider.value_of(property)?))) }
     }
     unsafe extern "system" fn host(this: *mut Face, out: *mut *mut Face) -> i32 {
         // SAFETY: as for `answer`.
@@ -1326,7 +1328,7 @@ impl Provider {
 
     unsafe extern "system" fn navigate(this: *mut Face, direction: i32, out: *mut *mut Face) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(provider.beside(direction)?.map_or(std::ptr::null_mut(), |id| Provider::of(&provider.told, id, PLACE)))) }
+        unsafe { answer(this, out, |provider| Ok(provider.beside(direction)?.map_or(std::ptr::null_mut(), |id| Provider::of(&provider.tree, id, PLACE)))) }
     }
     unsafe extern "system" fn runtime_id(this: *mut Face, out: *mut *mut c_void) -> i32 {
         // SAFETY: as for `answer`.
@@ -1348,7 +1350,7 @@ impl Provider {
     }
     unsafe extern "system" fn root(this: *mut Face, out: *mut *mut Face) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(Provider::of(&provider.told, 0, WINDOW))) }
+        unsafe { answer(this, out, |provider| Ok(Provider::of(&provider.tree, 0, WINDOW))) }
     }
 
     unsafe extern "system" fn at_point(this: *mut Face, x: f64, y: f64, out: *mut *mut Face) -> i32 {
@@ -1364,7 +1366,7 @@ impl Provider {
     /// or not.
     unsafe extern "system" fn bring(this: *mut Face) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, &mut (), |provider| provider.thing(|_| ()).and_then(|()| provider.told.ask(Ask::Show(provider.id)))) }
+        unsafe { answer(this, &mut (), |provider| provider.thing(|_| ()).and_then(|()| provider.tree.ask(Ask::Show(provider.id)))) }
     }
     /// `Invoke`: a button, menu row, heading; or a check box, which toggles.
     unsafe extern "system" fn press(this: *mut Face) -> i32 {
@@ -1374,7 +1376,7 @@ impl Provider {
     /// Toggle, selection or expand state: on (1) or off (0).
     unsafe extern "system" fn on(this: *mut Face, out: *mut i32) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.thing(|said| (said.on == Some(true)) as i32)) }
+        unsafe { answer(this, out, |provider| provider.thing(|node| (node.on == Some(true)) as i32)) }
     }
     /// Selects it alone (see `pick_alone`).
     unsafe extern "system" fn pick(this: *mut Face) -> i32 {
@@ -1393,7 +1395,7 @@ impl Provider {
     /// Its selection container: a tree item's tree. (Not told for anything else.)
     unsafe extern "system" fn among(this: *mut Face, out: *mut *mut Face) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.tree()) }
+        unsafe { answer(this, out, |provider| provider.item_tree()) }
     }
     /// Expands and collapses it (see `open_to`).
     unsafe extern "system" fn unfold(this: *mut Face) -> i32 {
@@ -1407,7 +1409,7 @@ impl Provider {
     /// Expanded (1) or collapsed (0); a tree item with no children is a leaf (3).
     unsafe extern "system" fn unfolded(this: *mut Face, out: *mut i32) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.thing(|said| said.unfolded().map_or(3, |open| open as i32))) }
+        unsafe { answer(this, out, |provider| provider.thing(|node| node.unfolded().map_or(3, |open| open as i32))) }
     }
     /// A tree's selected items, among those told.
     unsafe extern "system" fn picked_items(this: *mut Face, out: *mut *mut c_void) -> i32 {
@@ -1417,7 +1419,7 @@ impl Provider {
     /// Whether a tree allows multiple selection.
     unsafe extern "system" fn many(this: *mut Face, out: *mut i32) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.thing(|said| (said.on == Some(true)) as i32)) }
+        unsafe { answer(this, out, |provider| provider.thing(|node| (node.on == Some(true)) as i32)) }
     }
     /// Whether selection is required: never.
     unsafe extern "system" fn required(this: *mut Face, out: *mut i32) -> i32 {
@@ -1432,17 +1434,17 @@ impl Provider {
         unsafe {
             let len = (0..).take_while(|at| !text.is_null() && *text.add(*at) != 0).count();
             let text = String::from_utf16_lossy(std::slice::from_raw_parts(if len == 0 { std::ptr::dangling() } else { text }, len));
-            answer(this, &mut (), |provider| if provider.thing(|said| said.role)? == Role::Select { Err(NOT_DONE) } else { provider.ask(Ask::Type(provider.id, text)) })
+            answer(this, &mut (), |provider| if provider.thing(|node| node.role)? == Role::ComboBox { Err(NOT_DONE) } else { provider.ask(Ask::Type(provider.id, text)) })
         }
     }
     unsafe extern "system" fn typed(this: *mut Face, out: *mut Text) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(provider.told.automation.text(&provider.thing(|said| said.value.clone())?))) }
+        unsafe { answer(this, out, |provider| Ok(provider.tree.automation.text(&provider.thing(|node| node.value.clone())?))) }
     }
     /// Read-only: what is disabled, and progress bars.
     unsafe extern "system" fn read_only(this: *mut Face, out: *mut i32) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.thing(|said| (!said.usable || matches!(said.role, Role::Progress | Role::Select)) as i32)) }
+        unsafe { answer(this, out, |provider| provider.thing(|node| (!node.enabled || matches!(node.role, Role::Progress | Role::ComboBox)) as i32)) }
     }
 
     unsafe extern "system" fn slide(this: *mut Face, to: f64) -> i32 {
@@ -1452,12 +1454,12 @@ impl Provider {
     /// The value (`WHICH` 0), minimum (1) or maximum (2).
     unsafe extern "system" fn amount<const WHICH: usize>(this: *mut Face, out: *mut f64) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.thing(|said| said.amount.unwrap_or_default()[WHICH] as f64)) }
+        unsafe { answer(this, out, |provider| provider.thing(|node| node.value_range.unwrap_or_default()[WHICH] as f64)) }
     }
     /// The small change, as the part says (0 for what does not step).
     unsafe extern "system" fn step(this: *mut Face, out: *mut f64) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.thing(|said| said.step as f64)) }
+        unsafe { answer(this, out, |provider| provider.thing(|node| node.step as f64)) }
     }
 
     /// A table's cell at a row and column, from 0. Nothing for a row out of view (a long table
@@ -1470,7 +1472,7 @@ impl Provider {
     /// column (1), from 0.
     unsafe extern "system" fn grid_number<const WHICH: usize>(this: *mut Face, out: *mut i32) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.thing(|said| said.grid.unwrap_or_default()[WHICH] as i32)) }
+        unsafe { answer(this, out, |provider| provider.thing(|node| node.grid.unwrap_or_default()[WHICH] as i32)) }
     }
     /// Row or column span: 1.
     unsafe extern "system" fn one(this: *mut Face, out: *mut i32) -> i32 {
@@ -1480,7 +1482,7 @@ impl Provider {
     /// A cell's table.
     unsafe extern "system" fn grid_of(this: *mut Face, out: *mut *mut Face) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(provider.in_table(|_, table| Some(table))?.map_or(std::ptr::null_mut(), |id| Provider::of(&provider.told, id, THING)))) }
+        unsafe { answer(this, out, |provider| Ok(provider.in_table(|_, table| Some(table))?.map_or(std::ptr::null_mut(), |id| Provider::of(&provider.tree, id, THING)))) }
     }
     /// The column headings: a table's, in order; a cell's own.
     unsafe extern "system" fn headings(this: *mut Face, out: *mut *mut c_void) -> i32 {
@@ -1517,11 +1519,11 @@ impl Provider {
     /// `RangeFromPoint`: the caret. (Character positions are not told.)
     unsafe extern "system" fn at_spot(this: *mut Face, _spot: Spot, out: *mut *mut Stretch) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(Stretch::made(&provider.told, provider.id, [provider.selected()?[1]; 2]))) }
+        unsafe { answer(this, out, |provider| Ok(Stretch::made(&provider.tree, provider.id, [provider.selected()?[1]; 2]))) }
     }
     unsafe extern "system" fn all_text(this: *mut Face, out: *mut *mut Stretch) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(Stretch::made(&provider.told, provider.id, [0, provider.length()?]))) }
+        unsafe { answer(this, out, |provider| Ok(Stretch::made(&provider.tree, provider.id, [0, provider.length()?]))) }
     }
     /// Supported text selection: single (1).
     unsafe extern "system" fn selects(this: *mut Face, out: *mut i32) -> i32 {
@@ -1530,7 +1532,7 @@ impl Provider {
     }
 }
 
-impl Told {
+impl WindowTree {
     /// Asks the window to act: it gets a message, and has done it when the message returns.
     fn ask(&self, ask: Ask) -> Result<(), i32> {
         self.asked.replace(Some(ask));
@@ -1595,7 +1597,7 @@ fn gone_by(text: &[char], unit: i32, at: usize, count: i32, wrong: &[[u32; 2]]) 
 struct Stretch {
     table: *const StretchTable,
     held: Cell<u32>,
-    told: Rc<Told>,
+    tree: Rc<WindowTree>,
     id: Id,
     ends: Cell<[u32; 2]>,
 }
@@ -1684,18 +1686,18 @@ impl Stretch {
         ours.then(|| unsafe { &*other })
     }
     /// A range of box `id`'s text, referenced once.
-    fn made(told: &Rc<Told>, id: Id, ends: [u32; 2]) -> *mut Stretch {
-        Box::into_raw(Box::new(Stretch { table: &raw const AS_STRETCH, held: Cell::new(1), told: told.clone(), id, ends: Cell::new(ends) }))
+    fn made(tree: &Rc<WindowTree>, id: Id, ends: [u32; 2]) -> *mut Stretch {
+        Box::into_raw(Box::new(Stretch { table: &raw const AS_STRETCH, held: Cell::new(1), tree: tree.clone(), id, ends: Cell::new(ends) }))
     }
     /// Reads something of its box. (An error once the box or window is gone.)
-    fn of_box<T>(&self, read: impl FnOnce(&Said) -> T) -> Result<T, i32> {
-        let said = self.told.said.borrow();
-        let found = said.iter().find(|said| said.id == self.id && matches!(said.role, Role::TextBox | Role::Secret));
-        found.filter(|_| self.told.hwnd.get() != 0).map(read).ok_or(GONE)
+    fn of_box<T>(&self, read: impl FnOnce(&AccessNode) -> T) -> Result<T, i32> {
+        let nodes = self.tree.nodes.borrow();
+        let found = nodes.iter().find(|node| node.id == self.id && matches!(node.role, Role::TextBox | Role::PasswordBox));
+        found.filter(|_| self.tree.hwnd.get() != 0).map(read).ok_or(GONE)
     }
     /// Its box's text now, in characters; and its two ends inside that.
     fn letters(&self) -> Result<(Vec<char>, [usize; 2]), i32> {
-        let letters: Vec<char> = self.of_box(|said| said.value.chars().collect())?;
+        let letters: Vec<char> = self.of_box(|node| node.value.chars().collect())?;
         let ends = self.ends.get().map(|end| (end as usize).min(letters.len()));
         Ok((letters, ends))
     }
@@ -1746,7 +1748,7 @@ impl Stretch {
     fn read(&self, most: i32) -> Result<Text, i32> {
         let (letters, [from, to]) = self.letters()?;
         let text: String = letters[from..to].iter().take(if most < 0 { usize::MAX } else { most as usize }).collect();
-        Ok(self.told.automation.text(&text))
+        Ok(self.tree.automation.text(&text))
     }
     /// The first occurrence of a text in it (the last, backward), as a range of its own; none
     /// where absent.
@@ -1757,13 +1759,13 @@ impl Stretch {
         let fits = |at: &usize| letters[*at..].iter().map(small).take(sought.len()).eq(sought.iter().copied());
         let mut places = (from..(to + 1).saturating_sub(sought.len())).filter(fits);
         let at = if backward { places.next_back() } else { places.next() };
-        let stretch = |at: usize| Stretch::made(&self.told, self.id, [at as u32, (at + sought.len()) as u32]);
+        let stretch = |at: usize| Stretch::made(&self.tree, self.id, [at as u32, (at + sought.len()) as u32]);
         Ok(at.filter(|_| !sought.is_empty()).map_or(std::ptr::null_mut(), stretch))
     }
     /// A text attribute: read-only, and annotation types (see `marked`); anything else is
     /// unsupported.
     fn looks(&self, look: i32) -> Result<Variant, i32> {
-        let (automation, usable) = (self.told.automation, self.of_box(|said| said.usable)?);
+        let (automation, usable) = (self.tree.automation, self.of_box(|node| node.enabled)?);
         if look == READ_ONLY {
             return Ok(automation.variant(&Value::Truth(!usable)));
         }
@@ -1785,15 +1787,15 @@ impl Stretch {
         unsafe { if marks.is_some() { (automation.mixed)(&mut answer) } else { (automation.unknown)(&mut answer) } };
         Ok(Variant { kind: if answer.is_null() { 0 } else { 13 }, unused: [0; 3], held: Held { object: answer } })
     }
-    /// The misspelled words in its box ([`Said::spelt_wrong`]).
+    /// The misspelled words in its box ([`AccessNode::misspelled`]).
     fn wrong(&self) -> Result<Vec<[u32; 2]>, i32> {
-        self.of_box(|said| said.spelt_wrong.clone())
+        self.of_box(|node| node.misspelled.clone())
     }
     /// Its bounding rectangles as a `SAFEARRAY` (left, top, width, height): its box's, for want
     /// of each letter's; empty while the range is.
     fn on_screen(&self) -> Result<*mut c_void, i32> {
-        let (rect, [from, to]) = (self.of_box(|said| said.rect)?, self.ends.get());
-        let (scale, corner, automation) = (self.told.scale.get(), self.told.corner(), self.told.automation);
+        let (rect, [from, to]) = (self.of_box(|node| node.rect)?, self.ends.get());
+        let (scale, corner, automation) = (self.tree.scale.get(), self.tree.corner(), self.tree.automation);
         let numbers = [corner.x as f32 + rect.x * scale, corner.y as f32 + rect.y * scale, rect.w * scale, rect.h * scale].map(f64::from);
         let count = if from == to { 0 } else { 4 };
         // SAFETY: Windows makes an array of `VT_R8` (5) and copies one in at a time from where
@@ -1806,10 +1808,10 @@ impl Stretch {
     }
     /// Has its box select it: the window is asked. (Not a disabled box, nor a password box.)
     fn selects(&self) -> Result<(), i32> {
-        if !self.of_box(|said| said.usable && said.role == Role::TextBox)? {
+        if !self.of_box(|node| node.enabled && node.role == Role::TextBox)? {
             return Err(NOT_NOW);
         }
-        self.told.ask(Ask::Select(self.id, self.ends.get()))
+        self.tree.ask(Ask::Select(self.id, self.ends.get()))
     }
 
     /// `QueryInterface`: a range, and `IUnknown`.
@@ -1841,7 +1843,7 @@ impl Stretch {
     }
     unsafe extern "system" fn copy(this: *mut Stretch, out: *mut *mut Stretch) -> i32 {
         // SAFETY: as for `about`.
-        unsafe { about(this, out, |stretch| Ok(Stretch::made(&stretch.told, stretch.id, stretch.ends.get()))) }
+        unsafe { about(this, out, |stretch| Ok(Stretch::made(&stretch.tree, stretch.id, stretch.ends.get()))) }
     }
     /// Whether another range covers the same characters of the same box.
     unsafe extern "system" fn same(this: *mut Stretch, other: *mut Stretch, out: *mut i32) -> i32 {
@@ -1887,7 +1889,7 @@ impl Stretch {
     /// `GetEnclosingElement`: its box.
     unsafe extern "system" fn within(this: *mut Stretch, out: *mut *mut Face) -> i32 {
         // SAFETY: as for `about`.
-        unsafe { about(this, out, |stretch| stretch.of_box(|_| ()).map(|_| Provider::of(&stretch.told, stretch.id, THING))) }
+        unsafe { about(this, out, |stretch| stretch.of_box(|_| ()).map(|_| Provider::of(&stretch.tree, stretch.id, THING))) }
     }
     unsafe extern "system" fn text(this: *mut Stretch, most: i32, out: *mut Text) -> i32 {
         // SAFETY: as for `about`.
@@ -1925,7 +1927,7 @@ impl Stretch {
     /// `GetChildren`: none (an empty array).
     unsafe extern "system" fn inside(this: *mut Stretch, out: *mut *mut c_void) -> i32 {
         // SAFETY: as for `about`; Windows makes an empty array.
-        unsafe { about(this, out, |stretch| stretch.of_box(|_| (stretch.told.automation.numbers)(13, 0, 0))) }
+        unsafe { about(this, out, |stretch| stretch.of_box(|_| (stretch.tree.automation.numbers)(13, 0, 0))) }
     }
 }
 
@@ -1982,24 +1984,24 @@ pub(crate) mod tests {
 
     /// An element as the interface tells it, with no state. It lies in a list with the others,
     /// by id.
-    fn thing(id: Id, role: Role, name: &str, within: Option<usize>) -> Said {
+    fn thing(id: Id, role: Role, name: &str, within: Option<usize>) -> AccessNode {
         let rect = rect(id as f32 * 20.0, 10.0, 16.0, 8.0);
-        Said::plain(id, role, name.into(), rect, within)
+        AccessNode::plain(id, role, name.into(), rect, within)
     }
 
     /// A window with a table: 40 rows of which two show (the 11th and 12th), two columns; their
     /// headings, the first sorting the rows; and the two rows, the first selected, each with
     /// its cells. The second row's second cell holds a button and no text.
-    fn ledger() -> Vec<Said> {
-        let cell = |id: Id, name: &str, row: usize, place: [u32; 2]| Said { grid: Some(place), ..thing(id, Role::Cell, name, Some(row)) };
+    fn ledger() -> Vec<AccessNode> {
+        let cell = |id: Id, name: &str, row: usize, place: [u32; 2]| AccessNode { grid: Some(place), ..thing(id, Role::Cell, name, Some(row)) };
         vec![
-            Said { grid: Some([40, 2]), rect: rect(0.0, 0.0, 200.0, 100.0), ..thing(1, Role::Table, "", None) },
-            Said { of: Some([1, 2]), sorted: Some(false), ..thing(2, Role::Heading, "Name", Some(0)) },
-            Said { of: Some([2, 2]), ..thing(3, Role::Heading, "Size", Some(0)) },
-            Said { of: Some([11, 40]), on: Some(true), ..thing(4, Role::TableRow, "a.txt, 3 KB", Some(0)) },
+            AccessNode { grid: Some([40, 2]), rect: rect(0.0, 0.0, 200.0, 100.0), ..thing(1, Role::Table, "", None) },
+            AccessNode { position: Some([1, 2]), sorted: Some(false), ..thing(2, Role::ColumnHeader, "Name", Some(0)) },
+            AccessNode { position: Some([2, 2]), ..thing(3, Role::ColumnHeader, "Size", Some(0)) },
+            AccessNode { position: Some([11, 40]), on: Some(true), ..thing(4, Role::TableRow, "a.txt, 3 KB", Some(0)) },
             cell(5, "a.txt", 3, [10, 0]),
             cell(6, "3 KB", 3, [10, 1]),
-            Said { of: Some([12, 40]), on: Some(false), ..thing(7, Role::TableRow, "b.txt, Open", Some(0)) },
+            AccessNode { position: Some([12, 40]), on: Some(false), ..thing(7, Role::TableRow, "b.txt, Open", Some(0)) },
             cell(8, "b.txt", 6, [11, 0]),
             cell(9, "Open", 6, [11, 1]),
             thing(10, Role::Button, "Open", Some(8)),
@@ -2008,34 +2010,34 @@ pub(crate) mod tests {
 
     /// A window with one element of every kind: a line of text, a group with a button and a
     /// check box, and the rest beside them.
-    fn everything() -> Vec<Said> {
+    fn everything() -> Vec<AccessNode> {
         vec![
             thing(1, Role::Text, "Sound", None),
-            Said { rect: rect(56.0, 6.0, 44.0, 16.0), ..thing(2, Role::Group, "Tools", None) },
+            AccessNode { rect: rect(56.0, 6.0, 44.0, 16.0), ..thing(2, Role::Group, "Tools", None) },
             thing(3, Role::Button, "Save", Some(1)),
-            Said { on: Some(true), ..thing(4, Role::Tick, "Loud", Some(1)) },
-            Said { amount: Some([4.0, 0.0, 10.0]), step: 0.5, ..thing(5, Role::Slider, "", None) },
-            Said { value: "Ada".into(), ..thing(6, Role::TextBox, "Your name", None) },
-            Said { on: Some(false), usable: false, ..thing(7, Role::Choice, "Never", None) },
-            Said { on: Some(false), ..thing(8, Role::Fold, "More", None) },
-            Said { on: Some(true), ..thing(9, Role::MenuItem, "Dark", None) },
-            thing(10, Role::Heading, "Size", None),
-            Said { amount: Some([0.5, 0.0, 1.0]), ..thing(11, Role::Progress, "", None) },
+            AccessNode { on: Some(true), ..thing(4, Role::CheckBox, "Loud", Some(1)) },
+            AccessNode { value_range: Some([4.0, 0.0, 10.0]), step: 0.5, ..thing(5, Role::Slider, "", None) },
+            AccessNode { value: "Ada".into(), ..thing(6, Role::TextBox, "Your name", None) },
+            AccessNode { on: Some(false), enabled: false, ..thing(7, Role::RadioButton, "Never", None) },
+            AccessNode { on: Some(false), ..thing(8, Role::Fold, "More", None) },
+            AccessNode { on: Some(true), ..thing(9, Role::MenuItem, "Dark", None) },
+            thing(10, Role::ColumnHeader, "Size", None),
+            AccessNode { value_range: Some([0.5, 0.0, 1.0]), ..thing(11, Role::Progress, "", None) },
         ]
     }
 
     /// What Windows was told of a missing window (no window is 1), at two pixels per unit,
     /// focused.
-    fn told(things: Vec<Said>) -> Rc<Told> {
+    fn made_tree(things: Vec<AccessNode>) -> Rc<WindowTree> {
         let thread = unsafe { GetCurrentThreadId() };
-        Rc::new(Told {
+        Rc::new(WindowTree {
             automation: automation().unwrap(),
             thread,
             hwnd: Cell::new(1),
             scale: Cell::new(2.0),
             keyboard: Cell::new(true),
             fresh: Cell::new(false),
-            said: RefCell::new(things),
+            nodes: RefCell::new(things),
             turn: Cell::new(0),
             out: RefCell::default(),
             asked: RefCell::default(),
@@ -2075,8 +2077,8 @@ pub(crate) mod tests {
     }
 
     impl Held {
-        fn of(told: &Rc<Told>, id: Id) -> Held {
-            Held(Provider::of(told, id, THING))
+        fn of(tree: &Rc<WindowTree>, id: Id) -> Held {
+            Held(Provider::of(tree, id, THING))
         }
         fn table<T>(&self) -> &'static T {
             unsafe { &*(*self.0).table.cast() }
@@ -2155,9 +2157,9 @@ pub(crate) mod tests {
     /// function is called: invoke, toggle, select or expand; with a text, set value; with an
     /// amount, set range value. Returns what Windows would get.
     pub(crate) fn act(hwnd: HANDLE, name: &str, pattern: i32, text: Option<&str>, amount: Option<f64>) -> i32 {
-        let told = told_of(hwnd).expect("a window that was asked what is in it");
-        let id = told.said.borrow().iter().find(|said| said.name == name).map(|said| said.id).expect("a thing of that name");
-        let way = Held::of(&told, id).way(pattern).expect("a thing that does this");
+        let tree = window_tree(hwnd).expect("a window that was asked what is in it");
+        let id = tree.nodes.borrow().iter().find(|node| node.name == name).map(|node| node.id).expect("a thing of that name");
+        let way = Held::of(&tree, id).way(pattern).expect("a thing that does this");
         let text = text.map(|text| text.encode_utf16().chain([0]).collect::<Vec<u16>>());
         unsafe {
             match (&text, amount) {
@@ -2171,9 +2173,9 @@ pub(crate) mod tests {
     /// For the window tests: has the text box of a name select between two characters as
     /// Windows would, through a text range. Returns what Windows would get.
     pub(crate) fn select(hwnd: HANDLE, name: &str, ends: [u32; 2]) -> i32 {
-        let told = told_of(hwnd).expect("a window that was asked what is in it");
-        let id = told.said.borrow().iter().find(|said| said.name == name).map(|said| said.id).expect("a thing of that name");
-        let stretch = Kept(Stretch::made(&told, id, ends));
+        let tree = window_tree(hwnd).expect("a window that was asked what is in it");
+        let id = tree.nodes.borrow().iter().find(|node| node.name == name).map(|node| node.id).expect("a thing of that name");
+        let stretch = Kept(Stretch::made(&tree, id, ends));
         unsafe { (stretch.table().select)(stretch.0) }
     }
 
@@ -2190,8 +2192,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_window_is_walked_the_way_windows_walks_it() {
-        let told = told(everything());
-        let window = Held::of(&told, 0);
+        let tree = made_tree(everything());
+        let window = Held::of(&tree, 0);
         // The window: its kind comes from Windows' host provider; it has no parent or siblings;
         // its runtime id is Windows' to make.
         assert_eq!((window.property(CONTROL_TYPE), window.property(NAME)), (Ok(Value::None), Ok(Value::None)));
@@ -2209,20 +2211,20 @@ pub(crate) mod tests {
         assert!(std::ptr::eq(up.provider(), group.provider()) && std::ptr::eq(up.go(UP).unwrap().unwrap().provider(), window.provider()));
         assert_eq!(window.go(LAST).unwrap().unwrap().property(CONTROL_TYPE), Ok(Value::Number(50012)));
         // Each runtime id holds the id and role (the button is role 1).
-        assert_eq!((Held::of(&told, 3).runtime_id(), Held::of(&told, 0x1_0000_0005).runtime_id()), (vec![3, 3, 0, 1], vec![3, 5, 1, 0]));
+        assert_eq!((Held::of(&tree, 3).runtime_id(), Held::of(&tree, 0x1_0000_0005).runtime_id()), (vec![3, 3, 0, 1], vec![3, 5, 1, 0]));
         drop((window, group, last, up));
-        assert!(told.out.borrow().is_empty() && Rc::strong_count(&told) == 1, "every provider was freed when the last let go of it");
+        assert!(tree.out.borrow().is_empty() && Rc::strong_count(&tree) == 1, "every provider was freed when the last let go of it");
     }
 
     #[test]
     fn each_kind_of_thing_is_what_windows_calls_it_and_does_what_it_can() {
         // A link is a hyperlink: invokable and focusable.
-        let linked = told(vec![thing(1, Role::Link, "Read more", None)]);
+        let linked = made_tree(vec![thing(1, Role::Link, "Read more", None)]);
         let link = Held::of(&linked, 1);
         assert_eq!((link.property(CONTROL_TYPE), link.way(TO_PRESS).is_some(), link.way(TO_TICK).is_some()), (Ok(Value::Number(50005)), true, false));
         assert_eq!((link.property(TAKES_KEYBOARD), link.name()), (Ok(Value::Truth(true)), "Read more".to_string()));
         drop(link);
-        let told = told(everything());
+        let tree = made_tree(everything());
         // Control type, patterns, and focusable.
         let expected = [
             (1, 50020, vec![], false),
@@ -2238,24 +2240,24 @@ pub(crate) mod tests {
             (11, 50012, vec![TO_SLIDE], false),
         ];
         for (id, control, ways, keys) in expected {
-            let thing = Held::of(&told, id);
+            let thing = Held::of(&tree, id);
             let has: Vec<i32> = [TO_PRESS, TO_TYPE, TO_SLIDE, TO_FOLD, TO_PICK, TO_TICK].into_iter().filter(|pattern| thing.way(*pattern).is_some()).collect();
             assert_eq!((thing.property(CONTROL_TYPE), has, thing.property(TAKES_KEYBOARD)), (Ok(Value::Number(control)), ways, Ok(Value::Truth(keys))), "the thing {id}");
             assert_eq!((thing.property(ENABLED), thing.property(AUTOMATION_ID)), (Ok(Value::Truth(id != 7)), Ok(Value::Text(format!("{id:016x}")))));
         }
         // States, read through the pattern faces.
         let on = |id: Id, pattern: i32, state: fn(&Held) -> Get<i32>| {
-            let way = Held::of(&told, id).way(pattern).unwrap();
+            let way = Held::of(&tree, id).way(pattern).unwrap();
             way.get(state(&way))
         };
         assert_eq!(on(4, TO_TICK, |way| way.table::<TickTable>().ticked), Ok(1));
         assert_eq!(on(9, TO_TICK, |way| way.table::<TickTable>().ticked), Ok(1));
         assert_eq!(on(7, TO_PICK, |way| way.table::<ChoiceTable>().picked), Ok(0));
         assert_eq!(on(8, TO_FOLD, |way| way.table::<FoldTable>().unfolded), Ok(0));
-        let typed = Held::of(&told, 6).way(TO_TYPE).unwrap();
+        let typed = Held::of(&tree, 6).way(TO_TYPE).unwrap();
         assert_eq!((typed.get(typed.table::<TypedTable>().value).map(read_text), typed.get(typed.table::<TypedTable>().read_only)), (Ok("Ada".into()), Ok(0)));
         let amounts = |id: Id| {
-            let (slide, table) = (Held::of(&told, id).way(TO_SLIDE).unwrap(), &AS_SLIDE);
+            let (slide, table) = (Held::of(&tree, id).way(TO_SLIDE).unwrap(), &AS_SLIDE);
             [table.value, table.least, table.most, table.small_step, table.large_step]
                 .map(|get| slide.get(get).unwrap())
                 .into_iter()
@@ -2264,14 +2266,14 @@ pub(crate) mod tests {
         };
         assert_eq!((amounts(5), amounts(11)), (vec![4.0, 0.0, 10.0, 0.5, 0.5, 0.0], vec![0.5, 0.0, 1.0, 0.0, 0.0, 1.0]));
         // A menu row neither checked nor unchecked is only invoked.
-        told.said.borrow_mut()[8].on = None;
-        assert!(Held::of(&told, 9).way(TO_TICK).is_none() && Held::of(&told, 9).way(TO_PRESS).is_some());
+        tree.nodes.borrow_mut()[8].on = None;
+        assert!(Held::of(&tree, 9).way(TO_TICK).is_none() && Held::of(&tree, 9).way(TO_PRESS).is_some());
     }
 
     #[test]
     fn a_provider_says_where_its_thing_is_and_the_window_what_is_at_a_place() {
-        let told = told(everything());
-        let (window, button) = (Held::of(&told, 0).query(WINDOW).unwrap(), Held::of(&told, 3).query(PLACE).unwrap());
+        let tree = made_tree(everything());
+        let (window, button) = (Held::of(&tree, 0).query(WINDOW).unwrap(), Held::of(&tree, 3).query(PLACE).unwrap());
         // In pixels from the window corner (for a missing window, the screen's): the button
         // lies at 60, 10 and is 16 by 8 units.
         assert_eq!(button.get(button.table::<PlaceTable>().bounds), Ok([120.0, 20.0, 32.0, 16.0]));
@@ -2285,21 +2287,21 @@ pub(crate) mod tests {
         assert_eq!((at(130.0, 30.0), at(114.0, 14.0), at(900.0, 900.0), at(-5.0, 30.0)), (3, 2, 0, 0));
         // Focus: nothing, then the slider.
         let focused = || window.get(window.table::<WindowTable>().focused).map(|on| (!on.is_null()).then(|| Held(on).provider().id));
-        assert_eq!((focused(), Held::of(&told, 5).property(HAS_KEYBOARD)), (Ok(None), Ok(Value::Truth(false))));
-        told.said.borrow_mut()[4].focused = true;
-        assert_eq!((focused(), Held::of(&told, 5).property(HAS_KEYBOARD)), (Ok(Some(5)), Ok(Value::Truth(true))));
+        assert_eq!((focused(), Held::of(&tree, 5).property(HAS_KEYBOARD)), (Ok(None), Ok(Value::Truth(false))));
+        tree.nodes.borrow_mut()[4].focused = true;
+        assert_eq!((focused(), Held::of(&tree, 5).property(HAS_KEYBOARD)), (Ok(Some(5)), Ok(Value::Truth(true))));
         // (While another window has focus, the focused element is still reported.)
-        told.keyboard.set(false);
-        assert_eq!((focused(), Held::of(&told, 5).property(HAS_KEYBOARD)), (Ok(Some(5)), Ok(Value::Truth(false))));
+        tree.keyboard.set(false);
+        assert_eq!((focused(), Held::of(&tree, 5).property(HAS_KEYBOARD)), (Ok(Some(5)), Ok(Value::Truth(false))));
         // Elements and the window are fragments; only the window answers hit tests.
         assert_eq!((button.query(WINDOW).err(), window.query(PLACE).is_ok(), button.get(button.table::<PlaceTable>().root).map(|root| Held(root).provider().id)), (Some(NO_INTERFACE), true, Ok(0)));
     }
 
     #[test]
     fn one_provider_stands_for_a_thing_and_is_counted() {
-        let told = told(everything());
-        let (first, again) = (Held::of(&told, 3), Held::of(&told, 3));
-        assert!(std::ptr::eq(first.provider(), again.provider()) && first.provider().held.get() == 2 && told.out.borrow().len() == 1);
+        let tree = made_tree(everything());
+        let (first, again) = (Held::of(&tree, 3), Held::of(&tree, 3));
+        assert!(std::ptr::eq(first.provider(), again.provider()) && first.provider().held.get() == 2 && tree.out.borrow().len() == 1);
         // Asked for `IUnknown` through any face, it returns the same one; and it refuses an
         // unknown IID.
         let unknown = |face: &Held| face.query(FACES).unwrap().0;
@@ -2311,18 +2313,18 @@ pub(crate) mod tests {
         drop((again, press));
         assert_eq!((first.provider().held.get(), unsafe { (first.table::<Unknown>().hold)(first.0) }, unsafe { (first.table::<Unknown>().release)(first.0) }), (1, 2, 1));
         drop(first);
-        assert!(told.out.borrow().is_empty());
+        assert!(tree.out.borrow().is_empty());
     }
 
     #[test]
     fn a_provider_whose_thing_or_window_is_gone_says_so() {
-        let told = told(everything());
-        let (window, button, tick) = (Held::of(&told, 0), Held::of(&told, 3), Held::of(&told, 4));
+        let tree = made_tree(everything());
+        let (window, button, tick) = (Held::of(&tree, 0), Held::of(&tree, 3), Held::of(&tree, 4));
         let (press, place) = (button.way(TO_PRESS).unwrap(), button.query(PLACE).unwrap());
         assert_eq!(button.name(), "Save");
         // The app shows another page: the button's id is now a slider's, and the check box is
         // gone.
-        *told.said.borrow_mut() = vec![thing(1, Role::Text, "Another page", None), Said { amount: Some([1.0, 0.0, 2.0]), ..thing(3, Role::Slider, "", None) }];
+        *tree.nodes.borrow_mut() = vec![thing(1, Role::Text, "Another page", None), AccessNode { value_range: Some([1.0, 0.0, 2.0]), ..thing(3, Role::Slider, "", None) }];
         for gone in [&button, &tick] {
             assert_eq!((gone.property(NAME), gone.go(UP).err(), gone.go(FIRST).err()), (Err(GONE), Some(GONE), Some(GONE)));
         }
@@ -2331,80 +2333,80 @@ pub(crate) mod tests {
             (GONE, Err(GONE), GONE)
         );
         // Its runtime id stays the same; what is there now is another element.
-        let slider = Held::of(&told, 3);
+        let slider = Held::of(&tree, 3);
         assert!(!std::ptr::eq(slider.provider(), button.provider()));
         assert_eq!((button.runtime_id(), slider.runtime_id(), slider.property(CONTROL_TYPE)), (vec![3, 3, 0, Role::Button as i32], vec![3, 3, 0, Role::Slider as i32], Ok(Value::Number(50015))));
         assert_eq!(window.names_inside(), ["Another page", ""]);
         // The window is destroyed: whatever is asked, it is gone.
-        told.hwnd.set(0);
+        tree.hwnd.set(0);
         assert_eq!((window.go(FIRST).err(), window.property(NAME), slider.property(NAME)), (Some(GONE), Err(GONE), Err(GONE)));
         let root = window.query(WINDOW).unwrap();
         assert_eq!(root.get(root.table::<WindowTable>().focused).map(|on| on.is_null()), Ok(true));
         let mut out = std::ptr::null_mut();
         assert_eq!((unsafe { (root.table::<WindowTable>().at_point)(root.0, 1.0, 1.0, &mut out) }, out.is_null()), (GONE, true));
         drop((window, button, tick, press, place, slider, root));
-        assert!(told.out.borrow().is_empty() && Rc::strong_count(&told) == 1);
+        assert!(tree.out.borrow().is_empty() && Rc::strong_count(&tree) == 1);
     }
 
     #[test]
     fn what_is_asked_of_a_thing_goes_to_its_window_and_no_further() {
-        let told = told(everything());
+        let tree = made_tree(everything());
         let act = |id: Id, pattern: i32, act: fn(&Held) -> Do| {
-            let way = Held::of(&told, id).way(pattern).unwrap();
+            let way = Held::of(&tree, id).way(pattern).unwrap();
             unsafe { act(&way)(way.0) }
         };
         // The missing window cannot act: nothing done, nothing left asked.
         assert_eq!(act(3, TO_PRESS, |way| way.table::<PressTable>().press), NOT_NOW);
         assert_eq!(act(4, TO_TICK, |way| way.table::<TickTable>().tick), NOT_NOW);
         assert_eq!(act(8, TO_FOLD, |way| way.table::<FoldTable>().unfold), NOT_NOW);
-        assert!(told.asked.borrow().is_none());
+        assert!(tree.asked.borrow().is_none());
         // What is already as asked is left alone, at once.
         assert_eq!(act(8, TO_FOLD, |way| way.table::<FoldTable>().fold), 0);
-        told.said.borrow_mut()[6].on = Some(true);
+        tree.nodes.borrow_mut()[6].on = Some(true);
         assert_eq!(act(7, TO_PICK, |way| way.table::<ChoiceTable>().pick), 0);
         // One of a single-selection set cannot be removed; an unselected one needs no removing.
         assert_eq!(act(7, TO_PICK, |way| way.table::<ChoiceTable>().remove), NOT_DONE);
-        told.said.borrow_mut()[6].on = Some(false);
+        tree.nodes.borrow_mut()[6].on = Some(false);
         assert_eq!(act(7, TO_PICK, |way| way.table::<ChoiceTable>().remove), 0);
         // Disabled elements do not act (the window is not even asked).
         assert_eq!(act(7, TO_PICK, |way| way.table::<ChoiceTable>().pick), NOT_NOW);
         // A slider is not set past its ends; a progress bar not at all.
         let slide = |id: Id, to: f64| {
-            let way = Held::of(&told, id).way(TO_SLIDE).unwrap();
+            let way = Held::of(&tree, id).way(TO_SLIDE).unwrap();
             unsafe { (way.table::<SlideTable>().put)(way.0, to) }
         };
         assert_eq!((slide(5, 11.0), slide(5, -1.0), slide(5, 4.0), slide(5, 6.0), slide(11, 0.7)), (NO_SUCH, NO_SUCH, 0, NOT_NOW, NOT_DONE));
-        let typed = Held::of(&told, 6).way(TO_TYPE).unwrap();
+        let typed = Held::of(&tree, 6).way(TO_TYPE).unwrap();
         let text: Vec<u16> = "Grace".encode_utf16().chain([0]).collect();
         assert_eq!(unsafe { ((typed.table::<TypedTable>().put)(typed.0, text.as_ptr()), (typed.table::<TypedTable>().put)(typed.0, std::ptr::null())) }, (NOT_NOW, NOT_NOW));
     }
 
     #[test]
     fn the_list_is_kept_for_as_long_as_anybody_wants_it() {
-        let told = told(everything());
-        let mut reading = Reading { windows: vec![told.clone()], ours: true };
+        let tree = made_tree(everything());
+        let mut reading = Reading { windows: vec![tree.clone()], ours: true };
         // A provider is held: the list is wanted, and Windows is not asked.
-        let held = Held::of(&told, 3);
+        let held = Held::of(&tree, 3);
         assert!(!reading.left(|| panic!("Windows is not asked while a provider is held")));
         drop(held);
         // None held, but Windows says a client listens.
-        assert!(!reading.left(|| true) && reading.ours && !told.said.borrow().is_empty());
+        assert!(!reading.left(|| true) && reading.ours && !tree.nodes.borrow().is_empty());
         // None held and nobody listens: the list and its copy go. Reported once.
-        assert!(reading.left(|| false) && !reading.ours && told.said.borrow().is_empty() && told.fresh.get());
+        assert!(reading.left(|| false) && !reading.ours && tree.nodes.borrow().is_empty() && tree.fresh.get());
         assert!(!reading.left(|| panic!("a list that is not kept for Windows is not Windows' to stop")));
     }
 
     #[test]
     fn what_only_some_things_have_is_told_of_those() {
-        let told = told(vec![
-            Said { keys: "Ctrl+O".into(), ..thing(1, Role::MenuItem, "Open", None) },
-            Said { of: Some([2, 5]), on: Some(true), ..thing(2, Role::Tab, "Two", None) },
-            thing(3, Role::Secret, "Password", None),
+        let tree = made_tree(vec![
+            AccessNode { shortcut: "Ctrl+O".into(), ..thing(1, Role::MenuItem, "Open", None) },
+            AccessNode { position: Some([2, 5]), on: Some(true), ..thing(2, Role::Tab, "Two", None) },
+            thing(3, Role::PasswordBox, "Password", None),
             thing(4, Role::Dialog, "Sure?", None),
-            Said { on: Some(true), ..thing(5, Role::Switch, "Loud", None) },
-            Said { on: Some(false), value: "Roomy".into(), ..thing(6, Role::Select, "", None) },
+            AccessNode { on: Some(true), ..thing(5, Role::Switch, "Loud", None) },
+            AccessNode { on: Some(false), value: "Roomy".into(), ..thing(6, Role::ComboBox, "", None) },
         ]);
-        let of = |id: Id, property: i32| Held::of(&told, id).property(property);
+        let of = |id: Id, property: i32| Held::of(&tree, id).property(property);
         // A menu row's accelerator; a tab's position in set; a password box; a dialog. And
         // nothing for elements without these.
         assert_eq!((of(1, KEYS), of(2, KEYS)), (Ok(Value::Text("Ctrl+O".into())), Ok(Value::None)));
@@ -2415,7 +2417,7 @@ pub(crate) mod tests {
         assert_eq!([1, 2, 3, 4, 5, 6].map(|id| of(id, CONTROL_TYPE)), [50011, 50019, 50004, 50033, 50000, 50003].map(|kind| Ok(Value::Number(kind))));
         // A tab is selectable, a switch toggles, a combo box expands and reports its choice,
         // read-only.
-        let does = |id: Id, pattern: i32| Held::of(&told, id).way(pattern).is_some();
+        let does = |id: Id, pattern: i32| Held::of(&tree, id).way(pattern).is_some();
         assert!(does(2, TO_PICK) && does(5, TO_TICK) && does(6, TO_FOLD) && does(6, TO_TYPE) && !does(4, TO_PRESS) && !does(5, TO_PICK));
     }
 
@@ -2481,24 +2483,24 @@ pub(crate) mod tests {
     }
 
     /// A text box with two lines, its second word selected backward.
-    fn notes() -> Said {
-        Said { value: "one two\nthree".into(), caret: Some([7, 4]), focused: true, ..thing(6, Role::TextBox, "Notes", None) }
+    fn notes() -> AccessNode {
+        AccessNode { value: "one two\nthree".into(), caret: Some([7, 4]), focused: true, ..thing(6, Role::TextBox, "Notes", None) }
     }
 
     #[test]
     fn what_is_out_of_view_is_told_as_off_the_screen_and_can_be_brought_into_view() {
         let mut things = everything();
-        things[4].shown = false;
-        let told = told(things);
+        things[4].visible = false;
+        let tree = made_tree(things);
         // The slider is scrolled out of view, the button is not.
-        assert_eq!((Held::of(&told, 5).property(OFF_THE_SCREEN), Held::of(&told, 3).property(OFF_THE_SCREEN)), (Ok(Value::Truth(true)), Ok(Value::Truth(false))));
+        assert_eq!((Held::of(&tree, 5).property(OFF_THE_SCREEN), Held::of(&tree, 3).property(OFF_THE_SCREEN)), (Ok(Value::Truth(true)), Ok(Value::Truth(false))));
         // Anything can be scrolled into view, slider and text alike: the window is asked, which
         // here is missing, so "not now".
         for id in [5, 1] {
-            let way = Held::of(&told, id).way(10017).expect("anything is scrolled into view");
+            let way = Held::of(&tree, id).way(10017).expect("anything is scrolled into view");
             assert_eq!(unsafe { (way.table::<ScrollItemTable>().show)(way.0) }, NOT_NOW);
         }
-        told.hwnd.set(0);
+        tree.hwnd.set(0);
     }
 
     #[test]
@@ -2515,9 +2517,9 @@ pub(crate) mod tests {
         let starts_of = (0..=text.len()).filter(|at| starts(&text, 1, *at, &wrong)).collect::<Vec<_>>();
         assert_eq!(starts_of, [0, 4, 9, 14, 19, 22]);
         // And so a screen reader is told, through a text box's range.
-        let told = told(vec![Said { value: text.iter().collect(), spelt_wrong: wrong.to_vec(), ..thing(6, Role::TextBox, "Letter", None) }]);
+        let tree = made_tree(vec![AccessNode { value: text.iter().collect(), misspelled: wrong.to_vec(), ..thing(6, Role::TextBox, "Letter", None) }]);
         let look = |ends: [u32; 2]| {
-            let (stretch, mut look) = (Kept(Stretch::made(&told, 6, ends)), std::mem::MaybeUninit::<Variant>::zeroed());
+            let (stretch, mut look) = (Kept(Stretch::made(&tree, 6, ends)), std::mem::MaybeUninit::<Variant>::zeroed());
             assert_eq!(unsafe { (stretch.table().look)(stretch.0, MARKS, look.as_mut_ptr()) }, 0);
             // (An array, read and freed; or the mixed value, released, returned as minus its
             // type.)
@@ -2532,7 +2534,7 @@ pub(crate) mod tests {
             kinds[..count].to_vec()
         };
         assert_eq!([look([5, 8]), look([0, 3]), look([2, 6])], [vec![SPELT_WRONG], vec![], vec![-13]], "marked, not marked, some of each");
-        told.hwnd.set(0);
+        tree.hwnd.set(0);
     }
 
     #[test]
@@ -2554,10 +2556,10 @@ pub(crate) mod tests {
     #[test]
     fn a_text_box_is_read_piece_by_piece() {
         const TO_READ: i32 = 10014;
-        let told = told(vec![thing(1, Role::Button, "Save", None), notes()]);
+        let tree = made_tree(vec![thing(1, Role::Button, "Save", None), notes()]);
         // Only text boxes have the text pattern.
-        assert!(Held::of(&told, 1).way(TO_READ).is_none());
-        let text = Held::of(&told, 6).way(TO_READ).expect("a text box is read piece by piece");
+        assert!(Held::of(&tree, 1).way(TO_READ).is_none());
+        let text = Held::of(&tree, 6).way(TO_READ).expect("a text box is read piece by piece");
         let table = text.table::<TextTable>();
         assert_eq!(text.get(table.selects), Ok(1));
         // All its text; and its selection, as an array of one range.
@@ -2577,7 +2579,7 @@ pub(crate) mod tests {
         assert_eq!([piece.gone(2, 1), piece.gone(0, 1), piece.gone(3, 5), piece.gone(3, -1)], [(1, "two\n".into()), (1, "w".into()), (1, "three".into()), (-1, "one two\n".into())]);
         assert_eq!((piece.gone(2, 0), selected.text()), ((0, "one two\n".into()), Ok("two".into())), "a copy goes its own way");
         // An empty range moves as a caret: by positions, to the very end.
-        let cursor = Kept(Stretch::made(&told, 6, [0, 0]));
+        let cursor = Kept(Stretch::made(&tree, 6, [0, 0]));
         assert_eq!([cursor.gone(0, 2), cursor.gone(2, 1), cursor.gone(3, 9)], [(2, String::new()), (1, String::new()), (2, String::new())]);
         assert_eq!(cursor.ends(), [13, 13]);
 
@@ -2619,13 +2621,13 @@ pub(crate) mod tests {
         assert_eq!(unsafe { (selected.table().select)(selected.0) }, NOT_NOW);
 
         // The text changes under a range: it reads what is there now, within its ends.
-        told.said.borrow_mut()[1].value = "one".into();
+        tree.nodes.borrow_mut()[1].value = "one".into();
         assert_eq!((all.text(), selected.text(), all.ends()), (Ok("one".into()), Ok(String::new()), [0, 13]));
         // Once the box is gone, every range of it says so.
-        told.said.borrow_mut().truncate(1);
+        tree.nodes.borrow_mut().truncate(1);
         assert_eq!((all.text(), unsafe { (all.table().widen)(all.0, 0) }), (Err(GONE), GONE));
         drop((text, all, selected, piece, cursor, whole));
-        assert!(told.out.borrow().is_empty() && Rc::strong_count(&told) == 1, "every stretch was freed when the last let go of it");
+        assert!(tree.out.borrow().is_empty() && Rc::strong_count(&tree) == 1, "every stretch was freed when the last let go of it");
     }
 
     /// Held by a test in which Windows' own UI Automation client asks, while it does: one
@@ -2652,15 +2654,15 @@ pub(crate) mod tests {
         const TO_PLACE: i32 = 10007;
         const UNDER_HEADINGS: i32 = 10012;
         const UNDER_A_HEADING: i32 = 10013;
-        let told = told(ledger());
-        let (table, size) = (Held::of(&told, 1), Held::of(&told, 3));
+        let tree = made_tree(ledger());
+        let (table, size) = (Held::of(&tree, 1), Held::of(&tree, 3));
         // Control types: table, data items (rows and cells), header item; and their patterns.
-        let kinds = [1, 2, 4, 5, 9, 10].map(|id| Held::of(&told, id).property(CONTROL_TYPE));
+        let kinds = [1, 2, 4, 5, 9, 10].map(|id| Held::of(&tree, id).property(CONTROL_TYPE));
         assert_eq!(kinds, [50036, 50035, 50029, 50029, 50029, 50000].map(|kind| Ok(Value::Number(kind))));
-        let ways = |id: Id| [TO_GO_THROUGH, UNDER_HEADINGS, TO_PLACE, UNDER_A_HEADING, TO_PICK].map(|pattern| Held::of(&told, id).way(pattern).is_some());
+        let ways = |id: Id| [TO_GO_THROUGH, UNDER_HEADINGS, TO_PLACE, UNDER_A_HEADING, TO_PICK].map(|pattern| Held::of(&tree, id).way(pattern).is_some());
         assert_eq!([ways(1), ways(5), ways(4)], [[true, true, false, false, false], [false, false, true, true, false], [false, false, false, false, true]]);
         // A selected row takes focus, and reports selected and its position.
-        let row = Held::of(&told, 4);
+        let row = Held::of(&tree, 4);
         assert_eq!((row.property(TAKES_KEYBOARD), row.property(NTH), row.property(OF_SO_MANY)), (Ok(Value::Truth(true)), Ok(Value::Number(11)), Ok(Value::Number(40))));
         assert_eq!(row.way(TO_PICK).map(|way| way.get(way.table::<ChoiceTable>().picked)), Some(Ok(1)));
         // The table: row and column counts; a cell by row and column. (A cell of a row out of
@@ -2683,7 +2685,7 @@ pub(crate) mod tests {
         assert_eq!(headings(|way| way.table::<HeadedTable>().column_headings, &headed), ["Name", "Size"]);
         assert_eq!((headings(|way| way.table::<HeadedTable>().row_headings, &headed), headed.get(headed.table::<HeadedTable>().by_rows)), (Vec::<String>::new(), Ok(0)));
         // A cell: its row and column, spans of one, its table, its heading.
-        let cell = Held::of(&told, 9);
+        let cell = Held::of(&tree, 9);
         let place = cell.way(TO_PLACE).unwrap();
         let numbers = [
             place.get(place.table::<InGridTable>().row),
@@ -2699,17 +2701,17 @@ pub(crate) mod tests {
         assert_eq!(headings(|way| way.table::<UnderHeadingTable>().row_headings, &under), Vec::<String>::new());
         // The button's parent is the cell, the cell's the row, the row's the table.
         let up = |held: &Held| held.go(UP).unwrap().unwrap().name();
-        let button = Held::of(&told, 10);
-        assert_eq!([up(&button), up(&cell), up(&Held::of(&told, 7))], ["Open", "b.txt, Open", ""]);
+        let button = Held::of(&tree, 10);
+        assert_eq!([up(&button), up(&cell), up(&Held::of(&tree, 7))], ["Open", "b.txt, Open", ""]);
         // The sorted column's heading says its direction, in words and as ARIA.
-        let name = Held::of(&told, 2);
+        let name = Held::of(&tree, 2);
         assert_eq!((name.property(STATUS), name.property(ARIA)), (Ok(Value::Text("sorted ascending".into())), Ok(Value::Text("sort=ascending".into()))));
         assert_eq!((size.property(STATUS), size.property(ARIA)), (Ok(Value::None), Ok(Value::None)));
         // A cell no longer in the table (its row scrolled out) is gone.
-        told.said.borrow_mut().truncate(6);
+        tree.nodes.borrow_mut().truncate(6);
         assert_eq!((place.get(place.table::<InGridTable>().row), item(11, 0)), (Err(GONE), (0, None)));
         drop((table, size, kinds, row, grid, headed, cell, place, in_grid, under, button, name));
-        assert!(told.out.borrow().is_empty() && Rc::strong_count(&told) == 1, "every provider was freed when the last let go of it");
+        assert!(tree.out.borrow().is_empty() && Rc::strong_count(&tree) == 1, "every provider was freed when the last let go of it");
     }
 
     #[test]
@@ -2726,8 +2728,8 @@ pub(crate) mod tests {
         let let_go: [unsafe extern "system" fn(Handle) -> i32; 2] = unsafe { [c"UiaPatternRelease", c"UiaNodeRelease"].map(|name| found(core, name).unwrap()) };
         let _alone = WINDOWS_ASKS.lock().unwrap_or_else(|held| held.into_inner());
         assert!(unsafe { CoInitializeEx(std::ptr::null_mut(), 2) } >= 0);
-        let told = told(ledger());
-        let (face, mut node, mut pattern, mut cell) = (Provider::of(&told, 1, THING), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        let tree = made_tree(ledger());
+        let (face, mut node, mut pattern, mut cell) = (Provider::of(&tree, 1, THING), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
         let property = |node: Handle, property: i32| {
             let mut value = std::mem::MaybeUninit::<Variant>::zeroed();
             assert_eq!(unsafe { value_of(node, property, value.as_mut_ptr()) }, 0);
@@ -2766,8 +2768,8 @@ pub(crate) mod tests {
         let let_go: [unsafe extern "system" fn(Handle) -> i32; 3] = unsafe { [c"UiaTextRangeRelease", c"UiaPatternRelease", c"UiaNodeRelease"].map(|name| found(core, name).unwrap()) };
         let _alone = WINDOWS_ASKS.lock().unwrap_or_else(|held| held.into_inner());
         assert!(unsafe { CoInitializeEx(std::ptr::null_mut(), 2) } >= 0);
-        let told = told(vec![thing(1, Role::Button, "Save", None), notes()]);
-        let (face, mut node, mut pattern, mut stretch, mut went) = (Provider::of(&told, 6, THING), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), [0; 2]);
+        let tree = made_tree(vec![thing(1, Role::Button, "Save", None), notes()]);
+        let (face, mut node, mut pattern, mut stretch, mut went) = (Provider::of(&tree, 6, THING), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), [0; 2]);
         let read = |stretch: Handle| {
             let mut text = std::ptr::null_mut();
             assert_eq!(unsafe { text_of(stretch, -1, &mut text) }, 0);
@@ -2791,8 +2793,8 @@ pub(crate) mod tests {
         // Every range Windows got is freed: only this test and the provider hold what was told.
         // (Windows keeps one reference to a provider it made a node of after the node is
         // released, as with a node alone; from now on that provider says its window is gone.)
-        told.hwnd.set(0);
-        assert_eq!((told.out.borrow().len(), Rc::strong_count(&told)), (1, 2));
+        tree.hwnd.set(0);
+        assert_eq!((tree.out.borrow().len(), Rc::strong_count(&tree)), (1, 2));
     }
 
     #[test]
@@ -2812,10 +2814,10 @@ pub(crate) mod tests {
         let let_go: [unsafe extern "system" fn(Handle) -> i32; 3] = unsafe { [c"UiaTextRangeRelease", c"UiaPatternRelease", c"UiaNodeRelease"].map(|name| found(core, name).unwrap()) };
         let _alone = WINDOWS_ASKS.lock().unwrap_or_else(|held| held.into_inner());
         assert!(unsafe { CoInitializeEx(std::ptr::null_mut(), 2) } >= 0);
-        let letter = Said { value: "the qwrty and zxcvb".into(), spelt_wrong: vec![[4, 9], [14, 19]], ..thing(6, Role::TextBox, "Letter", None) };
-        let told = told(vec![thing(1, Role::Button, "Save", None), Said { shown: false, ..thing(2, Role::Button, "Later", None) }, letter]);
+        let letter = AccessNode { value: "the qwrty and zxcvb".into(), misspelled: vec![[4, 9], [14, 19]], ..thing(6, Role::TextBox, "Letter", None) };
+        let tree = made_tree(vec![thing(1, Role::Button, "Save", None), AccessNode { visible: false, ..thing(2, Role::Button, "Later", None) }, letter]);
         let node = |id: Id| {
-            let (face, mut node) = (Provider::of(&told, id, THING), std::ptr::null_mut());
+            let (face, mut node) = (Provider::of(&tree, id, THING), std::ptr::null_mut());
             assert_eq!(unsafe { node_of(face, &mut node) }, 0);
             unsafe { Provider::release(face) };
             node
@@ -2853,13 +2855,13 @@ pub(crate) mod tests {
             [save, later].into_iter().for_each(|node| _ = let_go[2](node));
             CoUninitialize();
         }
-        told.hwnd.set(0);
+        tree.hwnd.set(0);
     }
 
     #[test]
     fn windows_is_told_what_changed_and_no_more() {
         let was = everything();
-        let changed = |alter: fn(&mut Vec<Said>)| {
+        let changed = |alter: fn(&mut Vec<AccessNode>)| {
             let mut now = everything();
             alter(&mut now);
             changes(&was, true, &now, true)
@@ -2872,8 +2874,8 @@ pub(crate) mod tests {
         assert_eq!(changed(|now| now[5].value = "Ada L".into()), [property(6, VALUE, text("Ada"), text("Ada L")), Change::Text(6)]);
         // In a text box, the caret moving is reported alone.
         assert_eq!(changed(|now| now[5].caret = Some([1, 3])), [Change::Caret(6)]);
-        assert_eq!(changed(|now| now[4].amount = Some([4.5, 0.0, 10.0])), [property(5, AMOUNT, Value::Real(4.0), Value::Real(4.5))]);
-        assert_eq!(changed(|now| now[6].usable = true), [property(7, ENABLED, Value::Truth(false), Value::Truth(true))]);
+        assert_eq!(changed(|now| now[4].value_range = Some([4.5, 0.0, 10.0])), [property(5, AMOUNT, Value::Real(4.0), Value::Real(4.5))]);
+        assert_eq!(changed(|now| now[6].enabled = true), [property(7, ENABLED, Value::Truth(false), Value::Truth(true))]);
         // State, as its role has it: toggled, expanded, selected.
         assert_eq!(changed(|now| now[3].on = Some(false)), [property(4, TICKED, Value::Number(1), Value::Number(0))]);
         assert_eq!(changed(|now| now[8].on = Some(false)), [property(9, TICKED, Value::Number(1), Value::Number(0))]);
@@ -2888,7 +2890,7 @@ pub(crate) mod tests {
         assert_eq!(changed(|now| _ = now.remove(3)), [Change::Children(2)]);
         assert_eq!(changed(|now| now.swap(2, 3)), [Change::Children(2)]);
         assert_eq!(changed(|now| now.truncate(1)), [Change::Children(0)]);
-        let grouped = |now: &mut Vec<Said>| now.extend([thing(12, Role::Group, "More tools", None), thing(13, Role::Button, "New", Some(11))]);
+        let grouped = |now: &mut Vec<AccessNode>| now.extend([thing(12, Role::Group, "More tools", None), thing(13, Role::Button, "New", Some(11))]);
         assert_eq!(changed(grouped), [Change::Children(0)]);
         // The rows come to be sorted by a heading, or reversed; a table gets more rows or fewer
         // columns.
@@ -2904,12 +2906,12 @@ pub(crate) mod tests {
         let counts = [property(1, ROW_COUNT, Value::Number(40), Value::Number(41)), property(1, COLUMN_COUNT, Value::Number(2), Value::Number(1))];
         assert_eq!(changes(&ledger(), true, &grown, true), counts);
         // Another role under an existing id is another element.
-        assert_eq!(changed(|now| (now[2].role, now[2].name) = (Role::Tick, "Other".into())), [Change::Children(2)]);
+        assert_eq!(changed(|now| (now[2].role, now[2].name) = (Role::CheckBox, "Other".into())), [Change::Children(2)]);
         // Focus goes to an element, on to another, and off all.
         assert_eq!(changed(|now| now[2].focused = true), [Change::Focus(3)]);
         let mut on_button = everything();
         on_button[2].focused = true;
-        let then = |keyboard: [bool; 2], alter: fn(&mut Vec<Said>)| {
+        let then = |keyboard: [bool; 2], alter: fn(&mut Vec<AccessNode>)| {
             let mut now = on_button.clone();
             alter(&mut now);
             changes(&on_button, keyboard[0], &now, keyboard[1])
@@ -2921,7 +2923,7 @@ pub(crate) mod tests {
         assert_eq!((then([true, false], |_| {}), then([false, true], |_| {})), (vec![], vec![Change::Focus(3)]));
         // Property changes are raised before focus.
         assert_eq!(
-            then([true, true], |now| (now[2].focused, now[4].focused, now[4].amount) = (false, true, Some([5.0, 0.0, 10.0]))),
+            then([true, true], |now| (now[2].focused, now[4].focused, now[4].value_range) = (false, true, Some([5.0, 0.0, 10.0]))),
             [property(5, AMOUNT, Value::Real(4.0), Value::Real(5.0)), Change::Focus(5)]
         );
     }
@@ -2936,7 +2938,7 @@ pub(crate) mod tests {
 
     thread_local! {
         /// What was told of the window that hears requests, and what it heard.
-        static HEARD_BY: RefCell<Option<Rc<Told>>> = const { RefCell::new(None) };
+        static HEARD_BY: RefCell<Option<Rc<WindowTree>>> = const { RefCell::new(None) };
         static HEARD: RefCell<Vec<Ask>> = const { RefCell::new(Vec::new()) };
     }
     /// A window that only hears screen-reader requests: takes them, as the interface would, and
@@ -2945,19 +2947,19 @@ pub(crate) mod tests {
         if msg != WM_READER {
             return unsafe { DefWindowProcW(hwnd, msg, w, l) };
         }
-        let asked = HEARD_BY.with_borrow(|told| told.as_ref().and_then(|told| told.asked.take()));
+        let asked = HEARD_BY.with_borrow(|tree| tree.as_ref().and_then(|tree| tree.asked.take()));
         HEARD.with_borrow_mut(|heard| heard.extend(asked));
         0
     }
     /// Such a window, message-only (never shown or active), for what was told: providers ask it
     /// from then on. Ends with `DestroyWindow`.
-    fn hearing(told: &Rc<Told>) -> HANDLE {
+    fn hearing(tree: &Rc<WindowTree>) -> HANDLE {
         let class: Vec<u16> = "STATIC".encode_utf16().chain([0]).collect();
         let hwnd = unsafe { CreateWindowExW(0, class.as_ptr(), std::ptr::null(), 0, 0, 0, 0, 0, -3, 0, 0, std::ptr::null_mut()) };
         assert_ne!(hwnd, 0);
         unsafe { SetWindowLongPtrW(hwnd, -4, hears as *const () as isize) };
-        told.hwnd.set(hwnd);
-        HEARD_BY.set(Some(told.clone()));
+        tree.hwnd.set(hwnd);
+        HEARD_BY.set(Some(tree.clone()));
         HEARD.with_borrow_mut(Vec::clear);
         hwnd
     }
@@ -2978,7 +2980,7 @@ pub(crate) mod tests {
             return unsafe { DefWindowProcW(hwnd, msg, w, l) };
         }
         unsafe { Provider::release(LETTING_GO.take()) };
-        LEFT.set(HEARD_BY.with_borrow(|told| told.as_ref().map_or(0, |told| told.out.borrow().len())));
+        LEFT.set(HEARD_BY.with_borrow(|tree| tree.as_ref().map_or(0, |tree| tree.out.borrow().len())));
         0
     }
 
@@ -2987,16 +2989,16 @@ pub(crate) mod tests {
         // A client invokes a button through its provider, holding nothing else; the window
         // closes meanwhile and releases the provider. It lives until it has answered, and goes
         // after.
-        let told = told(vec![thing(3, Role::Button, "Close", None)]);
-        let window = hearing(&told);
+        let tree = made_tree(vec![thing(3, Role::Button, "Close", None)]);
+        let window = hearing(&tree);
         unsafe { SetWindowLongPtrW(window, -4, closes as *const () as isize) };
-        let press = Provider::of(&told, 3, PRESS);
+        let press = Provider::of(&tree, 3, PRESS);
         LETTING_GO.set(press);
         let code = unsafe { (((*press).table as *const PressTable).read().press)(press) };
-        assert_eq!((code, LEFT.get(), told.out.borrow().len()), (NOT_NOW, 1, 0));
+        assert_eq!((code, LEFT.get(), tree.out.borrow().len()), (NOT_NOW, 1, 0));
         unsafe { DestroyWindow(window) };
         HEARD_BY.set(None);
-        assert_eq!(Rc::strong_count(&told), 1);
+        assert_eq!(Rc::strong_count(&tree), 1);
     }
 
     #[test]
@@ -3004,10 +3006,10 @@ pub(crate) mod tests {
         // Of another vendor's object only its first word, the vtable pointer, is known: here it
         // has nothing more. A provider is no range, nor is null. None is read past that word,
         // and each is refused.
-        let told = told(vec![notes()]);
-        let stretch = Kept(Stretch::made(&told, 6, [0, 3]));
+        let tree = made_tree(vec![notes()]);
+        let stretch = Kept(Stretch::made(&tree, 6, [0, 3]));
         let mut foreign = [(&raw const AS_THING) as usize];
-        let provider = Provider::of(&told, 6, THING);
+        let provider = Provider::of(&tree, 6, THING);
         for other in [foreign.as_mut_ptr().cast::<Stretch>(), provider.cast(), std::ptr::null_mut()] {
             let (mut same, mut far) = (7, 7);
             let codes = unsafe {
@@ -3023,43 +3025,43 @@ pub(crate) mod tests {
 
     /// A window with a tree, as the library's parts tell it, and the id of the element of a
     /// name.
-    fn grove() -> (Rc<Told>, impl Fn(&str) -> Id) {
-        let said = crate::branches::tests::grown().0.said().to_vec();
-        let ids: Vec<(String, Id)> = said.iter().map(|said| (said.name.clone(), said.id)).collect();
-        (told(said), move |name: &str| ids.iter().find(|(named, _)| named == name).map(|(_, id)| *id).unwrap_or_else(|| panic!("nothing is called {name}")))
+    fn grove() -> (Rc<WindowTree>, impl Fn(&str) -> Id) {
+        let nodes = crate::tree_view::tests::grown().0.visible_access_nodes().to_vec();
+        let ids: Vec<(String, Id)> = nodes.iter().map(|node| (node.name.clone(), node.id)).collect();
+        (made_tree(nodes), move |name: &str| ids.iter().find(|(named, _)| named == name).map(|(_, id)| *id).unwrap_or_else(|| panic!("nothing is called {name}")))
     }
 
     #[test]
     fn a_tree_is_told_as_items_that_open_close_and_are_picked() {
         const TO_SELECT: i32 = 10001;
-        let (told, id) = grove();
-        let tree = told.said.borrow()[0].id;
+        let (tree, id) = grove();
+        let root = tree.nodes.borrow()[0].id;
         let [folder, open, note, picked] = ["folder 0", "folder 1", "note 10", "note 11"].map(&id);
         // Control types and patterns: a tree reports its selected items; an item is selectable,
         // and expands where it has children.
-        let of = |id: Id, property: i32| Held::of(&told, id).property(property);
-        assert_eq!([tree, folder, note].map(|id| of(id, CONTROL_TYPE)), [50023, 50024, 50024].map(|kind| Ok(Value::Number(kind))));
-        let ways = |id: Id| [TO_SELECT, TO_FOLD, TO_PICK, TO_PRESS].map(|pattern| Held::of(&told, id).way(pattern).is_some());
-        assert_eq!([ways(tree), ways(folder), ways(note)], [[true, false, false, false], [false, true, true, false], [false, false, true, false]]);
+        let of = |id: Id, property: i32| Held::of(&tree, id).property(property);
+        assert_eq!([root, folder, note].map(|id| of(id, CONTROL_TYPE)), [50023, 50024, 50024].map(|kind| Ok(Value::Number(kind))));
+        let ways = |id: Id| [TO_SELECT, TO_FOLD, TO_PICK, TO_PRESS].map(|pattern| Held::of(&tree, id).way(pattern).is_some());
+        assert_eq!([ways(root), ways(folder), ways(note)], [[true, false, false, false], [false, true, true, false], [false, false, true, false]]);
         // Level and position of each; each focusable.
         assert_eq!([open, note].map(|id| [LEVEL, NTH, OF_SO_MANY].map(|property| of(id, property))), [[1, 2, 10], [2, 1, 3]].map(|numbers| numbers.map(|n| Ok(Value::Number(n)))));
-        assert_eq!((of(tree, LEVEL), of(note, TAKES_KEYBOARD)), (Ok(Value::None), Ok(Value::Truth(true))));
+        assert_eq!((of(root, LEVEL), of(note, TAKES_KEYBOARD)), (Ok(Value::None), Ok(Value::Truth(true))));
         // Expanded, collapsed; selected, not; each one's tree, and the tree's selection.
-        let state = |id: Id| Held::of(&told, id).way(TO_FOLD).map(|way| way.get(way.table::<FoldTable>().unfolded));
+        let state = |id: Id| Held::of(&tree, id).way(TO_FOLD).map(|way| way.get(way.table::<FoldTable>().unfolded));
         assert_eq!((state(open), state(folder)), (Some(Ok(1)), Some(Ok(0))));
-        let pick = |id: Id| Held::of(&told, id).way(TO_PICK).unwrap();
+        let pick = |id: Id| Held::of(&tree, id).way(TO_PICK).unwrap();
         assert_eq!((pick(picked).get(pick(picked).table::<ChoiceTable>().picked), pick(note).get(pick(note).table::<ChoiceTable>().picked)), (Ok(1), Ok(0)));
         let among = Held(pick(note).get(pick(note).table::<ChoiceTable>().among).unwrap());
-        assert!(std::ptr::eq(among.provider(), Held::of(&told, tree).provider()));
-        let picks = Held::of(&told, tree).way(TO_SELECT).unwrap();
+        assert!(std::ptr::eq(among.provider(), Held::of(&tree, root).provider()));
+        let picks = Held::of(&tree, root).way(TO_SELECT).unwrap();
         assert_eq!(names_in(picks.get(picks.table::<SelectionTable>().selection).unwrap()), ["note 11"]);
         assert_eq!((picks.get(picks.table::<SelectionTable>().many), picks.get(picks.table::<SelectionTable>().required)), (Ok(1), Ok(0)));
 
         // A screen reader's requests reach the window as the keys that do them; what is as
         // asked already is left alone. (A hearing window stands in for the real one.)
-        let window = hearing(&told);
+        let window = hearing(&tree);
         let act = |id: Id, pattern: i32, act: fn(&Held) -> Do| {
-            let way = Held::of(&told, id).way(pattern).unwrap();
+            let way = Held::of(&tree, id).way(pattern).unwrap();
             unsafe { act(&way)(way.0) }
         };
         let codes = [
@@ -3075,7 +3077,7 @@ pub(crate) mod tests {
         assert_eq!(codes, [0; 8]);
         assert_eq!(heard(), [Ask::Open(folder, true), Ask::Open(open, false), Ask::Pick(note), Ask::Pick(picked), Ask::Press(picked)]);
         unsafe { DestroyWindow(window) };
-        told.hwnd.set(0);
+        tree.hwnd.set(0);
         assert_eq!(of(folder, CONTROL_TYPE), Err(GONE));
     }
 
@@ -3093,15 +3095,15 @@ pub(crate) mod tests {
         let let_go: [unsafe extern "system" fn(Handle) -> i32; 2] = unsafe { [c"UiaPatternRelease", c"UiaNodeRelease"].map(|name| found(core, name).unwrap()) };
         let _alone = WINDOWS_ASKS.lock().unwrap_or_else(|held| held.into_inner());
         assert!(unsafe { CoInitializeEx(std::ptr::null_mut(), 2) } >= 0);
-        let (told, id) = grove();
-        let window = hearing(&told);
+        let (tree, id) = grove();
+        let window = hearing(&tree);
         let property = |node: Handle, property: i32| {
             let mut value = std::mem::MaybeUninit::<Variant>::zeroed();
             assert_eq!(unsafe { value_of(node, property, value.as_mut_ptr()) }, 0);
             read(unsafe { value.assume_init() })
         };
-        let [tree, folder, note] = [told.said.borrow()[0].id, id("folder 2"), id("note 12")];
-        let faces = [tree, folder, note].map(|id| Provider::of(&told, id, THING));
+        let [root, folder, note] = [tree.nodes.borrow()[0].id, id("folder 2"), id("note 12")];
+        let faces = [root, folder, note].map(|id| Provider::of(&tree, id, THING));
         let mut nodes = [std::ptr::null_mut(); 3];
         for (face, node) in faces.iter().zip(&mut nodes) {
             assert_eq!(unsafe { node_of(*face, node) }, 0);
@@ -3127,6 +3129,6 @@ pub(crate) mod tests {
             DestroyWindow(window);
             CoUninitialize();
         }
-        told.hwnd.set(0);
+        tree.hwnd.set(0);
     }
 }
