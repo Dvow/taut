@@ -992,22 +992,28 @@ mod mac {
                     if let Some(folder) = items_now.first() {
                         let (level, open) = (number_of(ask(*folder, "AXDisclosureLevel")), number_of(ask(*folder, "AXDisclosing")));
                         steps.check((level, open) == (Some(0), Some(0)), || format!("the folder is at level {level:?}, open {open:?}"));
-                        let yes: Obj = send(class(c"NSNumber"), c"numberWithBool:", (1u8,));
-                        let opened = unsafe { AXUIElementSetAttributeValue(*folder, string("AXDisclosing"), yes) };
-                        steps.check(opened == 0, || format!("opening the folder failed: {opened}"));
                     }
                     steps.next();
                 }
+                // (One thing a step: what a reader does moves focus, and the last one has it.)
                 2 if steps.waited(500) => {
                     let found = all();
                     if let Some(field) = find(&found, "AXTextField") {
                         let picked = range_of(ask(field, "AXSelectedTextRange"));
                         let said = ask(field, "AXSelectedText").and_then(text_of);
                         let focused = number_of(ask(field, "AXFocused"));
-                        steps.check(picked == Some([6, 5]) && said.as_deref() == Some("wrold"), || {
-                            format!("selected by a reader: {picked:?}, {said:?}; the box has focus {}, the reader says {focused:?}", words.focused)
-                        });
+                        let message = format!("selected by a reader: {picked:?}, {said:?}; the box has focus {}, the reader says {focused:?}", words.focused);
+                        steps.check(picked == Some([6, 5]) && said.as_deref() == Some("wrold"), || message);
                     }
+                    let outline = find(&found, "AXOutline");
+                    let folder = outline.and_then(|outline| ask(outline, "AXRows")).map(items).unwrap_or_default().first().copied();
+                    let yes: Obj = send(class(c"NSNumber"), c"numberWithBool:", (1u8,));
+                    let opened = folder.map(|folder| unsafe { AXUIElementSetAttributeValue(folder, string("AXDisclosing"), yes) });
+                    steps.check(opened == Some(0), || format!("opening the folder failed: {opened:?}"));
+                    steps.next();
+                }
+                3 if steps.waited(500) => {
+                    let found = all();
                     let outline = find(&found, "AXOutline");
                     let items_now = outline.and_then(|outline| ask(outline, "AXRows")).map(items).unwrap_or_default();
                     steps.check(items_now.len() == 3, || format!("opened, the tree has {} rows", items_now.len()));
