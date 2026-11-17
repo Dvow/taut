@@ -148,9 +148,9 @@ mod markdown_pages;
 mod markdown_view;
 mod node_graph;
 mod normalization;
+mod notifications;
 #[cfg(target_os = "macos")]
 mod ns_accessibility;
-mod notifications;
 mod number;
 #[cfg(windows)]
 mod ole_drag;
