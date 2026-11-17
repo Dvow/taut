@@ -55,7 +55,7 @@ On Linux, a window is a Wayland window where a compositor answers, else X11;
 
 Features (off by default) cover what the calls can't reveal: `right-to-left`, `brahmic`,
 `touch`, `emoji`, `fallback-fonts`, `cff`, `woff2`, `color-profiles`
-(`taut = { version = "0.1", features = ["emoji"] }`). Costs: `docs/costs-and-speed.md`.
+(`taut = { version = "0.2", features = ["emoji"] }`). Costs: `docs/costs-and-speed.md`.
 
 ## Three rules
 

@@ -67,7 +67,7 @@ fn own_fonts(ui: &mut Ui) -> Option<()> {
 
 ```toml
 [dependencies]
-taut = { version = "0.1", features = ["right-to-left", "brahmic", "emoji"] }
+taut = { version = "0.2", features = ["right-to-left", "brahmic", "emoji"] }
 ```
 
 - `right-to-left`: Hebrew, Arabic, Persian, Urdu in reading order, Arabic joined (without it:

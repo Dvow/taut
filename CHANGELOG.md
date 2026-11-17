@@ -3,7 +3,7 @@
 Changes an app can notice, newest first. Before 1.0, a new minor version (0.1 → 0.2) may need
 code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-17)
 
 - **GPU or CPU:** the feature `gpu` has the GPU show windows, byte for byte the pixels the CPU
   draws: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL ES 3 (EGL) or Vulkan on Linux
