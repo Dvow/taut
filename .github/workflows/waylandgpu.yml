@@ -24,10 +24,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Packages, and /dev/udmabuf
         run: |
+          uname -r
+          grep -E 'UDMABUF|DMABUF_HEAPS|CONFIG_DRM_VGEM|CONFIG_DRM_VKMS|CONFIG_SYNC_FILE' /boot/config-$(uname -r) || true
+          find /lib/modules/$(uname -r) -name 'udmabuf*' -o -name 'vgem*' -o -name 'vkms*' | head
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends linux-modules-extra-$(uname -r) weston xvfb xauth \
+          apt-cache search --names-only "linux-modules.*$(uname -r)" || true
+          sudo apt-get install -y linux-modules-extra-$(uname -r) || echo 'no modules-extra package'
+          sudo apt-get install -y --no-install-recommends weston xvfb xauth \
             mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 libx11-dev
-          sudo modprobe udmabuf
-          sudo chmod 666 /dev/udmabuf
+          sudo modprobe udmabuf || echo 'no udmabuf module'
+          sudo chmod 666 /dev/udmabuf || true
       - name: Probe
         run: bash .github/waylandgpu/probe.sh
