@@ -1,0 +1,63 @@
+# taut on macOS: the build, clippy, the macOS window checks (real windows on the runner's
+# screen, which is nobody's), the library's own tests, and the size of two examples. Pictures of
+# the windows are kept as an artifact. Runs only for the branch `macos`.
+name: macOS
+
+on:
+  push:
+    branches: [macos]
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable && rustc -V && sw_vers && uname -m
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy, no features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy, all features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: The window checks
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/shots"
+          (sleep 25; screencapture -x "$RUNNER_TEMP/shots/desktop.png") &
+          TAUT_SHOTS="$RUNNER_TEMP/shots" cargo test --test macos
+      - name: The window checks, all features
+        if: ${{ !cancelled() }}
+        run: TAUT_SHOTS="$RUNNER_TEMP/shots/all-features" cargo test --all-features --test macos
+      - name: Library tests, no features
+        if: ${{ !cancelled() }}
+        run: cargo test --lib --no-fail-fast
+      - name: Library tests, all features
+        if: ${{ !cancelled() }}
+        run: cargo test --lib --all-features --no-fail-fast
+      - name: Sizes
+        if: ${{ !cancelled() }}
+        run: |
+          cargo build --release --example hello --example gallery
+          ls -l target/release/examples/hello target/release/examples/gallery
+      - name: Pictures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-pictures
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: warn

@@ -241,6 +241,8 @@ pub(crate) fn hand_pictures_and_files() {
     crate::x11::hand_pictures_and_files();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::wayland::hand_pictures_and_files();
+    #[cfg(target_os = "macos")]
+    crate::macos::hand_pictures_and_files();
 }
 
 /// Hands the windows their drop handling (files and text dragged in from other programs), on
@@ -257,6 +259,8 @@ pub(crate) fn hand_drops() {
     crate::x11::hand_drops();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::wayland::hand_drops();
+    #[cfg(target_os = "macos")]
+    crate::macos_files::hand_drops();
 }
 
 /// Hands the windows their drag-out code, on this thread: the first time an app hands something
@@ -279,6 +283,8 @@ pub(crate) fn hand_file_dialog() {
     crate::windows::hand_file_dialog();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::portal::hand_file_dialog();
+    #[cfg(target_os = "macos")]
+    crate::macos_files::hand_file_dialog();
 }
 
 /// Hands the windows their desktop integration, on this thread: the first time an app asks for
@@ -357,6 +363,12 @@ pub fn system_text() -> Box<dyn crate::text::TextSystem> {
 #[cfg(windows)]
 pub use crate::windows::{Messages, SystemClipboard};
 // Every system has these, each its own: the docs mark them as no single system's.
+#[cfg(target_os = "macos")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::core_text::SystemText;
+#[cfg(target_os = "macos")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::macos::{Waker, run};
 #[cfg(all(unix, not(target_os = "macos")))]
 #[cfg_attr(docsrs, doc(auto_cfg = false))]
 pub use crate::wayland::run;

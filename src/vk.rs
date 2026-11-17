@@ -35,6 +35,9 @@ pub(crate) fn loader() -> Option<Find> {
         let library = unsafe { crate::x11::dlopen(c"libvulkan.so.1".as_ptr(), 2) };
         (!library.is_null()).then(|| crate::x11::symbol(library, "vkGetInstanceProcAddr\0")).flatten().unwrap_or(std::ptr::null_mut())
     };
+    // macOS has no Vulkan of its own.
+    #[cfg(target_os = "macos")]
+    let found = std::ptr::null_mut::<c_void>();
     // SAFETY: the loader's function is declared as vulkan_core.h declares it.
     (!found.is_null()).then(|| unsafe { std::mem::transmute::<*const c_void, Find>(found.cast_const()) })
 }

@@ -49,6 +49,12 @@ gpu = []
 # None.
 [dependencies]
 
+# The macOS windows, on a Mac: AppKit opens windows only on the main thread, where libtest
+# runs no test.
+[[test]]
+name = "macos"
+harness = false
+
 # The library in a DLL with a C interface.
 [[example]]
 name = "overlay"

@@ -54,7 +54,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
-#[cfg(any(target_os = "macos", target_os = "ios", target_family = "wasm"))]
+#[cfg(any(target_os = "ios", target_family = "wasm"))]
 compile_error!("taut runs on Windows and Linux so far: its windows for macOS, iOS and the web are not written yet");
 // Tests running the examples on a compositor refer to the crate as `taut`, as they do.
 #[cfg(test)]
@@ -80,6 +80,8 @@ mod colr;
 mod combo;
 #[cfg(all(test, unix, not(target_os = "macos")))]
 mod compositors;
+#[cfg(target_os = "macos")]
+mod core_text;
 mod date;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod decorations;
@@ -133,6 +135,12 @@ pub mod layer_vulkan;
 pub mod layout;
 mod line_breaks;
 mod locale;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+mod macos_files;
+#[cfg(target_os = "macos")]
+mod macos_sys;
 mod markdown;
 mod markdown_pages;
 mod markdown_view;
