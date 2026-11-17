@@ -2391,6 +2391,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         } else if come {
             self.forward(at);
         }
+        #[cfg(feature = "gpu")]
+        if at == 0 {
+            self.tell_renderer();
+        }
     }
 
     /// The session bus has messages, as under X: the portal and screen readers each take

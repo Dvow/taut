@@ -231,6 +231,13 @@ impl<App> Host<App> {
         }
     }
 
+    /// Tells the interface which path shows the first window (`Ui::renderer`); it runs again
+    /// where that changed.
+    pub(super) fn tell_renderer(&mut self) {
+        let renderer = if matches!(self.windows[0].sheet.way, Way::Gpu(_)) { Renderer::Vulkan } else { Renderer::Cpu };
+        self.rerun |= std::mem::replace(&mut self.ui.renderer, renderer) != renderer;
+    }
+
     /// Whether buffer `id`, released, was an image's (which may be drawn into again).
     pub(super) fn released_by_gpu(&mut self, id: u32) -> bool {
         self.link.gpu.borrow_mut().as_mut().is_some_and(|gpu| gpu.released(&self.link.wire, id))
@@ -1234,7 +1241,8 @@ mod tests {
         assert!(sheet.draw(&link, 1.0, &mut |canvas| ui.paint(canvas)));
         assert_eq!(attached(&said(&compositor, &link), sheet.surface), Some(THEIRS));
         assert_eq!(shows(&sheet).copied, bounded([changed, now].concat()), "what it missed, and what changed now");
-        assert!(shows(&sheet).copied.iter().all(|[left, top, right, bottom]| (right - left) * (bottom - top) < 200 * 120 / 4), "a small part");
+        let copied: i32 = shows(&sheet).copied.iter().map(|[left, top, right, bottom]| (right - left) * (bottom - top)).sum();
+        assert!(copied < 200 * 120 / 2, "a part, not all of it: {:?}", shows(&sheet).copied);
         assert!(handed(&link, &sheet) == Surface::draw(&mut ui, 64).pixels);
         // Held: the third. All held: nothing until one is released.
         recount(&mut ui, &mut sheet, 78);
@@ -1414,9 +1422,16 @@ mod tests {
         let takes_dmabufs = host.link.has.dmabuf.0 != 0;
         let mut desk = Desk::new();
         let corner = desk.as_mut().filter(|desk| desk.has_hands()).and_then(|desk| corner(&mut host, desk));
+        // The pointer goes to the screen's corner farthest from the window: the compositor
+        // draws it over what it shows.
+        if let (Some(desk), Some(at)) = (desk.as_mut(), corner) {
+            let [wide, high] = desk.units();
+            desk.point(crate::geom::pt(if at.x > wide / 2.0 { 2.0 } else { wide - 3.0 }, if at.y > high / 2.0 { 2.0 } else { high - 3.0 }));
+        }
         let afresh = Surface::draw(&mut host.ui, 64);
         if !takes_dmabufs || !exports() {
             assert!(matches!(host.windows[0].sheet.way, Way::Shm), "by shared memory");
+            assert_eq!(host.ui.renderer(), Renderer::Cpu);
             let buffer = host.windows[0].sheet.buffers.iter_mut().find(|buffer| buffer.missing.is_empty()).unwrap();
             assert!(buffer.memory.pixels() == afresh.pixels);
             if let (Some(desk), Some(corner)) = (desk.as_mut(), corner) {
@@ -1425,6 +1440,7 @@ mod tests {
             return eprintln!("the compositor takes no dmabufs ({takes_dmabufs}) or no device exports them: shared memory shows the window");
         }
         assert!(matches!(host.windows[0].sheet.way, Way::Gpu(_)), "through the GPU");
+        assert_eq!(host.ui.renderer(), Renderer::Vulkan, "and the interface is told so");
         assert!(handed(&host.link, &host.windows[0].sheet) == afresh.pixels, "the dmabuf holds what the CPU draws");
         match (desk.as_mut(), corner) {
             (Some(desk), Some(corner)) => assert_eq!(on_screen(&mut host, desk, corner), Some(0), "the screen shows it, pixel for pixel"),
@@ -1453,9 +1469,22 @@ mod tests {
         let afresh = Surface::draw(&mut host.ui, 64);
         let buffer = host.windows[0].sheet.buffers.iter_mut().find(|buffer| buffer.missing.is_empty()).unwrap();
         assert!(buffer.memory.pixels() == afresh.pixels);
+        assert_eq!(host.ui.renderer(), Renderer::Cpu, "the interface is told");
         if let (Some(desk), Some(corner)) = (desk.as_mut(), corner) {
             assert_eq!(on_screen(&mut host, desk, corner), Some(0), "the screen shows it after the fall");
         }
+    }
+
+    /// What a window's surface waits for, for a test that failed.
+    fn state(host: &Windows) -> String {
+        let sheet = &host.windows[0].sheet;
+        let gpu = host.link.gpu.borrow();
+        let held = gpu.as_ref().map(|gpu| gpu.held.clone()).unwrap_or_default();
+        let images: Vec<u32> = match &sheet.way {
+            Way::Gpu(shows) => shows.images.iter().map(|image| image.buffer).collect(),
+            _ => sheet.buffers.iter().map(|buffer| buffer.id | (buffer.busy as u32) << 31).collect(),
+        };
+        format!("waiting {}, changed {:?}, images or buffers {images:x?}, held {held:x?}", sheet.waiting, sheet.changed)
     }
 
     /// Whether a window may draw at once: the compositor showed its last frame, and holds not
@@ -1487,7 +1516,7 @@ mod tests {
             for whole in [false, true] {
                 let (mut drawing, mut shown) = (Vec::new(), Vec::new());
                 for at in 1..=60 {
-                    assert!(waits(&mut host, ready), "ready to draw");
+                    assert!(waits(&mut host, ready), "ready to draw: frame {at}, {}", state(&host));
                     *count.borrow_mut() = at;
                     host.rerun = true;
                     host.describe();
