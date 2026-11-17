@@ -1164,7 +1164,14 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             ask(self.windows[at].window, view, files);
         }
         let (shown, over) = (&mut self.windows[at], self.over);
-        with_view(shown.view, |state| (state.cursor, state.ime) = (cursor, ime));
+        let moved = with_view(shown.view, |state| {
+            let moved = state.ime != ime && state.marked > 0;
+            (state.cursor, state.ime) = (cursor, ime);
+            moved
+        });
+        if moved == Some(true) {
+            crate::macos_composing::follow(shown.view, ime);
+        }
         if over == Some(shown.view) {
             show_cursor(cursor);
         }

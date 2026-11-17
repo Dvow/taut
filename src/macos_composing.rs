@@ -79,12 +79,22 @@ pub(crate) fn show(view: Obj, text: &str, picked: NSRange, at: Option<Rect>) {
     let Some(at) = at.filter(|_| !text.is_empty()) else { return hide(view) };
     let panel = panel_of(view);
     let size = f64::from(at.h * 0.75).clamp(9.0, 72.0);
-    // SAFETY: the panel and its label are the library's; the rectangle is turned from the view's
-    // into its window's and the screen's.
+    // SAFETY: the panel and its label are the library's.
     unsafe {
         let label: Obj = send(panel, c"contentView", ());
         send::<()>(label, c"setAttributedStringValue:", (dressed(text, picked, size),));
         send::<()>(label, c"sizeToFit", ());
+    }
+    place(view, panel, at);
+}
+
+/// Puts a view's panel at the text cursor `at` (in the view's units), its top where the
+/// cursor's is, and shows it over the window.
+fn place(view: Obj, panel: Obj, at: Rect) {
+    // SAFETY: the panel and its label are the library's; the rectangle is turned from the view's
+    // into its window's and the screen's.
+    unsafe {
+        let label: Obj = send(panel, c"contentView", ());
         let fits = send_rect(label, c"frame", ()).size;
         let window: Obj = send(view, c"window", ());
         let cursor = NSRect::new(f64::from(at.x), f64::from(at.y), 1.0, f64::from(at.h));
@@ -97,6 +107,16 @@ pub(crate) fn show(view: Obj, text: &str, picked: NSRange, at: Option<Rect>) {
             send::<()>(window, c"addChildWindow:ordered:", (panel, 1isize));
         }
         send::<()>(panel, c"orderFront:", (std::ptr::null_mut::<c_void>(),));
+    }
+}
+
+/// The text cursor moved (the text, the window): what is composed, if shown, goes with it.
+pub(crate) fn follow(view: Obj, at: Option<Rect>) {
+    let Some(panel) = PANELS.with_borrow(|panels| panels.iter().find(|(of, _)| *of == view).map(|(_, panel)| *panel)) else { return };
+    // SAFETY: a plain question of the library's panel.
+    let shown = !unsafe { send::<Obj>(panel, c"parentWindow", ()) }.is_null();
+    if let Some(at) = at.filter(|_| shown) {
+        place(view, panel, at);
     }
 }
 

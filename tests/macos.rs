@@ -1224,6 +1224,7 @@ mod mac {
                     let frame = rect_of(target, c"frame");
                     let main: Obj = items(send(class(c"NSScreen"), c"screens", ()))[0];
                     let to = NSPoint { x: frame.origin.x + 110.0, y: rect_of(main, c"frame").size.height - frame.origin.y - 80.0 };
+                    println!("    dragged from {from:?} to {to:?}");
                     post_drag(from, to);
                     steps.next();
                 }
@@ -1232,8 +1233,8 @@ mod mac {
                     steps.check(taken.as_deref() == Some("from taut"), || format!("the other window took {taken:?}"));
                     steps.check(outcome == Some(taut::DropEffect::Copied), || format!("the box heard {outcome:?}"));
                     steps.check(!source.pressed, || "the button is still held after the drop".into());
-                    send::<()>(target, c"close", ());
-                    send::<()>(target, c"release", ());
+                    // (Only put away: the system's drag may still hold on to it.)
+                    send::<()>(target, c"orderOut:", (std::ptr::null_mut::<c_void>(),));
                     steps.done = true;
                 }
                 _ => {}

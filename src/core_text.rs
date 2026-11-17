@@ -8,6 +8,7 @@
 //! then laying coverage in a colour. Advances are whole pixels, so every glyph starts on one.
 use crate::canvas::Canvas;
 use crate::color::Color;
+use crate::font_file::{FontFile, Set};
 use crate::macos_sys::{CFRelease, CFStringCreateWithBytes, NSPoint, NSRect, NSSize, Obj, UTF8, array_items, rust_string, send};
 use crate::macos_sys::{CGBitmapContextCreate, CGColorSpaceCreateDeviceGray, CGColorSpaceRelease, CGContextRelease, CGContextSetGrayFillColor, CGContextSetShouldAntialias};
 use crate::system_fonts::Style;
@@ -46,6 +47,20 @@ unsafe extern "C" {
     static kCTFontTraitsAttribute: *const c_void;
     static kCTFontWeightTrait: *const c_void;
     static kCTFontSymbolicTrait: *const c_void;
+    fn CTFontCreateCopyWithAttributes(font: *const c_void, size: f64, matrix: *const c_void, attributes: *const c_void) -> *const c_void;
+    fn CTLineCreateWithAttributedString(text: *const c_void) -> *const c_void;
+    fn CTLineGetGlyphRuns(line: *const c_void) -> *const c_void;
+    fn CTLineGetTypographicBounds(line: *const c_void, ascent: *mut f64, descent: *mut f64, leading: *mut f64) -> f64;
+    fn CTRunGetGlyphCount(run: *const c_void) -> isize;
+    fn CTRunGetGlyphs(run: *const c_void, range: CFRange, glyphs: *mut u16);
+    fn CTRunGetPositions(run: *const c_void, range: CFRange, positions: *mut NSPoint);
+    fn CTRunGetAttributes(run: *const c_void) -> *const c_void;
+    static kCTFontAttributeName: *const c_void;
+}
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFEqual(one: *const c_void, other: *const c_void) -> bool;
+    fn CFDictionaryGetValue(dictionary: *const c_void, key: *const c_void) -> *const c_void;
 }
 
 /// CoreText's own fonts for the interface: the system font, and its fixed-pitch one
@@ -277,4 +292,70 @@ pub(crate) fn file_for(face: Face, letter: char) -> Option<PathBuf> {
     let url = Owned(unsafe { CTFontCopyAttribute(used, kCTFontURLAttribute) });
     let path: Obj = unsafe { send(url.0.cast_mut(), c"path", ()) };
     rust_string(path).map(PathBuf::from)
+}
+
+// ---- emoji ----
+
+/// The emoji font CoreText draws in, at one point a font unit (kept for the program's life;
+/// none yet while 0), and the serials of the files read of it: CoreText shapes their sequences
+/// (`sequence`). Apple Color Emoji joins families, flags and skin tones in `morx`, which
+/// `shaping.rs` does not read.
+static EMOJI: std::sync::Mutex<(usize, Vec<u32>)> = std::sync::Mutex::new((0, Vec::new()));
+/// The most files of it kept track of: more are read only by tests.
+const EMOJI_FILES: usize = 64;
+
+/// The system's emoji font, as a file read here: the one CoreText draws a smiling face in (the
+/// face of a collection whose glyph for it is CoreText's).
+pub(crate) fn emoji_file() -> Option<FontFile> {
+    let _pool = crate::macos_sys::Pool::new();
+    let base = font_of(Face::Regular, 12.0);
+    let (other, glyph) = fallback(base.0, '😀')?;
+    // SAFETY: the URL comes back +1 (or null); its path is read at once.
+    let url = Owned(unsafe { CTFontCopyAttribute(other.0, kCTFontURLAttribute) });
+    let path = rust_string(unsafe { send(url.0.cast_mut(), c"path", ()) })?;
+    let file = (0..4).filter_map(|nth| FontFile::open(&path)?.nth(nth)).find(|font| font.glyph('😀') == glyph)?;
+    let mut kept = EMOJI.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if kept.0 == 0 {
+        // SAFETY: a copy of the font at the file's units per em (+1), kept for good.
+        kept.0 = unsafe { CTFontCreateCopyWithAttributes(other.0, f64::from(file.units()), std::ptr::null(), std::ptr::null()) } as usize;
+    }
+    if kept.1.len() >= EMOJI_FILES {
+        kept.1.clear();
+    }
+    kept.1.push(file.serial());
+    Some(file)
+}
+
+/// The glyphs CoreText makes of a sequence in the system's emoji font, if `font` is a file of
+/// it (see `FontFile::set`): each placed right and up from the pen, in font units; and the
+/// pen's advance. `None` for another font, or where CoreText drew some of it from another.
+pub(crate) fn sequence(font: &FontFile, letters: &str, glyphs: &mut Vec<Set>) -> Option<f32> {
+    let shaper = {
+        let kept = EMOJI.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        kept.1.contains(&font.serial()).then_some(kept.0 as *const c_void)?
+    };
+    let _pool = crate::macos_sys::Pool::new();
+    // SAFETY: an attributed string in the kept font (toll-free bridged), laid out as a line
+    // (+1, released); its runs are read while it lives, each glyph and place into room for
+    // as many as the run says.
+    unsafe {
+        let looks: Obj = send(crate::macos_sys::class(c"NSDictionary"), c"dictionaryWithObject:forKey:", (shaper, kCTFontAttributeName));
+        let text: Obj = send(crate::macos_sys::class(c"NSAttributedString"), c"alloc", ());
+        let text: Obj = send(send::<Obj>(text, c"initWithString:attributes:", (crate::macos_sys::ns_string(letters), looks)), c"autorelease", ());
+        let line = Owned(CTLineCreateWithAttributedString(text.cast_const()));
+        glyphs.clear();
+        for run in array_items(CTLineGetGlyphRuns(line.0).cast_mut()) {
+            let used = CFDictionaryGetValue(CTRunGetAttributes(run), kCTFontAttributeName);
+            if !CFEqual(used, shaper) {
+                return None;
+            }
+            let count = CTRunGetGlyphCount(run).max(0) as usize;
+            let (mut ids, mut places) = (vec![0u16; count], vec![NSPoint::default(); count]);
+            CTRunGetGlyphs(run, CFRange { location: 0, length: 0 }, ids.as_mut_ptr());
+            CTRunGetPositions(run, CFRange { location: 0, length: 0 }, places.as_mut_ptr());
+            let placed = ids.into_iter().zip(places).filter(|(glyph, _)| *glyph != u16::MAX);
+            glyphs.extend(placed.map(|(glyph, at)| Set { glyph, at: [at.x as f32, at.y as f32] }));
+        }
+        Some(CTLineGetTypographicBounds(line.0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) as f32)
+    }
 }

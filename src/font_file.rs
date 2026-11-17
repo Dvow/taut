@@ -1034,6 +1034,11 @@ impl FontFile {
         glyphs.clear();
         let unseen = |letter: char| matches!(letter, '\u{200c}' | '\u{200d}' | '\u{e0000}'..='\u{e007f}' | '\u{fe00}'..='\u{fe0f}');
         letters.chars().all(|letter| unseen(letter) || self.glyph(letter) != 0).then_some(())?;
+        // (On macOS the system's emoji font joins sequences in `morx`: CoreText shapes them.)
+        #[cfg(target_os = "macos")]
+        if let Some(pen) = crate::core_text::sequence(self, letters, glyphs) {
+            return Some(pen);
+        }
         let mut laid = Vec::new();
         let pen = self.shape(&self.emoji, letters, &mut laid);
         let mut at = 0;
