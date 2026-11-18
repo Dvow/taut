@@ -130,6 +130,8 @@ pub mod layer_d3d11;
 pub mod layer_d3d12;
 #[cfg(windows)]
 pub mod layer_d3d9;
+#[cfg(target_os = "macos")]
+pub mod layer_metal;
 pub mod layer_opengl;
 pub mod layer_vulkan;
 pub mod layout;
