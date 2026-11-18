@@ -1,6 +1,6 @@
 //! Dragging out of a window into another program, on Windows: through OLE drag and drop.
 //!
-//! The payload is a `Carried`, an `IDataObject`: the target program asks it which formats it
+//! The payload is a `DataObject`, an `IDataObject`: the target program asks it which formats it
 //! offers and for itself in one (files as a file list a file manager reads, UTF-16 text, a
 //! picture as a PNG file and as a DIB, a link as a URL and as text). Each format is produced on
 //! first request and cached. With it goes a `Source`, an `IDropSource`, which Windows asks
@@ -12,11 +12,12 @@
 //! While dragged over its own window, that window's interface hears the pointer as for an
 //! internal drag: so it is an internal drag again there, dropped there as usual.
 //!
-//! `DoDragDrop` is reached only through `CARRY`, which a test replaces: the real call follows
-//! the real mouse and drops on whatever is under it. (The library's own tests never reach it.)
+//! `DoDragDrop` is reached only through `RUN_DRAG`, which a test replaces: the real call
+//! follows the real mouse and drops on whatever is under it. (The library's own tests never
+//! reach it.)
 use crate::drag_drop::{DragData, DropEffect, OwnedDragData};
 use crate::windows::sys::*;
-use crate::windows::{carried_over, in_memory, to_block, to_drop, wide};
+use crate::windows::{drag_back_over, in_memory, to_block, to_drop, wide};
 use std::cell::{Cell, OnceCell};
 use std::ffi::c_void;
 
@@ -47,7 +48,7 @@ const NO_FORM: i32 = 0x8004_0064_u32 as i32;
 const NO_MEDIUM: i32 = 0x8004_0069_u32 as i32;
 const NO_ASPECT: i32 = 0x8004_006B_u32 as i32;
 const NOT_DONE: i32 = 0x8000_4001_u32 as i32;
-const NOT_TOLD: i32 = 0x8004_0003_u32 as i32;
+const NO_ADVISE: i32 = 0x8004_0003_u32 as i32;
 const NO_INTERFACE: i32 = 0x8000_4002_u32 as i32;
 const FEWER: i32 = 1;
 
@@ -118,8 +119,8 @@ unsafe extern "system" fn release<T>(this: *mut T) -> u32 {
 /// A drag payload: an `IDataObject`, which other programs ask for its content in a format they
 /// know.
 #[repr(C)]
-pub(crate) struct Carried {
-    table: &'static CarriedTable,
+pub(crate) struct DataObject {
+    table: &'static DataObjectTable,
     held: Cell<u32>,
     what: OwnedDragData,
     /// Its formats, by clipboard format number, each with its bytes once produced.
@@ -132,45 +133,45 @@ pub(crate) struct Carried {
 
 /// `IDataObject`'s vtable, in the order Windows declares it.
 #[repr(C)]
-struct CarriedTable {
-    query: unsafe extern "system" fn(*mut Carried, *const [u32; 4], *mut *mut Carried) -> i32,
-    hold: unsafe extern "system" fn(*mut Carried) -> u32,
-    release: unsafe extern "system" fn(*mut Carried) -> u32,
-    get_data: unsafe extern "system" fn(*mut Carried, *const FORMATETC, *mut STGMEDIUM) -> i32,
-    get_data_here: unsafe extern "system" fn(*mut Carried, *const FORMATETC, *mut STGMEDIUM) -> i32,
-    query_get_data: unsafe extern "system" fn(*mut Carried, *const FORMATETC) -> i32,
-    canonical: unsafe extern "system" fn(*mut Carried, *const FORMATETC, *mut FORMATETC) -> i32,
-    set_data: unsafe extern "system" fn(*mut Carried, *const FORMATETC, *mut STGMEDIUM, i32) -> i32,
-    forms: unsafe extern "system" fn(*mut Carried, u32, *mut *mut Forms) -> i32,
-    advise: unsafe extern "system" fn(*mut Carried, *const FORMATETC, u32, *mut c_void, *mut u32) -> i32,
-    unadvise: unsafe extern "system" fn(*mut Carried, u32) -> i32,
-    advices: unsafe extern "system" fn(*mut Carried, *mut *mut c_void) -> i32,
+struct DataObjectTable {
+    query: unsafe extern "system" fn(*mut DataObject, *const [u32; 4], *mut *mut DataObject) -> i32,
+    hold: unsafe extern "system" fn(*mut DataObject) -> u32,
+    release: unsafe extern "system" fn(*mut DataObject) -> u32,
+    get_data: unsafe extern "system" fn(*mut DataObject, *const FORMATETC, *mut STGMEDIUM) -> i32,
+    get_data_here: unsafe extern "system" fn(*mut DataObject, *const FORMATETC, *mut STGMEDIUM) -> i32,
+    query_get_data: unsafe extern "system" fn(*mut DataObject, *const FORMATETC) -> i32,
+    canonical: unsafe extern "system" fn(*mut DataObject, *const FORMATETC, *mut FORMATETC) -> i32,
+    set_data: unsafe extern "system" fn(*mut DataObject, *const FORMATETC, *mut STGMEDIUM, i32) -> i32,
+    forms: unsafe extern "system" fn(*mut DataObject, u32, *mut *mut Forms) -> i32,
+    advise: unsafe extern "system" fn(*mut DataObject, *const FORMATETC, u32, *mut c_void, *mut u32) -> i32,
+    unadvise: unsafe extern "system" fn(*mut DataObject, u32) -> i32,
+    advices: unsafe extern "system" fn(*mut DataObject, *mut *mut c_void) -> i32,
 }
 
-static CARRIED: CarriedTable = CarriedTable {
-    query: query::<Carried>,
-    hold: hold::<Carried>,
-    release: release::<Carried>,
-    get_data: Carried::get_data,
-    get_data_here: Carried::not_done,
-    query_get_data: Carried::query_get_data,
-    canonical: Carried::canonical,
-    set_data: Carried::set_data,
-    forms: Carried::forms,
-    advise: Carried::advise,
-    unadvise: Carried::unadvise,
-    advices: Carried::advices,
+static DATA_OBJECT_TABLE: DataObjectTable = DataObjectTable {
+    query: query::<DataObject>,
+    hold: hold::<DataObject>,
+    release: release::<DataObject>,
+    get_data: DataObject::get_data,
+    get_data_here: DataObject::not_done,
+    query_get_data: DataObject::query_get_data,
+    canonical: DataObject::canonical,
+    set_data: DataObject::set_data,
+    forms: DataObject::forms,
+    advise: DataObject::advise,
+    unadvise: DataObject::unadvise,
+    advices: DataObject::advices,
 };
 
-impl Com for Carried {
+impl Com for DataObject {
     const NAME: u32 = 0x10E;
 }
 
-impl Carried {
+impl DataObject {
     /// A drag payload owning a copy of everything in it, with one reference: the caller's. Its
     /// formats: files as a file list; text as text; a picture as a PNG file, keeping alpha, and
     /// as a DIB every program reads; a link as a URL (which browsers take as one) and as text.
-    pub(crate) fn new(what: DragData) -> *mut Carried {
+    pub(crate) fn new(what: DragData) -> *mut DataObject {
         let what = OwnedDragData::of(what);
         let forms = match what {
             OwnedDragData::Files(_) => vec![FILES],
@@ -179,7 +180,7 @@ impl Carried {
             OwnedDragData::Link(_) => vec![form_named("UniformResourceLocatorW"), TEXT],
         };
         let forms = forms.into_iter().map(|form| (form, OnceCell::new())).collect();
-        Box::into_raw(Box::new(Carried { table: &CARRIED, held: Cell::new(1), what, forms, done: Cell::new([None; 2]) }))
+        Box::into_raw(Box::new(DataObject { table: &DATA_OBJECT_TABLE, held: Cell::new(1), what, forms, done: Cell::new([None; 2]) }))
     }
 
     /// Its bytes in one format.
@@ -205,15 +206,15 @@ impl Carried {
 
     /// `GetData`: itself in one format, in global memory the caller frees (no release callback:
     /// no owner).
-    unsafe extern "system" fn get_data(this: *mut Carried, asked: *const FORMATETC, out: *mut STGMEDIUM) -> i32 {
+    unsafe extern "system" fn get_data(this: *mut DataObject, asked: *const FORMATETC, out: *mut STGMEDIUM) -> i32 {
         // SAFETY: Windows passes this object, the request, and room for the answer.
-        let (carried, asked) = unsafe { (&*this, &*asked) };
-        let at = match carried.form(asked) {
+        let (data, asked) = unsafe { (&*this, &*asked) };
+        let at = match data.form(asked) {
             Ok(at) => at,
             Err(why) => return why,
         };
-        let (form, bytes) = &carried.forms[at];
-        let memory = in_memory(bytes.get_or_init(|| carried.bytes(*form)));
+        let (form, bytes) = &data.forms[at];
+        let memory = in_memory(bytes.get_or_init(|| data.bytes(*form)));
         if memory == 0 {
             return 0x8007_000E_u32 as i32; // E_OUTOFMEMORY
         }
@@ -223,14 +224,14 @@ impl Carried {
     }
 
     /// `QueryGetData`.
-    unsafe extern "system" fn query_get_data(this: *mut Carried, asked: *const FORMATETC) -> i32 {
+    unsafe extern "system" fn query_get_data(this: *mut DataObject, asked: *const FORMATETC) -> i32 {
         // SAFETY: Windows passes this object and the request.
-        let (carried, asked) = unsafe { (&*this, &*asked) };
-        carried.form(asked).map_or_else(|why| why, |_| 0)
+        let (data, asked) = unsafe { (&*this, &*asked) };
+        data.form(asked).map_or_else(|why| why, |_| 0)
     }
 
     /// `GetCanonicalFormatEtc`: none here; every format suits every device.
-    unsafe extern "system" fn canonical(_: *mut Carried, _: *const FORMATETC, out: *mut FORMATETC) -> i32 {
+    unsafe extern "system" fn canonical(_: *mut DataObject, _: *const FORMATETC, out: *mut FORMATETC) -> i32 {
         // SAFETY: Windows passes room for the answer, of which only the device is set.
         if !out.is_null() {
             unsafe { (*out).device = std::ptr::null() };
@@ -241,18 +242,18 @@ impl Carried {
     /// `SetData`, from the drop target. Of everything it may say, two are heard: the effect it
     /// performed, as Windows sees it and as the user does, each a DWORD in global memory. (The
     /// medium is released here when it is ours to release.)
-    unsafe extern "system" fn set_data(this: *mut Carried, said: *const FORMATETC, medium: *mut STGMEDIUM, ours: i32) -> i32 {
+    unsafe extern "system" fn set_data(this: *mut DataObject, said: *const FORMATETC, medium: *mut STGMEDIUM, ours: i32) -> i32 {
         // SAFETY: Windows passes this object, the format and the medium; the memory is locked
         // while its DWORD is read, no further than its size.
         unsafe {
-            let (carried, said) = (&*this, &*said);
+            let (data, said) = (&*this, &*said);
             let which = [form_named("Performed DropEffect"), form_named("Logical Performed DropEffect")].iter().position(|form| *form == said.format);
             let Some(which) = which.filter(|_| (*medium).medium == 1) else { return NOT_DONE };
             let start = GlobalLock((*medium).memory).cast::<u8>();
             if !start.is_null() && GlobalSize((*medium).memory) >= 4 {
-                let mut done = carried.done.get();
+                let mut done = data.done.get();
                 done[which] = Some(u32::from_le_bytes(*start.cast::<[u8; 4]>()));
-                carried.done.set(done);
+                data.done.set(done);
             }
             GlobalUnlock((*medium).memory);
             if ours != 0 {
@@ -263,30 +264,30 @@ impl Carried {
     }
 
     /// `EnumFormatEtc`: an enumerator of its formats.
-    unsafe extern "system" fn forms(this: *mut Carried, direction: u32, out: *mut *mut Forms) -> i32 {
+    unsafe extern "system" fn forms(this: *mut DataObject, direction: u32, out: *mut *mut Forms) -> i32 {
         // SAFETY: Windows passes this object and room for the answer. (`DATADIR_GET`: the
         // formats it offers; none can be set.)
-        let carried = unsafe { &*this };
+        let data = unsafe { &*this };
         if direction != 1 {
             return NOT_DONE;
         }
-        let list = carried.forms.iter().map(|(format, _)| FORMATETC { format: *format, device: std::ptr::null(), aspect: 1, index: -1, medium: 1 }).collect();
+        let list = data.forms.iter().map(|(format, _)| FORMATETC { format: *format, device: std::ptr::null(), aspect: 1, index: -1, medium: 1 }).collect();
         unsafe { *out = Box::into_raw(Box::new(Forms { table: &FORMS, held: Cell::new(1), list, at: Cell::new(0) })) };
         0
     }
 
     /// `GetDataHere`, `DAdvise`: not supported; the payload never changes.
-    unsafe extern "system" fn not_done(_: *mut Carried, _: *const FORMATETC, _: *mut STGMEDIUM) -> i32 {
+    unsafe extern "system" fn not_done(_: *mut DataObject, _: *const FORMATETC, _: *mut STGMEDIUM) -> i32 {
         NOT_DONE
     }
-    unsafe extern "system" fn advise(_: *mut Carried, _: *const FORMATETC, _: u32, _: *mut c_void, _: *mut u32) -> i32 {
-        NOT_TOLD
+    unsafe extern "system" fn advise(_: *mut DataObject, _: *const FORMATETC, _: u32, _: *mut c_void, _: *mut u32) -> i32 {
+        NO_ADVISE
     }
-    unsafe extern "system" fn unadvise(_: *mut Carried, _: u32) -> i32 {
-        NOT_TOLD
+    unsafe extern "system" fn unadvise(_: *mut DataObject, _: u32) -> i32 {
+        NO_ADVISE
     }
-    unsafe extern "system" fn advices(_: *mut Carried, _: *mut *mut c_void) -> i32 {
-        NOT_TOLD
+    unsafe extern "system" fn advices(_: *mut DataObject, _: *mut *mut c_void) -> i32 {
+        NO_ADVISE
     }
 
     /// What the drop target did: what it reported, where it did, else what Windows says
@@ -437,7 +438,7 @@ impl Source {
     pub(crate) fn looks_at(&self, at: POINT) -> i32 {
         let home = over(self.hwnd, at).then_some(at);
         if home.is_some() || self.home.get().is_some() {
-            carried_over(self.hwnd, home);
+            drag_back_over(self.hwnd, home);
         }
         self.home.set(home);
         if home.is_none() {
@@ -457,20 +458,20 @@ fn over(hwnd: HANDLE, at: POINT) -> bool {
 
 /// How a drag out of a window runs: Windows' `DoDragDrop`, or a test's replacement. It gets the
 /// payload, its source, the allowed effects, and room for the performed effect.
-pub(crate) type Carry = unsafe fn(*mut Carried, *mut Source, u32, *mut u32) -> i32;
+pub(crate) type RunDrag = unsafe fn(*mut DataObject, *mut Source, u32, *mut u32) -> i32;
 
 thread_local! {
     /// How drags out of this thread's windows run.
-    pub(crate) static CARRY: Cell<Carry> = Cell::new(BY);
+    pub(crate) static RUN_DRAG: Cell<RunDrag> = Cell::new(BY);
     /// The payload being dragged out now, and its window: for that window's own drop target,
     /// which defers to the source (see `Source::looks_at`).
-    static GOING: Cell<(*mut Carried, HANDLE)> = const { Cell::new((std::ptr::null_mut(), 0)) };
+    static DRAGGING: Cell<(*mut DataObject, HANDLE)> = const { Cell::new((std::ptr::null_mut(), 0)) };
 }
 
 /// Whether a drag out of a window of this thread is running: meanwhile the program's OLE use
 /// continues, even if the first window is gone.
-pub(crate) fn carrying() -> bool {
-    !GOING.get().0.is_null()
+pub(crate) fn dragging_out() -> bool {
+    !DRAGGING.get().0.is_null()
 }
 
 /// Windows runs the drag, if its mouse button is really held: physically, not just as a window
@@ -478,9 +479,9 @@ pub(crate) fn carrying() -> bool {
 /// With swapped mouse buttons (`SM_SWAPBUTTON`, 23), the dragging button is physically the
 /// right one.
 #[cfg(not(test))]
-const BY: Carry = by_windows;
+const BY: RunDrag = by_windows;
 #[cfg(not(test))]
-unsafe fn by_windows(data: *mut Carried, source: *mut Source, allowed: u32, effect: *mut u32) -> i32 {
+unsafe fn by_windows(data: *mut DataObject, source: *mut Source, allowed: u32, effect: *mut u32) -> i32 {
     // SAFETY: plain queries; and the objects are alive, held by the caller.
     unsafe {
         let button = if GetSystemMetrics(23) != 0 { 2 } else { 1 };
@@ -494,15 +495,15 @@ unsafe fn by_windows(data: *mut Carried, source: *mut Source, allowed: u32, effe
 /// In the library's own tests Windows never runs a drag: a test dragging out installs its own
 /// replacement.
 #[cfg(test)]
-const BY: Carry = by_nobody;
+const BY: RunDrag = by_nobody;
 #[cfg(test)]
-unsafe fn by_nobody(_: *mut Carried, _: *mut Source, _: u32, _: *mut u32) -> i32 {
+unsafe fn by_nobody(_: *mut DataObject, _: *mut Source, _: u32, _: *mut u32) -> i32 {
     CANCEL
 }
 
 /// Whether `data` is the payload being dragged out of window `hwnd` now.
-pub(crate) fn is_going(data: *const c_void, hwnd: HANDLE) -> bool {
-    GOING.get() == (data.cast_mut().cast(), hwnd)
+pub(crate) fn is_dragging(data: *const c_void, hwnd: HANDLE) -> bool {
+    DRAGGING.get() == (data.cast_mut().cast(), hwnd)
 }
 
 /// The source's answer to `QueryContinueDrag` (see `Source::go_on`), for the window tests.
@@ -515,7 +516,7 @@ pub(crate) fn go_on(source: *mut Source, escape: bool, held: u32) -> i32 {
 ///
 /// # Safety
 /// `data` is alive, held once by the caller, which no longer holds it after this.
-pub(crate) unsafe fn let_go(data: *mut Carried) {
+pub(crate) unsafe fn let_go(data: *mut DataObject) {
     // SAFETY: as the caller promises.
     unsafe { release(data) };
 }
@@ -529,18 +530,18 @@ pub(crate) struct Outcome {
     pub(crate) home: Option<POINT>,
 }
 
-/// How a drag out of a window is handed to Windows: the `Carried` constructor, and the drag
-/// runner (`carry_out`). Handed over where the app first drags something out (`Ui::drag_out`,
-/// through `windows::hands_out`), and nothing else reaches it: a program that never drags out
-/// carries none of this file but `is_going` and `let_go`.
+/// How a drag out of a window is handed to Windows: the `DataObject` constructor, and the drag
+/// runner (`drag_out`). Handed over where the app first drags something out (`Ui::drag_out`,
+/// through `windows::enable_drag_out`), and nothing else reaches it: a program that never drags
+/// out compiles in none of this file but `is_dragging` and `let_go`.
 #[derive(Clone, Copy)]
 pub(crate) struct Outward {
-    pub made: fn(DragData) -> *mut Carried,
-    pub carried: unsafe fn(HANDLE, *mut Carried) -> Outcome,
+    pub made: fn(DragData) -> *mut DataObject,
+    pub run: unsafe fn(HANDLE, *mut DataObject) -> Outcome,
 }
 
 /// The only implementation (see `Outward`).
-pub(crate) const OUTWARD: Outward = Outward { made: Carried::new, carried: carry_out };
+pub(crate) const OUTWARD: Outward = Outward { made: DataObject::new, run: drag_out };
 
 /// Drags `data` out of window `hwnd` until dropped or cancelled, and reports the result. The
 /// caller's reference to `data` is released here.
@@ -548,13 +549,13 @@ pub(crate) const OUTWARD: Outward = Outward { made: Carried::new, carried: carry
 /// # Safety
 /// `data` is alive, and referenced once by the caller. No reference to the windows' state is
 /// held meanwhile: the windows keep being drawn and notified, as ever.
-pub(crate) unsafe fn carry_out(hwnd: HANDLE, data: *mut Carried) -> Outcome {
+pub(crate) unsafe fn drag_out(hwnd: HANDLE, data: *mut DataObject) -> Outcome {
     let (source, mut effect) = (Source::new(hwnd), 0);
-    GOING.set((data, hwnd));
+    DRAGGING.set((data, hwnd));
     // SAFETY: both objects are alive, referenced here once each until the end.
     unsafe {
-        let said = CARRY.get()(data, source, COPY | MOVE | LINK, &mut effect);
-        GOING.set((std::ptr::null_mut(), 0));
+        let said = RUN_DRAG.get()(data, source, COPY | MOVE | LINK, &mut effect);
+        DRAGGING.set((std::ptr::null_mut(), 0));
         let taken = if said == DROP { (*data).taken(effect) } else { None };
         // (The drop point is where the pointer was when Windows last asked about the cursor: it
         // asks after every move.)
@@ -575,7 +576,7 @@ mod tests {
     }
 
     /// What a program gets of `data` in one format, as bytes; or the error it gets.
-    fn got(data: *mut Carried, format: u16) -> Result<Vec<u8>, i32> {
+    fn got(data: *mut DataObject, format: u16) -> Result<Vec<u8>, i32> {
         let mut handed = STGMEDIUM { medium: 0, memory: 0, owner: std::ptr::null_mut() };
         unsafe {
             let said = ((*data).table.get_data)(data, &asked(format), &mut handed);
@@ -592,11 +593,11 @@ mod tests {
     }
 
     /// The formats a program finds in `data`, enumerating one at a time.
-    fn listed(data: *mut Carried) -> Vec<u16> {
+    fn listed(data: *mut DataObject) -> Vec<u16> {
         let mut forms = std::ptr::null_mut();
         unsafe {
-            assert_eq!((CARRIED.forms)(data, 1, &mut forms), 0);
-            assert_eq!((CARRIED.forms)(data, 2, &mut std::ptr::null_mut()), NOT_DONE, "nothing can be set in it");
+            assert_eq!((DATA_OBJECT_TABLE.forms)(data, 1, &mut forms), 0);
+            assert_eq!((DATA_OBJECT_TABLE.forms)(data, 2, &mut std::ptr::null_mut()), NOT_DONE, "nothing can be set in it");
             let (mut found, mut one, mut count) = (Vec::new(), asked(0), 0);
             while (FORMS.next)(forms, 1, &mut one, &mut count) == 0 {
                 assert_eq!((count, one.aspect, one.index, one.medium), (1, 1, -1, 1));
@@ -612,9 +613,9 @@ mod tests {
     }
 
     #[test]
-    fn files_are_carried_out_as_the_list_a_file_manager_reads() {
+    fn files_are_dragged_out_as_the_list_a_file_manager_reads() {
         let files = [std::path::PathBuf::from("C:\\a\\one.txt"), std::path::PathBuf::from("D:\\zwei drei\\für.png")];
-        let data = Carried::new(DragData::Files(&files));
+        let data = DataObject::new(DragData::Files(&files));
         assert_eq!(listed(data), [FILES]);
         assert_eq!(got(data, FILES), Ok(to_drop(&files)));
         // (A `DROPFILES` header: the names' offset, the drop point, and two flags, the last
@@ -622,29 +623,29 @@ mod tests {
         assert_eq!(&got(data, FILES).unwrap()[..20], &[20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
         assert_eq!(got(data, TEXT), Err(NO_FORM), "files are not text");
         unsafe {
-            assert_eq!((CARRIED.query_get_data)(data, &asked(FILES)), 0);
-            assert_eq!((CARRIED.query_get_data)(data, &asked(PIXELS)), NO_FORM);
-            assert_eq!((CARRIED.query_get_data)(data, &FORMATETC { medium: 4, ..asked(FILES) }), NO_MEDIUM, "only in memory");
-            assert_eq!((CARRIED.query_get_data)(data, &FORMATETC { aspect: 2, ..asked(FILES) }), NO_ASPECT, "only all of it");
-            assert_eq!((CARRIED.release)(data), 0);
+            assert_eq!((DATA_OBJECT_TABLE.query_get_data)(data, &asked(FILES)), 0);
+            assert_eq!((DATA_OBJECT_TABLE.query_get_data)(data, &asked(PIXELS)), NO_FORM);
+            assert_eq!((DATA_OBJECT_TABLE.query_get_data)(data, &FORMATETC { medium: 4, ..asked(FILES) }), NO_MEDIUM, "only in memory");
+            assert_eq!((DATA_OBJECT_TABLE.query_get_data)(data, &FORMATETC { aspect: 2, ..asked(FILES) }), NO_ASPECT, "only all of it");
+            assert_eq!((DATA_OBJECT_TABLE.release)(data), 0);
         }
     }
 
     #[test]
-    fn text_and_links_are_carried_out_as_text_and_a_link_as_an_address_too() {
-        let (text, link) = (Carried::new(DragData::Text("words, ünïcode 𝄞")), Carried::new(DragData::Link("https://example.org/ä")));
+    fn text_and_links_are_dragged_out_as_text_and_a_link_as_an_address_too() {
+        let (text, link) = (DataObject::new(DragData::Text("words, ünïcode 𝄞")), DataObject::new(DragData::Link("https://example.org/ä")));
         let address = form_named("UniformResourceLocatorW");
         assert_eq!((listed(text), listed(link)), (vec![TEXT], vec![address, TEXT]));
         assert_eq!(got(text, TEXT), Ok(utf16("words, ünïcode 𝄞")));
         assert_eq!((got(link, address), got(link, TEXT)), (Ok(utf16("https://example.org/ä")), Ok(utf16("https://example.org/ä"))));
         assert_eq!(got(text, address), Err(NO_FORM));
-        unsafe { assert_eq!(((CARRIED.release)(text), (CARRIED.release)(link)), (0, 0)) };
+        unsafe { assert_eq!(((DATA_OBJECT_TABLE.release)(text), (DATA_OBJECT_TABLE.release)(link)), (0, 0)) };
     }
 
     #[test]
-    fn a_picture_is_carried_out_as_a_png_file_and_as_the_block_of_pixels_made_once() {
+    fn a_picture_is_dragged_out_as_a_png_file_and_as_the_block_of_pixels_made_once() {
         let pixels = [0xff10_2030u32, 0x8040_5060, 0x0070_8090, 0xffa0_b0c0, 0x01d0_e0f0, 0xfe01_0203];
-        let data = Carried::new(DragData::Picture(2, &pixels));
+        let data = DataObject::new(DragData::Picture(2, &pixels));
         let png = form_named("PNG");
         assert_eq!(listed(data), [png, PIXELS]);
         assert_eq!(got(data, png).ok().and_then(|png| crate::png::decode(&png)), Some((2, pixels.to_vec())));
@@ -656,16 +657,16 @@ mod tests {
             assert!(made.is_some());
             got(data, png).unwrap();
             assert_eq!(forms[0].1.get().map(|bytes| bytes.as_ptr()), made);
-            assert_eq!((CARRIED.release)(data), 0);
+            assert_eq!((DATA_OBJECT_TABLE.release)(data), 0);
         }
     }
 
     #[test]
     fn the_list_of_forms_is_gone_through_skipped_reset_and_copied() {
-        let data = Carried::new(DragData::Picture(1, &[0xff00_0000]));
+        let data = DataObject::new(DragData::Picture(1, &[0xff00_0000]));
         let (mut forms, mut two, mut count) = (std::ptr::null_mut(), [asked(0), asked(0)], 0);
         unsafe {
-            (CARRIED.forms)(data, 1, &mut forms);
+            (DATA_OBJECT_TABLE.forms)(data, 1, &mut forms);
             assert_eq!(((FORMS.next)(forms, 2, two.as_mut_ptr(), &mut count), count, two.map(|form| form.format)), (0, 2, [form_named("PNG"), PIXELS]));
             assert_eq!(((FORMS.next)(forms, 2, two.as_mut_ptr(), &mut count), count), (FEWER, 0), "none are left");
             assert_eq!(((FORMS.reset)(forms), (FORMS.skip)(forms, 1)), (0, 0));
@@ -676,16 +677,16 @@ mod tests {
             let (mut same, mut none) = (std::ptr::null_mut(), std::ptr::null_mut());
             assert_eq!(((FORMS.query)(forms, &[0x103, 0, 0xC0, 0x4600_0000], &mut same), same), (0, forms));
             assert_eq!(((FORMS.query)(forms, &[0x10E, 0, 0xC0, 0x4600_0000], &mut none), none.is_null()), (NO_INTERFACE, true));
-            assert_eq!(((FORMS.release)(forms), (FORMS.release)(forms), (FORMS.release)(copy), (CARRIED.release)(data)), (1, 0, 0, 0));
+            assert_eq!(((FORMS.release)(forms), (FORMS.release)(forms), (FORMS.release)(copy), (DATA_OBJECT_TABLE.release)(data)), (1, 0, 0, 0));
         }
     }
 
     #[test]
     fn what_the_program_it_went_to_says_it_did_is_heard() {
-        let data = Carried::new(DragData::Text("t"));
+        let data = DataObject::new(DragData::Text("t"));
         let say = |form: &str, what: u32| {
             let mut medium = STGMEDIUM { medium: 1, memory: in_memory(&what.to_le_bytes()), owner: std::ptr::null_mut() };
-            unsafe { (CARRIED.set_data)(data, &asked(form_named(form)), &mut medium, 1) }
+            unsafe { (DATA_OBJECT_TABLE.set_data)(data, &asked(form_named(form)), &mut medium, 1) }
         };
         unsafe {
             // Windows' own answer, when nothing was reported.
@@ -698,17 +699,17 @@ mod tests {
             assert_eq!((say("Performed DropEffect", 0), say("Logical Performed DropEffect", MOVE)), (0, 0));
             assert_eq!((*data).taken(0), Some(DropEffect::Moved));
             assert_eq!(say("DropDescription", 1), NOT_DONE, "the rest is not heard");
-            assert_eq!((CARRIED.release)(data), 0);
+            assert_eq!((DATA_OBJECT_TABLE.release)(data), 0);
         }
-        let data = Carried::new(DragData::Text("t"));
+        let data = DataObject::new(DragData::Text("t"));
         let said = |what: u32| {
             let mut medium = STGMEDIUM { medium: 1, memory: in_memory(&what.to_le_bytes()), owner: std::ptr::null_mut() };
-            unsafe { (CARRIED.set_data)(data, &asked(form_named("Performed DropEffect")), &mut medium, 1) }
+            unsafe { (DATA_OBJECT_TABLE.set_data)(data, &asked(form_named("Performed DropEffect")), &mut medium, 1) }
         };
         said(COPY);
         unsafe {
             assert_eq!((*data).taken(MOVE), Some(DropEffect::Copied), "what it says it did counts");
-            assert_eq!((CARRIED.release)(data), 0);
+            assert_eq!((DATA_OBJECT_TABLE.release)(data), 0);
         }
     }
 
@@ -731,9 +732,9 @@ mod tests {
     }
 
     #[test]
-    fn nothing_in_these_tests_is_carried_by_windows() {
-        let data = Carried::new(DragData::Text("t"));
-        assert_eq!(CARRY.get() as usize, by_nobody as Carry as usize);
-        assert_eq!(unsafe { carry_out(0, data) }, Outcome { taken: None, home: None });
+    fn nothing_in_these_tests_is_dragged_by_windows() {
+        let data = DataObject::new(DragData::Text("t"));
+        assert_eq!(RUN_DRAG.get() as usize, by_nobody as RunDrag as usize);
+        assert_eq!(unsafe { drag_out(0, data) }, Outcome { taken: None, home: None });
     }
 }

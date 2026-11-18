@@ -127,7 +127,8 @@ pub enum Event {
     /// The wheel turned: units to scroll right and down.
     Wheel(f32, f32),
     /// Ctrl+wheel or a touchpad pinch: scale what is under the pointer by this factor. Taken by
-    /// a zooming box ([`Ui::zoom`](crate::Ui::zoom)) or a board.
+    /// a zooming box ([`Ui::zoom`](crate::Ui::zoom)) or a pan-and-zoom view
+    /// ([`Ui::pan_zoom`](crate::Ui::pan_zoom)).
     Zoom(f32),
     /// A finger on a touch screen landed, moved or lifted. Becomes taps, scrolling, long
     /// presses and pinches.

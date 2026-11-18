@@ -70,7 +70,7 @@ pub fn single_instance(name: &str) -> bool {
     crate::platform::hand_desktop();
     #[cfg(windows)]
     return crate::windows_shell::first_copy(name, &packed);
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     return linux::first_copy(name, &packed);
     #[allow(unreachable_code)]
     true
@@ -169,11 +169,14 @@ impl Ui {
     }
 }
 
-/// Linux: a file lock and a socket in the user's runtime folder.
-#[cfg(all(unix, not(target_os = "macos")))]
+/// Linux and macOS: a file lock and a socket in the user's runtime folder (on macOS, where
+/// there is none, the user's own temporary folder).
+#[cfg(unix)]
 pub(crate) mod linux {
     use super::{MOST, PATIENCE, came, unpacked};
     use std::ffi::c_int;
+    #[cfg(target_os = "macos")]
+    use std::ffi::c_void;
     use std::io::Read;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -183,11 +186,32 @@ pub(crate) mod linux {
     unsafe extern "C" {
         fn flock(fd: c_int, how: c_int) -> c_int;
         fn send(fd: c_int, bytes: *const u8, len: usize, flags: c_int) -> isize;
+        #[cfg(target_os = "macos")]
+        fn setsockopt(fd: c_int, level: c_int, name: c_int, value: *const c_void, len: u32) -> c_int;
+    }
+
+    /// macOS: a socket that never raises SIGPIPE (`SOL_SOCKET`, `SO_NOSIGPIPE`). Elsewhere each
+    /// send says so itself (`NO_SIGNAL`).
+    fn quiet(stream: &UnixStream) {
+        #[cfg(target_os = "macos")]
+        // SAFETY: an option of a socket this program holds, set from a 4-byte one.
+        unsafe {
+            setsockopt(stream.as_raw_fd(), 0xffff, 0x1022, (&1i32 as *const i32).cast(), 4)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let _ = stream;
     }
     /// Exclusive lock, without waiting (`LOCK_EX | LOCK_NB`); and a send that fails instead of
-    /// raising SIGPIPE when the other end is gone (`MSG_NOSIGNAL`).
+    /// raising SIGPIPE when the other end is gone (`MSG_NOSIGNAL`; macOS has no such flag, and
+    /// sets it on the socket instead, see `quiet`).
     const ALONE: c_int = 2 | 4;
+    #[cfg(not(target_os = "macos"))]
     const NO_SIGNAL: c_int = 0x4000;
+    #[cfg(target_os = "macos")]
+    const NO_SIGNAL: c_int = 0;
+    /// The longest name kept as it is in the socket path: macOS's paths hold 104 bytes, and its
+    /// temporary folder takes half.
+    const NAMED: usize = if cfg!(target_os = "macos") { 32 } else { 64 };
     /// The first copy's reply to a start it took.
     const TAKEN: u8 = b'y';
 
@@ -195,11 +219,14 @@ pub(crate) mod linux {
     /// folder (in a sandbox, the app's part of it, shared by every copy). `None` without one. A
     /// name that would make the socket path too long, or holds a slash, becomes a hash.
     pub(crate) fn place(name: &str) -> Option<PathBuf> {
-        let mut folder = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").filter(|folder| !folder.is_empty())?);
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|folder| !folder.is_empty());
+        #[cfg(target_os = "macos")]
+        let runtime = runtime.or_else(|| std::env::var_os("TMPDIR").filter(|folder| !folder.is_empty()));
+        let mut folder = PathBuf::from(runtime?);
         if let Some(app) = std::env::var_os("FLATPAK_ID").filter(|app| !app.is_empty()) {
             folder = folder.join("app").join(app);
         }
-        let plain = name.len() <= 64 && !name.is_empty() && !name.contains(['/', '\0']);
+        let plain = name.len() <= NAMED && !name.is_empty() && !name.contains(['/', '\0']);
         let named = if plain { name.to_string() } else { format!("{:016x}", crate::id::hash(name.as_bytes())) };
         Some(folder.join(format!("taut-{named}")))
     }
@@ -255,6 +282,7 @@ pub(crate) mod linux {
 
     /// Hears one later start: reads all of it, then replies that it took it.
     fn hear(stream: UnixStream) {
+        quiet(&stream);
         _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let mut bytes = Vec::new();
         if (&stream).take(MOST as u64 + 1).read_to_end(&mut bytes).is_err() {
@@ -269,6 +297,7 @@ pub(crate) mod linux {
     /// Hands this start to the first copy; returns whether it was taken.
     fn hand_over(place: &std::path::Path, packed: &[u8]) -> bool {
         let Ok(stream) = UnixStream::connect(beside(place, ".socket")) else { return false };
+        quiet(&stream);
         _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let mut sent = 0;
         while sent < packed.len() {

@@ -486,7 +486,7 @@ fn describe(app: &mut App, ui: &mut Ui) {
     ui.column().gap(2.0).open();
     for (number, thing) in app.things.iter().enumerate() {
         let row = ui.selectable(false, thing);
-        // Pressed and moved a little, the row is carried: what is described here follows the pointer.
+        // Pressed and moved a little, the row is dragged: what is described here follows the pointer.
         if ui.drag_source(&row, number as u64) {
             ui.label(thing);
             ui.close();
@@ -504,7 +504,7 @@ fn describe(app: &mut App, ui: &mut Ui) {
 }
 ```
 
-The carried value is a number meaningful to the app; `ui.drag_payload()` reports it during the
+The dragged value is a number meaningful to the app; `ui.drag_payload()` reports it during the
 drag; `ui.dropped(&on)` reports a drop on a sensing box. Files from other programs:
 `ui.files_hovered()`, `ui.files_dropped(&on)`.
 

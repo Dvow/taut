@@ -49,8 +49,10 @@ Popovers anchored to their button.
 - Password box: dots only, no copy, no word jumps, only dots exposed to readers.
 - Multi-line boxes that fill their room, or leave Enter to the app (Shift+Enter: new line).
 - App Edit menus; readable and settable cursor and selection (with line and column).
-- Spell checking with the system's checker and user dictionary (Windows; Enchant on Linux),
-  visible words only, on a background thread; suggestions, "Add to dictionary", "Ignore".
+- Spell checking with the system's checker and user dictionary (Windows; Enchant on Linux;
+  `NSSpellChecker` on macOS), visible words only, on a background thread; suggestions, "Add to
+  dictionary", "Ignore"; several languages per box (`Some("en-US,de-DE")`); words written twice
+  ("the the").
   About 30 KB, only when used.
 
 ## Tables and long lists
@@ -58,7 +60,8 @@ Popovers anchored to their button.
 - Sort by heading (Shift: several columns); resize, reorder, hide columns.
 - Horizontal scrolling with pinned columns; pinned top and bottom rows.
 - One Tab stop with a cell cursor; keyboard row selection; in-place editing (text, number,
-  choice); Ctrl+C copies rows as spreadsheet text.
+  choice); Ctrl+C copies rows as spreadsheet text; Ctrl+V pastes it into editable cells;
+  Ctrl+Z and Ctrl+Y undo and redo edits and pastes (`ui.cell_changes`).
 - Lists of any length cost only visible rows, including rows of varying height.
 
 ## Panels, docks, pan and zoom, graphs
@@ -106,7 +109,12 @@ Popovers anchored to their button.
   pairs.
 - **Vertical text** (`ui.vertical_label`): UAX #50 orientation, `vert` forms, `vmtx`/`VORG`;
   matches HarfBuzz in seven CJK fonts.
-- **Dates, times, numbers** in the user's system format; overridable.
+- **Dates, times, numbers** in the user's system format (order, separators, digit counts, group
+  sizes such as 12,34,567); month and day names and AM/PM in the system's language; Windows
+  region changes followed while running; overridable.
+- **Built-in words** (menus, file dialog, calendar, bars) in German, Spanish, French, Japanese,
+  Portuguese and Simplified Chinese with `translations`, from the user's language or
+  `ui.translate("de")`.
 
 ## Drawing and pictures
 
@@ -132,19 +140,23 @@ Popovers anchored to their button.
   tool, dialog, always on top); close requests that can be refused, also at logoff.
 - Frameless windows with app-drawn title strips (real title bar on Windows: snapping works);
   full screen; transparent windows.
-- Saved state: docks, tables, panels, windows, pan-zoom views, window position, one line of text each;
+- Saved state: docks, tables, panels, windows, pan-zoom views, window position, recent colours,
+  one line of text each;
   `taut::storage` writes atomically to the settings folder.
 - Drag and drop between boxes, from other programs (files, text) and out to them (files, text,
   pictures, links).
-- Clipboard (Windows, X11, Wayland): text, pictures, files.
+- Clipboard (Windows, X11, Wayland, macOS): text, pictures, files.
 - Open files and links with the default program.
-- Tray icon with native menu, system notifications, global hotkeys, single instance. Unused,
-  none of it is compiled in.
+- Tray icon with native menu, system notifications (on macOS for app bundles), global hotkeys,
+  single instance. Unused, none of it is compiled in.
 - **GPU or CPU** (`gpu`): Direct3D 11 or 12, Vulkan or OpenGL (Windows), or OpenGL ES 3 (EGL) and
   Vulkan (Linux, X11) show the pixels the CPU drew, byte for byte the same; whole frames in step with
   the screen; only changed rectangles uploaded (and presented, where the path can); a missing
   path falls back to the next; a lost device made again, else the CPU. `Window::renderer`,
   `ui.renderer()`, `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl`.
+- **Drawn by the GPU** (`gpu-draw`): every GPU path draws boxes, borders, shadows, text,
+  pictures, gradients, filled shapes and strokes itself, within a few levels of the CPU; scenes,
+  SVG drawings and colour emoji go up as CPU-drawn patches. Only changed parts drawn; `Auto` only large ones. `TAUT_DRAW=cpu|gpu|auto`.
 
 ## Input and accessibility
 
@@ -152,7 +164,7 @@ Popovers anchored to their button.
   groups and tab rows are one stop each.
 - **Touch** (`touch`; Windows, X11, Wayland): tap, long press, inertial scrolling, pinch zoom;
   pens with pressure, tilt and eraser; touchpad pinch.
-- **Screen readers** (UI Automation, AT-SPI): role, name, state, position and shortcut for every
+- **Screen readers** (UI Automation, AT-SPI, NSAccessibility): role, name, state, position and shortcut for every
   part, including off-screen content; tables and trees with full structure; text by character,
   word and line; announcements. Nothing is built until a reader asks.
 - **Themes:** dark, light, two high-contrast; accent, density and text scale; or follow the

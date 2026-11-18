@@ -1,6 +1,8 @@
 # taut
 
-A GUI library for Rust on Windows and Linux with no dependencies: no crates, no web view, no
+[![CI](https://github.com/Dvow/taut/actions/workflows/ci.yml/badge.svg)](https://github.com/Dvow/taut/actions/workflows/ci.yml)
+
+A GUI library for Rust on Windows, Linux and macOS with no dependencies: no crates, no web view, no
 graphics card needed. One function describes the window from the app's state; the library draws
 only what changed, and nothing while nothing happens.
 
@@ -40,21 +42,25 @@ takes `&mut` to what it changes and returns what the user did.
 - **No dependencies:** 0 crates (iced 159, egui 179, Slint 245). No GPU needed.
 - **Fast:** a 1,000-row window is described and redrawn in 172 µs (one frame: Dear ImGui 244 µs,
   egui 6,114 µs). Idle costs nothing.
-- **Accessible:** full keyboard use; screen readers through UI Automation and AT-SPI.
-- **Tested:** over 1,100 tests on Windows 11, Ubuntu and Arch Linux; every interface test checks
-  partial against full redraw, pixel for pixel; every parser of outside data is fuzzed.
+- **Accessible:** full keyboard use; screen readers through UI Automation, AT-SPI and
+  NSAccessibility.
+- **Tested:** over 1,100 tests on Windows 11, Ubuntu and Arch Linux, and on macOS 26; every
+  interface test checks partial against full redraw, pixel for pixel; every parser of outside
+  data is fuzzed.
 
 ## At a glance
 
-- **Systems:** Windows; Linux on X11 or Wayland. Not macOS, iOS, Android or the web yet.
+- **Systems:** Windows; Linux on X11 or Wayland; macOS (AppKit). Not iOS, Android or the web
+  yet.
 - **Rust:** 1.88+. **Licence:** MIT or Apache-2.0.
 - **Features** (all off by default): `right-to-left`, `brahmic`, `emoji`, `fallback-fonts`,
-  `touch`, `cff`, `woff2`, `color-profiles`, `gpu`
+  `touch`, `cff`, `woff2`, `color-profiles`, `gpu`, `gpu-draw`, `translations`
   ([costs](docs/costs-and-speed.md#what-it-costs)).
 - **GPU or CPU:** the CPU draws every pixel; with `gpu`, the GPU shows them, byte for byte the
-  same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11
-  ([costs](docs/costs-and-speed.md#gpu-or-cpu)).
-- **State:** 0.1. Names may change before 1.0 ([changes](CHANGELOG.md),
+  same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11;
+  Vulkan (dmabufs) under Wayland, when asked ([costs](docs/costs-and-speed.md#gpu-or-cpu)). With
+  `gpu-draw`, every GPU path draws them too, within a few levels.
+- **State:** 0.2. Names may change before 1.0 ([changes](CHANGELOG.md),
   [what is missing](docs/what-is-missing.md)).
 
 ## Examples
@@ -95,6 +101,7 @@ changed ([chapter 9](docs/09-inside-another-program.md)):
 | Direct3D 12 | `layer_d3d12` | `layer.draw(&mut ui, list, area)` |
 | OpenGL 3.3+ | `layer_opengl` | `layer.draw(&mut ui)` |
 | Vulkan 1.0+ | `layer_vulkan` | `layer.draw(&mut ui, commands, area)` |
+| Metal (macOS) | `layer_metal` | `layer.draw(&mut ui, encoder, area)` |
 | wgpu, bgfx, Skia, any other | `Surface::upload` | your `write_texture` of each changed place |
 
 ## Beside other Rust libraries
@@ -105,7 +112,7 @@ A label and a button, built for size on Windows, 2026-11-15:
 | --- | --- | --- | --- | --- |
 | Program | 457 KB | 8.3 MB | 5.9 MB | 7.8 MB |
 | Other crates | 0 | 179 | 159 | 245 |
-| Drawn by | CPU; shown by Direct3D 11/12, Vulkan, OpenGL or the CPU, same pixels | GPU (wgpu or OpenGL) | GPU (wgpu), or CPU | GPU (OpenGL, Skia), or CPU |
+| Drawn by | CPU; shown by Direct3D 11/12, Vulkan, OpenGL or the CPU, same pixels; or drawn by any of them (`gpu-draw`) | GPU (wgpu or OpenGL) | GPU (wgpu), or CPU | GPU (OpenGL, Skia), or CPU |
 | Screen readers | own (UI Automation, AT-SPI) | AccessKit | none in 0.14 | AccessKit |
 
 [More libraries, and Dear ImGui part by part](docs/beside-other-libraries.md).

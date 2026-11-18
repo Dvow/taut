@@ -575,7 +575,7 @@ impl Ui {
         // compares against nothing.
         let at = self.pointer().filter(|_| dragged).map_or(f32::NAN, |at| at.x);
         let middle = |of: Rect| if of.is_empty() { f32::NAN } else { of.x + of.w / 2.0 };
-        let [before, after] = beside.map(|name| name.map_or(f32::NAN, |name| middle(self.seen(self.id(name)))));
+        let [before, after] = beside.map(|name| name.map_or(f32::NAN, |name| middle(self.visible_rect(self.id(name)))));
         // A closable tab's keys: Delete closes it (as ARIA has it), Control+Shift with Left or
         // Right moves it.
         let moves = |ui: &mut Ui, key: Key, to: Option<&str>| tab.focused && to.is_some() && ui.key(key, Mods { ctrl: true, shift: true, alt: false });

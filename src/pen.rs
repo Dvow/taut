@@ -223,7 +223,7 @@ impl Inked {
             // (A single-colour stroke with round caps and joins and no dashes is rendered
             // exactly as everything near enough to its path.)
             (None, Some(pen)) => canvas.stroke(&self.path, at, 1.0, pen.width, self.color),
-            (None, None) => canvas.fill_with(&mut |each| self.path.flatten_closed(s, pt(at.x * s, at.y * s), 1.0, each), false, |_, _| self.color),
+            (None, None) => canvas.fill_one(&mut |each| self.path.flatten_closed(s, pt(at.x * s, at.y * s), 1.0, each), self.color),
         }
     }
 
@@ -368,7 +368,7 @@ fn lines(canvas: &mut Canvas, (edges, ends): (&[[Point; 2]], &[usize]), to_pixel
         cover.fill_with(&mut placed(&edges[from..*end], to_pixels), false, |_, _| Color::WHITE);
         from = *end;
     }
-    canvas.ink(covers, across as usize, [left, first], ink);
+    canvas.fill_mask(covers, across as usize, [left, first], ink);
 }
 
 /// The fewest `to_pixels` input units per pixel: by its largest stretch. (So a curve flattened

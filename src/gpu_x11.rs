@@ -157,6 +157,35 @@ impl Gpu {
         }
     }
 
+    /// What the GPU records a part of a window `area` pixels big into (left, top, right,
+    /// bottom), where it draws such a part itself (see `gpu_draw`): OpenGL and Vulkan do.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn drawing(&mut self, area: [c_int; 4]) -> Option<&mut crate::gpu_draw::DrawList> {
+        match self {
+            Gpu::OpenGL(gpu) if gpu.drawing.takes(area) => Some(&mut *gpu.list),
+            Gpu::Vulkan(gpu) if gpu.drawing.takes(area) => Some(&mut *gpu.list),
+            _ => None,
+        }
+    }
+
+    /// Draws a recorded paint into a window's pixels on the GPU, inside `place`, to be shown
+    /// with what was put in; and keeps `list` for the next one. Says whether it drew: if not,
+    /// the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn draw(&mut self, shows: &mut Shows, mut list: crate::gpu_draw::DrawList, place: [c_int; 4]) -> bool {
+        let drawn = match (&mut *self, shows) {
+            (Gpu::OpenGL(gpu), Shows::OpenGL(shows)) if !list.failed => gpu.draw(shows, &list, place),
+            (Gpu::Vulkan(gpu), Shows::Vulkan(shows)) if !list.failed => gpu.draw(shows, &list, place),
+            _ => false,
+        };
+        list.finish(drawn);
+        match self {
+            Gpu::OpenGL(gpu) => *gpu.list = list,
+            Gpu::Vulkan(gpu) => *gpu.list = list,
+        }
+        drawn
+    }
+
     /// Shows what was put into a window's pixels since they were last shown.
     pub(crate) fn show(&mut self, shows: &mut Shows) {
         match (self, shows) {

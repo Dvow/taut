@@ -291,12 +291,14 @@ impl AccessNode {
 
     /// For the column heading the rows are sorted by: the direction, in the word both Windows
     /// and Linux use.
+    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
     pub(crate) fn sort_word(&self) -> Option<&'static str> {
         self.sorted.map(|down| if down { "descending" } else { "ascending" })
     }
     /// Whether it can take focus: anything operable, a selectable table row, a document (for
     /// selecting in it), and a table cell (focus there being the table's cell); not text,
     /// progress bars, or containers.
+    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
     pub(crate) fn takes_keyboard(&self) -> bool {
         match self.role {
             Role::TableRow => self.on.is_some(),
@@ -336,6 +338,7 @@ pub(crate) fn view(nodes: &[AccessNode], at: usize) -> Rect {
 }
 
 /// A cell's table, by node index.
+#[cfg(any(windows, unix))]
 pub(crate) fn table_of(nodes: &[AccessNode], cell: usize) -> Option<usize> {
     let row = nodes.get(cell).filter(|cell| cell.role == Role::Cell)?.parent?;
     nodes.get(row)?.parent.filter(|table| nodes.get(*table).is_some_and(|table| table.role == Role::Table))
@@ -343,11 +346,13 @@ pub(crate) fn table_of(nodes: &[AccessNode], cell: usize) -> Option<usize> {
 
 /// A table's cell at a row and column from 0: its node index. None for a row out of view,
 /// whose cells have no nodes.
+#[cfg(any(windows, unix))]
 pub(crate) fn cell_at(nodes: &[AccessNode], table: usize, place: [u32; 2]) -> Option<usize> {
     (table + 1..nodes.len()).find(|at| nodes[*at].grid == Some(place) && table_of(nodes, *at) == Some(table))
 }
 
 /// The heading over a table column, from 0.
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 pub(crate) fn heading_at(nodes: &[AccessNode], table: usize, column: u32) -> Option<usize> {
     let heads = |at: &usize| nodes[*at].role == Role::ColumnHeader && nodes[*at].parent == Some(table);
     (table + 1..nodes.len()).find(|at| heads(at) && nodes[*at].position.is_some_and(|of| of[0] == column + 1))
@@ -587,7 +592,7 @@ struct NodeBuilder<'a> {
     /// The notes in box order, and their text.
     notes: &'a [Note],
     note_text: &'a str,
-    /// The long-list rows described (`Ui::rows_told`), and how many were placed: the first
+    /// The long-list rows described (`Ui::access_rows`), and how many were placed: the first
     /// node in such a row gives its position of how many.
     list_rows: &'a [(u32, [u32; 2])],
     rows_placed: usize,
@@ -786,8 +791,8 @@ fn place_radio_buttons(nodes: &mut [AccessNode], rovers: &[Rover]) {
 
 /// What screen readers are told, and what tests find things by.
 impl Ui {
-    /// A screen reader starts or stops listening to this window: from the next run on, `said`
-    /// is kept up to date, or not.
+    /// A screen reader starts or stops listening to this window: from the next run on,
+    /// [`visible_access_nodes`](Self::visible_access_nodes) is kept up to date, or not.
     pub fn set_screen_reader(&mut self, listening: bool) {
         (self.listening, self.again) = (listening, true);
         if listening {
@@ -801,7 +806,6 @@ impl Ui {
         }
     }
     /// Which nodes these are: it changes whenever they may have. (0 while nobody listens.)
-    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
     pub(crate) fn access_version(&self) -> u64 {
         self.visible_boxes.access_cache.first().map_or(0, |cache| cache.version)
     }

@@ -15,12 +15,13 @@
 //! ```
 //!
 //! A wire is dragged from port to port: output to input, or back. While dragging, compatible
-//! ports stand out and the rest fade; an incompatible one, by the app's `fits`, refuses it. An
-//! input takes one wire: a new one replaces the old, and a wire pulled off an input and dropped
-//! on nothing is deleted. Nodes are selected by click (Control toggles one, Shift adds one) and
-//! by a rectangle dragged on the background; selected, they move together, delete with Delete,
-//! and copy (Control+C, X, V; Control+D duplicates beside them). Right-click asks the app for
-//! its menu ([`GraphAction::Menu`]), with the content point, to place a new node there.
+//! ports stand out and the rest fade; one the app's [`can_connect`](Graph::can_connect) refuses
+//! takes no wire. An input takes one wire: a new one replaces the old, and a wire pulled off an
+//! input and dropped on nothing is deleted. Nodes are selected by click (Control toggles one,
+//! Shift adds one) and by a rectangle dragged on the background; selected, they move together,
+//! delete with Delete, and copy (Control+C, X, V; Control+D duplicates beside them).
+//! Right-click asks the app for its menu ([`GraphAction::Menu`]), with the content point, to
+//! place a new node there.
 //!
 //! The keyboard reaches everything. Tab goes from node to node in `nodes` order: a node's
 //! title, its ports once (Left and Right cycle them), and the app's parts in it; the view

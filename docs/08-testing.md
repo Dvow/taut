@@ -44,7 +44,7 @@ trial.fill("A name", "Alan");
 trial.key("Enter");
 assert_eq!(trial.app.names, ["Ada", "Alan"]);
 // The box is empty again at once: a key the app takes has the window described once more.
-assert!(trial.visible_access_nodes().iter().any(|said| said.role == Role::TextBox && said.name == "A name" && said.value.is_empty()));
+assert!(trial.visible_access_nodes().iter().any(|node| node.role == Role::TextBox && node.name == "A name" && node.value.is_empty()));
 // And the window shows both: a screen reader would be told of them.
 assert!(trial.has(Role::Text, "Ada") && trial.has(Role::Text, "Alan"));
 ```

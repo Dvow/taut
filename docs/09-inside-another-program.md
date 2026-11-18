@@ -113,6 +113,7 @@ objects, then draw it over each frame with one call:
 | Direct3D 12 | `layer_d3d12::Layer::new(device, queue, format)` | `layer.draw(&mut ui, list, area)` |
 | OpenGL 3.3+ | `layer_opengl::Layer::new(&mut find)` | `layer.draw(&mut ui)` |
 | Vulkan 1.0+ | `layer_vulkan::Layer::new(&handles)` | `layer.draw(&mut ui, commands, area)`, in the render pass |
+| Metal (macOS) | `layer_metal::Layer::new(device, queue, format)` | `layer.draw(&mut ui, encoder, area)`, in the render pass |
 
 ```rust,ignore
 // Direct3D 11: the program's ID3D11Device and ID3D11DeviceContext, as raw pointers.
@@ -147,15 +148,16 @@ unsafe { layer.delete() };
 ```
 
 - Uploads only changes (`UpdateSurface`, `UpdateSubresource`, `CopyTextureRegion`,
-  `glTexSubImage2D`, `vkCmdCopyBufferToImage`) and draws one premultiplied quad; idle frames
-  upload nothing.
-- Direct3D 12 and Vulkan copy with commands of their own, run on the program's queue before its
-  frame. A resize waits for the frames before.
+  `glTexSubImage2D`, `vkCmdCopyBufferToImage`, a Metal blit) and draws one premultiplied quad;
+  idle frames upload nothing.
+- Direct3D 12, Vulkan and Metal copy with commands of their own, run on the program's queue
+  before its frame. A resize waits for the frames before (Metal's command buffers keep the old
+  texture themselves).
 - Draws at the top left of the viewport (Direct3D 9 and 11, OpenGL) or of `area` (Direct3D 12,
-  Vulkan), clipped to it; size the `Ui` to match.
-- Direct3D 9 and 11 and OpenGL restore all state they set. Direct3D 12 and Vulkan have none to
-  restore: after `draw`, set your own pipeline, root signature or descriptor sets, descriptor
-  heaps, viewport and scissor again.
+  Vulkan, Metal), clipped to it; size the `Ui` to match.
+- Direct3D 9 and 11 and OpenGL restore all state they set. Direct3D 12, Vulkan and Metal have
+  none to restore: after `draw`, set your own pipeline, root signature or descriptor sets,
+  descriptor heaps, textures, viewport and scissor again.
 - Lost devices: Direct3D 9 calls `layer.before_reset()` before `Reset` (9Ex needs none);
   Direct3D 12 and Vulkan return the error, and a new device takes a new layer.
 - Errors are values: `Error`, with the operation and the system's message.

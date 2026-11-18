@@ -106,6 +106,7 @@ fn off(got: &[u32], surface: &Surface, under: &[u32]) -> (u32, usize) {
 const TOLERANCE: u32 = 1;
 
 /// The rows of a picture `width` wide, the last first: OpenGL counts rows from the bottom.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn upside_down(pixels: &[u32], width: usize) -> Vec<u32> {
     pixels.rchunks(width).flatten().copied().collect()
 }
@@ -709,6 +710,8 @@ functions!(Checks {
     glScissor: fn(i32, i32, i32, i32);
 });
 
+// (macOS: no context of the kind made here.)
+#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
 mod open_gl {
     use super::*;
     use std::ffi::CStr;
@@ -738,6 +741,12 @@ mod open_gl {
         let context = egl::context(egl::PLATFORM_SURFACELESS, std::ptr::null_mut(), None).expect("EGL gives no OpenGL 3.3 of the core profile without a display");
         let find = context.egl.eglGetProcAddress;
         (Box::new(move |name| unsafe { find(name.as_ptr()) }), context)
+    }
+
+    /// Skipped in CI on Windows (`TAUT_CI`): its runners have only Windows' OpenGL 1.1, with no core
+    /// profile. CI tests the layer on Linux, on Mesa.
+    fn no_opengl_here() -> bool {
+        cfg!(windows) && std::env::var_os("TAUT_CI").is_some()
     }
 
     /// Which OpenGL this is, as it says.
@@ -813,16 +822,25 @@ mod open_gl {
 
     #[test]
     fn opengl_shows_the_surface_over_what_was_drawn() {
+        if no_opengl_here() {
+            return;
+        }
         shows_the_surface_over_what_was_drawn(&mut OpenGl::new(context()), "OpenGL");
     }
 
     #[test]
     fn opengl_is_given_only_the_places_that_changed() {
+        if no_opengl_here() {
+            return;
+        }
         is_given_only_the_places_that_changed(&mut OpenGl::new(context()), "OpenGL");
     }
 
     #[test]
     fn opengl_lies_at_the_programs_viewport() {
+        if no_opengl_here() {
+            return;
+        }
         lies_at_the_programs_viewport(&mut OpenGl::new(context()), "OpenGL");
     }
 
@@ -873,6 +891,9 @@ mod open_gl {
     /// said before.
     #[test]
     fn opengl_puts_back_what_it_sets() {
+        if no_opengl_here() {
+            return;
+        }
         let mut opengl = OpenGl::new(context());
         let mut gallery = Gallery::new(320, 230, 1.0);
         opengl.update(&mut gallery.ui);
@@ -939,6 +960,9 @@ mod open_gl {
     /// does not have, and an interface wider than its textures.
     #[test]
     fn opengl_says_what_went_wrong() {
+        if no_opengl_here() {
+            return;
+        }
         let (find, _keep_alive) = context();
         let failed = unsafe { Layer::new(&mut |name| if name == c"glBlendFuncSeparate" { std::ptr::null() } else { find(name) }) }.expect_err("no layer without a function");
         assert_eq!(failed.to_string(), "finding OpenGL's functions failed: this OpenGL has no glBlendFuncSeparate");

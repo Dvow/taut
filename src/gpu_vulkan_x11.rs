@@ -130,6 +130,14 @@ pub(crate) struct Gpu {
     regions: bool,
     /// The device was lost, or failed: all of it is to be let go.
     pub(crate) lost: bool,
+    /// Where the GPU draws windows too, what it records to, and what it draws with: not yet
+    /// tried, or what that gave (see `gpu_draw`).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) drawing: crate::gpu_draw::Drawing,
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) list: Box<crate::gpu_draw::DrawList>,
+    #[cfg(feature = "gpu-draw")]
+    pipeline: Option<Option<Box<crate::gpu_draw_vulkan::Pipeline>>>,
     /// Tests: every call from now on says the device was lost.
     #[cfg(test)]
     faked: bool,
@@ -162,6 +170,19 @@ pub(crate) struct Shows {
     /// top, right, bottom in pixels from the top left.
     put: Vec<[c_int; 4]>,
     past: Vec<Vec<[c_int; 4]>>,
+    /// Where the GPU draws the window (`gpu-draw`): the image it draws in (none until it first
+    /// draws).
+    #[cfg(feature = "gpu-draw")]
+    picture: Option<Box<Picture>>,
+}
+
+/// An image of a window's pixels the GPU draws in (`gpu-draw`), its memory, and the places put
+/// into the buffer since they were copied into it.
+#[cfg(feature = "gpu-draw")]
+struct Picture {
+    image: Handle,
+    memory: Handle,
+    pending: Vec<[c_int; 4]>,
 }
 
 /// An image of a swap chain: the frame it last showed (0: none yet, so its pixels are unknown),
@@ -178,25 +199,6 @@ impl Shows {
     pub(crate) fn size(&self) -> [c_int; 2] {
         self.size
     }
-}
-
-/// Whether `name` is among the extensions `list` fills in.
-fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32, name: &CStr) -> bool {
-    let all = listed(VkExtensionProperties::default(), list);
-    // SAFETY: each name is Vulkan's, ending in a zero within its array.
-    all.iter().any(|offered| unsafe { CStr::from_ptr(offered.name.as_ptr()) } == name)
-}
-
-/// What one of Vulkan's enumerations fills in: its count first, then that many.
-fn listed<T: Copy>(zero: T, mut fill: impl FnMut(*mut u32, *mut T) -> i32) -> Vec<T> {
-    let mut count = 0;
-    if fill(&mut count, null_mut()) < 0 {
-        return Vec::new();
-    }
-    let mut all = vec![zero; count as usize];
-    let result = fill(&mut count, all.as_mut_ptr());
-    all.truncate(if result < 0 { 0 } else { count as usize });
-    all
 }
 
 impl Vulkan {
@@ -323,7 +325,13 @@ impl Gpu {
         // (Xlib.h).
         let (vulkan, visual, dri3) = unsafe { (Vulkan::open(x)?, *visual.cast::<c_ulong>().add(1), any || has_dri3(x)) };
         let chosen = vulkan.choose(visual, any, dri3)?;
+        #[cfg(feature = "gpu-draw")]
+        let cpu = chosen.cpu;
         let mut gpu = Gpu::make(vulkan, chosen)?;
+        #[cfg(feature = "gpu-draw")]
+        {
+            gpu.drawing = crate::gpu_draw::Drawing::chosen(!any, !cpu, std::env::var("TAUT_DRAW").ok().as_deref());
+        }
         let shows = gpu.window(id, size)?;
         Some((gpu, shows))
     }
@@ -364,6 +372,12 @@ impl Gpu {
             lost: false,
             #[cfg(test)]
             faked: false,
+            #[cfg(feature = "gpu-draw")]
+            drawing: crate::gpu_draw::Drawing::Never,
+            #[cfg(feature = "gpu-draw")]
+            list: Box::default(),
+            #[cfg(feature = "gpu-draw")]
+            pipeline: None,
         };
         let pool = VkCommandPoolCreateInfo { kind: 39, flags: 0x2, family, ..Default::default() };
         // SAFETY: the device's queue 0 of the family it was made with; and a pool for it.
@@ -437,6 +451,8 @@ impl Gpu {
             remake: false,
             put: Vec::new(),
             past: Vec::new(),
+            #[cfg(feature = "gpu-draw")]
+            picture: None,
         };
         if supported != 0 && self.parts(&mut shows) && self.fit(&mut shows, size) {
             return Some(shows);
@@ -506,8 +522,12 @@ impl Gpu {
         made && !pixels.is_null()
     }
 
-    /// Lets go of a window's pixels.
+    /// Lets go of a window's pixels, and the image the GPU draws them in.
     fn unbuffer(&mut self, shows: &mut Shows) {
+        #[cfg(feature = "gpu-draw")]
+        if let (Some(pipeline), Some(picture)) = (self.pipeline.as_ref().and_then(|made| made.as_deref()), shows.picture.take()) {
+            pipeline.unpicture((picture.image, picture.memory));
+        }
         // SAFETY: nothing on the device uses them (the queue is idle); null handles are let be.
         unsafe {
             (self.on.vkDestroyBuffer)(self.device, shows.buffer, null());
@@ -606,6 +626,10 @@ impl Gpu {
             unsafe { std::ptr::copy_nonoverlapping(strip.as_ptr().add(row * wide + left), shows.pixels.add((top + row) * wide + left), length) };
         }
         note(&mut shows.put, place);
+        #[cfg(feature = "gpu-draw")]
+        if let Some(picture) = shows.picture.as_mut() {
+            note(&mut picture.pending, place);
+        }
     }
 
     /// Shows what was put into a window's pixels since they were last shown: copied into the
@@ -653,6 +677,7 @@ impl Gpu {
 
     /// Copies `wanted` places of a window's pixels into image `at` of its swap chain, once the
     /// image is had. Says whether the copy was given to the queue; if not, the device is lost.
+    #[cfg(not(feature = "gpu-draw"))]
     fn copy(&mut self, shows: &mut Shows, at: usize, wanted: &[[c_int; 4]]) -> bool {
         let (on, commands, Image { image, showed, drawn }, width) = (&self.on, shows.commands, shows.images[at], shows.size[0]);
         let regions: Vec<VkBufferImageCopy> = wanted.iter().filter_map(|place| within(place, shows.extent)).map(|place| region(place, width)).collect();
@@ -679,6 +704,140 @@ impl Gpu {
         shows.busy = result == 0;
         self.lost |= result != 0;
         result == 0
+    }
+
+    /// Copies `wanted` places of a window's pixels into image `at` of its swap chain, once the
+    /// image is had. Says whether the copy was given to the queue; if not, the device is lost.
+    #[cfg(feature = "gpu-draw")]
+    fn copy(&mut self, shows: &mut Shows, at: usize, wanted: &[[c_int; 4]]) -> bool {
+        let (on, commands, Image { image, showed, drawn }, width) = (&self.on, shows.commands, shows.images[at], shows.size[0]);
+        let regions: Vec<VkBufferImageCopy> = wanted.iter().filter_map(|place| within(place, shows.extent)).map(|place| region(place, width)).collect();
+        let old = if showed == 0 { LAYOUT_UNDEFINED } else { LAYOUT_PRESENT };
+        let before = barrier(image, old, LAYOUT_TRANSFER_DESTINATION, 0, ACCESS_TRANSFER_WRITE);
+        let after = barrier(image, LAYOUT_TRANSFER_DESTINATION, LAYOUT_PRESENT, ACCESS_TRANSFER_WRITE, 0);
+        let begin = VkCommandBufferBeginInfo { kind: 42, flags: 0x1, ..Default::default() };
+        // SAFETY: Vulkan's documented calls; the commands are not in use (their fence was
+        // waited for), the buffer and image are the window's.
+        unsafe {
+            (on.vkResetFences)(self.device, 1, &shows.fence);
+            (on.vkBeginCommandBuffer)(commands, &begin);
+            (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &before);
+        }
+        if !self.copied_from_picture(shows, image, wanted) && !regions.is_empty() {
+            // SAFETY: as above; the places lie in the buffer and the image.
+            unsafe { (on.vkCmdCopyBufferToImage)(commands, shows.buffer, image, LAYOUT_TRANSFER_DESTINATION, regions.len() as u32, regions.as_ptr()) };
+        }
+        // SAFETY: as above.
+        let recorded = unsafe {
+            (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &after);
+            (on.vkEndCommandBuffer)(commands)
+        };
+        let stage = STAGE_TRANSFER;
+        let submit = VkSubmitInfo { kind: 4, wait_count: 1, waits: &shows.acquired, wait_stages: &stage, buffer_count: 1, buffers: &commands, signal_count: 1, signals: &drawn, ..Default::default() };
+        // SAFETY: as above.
+        let result = if recorded == 0 { unsafe { (on.vkQueueSubmit)(self.queue, 1, &submit, shows.fence) } } else { recorded };
+        shows.busy = result == 0;
+        self.lost |= result != 0;
+        result == 0
+    }
+
+    /// Records `wanted` places copied into swap chain image `image` from the image the GPU draws
+    /// the window in, where it has one (what was put since going into it first). Says whether
+    /// it did; if not, they are copied from the buffer.
+    #[cfg(feature = "gpu-draw")]
+    fn copied_from_picture(&self, shows: &mut Shows, image: Handle, wanted: &[[c_int; 4]]) -> bool {
+        let Some(pipeline) = self.pipeline.as_ref().and_then(|made| made.as_deref()) else { return false };
+        let Some(from) = shows.picture.as_ref().map(|picture| picture.image) else { return false };
+        self.fill_picture(shows, false);
+        let inside: Vec<[c_int; 4]> = wanted.iter().filter_map(|place| within(place, shows.extent)).collect();
+        pipeline.copy_places(shows.commands, from, image, &inside);
+        true
+    }
+
+    /// Records the places put since copied into the image the GPU draws the window in (all of
+    /// it, if `fresh`: just made), which is then ready to be copied from.
+    #[cfg(feature = "gpu-draw")]
+    fn fill_picture(&self, shows: &mut Shows, fresh: bool) {
+        let ([width, height], buffer, commands) = (shows.size, shows.buffer, shows.commands);
+        let Some(held) = shows.picture.as_mut().filter(|held| fresh || !held.pending.is_empty()) else { return };
+        let picture = held.image;
+        let places = if fresh { vec![[0, 0, width, height]] } else { std::mem::take(&mut held.pending) };
+        held.pending.clear();
+        let regions: Vec<VkBufferImageCopy> = places.into_iter().map(|place| region(place, width)).collect();
+        let (old, access) = if fresh { (LAYOUT_UNDEFINED, 0) } else { (LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_READ) };
+        let to_copy = barrier(picture, old, LAYOUT_TRANSFER_DESTINATION, access, ACCESS_TRANSFER_WRITE);
+        let to_read = barrier(picture, LAYOUT_TRANSFER_DESTINATION, LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_WRITE, ACCESS_TRANSFER_READ);
+        let on = &self.on;
+        // SAFETY: the commands are being recorded; the places lie in the buffer and the image.
+        unsafe {
+            (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_copy);
+            if !regions.is_empty() {
+                (on.vkCmdCopyBufferToImage)(commands, buffer, picture, LAYOUT_TRANSFER_DESTINATION, regions.len() as u32, regions.as_ptr());
+            }
+            (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_read);
+        }
+    }
+
+    /// Draws a recorded paint into the image the GPU draws a window in (made the first time,
+    /// from the buffer), inside `place` (left, top, right, bottom), to be shown with what was put
+    /// in; what it draws with is made the first time. Says whether it could: if not, the CPU is
+    /// to.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn draw(&mut self, shows: &mut Shows, list: &crate::gpu_draw::DrawList, place: [c_int; 4]) -> bool {
+        if shows.pixels.is_null() || !self.wait(shows) {
+            return false;
+        }
+        let mut made = self.pipeline.take().unwrap_or_else(|| self.drawer());
+        let drawn = made.as_mut().is_some_and(|pipeline| self.draw_with(shows, pipeline, list, place));
+        self.pipeline = Some(made);
+        if drawn {
+            note(&mut shows.put, place);
+        }
+        drawn
+    }
+
+    /// What the device draws with; nothing where it can't be made.
+    #[cfg(feature = "gpu-draw")]
+    fn drawer(&self) -> Option<Box<crate::gpu_draw_vulkan::Pipeline>> {
+        let (find, device, mut memory) = (self.vulkan.calls.vkGetDeviceProcAddr, self.device, VkPhysicalDeviceMemoryProperties::default());
+        // SAFETY: Vulkan fills in the device's memory; the names end in zeros.
+        unsafe { (self.vulkan.calls.vkGetPhysicalDeviceMemoryProperties)(self.chosen.physical, &mut memory) };
+        crate::gpu_draw_vulkan::Pipeline::new(&mut |name| unsafe { find(device, name.as_ptr()) }, device, &memory, false)
+    }
+
+    /// Records and runs the paint drawn by `pipeline`, as `draw` says, and waits for it. A
+    /// failure loses the device: the window's image and buffer no longer agree.
+    #[cfg(feature = "gpu-draw")]
+    fn draw_with(&mut self, shows: &mut Shows, pipeline: &mut crate::gpu_draw_vulkan::Pipeline, list: &crate::gpu_draw::DrawList, place: [c_int; 4]) -> bool {
+        let fresh = shows.picture.is_none();
+        if fresh {
+            let Some((image, memory)) = pipeline.picture(shows.size) else { return false };
+            shows.picture = Some(Box::new(Picture { image, memory, pending: Vec::new() }));
+        }
+        let picture = shows.picture.as_ref().map_or(0, |picture| picture.image);
+        let (commands, begin) = (shows.commands, VkCommandBufferBeginInfo { kind: 42, flags: 0x1, ..Default::default() });
+        // SAFETY: Vulkan's documented calls; the commands are not in use (their fence was
+        // waited for).
+        unsafe {
+            (self.on.vkResetFences)(self.device, 1, &shows.fence);
+            (self.on.vkBeginCommandBuffer)(commands, &begin);
+        }
+        self.fill_picture(shows, fresh);
+        let was = crate::gpu_draw_vulkan::Was { layout: LAYOUT_TRANSFER_SOURCE, access: ACCESS_TRANSFER_READ, stage: STAGE_TRANSFER };
+        let recorded = pipeline.record(commands, picture, shows.size, list, place, was, LAYOUT_TRANSFER_SOURCE);
+        let submit = VkSubmitInfo { kind: 4, buffer_count: 1, buffers: &commands, ..Default::default() };
+        // SAFETY: as above.
+        let result = unsafe { if (self.on.vkEndCommandBuffer)(commands) == 0 && recorded { (self.on.vkQueueSubmit)(self.queue, 1, &submit, shows.fence) } else { -1 } };
+        (shows.busy, self.lost) = (result == 0, self.lost || result != 0);
+        let done = self.wait(shows);
+        pipeline.forget_target();
+        done
+    }
+
+    /// Tests: whether it has drawn windows itself (see `gpu_draw`).
+    #[cfg(all(test, feature = "gpu-draw"))]
+    pub(crate) fn has_drawn(&self) -> bool {
+        matches!(self.pipeline, Some(Some(_)))
     }
 
     /// Presents image `at` of a window's swap chain once copied into, naming the places put.
@@ -751,6 +910,8 @@ impl Drop for Gpu {
         // SAFETY: Vulkan's documented calls; nothing of the device is used after.
         unsafe {
             (self.on.vkDeviceWaitIdle)(self.device);
+            #[cfg(feature = "gpu-draw")]
+            drop(self.pipeline.take());
             (self.on.vkDestroyCommandPool)(self.device, self.pool, null());
             (self.on.vkDestroyDevice)(self.device, null());
         }
@@ -764,10 +925,4 @@ fn within(place: &[c_int; 4], extent: [u32; 2]) -> Option<[c_int; 4]> {
     let [left, top] = [place[0].max(0), place[1].max(0)];
     let [right, bottom] = [place[2].min(extent[0] as c_int), place[3].min(extent[1] as c_int)];
     (left < right && top < bottom).then_some([left, top, right, bottom])
-}
-
-/// The copy of `place` from pixels `width` a row into the same place of an image.
-fn region([left, top, right, bottom]: [c_int; 4], width: c_int) -> VkBufferImageCopy {
-    let at = (top as u64 * width as u64 + left as u64) * 4;
-    VkBufferImageCopy { buffer_offset: at, row_length: width as u32, layers: LAYER, offset: [left, top, 0], extent: [(right - left) as u32, (bottom - top) as u32, 1], ..Default::default() }
 }

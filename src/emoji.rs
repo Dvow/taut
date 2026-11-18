@@ -420,9 +420,9 @@ fn system(full: bool) -> Option<FontFile> {
 }
 
 /// The system's emoji font, if any: elsewhere, the one Fontconfig names (known where system
-/// text is in use), if it has colour glyphs and a smiling face; else the first such font in the
-/// font folders. User fonts come before system ones, and a folder's files before its
-/// subfolders.
+/// text is in use), or on macOS the one CoreText draws in, if it has colour glyphs and a
+/// smiling face; else the first such font in the font folders. User fonts come before system
+/// ones, and a folder's files before its subfolders.
 #[cfg(not(windows))]
 fn system(full: bool) -> Option<FontFile> {
     use std::path::PathBuf;
@@ -430,7 +430,7 @@ fn system(full: bool) -> Option<FontFile> {
     #[cfg(not(target_os = "macos"))]
     let named = crate::x11::emoji_file().and_then(FontFile::open).filter(smiles);
     #[cfg(target_os = "macos")]
-    let named = None;
+    let named = crate::core_text::emoji_file().filter(smiles);
     if named.is_some() {
         return named;
     }

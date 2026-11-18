@@ -33,7 +33,7 @@ use crate::id::Id;
 use crate::platform::{Clipboard, PicturesAndFiles, Window, WindowPlacement};
 use crate::portal::Portal;
 use crate::preferences::{Preferences, of_x_settings};
-use crate::screens::{Screen, Spot, spot};
+use crate::screens::{OpenAt, Screen, window_origin};
 use crate::second_window::{WindowKind, WindowOpening};
 use crate::text::{Face, Font, Metrics, TextSystem};
 use crate::ui::Ui;
@@ -1053,7 +1053,7 @@ struct Connection {
     /// The same for what one of the program's windows drags out to other programs, under
     /// `XdndSelection`, with the window dragging it, which owns it.
     dnd: Atom,
-    carried: RefCell<(XWindow, Kinds)>,
+    dragged_out: RefCell<(XWindow, Kinds)>,
     /// Copies going to other programs in pieces.
     going: RefCell<Vec<Going>>,
     /// The program's icon as X keeps it on a window (see `pictured`).
@@ -1097,7 +1097,7 @@ impl Connection {
         conns.1 = if shrugs(before) { conns.1 } else { before };
         conns.0 += 1;
         let (selection, utf8, targets, mailbox) = (atom(selection), atom(c"UTF8_STRING"), atom(c"TARGETS"), atom(c"TAUT_CLIPBOARD"));
-        let (held, dnd, carried) = (RefCell::new(Vec::new()), atom(c"XdndSelection"), RefCell::new((0, Vec::new())));
+        let (held, dnd, dragged_out) = (RefCell::new(Vec::new()), atom(c"XdndSelection"), RefCell::new((0, Vec::new())));
         Connection {
             x,
             display,
@@ -1108,7 +1108,7 @@ impl Connection {
             mailbox,
             held,
             dnd,
-            carried,
+            dragged_out,
             going: RefCell::new(Vec::new()),
             icons: Vec::new(),
             #[cfg(feature = "gpu")]
@@ -1177,10 +1177,10 @@ impl Connection {
     fn lost(&self, selection: Atom) {
         // SAFETY: the display is open.
         let owner = unsafe { (self.x.XGetSelectionOwner)(self.display, selection) };
-        let mut carried = self.carried.borrow_mut();
+        let mut dragged_out = self.dragged_out.borrow_mut();
         match selection {
             _ if selection == self.selection && owner != self.window => self.held.borrow_mut().clear(),
-            _ if selection == self.dnd && owner != carried.0 => *carried = (0, Vec::new()),
+            _ if selection == self.dnd && owner != dragged_out.0 => *dragged_out = (0, Vec::new()),
             _ => {}
         }
     }
@@ -1188,8 +1188,8 @@ impl Connection {
     /// Holds what window `from` drags out, in each type other programs may ask for, owned by
     /// that window from `time`; replacing what was dragged before. (With nothing and no window,
     /// nothing is dragged any more.)
-    fn carry_out(&self, kinds: Kinds, from: XWindow, time: c_ulong) {
-        *self.carried.borrow_mut() = (from, kinds);
+    fn own_drag_out(&self, kinds: Kinds, from: XWindow, time: c_ulong) {
+        *self.dragged_out.borrow_mut() = (from, kinds);
         // SAFETY: the display is open, and the window, if named, is the program's.
         unsafe {
             (self.x.XSetSelectionOwner)(self.display, self.dnd, from, time);
@@ -1200,8 +1200,8 @@ impl Connection {
     /// What one of the program's windows drags out, in one type, while it does: at hand for
     /// another of its windows it is dropped on, which could not ask X and wait for the reply.
     /// (Nothing while nothing is dragged here.)
-    fn carried_as(&self, kind: Atom) -> Option<Vec<u8>> {
-        self.carried.borrow().1.iter().find(|(carried_as, _)| *carried_as == kind).map(|(_, bytes)| bytes.to_vec())
+    fn dragged_out_as(&self, kind: Atom) -> Option<Vec<u8>> {
+        self.dragged_out.borrow().1.iter().find(|(dragged_out_as, _)| *dragged_out_as == kind).map(|(_, bytes)| bytes.to_vec())
     }
 
     /// What something dragged out of a window is to X programs, in each type with its bytes:
@@ -1387,8 +1387,8 @@ impl Connection {
     /// # Safety
     /// `asked` is a request X delivered on this display.
     unsafe fn answer(&self, asked: RequestEvent) {
-        let (carried, copied) = (self.carried.borrow(), self.held.borrow());
-        let held = if asked.selection == self.dnd && self.dnd != self.selection { &carried.1 } else { &*copied };
+        let (dragged_out, copied) = (self.dragged_out.borrow(), self.held.borrow());
+        let held = if asked.selection == self.dnd && self.dnd != self.selection { &dragged_out.1 } else { &*copied };
         // An ICCCM-obsolete requester leaves the owner to pick the property.
         let mut property = if asked.property == 0 { asked.target } else { asked.property };
         // What is asked: the list of types offered (`TARGETS`, as atoms, type 4), or the data
@@ -1805,7 +1805,7 @@ struct Shown {
     /// It announced it accepts drops (see `Drops`); the window dragging something over it (0
     /// for none), where it was last, and what it is taken as (files or text).
     takes: bool,
-    carried: (XWindow, Point, Atom),
+    drag_over: (XWindow, Point, Atom),
     cursor: Cursor,
     /// Its app hid it entirely to live in the tray ([`Ui::hide_window`]): withdrawn until it
     /// comes forward.
@@ -1870,7 +1870,7 @@ impl Shown {
             (x.XMapWindow)(display, id);
             typing
         };
-        let (normal, carried) = (WindowPlacement { maximized: false, ..opens }, (0, Point::default(), 0));
+        let (normal, drag_over) = (WindowPlacement { maximized: false, ..opens }, (0, Point::default(), 0));
         Shown {
             id,
             known,
@@ -1893,7 +1893,7 @@ impl Shown {
             spot: [0; 2],
             hidden: false,
             takes: false,
-            carried,
+            drag_over,
             cursor: Cursor::Arrow,
             withdrawn: false,
             uncovered: Rect::EMPTY,
@@ -2167,8 +2167,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             // the nearest), or centred on the screen it names; else where the window manager
             // puts it.
             let found = screens(&conn, scale);
-            let asked = window.position.map(|(x, y)| Spot::At(x, y)).or(window.screen.map(Spot::Middle)).unwrap_or_default();
-            let at = spot(&found, asked, |_| size.map(|side| side as f32)).map(|(_, at)| (at.x as i32, at.y as i32));
+            let asked = window.position.map(|(x, y)| OpenAt::At(x, y)).or(window.screen.map(OpenAt::Middle)).unwrap_or_default();
+            let at = window_origin(&found, asked, |_| size.map(|side| side as f32)).map(|(_, at)| (at.x as i32, at.y as i32));
             let (id, kind) = new_window(&conn.x, display, size, least, at, [window.frameless, window.transparent]);
             (conn.window, conn.icons) = (id, pictured(window.icons));
             let conn = Rc::new(conn);
@@ -2307,7 +2307,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             (28, Some(at)) => self.noted(at, news.atom),
             // SAFETY: as above: a type-33 event is a client message, a type-30 one (below) a
             // selection request, delivered on this display.
-            (33, Some(at)) => self.told(at, unsafe { event.client }),
+            (33, Some(at)) => self.client_message(at, unsafe { event.client }),
             // The XSETTINGS changed: the theme may have.
             (28, None) if news.window == self.settings => self.settings_changed(),
             // The work areas are given on the root window, per desktop.
@@ -2623,7 +2623,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// XDND replies from a program something dragged from here is over (status, finished); or
     /// XDND messages from a program dragging something here (enter, position, leave, drop),
     /// which a window hears once its app asked about drops (see `Drops`).
-    fn told(&mut self, at: usize, told: ClientEvent) {
+    fn client_message(&mut self, at: usize, told: ClientEvent) {
         let conn = self.conn.clone();
         // The first number says what to do, or which window it comes from.
         let (named, from) = (|name: &CStr| told.message == conn.atom(name), told.data[0] as XWindow);
@@ -2633,9 +2633,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         if named(c"WM_PROTOCOLS") && from == conn.atom(c"WM_DELETE_WINDOW") {
             self.closed(at);
         } else if let Some(outward) = OUTWARD.get().filter(|_| named(c"XdndStatus") || named(c"XdndFinished")) {
-            self.rerun |= (outward.told)(self.outgoing(), from, named(c"XdndFinished"), told.data);
+            self.rerun |= (outward.reply)(self.outgoing(), from, named(c"XdndFinished"), told.data);
         } else if let Some(drops) = DROPS.get() {
-            self.rerun |= (drops.told)(self.taking(), at, &told);
+            self.rerun |= (drops.xdnd_message)(self.taking(), at, &told);
         }
     }
 
@@ -2689,14 +2689,14 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let ([left, top], [x, y]) = (first.frame, self.conn.place(first.id));
         let over = rect((x - left) as f32, (y - top) as f32, (first.size[0] + 2 * left) as f32, (first.size[1] + top + left) as f32);
         let asked = match (opening.position, opening.screen, opening.kind) {
-            (Some((x, y)), ..) => Spot::At(x, y),
-            (None, Some(nth), _) => Spot::Middle(nth),
-            (None, None, WindowKind::Dialog) => Spot::Over(over),
+            (Some((x, y)), ..) => OpenAt::At(x, y),
+            (None, Some(nth), _) => OpenAt::Middle(nth),
+            (None, None, WindowKind::Dialog) => OpenAt::Over(over),
             _ => return None,
         };
         let [left, top] = if opening.frameless { [0, 0] } else { first.frame };
         let big = [size.w * scale + (2 * left) as f32, size.h * scale + (top + left) as f32];
-        spot(self.ui.screens(), asked, |_| big).map(|(_, at)| (at.x as i32, at.y as i32))
+        window_origin(self.ui.screens(), asked, |_| big).map(|(_, at)| (at.x as i32, at.y as i32))
     }
 
     // ---- dragging out of a window (how: `Outward`) ----
@@ -3005,6 +3005,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let (id, [width, height], clear, context) = (shown.id, shown.size, shown.kind.transparent, self.draws_with(at).2);
         let (left, right) = (((area.x * scale).floor() as c_int).max(0), ((area.right() * scale).ceil() as c_int).min(width));
         let (mut top, bottom) = (((area.y * scale).floor() as c_int).max(0), ((area.bottom() * scale).ceil() as c_int).min(height));
+        #[cfg(feature = "gpu-draw")]
+        if !clear && self.drawn_by_gpu(at, area, [left, top, right, bottom]) {
+            return;
+        }
         while top < bottom && left < right {
             let high = rows.min(bottom - top);
             let mut canvas = Canvas::new(&mut self.strip[..(width * high) as usize], width as usize, high as usize, (0, top), scale);
@@ -3033,6 +3037,24 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let crate::gpu_x11::Way::Gpu(shows) = &mut shown.way else { return false };
         gpu.put(shows, &self.strip, shown.size[0], place);
         true
+    }
+
+    /// Draws `area` of a window (`place` in pixels: left, top, right, bottom) on the GPU, where
+    /// the GPU shows the window and draws a part that big itself (see `gpu_draw`). Says whether
+    /// it did; if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    fn drawn_by_gpu(&mut self, at: usize, area: Rect, place: [c_int; 4]) -> bool {
+        let (scale, size) = (self.scale, self.windows[at].size);
+        let (Some(gpu), crate::gpu_x11::Way::Gpu(_)) = (self.gpu.as_mut(), &self.windows[at].way) else { return false };
+        let Some(list) = gpu.drawing(place) else { return false };
+        let mut list = std::mem::take(list);
+        list.begin(size);
+        let mut canvas = Canvas::recording(&mut list, size[0] as usize, size[1] as usize, (0, 0), scale);
+        canvas.clip(area.snap_to_pixels(scale));
+        self.windows[at].with(&mut self.ui, |ui| ui.paint(&mut canvas));
+        drop(canvas);
+        let (Some(gpu), crate::gpu_x11::Way::Gpu(shows)) = (self.gpu.as_mut(), &mut self.windows[at].way) else { return false };
+        gpu.draw(shows, list, place)
     }
 
     /// Shows what was put into a window's texture, where the GPU shows the window.
@@ -3147,14 +3169,14 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 #[derive(Clone, Copy)]
 struct Drops {
     /// An XDND message to window `at` from a drag source. Says whether an interface must run.
-    told: fn(Taking<'_>, usize, &ClientEvent) -> bool,
+    xdnd_message: fn(Taking<'_>, usize, &ClientEvent) -> bool,
     /// After a run (see `Taking::ran`).
     ran: fn(Taking<'_>),
 }
 
 /// Hands the windows their drop handling, on this thread (see `Drops`).
 pub(crate) fn hand_drops() {
-    DROPS.set(Some(Drops { told: |taking, at, told| taking.told(at, told), ran: |taking| taking.ran() }));
+    DROPS.set(Some(Drops { xdnd_message: |taking, at, told| taking.xdnd_message(at, told), ran: |taking| taking.ran() }));
 }
 
 /// What taking in drops works with: the connection, the first window's interface (lending out
@@ -3173,16 +3195,16 @@ struct Taking<'a> {
 impl Taking<'_> {
     /// An XDND message to window `at` from a drag source: enter, position, leave or drop. Says
     /// whether an interface must run.
-    fn told(mut self, at: usize, told: &ClientEvent) -> bool {
+    fn xdnd_message(mut self, at: usize, told: &ClientEvent) -> bool {
         let conn = self.conn;
         let (named, from) = (|name: &CStr| told.message == conn.atom(name), told.data[0] as XWindow);
         if named(c"XdndEnter") {
             let kind = self.offered(at, told);
-            self.carry(at, if kind != 0 { from } else { 0 }, kind);
+            self.note_drag_over(at, if kind != 0 { from } else { 0 }, kind);
         } else if named(c"XdndPosition") {
-            self.carried_to(at, from, told.data[2]);
-        } else if named(c"XdndLeave") && from == self.windows[at].carried.0 {
-            self.carry(at, 0, 0);
+            self.drag_moved_to(at, from, told.data[2]);
+        } else if named(c"XdndLeave") && from == self.windows[at].drag_over.0 {
+            self.note_drag_over(at, 0, 0);
             self.hear(at, Event::Leave); // the pointer left with it
         } else if named(c"XdndDrop") {
             self.let_go(at, from, told.data[2] as c_ulong);
@@ -3228,27 +3250,27 @@ impl Taking<'_> {
 
     /// Notes which window drags something over a window and as what (0 for none), and tells its
     /// interface when it comes and goes.
-    fn carry(&mut self, at: usize, from: XWindow, kind: Atom) {
-        let (was, text) = (self.windows[at].carried, kind != self.conn.atom(FILES));
+    fn note_drag_over(&mut self, at: usize, from: XWindow, kind: Atom) {
+        let (was, text) = (self.windows[at].drag_over, kind != self.conn.atom(FILES));
         if (from != 0) != (was.0 != 0) {
             let text = if from != 0 { text } else { was.2 != self.conn.atom(FILES) };
             self.hear(at, if text { Event::TextHovered(from != 0) } else { Event::FilesHovered(from != 0) });
         }
-        self.windows[at].carried = (from, was.1, kind);
+        self.windows[at].drag_over = (from, was.1, kind);
     }
 
     /// The drag reached a screen position (its halves are x and y). If the window takes it, its
     /// interface hears where on the window that is; and the source hears whether it may be
     /// dropped here. It may, as a copy.
-    fn carried_to(&mut self, at: usize, from: XWindow, place: c_long) {
+    fn drag_moved_to(&mut self, at: usize, from: XWindow, place: c_long) {
         let conn = self.conn;
         let (x, display, id) = (&conn.x, conn.display, self.windows[at].id);
-        let (takes, mut on, mut child) = (from == self.windows[at].carried.0, [0; 2], 0);
+        let (takes, mut on, mut child) = (from == self.windows[at].drag_over.0, [0; 2], 0);
         if takes {
             // SAFETY: X fills in where on this window the screen position is.
             unsafe { (x.XTranslateCoordinates)(display, root(x, display), id, (place >> 16) as i16 as c_int, place as i16 as c_int, &mut on[0], &mut on[1], &mut child) };
-            self.windows[at].carried.1 = pt(on[0] as f32 / self.scale, on[1] as f32 / self.scale);
-            self.hear(at, Event::Move(self.windows[at].carried.1));
+            self.windows[at].drag_over.1 = pt(on[0] as f32 / self.scale, on[1] as f32 / self.scale);
+            self.hear(at, Event::Move(self.windows[at].drag_over.1));
         }
         let copies = if takes { conn.atom(c"XdndActionCopy") } else { 0 };
         // No rectangle is given in which the reply would stay the same: every move is to be
@@ -3261,13 +3283,13 @@ impl Taking<'_> {
     /// interface gets it where it was dropped. The source hears whether a box of the window
     /// took it once the interface has run.
     fn let_go(&mut self, at: usize, from: XWindow, time: c_ulong) {
-        let (conn, (carried, _, kind), id) = (self.conn, self.windows[at].carried, self.windows[at].id);
-        let got = (from == carried && from != 0).then(|| conn.carried_as(kind).or_else(|| conn.read(id, conn.dnd, kind, time))).flatten();
-        if from == carried {
-            self.carry(at, 0, kind);
+        let (conn, (source, _, kind), id) = (self.conn, self.windows[at].drag_over, self.windows[at].id);
+        let got = (from == source && from != 0).then(|| conn.dragged_out_as(kind).or_else(|| conn.read(id, conn.dnd, kind, time))).flatten();
+        if from == source {
+            self.note_drag_over(at, 0, kind);
         }
         let Some(got) = got.filter(|got| !got.is_empty()) else { return conn.tell(from, from, c"XdndFinished", [id as c_long, 0, 0, 0, 0]) };
-        self.hear(at, Event::Move(self.windows[at].carried.1));
+        self.hear(at, Event::Move(self.windows[at].drag_over.1));
         let files = kind == conn.atom(FILES);
         self.hear(at, if files { Event::FilesDropped(files_in(&got)) } else { Event::TextDropped(String::from_utf8_lossy(&got).into_owned()) });
         self.finishing.push((id, from));
@@ -3277,8 +3299,8 @@ impl Taking<'_> {
 // ---- dragging out of a window (XDND, as the source) ----
 
 /// How the windows drag things out to other programs by XDND. Set by the first call handing
-/// something out ([`Ui::drag_out`], through `platform::hands_out`); reached no other way, so a
-/// program that never does is built without it (including a PNG writer).
+/// something out ([`Ui::drag_out`], through `platform::enable_drag_out`); reached no other way,
+/// so a program that never does is built without it (including a PNG writer).
 #[derive(Clone, Copy)]
 struct Outward {
     /// After a run: what the person just dragged out of a window goes out. Says whether an
@@ -3293,11 +3315,11 @@ struct Outward {
     given_up: fn(Outgoing<'_>) -> bool,
     /// The window it is over (named by the first number) says what it would do with it; or
     /// (with `true`) what it did after the drop.
-    told: fn(Outgoing<'_>, XWindow, bool, [c_long; 5]) -> bool,
+    reply: fn(Outgoing<'_>, XWindow, bool, [c_long; 5]) -> bool,
 }
 
 /// Hands the windows their drag-out code, on this thread (see `Outward`).
-pub(crate) fn hands_out() {
+pub(crate) fn enable_drag_out() {
     OUTWARD.set(Some(Outward {
         ran: |outgoing| outgoing.ran(),
         moved: |mut outgoing, at, root, time| outgoing.out_at(at, root, time),
@@ -3309,7 +3331,7 @@ pub(crate) fn hands_out() {
             outgoing.give_up_out();
             outgoing.rerun
         },
-        told: |mut outgoing, from, done, data| {
+        reply: |mut outgoing, from, done, data| {
             match done {
                 true => outgoing.finished(from, data),
                 false => outgoing.answered(from, data),
@@ -3333,10 +3355,10 @@ struct Outgoing<'a> {
 
 impl Outgoing<'_> {
     /// After a run: whatever the person just dragged out of a window goes out (see
-    /// `carry_out`). Says whether an interface must run.
+    /// `start_drag_out`). Says whether an interface must run.
     fn ran(mut self) -> bool {
         for at in 0..self.windows.len() {
-            self.carry_out(at);
+            self.start_drag_out(at);
         }
         self.rerun
     }
@@ -3345,13 +3367,13 @@ impl Outgoing<'_> {
     /// window owns `XdndSelection` in each type offered, keeping the type list on itself where
     /// there are more than three, and grabs the keyboard while dragging, so Escape cancels it
     /// wherever the pointer is. Then the window under the pointer hears of it.
-    fn carry_out(&mut self, at: usize) {
+    fn start_drag_out(&mut self, at: usize) {
         let conn = self.conn;
         let Some(kinds) = self.windows[at].with(self.ui, |ui| ui.take_drag_out().map(|what| conn.kinds_of(what))).flatten() else { return };
         self.give_up_out();
         let (from, ([x, y], time, state)) = (self.windows[at].id, self.last);
         let names: Vec<Atom> = kinds.iter().map(|(kind, _)| *kind).collect();
-        conn.carry_out(kinds, from, time);
+        conn.own_drag_out(kinds, from, time);
         if names.len() > 3 {
             conn.leave(from, conn.atom(c"XdndTypeList"), 4, &names);
         }
@@ -3505,7 +3527,7 @@ impl Outgoing<'_> {
         let conn = self.conn;
         // SAFETY: the display is open. (0: `CurrentTime`.)
         unsafe { (conn.x.XUngrabKeyboard)(conn.display, 0) };
-        conn.carry_out(Vec::new(), 0, 0);
+        conn.own_drag_out(Vec::new(), 0, 0);
         let Some(at) = self.windows.iter().position(|shown| shown.id == out.from) else { return };
         self.rerun |= self.windows[at].with(self.ui, |ui| ui.set_drop_effect(taken)).is_some();
     }
@@ -4418,7 +4440,7 @@ pub(crate) mod tests {
     /// The program's icons are on its window for task bars and window lists: each width,
     /// height, then pixels.
     #[test]
-    fn a_window_carries_the_programs_pictures_of_itself() {
+    fn a_window_holds_the_programs_pictures_of_itself() {
         let (small, big) = ([0xff10_2030u32; 4], [0x8040_5060u32; 6]);
         let icons = [(2, &small[..]), (3, &big[..])];
         let asked = Window { title: "taut pictured", width: 320.0, height: 200.0, icons: &icons, ..Default::default() };
@@ -4568,7 +4590,7 @@ pub(crate) mod tests {
     /// Another program dragging files, on a thread of its own: a window owning `XdndSelection`
     /// that serves `list`. Returns that window once X has registered it; then sends which
     /// window requested the list, and each client message received (atom and numbers).
-    fn files_carried_elsewhere(list: &'static str) -> (XWindow, std::sync::mpsc::Receiver<(Atom, [c_long; 5])>) {
+    fn files_dragged_from_elsewhere(list: &'static str) -> (XWindow, std::sync::mpsc::Receiver<(Atom, [c_long; 5])>) {
         let (tell, heard) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let source = conn(c"XdndSelection").unwrap();
@@ -4621,7 +4643,7 @@ pub(crate) mod tests {
         // asked after that.
         settle(&mut host);
         let (conn, second) = (host.conn.clone(), host.windows[1].id);
-        let (from, heard) = files_carried_elsewhere("file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n");
+        let (from, heard) = files_dragged_from_elsewhere("file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n");
         let (named, wait) = (|name: &CStr| conn.atom(name), Duration::from_secs(2));
         // The second window's check box on screen.
         let (at, mut place, mut child) = (middle(app.borrow().at[2], host.scale), [0; 2], 0);
@@ -4643,7 +4665,7 @@ pub(crate) mod tests {
     /// display: only when asked, on a display of its own.)
     #[test]
     #[ignore]
-    fn a_window_takes_what_other_programs_carry_only_once_its_app_asks() {
+    fn a_window_takes_what_other_programs_drag_in_only_once_its_app_asks() {
         let (asks, got) = (Rc::new(Cell::new(false)), Rc::new(RefCell::new((Vec::new(), Rect::EMPTY))));
         let (app_asks, kept) = (asks.clone(), got.clone());
         let window = Window { title: "taut test", width: 320.0, height: 200.0, ..Default::default() };
@@ -4657,17 +4679,17 @@ pub(crate) mod tests {
         settle(&mut host);
         let (conn, id) = (host.conn.clone(), host.windows[0].id);
         let (named, wait) = (|name: &CStr| conn.atom(name), Duration::from_secs(2));
-        assert!(DROPS.get().is_none() && OUTWARD.get().is_none(), "no way of taking or carrying out has been handed over");
+        assert!(DROPS.get().is_none() && OUTWARD.get().is_none(), "no way of taking or dragging out has been handed over");
         assert_eq!(conn.numbers(id, c"XdndAware"), [], "it says nothing while its app has not asked");
-        let (from, heard) = files_carried_elsewhere("file:///tmp/one.txt\r\n");
+        let (from, heard) = files_dragged_from_elsewhere("file:///tmp/one.txt\r\n");
         let at = spot(&host, 0, got.borrow().1);
-        let carried = || {
+        let dragged_in = || {
             [
                 message(id, named(c"XdndEnter"), [from as c_long, 5 << 24, named(FILES) as c_long, 0, 0]),
                 message(id, named(c"XdndPosition"), [from as c_long, 0, (at[0] << 16 | at[1]) as c_long, 0, named(c"XdndActionCopy") as c_long]),
             ]
         };
-        carried().into_iter().for_each(|event| send(&mut host, id, event));
+        dragged_in().into_iter().for_each(|event| send(&mut host, id, event));
         assert!(heard.recv_timeout(Duration::from_millis(300)).is_err() && !host.ui.files_over, "nothing answered, nothing heard");
         send(&mut host, id, message(id, named(c"XdndLeave"), [from as c_long, 0, 0, 0, 0]));
         // The app asks: from that run the window announces XDND 5, and drops reach the app.
@@ -4675,7 +4697,7 @@ pub(crate) mod tests {
         host.rerun = true;
         host.turn();
         assert_eq!(conn.numbers(id, c"XdndAware"), [5], "it says so once its app asks");
-        carried().into_iter().for_each(|event| send(&mut host, id, event));
+        dragged_in().into_iter().for_each(|event| send(&mut host, id, event));
         assert_eq!(heard.recv_timeout(wait), Ok((named(c"XdndStatus"), [id as c_long, 3, 0, 0, named(c"XdndActionCopy") as c_long])), "they may be let go here");
         assert!(host.ui.files_over);
         send(&mut host, id, message(id, named(c"XdndDrop"), [from as c_long, 0, 0, 0, 0]));
@@ -6211,7 +6233,7 @@ pub(crate) mod tests {
     /// inside the window, `what` outside it) and a drop box that also takes files and text from
     /// other programs; its second window, while open, a box taking files and text.
     #[derive(Default)]
-    struct Carrier {
+    struct DragSourceApp {
         what: Option<DragData<'static>>,
         from: Rect,
         on: Rect,
@@ -6227,9 +6249,9 @@ pub(crate) mod tests {
         took_text: Option<String>,
     }
 
-    fn carrier(app: &mut Carrier, ui: &mut Ui) {
+    fn drag_source_app(app: &mut DragSourceApp, ui: &mut Ui) {
         ui.column().pad(10.0).gap(10.0).open();
-        let from = ui.button("Carry me");
+        let from = ui.button("Drag me");
         if ui.drag_source(&from, 7) {
             ui.label("seven");
             ui.close();
@@ -6250,11 +6272,11 @@ pub(crate) mod tests {
     }
 
     /// That app's windows, the first with its corner at `at` on screen.
-    fn carrying(what: Option<DragData<'static>>, takes: SecondWindow, at: (i32, i32)) -> Option<(Alone, Rc<RefCell<Carrier>>)> {
-        let app = Rc::new(RefCell::new(Carrier { what, takes, ..Default::default() }));
+    fn drag_source_window(what: Option<DragData<'static>>, takes: SecondWindow, at: (i32, i32)) -> Option<(Alone, Rc<RefCell<DragSourceApp>>)> {
+        let app = Rc::new(RefCell::new(DragSourceApp { what, takes, ..Default::default() }));
         let described = app.clone();
-        let window = Window { title: "taut carrying", position: Some(at), width: 300.0, height: 200.0, ..Default::default() };
-        Some((host(window, move |ui| carrier(&mut described.borrow_mut(), ui))?, app))
+        let window = Window { title: "taut dragging", position: Some(at), width: 300.0, height: 200.0, ..Default::default() };
+        Some((host(window, move |ui| drag_source_app(&mut described.borrow_mut(), ui))?, app))
     }
 
     /// A window box's middle on screen.
@@ -6359,11 +6381,11 @@ pub(crate) mod tests {
     /// cancels it anywhere.
     #[test]
     #[ignore = "works the pointer of a display of its own (xvfb-run)"]
-    fn files_carried_out_go_to_another_program_the_xdnd_way_and_come_back_home() {
+    fn files_dragged_out_go_to_another_program_the_xdnd_way_and_come_back_home() {
         let Some(hands) = hands() else { return eprintln!("no display of the tests' own to work the pointer of: not tested") };
         let (keys, codes) = (Keys::open().unwrap(), Codes::open().unwrap());
         let paths: &'static [PathBuf] = Box::leak(Box::new([PathBuf::from("/tmp/one.txt"), PathBuf::from("/tmp/two words.png")]));
-        let ((_alone, mut host), app) = carrying(Some(DragData::Files(paths)), SecondWindow::default(), (50, 50)).expect("a display");
+        let ((_alone, mut host), app) = drag_source_window(Some(DragData::Files(paths)), SecondWindow::default(), (50, 50)).expect("a display");
         let (target, heard) = takes_elsewhere(c"XdndActionMove");
         settle(&mut host);
         let (from, on) = (spot(&host, 0, app.borrow().from), spot(&host, 0, app.borrow().on));
@@ -6377,7 +6399,7 @@ pub(crate) mod tests {
         // and position, asked to copy.
         goes(&hands, &mut host, [420, 150]);
         assert!(host.out.as_ref().is_some_and(|out| out.from == id && out.over == 0) && !host.ui.drag_leaves_window());
-        assert_eq!(host.conn.carried_as(host.conn.atom(FILES)).as_deref(), Some(&b"file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n"[..]));
+        assert_eq!(host.conn.dragged_out_as(host.conn.atom(FILES)).as_deref(), Some(&b"file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n"[..]));
         goes(&hands, &mut host, [550, 150]);
         goes(&hands, &mut host, [560, 160]);
         assert_eq!(sent(&heard)[..2], ["XdndEnter 5 text/uri-list", "XdndPosition XdndActionCopy"]);
@@ -6389,7 +6411,7 @@ pub(crate) mod tests {
         lets(&mut host, 50);
         assert_eq!(sent(&heard).iter().filter(|said| said.starts_with("read")).collect::<Vec<_>>(), ["read file:///tmp/one.txt\r\nfile:///tmp/two%20words.png\r\n"]);
         assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![DropEffect::Moved], None));
-        assert!(host.conn.carried_as(host.conn.atom(FILES)).is_none(), "nothing is carried any more");
+        assert!(host.conn.dragged_out_as(host.conn.atom(FILES)).is_none(), "nothing is dragged any more");
         // Dragged out again and back over its own window: the other program gets a leave;
         // dropped on the box, it is the number again.
         goes(&hands, &mut host, from);
@@ -6426,13 +6448,13 @@ pub(crate) mod tests {
     #[test]
     #[ignore]
     fn text_from_another_program_reaches_the_box_it_is_let_go_on() {
-        let ((_alone, mut host), app) = carrying(None, SecondWindow::default(), (50, 50)).expect("a display");
+        let ((_alone, mut host), app) = drag_source_window(None, SecondWindow::default(), (50, 50)).expect("a display");
         settle(&mut host);
         let (conn, id) = (host.conn.clone(), host.windows[0].id);
         let (named, wait) = (|name: &CStr| conn.atom(name), Duration::from_secs(2));
         let on = app.borrow().on;
         for (place, taken) in [(on, true), (Rect { y: 180.0, h: 10.0, ..on }, false)] {
-            let (from, heard) = files_carried_elsewhere("words, ünïcode 𝄞");
+            let (from, heard) = files_dragged_from_elsewhere("words, ünïcode 𝄞");
             let at = spot(&host, 0, place);
             send(&mut host, id, message(id, named(c"XdndEnter"), [from as c_long, 5 << 24, named(c"UTF8_STRING") as c_long, named(TEXT) as c_long, 0]));
             send(&mut host, id, message(id, named(c"XdndPosition"), [from as c_long, 0, (at[0] << 16 | at[1]) as c_long, 0, named(c"XdndActionCopy") as c_long]));
@@ -6445,7 +6467,7 @@ pub(crate) mod tests {
             assert_eq!(app.borrow_mut().text.take().as_deref(), if taken { Some("words, ünïcode 𝄞") } else { None });
         }
         // What is neither files nor text is not taken.
-        let (from, heard) = files_carried_elsewhere("");
+        let (from, heard) = files_dragged_from_elsewhere("");
         send(&mut host, id, message(id, named(c"XdndEnter"), [from as c_long, 5 << 24, named(PICTURE) as c_long, 0, 0]));
         let at = spot(&host, 0, app.borrow().on);
         send(&mut host, id, message(id, named(c"XdndPosition"), [from as c_long, 0, (at[0] << 16 | at[1]) as c_long, 0, named(c"XdndActionCopy") as c_long]));
@@ -6458,9 +6480,9 @@ pub(crate) mod tests {
     /// its pointer.)
     #[test]
     #[ignore = "works the pointer of a display of its own (xvfb-run)"]
-    fn what_one_window_carries_out_another_window_of_the_program_takes() {
+    fn what_one_window_drags_out_another_window_of_the_program_takes() {
         let Some(hands) = hands() else { return eprintln!("no display of the tests' own to work the pointer of: not tested") };
-        let ((_alone, mut host), app) = carrying(Some(DragData::Text("über alles")), SecondWindow::new(200.0, 120.0).position(500, 100), (50, 50)).expect("a display");
+        let ((_alone, mut host), app) = drag_source_window(Some(DragData::Text("über alles")), SecondWindow::new(200.0, 120.0).position(500, 100), (50, 50)).expect("a display");
         settle(&mut host);
         assert_eq!(host.windows.len(), 2);
         let (from, took) = (spot(&host, 0, app.borrow().from), spot(&host, 1, app.borrow().took));
@@ -6486,7 +6508,7 @@ pub(crate) mod tests {
             return;
         }
         let paths: &'static [PathBuf] = Box::leak(Box::new([PathBuf::from("/tmp/from the other.txt")]));
-        let ((_alone, mut host), app) = carrying(Some(DragData::Files(paths)), SecondWindow::default(), (500, 100)).expect("a display");
+        let ((_alone, mut host), app) = drag_source_window(Some(DragData::Files(paths)), SecondWindow::default(), (500, 100)).expect("a display");
         settle(&mut host);
         let (on, from) = (spot(&host, 0, app.borrow().on), spot(&host, 0, app.borrow().from));
         println!("ready {} {} {} {}", on[0], on[1], from[0], from[1]);
@@ -6509,9 +6531,9 @@ pub(crate) mod tests {
     /// for the test above; on a display of its own, with its pointer.)
     #[test]
     #[ignore = "works the pointer of a display of its own (xvfb-run)"]
-    fn two_programs_carry_to_each_other() {
+    fn two_programs_drag_to_each_other() {
         let Some(hands) = hands() else { return eprintln!("no display of the tests' own to work the pointer of: not tested") };
-        let ((_alone, mut host), app) = carrying(Some(DragData::Text("from the first program")), SecondWindow::default(), (50, 50)).expect("a display");
+        let ((_alone, mut host), app) = drag_source_window(Some(DragData::Text("from the first program")), SecondWindow::default(), (50, 50)).expect("a display");
         let mut other = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "x11::tests::a_program_that_takes_and_hands_out", "--ignored", "--nocapture", "--test-threads=1"])
             .env("TAUT_TEST_OTHER", "1")
@@ -7390,6 +7412,76 @@ pub(crate) mod tests {
                 for (nth, (x, gpu)) in pictures[0].iter().zip(shown).enumerate() {
                     assert_eq!(differ(x, gpu), (0, None, None), "step {nth}: X and {renderer:?} show different pixels");
                 }
+            }
+        }
+
+        /// Where the GPU draws too (`gpu-draw`), it draws every kind of thing as the CPU does:
+        /// forced to, as on a device that is the CPU at work. Says whether `host` has a GPU path.
+        #[cfg(feature = "gpu-draw")]
+        fn always_drawn(host: &mut Windows) -> bool {
+            match host.gpu.as_mut() {
+                Some(crate::gpu_x11::Gpu::OpenGL(gpu)) => gpu.drawing = crate::gpu_draw::Drawing::Always,
+                Some(crate::gpu_x11::Gpu::Vulkan(gpu)) => gpu.drawing = crate::gpu_draw::Drawing::Always,
+                None => return false,
+            }
+            true
+        }
+
+        /// Whether the GPU drew `host`'s windows itself.
+        #[cfg(feature = "gpu-draw")]
+        fn drawn_by_gpu(host: &Windows) -> bool {
+            match host.gpu.as_ref() {
+                Some(crate::gpu_x11::Gpu::OpenGL(gpu)) => gpu.has_drawn(),
+                Some(crate::gpu_x11::Gpu::Vulkan(gpu)) => gpu.has_drawn(),
+                None => false,
+            }
+        }
+
+        /// Where the GPU draws too (`gpu-draw`), each GPU path's window shows what its interface
+        /// paints at every step within a few levels (see `gpu_draw`), drawn by the GPU.
+        #[cfg(feature = "gpu-draw")]
+        #[test]
+        #[ignore]
+        fn the_gpu_draws_what_the_cpu_paints_within_a_few_levels() {
+            for renderer in GPUS {
+                let Some(((_alone, mut host), app)) = through(renderer) else { continue };
+                assert!(always_drawn(&mut host));
+                let off = |a: &c_ulong, b: &c_ulong| [16, 8, 0].map(|shift| (a >> shift & 255).abs_diff(b >> shift & 255)).into_iter().max().unwrap_or(0);
+                for nth in 0..8 {
+                    let said = step(&mut host, &app, nth);
+                    let (seen, must) = shown(&mut host, 0);
+                    let most = seen.iter().flatten().zip(must.iter().flatten()).map(|(a, b)| off(a, b)).max().unwrap_or(0);
+                    assert!(most <= crate::gpu_draw::tests::TOLERANCE as c_ulong, "{renderer:?}, {said}: a pixel {most} levels off what was painted");
+                }
+                assert!(drawn_by_gpu(&host), "{renderer:?}: drawn by the GPU");
+            }
+        }
+
+        /// Where the GPU draws too (`gpu-draw`), each GPU path draws every kind of thing as the
+        /// CPU paints it, within a few levels: boxes, borders, a shadow, an icon, pictures, text,
+        /// and what the CPU puts in patches.
+        #[cfg(feature = "gpu-draw")]
+        #[test]
+        #[ignore]
+        fn the_gpu_draws_every_kind_of_thing_as_the_cpu_paints_it() {
+            for renderer in GPUS {
+                let mut pictures = None;
+                let window = Window { title: "taut gpu", width: 360.0, height: 210.0, renderer, ..Default::default() };
+                let (_alone, mut host) = host(window, move |ui| crate::gpu_draw::tests::every_kind(ui, &mut pictures)).expect("a display");
+                settle(&mut host);
+                if host.gpu.as_ref().map(crate::gpu_x11::Gpu::renderer) != Some(renderer) || !always_drawn(&mut host) {
+                    eprintln!("{renderer:?} missing: not tested");
+                    continue;
+                }
+                host.windows[0].uncovered = whole(host.windows[0].size, host.scale);
+                host.draw(0);
+                let (seen, must) = shown(&mut host, 0);
+                let off = |a: &c_ulong, b: &c_ulong| [16, 8, 0].map(|shift| (a >> shift & 255).abs_diff(b >> shift & 255)).into_iter().max().unwrap_or(0);
+                let most = seen.iter().flatten().zip(must.iter().flatten()).map(|(a, b)| off(a, b)).max().unwrap_or(0);
+                let differ = seen.iter().flatten().zip(must.iter().flatten()).filter(|(a, b)| a != b).count();
+                eprintln!("{renderer:?}: {differ} pixels differ, at most by {most}");
+                assert!(most <= crate::gpu_draw::tests::TOLERANCE as c_ulong, "{renderer:?}: a pixel {most} levels off what was painted");
+                assert!(drawn_by_gpu(&host), "{renderer:?}: drawn by the GPU");
             }
         }
 

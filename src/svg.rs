@@ -199,7 +199,7 @@ struct Filters {
 /// [`png::encode_rgba`](crate::png::encode_rgba) take them. `currentColor` is black. Nothing
 /// for a file holding no drawing, or a picture of no size.
 pub fn decode(svg: &str, width: usize, height: usize) -> Option<(usize, Vec<u32>)> {
-    let kept = Kept::read(svg).filter(|_| width > 0 && height > 0)?;
+    let kept = ParsedDrawing::read(svg).filter(|_| width > 0 && height > 0)?;
     let mut pixels = kept.draw([width, height], [0, height], Color::BLACK);
     // A canvas keeps premultiplied colours; a picture does not.
     pixels.iter_mut().for_each(|pixel| *pixel = unmultiplied(*pixel));
@@ -727,7 +727,7 @@ enum Cut {
     Clip(usize),
     Mask(usize),
     Box([f32; 4]),
-    Kept(u32),
+    DrawingBox(u32),
 }
 
 /// A pattern as one shape is filled with it: tiles edge to edge, each a drawing of its own.
@@ -875,7 +875,7 @@ struct More {
 }
 
 /// A drawing as kept: everything it is drawn from, and cached pictures at the sizes last shown.
-pub(crate) struct Kept {
+pub(crate) struct ParsedDrawing {
     /// Its stated size, in units.
     size: [f32; 2],
     /// Its `viewBox`: left, top, width, height.
@@ -905,7 +905,7 @@ pub(crate) struct Kept {
 /// State while reading a file: the file, what is kept so far, and cached lookups.
 struct Reading<'a> {
     file: File<'a>,
-    kept: Kept,
+    parsed: ParsedDrawing,
     /// Elements to kept outlines.
     outlined: HashMap<usize, u32>,
     /// Gradients read, by element; none for one with no stops.
@@ -1042,23 +1042,23 @@ impl Walk {
     }
 }
 
-impl Kept {
+impl ParsedDrawing {
     /// Reads a file. Nothing if it holds no drawing: no `<svg>`, or one of no size.
-    pub(crate) fn read(text: &str) -> Option<Kept> {
-        Kept::read_part(text, None)
+    pub(crate) fn read(text: &str) -> Option<ParsedDrawing> {
+        ParsedDrawing::read_part(text, None)
     }
 
     /// Reads one glyph's drawing from a font's `SVG ` table document: the element with id `id`,
     /// as if it were all the file drew (with what it uses of the rest). The space is the
     /// font's: the origin is the glyph's pen on the baseline, and it is `em` units wide and
     /// high, unless it says how much of it that is. Nothing without such an element.
-    pub(crate) fn glyph(text: &str, id: &str, em: f32) -> Option<Kept> {
-        Kept::read_part(text, Some((id, em)))
+    pub(crate) fn glyph(text: &str, id: &str, em: f32) -> Option<ParsedDrawing> {
+        ParsedDrawing::read_part(text, Some((id, em)))
     }
 
     /// Reads a file, or with `glyph` the glyph part of it (see `glyph`).
-    fn read_part(text: &str, glyph: Option<(&str, f32)>) -> Option<Kept> {
-        Reading::of(text, glyph).map(|reading| reading.kept)
+    fn read_part(text: &str, glyph: Option<(&str, f32)>) -> Option<ParsedDrawing> {
+        Reading::of(text, glyph).map(|reading| reading.parsed)
     }
 
     /// What it holds besides shapes, if any.
@@ -1457,8 +1457,8 @@ fn cut(blocks: &mut Vec<Block>, keep: Keep) {
 }
 
 impl<'a> Reading<'a> {
-    /// Reads a file, or with `glyph` its glyph part (see `Kept::glyph`): what is kept and its
-    /// drawing cost. Nothing if it holds no drawing.
+    /// Reads a file, or with `glyph` its glyph part (see `ParsedDrawing::glyph`): what is kept
+    /// and its drawing cost. Nothing if it holds no drawing.
     fn of(text: &'a str, glyph: Option<(&str, f32)>) -> Option<Reading<'a>> {
         let file = File::read(text);
         let root = file.elements.iter().position(|element| element.name == "svg")?;
@@ -1486,7 +1486,7 @@ impl<'a> Reading<'a> {
             None => [wide.or(high.map(|high| high * across / down)).unwrap_or(across), high.or(wide.map(|wide| wide * down / across)).unwrap_or(down)],
         };
         let aspect = Aspect::read(file.attribute(root, "preserveAspectRatio").unwrap_or(""));
-        let kept = Kept {
+        let kept = ParsedDrawing {
             size,
             view,
             aspect,
@@ -1504,7 +1504,7 @@ impl<'a> Reading<'a> {
         };
         let mut reading = Reading {
             file,
-            kept,
+            parsed: kept,
             outlined: HashMap::new(),
             gradients_read: HashMap::new(),
             pictured: HashMap::new(),
@@ -1527,7 +1527,7 @@ impl<'a> Reading<'a> {
     fn walk(&mut self, root: usize) {
         // The walks in progress, innermost last. (A drawing unit is this share of the picture:
         // its view is all of it.)
-        let [.., wide, high] = self.kept.view;
+        let [.., wide, high] = self.parsed.view;
         let mut walks = vec![Walk::through(root, root + 1, Style { share: [1.0 / (wide * high), 1.0], ..Style::default() })];
         while let Some(deep) = walks.len().checked_sub(1) {
             // Each step looks through the walks it is in.
@@ -1564,7 +1564,7 @@ impl<'a> Reading<'a> {
             }
             // A `<use>` and a nested `<svg>` position what they hold; a nested viewport is
             // fitted to its box and clipped at its edges.
-            let [.., wide, high] = self.kept.view;
+            let [.., wide, high] = self.parsed.view;
             let length_of = |name: &str, whole: f32| self.file.attribute(at, name).and_then(|text| length(text, whole));
             if matches!(name, "use" | "svg") && at != root {
                 style.table = both(&style.table, &[1.0, 0.0, 0.0, 1.0, length_of("x", wide).unwrap_or(0.0), length_of("y", high).unwrap_or(0.0)]);
@@ -1591,10 +1591,10 @@ impl<'a> Reading<'a> {
             }
             // A semi-transparent group composites as one, so its overlapping shapes do not show
             // through each other; so does clipped or filtered content.
-            let cuts = [style.clip.map(Cut::Clip), style.mask.map(Cut::Mask), room.map(Cut::Box), around_box.map(Cut::Kept)];
+            let cuts = [style.clip.map(Cut::Clip), style.mask.map(Cut::Mask), room.map(Cut::Box), around_box.map(Cut::DrawingBox)];
             let cut = filtered || (cuts.iter().any(Option::is_some) && layers < LAYERS);
             let layer = ((style.opacity < 1.0 || cut) && layers < LAYERS).then_some(style.opacity);
-            let first = self.kept.items.len() + layer.is_some() as usize;
+            let first = self.parsed.items.len() + layer.is_some() as usize;
             let (cuts, filter) = if cut { (cuts, style.filter.filter(|_| filtered)) } else { ([None; 4], None) };
             let Some((from, to, used)) = held.filter(|_| walks.len() < DEEP) else {
                 // A clipped shape is walked again as itself on a block of its own: a filtered
@@ -1618,7 +1618,7 @@ impl<'a> Reading<'a> {
     /// the next tile begins.
     fn finish(&mut self, walks: &mut Vec<Walk>) {
         let Some(walk) = walks.last_mut() else { return };
-        walk.last = walk.last.min(self.kept.items.len());
+        walk.last = walk.last.min(self.parsed.items.len());
         let (filter, cut, done) = (walk.filter.take(), walk.cuts.iter_mut().find_map(Option::take), *walk);
         if let (Some(filter), Some(filters)) = (filter, self.filtering) {
             (filters.read)(self, filter, &done);
@@ -1627,7 +1627,7 @@ impl<'a> Reading<'a> {
             let cutting = self.cutting(cut, &done);
             return walks.push(cutting);
         }
-        self.kept.items.extend(done.keep.map(Item::Cut).into_iter().chain(done.layer.map(Item::End)).chain(done.then.map(Item::Tile)));
+        self.parsed.items.extend(done.keep.map(Item::Cut).into_iter().chain(done.layer.map(Item::End)).chain(done.then.map(Item::Tile)));
         walks.pop();
     }
 
@@ -1664,17 +1664,17 @@ impl<'a> Reading<'a> {
     /// the clip.
     fn cutting(&mut self, cut: Cut, walk: &Walk) -> Walk {
         self.begin(&walk.style);
-        let first = self.kept.items.len();
+        let first = self.parsed.items.len();
         let table = walk.units;
         match cut {
             // Filling its whole block, a box costs the block's area. A kept box is in drawing
             // units.
-            Cut::Box(_) | Cut::Kept(_) => {
+            Cut::Box(_) | Cut::DrawingBox(_) => {
                 self.spend(walk.style.share[1]);
                 let (place, table) = self.box_cut(cut, table);
-                self.kept.paths.push(rect(place, [None; 2]));
-                let (path, pen) = (self.kept.paths.len() as u32 - 1, self.pen(&walk.style));
-                self.kept.items.push(Item::Shape(Shape { path, table, fill: Ink::Own(Color::WHITE), even_odd: false, line: Ink::None, pen, boxed: None }));
+                self.parsed.paths.push(rect(place, [None; 2]));
+                let (path, pen) = (self.parsed.paths.len() as u32 - 1, self.pen(&walk.style));
+                self.parsed.items.push(Item::Shape(Shape { path, table, fill: Ink::Own(Color::WHITE), even_odd: false, line: Ink::None, pen, boxed: None }));
                 Walk { keep: Some(Keep::Solid), ..Walk::through(0, 0, walk.style) }
             }
             // A clip path is in the units of what it clips, or its bounding box.
@@ -1688,7 +1688,7 @@ impl<'a> Reading<'a> {
             // masks (10% larger each way by default), or in units. Its content is in units or
             // bounding box.
             Cut::Mask(at) => {
-                let ([.., wide, high], square) = (self.kept.view, self.box_of(walk));
+                let ([.., wide, high], square) = (self.parsed.view, self.box_of(walk));
                 let boxed = self.file.attribute(at, "maskUnits") != Some("userSpaceOnUse");
                 let [wide, high] = if boxed { [1.0; 2] } else { [wide, high] };
                 let side = |name: &str, whole: f32, fallback: f32| self.file.attribute(at, name).and_then(|text| length(text, whole)).unwrap_or(fallback * whole);
@@ -1737,10 +1737,10 @@ impl<'a> Reading<'a> {
                 return;
             }
             self.spend(cost);
-            let filters = &mut self.kept.more().filters;
+            let filters = &mut self.parsed.more().filters;
             filters.push(filter);
             let filter = Item::Filter(filters.len() as u32 - 1);
-            self.kept.items.push(filter);
+            self.parsed.items.push(filter);
         }
     }
 
@@ -1748,7 +1748,7 @@ impl<'a> Reading<'a> {
     /// transform taking a unit square onto it): its region and steps. Each child it knows is a
     /// step, in order; steps after the reading budget is spent are not read.
     fn filter_of(&mut self, at: usize, walk: &Walk, square: &Table) -> Filter {
-        let ([.., wide, high], end) = (self.kept.view, self.file.elements[at].end);
+        let ([.., wide, high], end) = (self.parsed.view, self.file.elements[at].end);
         let [bw, bh, bx, by] = [square[0], square[3], square[4], square[5]];
         let attr = |name: &str| self.file.attribute(at, name);
         // Its region: in bounding-box fractions (by default 10% larger each way), or in units.
@@ -1783,7 +1783,7 @@ impl<'a> Reading<'a> {
     /// malformed step (librsvg skips those too).
     fn step(&mut self, at: usize, around: &Style, (in_box, [bx, by, bw, bh]): (bool, [f32; 4]), (results, made): (&[(&'a str, usize)], usize)) -> Option<svg_filters::Step> {
         let style = self.styled(at, around);
-        let (file, [.., wide, high]) = (&self.file, self.kept.view);
+        let (file, [.., wide, high]) = (&self.file, self.parsed.view);
         let attr = |name: &str| file.attribute(at, name);
         let input = |name: &str| input_of(attr(name).map(str::trim), results, made);
         // Lengths and subregion: in bounding-box fractions, or units.
@@ -1837,8 +1837,8 @@ impl<'a> Reading<'a> {
     /// own.
     fn box_cut(&self, cut: Cut, units: Table) -> ([f32; 4], Table) {
         match cut {
-            Cut::Kept(boxed) => {
-                let [left, top, right, bottom] = self.kept.boxes[boxed as usize];
+            Cut::DrawingBox(boxed) => {
+                let [left, top, right, bottom] = self.parsed.boxes[boxed as usize];
                 ([left, top, right - left, bottom - top], SAME)
             }
             Cut::Box(place) => (place, units),
@@ -1853,7 +1853,7 @@ impl<'a> Reading<'a> {
         // Not the shapes of clips or tiles inside it: each such block begins where the shapes
         // so far end, and what was drawn on it is dropped with it.
         let (mut shapes, mut begun): (Vec<&Shape>, Vec<usize>) = (Vec::new(), Vec::new());
-        for item in &self.kept.items[walk.first.min(walk.last)..walk.last.min(self.kept.items.len())] {
+        for item in &self.parsed.items[walk.first.min(walk.last)..walk.last.min(self.parsed.items.len())] {
             match item {
                 Item::Begin | Item::Tile(_) => begun.push(shapes.len()),
                 Item::End(_) => _ = begun.pop(),
@@ -1863,7 +1863,7 @@ impl<'a> Reading<'a> {
             }
         }
         let corners = shapes.into_iter().flat_map(|shape| {
-            let ([left, top, wide, high], table) = (bounds(&self.kept.paths[shape.path as usize]), both(&back, &shape.table));
+            let ([left, top, wide, high], table) = (bounds(&self.parsed.paths[shape.path as usize]), both(&back, &shape.table));
             [pt(left, top), pt(left + wide, top), pt(left, top + high), pt(left + wide, top + high)].map(|corner| through(&table, corner))
         });
         let (low, high) =
@@ -1884,11 +1884,11 @@ impl<'a> Reading<'a> {
         }
         let [x0, x1, y0, y1] = [across * x + left, across * (x + wide) + left, down * y + top, down * (y + high) + top];
         let mut place = [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)];
-        if let Some([outer_left, outer_top, outer_right, outer_bottom]) = style.boxed.map(|around| self.kept.boxes[around as usize]) {
+        if let Some([outer_left, outer_top, outer_right, outer_bottom]) = style.boxed.map(|around| self.parsed.boxes[around as usize]) {
             place = [place[0].max(outer_left), place[1].max(outer_top), place[2].min(outer_right), place[3].min(outer_bottom)];
         }
-        self.kept.boxes.push(place);
-        Some(self.kept.boxes.len() as u32 - 1)
+        self.parsed.boxes.push(place);
+        Some(self.parsed.boxes.len() as u32 - 1)
     }
 
     /// A clip path's box, where it is a single square-cornered rectangle in user units (left,
@@ -1906,7 +1906,7 @@ impl<'a> Reading<'a> {
         if self.file.elements[only].name != "rect" || round || rect.gone || rect.hidden || rect.clip.is_some() || b != 0.0 || c != 0.0 {
             return None;
         }
-        let [.., wide, high] = self.kept.view;
+        let [.., wide, high] = self.parsed.view;
         let side = |name: &str, whole: f32| self.file.attribute(only, name).and_then(|text| length(text, whole)).unwrap_or(0.0);
         let [x, y, w, h] = [side("x", wide), side("y", high), side("width", wide), side("height", high)];
         Some([across * x + left, down * y + top, across * w.max(0.0), down * h.max(0.0)])
@@ -1960,7 +1960,7 @@ impl<'a> Reading<'a> {
     /// Takes in one property. (Unknown names say nothing.)
     fn take_property(&mut self, style: &mut Style, name: &str, value: &str) {
         let value = value.trim().trim_end_matches("!important").trim_end();
-        let [.., wide, high] = self.kept.view;
+        let [.., wide, high] = self.parsed.view;
         let part = |fallback: f32| share(value).unwrap_or(fallback).clamp(0.0, 1.0);
         let thick = |fallback: f32| length(value, ((wide * wide + high * high) / 2.0).sqrt()).unwrap_or(fallback);
         match name {
@@ -2031,15 +2031,15 @@ impl<'a> Reading<'a> {
     /// Keeps a stroke's dash array (dash and gap lengths alternating). Says where it is kept.
     /// (None where the lengths make no dashes: a negative one, or a zero total.)
     fn dashes(&mut self, text: &str) -> [u32; 2] {
-        let [.., wide, high] = self.kept.view;
-        let first = self.kept.dashes.len();
+        let [.., wide, high] = self.parsed.view;
+        let first = self.parsed.dashes.len();
         let lengths = text.split(|c: char| c == ',' || c.is_whitespace()).filter(|length| !length.is_empty());
-        self.kept.dashes.extend(lengths.map_while(|text| length(text, ((wide * wide + high * high) / 2.0).sqrt())));
-        let dashes = &self.kept.dashes[first..];
+        self.parsed.dashes.extend(lengths.map_while(|text| length(text, ((wide * wide + high * high) / 2.0).sqrt())));
+        let dashes = &self.parsed.dashes[first..];
         if dashes.iter().any(|dash| *dash < 0.0) || !positive(dashes.iter().sum::<f32>()) {
-            self.kept.dashes.truncate(first);
+            self.parsed.dashes.truncate(first);
         }
-        [first as u32, self.kept.dashes.len() as u32]
+        [first as u32, self.parsed.dashes.len() as u32]
     }
 
     /// Keeps the shape an element is, styled `style`, with the pattern tiles `tiles` for fill
@@ -2077,9 +2077,9 @@ impl<'a> Reading<'a> {
         };
         self.pictured.insert(at, read);
         let Some(kept) = read else { return };
-        let picture = &self.kept.more().pictures[kept as usize];
+        let picture = &self.parsed.more().pictures[kept as usize];
         let [wide, high] = [picture.wide as f32, (picture.pixels.len() / picture.wide) as f32];
-        let [.., across, down] = self.kept.view;
+        let [.., across, down] = self.parsed.view;
         let length_of = |name: &str, whole: f32| self.file.attribute(at, name).and_then(|text| length(text, whole));
         let [x, y, w, h] = [length_of("x", across).unwrap_or(0.0), length_of("y", down).unwrap_or(0.0), length_of("width", across).unwrap_or(wide), length_of("height", down).unwrap_or(high)];
         let place = both(&[1.0, 0.0, 0.0, 1.0, x, y], &Aspect::read(self.file.attribute(at, "preserveAspectRatio").unwrap_or("")).fit([0.0, 0.0, wide, high], [w, h]));
@@ -2087,7 +2087,7 @@ impl<'a> Reading<'a> {
         let [left, top] = [place[4].max(x), place[5].max(y)];
         let [right, bottom] = [(place[4] + place[0] * wide).min(x + w), (place[5] + place[3] * high).min(y + h)];
         let path = self.kept_path(rect([left, top, right - left, bottom - top], [None; 2]));
-        self.kept.more().pictures[kept as usize].place = place;
+        self.parsed.more().pictures[kept as usize].place = place;
         let solid = style.faded * style.opacity;
         if !positive(solid) || !(right > left && bottom > top) {
             return;
@@ -2095,7 +2095,7 @@ impl<'a> Reading<'a> {
         self.pieces += 5;
         self.spend(self.covers(path, style, false) * TILES);
         let pen = self.pen(style);
-        self.kept.items.push(Item::Shape(Shape { path, table: style.table, fill: Ink::Picture(kept, solid), even_odd: false, line: Ink::None, pen, boxed: style.boxed }));
+        self.parsed.items.push(Item::Shape(Shape { path, table: style.table, fill: Ink::Picture(kept, solid), even_odd: false, line: Ink::None, pen, boxed: style.boxed }));
     }
 
     /// Reads and keeps an `<image>`'s picture: which kept one. Nothing if it holds none
@@ -2105,7 +2105,7 @@ impl<'a> Reading<'a> {
         let (wide, pixels) = crate::ui::read_picture(&data(href)?)?;
         self.steps += pixels.len() / 64;
         let pixels = pixels.into_iter().map(premultiplied).collect();
-        let pictures = &mut self.kept.more().pictures;
+        let pictures = &mut self.parsed.more().pictures;
         pictures.push(Picture { pixels, wide, place: SAME });
         Some(pictures.len() as u32 - 1)
     }
@@ -2115,9 +2115,9 @@ impl<'a> Reading<'a> {
         let pen = self.pen(style);
         // In a clip path only the outline counts, filled opaque.
         if style.clipping {
-            self.pieces += self.kept.paths[path as usize].steps().len();
+            self.pieces += self.parsed.paths[path as usize].steps().len();
             self.spend(self.covers(path, style, false));
-            self.kept.items.push(Item::Shape(Shape { path, table: style.table, fill: Ink::Own(Color::WHITE), even_odd: style.clip_even_odd, line: Ink::None, pen, boxed: style.boxed }));
+            self.parsed.items.push(Item::Shape(Shape { path, table: style.table, fill: Ink::Own(Color::WHITE), even_odd: style.clip_even_odd, line: Ink::None, pen, boxed: style.boxed }));
             return;
         }
         // A semi-transparent shape both filled and stroked composites as one, else its stroke
@@ -2129,7 +2129,7 @@ impl<'a> Reading<'a> {
         let line = if style.pen.width > 0.0 { self.ink(style.paints[1], style.solid[1] * solid, style.ink, path, tiles[1]) } else { Ink::None };
         // A stroke costing more than the budget left is not drawn: one shape alone could cost
         // all of it and more (see `spent`).
-        let (steps, [_, outlines]) = (self.kept.paths[path as usize].steps().len(), most(self.file.text.len()));
+        let (steps, [_, outlines]) = (self.parsed.paths[path as usize].steps().len(), most(self.file.text.len()));
         let lined = if line == Ink::None { 0 } else { self.line_pieces(path, style) };
         let (line, lined) = if self.pieces + 2 * steps + lined > outlines { (Ink::None, 0) } else { (line, lined) };
         if fill == Ink::None && line == Ink::None {
@@ -2156,8 +2156,8 @@ impl<'a> Reading<'a> {
         if layered {
             self.begin(style);
         }
-        self.kept.items.extend(shapes.into_iter().map(Item::Shape));
-        self.kept.items.extend(layered.then_some(Item::End(style.opacity)));
+        self.parsed.items.extend(shapes.into_iter().map(Item::Shape));
+        self.parsed.items.extend(layered.then_some(Item::End(style.opacity)));
     }
 
     /// The letters of a text element and its `<tspan>`s, styled `style`: each piece's letters
@@ -2195,7 +2195,7 @@ impl<'a> Reading<'a> {
     /// A text piece as it starts: its element, style, parent piece, and its letters' given
     /// positions (x, y, dx, dy).
     fn piece(&mut self, at: usize, style: Style, around: usize) -> Piece {
-        let [.., wide, high] = self.kept.view;
+        let [.., wide, high] = self.parsed.view;
         let list =
             |name: &str, whole: f32| self.file.attribute(at, name).map(|value| value.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|one| length(one, whole)).collect()).unwrap_or_default();
         let places = [list("x", wide), list("y", high), list("dx", wide), list("dy", high)];
@@ -2335,7 +2335,7 @@ impl<'a> Reading<'a> {
     fn spent(&self) -> bool {
         let long = self.file.text.len();
         let [shapes, outlines] = most(long);
-        self.steps > 16 * shapes || self.kept.items.len() > shapes || self.pieces > outlines || self.passes > passes(long)
+        self.steps > 16 * shapes || self.parsed.items.len() > shapes || self.pieces > outlines || self.passes > passes(long)
     }
 
     /// The outline segments a shape's stroke costs beyond the outline's own: each segment
@@ -2343,7 +2343,7 @@ impl<'a> Reading<'a> {
     /// it, at its corners), more with round joins; and each dash as a segment (up to the 10,000
     /// dashes `pen.rs` cuts a ring into).
     fn line_pieces(&self, path: u32, style: &Style) -> usize {
-        let steps = self.kept.paths[path as usize].steps();
+        let steps = self.parsed.paths[path as usize].steps();
         let [a, b, c, d, ..] = style.table;
         let (side, wide) = ((style.share[1] / style.share[0]).sqrt(), style.pen.width * (a * d - b * c).abs().sqrt());
         // Round joins and caps are arcs of more points the wider they are: up to 256 for one as
@@ -2351,7 +2351,7 @@ impl<'a> Reading<'a> {
         let across = (wide / side).min(1.0);
         let round = matches!(style.pen.join, Join::Round) || style.pen.cap == Cap::Round;
         let each = LINED * across + if round { ROUNDS * across.sqrt() } else { 0.0 };
-        let dashes = &self.kept.dashes[style.pen.dashes[0] as usize..style.pen.dashes[1] as usize];
+        let dashes = &self.parsed.dashes[style.pen.dashes[0] as usize..style.pen.dashes[1] as usize];
         let rings = steps.iter().filter(|step| matches!(step, Step::Move(_))).count() as f32;
         let cut = (reach_along(steps) * dashes.len() as f32 / (2.0 * dashes.iter().sum::<f32>())).min(10_000.0 * rings);
         let more = steps.len() as f32 * each + if dashes.is_empty() { 0.0 } else { cut * (1.0 + each) };
@@ -2367,13 +2367,13 @@ impl<'a> Reading<'a> {
     /// Begins a block for what follows, the size of the one `style` is drawn on.
     fn begin(&mut self, style: &Style) {
         self.spend(style.share[1]);
-        self.kept.items.push(Item::Begin);
+        self.parsed.items.push(Item::Begin);
     }
 
     /// How much of the picture a shape's bounding box covers (with its stroke, if `lined`),
     /// styled `style`: at most its whole block.
     fn covers(&self, path: u32, style: &Style, lined: bool) -> f32 {
-        let Some([left, top, right, bottom]) = reach(&self.kept.paths[path as usize]) else { return 0.0 };
+        let Some([left, top, right, bottom]) = reach(&self.parsed.paths[path as usize]) else { return 0.0 };
         // A miter sticks out further than half the stroke width: as far as the limit allows.
         let out = if lined { style.pen.width * style.pen.miter.max(2.0) / 2.0 } else { 0.0 };
         let corners = [pt(left - out, top - out), pt(right + out, top - out), pt(left - out, bottom + out), pt(right + out, bottom + out)].map(|corner| through(&style.table, corner));
@@ -2384,16 +2384,16 @@ impl<'a> Reading<'a> {
 
     /// Keeps an outline: which kept one.
     fn kept_path(&mut self, outline: Path) -> u32 {
-        self.kept.paths.push(outline);
-        self.kept.paths.len() as u32 - 1
+        self.parsed.paths.push(outline);
+        self.parsed.paths.len() as u32 - 1
     }
 
     /// Which kept pen `style` draws with: the last kept, if it is that one.
     fn pen(&mut self, style: &Style) -> u32 {
-        if self.kept.pens.last() != Some(&style.pen) {
-            self.kept.pens.push(style.pen);
+        if self.parsed.pens.last() != Some(&style.pen) {
+            self.parsed.pens.push(style.pen);
         }
-        self.kept.pens.len() as u32 - 1
+        self.parsed.pens.len() as u32 - 1
     }
 
     /// Begins the pattern tiles a shape is filled and stroked with, if any: gives back which
@@ -2407,13 +2407,13 @@ impl<'a> Reading<'a> {
             _ => None,
         });
         let path = self.outline(at, name).filter(|_| patterns != [None; 2])?;
-        let bounds = bounds(&self.kept.paths[path as usize]);
+        let bounds = bounds(&self.parsed.paths[path as usize]);
         let tiles = patterns.map(|pattern| pattern.and_then(|pattern| self.tile(pattern, bounds, style)));
         // The first tile begins at once, the other once the first is drawn.
         let numbers = tiles.map(|tile| tile.map(|(number, _)| number));
         let mut drawings: Vec<Walk> = tiles.iter().flatten().map(|(_, walk)| *walk).collect();
         let mut begun = numbers.iter().flatten().copied();
-        self.kept.items.extend(begun.next().map(Item::Tile));
+        self.parsed.items.extend(begun.next().map(Item::Tile));
         if let Some(first) = drawings.first_mut() {
             first.then = begun.next();
         }
@@ -2431,7 +2431,7 @@ impl<'a> Reading<'a> {
             line.push(after);
         }
         let attr = |name: &str| line.iter().find_map(|at| self.file.attribute(*at, name));
-        let [.., wide, high] = self.kept.view;
+        let [.., wide, high] = self.parsed.view;
         // Tile position and size: in bounding-box fractions, or units.
         let side = |name: &str, whole: f32| attr(name).and_then(|text| length(text, whole)).unwrap_or(0.0);
         let [x, y, w, h] = match attr("patternUnits") != Some("userSpaceOnUse") {
@@ -2452,17 +2452,17 @@ impl<'a> Reading<'a> {
         // Its content is in tile units, so many per block.
         let block = table[0].hypot(table[1]) * table[2].hypot(table[3]) * w * h * style.share[0];
         self.spend(block);
-        self.kept.tiles.push(Tile { table, size: [w, h], inner });
+        self.parsed.tiles.push(Tile { table, size: [w, h], inner });
         let share = [block * (inner[0] * inner[3] - inner[1] * inner[2]).abs() / (w * h), block];
         let style = Style { table: SAME, share, ..self.styled(at, &Style::default()) };
-        Some((self.kept.tiles.len() as u32 - 1, Walk { used: Some(at), ..Walk::through(content + 1, self.file.elements[content].end, style) }))
+        Some((self.parsed.tiles.len() as u32 - 1, Walk { used: Some(at), ..Walk::through(content + 1, self.file.elements[content].end, style) }))
     }
 
     /// The walk through a shape's markers, outline `path`, styled `style`: at its start, each
     /// vertex and its end, each placed and oriented along the outline. Nothing where it has
     /// none.
     fn markers(&mut self, path: u32, style: &Style) -> Option<Walk> {
-        let (corners, from) = (corners(&self.kept.paths[path as usize]), self.corners.len());
+        let (corners, from) = (corners(&self.parsed.paths[path as usize]), self.corners.len());
         let last = corners.len().saturating_sub(1);
         for (n, (point, way)) in corners.into_iter().enumerate() {
             let which = match n {
@@ -2509,7 +2509,7 @@ impl<'a> Reading<'a> {
         if let Some(kept) = self.outlined.get(&at) {
             return Some(*kept);
         }
-        let [.., wide, high] = self.kept.view;
+        let [.., wide, high] = self.parsed.view;
         let across = ((wide * wide + high * high) / 2.0).sqrt();
         let length_of = |name: &str, whole: f32| self.file.attribute(at, name).and_then(|text| length(text, whole));
         let (x, y) = (|name: &str| length_of(name, wide).unwrap_or(0.0), |name: &str| length_of(name, high).unwrap_or(0.0));
@@ -2525,9 +2525,9 @@ impl<'a> Reading<'a> {
             "polygon" => Path::svg(&format!("M{points}z")),
             _ => return None,
         };
-        self.kept.paths.push(path);
-        self.outlined.insert(at, self.kept.paths.len() as u32 - 1);
-        Some(self.kept.paths.len() as u32 - 1)
+        self.parsed.paths.push(path);
+        self.outlined.insert(at, self.parsed.paths.len() as u32 - 1);
+        Some(self.parsed.paths.len() as u32 - 1)
     }
 
     /// A shape's final fill or stroke: `paint` as written, at opacity `solid`, `current_color`
@@ -2539,7 +2539,7 @@ impl<'a> Reading<'a> {
             (Paint::None, _) => Ink::None,
             (Paint::Own(color), _) | (Paint::CurrentColor, Some(color)) => Ink::Own(color.with_alpha(solid)),
             (Paint::CurrentColor, None) => {
-                self.kept.uses_current_color = true;
+                self.parsed.uses_current_color = true;
                 Ink::CurrentColor(solid)
             }
             (Paint::Gradient(at), _) => self.gradient(at, solid, path),
@@ -2555,7 +2555,7 @@ impl<'a> Reading<'a> {
         };
         self.gradients_read.insert(at, read);
         let Some(mut blend) = read else { return Ink::None };
-        let last = self.kept.stops[blend.stops[1] as usize - 1].1;
+        let last = self.parsed.stops[blend.stops[1] as usize - 1].1;
         // A zero-length gradient, and a single stop, give the last colour everywhere.
         let flat = match blend.way {
             Way::Line([x1, y1, x2, y2]) => (x1, y1) == (x2, y2),
@@ -2566,15 +2566,15 @@ impl<'a> Reading<'a> {
         }
         // In bounding-box units, the geometry follows the shape's box; a shape with no width or
         // height has none.
-        let [left, top, wide, high] = bounds(&self.kept.paths[path as usize]);
+        let [left, top, wide, high] = bounds(&self.parsed.paths[path as usize]);
         if blend.boxed && !(wide > 0.0 && high > 0.0) {
             return Ink::None;
         }
         if blend.boxed {
             blend.table = both(&[wide, 0.0, 0.0, high, left, top], &blend.table);
         }
-        self.kept.gradients.push(blend);
-        Ink::Gradient(self.kept.gradients.len() as u32 - 1, solid)
+        self.parsed.gradients.push(blend);
+        Ink::Gradient(self.parsed.gradients.len() as u32 - 1, solid)
     }
 
     /// Reads a gradient from its element and those it inherits from (`href`) for what it does
@@ -2586,7 +2586,7 @@ impl<'a> Reading<'a> {
             line.push(after);
         }
         let attr = |name: &str| line.iter().find_map(|at| self.file.attribute(*at, name));
-        let [.., wide, high] = self.kept.view;
+        let [.., wide, high] = self.parsed.view;
         let boxed = attr("gradientUnits") != Some("userSpaceOnUse");
         let [wide, high, across] = if boxed { [1.0; 3] } else { [wide, high, ((wide * wide + high * high) / 2.0).sqrt()] };
         // Unstated values are these fractions of the whole.
@@ -2606,20 +2606,20 @@ impl<'a> Reading<'a> {
             Some("repeat") => Spread::Repeat,
             _ => Spread::Pad,
         };
-        let (table, first) = (attr("gradientTransform").map_or(SAME, turned), self.kept.stops.len());
+        let (table, first) = (attr("gradientTransform").map_or(SAME, turned), self.parsed.stops.len());
         // Its stops are its own, or those of the nearest it inherits from that has any.
         for from in line {
             self.stops(from);
-            if self.kept.stops.len() > first {
+            if self.parsed.stops.len() > first {
                 break;
             }
         }
-        (self.kept.stops.len() > first).then_some(Gradient { stops: [first as u32, self.kept.stops.len() as u32], way, spread, table, boxed })
+        (self.parsed.stops.len() > first).then_some(Gradient { stops: [first as u32, self.parsed.stops.len() as u32], way, spread, table, boxed })
     }
 
     /// Keeps a gradient element's stops, each with its offset, never before the previous one.
     fn stops(&mut self, blend: usize) {
-        let (mut at, end, first) = (blend + 1, self.file.elements[blend].end, self.kept.stops.len());
+        let (mut at, end, first) = (blend + 1, self.file.elements[blend].end, self.parsed.stops.len());
         while at < end {
             let style = self.styled(at, &Style::default());
             let color = match style.stop.0 {
@@ -2627,9 +2627,9 @@ impl<'a> Reading<'a> {
                 _ => style.ink.unwrap_or(Color::BLACK),
             };
             let along = self.file.attribute(at, "offset").and_then(share).unwrap_or(0.0);
-            let least = self.kept.stops[first..].last().map_or(0.0, |before| before.0);
+            let least = self.parsed.stops[first..].last().map_or(0.0, |before| before.0);
             if self.file.elements[at].name == "stop" {
-                self.kept.stops.push((along.max(least).min(1.0), color.with_alpha(style.stop.1)));
+                self.parsed.stops.push((along.max(least).min(1.0), color.with_alpha(style.stop.1)));
             }
             at = self.file.elements[at].end;
         }
@@ -3308,7 +3308,7 @@ mod tests {
         // `currentColor`: black in a picture, or what the file sets.
         assert_eq!(drawn(4, 4, r#"<rect width="4" height="4" fill="currentColor"/>"#)[0], 0xff00_0000);
         assert_eq!(drawn(4, 4, r#"<g color="red"><rect width="4" height="4" fill="currentColor"/></g>"#)[0], RED);
-        let said = |shapes: &str| Kept::read(&format!("<svg>{shapes}</svg>")).unwrap().uses_current_color;
+        let said = |shapes: &str| ParsedDrawing::read(&format!("<svg>{shapes}</svg>")).unwrap().uses_current_color;
         assert_eq!(
             [said(r#"<path stroke="currentColor" d="M0 0h9"/>"#), said(r#"<path fill="red" d="M0 0h9v9z"/>"#), said(r#"<path color="red" fill="currentColor" d="M0 0h9v9z"/>"#)],
             [true, false, false]
@@ -3359,7 +3359,7 @@ mod tests {
             text += &format!(r##"<g id="a{level}">{}</g>"##, format!(r##"<use href="#a{}"/>"##, level - 1).repeat(10));
         }
         text += r##"</defs><use href="#a10"/></svg>"##;
-        let kept = Kept::read(&text).unwrap();
+        let kept = ParsedDrawing::read(&text).unwrap();
         assert!(kept.items.len() <= (1 << 16) + 1 && kept.paths.len() == 1, "{} shapes of {} outlines", kept.items.len(), kept.paths.len());
         // Groups nested deeper than any real drawing are skipped from there on.
         let deep = format!(r#"<svg viewBox="0 0 4 4">{}<rect width="4" height="4"/>{}<rect width="2" height="2" fill="red"/></svg>"#, "<g>".repeat(5000), "</g>".repeat(5000));
@@ -3368,7 +3368,7 @@ mod tests {
 
     #[test]
     fn a_drawing_fits_the_box_it_is_shown_in() {
-        let size = |head: &str| Kept::read(&format!("<svg {head}/>")).map(|kept| (kept.size, kept.view));
+        let size = |head: &str| ParsedDrawing::read(&format!("<svg {head}/>")).map(|kept| (kept.size, kept.view));
         // Its stated size; one side given, the other from the aspect; none, the picture's size
         // or 300 by 150.
         assert_eq!(size(r#"width="24" height="12""#), Some(([24.0, 12.0], [0.0, 0.0, 24.0, 12.0])));
@@ -3380,7 +3380,7 @@ mod tests {
             [size(r#"viewBox="0 0 0 10" width="8" height="8""#), size(r#"viewBox="1 2 3""#)].map(|read| read.map(|(_, view)| view)),
             [Some([0.0, 0.0, 8.0, 8.0]), Some([0.0, 0.0, 300.0, 150.0])]
         );
-        assert!(Kept::read("<g/>").is_none() && Kept::read("").is_none() && Kept::read(r#"<svg viewBox="0 0 1e39 5"/>"#).is_none());
+        assert!(ParsedDrawing::read("<g/>").is_none() && ParsedDrawing::read("").is_none() && ParsedDrawing::read(r#"<svg viewBox="0 0 1e39 5"/>"#).is_none());
         // In a box of another shape all of it shows, centred; or as the file asks: aligned to a
         // side, stretched, or sliced.
         let wide = |fitted: &str| decode(&format!(r#"<svg viewBox="0 0 4 4" preserveAspectRatio="{fitted}"><rect width="4" height="4" fill="red"/></svg>"#), 8, 4).unwrap().1;
@@ -3684,7 +3684,7 @@ mod tests {
         // For each, how near it comes to each bound (1 is there), and its passes.
         let (mut near, mut most_lookups) = (Vec::new(), (0, std::path::PathBuf::new()));
         for file in &files {
-            let read = |text: String| Reading::of(&text, None).map(|reading| (reading.passes, [reading.kept.items.len(), reading.pieces, reading.steps, reading.lookups], text.len()));
+            let read = |text: String| Reading::of(&text, None).map(|reading| (reading.passes, [reading.parsed.items.len(), reading.pieces, reading.steps, reading.lookups], text.len()));
             let Some((passes_kept, [items, pieces, steps, lookups], long)) = std::fs::read_to_string(file).ok().and_then(read) else { continue };
             most_lookups = most_lookups.max((lookups, file.clone()));
             let [shapes, outlines] = most(long);
@@ -3987,7 +3987,7 @@ mod tests {
         // Filters are read once a program asks.
         enable_filters();
         let font = r##"<svg><filter id="f"><feGaussianBlur stdDeviation="9"/></filter><path id="glyph3" d="M0 0h100v-100h-100z" filter="url(#f)"/></svg>"##;
-        let (glyph, file) = (Kept::glyph(font, "glyph3", 100.0).unwrap(), Kept::read(font).unwrap());
+        let (glyph, file) = (ParsedDrawing::glyph(font, "glyph3", 100.0).unwrap(), ParsedDrawing::read(font).unwrap());
         assert!(glyph.held().is_none() && file.held().is_some_and(|more| more.filters.len() == 1));
     }
 
@@ -4012,7 +4012,7 @@ mod tests {
         }
         text += r##"</defs><use href="#a3"/></svg>"##;
         let reading = Reading::of(&text, None).unwrap();
-        let filters = reading.kept.held().map_or(&[][..], |more| &more.filters[..]);
+        let filters = reading.parsed.held().map_or(&[][..], |more| &more.filters[..]);
         let steps: usize = filters.iter().map(|filter| filter.steps.len()).sum();
         assert!(text.len() < 700 && steps == 2 && filters.len() == 2, "{} bytes, {steps} steps of {} filters", text.len(), filters.len());
         assert!(reading.passes <= passes(text.len()) + 3.0, "{} passes", reading.passes);

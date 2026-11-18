@@ -1,5 +1,6 @@
 //! Where an app keeps its files between runs (settings, window and table layout; see the
-//! guide's "Kept between runs"), and writing a file so it is never left half written.
+//! guide's "Saving settings between runs"), and writing a file so it is never left half
+//! written.
 //!
 //! ```no_run
 //! let file = taut::storage::folder("Notes").expect("a name that can be a folder").join("kept.txt");

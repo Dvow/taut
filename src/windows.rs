@@ -29,7 +29,7 @@ use crate::frameless::HitTest;
 use crate::geom::{Rect, Size, pt, rect};
 use crate::id::Id;
 use crate::platform::{Clipboard, PicturesAndFiles, Window, WindowPlacement};
-use crate::screens::{Screen, Spot, spot};
+use crate::screens::{OpenAt, Screen, window_origin};
 use crate::second_window::{WindowKind, WindowOpening};
 use crate::text::{Face, Font, Metrics, TextSystem};
 use crate::touch_windows::{self, WM_POINTERCAPTURECHANGED, WM_POINTERUPDATE};
@@ -580,8 +580,8 @@ impl Fonts {
 
     /// The system font for this face at this pixel size, made on first use. (Used at once,
     /// before another is asked for: past `MADE` fonts all are freed and remade on demand, since
-    /// Windows allows some ten thousand GDI objects per process, and a board zoomed through
-    /// every size would else keep one per size.)
+    /// Windows allows some ten thousand GDI objects per process, and a pan-and-zoom view zoomed
+    /// through every size would else keep one per size.)
     fn font(&mut self, font: Font, scale: f32) -> (HANDLE, Metrics) {
         let (px, dc) = ((font.size * scale).round() as i32, self.dc);
         if self.made.len() >= MADE && !self.made.contains_key(&(font.face, px)) {
@@ -709,6 +709,12 @@ impl GdiText {
         let (dc, units) = (self.strip.dc, &self.fonts.utf16);
         let (origin, clip) = (canvas.origin(), canvas.clip_pixels());
         let ink = color.0;
+        #[cfg(feature = "gpu-draw")]
+        if let Some(list) = canvas.list() {
+            let strip = crate::gpu_draw_windows::Strip { dc, pixels: self.strip.pixels.get(), width: self.strip.width.get(), rows: self.strip.rows.get() };
+            let at = [(x * scale).round() as i32, (y * scale).round() as i32];
+            return crate::gpu_draw_windows::run(list, &strip, handle, font, (font.size * scale).round() as i32, units, at, color, clip);
+        }
         // SAFETY: the canvas is this strip, so Windows writes into the same pixels; the DC is
         // restored after.
         unsafe {
@@ -1213,15 +1219,15 @@ fn pixels_of(part: Rect, scale: f32) -> RECT {
 }
 
 /// Where a window with a `size` client and frame `looks` (`styles`; none if frameless) goes as
-/// `asked` on `screens` (see `screens::spot`): a screen DPI, and its frame corner there.
-/// Nothing where the system places it.
-fn place_on(screens: &[Screen], asked: Spot, size: Size, looks: Option<[u32; 2]>) -> Option<(u32, POINT)> {
+/// `asked` on `screens` (see `screens::window_origin`): a screen DPI, and its frame corner
+/// there. Nothing where the system places it.
+fn place_on(screens: &[Screen], asked: OpenAt, size: Size, looks: Option<[u32; 2]>) -> Option<(u32, POINT)> {
     let dpi = |scale: f32| (scale * 96.0).round() as u32;
     let big = |scale: f32| {
         let frame = framed(size.w, size.h, dpi(scale), looks);
         [(frame.right - frame.left) as f32, (frame.bottom - frame.top) as f32]
     };
-    let (nth, at) = spot(screens, asked, big)?;
+    let (nth, at) = window_origin(screens, asked, big)?;
     Some((dpi(screens[nth].scale), POINT { x: at.x as i32, y: at.y as i32 }))
 }
 
@@ -1693,7 +1699,7 @@ impl State {
         // A drag out is handed to Windows once this message is handled, which needs OLE:
         // without it nothing goes out.
         if let Some((data, outward)) = going {
-            self.carry_out(at, data, outward, ole);
+            self.queue_drag_out(at, data, outward, ole);
         }
         stood || forward
     }
@@ -1717,9 +1723,9 @@ impl State {
     }
 
     /// Queues what is dragged out of window `at`, with how, to be handed to Windows
-    /// (`carry_out_asked`); or without OLE, drops it at once, and the interface hears nothing
-    /// took it.
-    fn carry_out(&mut self, at: usize, data: *mut crate::ole_drag::Carried, outward: crate::ole_drag::Outward, ole: bool) {
+    /// (`run_queued_drag_out`); or without OLE, drops it at once, and the interface hears
+    /// nothing took it.
+    fn queue_drag_out(&mut self, at: usize, data: *mut crate::ole_drag::DataObject, outward: crate::ole_drag::Outward, ole: bool) {
         let hwnd = self.windows[at].hwnd;
         let gone = if ole { OUTGOING.replace(Some((hwnd, data, outward))).map(|(_, was, _)| was) } else { Some(data) };
         if let Some(gone) = gone {
@@ -1835,9 +1841,9 @@ impl State {
     fn place_for(&self, size: Size, opening: WindowOpening) -> Option<(u32, POINT)> {
         let looks = (!opening.frameless).then(|| styles(opening.kind, false, false));
         let asked = match (opening.position, opening.screen, opening.kind) {
-            (Some((x, y)), ..) => Spot::At(x, y),
-            (None, Some(nth), _) => Spot::Middle(nth),
-            (None, None, WindowKind::Dialog) => Spot::Over(self.area_of(0)),
+            (Some((x, y)), ..) => OpenAt::At(x, y),
+            (None, Some(nth), _) => OpenAt::Middle(nth),
+            (None, None, WindowKind::Dialog) => OpenAt::Over(self.area_of(0)),
             _ => return self.corner(size, looks),
         };
         place_on(self.ui.screens(), asked, size, looks)
@@ -1926,7 +1932,7 @@ impl State {
     /// Runs the interface if needed, and says whether a box of the window took the drop. (A
     /// window its app closed in the run handling the drop counts as having taken it: nobody is
     /// left to ask.)
-    fn carried(&mut self, at: usize, events: [Option<Event>; 2]) -> bool {
+    fn hear_drag(&mut self, at: usize, events: [Option<Event>; 2]) -> bool {
         self.ui.set_time(self.start.elapsed());
         let hwnd = self.windows[at].hwnd;
         let rerun = self.in_window(at, |ui, _| events.into_iter().flatten().fold(false, |rerun, event| ui.event(event) | rerun));
@@ -1965,6 +1971,10 @@ impl State {
             return;
         }
         let part = rect(area.left as f32 / s, area.top as f32 / s, (area.right - area.left) as f32 / s, (area.bottom - area.top) as f32 / s);
+        #[cfg(feature = "gpu-draw")]
+        if dc == 0 && self.drawn_by_gpu(at, area, part) {
+            return;
+        }
         let mut top = area.top;
         while top < area.bottom {
             let high = rows.min(area.bottom - top);
@@ -2184,6 +2194,29 @@ impl State {
         unsafe { shown.upload(device, [area.left, top], [area.right - area.left, high], first, width as usize) };
     }
 
+    /// Draws `area` of window `at` (`part` in units) on the GPU, where its device draws a part
+    /// that big (see `gpu_draw`). Says whether it did; if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    fn drawn_by_gpu(&mut self, at: usize, area: RECT, part: crate::geom::Rect) -> bool {
+        let place = [area.left, area.top, area.right, area.bottom];
+        let Some(device) = self.device.as_mut().filter(|device| device.draws(place)) else { return false };
+        let (mut list, size, scale) = (std::mem::take(&mut device.list), [self.windows[at].wide, self.windows[at].high], self.windows[at].scale);
+        list.begin(size);
+        let mut canvas = Canvas::recording(&mut list, size[0] as usize, size[1] as usize, (0, 0), scale);
+        canvas.clip(part);
+        self.in_window(at, |ui, _| ui.paint(&mut canvas));
+        drop(canvas);
+        let drawn = match (self.device.as_mut(), self.windows[at].shown.as_mut()) {
+            (Some(device), Some(shown)) => !list.failed && shown.draw(device, &list, place),
+            _ => false,
+        };
+        list.finish(drawn);
+        if let Some(device) = self.device.as_mut() {
+            device.list = list;
+        }
+        drawn
+    }
+
     /// Presents window `at`, `parts` of it drawn anew. A lost device is made again.
     fn present(&mut self, at: usize, parts: &[RECT]) {
         let (Some(device), window) = (&self.device, &mut self.windows[at]) else { return };
@@ -2386,7 +2419,7 @@ impl DropTarget {
         let has = |form: &FORMATETC| unsafe { ((*(*data).table).query_get_data)(data, form) == 0 };
         let [files, text] = self.takes();
         match () {
-            _ if crate::ole_drag::is_going(data.cast(), self.hwnd) => Brings::Nothing,
+            _ if crate::ole_drag::is_dragging(data.cast(), self.hwnd) => Brings::Nothing,
             _ if files && has(&FILES) => Brings::Files,
             _ if text && has(&TEXT) => Brings::Text,
             _ => Brings::Nothing,
@@ -2460,7 +2493,7 @@ impl DropTarget {
         // is told.)
         let nested = ANSWERING.replace(true);
         let state = if nested || self.brings.get() == Brings::Nothing { None } else { unsafe { state_of(self.hwnd) } };
-        let taken = state.is_some_and(|(state, at)| state.carried(at, events(&state.windows[at])));
+        let taken = state.is_some_and(|(state, at)| state.hear_drag(at, events(&state.windows[at])));
         ANSWERING.set(nested);
         taken
     }
@@ -2485,12 +2518,12 @@ unsafe fn dropped_text(memory: HANDLE) -> String {
 /// A drag out of window `hwnd` is over it again at a screen point, or left it (none): its
 /// interface hears where the pointer is, as for any drag inside it. (Windows asks the drag
 /// source this while dragging, between the windows' messages.)
-pub(crate) fn carried_over(hwnd: HANDLE, at: Option<POINT>) {
+pub(crate) fn drag_back_over(hwnd: HANDLE, at: Option<POINT>) {
     let nested = ANSWERING.replace(true);
     // SAFETY: as in `DropTarget::tell`.
     if let Some((state, at_window)) = if nested { None } else { unsafe { state_of(hwnd) } } {
         let event = at.and_then(|at| pointer_at(hwnd, at, state.windows[at_window].scale)).unwrap_or(Event::Leave);
-        state.carried(at_window, [Some(event), None]);
+        state.hear_drag(at_window, [Some(event), None]);
     }
     ANSWERING.set(nested);
 }
@@ -2498,7 +2531,7 @@ pub(crate) fn carried_over(hwnd: HANDLE, at: Option<POINT>) {
 /// What came of a drag out of window `hwnd`: its interface hears what the other program did
 /// with it, that the button came up (which Windows kept meanwhile), and where the pointer is if
 /// it was dropped on the window itself: there it drops as any drag inside the window.
-fn came_back(hwnd: HANDLE, outcome: crate::ole_drag::Outcome) {
+fn drag_out_ended(hwnd: HANDLE, outcome: crate::ole_drag::Outcome) {
     let nested = ANSWERING.replace(true);
     // SAFETY: as in `DropTarget::tell`.
     if let Some((state, at)) = if nested { None } else { unsafe { state_of(hwnd) } } {
@@ -2511,25 +2544,25 @@ fn came_back(hwnd: HANDLE, outcome: crate::ole_drag::Outcome) {
             unsafe { ReleaseCapture() };
         }
         state.in_window(at, |ui, _| ui.set_drop_effect(outcome.taken));
-        state.carried(at, [Some(place), Some(Event::Release(Button::Left))]);
+        state.hear_drag(at, [Some(place), Some(Event::Release(Button::Left))]);
     }
     ANSWERING.set(nested);
 }
 
 /// Where the app hands something out of a window ([`Ui::drag_out`]): from then on it goes to
 /// Windows through OLE (see `ole_drag::Outward`).
-pub(crate) fn hands_out() {
+pub(crate) fn enable_drag_out() {
     OUTWARD.set(Some(crate::ole_drag::OUTWARD));
 }
 
 /// Hands Windows what the person just dragged out of a window, if anything: between two
 /// messages, when no window is in use, since `DoDragDrop` then follows the mouse until the drop
 /// (the windows' messages still arriving meanwhile).
-fn carry_out_asked() {
+fn run_queued_drag_out() {
     while let Some((hwnd, data, outward)) = OUTGOING.take() {
         // SAFETY: the object was made for this and has one reference, the queue's.
-        let outcome = unsafe { (outward.carried)(hwnd, data) };
-        came_back(hwnd, outcome);
+        let outcome = unsafe { (outward.run)(hwnd, data) };
+        drag_out_ended(hwnd, outcome);
     }
 }
 
@@ -2590,6 +2623,8 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
         WM_NCHITTEST if state.windows[at].asks_hit_test => return state.hit_test(at, l),
         WM_SIZE => state.resized(at),
         WM_MOVE => state.moved(at),
+        // SAFETY: Windows sends this message with null or a setting's name.
+        WM_SETTINGCHANGE if at == 0 && unsafe { crate::locale::region_changed(l) } => state.run(),
         WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED if at == 0 => state.settings_changed(w),
         WM_DISPLAYCHANGE if at == 0 => state.screens_changed(),
         WM_ANSWERED => {
@@ -2739,7 +2774,7 @@ unsafe fn first_destroyed(hwnd: HANDLE, state: &mut State) {
         (desktop.ended)();
     }
     // Not while a drag out of the window is in progress: OLE still drives it.
-    let ole = state.ole == Some(true) && !crate::ole_drag::carrying();
+    let ole = state.ole == Some(true) && !crate::ole_drag::dragging_out();
     state.windows.drain(1..).for_each(Open::destroy);
     uia::gone(hwnd);
     // A `Waker` wakes no window from now on: the handle may soon be another's.
@@ -2777,7 +2812,7 @@ pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
             if let Some(answer) = DIALOG.get() {
                 answer();
             }
-            carry_out_asked();
+            run_queued_drag_out();
         }
     }
 }
@@ -2836,7 +2871,7 @@ pub(crate) fn open(window: Window, app: Box<dyn FnMut(&mut Ui)>) -> HANDLE {
         let (found, size) = (screens(), Size { w: window.width, h: window.height });
         let opening =
             WindowOpening { min_size: Size { w: window.min_width, h: window.min_height }, position: window.position, screen: window.screen, kind: WindowKind::Plain, frameless: window.frameless };
-        let asked = window.position.map(|(x, y)| Spot::At(x, y)).or(window.screen.map(Spot::Middle)).unwrap_or_default();
+        let asked = window.position.map(|(x, y)| OpenAt::At(x, y)).or(window.screen.map(OpenAt::Middle)).unwrap_or_default();
         let looks = (!window.frameless && !window.transparent).then(|| styles(WindowKind::Plain, false, false));
         let Some(first) = Open::make(window.title, size, opening, window.transparent, place_on(&found, asked, size, looks), 0, 0) else { return 0 };
         let hwnd = first.hwnd;
@@ -2939,9 +2974,9 @@ thread_local! {
     static ASKED: RefCell<Vec<(HANDLE, FileDialogRequest)>> = const { RefCell::new(Vec::new()) };
     static ANSWER: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     /// What a window just dragged out of itself, until handed to Windows.
-    static OUTGOING: Cell<Option<(HANDLE, *mut crate::ole_drag::Carried, crate::ole_drag::Outward)>> = const { Cell::new(None) };
+    static OUTGOING: Cell<Option<(HANDLE, *mut crate::ole_drag::DataObject, crate::ole_drag::Outward)>> = const { Cell::new(None) };
     /// How a drag out is handed to Windows: set once an app first hands something out
-    /// (`hands_out`), so a program that never does is built without it.
+    /// (`enable_drag_out`), so a program that never does is built without it.
     static OUTWARD: Cell<Option<crate::ole_drag::Outward>> = const { Cell::new(None) };
     /// How windows whose apps asked for the system file dialog are shown it: set once an app
     /// first asks (`hand_file_dialog`), so a program that never asks is built without it.
@@ -3001,7 +3036,7 @@ fn pick_file(owner: HANDLE, ask: &FileDialogRequest) -> Option<PathBuf> {
                 Com::function::<Says>(dialog, 22)(dialog, ending.as_ptr());
             }
         }
-        let picked = if dialog.is_null() { None } else { picked_in(dialog, owner) };
+        let picked = if dialog.is_null() { None } else { chosen_path(dialog, owner) };
         if com >= 0 {
             CoUninitialize();
         }
@@ -3031,7 +3066,7 @@ unsafe fn start_in(dialog: *mut Com, folder: &[u16]) {
 ///
 /// # Safety
 /// `dialog` is a live file dialog the caller holds one reference to.
-unsafe fn picked_in(dialog: *mut Com, owner: HANDLE) -> Option<PathBuf> {
+unsafe fn chosen_path(dialog: *mut Com, owner: HANDLE) -> Option<PathBuf> {
     let (mut item, mut name): (*mut Com, *mut u16) = (std::ptr::null_mut(), std::ptr::null_mut());
     // SAFETY: as the caller promises. The result is a shell item, whose file-system path
     // (`SIGDN_FILESYSPATH`, 0x8005_8000) comes in memory this function frees: the name ends at
@@ -3579,8 +3614,8 @@ pub(crate) mod tests {
         unsafe { DestroyWindow(hwnd) };
     }
 
-    /// Text measured and drawn at every size a board zooms through keeps at most `MADE` GDI
-    /// fonts and `GLYPHS` glyph pictures; what is dropped comes back the same.
+    /// Text measured and drawn at every size a pan-and-zoom view zooms through keeps at most
+    /// `MADE` GDI fonts and `GLYPHS` glyph pictures; what is dropped comes back the same.
     #[test]
     fn fonts_and_letters_made_at_every_size_are_held_to_a_bound() {
         let mut text = SystemText::new().unwrap();
@@ -3763,6 +3798,8 @@ pub(crate) mod tests {
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no dialog is shown on it");
         let folder = std::env::temp_dir().join(format!("taut-files-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
+        // The dialog answers with long names; a temp folder can have a short one (`RUNNER~1`).
+        let folder = PathBuf::from(std::fs::canonicalize(&folder).unwrap().to_string_lossy().trim_start_matches(r"\\?\"));
         std::fs::write(folder.join("report.txt"), "x").unwrap();
         // The user: presses a button of the dialog with this title (1: `IDOK`, 2: `IDCANCEL`)
         // once it is up, and again while it stays up: it takes a moment to initialize and
@@ -4515,10 +4552,10 @@ pub(crate) mod tests {
         unsafe { SetKeyboardState(&[0; 256]) };
     }
 
-    /// Whether this test program carries the GPU path: the name of the function that makes
+    /// Whether this test program has the GPU path: the name of the function that makes
     /// Direct3D devices is in its file. (The name is made here at run time, so the test is not
-    /// what carries it.)
-    pub(crate) fn carries_device_making() -> bool {
+    /// what compiles it in.)
+    pub(crate) fn has_device_creation() -> bool {
         let mut name = *b"D3D11CreateDevicf";
         name[16] = std::hint::black_box(name[16]) - 1;
         let program = std::fs::read(std::env::current_exe().unwrap()).unwrap();
@@ -4528,7 +4565,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg(not(feature = "gpu"))]
     fn without_the_feature_the_gpu_path_is_not_compiled_in() {
-        assert!(!carries_device_making());
+        assert!(!has_device_creation());
     }
 
     pub(crate) fn pump() -> bool {
@@ -6183,13 +6220,13 @@ RadioButton [Two] picked: True";
 
     /// The first window of such an app as `run` creates it, its corner at `corner` if given;
     /// not shown.
-    fn carrier(app: &Rc<RefCell<Out>>, corner: Option<(i32, i32)>) -> HANDLE {
+    fn drag_source_window(app: &Rc<RefCell<Out>>, corner: Option<(i32, i32)>) -> HANDLE {
         let app = app.clone();
         let describe = move |ui: &mut Ui| {
             let mut app = app.borrow_mut();
             let app = &mut *app;
             ui.column().pad(10.0).gap(10.0).open();
-            let from = ui.button("Carry me");
+            let from = ui.button("RunDrag me");
             if ui.drag_source(&from, 7) {
                 ui.label("seven");
                 ui.close();
@@ -6244,7 +6281,7 @@ RadioButton [Two] picked: True";
 
     /// `DoDragDrop` to a file manager that reads the files, moves them itself, and reports so
     /// as Explorer does: no effect as Windows sees it, a move as the user sees it.
-    unsafe fn moved_by_a_file_manager(data: *mut crate::ole_drag::Carried, source: *mut crate::ole_drag::Source, allowed: u32, effect: *mut u32) -> i32 {
+    unsafe fn moved_by_a_file_manager(data: *mut crate::ole_drag::DataObject, source: *mut crate::ole_drag::Source, allowed: u32, effect: *mut u32) -> i32 {
         let (data, mut handed) = (data.cast::<IDataObject>(), STGMEDIUM { medium: 0, memory: 0, owner: std::ptr::null_mut() });
         unsafe {
             assert_eq!((((*(*data).table).query_get_data)(data, &FILES), ((*(*data).table).get_data)(data, &FILES, &mut handed)), (0, 0));
@@ -6262,14 +6299,14 @@ RadioButton [Two] picked: True";
     }
 
     /// `DoDragDrop` until the user cancels with Escape.
-    unsafe fn given_up(_: *mut crate::ole_drag::Carried, source: *mut crate::ole_drag::Source, _: u32, _: *mut u32) -> i32 {
+    unsafe fn given_up(_: *mut crate::ole_drag::DataObject, source: *mut crate::ole_drag::Source, _: u32, _: *mut u32) -> i32 {
         assert_eq!(crate::ole_drag::go_on(source, true, 1), GIVEN_UP);
         GIVEN_UP
     }
 
     /// `DoDragDrop` over a window of this program (`OVER`), whose drop target hears it as
     /// Windows reports, then dropping there. (It sees what the drop target says it may do.)
-    unsafe fn let_go_over_a_window(data: *mut crate::ole_drag::Carried, source: *mut crate::ole_drag::Source, allowed: u32, effect: *mut u32) -> i32 {
+    unsafe fn let_go_over_a_window(data: *mut crate::ole_drag::DataObject, source: *mut crate::ole_drag::Source, allowed: u32, effect: *mut u32) -> i32 {
         let ((hwnd, at), data) = (OVER.get(), data.cast::<IDataObject>());
         unsafe {
             let target = GetPropW(hwnd, wide("OleDropTargetInterface").as_ptr()) as *mut DropTarget;
@@ -6292,18 +6329,18 @@ RadioButton [Two] picked: True";
     }
 
     #[test]
-    fn files_carried_out_of_a_window_go_to_windows_between_messages_and_its_app_hears_they_were_moved() {
+    fn files_dragged_out_of_a_window_go_to_windows_between_messages_and_its_app_hears_they_were_moved() {
         let paths: &'static [PathBuf] = Box::leak(Box::new([PathBuf::from("C:\\a\\one.txt"), PathBuf::from("D:\\zwei drei\\für.png")]));
         let app = Rc::new(RefCell::new(Out { what: Some(DragData::Files(paths)), ..Out::default() }));
-        let hwnd = carrier(&app, None);
+        let hwnd = drag_source_window(&app, None);
         // Dragged out of the window, it waits until the message that took it there is handled.
         // (This window is never shown: whatever the pointer is over, it is not this one.)
         take_out(hwnd, &app, pt(320.0, 50.0));
         assert_eq!(OUTGOING.get().map(|(from, ..)| from), Some(hwnd));
         assert!(!state(hwnd).ui.drag_leaves_window(), "it is out already");
-        let was = crate::ole_drag::CARRY.replace(moved_by_a_file_manager);
-        carry_out_asked();
-        crate::ole_drag::CARRY.set(was);
+        let was = crate::ole_drag::RUN_DRAG.replace(moved_by_a_file_manager);
+        run_queued_drag_out();
+        crate::ole_drag::RUN_DRAG.set(was);
         assert!(OUTGOING.get().is_none());
         assert_eq!(SAW.take(), ["C:\\a\\one.txt", "D:\\zwei drei\\für.png"]);
         // The app heard once that they were moved; nothing was dropped in the window; the
@@ -6318,61 +6355,61 @@ RadioButton [Two] picked: True";
     #[test]
     fn what_is_given_up_with_escape_is_let_go_nowhere() {
         let app = Rc::new(RefCell::new(Out { what: Some(DragData::Text("words")), ..Out::default() }));
-        let hwnd = carrier(&app, None);
+        let hwnd = drag_source_window(&app, None);
         take_out(hwnd, &app, pt(150.0, 250.0));
-        let was = crate::ole_drag::CARRY.replace(given_up);
-        carry_out_asked();
-        crate::ole_drag::CARRY.set(was);
+        let was = crate::ole_drag::RUN_DRAG.replace(given_up);
+        run_queued_drag_out();
+        crate::ole_drag::RUN_DRAG.set(was);
         assert_eq!((app.borrow().taken.clone(), app.borrow().dropped), (vec![], None));
         assert!(state(hwnd).ui.drag_payload().is_none() && unsafe { GetCapture() } != hwnd);
         // In the library's own tests Windows drags nothing: a drag out is dropped at once, as
         // cancelled.
         take_out(hwnd, &app, pt(150.0, 250.0));
-        carry_out_asked();
+        run_queued_drag_out();
         assert_eq!((app.borrow().taken.clone(), app.borrow().dropped, state(hwnd).ui.drag_payload()), (vec![], None, None));
         unsafe { DestroyWindow(hwnd) };
     }
 
     #[test]
-    fn what_one_window_carries_out_another_window_of_the_program_takes() {
+    fn what_one_window_drags_out_another_window_of_the_program_takes() {
         let app = Rc::new(RefCell::new(Out { what: Some(DragData::Text("über alles")), takes: SecondWindow::new(200.0, 120.0), ..Out::default() }));
-        let first = carrier(&app, None);
+        let first = drag_source_window(&app, None);
         let [_, second] = windows(first)[..] else { panic!("{} windows", windows(first).len()) };
         assert!(state(first).ole == Some(true) && kept(second).files, "the second window takes files and text");
         take_out(first, &app, pt(320.0, 50.0));
         OVER.set((second, on_screen(second, middle(app.borrow().took))));
-        let was = crate::ole_drag::CARRY.replace(let_go_over_a_window);
-        carry_out_asked();
+        let was = crate::ole_drag::RUN_DRAG.replace(let_go_over_a_window);
+        run_queued_drag_out();
         assert_eq!((SAW.take(), app.borrow().text.clone(), app.borrow().taken.clone()), (vec!["may: 1".to_string()], Some("über alles".into()), vec![DropEffect::Copied]));
         // Over its source window, its drop target leaves it alone: there it is that window's
         // own (see the private-desktop test), not text from elsewhere.
         app.borrow_mut().taken.clear();
         take_out(first, &app, pt(320.0, 50.0));
         OVER.set((first, on_screen(first, middle(app.borrow().on))));
-        carry_out_asked();
-        crate::ole_drag::CARRY.set(was);
+        run_queued_drag_out();
+        crate::ole_drag::RUN_DRAG.set(was);
         assert_eq!((SAW.take(), app.borrow().taken.clone(), app.borrow().dropped), (vec!["may: 0".to_string()], vec![], None));
         // Files from the second window to the first, the same way.
         let paths: &'static [PathBuf] = Box::leak(Box::new([PathBuf::from("C:\\a\\one.txt")]));
         app.borrow_mut().what = Some(DragData::Files(paths));
         take_out(first, &app, pt(320.0, 50.0));
         OVER.set((second, on_screen(second, middle(app.borrow().took))));
-        let was = crate::ole_drag::CARRY.replace(let_go_over_a_window);
-        carry_out_asked();
-        crate::ole_drag::CARRY.set(was);
+        let was = crate::ole_drag::RUN_DRAG.replace(let_go_over_a_window);
+        run_queued_drag_out();
+        crate::ole_drag::RUN_DRAG.set(was);
         assert_eq!((SAW.take(), app.borrow().files.clone(), app.borrow().taken.clone()), (vec!["may: 1".to_string()], paths.to_vec(), vec![DropEffect::Copied]));
         unsafe { DestroyWindow(first) };
     }
 
     #[test]
-    fn what_is_carried_out_comes_back_over_its_window_and_goes_out_over_a_window_lying_on_it() {
+    fn what_is_dragged_out_comes_back_over_its_window_and_goes_out_over_a_window_lying_on_it() {
         // Shown for real: on a private desktop nobody sees.
-        on_a_desktop_of_its_own("windows::tests::on_a_desktop_nobody_sees_what_is_carried_out_come_back_and_go_out_over_a_window_on_it");
+        on_a_desktop_of_its_own("windows::tests::on_a_desktop_nobody_sees_what_is_dragged_out_come_back_and_go_out_over_a_window_on_it");
     }
 
     /// `DoDragDrop` out of window `OVER` and back over it at the screen point, dropping there.
     /// (It sees the cursor, and where the window's interface heard the pointer was.)
-    unsafe fn home_again(_: *mut crate::ole_drag::Carried, source: *mut crate::ole_drag::Source, _: u32, effect: *mut u32) -> i32 {
+    unsafe fn home_again(_: *mut crate::ole_drag::DataObject, source: *mut crate::ole_drag::Source, _: u32, effect: *mut u32) -> i32 {
         let (hwnd, at) = OVER.get();
         let off = POINT { x: at.x, y: at.y + 2000 };
         unsafe {
@@ -6388,13 +6425,13 @@ RadioButton [Two] picked: True";
 
     #[test]
     #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
-    fn on_a_desktop_nobody_sees_what_is_carried_out_come_back_and_go_out_over_a_window_on_it() {
+    fn on_a_desktop_nobody_sees_what_is_dragged_out_come_back_and_go_out_over_a_window_on_it() {
         if std::env::var_os(ALONE).is_none() {
             return;
         }
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no window is shown on it");
         let app = Rc::new(RefCell::new(Out { what: Some(DragData::Text("words")), takes: SecondWindow::new(200.0, 120.0).position(300, 150), ..Out::default() }));
-        let first = carrier(&app, Some((100, 100)));
+        let first = drag_source_window(&app, Some((100, 100)));
         let [_, second] = windows(first)[..] else { panic!("{} windows", windows(first).len()) };
         unsafe { (ShowWindow(first, 1), ShowWindow(second, 1)) };
         pump();
@@ -6415,9 +6452,9 @@ RadioButton [Two] picked: True";
         // interface hears where the pointer is, and has the number dropped there.
         let on = on_screen(first, middle(app.borrow().on));
         OVER.set((first, on));
-        let was = crate::ole_drag::CARRY.replace(home_again);
-        carry_out_asked();
-        crate::ole_drag::CARRY.set(was);
+        let was = crate::ole_drag::RUN_DRAG.replace(home_again);
+        run_queued_drag_out();
+        crate::ole_drag::RUN_DRAG.set(was);
         let at = middle(app.borrow().on);
         assert_eq!(SAW.take(), ["40102 None Some(7)".to_string(), format!("0 Some({at:?}) Some(7)")]);
         assert_eq!((app.borrow().dropped, app.borrow().taken.clone()), (Some(7), vec![]));

@@ -196,7 +196,7 @@ impl Combo {
 pub(crate) enum Registration {
     New,
     // Only the portal answers later.
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     Pending,
     Registered,
     Refused,

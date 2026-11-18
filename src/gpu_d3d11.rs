@@ -62,6 +62,9 @@ pub(crate) struct Device {
     factory: Com,
     /// It is a GPU, not WARP.
     pub(crate) gpu: bool,
+    /// What it draws windows with, where it does (see `gpu_draw`).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) drawing: Option<crate::gpu_draw_windows::Pipeline>,
 }
 
 impl Device {
@@ -70,11 +73,11 @@ impl Device {
     pub(crate) fn gpu() -> Option<Device> {
         #[cfg(test)]
         if crate::gpu_windows::tests::faked().software {
-            let mut device = Device::made(WARP)?;
+            let mut device = Device::made(WARP)?.drawing();
             device.gpu = true;
             return Some(device);
         }
-        let device = Device::made(HARDWARE)?;
+        let device = Device::made(HARDWARE)?.drawing();
         (!device.vendor_is_microsoft()).then_some(device)
     }
 
@@ -90,7 +93,14 @@ impl Device {
     /// A device of the driver type, with its DXGI factory; nothing where any part fails. Its
     /// frame queue is one frame long: a present waits for the one before to be shown.
     fn made(driver: u32) -> Option<Device> {
-        let mut made = Device { device: null_mut(), context: null_mut(), factory: null_mut(), gpu: driver == HARDWARE };
+        let mut made = Device {
+            device: null_mut(),
+            context: null_mut(),
+            factory: null_mut(),
+            gpu: driver == HARDWARE,
+            #[cfg(feature = "gpu-draw")]
+            drawing: None,
+        };
         let (mut level, mut dxgi, mut adapter) = (0, null_mut(), null_mut());
         let found = function_in(system_library("d3d11.dll"), c"D3D11CreateDevice");
         // SAFETY: `D3D11CreateDevice` (0x29: single-threaded, no driver threads, BGRA) and the
@@ -114,6 +124,20 @@ impl Device {
     }
 
     /// Whether the device's adapter is Microsoft's (vendor 0x1414): the Basic Render Driver,
+    /// The same device, made to draw windows too where the feature `gpu-draw` is on (see
+    /// `gpu_draw`). Its shaders are compiled here, on the device's own thread.
+    #[inline]
+    #[cfg_attr(not(feature = "gpu-draw"), allow(unused_mut))]
+    fn drawing(mut self) -> Device {
+        // (Not `Device { drawing, ..self }`: that copies the COM pointers, then releases them
+        // with `self`.)
+        #[cfg(feature = "gpu-draw")]
+        {
+            self.drawing = crate::gpu_draw_windows::Pipeline::new(self.device);
+        }
+        self
+    }
+
     /// which draws on the CPU.
     fn vendor_is_microsoft(&self) -> bool {
         let (mut dxgi, mut adapter, mut described) = (null_mut(), null_mut(), [0u64; 40]);
@@ -146,6 +170,8 @@ impl Drop for Device {
     /// Lets the context finish (`Flush`, 111), then releases all three: a window's next swap
     /// chain needs the last one gone.
     fn drop(&mut self) {
+        #[cfg(feature = "gpu-draw")]
+        drop(self.drawing.take());
         // SAFETY: each is held once, by this device.
         unsafe {
             if !self.context.is_null() {
@@ -156,6 +182,18 @@ impl Drop for Device {
     }
 }
 
+/// How a window's texture is bound: drawn into by the GPU (`D3D11_BIND_RENDER_TARGET`) where
+/// the device draws windows, else only copied.
+#[inline]
+fn drawn(device: &Device) -> u32 {
+    #[cfg(feature = "gpu-draw")]
+    if device.drawing.is_some() {
+        return 0x20;
+    }
+    let _ = device;
+    0
+}
+
 /// A window's swap chain, and the texture holding all of the window's pixels.
 pub(crate) struct Shown {
     chain: Com,
@@ -163,6 +201,9 @@ pub(crate) struct Shown {
     picture: Com,
     /// Width and height in pixels of both.
     size: [i32; 2],
+    /// The view the GPU draws into the texture through, where its device draws (null if not).
+    #[cfg(feature = "gpu-draw")]
+    target: Com,
 }
 
 impl Shown {
@@ -171,7 +212,13 @@ impl Shown {
     pub(crate) fn new(device: &Device, hwnd: HANDLE, size: [i32; 2]) -> Option<Shown> {
         let [width, height] = size.map(|side| side.max(1) as u32);
         let described = ChainDescription { width, height, format: B8G8R8A8_UNORM, stereo: 0, sample_count: 1, sample_quality: 0, usage: 0x20, buffers: 2, scaling: 1, effect: 3, alpha: 3, flags: 0 };
-        let mut shown = Shown { chain: null_mut(), picture: null_mut(), size: [0; 2] };
+        let mut shown = Shown {
+            chain: null_mut(),
+            picture: null_mut(),
+            size: [0; 2],
+            #[cfg(feature = "gpu-draw")]
+            target: null_mut(),
+        };
         type MakeChain = unsafe extern "system" fn(Com, Com, HANDLE, *const ChainDescription, *const c_void, Com, *mut Com) -> i32;
         // SAFETY: the factory's CreateSwapChainForHwnd (15) for a live window; its
         // MakeWindowAssociation (8) with 3 (`DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER`):
@@ -193,13 +240,26 @@ impl Shown {
             return Some(false);
         }
         let [width, height] = size.map(|side| side as u32);
-        let described =
-            TextureDescription { width, height, mip_levels: 1, array_size: 1, format: B8G8R8A8_UNORM, sample_count: 1, sample_quality: 0, usage: 0, bind_flags: 0, cpu_access_flags: 0, misc_flags: 0 };
+        let described = TextureDescription {
+            width,
+            height,
+            mip_levels: 1,
+            array_size: 1,
+            format: B8G8R8A8_UNORM,
+            sample_count: 1,
+            sample_quality: 0,
+            usage: 0,
+            bind_flags: drawn(device),
+            cpu_access_flags: 0,
+            misc_flags: 0,
+        };
         type MakeTexture = unsafe extern "system" fn(Com, *const TextureDescription, *const c_void, *mut Com) -> i32;
         self.size = [0; 2];
         // SAFETY: the old texture is held here alone; the swap chain's ResizeBuffers (13) while
         // nothing holds its buffers; the device's CreateTexture2D (5).
         unsafe {
+            #[cfg(feature = "gpu-draw")]
+            release(std::mem::replace(&mut self.target, null_mut()));
             release(std::mem::replace(&mut self.picture, null_mut()));
             if function::<unsafe extern "system" fn(Com, u32, u32, u32, u32, u32) -> i32>(self.chain, 13)(self.chain, 0, width, height, 0, 0) < 0 {
                 return None;
@@ -207,6 +267,10 @@ impl Shown {
             if function::<MakeTexture>(device.device, 5)(device.device, &described, null(), &mut self.picture) < 0 {
                 return None;
             }
+        }
+        #[cfg(feature = "gpu-draw")]
+        if device.drawing.is_some() {
+            self.target = crate::gpu_draw_windows::Pipeline::target(device.device, self.picture);
         }
         self.size = size;
         Some(true)
@@ -227,6 +291,14 @@ impl Shown {
         // SAFETY: the box lies in the texture; the rows read lie where the caller promises. (The
         // context's UpdateSubresource, 48.)
         unsafe { function::<Copy>(device.context, 48)(device.context, self.picture, 0, &place, first, (pitch * 4) as u32, 0) };
+    }
+
+    /// Draws a recorded paint into the texture, inside `area` (left, top, right, bottom). Says
+    /// whether it could: if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn draw(&mut self, device: &mut Device, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
+        let Some(drawing) = device.drawing.as_mut() else { return false };
+        drawing.draw(device.device, device.context, self.target, list, area, self.size)
     }
 
     /// Copies the texture to the back buffer and presents it, `dirty` being what changed, at the
@@ -258,6 +330,11 @@ impl Drop for Shown {
     fn drop(&mut self) {
         // SAFETY: each is held once, by this window.
         unsafe { [self.picture, self.chain].into_iter().for_each(|object| release(object)) };
+        #[cfg(feature = "gpu-draw")]
+        // SAFETY: held once, by this window.
+        unsafe {
+            release(self.target)
+        };
     }
 }
 

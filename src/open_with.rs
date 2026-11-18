@@ -76,6 +76,15 @@ fn opened(what: &OsStr) -> bool {
     open_by(what, crate::atspi::Bus::session(), OsStr::new("xdg-open"))
 }
 
+/// Hands `what` to `open`, which opens it as a double click in Finder does. Says whether it
+/// did. (A name starting with a dash is given as `./-...`, so it is not read as an option.)
+#[cfg(target_os = "macos")]
+fn opened(what: &OsStr) -> bool {
+    let dashed = what.as_encoded_bytes().starts_with(b"-");
+    let what = if dashed { std::path::Path::new(".").join(what).into_os_string() } else { what.to_os_string() };
+    std::process::Command::new("/usr/bin/open").arg(what).status().is_ok_and(|status| status.success())
+}
+
 /// The same over `bus`, with `opener` for what the portal does not take.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn open_by(what: &OsStr, bus: Option<crate::atspi::Bus>, opener: &OsStr) -> bool {
@@ -140,6 +149,7 @@ mod tests {
     /// A stand-in for whatever the system would start: built in a folder whose name has a space
     /// and a non-ASCII letter, it writes what it was handed (one per line) into `opened.txt`
     /// beside itself, and shows nothing.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn stand_in(name: &str) -> PathBuf {
         let folder = std::env::current_exe().unwrap().parent().unwrap().join(format!("stand in \u{e9} {name}"));
         _ = std::fs::remove_dir_all(&folder);
@@ -158,6 +168,7 @@ mod tests {
 
     /// What the stand-in at `program` was handed, once it ran; nothing if it did not run within
     /// a few seconds.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn handed(program: &Path) -> Option<String> {
         let note = program.with_file_name("opened.txt");
         let since = std::time::Instant::now();

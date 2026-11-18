@@ -7,7 +7,7 @@ What taut aims to be, and how each aim is checked.
 | Goal | Means | Checked by |
 | --- | --- | --- |
 | **General** | Nothing is made for one particular app. General means (boxes, shapes, pointer and keys on any box) come before special parts. | Reading the change: a part only one app could use does not go in. |
-| **Portable** | The same interface code everywhere; only the window, text and clipboard differ by system. Runs in its own window, as a texture under any renderer, or in a DLL. | Tests on Windows, Ubuntu and Arch Linux; `tests/dll.rs` drives the DLL; every interface test draws into a `Surface`. |
+| **Portable** | The same interface code everywhere; only the window, text and clipboard differ by system. Runs in its own window, as a texture under any renderer, or in a DLL. | Tests on Windows, Ubuntu and Arch Linux; macOS windows in `tests/macos.rs` on a Mac runner; `tests/dll.rs` drives the DLL; every interface test draws into a `Surface`. |
 | **Light** | Zero dependencies. No frame loop. A program carries only what it calls; what can't be told from the calls is a feature, off by default. Outside data is bounded by its cost, not just its count. | `examples/walk` measures memory, size and idle CPU (zero); [costs](docs/costs-and-speed.md#what-it-costs). |
 | **Fast** | In every category (describe, lay out, redraw, full draw, event to pixels, idle) at least as fast as Dear ImGui at every window size. | `examples/bench` before and after every core change; [speed](docs/costs-and-speed.md#how-fast-it-is). |
 | **Complete** | What Dear ImGui and egui can do, taut can do. A feature works by keyboard and pointer, at every scale, on every system, with and without its feature flag, and is tested. | [Beside Dear ImGui](docs/beside-other-libraries.md#beside-dear-imgui), [what is missing](docs/what-is-missing.md), `tests/accessibility.rs`. |
@@ -29,7 +29,7 @@ What taut aims to be, and how each aim is checked.
   `Response` are `#[non_exhaustive]`.
 - Files from other programs are read, never memory-mapped. Writes to pipes never raise
   SIGPIPE.
-- macOS, iOS and Android come after Windows and Linux are complete; nothing may rule them out.
+- iOS and Android come after Windows, Linux and macOS are complete; nothing may rule them out.
 
 ## Contributing
 
@@ -39,12 +39,13 @@ A change is ready when:
 2. It is flat: `cargo test --test flat` passes.
 3. It has tests through the harness in `tests/common`, so its redraw is checked at every step.
 4. `cargo fmt` and `cargo clippy --all-targets` are clean (every public item documented).
-5. All tests pass on Windows, Ubuntu and Arch Linux, with no features and with all.
+5. All tests pass on Windows, Ubuntu and Arch Linux, with no features and with all. CI runs them
+   on Windows and Ubuntu (`.github/workflows/ci.yml`).
 6. Core changes are benchmarked before and after.
 7. `GUIDE.md` shows it in a compiled example; [costs](docs/costs-and-speed.md) and
    [what is missing](docs/what-is-missing.md) are updated.
 
 ## What is left
 
-- Back ends for macOS, Android and iOS.
+- Back ends for Android and iOS.
 - The rest of [what is missing](docs/what-is-missing.md).

@@ -86,7 +86,7 @@ pub(crate) enum Kind {
 }
 
 /// An animation as kept: the file's frames, still packed, and the canvas at one of them.
-pub(crate) struct Reel {
+pub(crate) struct LoadedAnimation {
     /// The canvas size in pixels.
     pub size: [usize; 2],
     pub frames: Vec<Frame>,
@@ -106,10 +106,10 @@ pub(crate) struct Reel {
     pub(crate) since: Duration,
 }
 
-impl Reel {
+impl LoadedAnimation {
     /// Reads an animation: GIF, PNG or WebP, by its signature; at most its first `most` frames.
     /// (A still image is a one-frame animation.) `None` if none of these, or no whole frame.
-    pub(crate) fn read(file: &[u8], most: usize) -> Option<Reel> {
+    pub(crate) fn read(file: &[u8], most: usize) -> Option<LoadedAnimation> {
         match file {
             [b'G', b'I', b'F', ..] => crate::gif::read_animation(file, most),
             [b'R', b'I', b'F', b'F', ..] => crate::webp::read_animation(file, most),
@@ -118,12 +118,12 @@ impl Reel {
     }
 
     /// An animation with a canvas of `size` and no frames yet, from a file of `kind`.
-    pub(crate) fn new(size: [usize; 2], kind: Kind, plays: Option<u64>) -> Reel {
-        Reel { size, frames: Vec::new(), kind, packed: Vec::new(), plays, pixels: Vec::new(), at: None, before: Vec::new(), afresh: false, since: Duration::ZERO }
+    pub(crate) fn new(size: [usize; 2], kind: Kind, plays: Option<u64>) -> LoadedAnimation {
+        LoadedAnimation { size, frames: Vec::new(), kind, packed: Vec::new(), plays, pixels: Vec::new(), at: None, before: Vec::new(), afresh: false, since: Duration::ZERO }
     }
 
     /// The animation once its frames are in: `None` if it has none. Its canvas starts clear.
-    pub(crate) fn done(mut self) -> Option<Reel> {
+    pub(crate) fn done(mut self) -> Option<LoadedAnimation> {
         self.pixels = vec![0; if self.frames.is_empty() { 0 } else { self.size[0] * self.size[1] }];
         (!self.frames.is_empty()).then_some(self)
     }
@@ -284,8 +284,8 @@ pub(crate) mod tests {
     use super::*;
 
     /// Every frame of an animation as the canvas stands while it shows, stacked vertically.
-    pub(crate) fn frames(reel: &mut Reel) -> Vec<u32> {
-        (0..reel.frames.len()).flat_map(|frame| reel.shown(frame).0.to_vec()).collect()
+    pub(crate) fn frames(anim: &mut LoadedAnimation) -> Vec<u32> {
+        (0..anim.frames.len()).flat_map(|frame| anim.shown(frame).0.to_vec()).collect()
     }
 
     /// Pixels as they look: transparent is transparent, whatever colour it holds.
@@ -313,10 +313,10 @@ pub(crate) mod tests {
 
     /// Whether a damaged animation is still playable: every frame shows, from the last back to
     /// the first, and fills the canvas.
-    pub(crate) fn playable(reel: Option<Reel>) -> bool {
-        let Some(mut reel) = reel else { return true };
-        let screen = reel.size[0] * reel.size[1];
-        (0..reel.frames.len()).rev().all(|frame| reel.shown(frame).0.len() == screen)
+    pub(crate) fn playable(anim: Option<LoadedAnimation>) -> bool {
+        let Some(mut anim) = anim else { return true };
+        let screen = anim.size[0] * anim.size[1];
+        (0..anim.frames.len()).rev().all(|frame| anim.shown(frame).0.len() == screen)
     }
 
     #[test]

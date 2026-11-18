@@ -80,7 +80,8 @@ const RECENT_KEPT: usize = 8;
 const ALT: Mods = Mods { alt: true, ..Mods::NONE };
 const CTRL_SHIFT: Mods = Mods { ctrl: true, shift: true, alt: false };
 
-/// The file dialog's words. English until the app sets its own in `files.words`.
+/// The file dialog's words: English (with the feature `translations`, the user's language)
+/// until the app sets its own in `files.words`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FileWords {
     /// Title when opening a file.
@@ -156,6 +157,16 @@ pub struct FileWords {
 
 impl Default for FileWords {
     fn default() -> Self {
+        #[cfg(feature = "translations")]
+        return FileWords::users();
+        #[cfg(not(feature = "translations"))]
+        FileWords::english()
+    }
+}
+
+impl FileWords {
+    /// The words in English.
+    pub(crate) fn english() -> Self {
         FileWords {
             open_a_file: "Open a file",
             open_files: "Open files",
@@ -534,8 +545,8 @@ impl FileDialog {
 
     /// The selected items' names for the name box: one alone, several each in quotes. Saving,
     /// only a file's name goes in: a folder is no name to save under.
-    fn picked_names(&self) -> Option<String> {
-        let names: Vec<&str> = self.listing.picked().filter(|at| !self.saving || !self.listing.entry(*at).folder()).map(|at| self.listing.name(at)).collect();
+    fn selected_names(&self) -> Option<String> {
+        let names: Vec<&str> = self.listing.selected().filter(|at| !self.saving || !self.listing.entry(*at).folder()).map(|at| self.listing.name(at)).collect();
         match names[..] {
             [] if self.saving => None,
             [] => Some(String::new()),
@@ -587,11 +598,7 @@ impl FileDialog {
     /// Takes a name to save under: with the requested extension, in an existing folder; asking
     /// first if it would overwrite a file.
     fn save_as(&mut self, file: PathBuf) -> Option<PathBuf> {
-        let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let file = match self.endings.first() {
-            Some(first) if !self.endings.iter().any(|ending| ends_in(&name, ending)) => file.with_file_name(name + first),
-            _ => file,
-        };
+        let file = self.ended(file);
         if !file.parent().is_some_and(Path::is_dir) {
             self.tell_trouble(format!("{}: {}", self.words.not_there, file.parent().unwrap_or(&file).to_string_lossy()));
             return None;
@@ -605,6 +612,27 @@ impl FileDialog {
             return None;
         }
         self.answer(vec![file])
+    }
+    /// `file` with the first ending asked for, unless its name has one of them.
+    fn ended(&self, file: PathBuf) -> PathBuf {
+        let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        match self.endings.first() {
+            Some(first) if !self.endings.iter().any(|ending| ends_in(&name, ending)) => file.with_file_name(name + first),
+            _ => file,
+        }
+    }
+    /// The system's dialog is to be asked again, for `file`: in its folder, with its name.
+    fn ask_again(&mut self, file: &Path) {
+        self.name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.folder = file.parent().map_or(std::mem::take(&mut self.folder), Path::to_path_buf);
+    }
+    /// The system's dialog answered with `answer`, or nothing (closed). Where the user went is
+    /// where the dialog starts next time.
+    fn system_answered(&mut self, answer: Option<PathBuf>) -> Option<PathBuf> {
+        self.shown = false;
+        let went = answer.as_deref().and_then(|file| if self.folders { Some(file) } else { file.parent() }).map(PathBuf::from);
+        self.folder = went.unwrap_or(std::mem::take(&mut self.folder));
+        answer.and_then(|file| self.answer(vec![file]))
     }
     /// Takes a folder, when one is asked for: the one named in the box, or with none, the one
     /// shown. (Above the drives there is none.)
@@ -1119,7 +1147,7 @@ impl Ui {
     /// buffer.)
     fn file_row(&mut self, files: &FileDialog, at: u32, written: &mut String) -> Response {
         let (entry, name) = (files.listing.entry(at), files.listing.name(at));
-        let state = self.selectable_row(at, entry.picked());
+        let state = self.selectable_row(at, entry.selected());
         self.row().gap(6.0).align(Align::Start, Align::Center).open();
         self.icon(match (entry.folder(), files.listing.is_picture(at)) {
             (true, _) => FOLDER,
@@ -1169,7 +1197,7 @@ impl Ui {
         }
         if state.clicked {
             did.taken = did.taken.or((state.double_clicked || by_key && enter).then_some(at));
-        } else if arrived && !files.listing.entry(at).picked() {
+        } else if arrived && !files.listing.entry(at).selected() {
             files.listing.pick_only(Some(at));
             did.picked = true;
         }
@@ -1230,7 +1258,7 @@ impl Ui {
     fn file_cell(&mut self, files: &FileDialog, at: u32, [nth, count]: [usize; 2], did: &mut Did) -> Response {
         let (t, entry, name) = (self.theme, files.listing.entry(at), files.listing.name(at));
         let state = self.press(self.id(("cell", at)));
-        let fill = if entry.picked() {
+        let fill = if entry.selected() {
             t.selected
         } else if state.hovered {
             t.hover
@@ -1238,7 +1266,7 @@ impl Ui {
             crate::color::Color::NONE
         };
         self.column().key(("cell", at)).w(Length::Px(CELL)).h(Length::Grow(1.0)).pad(4.0).gap(4.0).align(Align::Start, Align::Center).fill(fill).radius(6.0).sense().focusable().open();
-        self.tell(&state, Role::Row, Some(entry.picked()), name);
+        self.tell(&state, Role::Row, Some(entry.selected()), name);
         self.tell_position(nth + 1, count);
         self.el().size(SMALL, SMALL).align(Align::Center, Align::Center).open();
         let mark = if entry.folder() {
@@ -1377,7 +1405,7 @@ impl Ui {
     /// After the list is described: the selection goes into the name box, then letters typed on
     /// the list, range and page keys, and the thumbnails wanted.
     fn after_list(&mut self, files: &mut FileDialog, did: &Did) {
-        if let Some(names) = files.picked_names().filter(|_| did.picked) {
+        if let Some(names) = files.selected_names().filter(|_| did.picked) {
             files.name = names;
         }
         if let Some(row) = did.on {
@@ -1448,7 +1476,7 @@ impl Ui {
             files.listing.pick_all();
         }
         if one || all {
-            files.name = files.picked_names().unwrap_or_default();
+            files.name = files.selected_names().unwrap_or_default();
             self.rerun();
         }
     }
@@ -1457,7 +1485,7 @@ impl Ui {
         let Some(row) = row else { return };
         let Some(&at) = files.listing.found.get(row) else { return };
         files.listing.pick_only(Some(at));
-        if let Some(names) = files.picked_names() {
+        if let Some(names) = files.selected_names() {
             files.name = names;
         }
         files.jump = Some(row);
@@ -1469,7 +1497,7 @@ impl Ui {
             return;
         }
         files.listing.click(row, false, true);
-        files.name = files.picked_names().unwrap_or_default();
+        files.name = files.selected_names().unwrap_or_default();
         files.jump = Some(row);
         self.rerun();
     }
@@ -1531,7 +1559,7 @@ impl Ui {
             files.go(Go::To(path), true);
             return None;
         }
-        if !files.many || !files.listing.entry(at).picked() {
+        if !files.many || !files.listing.entry(at).selected() {
             files.name = files.listing.name(at).into();
         }
         files.take()
@@ -1543,11 +1571,14 @@ impl Ui {
     fn ask_system(&mut self, files: &mut FileDialog) -> Option<PathBuf> {
         if let Some(answer) = self.file_answer.take() {
             self.file_asked = false;
-            files.shown = false;
-            // Where the user went is where the dialog starts next time.
-            let went = answer.as_deref().and_then(|file| if files.folders { Some(file) } else { file.parent() }).map(PathBuf::from);
-            files.folder = went.unwrap_or(std::mem::take(&mut files.folder));
-            return answer.and_then(|file| files.answer(vec![file]));
+            // A name saved without an ending asked for gets the first (the Linux portal adds
+            // none). If that would replace a file, the system's dialog is asked again with it, to
+            // ask before replacing.
+            let ended = answer.clone().map(|file| if files.saving { files.ended(file) } else { file });
+            match ended.as_ref().filter(|ended| answer.as_ref() != Some(*ended) && ended.exists()) {
+                Some(ended) => files.ask_again(ended),
+                None => return files.system_answered(ended),
+            }
         }
         if !std::mem::replace(&mut self.file_asked, true) {
             crate::platform::hand_file_dialog();
@@ -1641,6 +1672,38 @@ mod tests {
             alone.run(&mut |ui| answers += ui.file_dialog(&mut system).is_some() as u32);
             assert_eq!((answers, system.shown, alone.take_file_dialog_request().is_none()), (0, false, true));
         }
+    }
+
+    /// A name the system's dialog saves under without the ending asked for gets it; if a file
+    /// has that name, the system's dialog is asked again, with it, so that it asks before
+    /// replacing.
+    #[test]
+    fn a_name_the_systems_dialog_saves_under_gets_the_ending_asked_for() {
+        let folder = std::env::temp_dir().join(format!("taut-ended-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("there.md"), "").unwrap();
+        let mut windowed = Ui::new(Box::new(crate::text::BuiltInFont), Box::new(crate::platform::LocalClipboard::default()));
+        windowed.set_native_file_dialog(true);
+        let (mut files, mut got) = (FileDialog::native(), Vec::new());
+        files.only(&[".md", ".txt"]);
+        let mut answered = |file: &Path, got: &mut Vec<PathBuf>, files: &mut FileDialog| {
+            windowed.file_dialog_answered(Some(file.to_path_buf()));
+            windowed.run(&mut |ui| got.extend(ui.file_dialog(files)));
+            windowed.take_file_dialog_request()
+        };
+        for (typed, saved) in [("notes", "notes.md"), ("notes.TXT", "notes.TXT"), ("notes.txt.bak", "notes.txt.bak.md")] {
+            files.save(&folder, "");
+            answered(&folder.join(typed), &mut got, &mut files);
+            assert_eq!(got.pop(), Some(folder.join(saved)), "{typed}");
+        }
+        // "there" would replace "there.md": asked again, nothing answered yet.
+        files.save(&folder, "");
+        let again = answered(&folder.join("there"), &mut got, &mut files).expect("asked again");
+        assert_eq!((again.name.as_str(), again.folder.as_path(), got.len(), files.shown), ("there.md", folder.as_path(), 0, true));
+        // Confirmed there, it is the answer.
+        answered(&folder.join("there.md"), &mut got, &mut files);
+        assert_eq!((got, files.shown), (vec![folder.join("there.md")], false));
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

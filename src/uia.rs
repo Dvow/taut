@@ -107,7 +107,7 @@ const COLUMN_COUNT: i32 = 30063;
 const VALUE: i32 = 30045;
 const AMOUNT: i32 = 30047;
 const UNFOLDED: i32 = 30070;
-const PICKED: i32 = 30079;
+const IS_SELECTED: i32 = 30079;
 const TICKED: i32 = 30086;
 /// Event ids: focus changed, selection item selected; structure change kind: children bulk
 /// invalidated.
@@ -496,7 +496,7 @@ fn compare(old: &AccessNode, new: &AccessNode, changes: &mut Vec<Change>) {
     let (state, stands): (i32, fn(bool) -> Value) = match new.role {
         Role::CheckBox | Role::Switch | Role::MenuItem | Role::Button => (TICKED, |on| Value::Number(on as i32)),
         Role::Fold | Role::ComboBox | Role::Submenu => (UNFOLDED, |on| Value::Number(on as i32)),
-        _ => (PICKED, Value::Truth),
+        _ => (IS_SELECTED, Value::Truth),
     };
     let properties = [
         (NAME, text(&old.name), text(&new.name)),
@@ -844,7 +844,7 @@ static AS_IN_GRID: InGridTable =
     InGridTable { unknown: UNKNOWN, row: Provider::grid_number::<0>, column: Provider::grid_number::<1>, rows_spanned: Provider::one, columns_spanned: Provider::one, grid: Provider::grid_of };
 static AS_HEADED: HeadedTable = HeadedTable { unknown: UNKNOWN, row_headings: Provider::no_headings, column_headings: Provider::headings, by_rows: Provider::by_rows };
 static AS_UNDER_HEADING: UnderHeadingTable = UnderHeadingTable { unknown: UNKNOWN, row_headings: Provider::no_headings, column_headings: Provider::headings };
-static AS_SELECTION: SelectionTable = SelectionTable { unknown: UNKNOWN, selection: Provider::picked_items, many: Provider::many, required: Provider::required };
+static AS_SELECTION: SelectionTable = SelectionTable { unknown: UNKNOWN, selection: Provider::selected_items, many: Provider::many, required: Provider::required };
 static AS_SCROLL_ITEM: ScrollItemTable = ScrollItemTable { unknown: UNKNOWN, show: Provider::bring };
 static AS_TEXT: TextTable = TextTable {
     unknown: UNKNOWN,
@@ -998,7 +998,7 @@ impl Provider {
 
     /// The visible part of this provider's element: all of it, but in a table only as far as
     /// the table shows. (A row is told whole, however far the table is scrolled sideways.)
-    fn seen(&self) -> Result<Rect, i32> {
+    fn visible_bounds(&self) -> Result<Rect, i32> {
         let nodes = self.tree.nodes.borrow();
         let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
         Ok(accessibility::view(&nodes, at))
@@ -1172,7 +1172,7 @@ impl Provider {
 
     /// The runtime id that tells this element from all others: `UiaAppendRuntimeId` (3), the
     /// id's two halves, and the role. (The window uses Windows': no array.)
-    fn told_apart_by(&self) -> *mut c_void {
+    fn runtime_id_array(&self) -> *mut c_void {
         let (automation, numbers) = (self.tree.automation, [3, self.id as i32, (self.id >> 32) as i32, self.role.map_or(0, |role| role as i32)]);
         if self.id == 0 {
             return std::ptr::null_mut();
@@ -1192,7 +1192,7 @@ impl Provider {
         if self.id == 0 {
             return Ok([0.0; 4]);
         }
-        let (rect, scale, corner) = (self.seen()?, self.tree.scale.get(), self.tree.corner());
+        let (rect, scale, corner) = (self.visible_bounds()?, self.tree.scale.get(), self.tree.corner());
         Ok([corner.x as f32 + rect.x * scale, corner.y as f32 + rect.y * scale, rect.w * scale, rect.h * scale].map(f64::from))
     }
 
@@ -1249,7 +1249,7 @@ impl Provider {
         Ok(accessibility::tree_of(&nodes, at).map_or(std::ptr::null_mut(), |tree| Provider::of(&self.tree, nodes[tree].id, THING)))
     }
     /// A `SAFEARRAY` of the providers of this tree's selected items, among those told.
-    fn picked_in(&self) -> Result<*mut c_void, i32> {
+    fn tree_selection(&self) -> Result<*mut c_void, i32> {
         let nodes = self.tree.nodes.borrow();
         let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
         let ids: Vec<Id> = nodes.iter().filter(|item| item.parent == Some(at) && item.on == Some(true)).map(|item| item.id).collect();
@@ -1332,7 +1332,7 @@ impl Provider {
     }
     unsafe extern "system" fn runtime_id(this: *mut Face, out: *mut *mut c_void) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(provider.told_apart_by())) }
+        unsafe { answer(this, out, |provider| Ok(provider.runtime_id_array())) }
     }
     unsafe extern "system" fn bounds(this: *mut Face, out: *mut [f64; 4]) -> i32 {
         // SAFETY: as for `answer`.
@@ -1412,9 +1412,9 @@ impl Provider {
         unsafe { answer(this, out, |provider| provider.thing(|node| node.unfolded().map_or(3, |open| open as i32))) }
     }
     /// A tree's selected items, among those told.
-    unsafe extern "system" fn picked_items(this: *mut Face, out: *mut *mut c_void) -> i32 {
+    unsafe extern "system" fn selected_items(this: *mut Face, out: *mut *mut c_void) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.picked_in()) }
+        unsafe { answer(this, out, |provider| provider.tree_selection()) }
     }
     /// Whether a tree allows multiple selection.
     unsafe extern "system" fn many(this: *mut Face, out: *mut i32) -> i32 {
@@ -2880,7 +2880,7 @@ pub(crate) mod tests {
         assert_eq!(changed(|now| now[3].on = Some(false)), [property(4, TICKED, Value::Number(1), Value::Number(0))]);
         assert_eq!(changed(|now| now[8].on = Some(false)), [property(9, TICKED, Value::Number(1), Value::Number(0))]);
         assert_eq!(changed(|now| now[7].on = Some(true)), [property(8, UNFOLDED, Value::Number(0), Value::Number(1))]);
-        assert_eq!(changed(|now| now[6].on = Some(true)), [property(7, PICKED, Value::Truth(false), Value::Truth(true)), Change::Picked(7)]);
+        assert_eq!(changed(|now| now[6].on = Some(true)), [property(7, IS_SELECTED, Value::Truth(false), Value::Truth(true)), Change::Picked(7)]);
         // Position is asked when wanted, not raised.
         assert_eq!(changed(|now| now[2].rect.y += 40.0), []);
         // Elements come and go: reported by their parent. A new element has no property

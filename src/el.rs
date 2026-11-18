@@ -152,10 +152,10 @@ impl Ui {
             self.scrollers.push(at);
             sum ^= crate::layout::grow_where_it_scrolls(&mut spec.frame);
         }
-        // One that had a scroll bar keeps its gutter free: see `Ui::strip`.
+        // One that had a scroll bar keeps its gutter free: see `Ui::update_gutter`.
         if scrolls && self.gutters.get(&spec.id).is_some_and(|gutter| gutter.reserved) {
             let was = spec.frame.part(Part::Scroll);
-            spec.frame.strip = true;
+            spec.frame.reserve_gutter = true;
             sum ^= mix(Part::Scroll as u64, was) ^ mix(Part::Scroll as u64, spec.frame.part(Part::Scroll));
         }
         if scrolls || spec.offset != [0.0; 2] {
@@ -651,16 +651,16 @@ impl El<'_> {
     /// Holds an animation ([`Ui::add_animation`]), at its pixel size unless a size is set after
     /// this. It shows the current frame and asks for a rerun when the next is due: only this
     /// box is redrawn then. (Paused while the window is minimized.)
-    pub fn animation(self, film: crate::animation::Animation) -> Self {
+    pub fn animation(self, animation: crate::animation::Animation) -> Self {
         let ui = &mut *self.ui;
         ui.shows.picture = Some(|canvas, pixels, width, r, radius| canvas.rounded_picture(pixels, width, r, radius));
         // A released animation takes no room and shows nothing.
-        let Some(reel) = ui.animations.get(film.0) else { return self.holds(Content::Film { film: film.0, frame: 0, keep: false }).size(0.0, 0.0) };
-        let ([wide, high], (frame, wait)) = (reel.size(), reel.due(ui.now.saturating_sub(reel.since)));
+        let Some(anim) = ui.animations.get(animation.0) else { return self.holds(Content::Animation { animation: animation.0, frame: 0, keep: false }).size(0.0, 0.0) };
+        let ([wide, high], (frame, wait)) = (anim.size(), anim.due(ui.now.saturating_sub(anim.since)));
         if let Some(wait) = wait.filter(|_| !ui.window_minimized()) {
             ui.wake_after(wait);
         }
-        self.holds(Content::Film { film: film.0, frame: frame as u32, keep: false }).size(wide as f32, high as f32)
+        self.holds(Content::Animation { animation: animation.0, frame: frame as u32, keep: false }).size(wide as f32, high as f32)
     }
     /// Draws its image, animation or drawing as large as fits, aspect ratio kept, centred,
     /// instead of stretched. The box keeps its given size: `.grow()` after this makes a photo
@@ -668,7 +668,7 @@ impl El<'_> {
     /// content.)
     #[inline]
     pub fn keep_aspect(mut self) -> Self {
-        if let Content::Picture { keep, .. } | Content::Drawing { keep, .. } | Content::Film { keep, .. } = &mut self.spec.content {
+        if let Content::Picture { keep, .. } | Content::Drawing { keep, .. } | Content::Animation { keep, .. } = &mut self.spec.content {
             *keep = true;
         }
         self

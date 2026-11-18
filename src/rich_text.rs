@@ -645,7 +645,7 @@ impl Ui {
         for at in rows {
             let row = shape.laid.rows[at];
             let corner = [corner[0] + row.left, corner[1] + row.top];
-            self.write_picked(shape, at, corner);
+            self.write_selection(shape, at, corner);
             for frag in &shape.laid.frags[row.frags[0] as usize..row.frags[1] as usize] {
                 self.write_frag(shape, frag, corner, lit);
             }
@@ -654,7 +654,7 @@ impl Ui {
 
     /// A row's selected part, as a highlight behind its text: extended past its end where the
     /// selection continues.
-    fn write_picked(&mut self, shape: &Shape, at: usize, corner: [f32; 2]) {
+    fn write_selection(&mut self, shape: &Shape, at: usize, corner: [f32; 2]) {
         let ([from, to], row) = (shape.picked, shape.laid.rows[at]);
         if from >= to || to <= row.words[0] || from > row.words[1] {
             return;

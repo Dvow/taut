@@ -80,13 +80,15 @@ impl Default for Window<'_> {
 
 /// What shows a window's pixels. The CPU draws them either way, so a window looks the same,
 /// byte for byte; the GPU only shows them. `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl`
-/// overrides the app's choice.
+/// overrides the app's choice. With the feature `gpu-draw`, every GPU path draws them too, within
+/// a few levels of 255 at edges: `Auto` large parts of a window, a path named all
+/// (`TAUT_DRAW=cpu|gpu|auto` overrides).
 ///
 /// | | GPU, best first | CPU |
 /// | --- | --- | --- |
 /// | Windows | Direct3D 11, Direct3D 12, Vulkan, OpenGL (WGL) | GDI |
 /// | Linux (X11) | OpenGL (EGL), Vulkan | X11 images |
-/// | Linux (Wayland) | none | shared memory |
+/// | Linux (Wayland) | Vulkan (dmabufs), never for `Auto` | shared memory |
 ///
 /// A path that is missing falls back along that order, then to the CPU. The GPU paths need the
 /// feature `gpu`; without it the CPU shows every window, and none of their code is compiled in.
@@ -123,10 +125,11 @@ const BEST: [Renderer; 4] = [Renderer::Direct3D11, Renderer::Direct3D12, Rendere
 const BEST: [Renderer; 2] = [Renderer::OpenGL, Renderer::Vulkan];
 
 impl Renderer {
-    /// What the user `said` (`TAUT_RENDERER`, in any case) over the app's choice.
-    #[cfg(feature = "gpu")]
-    pub(crate) fn chosen(self, said: Option<&str>) -> Renderer {
-        match said.map(str::to_ascii_lowercase).as_deref() {
+    /// The renderer the user names in `TAUT_RENDERER` (`asked`, any case), over the app's
+    /// choice.
+    #[cfg(all(feature = "gpu", not(target_os = "macos")))]
+    pub(crate) fn chosen(self, asked: Option<&str>) -> Renderer {
+        match asked.map(str::to_ascii_lowercase).as_deref() {
             Some("cpu") => Renderer::Cpu,
             Some("gpu") => Renderer::Gpu,
             Some("d3d11") => Renderer::Direct3D11,
@@ -241,6 +244,8 @@ pub(crate) fn hand_pictures_and_files() {
     crate::x11::hand_pictures_and_files();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::wayland::hand_pictures_and_files();
+    #[cfg(target_os = "macos")]
+    crate::macos::hand_pictures_and_files();
 }
 
 /// Hands the windows their drop handling (files and text dragged in from other programs), on
@@ -257,17 +262,21 @@ pub(crate) fn hand_drops() {
     crate::x11::hand_drops();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::wayland::hand_drops();
+    #[cfg(target_os = "macos")]
+    crate::macos_files::hand_drops();
 }
 
 /// Hands the windows their drag-out code, on this thread: the first time an app hands something
 /// out ([`Ui::drag_out`](crate::Ui::drag_out)). Reached no other way, so a program that never
 /// does is built without it. (On Windows OLE hands it to the system, see `ole_drag::Outward`;
-/// on X11 the windows speak XDND themselves.)
-pub(crate) fn hands_out() {
+/// on X11 the windows speak XDND themselves; on macOS see `macos_drag_out`.)
+pub(crate) fn enable_drag_out() {
     #[cfg(windows)]
-    crate::windows::hands_out();
+    crate::windows::enable_drag_out();
     #[cfg(all(unix, not(target_os = "macos")))]
-    crate::x11::hands_out();
+    crate::x11::enable_drag_out();
+    #[cfg(target_os = "macos")]
+    crate::macos_drag_out::enable();
 }
 
 /// Hands the windows their way to ask for the system's file dialog, on this thread: the first
@@ -279,6 +288,8 @@ pub(crate) fn hand_file_dialog() {
     crate::windows::hand_file_dialog();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::portal::hand_file_dialog();
+    #[cfg(target_os = "macos")]
+    crate::macos_files::hand_file_dialog();
 }
 
 /// Hands the windows their desktop integration, on this thread: the first time an app asks for
@@ -296,6 +307,8 @@ pub(crate) fn hand_desktop() {
     crate::x11::hand_desktop();
     #[cfg(all(unix, not(target_os = "macos")))]
     crate::wayland::hand_desktop();
+    #[cfg(target_os = "macos")]
+    crate::macos_shell::hand_desktop();
 }
 
 /// An in-process clipboard, for where there is no system to ask: what is copied stays inside
@@ -357,6 +370,12 @@ pub fn system_text() -> Box<dyn crate::text::TextSystem> {
 #[cfg(windows)]
 pub use crate::windows::{Messages, SystemClipboard};
 // Every system has these, each its own: the docs mark them as no single system's.
+#[cfg(target_os = "macos")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::core_text::SystemText;
+#[cfg(target_os = "macos")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::macos::{Waker, run};
 #[cfg(all(unix, not(target_os = "macos")))]
 #[cfg_attr(docsrs, doc(auto_cfg = false))]
 pub use crate::wayland::run;
