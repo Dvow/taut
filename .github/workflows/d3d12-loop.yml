@@ -23,7 +23,7 @@ jobs:
       - name: 50 rounds of three window tests and the removal test at once
         shell: bash
         run: |
-          exe=$(ls target/debug/deps/taut-*.exe | head -1)
+          exe=$(find target/debug -name "taut-*.exe" -path "*out*" | head -1); echo "$exe"
           fails=0
           for i in $(seq 1 50); do
             for k in 1 2 3; do "$exe" direct3d_12_and_the_cpu_show_the_same_pixels > out-$k.txt 2>&1 & done
