@@ -3,7 +3,7 @@
 Changes an app can notice, newest first. Before 1.0, a new minor version (0.1 → 0.2) may need
 code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
-## 0.2.1 (unreleased)
+## 0.2.1 (2026-11-18)
 
 - **Drawn by the GPU:** the feature `gpu-draw` (with `gpu`) has every GPU path draw windows,
   not only show them: Direct3D 11 and 12, Vulkan (Windows, X11, Wayland) and OpenGL (Windows,
