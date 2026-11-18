@@ -210,8 +210,14 @@ fn listed(family: Option<&str>) -> Vec<(String, Style)> {
     crate::x11::listed(family.map(escaped).as_deref())
 }
 
+/// The fonts CoreText has.
+#[cfg(target_os = "macos")]
+fn listed(family: Option<&str>) -> Vec<(String, Style)> {
+    crate::core_text::listed(family)
+}
+
 /// The system's fonts: none known here.
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(not(any(windows, unix)))]
 fn listed(_family: Option<&str>) -> Vec<(String, Style)> {
     Vec::new()
 }
@@ -224,8 +230,22 @@ pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::Fon
     crate::x11::file_for(face, letter).and_then(crate::font_file::FontFile::open)
 }
 
+/// The same from the file CoreText draws the character from.
+#[cfg(target_os = "macos")]
+pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::FontFile> {
+    crate::core_text::file_for(face, letter).and_then(crate::font_file::FontFile::open)
+}
+
+/// How CoreText is asked for a face's font: the family named, if any (else the system's font
+/// for face `of`), and the style.
+#[cfg(target_os = "macos")]
+pub(crate) fn asked(face: Face) -> (Option<String>, Face, Style) {
+    let kept = kept(face);
+    (kept.family.map(name), kept.of, kept.style)
+}
+
 /// The same where system fonts are unknown.
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(not(any(windows, unix)))]
 pub(crate) fn file_for(_face: Face, _letter: char) -> Option<crate::font_file::FontFile> {
     None
 }

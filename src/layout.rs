@@ -143,7 +143,7 @@ pub(crate) enum Content {
     /// An SVG drawing, by index, with the colour for its `currentColor` parts.
     Drawing { drawing: u32, color: Color, keep: bool },
     /// An animation, by index, and its current frame.
-    Film { film: u32, frame: u32, keep: bool },
+    Animation { animation: u32, frame: u32, keep: bool },
     /// A 3D scene of triangle meshes: which of this run's.
     Scene { scene: u32 },
     /// No content, but a gradient fill: the UI's stops `stops[0]` to `stops[1]`, along a line
@@ -219,9 +219,9 @@ pub(crate) struct Frame {
     /// Offset from where layout puts it; what follows does not move.
     pub nudge: [f32; 2],
     /// Which axes it scrolls on. And whether it keeps its vertical scroll bar gutter free (see
-    /// `Ui::strip`).
+    /// `Ui::update_gutter`).
     pub scroll: [bool; 2],
-    pub strip: bool,
+    pub reserve_gutter: bool,
     /// Children are clipped to it.
     pub clip: bool,
     /// It takes pointer input.
@@ -284,7 +284,7 @@ impl Default for Frame {
             place: None,
             nudge: [0.0; 2],
             scroll: [false; 2],
-            strip: false,
+            reserve_gutter: false,
             clip: false,
             senses: false,
             focus: false,
@@ -345,7 +345,7 @@ impl Frame {
             Part::Align => self.along as u64 | (self.across as u64) << 8,
             Part::Place => self.place.map_or(16, |place| place.horizontal() as u64 | (place.vertical() as u64) << 2),
             Part::Nudge => pair(self.nudge[0], self.nudge[1]),
-            Part::Scroll => self.scroll[0] as u64 | (self.scroll[1] as u64) << 1 | (self.strip as u64) << 2,
+            Part::Scroll => self.scroll[0] as u64 | (self.scroll[1] as u64) << 1 | (self.reserve_gutter as u64) << 2,
             Part::Clip => self.clip as u64,
             Part::Senses => self.senses as u64,
             Part::Focus => self.focus as u64,
@@ -634,12 +634,12 @@ impl Tree {
     /// keeps that free.)
     pub fn available(&self, at: u32, axis: usize) -> f32 {
         let frame = &self.specs[at as usize].frame;
-        let strip = if axis == 1 && self.has_bar(at, 0) || axis == 0 && frame.strip { BAR } else { 0.0 };
+        let strip = if axis == 1 && self.has_bar(at, 0) || axis == 0 && frame.reserve_gutter { BAR } else { 0.0 };
         self.places[at as usize].dim[axis] - frame.pad_along(axis) - strip
     }
     /// The part of box `at` (at `r`) its content shows in: all but those gutters.
     pub fn view(&self, at: u32, r: Rect) -> Rect {
-        let (side, under) = (self.specs[at as usize].frame.strip, self.has_bar(at, 0));
+        let (side, under) = (self.specs[at as usize].frame.reserve_gutter, self.has_bar(at, 0));
         rect(r.x, r.y, r.w - if side { BAR } else { 0.0 }, r.h - if under { BAR } else { 0.0 })
     }
     /// The part of box `at` (at `r`) its scrolled content shows in: its view between the
@@ -775,7 +775,7 @@ impl Tree {
             };
             // A box fitting its content is taller by a horizontal bar's gutter if it overflows
             // sideways; one fitting its width is wider by the side gutter it keeps free.
-            let strip = if axis == 1 && self.overflows(i as u32, 0) || axis == 0 && self.specs[i].frame.strip { BAR } else { 0.0 };
+            let strip = if axis == 1 && self.overflows(i as u32, 0) || axis == 0 && self.specs[i].frame.reserve_gutter { BAR } else { 0.0 };
             let (frame, place) = (&self.specs[i].frame, &mut self.places[i]);
             // The content: along the flow sizes add up, across it the largest wins.
             let inside = if frame.flows(axis) { own + place.sum + frame.gap * (place.count - 1.0).max(0.0) } else { own.max(place.most) };

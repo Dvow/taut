@@ -25,6 +25,7 @@ functions!(Calls {
     vkDestroyInstance: fn(Object, *const c_void);
     vkEnumeratePhysicalDevices: fn(Object, *mut u32, *mut Object) -> i32;
     vkGetPhysicalDeviceProperties: fn(Object, *mut VkPhysicalDeviceProperties);
+    vkGetPhysicalDeviceFeatures: fn(Object, *mut [u32; 55]);
     vkGetPhysicalDeviceQueueFamilyProperties: fn(Object, *mut u32, *mut VkQueueFamilyProperties);
     vkGetPhysicalDeviceMemoryProperties: fn(Object, *mut VkPhysicalDeviceMemoryProperties);
     vkGetPhysicalDeviceWin32PresentationSupportKHR: fn(Object, u32) -> u32;
@@ -100,6 +101,12 @@ pub(crate) struct Device {
     regions: bool,
     /// Vulkan said the device was lost.
     lost: Cell<bool>,
+    /// What it draws windows with, where it does (see `gpu_draw`), and whether it blends GDI's
+    /// runs per channel (`dualSrcBlend`).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) drawing: Option<Box<crate::gpu_draw_vulkan::Pipeline>>,
+    #[cfg(feature = "gpu-draw")]
+    dual: bool,
 }
 
 impl Device {
@@ -134,7 +141,16 @@ impl Device {
         let owner = Owner { calls: Arc::new(calls), find, instance, device: null_mut() };
         #[cfg(not(test))]
         let owner = Owner { calls: Arc::new(calls), instance, device: null_mut() };
-        Device::on_a_gpu(owner)
+        #[cfg_attr(not(feature = "gpu-draw"), allow(unused_mut))]
+        let mut device = Device::on_a_gpu(owner)?;
+        // Its shaders are made here, on the device's own thread.
+        #[cfg(feature = "gpu-draw")]
+        {
+            let (made, memory, dual) = (device.owner.device, device.memory, device.dual);
+            // SAFETY: the instance is alive.
+            device.drawing = crate::gpu_draw_vulkan::Pipeline::new(&mut |name| unsafe { find(instance, name.as_ptr()) }, made, &memory, dual);
+        }
+        Some(device)
     }
 
     /// The device, on the first of the system's GPUs that has a queue that draws and presents to
@@ -152,7 +168,9 @@ impl Device {
         let names = [c"VK_KHR_swapchain".as_ptr(), c"VK_KHR_incremental_present".as_ptr()];
         let priority = 1.0f32;
         let queue = VkDeviceQueueCreateInfo { kind: 2, family, count: 1, priorities: &priority, ..Default::default() };
-        let asked = VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: 1 + regions as u32, extensions: names.as_ptr(), ..Default::default() };
+        let features = Device::features(&calls, physical);
+        let asked =
+            VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: 1 + regions as u32, extensions: names.as_ptr(), features: features.as_ptr().cast(), ..Default::default() };
         // SAFETY: the physical device is the instance's; the description lives through the call.
         if unsafe { (calls.vkCreateDevice)(physical, &asked, null(), &mut owner.device) } < 0 {
             // SAFETY: nothing else holds the instance.
@@ -160,8 +178,38 @@ impl Device {
             return None;
         }
         let lost = Cell::new(false);
-        let mut device = Device { owner, physical, family, queue: null_mut(), pool: 0, commands: null_mut(), fence: 0, taken: 0, copied: 0, memory: Default::default(), regions, lost };
+        let mut device = Device {
+            owner,
+            physical,
+            family,
+            queue: null_mut(),
+            pool: 0,
+            commands: null_mut(),
+            fence: 0,
+            taken: 0,
+            copied: 0,
+            memory: Default::default(),
+            regions,
+            lost,
+            #[cfg(feature = "gpu-draw")]
+            drawing: None,
+            #[cfg(feature = "gpu-draw")]
+            dual: features[7] != 0,
+        };
         device.with_commands().then_some(device)
+    }
+
+    /// The device features asked for: where windows are drawn (`gpu-draw`), blending with a second
+    /// colour (`dualSrcBlend`, the eighth) if the GPU has it; else none.
+    fn features(calls: &Calls, physical: Object) -> [u32; 55] {
+        let mut wanted = [0u32; 55];
+        if cfg!(feature = "gpu-draw") {
+            let mut has = [0u32; 55];
+            // SAFETY: a plain query of the instance's physical device.
+            unsafe { (calls.vkGetPhysicalDeviceFeatures)(physical, &mut has) };
+            wanted[7] = has[7];
+        }
+        wanted
     }
 
     /// The first queue family of `physical`'s that draws and presents to windows, and whether it
@@ -262,7 +310,7 @@ impl Device {
     fn image(&self, size: [i32; 2]) -> Option<(Handle, Handle)> {
         let (calls, device) = (&self.owner.calls, self.owner.device);
         let extent = [size[0] as u32, size[1] as u32, 1];
-        let usage = USAGE_TRANSFER_SOURCE | USAGE_TRANSFER_DESTINATION;
+        let usage = USAGE_TRANSFER_SOURCE | USAGE_TRANSFER_DESTINATION | self.drawn();
         let made = VkImageCreateInfo { kind: 14, image_type: 1, format: B8G8R8A8_UNORM, extent, mip_levels: 1, array_layers: 1, samples: 1, usage, ..Default::default() };
         let (mut image, mut needs) = (0, VkMemoryRequirements::default());
         // SAFETY: the device is alive; the image is made and given memory.
@@ -278,6 +326,17 @@ impl Device {
             (calls.vkBindImageMemory)(device, image, memory, 0);
             Some((image, memory))
         }
+    }
+
+    /// What a window's image is used for besides copies: drawn into, where the device draws
+    /// windows (`gpu-draw`).
+    #[inline]
+    fn drawn(&self) -> u32 {
+        #[cfg(feature = "gpu-draw")]
+        if self.drawing.is_some() {
+            return crate::gpu_draw_vulkan::USAGE_DRAWN_INTO;
+        }
+        0
     }
 
     /// Hands the recorded command buffer to the queue, waiting on `wait` (a semaphore, or 0) and
@@ -320,6 +379,12 @@ unsafe impl Send for Device {}
 
 impl Drop for Device {
     fn drop(&mut self) {
+        // SAFETY: the device is alive; what draws goes first, once it is idle.
+        #[cfg(feature = "gpu-draw")]
+        unsafe {
+            (self.owner.calls.vkDeviceWaitIdle)(self.owner.device);
+            drop(self.drawing.take());
+        }
         let (calls, device) = (&self.owner.calls, self.owner.device);
         // SAFETY: the device is done with everything (it is waited for first); nothing is let go
         // of where nothing was made (a handle of 0).
@@ -476,6 +541,38 @@ impl Shown {
         }
         let extent = [width as u32, height as u32, 1];
         self.waiting.push(VkBufferImageCopy { buffer_offset: ((y * wide + x) * 4) as u64, row_length: wide as u32, layers: LAYER, offset: [x as i32, y as i32, 0], extent, ..Default::default() });
+    }
+
+    /// Draws a recorded paint into the picture, inside `area` (left, top, right, bottom), after
+    /// what is waiting is copied in; then waits for the GPU. Says whether it could: if not, the
+    /// CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn draw(&mut self, device: &mut Device, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
+        let Some(mut drawing) = device.drawing.take() else { return false };
+        let drawn = self.picture != 0 && device.begin() && self.draw_with(device, &mut drawing, list, area) && device.submit(0, 0) && device.wait();
+        drawing.forget_target();
+        device.drawing = Some(drawing);
+        drawn
+    }
+
+    /// Records what is waiting copied into the picture, then the paint drawn into it, which is
+    /// left ready to be copied from. Says whether it could be.
+    #[cfg(feature = "gpu-draw")]
+    fn draw_with(&mut self, device: &Device, drawing: &mut crate::gpu_draw_vulkan::Pipeline, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
+        let (calls, commands) = (&self.owner.calls, device.commands);
+        let before = if self.fresh { (LAYOUT_UNDEFINED, 0) } else { (LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_READ) };
+        let to_copy = barrier(self.picture, before.0, LAYOUT_TRANSFER_DESTINATION, before.1, ACCESS_TRANSFER_WRITE);
+        // SAFETY: the command buffer is being recorded; the places lie in the buffer and the
+        // picture.
+        unsafe {
+            (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_copy);
+            if !self.waiting.is_empty() {
+                (calls.vkCmdCopyBufferToImage)(commands, self.buffer, self.picture, LAYOUT_TRANSFER_DESTINATION, self.waiting.len() as u32, self.waiting.as_ptr());
+            }
+        }
+        let was = crate::gpu_draw_vulkan::Was { layout: LAYOUT_TRANSFER_DESTINATION, access: ACCESS_TRANSFER_WRITE, stage: STAGE_TRANSFER };
+        (self.fresh, self.waiting) = (false, Vec::new());
+        drawing.record(commands, self.picture, self.size, list, area, was, LAYOUT_TRANSFER_SOURCE)
     }
 
     /// Copies what is waiting into the picture, the picture into the swap chain's next image, and

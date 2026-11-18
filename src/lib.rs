@@ -37,8 +37,9 @@
 //! and Southeast Asian scripts), `emoji` (colour emoji), `fallback-fonts` (characters a font
 //! lacks, in the font Windows would choose), `touch` (touch, pen and touchpad pinch gestures),
 //! `cff` (`.otf` fonts with PostScript outlines), `woff2` (WOFF2 web fonts),
-//! `color-profiles` (image colour profiles) and `gpu` (windows shown by the GPU, see
-//! [`Renderer`]).
+//! `color-profiles` (image colour profiles), `gpu` (windows shown by the GPU, see
+//! [`Renderer`]), `gpu-draw` (windows drawn by the GPU too, see [`Renderer`]) and
+//! `translations` (built-in words in six more languages).
 //!
 //! # Systems
 //!
@@ -54,7 +55,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
-#[cfg(any(target_os = "macos", target_os = "ios", target_family = "wasm"))]
+#[cfg(any(target_os = "ios", target_family = "wasm"))]
 compile_error!("taut runs on Windows and Linux so far: its windows for macOS, iOS and the web are not written yet");
 // Tests running the examples on a compositor refer to the crate as `taut`, as they do.
 #[cfg(test)]
@@ -80,6 +81,8 @@ mod colr;
 mod combo;
 #[cfg(all(test, unix, not(target_os = "macos")))]
 mod compositors;
+#[cfg(target_os = "macos")]
+mod core_text;
 mod date;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod decorations;
@@ -101,6 +104,16 @@ pub mod gif;
 mod gpu_d3d11;
 #[cfg(all(windows, feature = "gpu"))]
 mod gpu_d3d12;
+#[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+mod gpu_draw;
+#[cfg(all(windows, feature = "gpu-draw"))]
+mod gpu_draw_d3d12;
+#[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+mod gpu_draw_opengl;
+#[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+mod gpu_draw_vulkan;
+#[cfg(all(windows, feature = "gpu-draw"))]
+mod gpu_draw_windows;
 #[cfg(all(windows, feature = "gpu"))]
 mod gpu_opengl_windows;
 #[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
@@ -128,17 +141,37 @@ pub mod layer_d3d11;
 pub mod layer_d3d12;
 #[cfg(windows)]
 pub mod layer_d3d9;
+#[cfg(target_os = "macos")]
+pub mod layer_metal;
 pub mod layer_opengl;
 pub mod layer_vulkan;
 pub mod layout;
 mod line_breaks;
 mod locale;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+mod macos_composing;
+#[cfg(target_os = "macos")]
+mod macos_drag_out;
+#[cfg(target_os = "macos")]
+mod macos_files;
+#[cfg(target_os = "macos")]
+mod macos_notifications;
+#[cfg(target_os = "macos")]
+mod macos_shell;
+#[cfg(target_os = "macos")]
+mod macos_sys;
 mod markdown;
 mod markdown_pages;
 mod markdown_view;
 mod node_graph;
 mod normalization;
 mod notifications;
+#[cfg(target_os = "macos")]
+mod ns_accessibility;
+#[cfg(target_os = "macos")]
+mod ns_spell_checker;
 mod number;
 #[cfg(windows)]
 mod ole_drag;
@@ -183,6 +216,7 @@ pub mod svg;
 mod svg_filters;
 pub mod system_fonts;
 mod table;
+mod table_paste;
 pub mod testing;
 pub mod text;
 mod text_edit;
@@ -191,6 +225,8 @@ mod toolbar;
 mod touch;
 #[cfg(windows)]
 mod touch_windows;
+#[cfg(feature = "translations")]
+mod translations;
 mod tray;
 mod tree_view;
 pub mod ui;
@@ -228,6 +264,7 @@ pub use chart::{Chart, ChartView, Series};
 pub use clock::Time;
 pub use code_editor::{CodeEditor, StringSyntax, Syntax, TokenKind};
 pub use color::Color;
+pub use color_picker::RecentColors;
 pub use date::{CalendarWords, Date};
 pub use dock::{Dock, DockNode};
 pub use drag_drop::{DragData, DropEffect};

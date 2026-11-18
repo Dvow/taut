@@ -1150,7 +1150,7 @@ impl CodeEditor {
 
     /// The lines the cursors' selections touch, in order, each once. (A selection ending at a
     /// line's start doesn't take that line.)
-    fn picked_lines(&self) -> Vec<usize> {
+    fn selected_lines(&self) -> Vec<usize> {
         let mut lines = Vec::new();
         for range in self.sels.iter().map(Sel::range) {
             let ends_a_line = range.end > range.start && self.starts[self.line_of(range.end)] as usize == range.end;
@@ -1175,7 +1175,7 @@ impl CodeEditor {
                 (range, step, caret)
             });
         }
-        let edits = self.picked_lines().into_iter().filter(|line| !self.line_text(*line).trim().is_empty()).map(|line| {
+        let edits = self.selected_lines().into_iter().filter(|line| !self.line_text(*line).trim().is_empty()).map(|line| {
             let start = self.starts[line] as usize;
             (start..start, if self.hard_tabs { "\t".to_string() } else { " ".repeat(self.tab_width.max(1)) })
         });
@@ -1185,7 +1185,7 @@ impl CodeEditor {
 
     /// Shift+Tab: removes one indent step from each cursor's line.
     fn outdent(&mut self) {
-        let edits = self.picked_lines().into_iter().map(|line| {
+        let edits = self.selected_lines().into_iter().map(|line| {
             let (start, text) = (self.starts[line] as usize, self.line_text(line));
             let spaces = text.bytes().take(self.tab_width.max(1)).take_while(|byte| *byte == b' ').count();
             (start..start + if text.starts_with('\t') { 1 } else { spaces }, String::new())

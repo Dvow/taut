@@ -596,15 +596,15 @@ mod todo {
         renaming: Option<(u64, String)>,
         /// The number the next new task is known by.
         next: u64,
-        /// Where the window is, as it last said.
-        placed: Option<WindowPlacement>,
+        /// Where the window is, as it last reported.
+        placement: Option<WindowPlacement>,
         /// The file the list is kept in.
         file: PathBuf,
     }
 
     fn describe(app: &mut App, ui: &mut Ui) {
         ui.theme = if ui.system_dark() { Theme::dark() } else { Theme::light() };
-        app.placed = ui.window_placement().or(app.placed);
+        app.placement = ui.window_placement().or(app.placement);
         let mut changed = adding(app, ui);
         showing(app, ui);
         changed |= list(app, ui);
@@ -702,15 +702,15 @@ mod todo {
         fn load(file: PathBuf) -> App {
             let text = std::fs::read_to_string(&file).unwrap_or_default();
             let mut lines = text.lines();
-            let placed = lines.next().and_then(|line| line.parse().ok());
+            let placement = lines.next().and_then(|line| line.parse().ok());
             let tasks: Vec<Task> = lines.enumerate().map(|(at, line)| Task { id: at as u64, done: line.starts_with("x "), text: line.get(2..).unwrap_or("").into() }).collect();
-            App { next: tasks.len() as u64, tasks, draft: String::new(), shown: 0, renaming: None, placed, file }
+            App { next: tasks.len() as u64, tasks, draft: String::new(), shown: 0, renaming: None, placement, file }
         }
 
         /// Writes the list into its file: where the window is on the first line, then a line for
         /// each task, with `x` before one that is done and `-` before one that is not.
         fn save(&self) -> std::io::Result<()> {
-            let mut text = self.placed.map_or(String::new(), |placed| placed.to_string());
+            let mut text = self.placement.map_or(String::new(), |placement| placement.to_string());
             for task in &self.tasks {
                 text += &format!("\n{} {}", if task.done { "x" } else { "-" }, task.text);
             }
@@ -736,7 +736,7 @@ mod todo {
     fn main() {
         let mut app = App::load(file());
         let window = Window { title: "To do", width: 400.0, height: 480.0, min_width: 280.0, min_height: 220.0, ..Default::default() };
-        taut::run(window.with_placement(app.placed), move |ui| describe(&mut app, ui));
+        taut::run(window.with_placement(app.placement), move |ui| describe(&mut app, ui));
     }
 
     // The picture of it:
@@ -746,7 +746,7 @@ mod todo {
     fn sample() -> App {
         let tasks = [("Buy bread", true), ("Write to Ada", false), ("Fix the gate", false), ("Book the train", true), ("Plan the garden", false)];
         let tasks = tasks.iter().enumerate().map(|(id, (text, done))| Task { id: id as u64, text: text.to_string(), done: *done }).collect();
-        App { tasks, draft: String::new(), shown: 0, renaming: None, next: 5, placed: None, file: std::env::temp_dir().join("taut-book-todo.txt") }
+        App { tasks, draft: String::new(), shown: 0, renaming: None, next: 5, placement: None, file: std::env::temp_dir().join("taut-book-todo.txt") }
     }
 
     pub(super) fn shots() -> Vec<super::Shot> {
@@ -1214,7 +1214,7 @@ mod a_scene {
     use taut::{Camera, Mesh, Ui};
 
     /// A body with four sides and a square floor: five points, and four triangles, each
-    /// said by the numbers of its three corners.
+    /// given by the numbers of its three corners.
     fn pyramid(ui: &mut Ui) -> Mesh {
         let points = vec![[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0], [0.0, 6.0, 0.0]];
         ui.add_mesh(points, vec![[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]])

@@ -14,7 +14,7 @@ Every call, in the order an app needs it. The examples compile with the tests.
 | fold (`ui.fold`) | collapsing header, expander |
 | tick box (`Role::CheckBox`); choice (`ui.radio`, `Role::RadioButton`) | checkbox; radio button |
 | select box (`ui.select`); `ui.combo` | drop-down, combo box; filterable combo box |
-| kept between runs (`taut::storage`, `to_string()`) | persisted settings |
+| saving settings between runs (`taut::storage`, `to_string()`) | persisted settings |
 | tell (`ui.tell`); access nodes (`ui.access_nodes()`) | accessibility info (role, name, state); accessibility tree |
 | notice (`ui.notice`) | toast, snackbar |
 | panel (`ui.panel`); second window (`SecondWindow`) | inner window (egui's `Window`); another OS window |
@@ -51,7 +51,8 @@ fn main() {
 ```
 
 On Linux, a window is a Wayland window where a compositor answers, else X11;
-`TAUT_BACKEND=x11` forces X.
+`TAUT_BACKEND=x11` forces X. On macOS, an AppKit window, run from the main thread; Command and
+Control are both `ctrl`.
 
 Features (off by default) cover what the calls can't reveal: `right-to-left`, `brahmic`,
 `touch`, `emoji`, `fallback-fonts`, `cff`, `woff2`, `color-profiles`
@@ -425,8 +426,8 @@ fn a_few_lines(state: &mut State, ui: &mut Ui) {
 ## The larger parts
 
 What the user does to these is stored in values the app keeps (`Table`, `TreeView`, `Panel`,
-`SecondWindow`, `Selection`, `Dock`), which can be saved ("Kept between runs"). Tables and trees tell
-screen readers their structure.
+`SecondWindow`, `Selection`, `Dock`), which can be saved ("Saving settings between runs").
+Tables and trees tell screen readers their structure.
 
 ```rust,no_run
 use taut::{Align, CellEditor, CellValue, Color, Column, Icon, Panel, Selection, Table, TreeItem, TreeView, Ui};
@@ -491,12 +492,15 @@ fn larger_parts(state: &mut State, ui: &mut Ui) {
     // Keyboard: one Tab stop; arrows, Home, End, Page Up/Down move the cell
     // (`state.table.focused_cell`) and pick rows. `editable` columns (text, number, choice) edit cells
     // (`ui.cell`) in place: F2, Enter, typing or double-click starts; Enter or Tab commits;
-    // Escape cancels; the app applies the change. Ctrl+C copies the rows the app supplies.
+    // Escape cancels; the app applies the change. Ctrl+C copies the rows the app supplies;
+    // Ctrl+V pastes spreadsheet text into editable cells; Ctrl+Z and Ctrl+Y undo and redo.
     let table = ui.table(&mut state.table, &COLUMNS);
     if table.changed {
         // put `state.files` in the order `state.table.sort` asks for
     }
-    if let Some(change) = ui.edited_cell(&table) {
+    // Edits, pastes, undo and redo; the closure gives a cell's text, kept for undoing.
+    let cells = |row: usize, column: usize| [state.files[row].0.clone(), state.files[row].1.to_string()][column].clone();
+    for change in ui.cell_changes(&table, &COLUMNS, cells) {
         if let CellValue::Text(name) = change.value {
             state.files[change.row].0 = name;
         }
@@ -561,7 +565,7 @@ fn larger_parts(state: &mut State, ui: &mut Ui) {
     }
     ui.close();
 
-    // Drag and drop: carry an app number from one box to another.
+    // Drag and drop: drag an app number from one box to another.
     let file = ui.selectable(false, "report.txt");
     if ui.drag_source(&file, 7) {
         ui.label("report.txt"); // follows the pointer
@@ -587,8 +591,8 @@ fn plan(ui: &mut Ui, view: &mut PanZoom, rooms: &[(Rect, &str)]) {
     let t = ui.theme;
     ui.pan_zoom(view, "Plan", 0.1..=8.0); // (`pan_zoom_editor`: a plain drag is the app's)
     for (at, name) in rooms {
-        // Everything on it is told of, in sight or not: its bars, and showing all of it, go
-        // by that.
+        // Everything on it is told to screen readers, in view or not: its bars, and showing all
+        // of it, go by that.
         if ui.in_view(*at) {
             ui.el().offset(at.x, at.y).size(at.w, at.h).fill(t.panel).text(name, t.font, t.text).show();
         }
@@ -608,7 +612,7 @@ use taut::{Graph, GraphAction, Node, Ui};
 
 fn sums(ui: &mut Ui, graph: &mut Graph<f64>) {
     while let Some(n) = ui.graph(graph, "Sums") {
-        // Its title and ports are drawn by now: what is said here goes under them.
+        // Its title and ports are drawn by now: what is described here goes under them.
         ui.number(&mut graph.nodes[n].data, 1.0);
         ui.close();
     }
@@ -738,14 +742,15 @@ fn save_or_print(ui: &mut Ui, notes: &Markdown, printing: &mut Option<PrintJob>)
 }
 ```
 
-## Kept between runs
+## Saving settings between runs
 
-`Dock`, `Table`, `Panel`, `SecondWindow`, `PanZoom` and `ui.window_placement()` (the window) are each one line of
-text: `to_string()`, back with `parse()`. `taut::storage` gives the settings folder and writes
+`Dock`, `Table`, `Panel`, `SecondWindow`, `PanZoom`, `ui.window_placement()` (the window) and
+`ui.recent_colors()` (back with `ui.set_recent_colors(..)`) are each one line of text:
+`to_string()`, back with `parse()`. `taut::storage` gives the settings folder and writes
 files atomically (a crash leaves the old file whole):
 
 ```rust,no_run
-let file = taut::storage::folder("Notes").expect("a name that can be a folder").join("kept.txt");
+let file = taut::storage::folder("Notes").expect("a name that can be a folder").join("settings.txt");
 // As the app starts (nothing, the first time; `read` is below):
 let text = taut::storage::read(&file).unwrap_or_default();
 // As it closes, what `written` below gives:
@@ -757,7 +762,7 @@ The values, one per line:
 ```rust
 use taut::{Dock, Panel, Table, WindowPlacement};
 
-struct Kept {
+struct Saved {
     window: Option<WindowPlacement>,
     dock: Dock,
     table: Table,
@@ -765,25 +770,25 @@ struct Kept {
 }
 
 /// How the app opens the first time.
-fn first() -> Kept {
+fn first() -> Saved {
     let dock = Dock::of(&["Files"]).beside(Dock::of(&["Editor", "Notes"]), 0.25);
-    Kept { window: None, dock, table: Table::default(), tools: Panel::new(40.0, 60.0, 260.0, 320.0) }
+    Saved { window: None, dock, table: Table::default(), tools: Panel::new(40.0, 60.0, 260.0, 320.0) }
 }
 
 /// A line for each value, to write when the app closes. (`window` is what
 /// `ui.window_placement()` said last.)
-fn written(kept: &Kept) -> String {
-    let window = kept.window.map_or(String::new(), |placed| placed.to_string());
-    format!("{window}\n{}\n{}\n{}\n", kept.dock, kept.table, kept.tools)
+fn written(saved: &Saved) -> String {
+    let window = saved.window.map_or(String::new(), |placement| placement.to_string());
+    format!("{window}\n{}\n{}\n{}\n", saved.dock, saved.table, saved.tools)
 }
 
 /// And back. A line that is missing, or is not what was written (a file from another
 /// version, or one somebody typed into), gives an error: that value is then as it is the
 /// first time, and nothing is ever laid out by half a line.
-fn read(text: &str) -> Kept {
+fn read(text: &str) -> Saved {
     let (mut lines, first) = (text.lines(), first());
     let mut line = || lines.next().unwrap_or("");
-    Kept {
+    Saved {
         window: line().parse().ok(),
         // (`only`: without the panels this version of the app no longer has. The ones it
         // has got since join the first tabs by themselves.)
@@ -793,18 +798,18 @@ fn read(text: &str) -> Kept {
     }
 }
 
-let mut kept = first();
-kept.window = Some(WindowPlacement { position: (300, 200), width: 1000.0, height: 640.0, maximized: false });
-kept.table.hidden.push(1);
-kept.tools.folded = true;
-let text = written(&kept);
+let mut saved = first();
+saved.window = Some(WindowPlacement { position: (300, 200), width: 1000.0, height: 640.0, maximized: false });
+saved.table.hidden.push(1);
+saved.tools.folded = true;
+let text = written(&saved);
 assert_eq!(text, "300 200 1000 640 0\ns,1,0.25,1,2;t,0,Files;t,0,Editor,Notes|\n|||1|0\n40 60 260 320 1 1\n");
 let back = read(&text);
-assert!(back.window == kept.window && back.dock == kept.dock && back.table == kept.table && back.tools == kept.tools);
+assert!(back.window == saved.window && back.dock == saved.dock && back.table == saved.table && back.tools == saved.tools);
 assert!(read("nonsense").dock == first().dock);
 ```
 
-Reopen the window there with `Window { .. }.placed(kept.window)` ("Where a window is" below).
+Reopen the window there with `Window { .. }.with_placement(saved.window)` ("Where a window is" below).
 
 ## The rest of `Ui`
 
@@ -820,10 +825,10 @@ Reopen the window there with `Window { .. }.placed(kept.window)` ("Where a windo
 | Drag and drop | `ui.drag_source(&from, what)` · `ui.drag_payload()` · `ui.dropped(&on)` · from other programs: `ui.files_hovered()`, `ui.files_dropped(&on)`, `ui.text_hovered()`, `ui.text_dropped(&on)` · out: `ui.drag_out(&from, DragData::Files(&paths))` (`Text`, `Picture`, `Link`) every run → `Some(DropEffect::Copied)` or `Some(DropEffect::Moved)` |
 | Overlays | `ui.open_popup(id, rect)` · `ui.popup(id)` · `ui.menu(id)` · `ui.close_popup()` · `ui.dialog_max_width(width)` · `ui.notice("Saved")` (4 s), `ui.notice_for(text, time)` · `ui.notices(Align::End, Align::End)`: a corner column for custom notices · `ui.pin(Align::Start, Align::End)`: pin the next box to a window edge |
 | Focus | `ui.focus()` · `ui.set_focus(id)` · `ui.select_all()` after it · `ui.move_focus(forward)` · `ui.focus_visible()`: focus came by keyboard |
-| Text boxes | Context menu: cut, copy, paste, select all (`ui.edit_words` translates) · `ui.check_spelling(None)` (or `Some("de-DE")`) before a box · `ui.enter_submits()`: Enter is the app's, Shift+Enter a new line · `ui.text_page(&mut text, hint)` fills its room · `ui.text_command(id, TextCommand::Undo)` (`Redo`, `Cut`, `Copy`, `Paste`, `SelectAll`) for Edit menus · `ui.text_edit_state(id)`: cursor, selection, undo state (`TextEditState::line_column(text)`) · `ui.select_text(id, [from, to])` |
+| Text boxes | Context menu: cut, copy, paste, select all (`ui.edit_words` translates) · `ui.check_spelling(None)` (or `Some("de-DE")`, `Some("en-US,de-DE")`) before a box: misspellings and words written twice · `ui.enter_submits()`: Enter is the app's, Shift+Enter a new line · `ui.text_page(&mut text, hint)` fills its room · `ui.text_command(id, TextCommand::Undo)` (`Redo`, `Cut`, `Copy`, `Paste`, `SelectAll`) for Edit menus · `ui.text_edit_state(id)`: cursor, selection, undo state (`TextEditState::line_column(text)`) · `ui.select_text(id, [from, to])` |
 | Ids | `ui.next_id()` · `ui.id(key)` |
 | Motion and time | `ui.animate(id, target, duration)` · `ui.wake_after(duration)` · `ui.rerun()` |
-| Where a window is | `ui.window_placement()` (save on close) · `Window { .. }.with_placement(kept)` restores it · `SecondWindow::new(420.0, 300.0).position(x, y).min_size(200.0, 120.0)` · `ui.screens()`, `ui.screen()`, `Window { screen: Some(1), .. }`, `.on_screen(1)`: "Screens, kinds of second window, and closing" |
+| Where a window is | `ui.window_placement()` (save on close) · `Window { .. }.with_placement(saved)` restores it · `SecondWindow::new(420.0, 300.0).position(x, y).min_size(200.0, 120.0)` · `ui.screens()`, `ui.screen()`, `Window { screen: Some(1), .. }`, `.on_screen(1)`: "Screens, kinds of second window, and closing" |
 | Clipboard | `ui.copy(text)` · `ui.clipboard()` · `ui.copy_picture(width, &pixels)` · `ui.clipboard_picture()` · `ui.copy_files(&paths)` · `ui.clipboard_files()` |
 | Files and links | `taut::open_with_system(path_or_link)`: default program, on its own thread |
 | Pictures | `ui.add_picture_file(bytes)` (PNG, JPEG, GIF, WebP, BMP, ICO) · `ui.add_picture(width, pixels)` · `ui.set_picture(picture, width, pixels)` · `ui.drop_picture(picture)` · `ui.picture_size`, `ui.animation_size`, `ui.drawing_size` · SVG: `ui.add_drawing(svg_text)`, `.drawing(drawing, color)`, `ui.drop_drawing` · animations: `ui.add_animation(bytes)`, `.animation(animation)`, `ui.drop_animation` · decode: `png::decode`, `svg::decode(text, width, height)`, `gif::decode`, `webp::decode`, `bmp::decode`, `bmp::decode_icon` · encode: `png::encode(width, pixels)` (`None` unless whole rows), `png::encode_rgba`, `jpeg::encode(width, &pixels, quality)`, `bmp::encode_icon(&[(width, &pixels), …])` · SVG extras, once: `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()` |
@@ -831,9 +836,9 @@ Reopen the window there with `Window { .. }.placed(kept.window)` ("Where a windo
 | App fonts | `ui.set_fonts(AppFonts::new(FontFile::read(bytes)?))` once, `.bold(..)`, `.mono(..)`; missing letters fall back to system text · `ui.set_text_system(..)`: files only · icon fonts: `.shape(&font.outline('\u{e88a}', 16.0), color)` · emoji: `ui.emoji_in_full()`; `ui.set_emoji(FontFile::read(bytes)?)` or `FontFile::open(path)`; after `ui.set_text_system(Box::new(own))`, `Box::new(Emoji::around(Box::new(own)))` · variable: `.with_variation(b"wght", 700.0)`, `.named("SemiBold Condensed")`; collections: `.nth(1)`, `.named("Cambria Math")`; `.axes()`, `.faces()` · custom `TextSystem`s are ordered and shaped too (`BidiText`) · `AppFonts::new(file).unhinted()`: no hinting · language forms: `ui.set_language(Language::named("sr"))` (default `Language::of_the_system()`), `AppFonts::new(file).language(..)` |
 | The window | `ui.set_title(text)` · `ui.quit()` · `ui.set_on_top(true)` · `ui.bring_to_front()` · `ui.window_focused()`, `ui.window_minimized()`, `ui.system_dark()` · `Window { minimized: true, .. }` · `Window { icons: &[(32, &pixels)], .. }` (Windows default: the exe's icon 1) · `ui.minimize()` · `ui.set_maximized(true)`, `ui.maximized()` · `ui.set_full_screen(true)`, `ui.full_screen()` · "Kinds of window" |
 | Screen readers | Custom parts: `ui.tell(&response, Role::CheckBox, Some(on), "")` (role, state, name if no text) · `ui.tell_text(&response, name, value)` · `ui.tell_value(&response, Role::Slider, [value, min, max])` (or `Role::SpinButton`) · then: `ui.tell_shortcut("Ctrl+O")`, `ui.tell_position(nth, count)`, `ui.tell_step(step)`, `ui.tell_tree_item(level, expanded)` (`Role::TreeItem` in a `Role::Tree` box), `ui.tell_level(level)` · `ui.tell_choice(&response, open, chosen)` · `ui.announce("Saved")` · `ui.tell_separately(&part)` · `ui.show_for_reader(id)` · tests: `ui.set_screen_reader(true)`, `ui.access_nodes()` (all; `node.visible`), `ui.visible_access_nodes()` (visible) · wordless parts take the label before them; else name them with `ui.tell(&part, role, None, "Name")` |
-| Dates, times, numbers | System format, read on first use · `ui.locale = Some(Locale { twelve_hour_clock: false, ..Locale::of_the_system() })`; `Locale::PLAIN` (2026-11-30, 14:05, 1234.5) · `ui.format_date(date)`, `ui.format_time(time, seconds)`, `ui.format_number(1234.5, 1)` · words: `ui.calendar_words`, `ui.number_words` · `Date::today()`, `Time::now()`, `date.days()`, `Date::from_days(n)`, `date.add_months(1)`, `time.seconds()` |
+| Dates, times, numbers | System format, read on first use · `ui.locale = Some(Locale { twelve_hour_clock: false, ..Locale::of_the_system() })`; `Locale::PLAIN` (2026-11-30, 14:05, 1234.5) · `ui.format_date(date)`, `ui.format_time(time, seconds)`, `ui.format_number(1234.5, 1)` · words: `ui.calendar_words` (month and day names and AM/PM the system's while `ui.locale` is `None`; `CalendarWords::of_the_system()`), `ui.number_words` · `Date::today()`, `Time::now()`, `date.days()`, `Date::from_days(n)`, `date.add_months(1)`, `time.seconds()` |
 | Looks | `ui.theme` · `ui.system_theme()` · `Theme::light()`, `Theme::high_contrast(ContrastColors::DARK)`, `.accented(color)`, `.dense()`, `.roomy()`, `.text_scaled(by)`: "Looks" |
-| Built-in words | `ui.widget_words`: breadcrumb overflow, close buttons of tags and banners, pagination, done steps (English by default) |
+| Built-in words | `ui.widget_words`: breadcrumb overflow, close buttons of tags and banners, pagination, done steps (English by default) · feature `translations`: every built-in word in the user's language (de, es, fr, ja, pt, zh), `ui.translate("fr")`, `FileWords::in_language("fr")` |
 
 ## Looks
 
@@ -903,7 +908,7 @@ fn describe(state: &mut State, ui: &mut Ui) {
         ui.set_full_screen(!whole);
     }
 
-    // A second window with no frame: its strip is said inside it, and `ui.quit()` there
+    // A second window with no frame: its title bar is described inside it, and `ui.quit()` there
     // closes it.
     if ui.frameless_window(&mut state.tools, "Tools") {
         let strip = ui.row().h(Length::Px(26.0)).pad((8.0, 0.0)).fill(t.panel).sense().open();
@@ -967,12 +972,25 @@ fn main() {
 - `Renderer::Auto` (the default): the best GPU path when the feature is on and the computer has
   a GPU of its own, not over a remote desktop. `Gpu`: over a remote desktop too. `Cpu`: never.
 - `Direct3D11`, `Direct3D12`, `Vulkan`, `OpenGL`: that path first, then the others, best
-  first (Windows: Direct3D 11, 12, Vulkan, OpenGL; Linux: OpenGL, then Vulkan), then the CPU.
+  first (Windows: Direct3D 11, 12, Vulkan, OpenGL; X11: OpenGL, then Vulkan), then the CPU.
+- Wayland: any GPU path asked for is Vulkan, handing the compositor dmabufs; `Auto` keeps
+  shared memory.
 - `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl` overrides the app.
 - `ui.renderer()` says which path shows the window (`Direct3D11`, …): `Cpu` until the device
   is made, and after a lost device that can't be made again.
 - Whole frames, in step with the screen; only changed rectangles are uploaded and presented.
   See-through windows stay on the CPU. Costs: [GPU or CPU](docs/costs-and-speed.md#gpu-or-cpu).
+
+With the feature `gpu-draw` too, the GPU draws as well as shows: boxes, borders, shadows,
+text, pictures, gradients, filled shapes and strokes; the CPU draws scenes, SVG drawings and
+colour emoji into patches it lays in.
+
+- Pixels within a few levels of 255 of the CPU's, at edges; GDI's text on a solid colour is
+  GDI's own.
+- Every GPU path draws: Direct3D 11 and 12, Vulkan (Windows, X11, Wayland) and OpenGL.
+- `Renderer::Auto` draws large parts on the GPU and small ones on the CPU; a path named draws
+  all. `TAUT_DRAW=cpu|gpu|auto` overrides.
+- Costs: [drawn by the GPU](docs/costs-and-speed.md#drawn-by-the-gpu).
 
 ## Screens, kinds of second window, and closing
 
@@ -1094,7 +1112,7 @@ struct State {
 }
 
 fn describe(state: &mut State, ui: &mut Ui) {
-    // The icon and its menu, said whole in every run.
+    // The icon and its menu, described whole in every run.
     if ui.tray(&[(16, &state.icon)], "Notes").clicked {
         ui.bring_to_front();
     }
@@ -1139,6 +1157,8 @@ fn main() {
 - Linux: `StatusNotifierItem` and `com.canonical.dbusmenu`; `org.freedesktop.Notifications` (the
   portal when sandboxed); X grabs or the portal's `GlobalShortcuts`; a socket in the runtime
   folder.
+- macOS: `NSStatusItem` (its menu on a right click), `RegisterEventHotKey` (Ctrl is Command), a
+  socket in the temporary folder; `UNUserNotificationCenter`, for an app bundle only.
 - Unused, none of it is compiled in.
 
 ## Scenes
@@ -1207,8 +1227,8 @@ if rerun {
 ```
 
 - `surface.upload(place)` gives a changed place as texture uploads take it (`x`, `y`, `width`,
-  `height`, `bytes`, `bytes_per_row`). Layers do it all for Direct3D 9, 11 and 12, OpenGL and
-  Vulkan (`layer_d3d9` .. `layer_vulkan`, chapter 9).
+  `height`, `bytes`, `bytes_per_row`). Layers do it all for Direct3D 9, 11 and 12, OpenGL,
+  Vulkan and Metal (`layer_d3d9` .. `layer_metal`, chapter 9).
 - Set the time before each run (`ui.set_time(clock)`, any monotonic clock) and run again when
   `ui.wake_in()` is due: double clicks, tooltips, blinking, notices and glides need it.
 - `Ui::new(platform::system_text(), ..)` uses system fonts on any surface. On Windows

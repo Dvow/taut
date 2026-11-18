@@ -110,11 +110,25 @@ fn committed(device: Com, kind: u32, described: &ResourceDescription, state: u32
     (result >= 0).then_some(made)
 }
 
-/// A texture `size` pixels, B8G8R8A8, in the GPU's own memory, to copy to and from.
-fn texture(device: Com, size: [i32; 2]) -> Option<Com> {
+/// A texture `size` pixels, B8G8R8A8, in the GPU's own memory, to copy to and from; and to draw
+/// into, where the device draws windows (`gpu-draw`).
+fn texture(device: &Device, size: [i32; 2]) -> Option<Com> {
+    let flags = drawn(device);
     let described =
-        ResourceDescription { dimension: 3, alignment: 0, width: size[0] as u64, height: size[1] as u32, depth: 1, mip_levels: 1, format: B8G8R8A8_UNORM, samples: [1, 0], layout: 0, flags: 0 };
-    committed(device, DEFAULT_HEAP, &described, COPY_DESTINATION)
+        ResourceDescription { dimension: 3, alignment: 0, width: size[0] as u64, height: size[1] as u32, depth: 1, mip_levels: 1, format: B8G8R8A8_UNORM, samples: [1, 0], layout: 0, flags };
+    committed(device.device, DEFAULT_HEAP, &described, COPY_DESTINATION)
+}
+
+/// How a window's texture is made: drawn into where the device draws windows, else only
+/// copied.
+#[inline]
+fn drawn(device: &Device) -> u32 {
+    #[cfg(feature = "gpu-draw")]
+    if device.drawing.is_some() {
+        return crate::gpu_draw_d3d12::DRAWN_INTO;
+    }
+    let _ = device;
+    0
 }
 
 /// A buffer of `bytes` in a heap of `kind` (upload or read back), starting in `state`, and where
@@ -143,6 +157,9 @@ pub(crate) struct Device {
     /// The fence's value last asked for.
     signalled: Cell<u64>,
     factory: Com,
+    /// What it draws windows with, where it does (see `gpu_draw`).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) drawing: Option<crate::gpu_draw_d3d12::Pipeline>,
 }
 
 impl Device {
@@ -153,13 +170,32 @@ impl Device {
         let factory = function_in(system_library("dxgi.dll"), c"CreateDXGIFactory2");
         // SAFETY: the functions as the headers declare them.
         let (make, factory) = unsafe { (make != 0 && factory != 0).then(|| (std::mem::transmute::<usize, MakeDevice>(make), std::mem::transmute::<usize, MakeFactory>(factory)))? };
-        let mut made = Device { device: null_mut(), queue: null_mut(), allocator: null_mut(), list: null_mut(), fence: null_mut(), event: 0, signalled: Cell::new(0), factory: null_mut() };
+        let mut made = Device {
+            device: null_mut(),
+            queue: null_mut(),
+            allocator: null_mut(),
+            list: null_mut(),
+            fence: null_mut(),
+            event: 0,
+            signalled: Cell::new(0),
+            factory: null_mut(),
+            #[cfg(feature = "gpu-draw")]
+            drawing: None,
+        };
         // SAFETY: as declared; the factory is released with the device.
         if unsafe { factory(0, &FACTORY, &mut made.factory) } < 0 {
             return None;
         }
         made.device = (0..16).find_map(|at| made.on_adapter(at, make))?;
-        made.with_queue().then_some(made)
+        if !made.with_queue() {
+            return None;
+        }
+        // Its shaders are compiled here, on the device's own thread.
+        #[cfg(feature = "gpu-draw")]
+        {
+            made.drawing = crate::gpu_draw_d3d12::Pipeline::new(made.device);
+        }
+        Some(made)
     }
 
     /// A Direct3D 12 device on DXGI's adapter `at`, if it is a GPU and takes one (feature level
@@ -271,6 +307,8 @@ impl Drop for Device {
         if !self.queue.is_null() && !self.fence.is_null() && self.run_nothing() {
             self.wait();
         }
+        #[cfg(feature = "gpu-draw")]
+        drop(self.drawing.take());
         // SAFETY: each is held once, by this device; the event is its own.
         unsafe {
             [self.list, self.allocator, self.fence, self.queue, self.device, self.factory].into_iter().for_each(|object| release(object));
@@ -347,7 +385,7 @@ impl Shown {
                 return None;
             }
         }
-        self.picture = texture(device.device, size)?;
+        self.picture = texture(device, size)?;
         self.room = (size[0] as usize * 4).next_multiple_of(ROW_ALIGNMENT) * size[1] as usize + 2 * ROW_ALIGNMENT;
         (self.upload, self.written) = buffer(device.device, UPLOAD_HEAP, self.room, GENERIC_READ)?;
         self.size = size;
@@ -399,6 +437,22 @@ impl Shown {
             then(list);
         }
         device.run()
+    }
+
+    /// Draws a recorded paint into the texture, inside `area` (left, top, right, bottom), after
+    /// the uploads waiting; then waits for the GPU. Says whether it could: if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn draw(&mut self, device: &mut Device, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
+        let Some(mut drawing) = device.drawing.take() else { return false };
+        let (picture, size) = (self.picture, self.size);
+        let ready = !picture.is_null() && drawing.prepare(device.device, list);
+        let record = |commands: Com| drawing.record(device.device, commands, picture, size, list, area);
+        let drawn = ready && self.copy_waiting(device, Some(&record)) && device.wait();
+        if drawn {
+            drawing.ran();
+        }
+        device.drawing = Some(drawing);
+        drawn
     }
 
     /// Copies the waiting uploads into the texture, the texture to the back buffer, and presents
@@ -462,6 +516,51 @@ impl Drop for Shown {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[cfg(feature = "gpu-draw")]
+    impl Device {
+        /// The `ID3D12Device`.
+        pub(crate) fn com(&self) -> Com {
+            self.device
+        }
+    }
+
+    /// A device on WARP, as the paths make one when a test fakes software devices.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn warp() -> Device {
+        crate::gpu_windows::tests::fake(crate::gpu_windows::tests::Faked { software: true, ..Default::default() });
+        let device = Device::gpu().expect("Direct3D 12 on WARP");
+        crate::gpu_windows::tests::fake(Default::default());
+        device
+    }
+
+    /// A texture `size` pixels drawn into, first filled with `under`, then given to `record`
+    /// (with the device and its open command list), and read back once that has run.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn drawn_on_warp(device: &Device, size: [i32; 2], under: &[u32], record: impl FnOnce(Com, Com, Com)) -> Vec<u32> {
+        let ([width, height], pitch) = (size.map(|side| side as usize), (size[0] as usize * 4).next_multiple_of(ROW_ALIGNMENT));
+        let picture = texture(device, size).expect("a texture");
+        let (upload, written) = buffer(device.device, UPLOAD_HEAP, pitch * height, GENERIC_READ).expect("an upload buffer");
+        let (readback, read) = buffer(device.device, 3, pitch * height, COPY_DESTINATION).expect("a buffer to read back");
+        for row in 0..height {
+            unsafe { std::ptr::copy_nonoverlapping(under[row * width..].as_ptr().cast::<u8>(), written.add(row * pitch), width * 4) };
+        }
+        let footprint = [B8G8R8A8_UNORM, width as u32, height as u32, 1, pitch as u32];
+        let whole = Place { resource: picture, kind: 0, offset: 0, footprint: [0; 5] };
+        type CopyRegion = unsafe extern "system" fn(Com, *const Place, u32, u32, u32, *const Place, *const Box3);
+        device.open();
+        unsafe { function::<CopyRegion>(device.list, 16)(device.list, &whole, 0, 0, 0, &Place { resource: upload, kind: 1, offset: 0, footprint }, null()) };
+        record(device.device, device.list, picture);
+        unsafe {
+            function::<unsafe extern "system" fn(Com, u32, *const Barrier)>(device.list, 26)(device.list, 1, &barrier(picture, COPY_DESTINATION, COPY_SOURCE));
+            function::<CopyRegion>(device.list, 16)(device.list, &Place { resource: readback, kind: 1, offset: 0, footprint }, 0, 0, 0, &whole, null());
+        }
+        assert!(device.run() && device.wait(), "the commands ran");
+        let rows = (0..height).map(|row| unsafe { std::slice::from_raw_parts(read.add(row * pitch).cast::<u32>(), width) });
+        let pixels = rows.flatten().copied().collect();
+        unsafe { [readback, upload, picture].into_iter().for_each(|object| release(object)) };
+        pixels
+    }
 
     /// A device on WARP, the software adapter (the factory's EnumWarpAdapter, 27, for an
     /// `IDXGIAdapter1`), for adapter 0.

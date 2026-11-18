@@ -1314,8 +1314,14 @@ pub(crate) fn system(face: Face, letter: char) -> Option<FontFile> {
     crate::x11::file_for(face, letter).and_then(FontFile::open).filter(|font| font.glyph(letter) != 0)
 }
 
+/// The same on macOS: the file CoreText draws the character from.
+#[cfg(target_os = "macos")]
+pub(crate) fn system(face: Face, letter: char) -> Option<FontFile> {
+    crate::core_text::file_for(face, letter).and_then(FontFile::open).filter(|font| font.glyph(letter) != 0)
+}
+
 /// The system font for a character: none known here.
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(not(any(windows, unix)))]
 pub(crate) fn system(_face: Face, _letter: char) -> Option<FontFile> {
     None
 }
@@ -1513,16 +1519,43 @@ pub(crate) mod tests {
             let x = if leftward { width as f32 / scale - 4.0 - wide } else { 4.0 };
             let mut row = vec![0xffff_ffffu32; width * line];
             ordered.draw_line(&mut Canvas::new(&mut row, width, line, (0, 0), scale), text, x, 1.0, font, Color::BLACK, leftward);
-            // Every line is drawn within its measured width.
+            // Every line is drawn within its measured width, and what its font's outlines reach
+            // past their advances.
             let inked: Vec<usize> = row.iter().enumerate().filter(|(_, pixel)| **pixel != 0xffff_ffff).map(|(at, _)| at % width).collect();
             let (left, right) = (inked.iter().min().copied().unwrap_or(0) as f32 / scale, inked.iter().max().copied().unwrap_or(0) as f32 / scale);
-            assert!(left >= x - 2.0 && right <= x + wide + 2.0, "{text:?}: ink from {left} to {right}, measured from {x} to {}", x + wide);
+            let [before, after] = overhang(text, font.size);
+            assert!(left >= x - 2.0 - before && right <= x + wide + 2.0 + after, "{text:?}: ink from {left} to {right}, measured from {x} to {}", x + wide);
             pixels.extend(row);
         }
         if let Some(folder) = std::env::var_os("TAUT_PICTURES") {
             let file = std::path::Path::new(&folder).join(format!("lines-{}.png", std::env::consts::OS));
             std::fs::write(file, crate::png::encode(width, &pixels).unwrap()).unwrap();
         }
+    }
+
+    /// How far the outlines of a line's Arabic and Hebrew words, in the system's font, reach past
+    /// their advances on the left and right, in units at `size`. (Some fonts place a mark off its
+    /// base: SF Arabic puts the kasra of a final noon 2.5 units at 14 left of the noon's start,
+    /// as HarfBuzz does.)
+    #[cfg(feature = "right-to-left")]
+    fn overhang(text: &str, size: f32) -> [f32; 2] {
+        let mut most = [0.0f32; 2];
+        for word in text.split(' ') {
+            let of_its_own = |letter: char| Script::of(letter).filter(|script| matches!(script, Script::Arabic | Script::Hebrew)).map(|script| (letter, script));
+            let Some((letter, script)) = word.chars().find_map(of_its_own) else { continue };
+            let Some(font) = system(Face::Regular, letter) else { continue };
+            let mut glyphs = Vec::new();
+            let total = font.shape(&Plan::of(&font, script, true, Language::NONE), word, &mut glyphs);
+            let mut pen = 0;
+            for laid in &glyphs {
+                let reach = font.outline_through(laid.glyph, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]).1;
+                let at = (pen + laid.offset[0]) as f32;
+                most[0] = most[0].max(-(at + reach[0]) * font.unit(size));
+                most[1] = most[1].max((at + reach[2] - total as f32) * font.unit(size));
+                pen += laid.advance;
+            }
+        }
+        most
     }
 
     /// Lines in Indic and Southeast Asian scripts: Hindi, Bengali, Gurmukhi, Gujarati, Oriya,

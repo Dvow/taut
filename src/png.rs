@@ -467,8 +467,8 @@ fn colours_of(chunks: &[(&[u8], &[u8])]) -> Option<crate::color_profiles::Change
 /// before each frame gives its region and how it is shown, and frame data goes in `fdAT`
 /// chunks, each with a sequence number first. The default image is the first frame where an
 /// `fcTL` precedes it, else no frame.
-pub(crate) fn read_animation(png: &[u8], most: usize) -> Option<crate::animation::Reel> {
-    use crate::animation::{After, Frame, Kind, Laid, Reel};
+pub(crate) fn read_animation(png: &[u8], most: usize) -> Option<crate::animation::LoadedAnimation> {
+    use crate::animation::{After, Frame, Kind, Laid, LoadedAnimation};
     let (chunks, _) = chunks(png)?;
     let (size, stored) = Stored::of(&chunks)?;
     // (Every PNG holds its default image, canvas-sized, frame or not: a canvas larger than its
@@ -506,9 +506,9 @@ pub(crate) fn read_animation(png: &[u8], most: usize) -> Option<crate::animation
         }
         frames.push(frame);
     }
-    let mut reel = Reel::new(size, Kind::Png(Box::new(stored)), plays);
-    (reel.frames, reel.packed) = (frames, packed);
-    reel.done()
+    let mut anim = LoadedAnimation::new(size, Kind::Png(Box::new(stored)), plays);
+    (anim.frames, anim.packed) = (frames, packed);
+    anim.done()
 }
 
 /// An APNG frame per its `fcTL`, on a `size` canvas: its region, duration (a fraction of a
@@ -1374,7 +1374,7 @@ mod tests {
     }
 
     use crate::animation::tests::{frames, pattern, playable, seen};
-    use crate::animation::{After, Laid, Reel};
+    use crate::animation::{After, Laid, LoadedAnimation};
     use std::path::PathBuf;
     use std::process::{Command, Stdio};
 
@@ -1444,14 +1444,14 @@ mod tests {
     #[test]
     fn moving_pictures_come_out_as_ffmpeg_shows_them() {
         for (name, png, wanted, shows, plays) in MOVING {
-            let mut reel = Reel::read(png, usize::MAX).unwrap_or_else(|| panic!("{name} is read"));
+            let mut anim = LoadedAnimation::read(png, usize::MAX).unwrap_or_else(|| panic!("{name} is read"));
             let (width, wanted) = decode(wanted).unwrap();
-            assert_eq!((reel.size[0], reel.frames.len() * reel.size[1]), (width, wanted.len() / width), "{name}: its size, and how many frames it has");
-            let (have, want) = (seen(&frames(&mut reel)), seen(&wanted));
+            assert_eq!((anim.size[0], anim.frames.len() * anim.size[1]), (width, wanted.len() / width), "{name}: its size, and how many frames it has");
+            let (have, want) = (seen(&frames(&mut anim)), seen(&wanted));
             let differ = have.iter().zip(&want).filter(|(one, other)| one != other).count();
             let first = have.iter().zip(&want).position(|(one, other)| one != other).map(|at| (at, have[at], want[at]));
             assert!(have == want, "{name}: {differ} pixels differ, the first (where, what, for what): {first:x?}");
-            assert_eq!((reel.frames.iter().map(|frame| frame.shows).collect::<Vec<u64>>(), reel.plays), (shows.to_vec(), plays), "{name}: its times");
+            assert_eq!((anim.frames.iter().map(|frame| frame.shows).collect::<Vec<u64>>(), anim.plays), (shows.to_vec(), plays), "{name}: its times");
         }
     }
 
@@ -1460,12 +1460,12 @@ mod tests {
         // Its default image where that is no frame; its first frame where it is.
         let (hand, first) = (decode(MOVING[1].1).unwrap(), decode(MOVING[2].1).unwrap());
         assert_eq!(hand, (8, vec![0xff33_6699; 48]));
-        let mut reel = Reel::read(MOVING[2].1, 1).unwrap();
-        assert_eq!(first, (reel.size[0], reel.shown(0).0.to_vec()));
+        let mut anim = LoadedAnimation::read(MOVING[2].1, 1).unwrap();
+        assert_eq!(first, (anim.size[0], anim.shown(0).0.to_vec()));
         // And a still PNG is a one-frame animation: its picture.
         let still = include_bytes!("../tests/pictures/plain.png");
-        let mut reel = Reel::read(still, usize::MAX).unwrap();
-        assert_eq!((reel.frames.len(), (reel.shown(0).0.to_vec(), reel.size[0])), (1, (decode(still).unwrap().1, decode(still).unwrap().0)));
+        let mut anim = LoadedAnimation::read(still, usize::MAX).unwrap();
+        assert_eq!((anim.frames.len(), (anim.shown(0).0.to_vec(), anim.size[0])), (1, (decode(still).unwrap().1, decode(still).unwrap().0)));
     }
 
     #[test]
@@ -1476,34 +1476,34 @@ mod tests {
         let (red, green, blue, half) = (0xffff_0000, 0xff00_ff00, 0xff00_00ff, 0x80ff_ffff);
         let made = |place: [u32; 4], after: u8, laid: u8, pixels: &[u32]| Made { place, shows: [1, 10], after, laid, raw: solid_rows(place[2] as usize, pixels) };
         let four = [made([0, 0, 4, 1], 0, 0, &[red; 4]), made([1, 0, 2, 1], 1, 0, &[green; 2]), made([3, 0, 1, 1], 2, 0, &[blue]), made([0, 0, 3, 1], 0, 1, &[half, half, 0])];
-        let mut reel = Reel::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &four), usize::MAX).unwrap();
-        let laid = reel.frames.iter().map(|frame| (frame.after, frame.laid)).collect::<Vec<_>>();
+        let mut anim = LoadedAnimation::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &four), usize::MAX).unwrap();
+        let laid = anim.frames.iter().map(|frame| (frame.after, frame.laid)).collect::<Vec<_>>();
         assert_eq!(laid, [(After::Stays, Laid::Instead), (After::Cleared, Laid::Instead), (After::PutBack, Laid::Instead), (After::Stays, Laid::OverPng)]);
-        assert_eq!(frames(&mut reel), [[red, red, red, red], [red, green, green, red], [red, 0, 0, blue], [0xffff_8080, 0x80ff_ffff, 0, red]].concat());
+        assert_eq!(frames(&mut anim), [[red, red, red, red], [red, green, green, red], [red, 0, 0, blue], [0xffff_8080, 0x80ff_ffff, 0, red]].concat());
         // Two-bit palette indices, in a frame not starting at the left edge: it lies at its
         // offset, though its pixels do not start on a byte.
         let palette = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255];
         let listed = |place: [u32; 4], raw: &[u8]| Made { place, shows: [1, 10], after: 0, laid: 0, raw: raw.to_vec() };
         let two = [listed([0, 0, 5, 1], &[0, 0x1b, 0]), listed([3, 0, 2, 1], &[0, 0x90])];
-        let mut reel = Reel::read(&moving([5, 1], [2, 3, 0], &palette, 0, None, &two), usize::MAX).unwrap();
-        assert_eq!(frames(&mut reel), [[red, green, blue, 0xffff_ffff, red], [red, green, blue, blue, green]].concat());
+        let mut anim = LoadedAnimation::read(&moving([5, 1], [2, 3, 0], &palette, 0, None, &two), usize::MAX).unwrap();
+        assert_eq!(frames(&mut anim), [[red, green, blue, 0xffff_ffff, red], [red, green, blue, blue, green]].concat());
         // A frame off the canvas ends the animation before it, as do one with a dispose or
         // blend op that does not exist, and a damaged one.
         let off = [made([0, 0, 4, 1], 0, 0, &[red; 4]), made([2, 0, 3, 1], 0, 0, &[green; 3])];
-        assert_eq!(Reel::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &off), usize::MAX).map(|reel| reel.frames.len()), Some(1));
+        assert_eq!(LoadedAnimation::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &off), usize::MAX).map(|anim| anim.frames.len()), Some(1));
         let odd = [made([0, 0, 4, 1], 0, 0, &[red; 4]), made([0, 0, 4, 1], 3, 0, &[red; 4]), made([0, 0, 4, 1], 0, 2, &[red; 4])];
-        assert_eq!(Reel::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &odd[..2]), usize::MAX).map(|reel| reel.frames.len()), Some(1));
-        assert_eq!(Reel::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &[&odd[..1], &odd[2..]].concat()), usize::MAX).map(|reel| reel.frames.len()), Some(1));
+        assert_eq!(LoadedAnimation::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &odd[..2]), usize::MAX).map(|anim| anim.frames.len()), Some(1));
+        assert_eq!(LoadedAnimation::read(&moving([4, 1], [8, 6, 0], &[], 0, None, &[&odd[..1], &odd[2..]].concat()), usize::MAX).map(|anim| anim.frames.len()), Some(1));
     }
 
     #[test]
     fn a_damaged_moving_picture_gives_nothing_or_some_film() {
         for (name, png, ..) in MOVING {
             // Truncated at every length; then whole with each byte in turn changed.
-            assert!((0..png.len()).all(|cut| playable(Reel::read(&png[..cut], usize::MAX))), "{name}, cut short");
+            assert!((0..png.len()).all(|cut| playable(LoadedAnimation::read(&png[..cut], usize::MAX))), "{name}, cut short");
             for at in 0..png.len() {
                 let damaged = |to: u8| [&png[..at], &[to], &png[at + 1..]].concat();
-                assert!([png[at] ^ (1 << (at % 8)), 0, 255].into_iter().all(|to| playable(Reel::read(&damaged(to), usize::MAX))), "{name}, byte {at}");
+                assert!([png[at] ^ (1 << (at % 8)), 0, 255].into_iter().all(|to| playable(LoadedAnimation::read(&damaged(to), usize::MAX))), "{name}, byte {at}");
             }
         }
     }

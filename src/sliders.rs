@@ -174,7 +174,7 @@ impl Ui {
     /// A slider's value beside it with its unit, in the person's locale, as wide as its widest
     /// value so the line does not move.
     pub(crate) fn slide_value(&mut self, value: f32, [low, high]: [f32; 2], step: f32, unit: &str) {
-        let (t, locale) = (self.theme, self.locale_in_use());
+        let (t, locale) = (self.theme, self.formats());
         let (mut written, mut rust) = (std::mem::take(&mut self.scratch), String::new());
         let mut widest = 0.0f32;
         for end in [low, high, value] {

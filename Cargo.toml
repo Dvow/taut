@@ -3,7 +3,7 @@ name = "taut"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
-description = "A Rust GUI library for Windows and Linux that aims to be small, fast and accessible, with zero dependencies and nothing compiled in that your program doesn't use."
+description = "A Rust GUI library for Windows, Linux and macOS that aims to be small, fast and accessible, with zero dependencies and nothing compiled in that your program doesn't use."
 license = "(MIT OR Apache-2.0) AND Unicode-3.0"
 repository = "https://github.com/Dvow/taut"
 homepage = "https://dvow.github.io/taut/"
@@ -42,21 +42,36 @@ cff = []
 color-profiles = []
 # WOFF2 fonts, with a Brotli decoder. Without it, `FontFile::read` rejects them.
 woff2 = []
-# Windows shown by the GPU (Direct3D 11 on Windows, EGL and OpenGL on Linux), loaded at run time;
-# the CPU still draws every pixel. Without it, the CPU shows them too (`Renderer`).
+# The built-in words (menus, file dialog, calendar, bars) in German, Spanish, French, Japanese,
+# Portuguese and Simplified Chinese, taken from the user's language. Without it, English until
+# the app sets its own.
+translations = []
+# Windows shown by the GPU (Direct3D, Vulkan or OpenGL on Windows; OpenGL or Vulkan under X11;
+# Vulkan dmabufs under Wayland), loaded at run time; the CPU still draws every pixel. Without it,
+# the CPU shows them too (`Renderer`).
 gpu = []
+# Windows drawn by the GPU too, where it is faster: boxes, borders, shadows, text, pictures,
+# gradients, shapes and strokes (Direct3D 11 and 12, Vulkan and OpenGL). Within a few levels of
+# 255 of the CPU at edges. Without it, the CPU draws every pixel.
+gpu-draw = ["gpu"]
 
 # None.
 [dependencies]
+
+# The macOS windows, on a Mac: AppKit opens windows only on the main thread, where libtest
+# runs no test.
+[[test]]
+name = "macos"
+harness = false
 
 # The library in a DLL with a C interface.
 [[example]]
 name = "overlay"
 crate-type = ["cdylib"]
 
-# docs.rs: every feature, both supported targets, items marked with the system and feature they
+# docs.rs: every feature, the supported targets, items marked with the system and feature they
 # need.
 [package.metadata.docs.rs]
 all-features = true
-targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
 rustdoc-args = ["--cfg", "docsrs"]

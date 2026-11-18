@@ -2629,7 +2629,8 @@ mod tests {
         report(all_differ, &tally);
     }
 
-    /// The system fonts for these scripts a test can rely on: Windows' own.
+    /// The system fonts for these scripts a test can rely on: Windows' own, and those CoreText
+    /// picks on macOS.
     fn systems() -> Vec<(char, FontFile)> {
         let letters = ['\u{915}', '\u{995}', '\u{b95}', '\u{d9a}', '\u{e01}', '\u{1780}', '\u{1000}'];
         letters.into_iter().filter_map(|letter| crate::bidi::system(crate::text::Face::Regular, letter).map(|font| (letter, font))).collect()
@@ -2660,6 +2661,9 @@ mod tests {
             let first = word.chars().next().expect("a letter");
             let Some((_, font)) = fonts.iter().find(|(letter, _)| script(*letter) == script(first)) else { continue };
             let found = froms(font, word);
+            // A font may draw the nikhahit and the tone mark as one glyph, standing for the
+            // nikhahit: Apple's Thai font does, as HarfBuzz has it too.
+            let order = if word == "\u{e19}\u{e49}\u{e33}" && found.len() == 3 { &[0, 2, 2][..] } else { order };
             assert!(found.starts_with(order), "{}: {found:?}", word.escape_unicode());
         }
     }

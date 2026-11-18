@@ -85,7 +85,7 @@ pub(crate) struct Shows {
     /// Lays a picture's pixels into a box with its corners, as [`Canvas::rounded_picture`]
     /// does: a picture, or an animation's frame.
     pub picture: Option<ShowsPicture>,
-    pub drawing: Option<fn(&mut crate::svg::Kept, Rect, Color, &mut Canvas)>,
+    pub drawing: Option<fn(&mut crate::svg::ParsedDrawing, Rect, Color, &mut Canvas)>,
     pub animation: Option<ShowsAnimation>,
     /// Rasterizes an icon at a size, as `draw_mask` does.
     pub icon: Option<fn(Icon, usize) -> Mask>,
@@ -107,7 +107,7 @@ type ShowsStripes = fn(&Tree, u32, Rect, Color, &mut Canvas);
 /// it ends.
 type Fades = fn(&mut Painter<'_>, &VisibleBox, &mut Canvas<'_>);
 /// Brings an animation to a frame and hands out its pixels.
-type ShowsAnimation = for<'r> fn(&'r mut crate::animation::Reel, usize) -> (&'r [u32], usize);
+type ShowsAnimation = for<'r> fn(&'r mut crate::animation::LoadedAnimation, usize) -> (&'r [u32], usize);
 /// Fills a box with a gradient.
 type ShowsGradient = fn(&mut Canvas, Rect, f32, &[(f32, Color)], Option<f32>);
 /// Draws a box's shadow: its place, corner radius, reach and colour.
@@ -121,8 +121,8 @@ pub(crate) struct Painter<'a> {
     pub icons: &'a [Icon],
     pub shapes: &'a [crate::pen::Inked],
     pub pictures: &'a mut Slots<Stored>,
-    pub drawings: &'a mut Slots<crate::svg::Kept>,
-    pub animations: &'a mut Slots<crate::animation::Reel>,
+    pub drawings: &'a mut Slots<crate::svg::ParsedDrawing>,
+    pub animations: &'a mut Slots<crate::animation::LoadedAnimation>,
     /// How content only some programs show is drawn, once described (see `Shows`).
     pub shows: Shows,
     pub scenes: &'a mut Scenes,
@@ -281,9 +281,9 @@ impl Painter<'_> {
                 let to = self.drawings.get(drawing).map_or(inside, |kept| fit_aspect(inside, kept.size(), keep));
                 self.shows.drawing.zip(self.drawings.get_mut(drawing)).map_or((), |(show, kept)| show(kept, to, color, canvas))
             }
-            Content::Film { film, frame, keep } => {
-                let to = self.animations.get(film).map_or(inside, |reel| fit_aspect(inside, reel.size().map(|side| side as f32), keep));
-                let shown = self.shows.animation.zip(self.animations.get_mut(film)).map(|(shown, reel)| shown(reel, frame as usize));
+            Content::Animation { animation, frame, keep } => {
+                let to = self.animations.get(animation).map_or(inside, |anim| fit_aspect(inside, anim.size().map(|side| side as f32), keep));
+                let shown = self.shows.animation.zip(self.animations.get_mut(animation)).map(|(shown, anim)| shown(anim, frame as usize));
                 shown.zip(self.shows.picture).map_or((), |((pixels, width), lay)| lay(canvas, pixels, width, to, spec.radius))
             }
             // A box with a solid fill, square corners and no border gets its scene drawn on
@@ -296,7 +296,7 @@ impl Painter<'_> {
             // The app's own shape, clipped to its box.
             Content::Shape { shape } => {
                 let draw = self.shows.shape.map(|draw| move |canvas: &mut Canvas| draw(&self.shapes[shape as usize], canvas, pt(inside.x, inside.y)));
-                draw.map_or((), |draw| canvas.held_to(r, draw))
+                draw.map_or((), |draw| canvas.with_clip(r, draw))
             }
         }
         if let Some(before) = held {

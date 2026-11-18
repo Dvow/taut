@@ -1034,6 +1034,11 @@ impl FontFile {
         glyphs.clear();
         let unseen = |letter: char| matches!(letter, '\u{200c}' | '\u{200d}' | '\u{e0000}'..='\u{e007f}' | '\u{fe00}'..='\u{fe0f}');
         letters.chars().all(|letter| unseen(letter) || self.glyph(letter) != 0).then_some(())?;
+        // (On macOS the system's emoji font joins sequences in `morx`: CoreText shapes them.)
+        #[cfg(target_os = "macos")]
+        if let Some(pen) = crate::core_text::sequence(self, letters, glyphs) {
+            return Some(pen);
+        }
         let mut laid = Vec::new();
         let pen = self.shape(&self.emoji, letters, &mut laid);
         let mut at = 0;
@@ -1773,9 +1778,9 @@ impl AppFonts {
     pub fn new(regular: FontFile) -> Self {
         AppFonts { files: vec![regular], faces: [0; 4], other: None, drawn: Vec::new(), cache_bytes: 0, hinted: true, forms: None }
     }
-    /// Unhinted glyphs at every size: for text that scales smoothly, as on a zoomed board.
+    /// Unhinted glyphs at every size: for text that scales smoothly, as in a zoomed view.
     /// (Otherwise small text's baseline, x-height and cap-height snap to whole pixels, keeping
-    /// it crisp; so glyph height changes in pixel steps as size changes.)
+    /// it sharp; so glyph height changes in pixel steps as size changes.)
     pub fn unhinted(self) -> Self {
         AppFonts { hinted: false, ..self }
     }

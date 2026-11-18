@@ -506,9 +506,9 @@ pub struct Ui {
     pub(crate) shapes_used: usize,
     pub(crate) pictures: Slots<Stored>,
     /// The drawings the app handed over.
-    pub(crate) drawings: Slots<crate::svg::Kept>,
+    pub(crate) drawings: Slots<crate::svg::ParsedDrawing>,
     /// The animations the app handed over.
-    pub(crate) animations: Slots<crate::animation::Reel>,
+    pub(crate) animations: Slots<crate::animation::LoadedAnimation>,
     /// How those are shown, once the app handed one over.
     pub(crate) shows: crate::paint::Shows,
     /// The meshes the app handed over, and this run's scenes.
@@ -654,7 +654,8 @@ pub struct Ui {
     pub(crate) dock_bars: Vec<(usize, Rect, f32)>,
     pub(crate) dragged_panel: String,
     pub(crate) panel_held: bool,
-    /// The words calendars and clocks are written in.
+    /// The words calendars and clocks are written in. Month and day names and AM/PM left in
+    /// English are the system's while [`locale`](Ui::locale) is `None`.
     pub calendar_words: CalendarWords,
     /// The open calendar: whose, the month shown, and a range's first picked day.
     pub(crate) calendar_open: Shown,
@@ -728,8 +729,10 @@ impl Ui {
     /// An interface drawing its text with `text` and copying to `clipboard`. (A window brings
     /// the system's; without one, [`BuiltInFont`](crate::text::BuiltInFont) and a
     /// [`LocalClipboard`](crate::LocalClipboard) do.)
+    #[cfg_attr(not(feature = "translations"), allow(clippy::let_and_return))]
     pub fn new(text: Box<dyn TextSystem>, clipboard: Box<dyn Clipboard>) -> Self {
-        Ui {
+        #[cfg_attr(not(feature = "translations"), allow(unused_mut))]
+        let mut ui = Ui {
             theme: Theme::dark(),
             edit_words: ["Cut", "Copy", "Paste", "Select all", "Add to dictionary", "Ignore"],
             frame_words: Default::default(),
@@ -880,7 +883,11 @@ impl Ui {
             under: (Vec::new(), Vec::new()),
             hiding: None,
             stops: Vec::new(),
-        }
+        };
+        // (With the feature `translations`: the user's language.)
+        #[cfg(feature = "translations")]
+        ui.translate_for_the_user();
+        ui
     }
 
     // ---- for the code that runs the window ----
@@ -970,7 +977,7 @@ impl Ui {
         // one counts as unfilled.
         let filled = |at: u32| {
             let shows = |spec: &Spec| {
-                !spec.fill.is_none() || matches!(spec.content, Content::Gradient { .. } | Content::Stripes { .. } | Content::Picture { .. } | Content::Film { .. } | Content::Scene { .. })
+                !spec.fill.is_none() || matches!(spec.content, Content::Gradient { .. } | Content::Stripes { .. } | Content::Picture { .. } | Content::Animation { .. } | Content::Scene { .. })
             };
             self.tree.specs.get(at as usize).is_some_and(shows)
         };
@@ -1193,7 +1200,7 @@ impl Ui {
         // while it has one.
         let (offset, strip) = (self.scrolls.get(&PAGE_ID).copied().unwrap_or_default(), self.gutters.get(&PAGE_ID).is_some_and(|gutter| gutter.reserved));
         self.offsets_key = (offset[0].to_bits() as u64) << 32 | offset[1].to_bits() as u64;
-        let frame = Frame { across: Align::Spread, strip, ..Default::default() };
+        let frame = Frame { across: Align::Spread, reserve_gutter: strip, ..Default::default() };
         self.root(Spec { id: PAGE_ID, fill: self.theme.bg, frame, offset, ..Default::default() }, Anchor::Middle, false);
         self.layers[0].height = 0;
         self.scrollers.push(0);
@@ -1621,7 +1628,7 @@ impl Ui {
                 Content::Shape { shape } => [shapes[shape as usize].key(), 0],
                 Content::Picture { picture, keep } => [picture as u64 | (keep as u64) << 32, pictures.get(picture).map_or(0, |stored| stored.version as u64)],
                 Content::Drawing { drawing, color, keep } => [drawing as u64 | (keep as u64) << 32, color.0 as u64],
-                Content::Film { film, frame, keep } => [film as u64 | (keep as u64) << 32, frame as u64],
+                Content::Animation { animation, frame, keep } => [animation as u64 | (keep as u64) << 32, frame as u64],
                 Content::Scene { scene } => [scenes.key(scene), 0],
                 Content::Gradient { stops: [from, to], turn } => [blend(from, to), turn.map_or(u64::MAX, |turn| turn.to_bits() as u64)],
                 Content::Stripes { color } => [0x7374_7269_7065, color.0 as u64],
@@ -1756,7 +1763,7 @@ impl Ui {
     /// its size changes.)
     fn update_gutter(&mut self, at: u32) -> bool {
         let (spec, dim) = (&self.tree.specs[at as usize], self.tree.places[at as usize].dim);
-        let (id, reserved, wanted) = (spec.id, spec.frame.strip, self.tree.has_bar(at, 1));
+        let (id, reserved, wanted) = (spec.id, spec.frame.reserve_gutter, self.tree.has_bar(at, 1));
         let mut gutter = self.gutters.get(&id).copied().unwrap_or_default();
         let flips = reserved != wanted && !(reserved && gutter.pinned == dim);
         gutter = match flips {
@@ -1989,7 +1996,7 @@ impl Ui {
         pt(at.x - self.caught.0.x, at.y - self.caught.0.y)
     }
     /// Where the box of this id was at the last layout: its visible part.
-    pub(crate) fn seen(&self, id: Id) -> Rect {
+    pub(crate) fn visible_rect(&self, id: Id) -> Rect {
         self.visible_boxes.rects.get(&id).copied().unwrap_or(Rect::EMPTY)
     }
 
@@ -2141,25 +2148,26 @@ impl Ui {
     /// Takes an animation in from a GIF, APNG or animated WebP file's bytes, to show with
     /// `animation`: it plays from now on wherever shown, costing nothing elsewhere. Kept
     /// compressed until [`drop_animation`](Self::drop_animation) or the window closes. (A still
-    /// file is a one-frame film.) Nothing if none of these, or damaged from the first frame.
+    /// file is a one-frame animation.) Nothing if none of these, or damaged from the first
+    /// frame.
     #[doc(alias("gif", "animation"))]
     pub fn add_animation(&mut self, file: &[u8]) -> Option<crate::animation::Animation> {
-        let mut reel = crate::animation::Reel::read(file, usize::MAX)?;
-        reel.since = self.now;
-        self.shows.animation = Some(crate::animation::Reel::shown);
-        Some(crate::animation::Animation(self.animations.put(reel)))
+        let mut anim = crate::animation::LoadedAnimation::read(file, usize::MAX)?;
+        anim.since = self.now;
+        self.shows.animation = Some(crate::animation::LoadedAnimation::shown);
+        Some(crate::animation::Animation(self.animations.put(anim)))
     }
     /// Drops an animation: where it still shows, nothing does.
-    pub fn drop_animation(&mut self, film: crate::animation::Animation) {
-        self.again |= self.animations.take(film.0).is_some();
+    pub fn drop_animation(&mut self, animation: crate::animation::Animation) {
+        self.again |= self.animations.take(animation.0).is_some();
     }
     /// Takes a drawing in from SVG text (`include_str!`, or read from disk), to show with
     /// `drawing` at any size, sharp at any scale. Kept until
     /// [`drop_drawing`](Self::drop_drawing) or the window closes. Nothing if the text holds no
     /// drawing.
     pub fn add_drawing(&mut self, svg: &str) -> Option<crate::svg::Drawing> {
-        self.shows.drawing = Some(crate::svg::Kept::show);
-        crate::svg::Kept::read(svg).map(|kept| crate::svg::Drawing(self.drawings.put(kept)))
+        self.shows.drawing = Some(crate::svg::ParsedDrawing::show);
+        crate::svg::ParsedDrawing::read(svg).map(|parsed| crate::svg::Drawing(self.drawings.put(parsed)))
     }
     /// Drops a drawing: where it still shows, nothing does.
     pub fn drop_drawing(&mut self, drawing: crate::svg::Drawing) {
@@ -2172,8 +2180,8 @@ impl Ui {
     }
     /// An animation's size in pixels: its canvas, which every frame is laid on. Nothing for a
     /// dropped one.
-    pub fn animation_size(&self, film: crate::animation::Animation) -> Option<(usize, usize)> {
-        self.animations.get(film.0).map(|reel| (reel.size()[0], reel.size()[1]))
+    pub fn animation_size(&self, animation: crate::animation::Animation) -> Option<(usize, usize)> {
+        self.animations.get(animation.0).map(|anim| (anim.size()[0], anim.size()[1]))
     }
     /// A drawing's own size in units: its file's width and height, else its view box. Nothing
     /// for a dropped one.

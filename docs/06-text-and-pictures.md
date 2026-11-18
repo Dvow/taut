@@ -219,7 +219,7 @@ Meshes are handed over once; each run sets the view and how each mesh is drawn:
 use taut::{Camera, Mesh, Ui};
 
 /// A body with four sides and a square floor: five points, and four triangles, each
-/// said by the numbers of its three corners.
+/// given by the numbers of its three corners.
 fn pyramid(ui: &mut Ui) -> Mesh {
     let points = vec![[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0], [0.0, 6.0, 0.0]];
     ui.add_mesh(points, vec![[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]])

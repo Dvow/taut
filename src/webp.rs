@@ -18,7 +18,7 @@
 //! shown opaque.
 //!
 //! An animated WebP is read as an animation (see `animation`), frames composed as libwebp does;
-//! as a picture, its first frame as the film shows it. A picture is turned upright per its
+//! as a picture, its first frame as the animation shows it. A picture is turned upright per its
 //! `EXIF` orientation, and colour-managed per its `ICCP` profile (see `color_profiles`). Other
 //! metadata is skipped.
 use crate::png::{Bits, Codes, codes};
@@ -30,11 +30,11 @@ const MOST: usize = 2048;
 /// Decodes a WebP file: the picture's width, and its pixels in rows from the top, each
 /// `0xAARRGGBB` (not premultiplied), as [`Ui::add_picture`](crate::Ui::add_picture) takes them.
 /// Turned upright per `EXIF`, colour-managed per `ICCP`. Of an animation, the first frame as
-/// the film shows it. Nothing for a damaged file or no WebP.
+/// the animation shows it. Nothing for a damaged file or no WebP.
 pub fn decode(webp: &[u8]) -> Option<(usize, Vec<u32>)> {
     let chunks = chunks(webp)?;
     let (width, pixels) = match chunks.iter().any(|(name, _)| *name == b"ANMF") {
-        true => read_animation(webp, 1).map(|mut reel| (reel.size[0], reel.shown(0).0.to_vec()))?,
+        true => read_animation(webp, 1).map(|mut anim| (anim.size[0], anim.shown(0).0.to_vec()))?,
         false => {
             let (width, mut pixels) = still(&chunks, webp.len())?;
             if let Some(change) = crate::color_profiles::Change::of_profile(first(&chunks, b"ICCP")) {
@@ -99,14 +99,15 @@ pub(crate) fn frame(chunks: &[u8], size: [usize; 2]) -> Option<Vec<u32>> {
     (width == size[0] && pixels.len() == size[0] * size[1]).then_some(pixels)
 }
 
-/// Reads a WebP as a film: its first `most` frames at most. A still WebP is a one-frame film.
-/// Nothing if no WebP, or no frame is whole. (A film ignores `EXIF` orientation.)
+/// Reads a WebP as an animation: its first `most` frames at most. A still WebP is a one-frame
+/// animation. Nothing if no WebP, or no frame is whole. (An animation ignores `EXIF`
+/// orientation.)
 ///
 /// An animated WebP gives its canvas size (`VP8X`) and loop count (`ANIM`); then each frame is
 /// an `ANMF` chunk with its offset, duration, dispose and blend flags, and its picture's
 /// chunks.
-pub(crate) fn read_animation(webp: &[u8], most: usize) -> Option<crate::animation::Reel> {
-    use crate::animation::{After, Frame, Kind, Laid, Reel};
+pub(crate) fn read_animation(webp: &[u8], most: usize) -> Option<crate::animation::LoadedAnimation> {
+    use crate::animation::{After, Frame, Kind, Laid, LoadedAnimation};
     let chunks = chunks(webp)?;
     let change = crate::color_profiles::Change::of_profile(first(&chunks, b"ICCP"));
     let three = |bytes: &[u8], at: usize| bytes.get(at..at + 3).map_or(0, |three| u32::from_le_bytes([three[0], three[1], three[2], 0]) as usize);
@@ -114,10 +115,10 @@ pub(crate) fn read_animation(webp: &[u8], most: usize) -> Option<crate::animatio
     // A still file is its picture: all its chunks become the frame's.
     if frames.is_empty() {
         let (width, pixels) = still(&chunks, webp.len())?;
-        let mut reel = Reel::new([width, pixels.len() / width], Kind::Webp(change.map(Box::new)), Some(1));
-        reel.packed = webp.get(12..)?.to_vec();
-        reel.frames.push(Frame::new([0, 0, width, pixels.len() / width], [0, reel.packed.len()], 0, After::Stays, Laid::Instead));
-        return reel.done();
+        let mut anim = LoadedAnimation::new([width, pixels.len() / width], Kind::Webp(change.map(Box::new)), Some(1));
+        anim.packed = webp.get(12..)?.to_vec();
+        anim.frames.push(Frame::new([0, 0, width, pixels.len() / width], [0, anim.packed.len()], 0, After::Stays, Laid::Instead));
+        return anim.done();
     }
     let screen = first(&chunks, b"VP8X");
     let size = [three(screen, 4) + 1, three(screen, 7) + 1];
@@ -126,22 +127,22 @@ pub(crate) fn read_animation(webp: &[u8], most: usize) -> Option<crate::animatio
     if size[0].saturating_mul(size[1]) > webp.len().saturating_mul(MOST) {
         return None;
     }
-    let mut reel = Reel::new(size, Kind::Webp(change.map(Box::new)), plays);
+    let mut anim = LoadedAnimation::new(size, Kind::Webp(change.map(Box::new)), plays);
     for frame in frames {
         let Some((head, chunks)) = frame.split_at_checked(16) else { break };
         let place = [three(head, 0) * 2, three(head, 3) * 2, three(head, 6) + 1, three(head, 9) + 1];
         let after = if head[15] & 1 == 1 { After::Cleared } else { After::Stays };
         let laid = if head[15] & 2 == 0 && seen_through(&chunks_of(chunks)) { Laid::OverWebp } else { Laid::Instead };
-        // (A frame off the canvas ends the film, as does one not whole: each is decoded once to
-        // see.)
+        // (A frame off the canvas ends the animation, as does one not whole: each is decoded
+        // once to see.)
         if place[0] + place[2] > size[0] || place[1] + place[3] > size[1] || self::frame(chunks, [place[2], place[3]]).is_none() {
             break;
         }
-        let packed = [reel.packed.len(), reel.packed.len() + chunks.len()];
-        reel.packed.extend_from_slice(chunks);
-        reel.frames.push(Frame::new(place, packed, three(head, 12) as u64, after, laid));
+        let packed = [anim.packed.len(), anim.packed.len() + chunks.len()];
+        anim.packed.extend_from_slice(chunks);
+        anim.frames.push(Frame::new(place, packed, three(head, 12) as u64, after, laid));
     }
-    reel.done()
+    anim.done()
 }
 
 /// Decodes a lossless chunk. `room` is the file's length.
@@ -981,9 +982,9 @@ fn spread(numbers: &[i32; 16]) -> [i32; 16] {
 
 /// Filters the pixels across one block edge. The first pixel after the edge is at `at`, pixels
 /// across it lie `step` apart, and the edge runs `along` from one to the next, `count` times.
-/// `up_to` gives the edge limit, the interior limit, and the high edge variance threshold above
-/// which the edge is kept sharper. `reach` is how many pixels each side may change: three, two,
-/// or only the two at the edge (the simple filter).
+/// `[across, beside, own]` are the edge limit, the interior limit, and the high edge variance
+/// threshold above which the edge is kept sharper. `reach` is how many pixels each side may
+/// change: three, two, or only the two at the edge (the simple filter).
 fn edge(pixels: &mut [u8], [at, step, along, count]: [usize; 4], [across, beside, own]: [i32; 3], reach: usize) {
     for at in (0..count).map(|place| at + place * along) {
         // The pixels across the edge, four each side; and their differences.
@@ -1437,7 +1438,7 @@ mod tests {
             let done = Command::new(program).args(arguments).current_dir(&work).stdin(Stdio::null()).stderr(Stdio::null()).status();
             assert!(done.is_ok_and(|status| status.success()), "{program} {arguments:?}");
         };
-        // A picture chunk as libvpx writes it: the one frame of a film, cut from ffmpeg's
+        // A picture chunk as libvpx writes it: the one frame of an animation, cut from ffmpeg's
         // container (32 bytes before its frames, 12 before each).
         let by_libvpx = |kind: &str, size: [usize; 2], how: &[&str]| {
             std::fs::write(work.join("in.png"), png::encode_rgba(size[0], &pattern(kind, size)).unwrap()).unwrap();
@@ -1517,7 +1518,7 @@ mod tests {
     }
 
     use crate::animation::tests::{frames, playable};
-    use crate::animation::{After, Laid, Reel};
+    use crate::animation::{After, Laid, LoadedAnimation};
 
     /// A hand-made animation frame: its offset (even), size, duration, flags (1: dispose to
     /// background; 2: no blend), and its picture's chunks.
@@ -1565,15 +1566,15 @@ mod tests {
     #[test]
     fn moving_pictures_come_out_as_libwebp_shows_them() {
         for (name, webp, wanted, shows, plays) in MOVING {
-            let mut reel = Reel::read(webp, usize::MAX).unwrap_or_else(|| panic!("{name} is read"));
+            let mut anim = LoadedAnimation::read(webp, usize::MAX).unwrap_or_else(|| panic!("{name} is read"));
             let (width, wanted) = png::decode(wanted).unwrap();
-            assert_eq!((reel.size[0], reel.frames.len() * reel.size[1]), (width, wanted.len() / width), "{name}: its size, and how many frames it has");
-            let (have, want) = (seen(&frames(&mut reel)), seen(&wanted));
+            assert_eq!((anim.size[0], anim.frames.len() * anim.size[1]), (width, wanted.len() / width), "{name}: its size, and how many frames it has");
+            let (have, want) = (seen(&frames(&mut anim)), seen(&wanted));
             let differ = have.iter().zip(&want).filter(|(one, other)| one != other).count();
             assert!(have == want, "{name}: {differ} pixels differ");
-            assert_eq!((reel.frames.iter().map(|frame| frame.shows).collect::<Vec<u64>>(), reel.plays), (shows.to_vec(), plays), "{name}: its times");
+            assert_eq!((anim.frames.iter().map(|frame| frame.shows).collect::<Vec<u64>>(), anim.plays), (shows.to_vec(), plays), "{name}: its times");
             // And its first frame is the file as a picture.
-            assert_eq!(decode(webp).map(|(width, pixels)| (width, seen(&pixels))), Some((width, want[..reel.size[0] * reel.size[1]].to_vec())), "{name} as a picture");
+            assert_eq!(decode(webp).map(|(width, pixels)| (width, seen(&pixels))), Some((width, want[..anim.size[0] * anim.size[1]].to_vec())), "{name} as a picture");
         }
     }
 
@@ -1584,33 +1585,33 @@ mod tests {
         let still = EXACT[4].1;
         let picture = &still[still.windows(4).position(|name| name == b"VP8L").unwrap()..];
         let made = |at: [usize; 2], flags: u8| Made { at, size: [33, 21], shows: 50, flags, chunks: picture.to_vec() };
-        let mut reel = Reel::read(&moving([40, 30], 0, &[made([0, 0], 0), made([4, 2], 1), made([6, 8], 2)]), usize::MAX).unwrap();
-        let laid: Vec<(After, Laid)> = reel.frames.iter().map(|frame| (frame.after, frame.laid)).collect();
+        let mut anim = LoadedAnimation::read(&moving([40, 30], 0, &[made([0, 0], 0), made([4, 2], 1), made([6, 8], 2)]), usize::MAX).unwrap();
+        let laid: Vec<(After, Laid)> = anim.frames.iter().map(|frame| (frame.after, frame.laid)).collect();
         // (That picture is opaque: each frame replaces.)
         assert_eq!(laid, [(After::Stays, Laid::Instead), (After::Cleared, Laid::Instead), (After::Stays, Laid::Instead)]);
         let (_, pixels) = decode(still).unwrap();
-        let mut at = |frame: usize, x: usize, y: usize| reel.shown(frame).0[y * 40 + x];
+        let mut at = |frame: usize, x: usize, y: usize| anim.shown(frame).0[y * 40 + x];
         assert_eq!([at(0, 0, 0), at(0, 32, 20), at(0, 33, 20), at(1, 4, 2), at(1, 3, 2)], [pixels[0], pixels[33 * 21 - 1], 0, pixels[0], pixels[2 * 33 + 3]]);
         // Cleared where the previous frame lay; and the frame lies at its offset.
         assert_eq!([at(2, 5, 3), at(2, 2, 0), at(2, 6, 8)], [0, pixels[2], pixels[0]]);
-        // A frame off the canvas ends the film before it, as does one whose picture is not the
-        // frame's size.
-        assert_eq!(Reel::read(&moving([40, 30], 0, &[made([0, 0], 0), made([8, 10], 0)]), usize::MAX).map(|reel| reel.frames.len()), Some(1));
+        // A frame off the canvas ends the animation before it, as does one whose picture is not
+        // the frame's size.
+        assert_eq!(LoadedAnimation::read(&moving([40, 30], 0, &[made([0, 0], 0), made([8, 10], 0)]), usize::MAX).map(|anim| anim.frames.len()), Some(1));
         let other = Made { size: [32, 21], ..made([0, 0], 0) };
-        assert_eq!(Reel::read(&moving([40, 30], 0, &[made([0, 0], 0), other]), usize::MAX).map(|reel| reel.frames.len()), Some(1));
-        // A still WebP is a one-frame film: its picture.
-        let mut reel = Reel::read(still, usize::MAX).unwrap();
-        assert_eq!((reel.frames.len(), reel.shown(0).0.to_vec()), (1, pixels));
+        assert_eq!(LoadedAnimation::read(&moving([40, 30], 0, &[made([0, 0], 0), other]), usize::MAX).map(|anim| anim.frames.len()), Some(1));
+        // A still WebP is a one-frame animation: its picture.
+        let mut anim = LoadedAnimation::read(still, usize::MAX).unwrap();
+        assert_eq!((anim.frames.len(), anim.shown(0).0.to_vec()), (1, pixels));
     }
 
     #[test]
     fn a_damaged_moving_picture_gives_nothing_or_some_film() {
         for (name, webp, ..) in MOVING {
             // Truncated at every length; then whole with each byte in turn changed.
-            assert!((0..webp.len()).all(|cut| playable(Reel::read(&webp[..cut], usize::MAX))), "{name}, cut short");
+            assert!((0..webp.len()).all(|cut| playable(LoadedAnimation::read(&webp[..cut], usize::MAX))), "{name}, cut short");
             for at in 0..webp.len() {
                 let damaged = |to: u8| [&webp[..at], &[to], &webp[at + 1..]].concat();
-                assert!([webp[at] ^ (1 << (at % 8)), 0, 255].into_iter().all(|to| playable(Reel::read(&damaged(to), usize::MAX))), "{name}, byte {at}");
+                assert!([webp[at] ^ (1 << (at % 8)), 0, 255].into_iter().all(|to| playable(LoadedAnimation::read(&damaged(to), usize::MAX))), "{name}, byte {at}");
             }
         }
     }
@@ -1654,7 +1655,7 @@ mod tests {
                 // (`MODE_RGBA`: a byte each, not premultiplied.)
                 options.0 = 1;
                 let decoder = open(&Data(webp.as_ptr(), webp.len()), &options, VERSION);
-                assert!(!decoder.is_null(), "libwebp reads the film");
+                assert!(!decoder.is_null(), "libwebp reads the animation");
                 let mut info = Info([0; 5], [0; 4]);
                 assert_eq!(told(decoder, &mut info), 1);
                 let ([wide, high, plays, ..], mut all, mut ends) = (info.0, Vec::new(), vec![0]);
@@ -1717,13 +1718,13 @@ mod tests {
         for (name, ..) in MOVING {
             let webp = std::fs::read(at(&format!("{name}.webp"))).unwrap();
             let (width, frames, shows, plays) = libwebp::frames(&webp);
-            // (Its durations are the film's, and the tests'.)
-            let reel = Reel::read(&webp, usize::MAX).unwrap();
+            // (Its durations are the animation's, and the tests'.)
+            let anim = LoadedAnimation::read(&webp, usize::MAX).unwrap();
             let times = (shows.into_iter().map(crate::animation::shows_for).collect::<Vec<u64>>(), Some(plays as u64).filter(|plays| *plays > 0));
-            assert_eq!((reel.frames.iter().map(|frame| frame.shows).collect::<Vec<u64>>(), reel.plays), times, "{name}: its times");
+            assert_eq!((anim.frames.iter().map(|frame| frame.shows).collect::<Vec<u64>>(), anim.plays), times, "{name}: its times");
             println!("{name}: times {times:?}");
             std::fs::write(at(&format!("{name}.webp.frames.png")), png::encode_rgba(width, &frames).unwrap()).unwrap();
-            let count = format!("tile=1x{}", frames.len() / width / Reel::read(&webp, 1).unwrap().size[1]);
+            let count = format!("tile=1x{}", frames.len() / width / LoadedAnimation::read(&webp, 1).unwrap().size[1]);
             run("ffmpeg", &["-y", "-loglevel", "error", "-i", &at(&format!("{name}.webp")), "-vf", &count, "-frames:v", "1", "-pix_fmt", "rgba", "ffmpeg.png"]);
             run("vips", &["copy", &format!("{}[n=-1]", at(&format!("{name}.webp"))), "vips.png"]);
             for other in ["ffmpeg", "vips"] {

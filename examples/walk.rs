@@ -1,6 +1,8 @@
 //! Starts the demo and uses it as a person would. Each thing it presses is found by what the
-//! window tells screen readers, each step is checked the same way, and a picture is saved after
-//! each step. Prints the demo's memory and processor time; ends with 1 if a step failed.
+//! window tells screen readers, each step is checked the same way (only what shows in a window
+//! counts), and a picture is saved after each step. Prints the demo's memory and processor
+//! time. Ends with 1 if a check failed, a picture is missing or blank, or the demo does not end
+//! when closed.
 //!
 //!   cargo build -p taut --example gallery --release
 //!   cargo run -p taut --example walk --release -- [<folder for pictures>] [<program>]
@@ -15,7 +17,7 @@
 //!   come from `PrintWindow`, which redraws the whole window, so they cannot show stale drawing.
 //! - **Linux (X11)**: moves the pointer and types through XTest, asks AT-SPI where things are,
 //!   and takes pictures of the screen. After each picture every window redraws in full, and any
-//!   difference (something left stale) is reported. Run it on a display of its own:
+//!   difference (something left stale) fails the walk. Run it on a display of its own:
 //!   `xvfb-run -a -s "-screen 0 900x600x24" target/release/examples/walk`. Needs libXtst, xclip,
 //!   libatspi, at-spi2-core, gdbus and dbus; it starts a session bus of its own when none is set.
 
@@ -99,14 +101,17 @@ trait Driver {
     fn wheel(&mut self, at: (f64, f64), notches: u32);
     fn key(&mut self, key: Key, control: bool);
     fn typed(&mut self, text: &str);
-    fn shot(&mut self, name: &str);
+    /// Saves a picture of the program's topmost window, or says why there is none (no
+    /// window, or a picture of one colour only).
+    fn shot(&mut self, name: &str) -> Result<(), String>;
     fn memory(&mut self, when: &str);
     /// Milliseconds of processor the program uses in this many seconds.
     fn processor(&mut self, seconds: u64) -> f64;
     /// What another program reads from the clipboard, where the walk can ask.
     fn clipboard(&mut self) -> Option<String>;
-    /// Ends the program; gives back what is left to say.
-    fn end(&mut self) -> String;
+    /// Ends the program; gives back what is left to say, as a failure where pictures were
+    /// wrong.
+    fn end(&mut self) -> Result<String, String>;
 }
 
 /// Waits so many milliseconds: time for the demo to take in what was done.
@@ -120,11 +125,17 @@ fn the_demo_beside() -> PathBuf {
     this.with_file_name(format!("gallery{}", std::env::consts::EXE_SUFFIX))
 }
 
-/// The walk as it goes: the system's driver, and what failed.
+/// The walk as it goes: the system's driver, what failed, and how many checks held.
 struct Walk<D: Driver> {
     driver: D,
     failed: Vec<String>,
+    held: usize,
     tell: bool,
+}
+
+/// Whether a node lies in one of the windows told, so a picture of the window shows it.
+fn in_view(nodes: &[Node], node: &Node) -> bool {
+    nodes.iter().any(|window| window.kind == Kind::Window && window.at.holds(node.at.mid()))
 }
 
 impl<D: Driver> Walk<D> {
@@ -160,14 +171,16 @@ impl<D: Driver> Walk<D> {
         nodes.get(at + 1).cloned()
     }
 
-    /// Whether a thing with this name shows, now.
+    /// Whether a thing with this name shows in a window, now.
     fn shows(&mut self, name: &str) -> bool {
-        self.driver.nodes().iter().any(|thing| thing.name == name)
+        let nodes = self.driver.nodes();
+        nodes.iter().any(|thing| thing.name == name && in_view(&nodes, thing))
     }
 
-    /// Whether a thing whose name starts so shows, now.
+    /// Whether a thing whose name starts so shows in a window, now.
     fn shows_start(&mut self, start: &str) -> bool {
-        self.driver.nodes().iter().any(|thing| thing.name.starts_with(start))
+        let nodes = self.driver.nodes();
+        nodes.iter().any(|thing| thing.name.starts_with(start) && in_view(&nodes, thing))
     }
 
     /// Clicks at a fraction of the way across and down a thing found by name.
@@ -193,12 +206,14 @@ impl<D: Driver> Walk<D> {
 
     /// Notes whether what a picture is named for holds.
     fn holds(&mut self, picture: &str, what: &str, holds: bool) {
-        if !holds {
-            self.failed.push(format!("{picture}: {what} does not hold"));
+        match holds {
+            true => self.held += 1,
+            false => self.failed.push(format!("{picture}: {what} does not hold")),
         }
     }
 
-    /// Saves a picture, after printing what the window tells if asked to.
+    /// Saves a picture, after printing what the window tells if asked to. A missing or blank
+    /// picture fails the walk.
     fn shot(&mut self, name: &str) {
         if self.tell {
             println!("-- {name}");
@@ -206,14 +221,16 @@ impl<D: Driver> Walk<D> {
                 println!("   {:?} {:?} at {:.0},{:.0} {:.0}x{:.0}{}", thing.kind, thing.name, thing.at.x, thing.at.y, thing.at.w, thing.at.h, if thing.on { " on" } else { "" });
             }
         }
-        self.driver.shot(name);
+        if let Err(why) = self.driver.shot(name) {
+            self.failed.push(format!("{name}: no picture: {why}"));
+        }
     }
 
-    /// The numbers of the cells under a heading, top to bottom.
+    /// The numbers of the cells under a heading that show in a window, top to bottom.
     fn column(&mut self, heading: &str) -> Vec<f64> {
         let nodes = self.driver.nodes();
         let Some(head) = nodes.iter().find(|thing| thing.kind == Kind::Heading && thing.name == heading) else { return Vec::new() };
-        let under = |thing: &&Node| thing.kind == Kind::Cell && thing.at.y > head.at.y && (head.at.x..head.at.x + head.at.w).contains(&thing.at.mid().0);
+        let under = |thing: &&Node| thing.kind == Kind::Cell && thing.at.y > head.at.y && (head.at.x..head.at.x + head.at.w).contains(&thing.at.mid().0) && in_view(&nodes, thing);
         nodes.iter().filter(under).filter_map(|cell| cell.name.split(' ').next()?.parse().ok()).collect()
     }
 }
@@ -227,6 +244,7 @@ fn main() {
         std::process::exit(1);
     }
     std::fs::create_dir_all(&folder).expect("the folder for the pictures could not be made");
+    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
     let tell = std::env::var_os("TAUT_WALK_TELL").is_some();
     #[cfg(windows)]
     let driver = windows::start(&folder, &program);
@@ -236,21 +254,26 @@ fn main() {
     return println!("there is no walk for this system yet");
     #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
     {
-        let mut walk = Walk { driver, failed: Vec::new(), tell };
+        let mut walk = Walk { driver, failed: Vec::new(), held: 0, tell };
         steps(&mut walk);
-        println!("{}", walk.driver.end());
+        match walk.driver.end() {
+            Ok(said) => println!("{said}"),
+            Err(said) => walk.failed.push(said),
+        }
         println!("pictures are in {}", folder.display());
         if !walk.failed.is_empty() {
             println!("FAILED:\n  {}", walk.failed.join("\n  "));
             std::process::exit(1);
         }
-        println!("every step held");
+        println!("every step held ({} checks)", walk.held);
     }
 }
 
 /// The steps, each checked against what the window tells.
 fn steps<D: Driver>(walk: &mut Walk<D>) {
     walk.driver.memory("at start");
+    let list = walk.find(Kind::Entry, "Filter items").is_some() && walk.shows("item 0") && walk.shows("item 2");
+    walk.holds("01-start", "the list page shows", list);
     walk.shot("01-start");
     println!("{:.0} ms of processor in 3 s with nothing happening", walk.driver.processor(3));
 
@@ -269,8 +292,9 @@ fn steps<D: Driver>(walk: &mut Walk<D>) {
     }
     walk.driver.key(Key::Letter('c'), true);
     walk.shot("03-selected");
-    if let Some(read) = walk.driver.clipboard() {
-        walk.holds("03-selected", &format!("another program reads what was copied ({read:?})"), read == "item 1");
+    match walk.driver.clipboard() {
+        Some(read) => walk.holds("03-selected", &format!("another program reads what was copied ({read:?})"), read == "item 1"),
+        None => println!("03-selected: not checked here (keys with Control are not sent)"),
     }
 
     // The menu of the second "More" (the first is the tool bar's), and its dialog.
@@ -353,7 +377,7 @@ fn steps<D: Driver>(walk: &mut Walk<D>) {
     walk.holds("11-drawing", "the page of drawings shows", drawing);
     walk.shot("11-drawing");
 
-    // More parts: a number stepped up, a colour and a day selected, a thing carried.
+    // More parts: a number stepped up, a colour and a day selected, a thing dragged.
     walk.press(Kind::Tab, "More");
     walk.press(Kind::Spin, "A number to type");
     for _ in 0..3 {
@@ -382,10 +406,10 @@ fn steps<D: Driver>(walk: &mut Walk<D>) {
     walk.driver.key(Key::Escape, false);
     if let (Some(apples), Some(bread)) = (walk.find(Kind::Any, "Apples"), walk.find(Kind::Any, "Bread")) {
         walk.driver.drag(apples.at.mid(), (bread.at.mid().0, bread.at.y + bread.at.h * 1.5));
-        let carried = walk.find(Kind::Any, "Apples").is_some_and(|now| (now.at.x - bread.at.x).abs() < 2.0);
-        walk.holds("13-carried", "the apples are in the second box", carried);
+        let dragged = walk.find(Kind::Any, "Apples").is_some_and(|now| (now.at.x - bread.at.x).abs() < 2.0);
+        walk.holds("13-dragged", "the apples are in the second box", dragged);
     }
-    walk.shot("13-carried");
+    walk.shot("13-dragged");
 
     // The Tools panel: moved by its title, stretched by its corner, then closed.
     walk.press(Kind::Any, "View");
@@ -406,13 +430,13 @@ fn steps<D: Driver>(walk: &mut Walk<D>) {
         walk.driver.click(close.at.mid());
     }
 
-    // The dock: a tab carried onto the middle mark of another place.
+    // The dock: a tab dragged onto the middle mark of another place.
     walk.press(Kind::Tab, "Dock");
     let dock = walk.find(Kind::Slider, "Files, Editor");
     let files = walk.shows("Folder 000");
     walk.holds("14a-dock", "the dock shows", dock.is_some() && files);
     walk.shot("14a-dock");
-    // A tab carried by itself onto the middle of the other place.
+    // A tab dragged by itself onto the middle of the other place.
     if let (Some(tab), Some(folder), Some(files)) = (walk.find(Kind::Tab, "Preview"), walk.find(Kind::Any, "Folder 000"), dock.clone()) {
         walk.driver.drag(tab.at.mid(), (folder.at.mid().0, files.at.mid().1));
     }
@@ -723,6 +747,34 @@ mod windows {
         search.1.into_iter().filter(|window| unsafe { GetWindow(*window, 4) } == 0).collect()
     }
 
+    /// A picture of a window as it draws all of itself, and its width (nothing for none).
+    fn picture_of(window: Handle) -> (Vec<u32>, usize) {
+        let mut frame = WinRect::default();
+        // SAFETY: `frame` is room for the window's place.
+        unsafe { GetWindowRect(window, &mut frame) };
+        let (wide, high) = (frame.right - frame.left, frame.bottom - frame.top);
+        if wide <= 0 || high <= 0 {
+            return (Vec::new(), 0);
+        }
+        let info = BitmapInfo { size: 40, width: wide, height: -high, planes: 1, bits: 32, rest: [0; 7] };
+        let mut pixels = null_mut();
+        // SAFETY: a top-down block of 32-bit pixels is made, the window draws all of itself
+        // into it (2: as for the screen), and it is copied and given back.
+        let picture = unsafe {
+            let dc = CreateCompatibleDC(0);
+            let block = CreateDIBSection(dc, &info, 0, &mut pixels, 0, 0);
+            let before = SelectObject(dc, block);
+            PrintWindow(window, dc, 2);
+            GdiFlush();
+            let picture = if pixels.is_null() { Vec::new() } else { std::slice::from_raw_parts(pixels, (wide * high) as usize).to_vec() };
+            SelectObject(dc, before);
+            DeleteObject(block);
+            DeleteDC(dc);
+            picture
+        };
+        (picture, wide as usize)
+    }
+
     /// The walk's side on Windows: the demo, UI Automation, and where pictures go.
     pub struct Demo {
         process: Handle,
@@ -940,33 +992,24 @@ mod windows {
             rest(150);
         }
 
-        fn shot(&mut self, name: &str) {
-            let Some(window) = windows_of(self.id).first().copied() else { return println!("NO PICTURE {name}: no window") };
-            let mut frame = WinRect::default();
-            // SAFETY: `frame` is room for the window's place.
-            unsafe { GetWindowRect(window, &mut frame) };
-            let (wide, high) = (frame.right - frame.left, frame.bottom - frame.top);
-            let info = BitmapInfo { size: 40, width: wide, height: -high, planes: 1, bits: 32, rest: [0; 7] };
-            let mut pixels = null_mut();
-            // SAFETY: a top-down block of 32-bit pixels is made, the window draws all of itself
-            // into it (2: as for the screen), and it is copied and given back.
-            let picture = unsafe {
-                let dc = CreateCompatibleDC(0);
-                let block = CreateDIBSection(dc, &info, 0, &mut pixels, 0, 0);
-                let before = SelectObject(dc, block);
-                PrintWindow(window, dc, 2);
-                GdiFlush();
-                let picture = if pixels.is_null() { Vec::new() } else { std::slice::from_raw_parts(pixels, (wide * high) as usize).to_vec() };
-                SelectObject(dc, before);
-                DeleteObject(block);
-                DeleteDC(dc);
-                picture
-            };
+        /// The first `PrintWindow` of a window just shown can come back blank: a blank picture
+        /// is taken again once.
+        fn shot(&mut self, name: &str) -> Result<(), String> {
+            let Some(window) = windows_of(self.id).first().copied() else { return Err("no window".into()) };
+            let (mut picture, mut wide) = picture_of(window);
+            if picture.iter().all(|pixel| Some(pixel) == picture.first()) {
+                rest(200);
+                (picture, wide) = picture_of(window);
+            }
             if picture.is_empty() {
-                return println!("NO PICTURE {name}");
+                return Err("the window gave none".into());
             }
             self.shots.push(name.to_string());
-            std::fs::write(self.folder.join(format!("{name}.png")), taut::png::encode(wide as usize, &picture).unwrap()).expect("the picture could not be saved");
+            std::fs::write(self.folder.join(format!("{name}.png")), taut::png::encode(wide, &picture).unwrap()).expect("the picture could not be saved");
+            match picture.iter().all(|pixel| *pixel == picture[0]) {
+                true => Err("all one colour".into()),
+                false => Ok(()),
+            }
         }
 
         fn memory(&mut self, when: &str) {
@@ -994,7 +1037,7 @@ mod windows {
             None
         }
 
-        fn end(&mut self) -> String {
+        fn end(&mut self) -> Result<String, String> {
             let first = windows_of(self.id).first().copied();
             if let Some(window) = first {
                 // SAFETY: a message can be posted to any handle.
@@ -1002,13 +1045,18 @@ mod windows {
             }
             release(self.automation);
             // SAFETY: the process is the walk's own; its handle is closed last.
-            unsafe {
-                if WaitForSingleObject(self.process, 4000) != 0 {
+            let closed = unsafe {
+                let closed = WaitForSingleObject(self.process, 4000) == 0;
+                if !closed {
                     TerminateProcess(self.process, 1);
                 }
                 CloseHandle(self.process);
+                closed
+            };
+            match closed {
+                true => Ok(format!("{} pictures", self.shots.len())),
+                false => Err("the demo did not end when its window was closed".into()),
             }
-            format!("{} pictures", self.shots.len())
         }
     }
 
@@ -1599,24 +1647,28 @@ mod x11 {
         }
 
         /// Saves the screen as drawn, then has everything redrawn and notes any difference.
-        fn shot(&mut self, name: &str) {
+        fn shot(&mut self, name: &str) -> Result<(), String> {
             self.shots += 1;
             let drawn = self.still_screen();
             self.draw_afresh();
             let afresh = self.still_screen();
             self.save(name, &drawn);
+            if drawn.pixels.iter().all(|pixel| Some(pixel) == drawn.pixels.first()) {
+                return Err("the screen is all one colour".into());
+            }
             if drawn.pixels == afresh.pixels {
-                return;
+                return Ok(());
             }
             let differing: Vec<usize> = (0..drawn.pixels.len()).filter(|at| drawn.pixels[*at] != afresh.pixels[*at]).collect();
             if self.blinks(&drawn, &differing) {
-                return;
+                return Ok(());
             }
             let places: Vec<(usize, usize)> = differing.iter().map(|at| (at % drawn.wide, at / drawn.wide)).collect();
             let (left, right) = (places.iter().map(|at| at.0).min().unwrap_or(0), places.iter().map(|at| at.0).max().unwrap_or(0));
             let (top, bottom) = (places.iter().map(|at| at.1).min().unwrap_or(0), places.iter().map(|at| at.1).max().unwrap_or(0));
             self.differing.push(format!("{name}: {} pixels, in {} by {} at {left},{top}", places.len(), right - left + 1, bottom - top + 1));
             self.save(&format!("{name}-afresh"), &afresh);
+            Ok(())
         }
 
         fn memory(&mut self, when: &str) {
@@ -1642,7 +1694,7 @@ mod x11 {
             Some(read_by_another_program())
         }
 
-        fn end(&mut self) -> String {
+        fn end(&mut self) -> Result<String, String> {
             // SAFETY: the demo is the walk's own child, asked to end (SIGTERM).
             unsafe { kill(self.demo.id() as c_int, 15) };
             let _ = self.demo.wait();
@@ -1653,8 +1705,8 @@ mod x11 {
             let _ = self.launcher.kill();
             let _ = self.launcher.wait();
             match self.differing.is_empty() {
-                true => format!("{} pictures; drawn afresh, each is the same", self.shots),
-                false => format!("{} pictures; drawn afresh, these differ (saved beside them):\n  {}", self.shots, self.differing.join("\n  ")),
+                true => Ok(format!("{} pictures; drawn afresh, each is the same", self.shots)),
+                false => Err(format!("{} pictures; drawn afresh, these differ (saved beside them):\n  {}", self.shots, self.differing.join("\n  "))),
             }
         }
     }

@@ -45,7 +45,7 @@
 use crate::atspi::{Bus, Message as BusMessage};
 use crate::canvas::Canvas;
 use crate::color::Color;
-use crate::decorations::{self, Asked, Strip};
+use crate::decorations::{self, Asked, TitleBar};
 use crate::event::{Button, Cursor, Event, Mods};
 use crate::file_dialog::FileDialogRequest;
 use crate::frameless::HitTest;
@@ -129,16 +129,23 @@ struct Has {
     text_inputs: u32,
     gestures: u32,
     tablets: u32,
+    /// `zwp_linux_dmabuf_v1`: its global name and version, bound only for a window the GPU
+    /// shows (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    dmabuf: (u32, u32),
 }
 
 /// What all windows and the clipboard share: the connection, the globals, the clipboard, and
 /// the last input serial (which the compositor wants whenever the program asks for something
-/// only a person should start: setting the selection, moving a window, activation).
+/// only a person should start: setting the selection, moving a window, activation). And the
+/// GPU, where it shows windows (feature `gpu`).
 struct Link {
     wire: Wire,
     has: Has,
     clipboard: RefCell<ClipboardState>,
     serial: Cell<u32>,
+    #[cfg(feature = "gpu")]
+    gpu: RefCell<Option<gpu_wayland::Gpu>>,
 }
 
 /// The Wayland clipboard: whoever copied last offers it in some MIME types and hands it to any
@@ -204,7 +211,15 @@ impl Link {
         if has.compositor == 0 || has.shm == 0 || has.shell == 0 {
             return None;
         }
-        Some((Link { wire, has, clipboard: RefCell::default(), serial: Cell::new(0) }, outputs))
+        let link = Link {
+            wire,
+            has,
+            clipboard: RefCell::default(),
+            serial: Cell::new(0),
+            #[cfg(feature = "gpu")]
+            gpu: RefCell::default(),
+        };
+        Some((link, outputs))
     }
 
     /// The registry's globals: name, interface and version each. Nothing where it says nothing
@@ -355,6 +370,8 @@ fn bind(wire: &Wire, registry: u32, offered: &[(u32, String, u32)]) -> (Has, Vec
             "zwp_pointer_gestures_v1" if cfg!(feature = "touch") && has.gestures == 0 => has.gestures = bind(1, Interface::Gestures),
             "zwp_tablet_manager_v2" if cfg!(feature = "touch") && has.tablets == 0 => has.tablets = bind(1, Interface::Tablets),
             "wl_output" if *version >= 2 => outputs.push((bind(4, Interface::Output), *name)),
+            #[cfg(feature = "gpu")]
+            "zwp_linux_dmabuf_v1" => has.dmabuf = (*name, *version),
             _ => {}
         }
     }
@@ -500,6 +517,9 @@ struct Sheet {
     owed: bool,
     /// See-through: drawn on a clear background.
     clear: bool,
+    /// Shown through the GPU, or by shared memory (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    way: gpu_wayland::Way,
 }
 
 impl Sheet {
@@ -507,7 +527,21 @@ impl Sheet {
     fn new(link: &Link, clear: bool) -> Self {
         let surface = link.wire.make(Interface::Surface);
         link.wire.send(link.has.compositor, 0, &[Arg::Uint(surface)]);
-        Sheet { surface, viewport: 0, buffers: Vec::new(), units: [0; 2], pixels: [0; 2], whole: 1, waiting: 0, changed: Vec::new(), hurry: false, owed: false, clear }
+        Sheet {
+            surface,
+            viewport: 0,
+            buffers: Vec::new(),
+            units: [0; 2],
+            pixels: [0; 2],
+            whole: 1,
+            waiting: 0,
+            changed: Vec::new(),
+            hurry: false,
+            owed: false,
+            clear,
+            #[cfg(feature = "gpu")]
+            way: gpu_wayland::Way::Unasked,
+        }
     }
 
     /// Shows it at a fractional scale from now on.
@@ -570,6 +604,10 @@ impl Sheet {
         if self.changed.is_empty() || (self.waiting != 0 && !self.hurry) {
             return self.pay(link);
         }
+        #[cfg(feature = "gpu")]
+        if let Some(drawn) = self.draw_by_gpu(link, scale, paint) {
+            return drawn;
+        }
         let Some(at) = self.free(link) else { return self.pay(link) };
         let (changed, clear) = (std::mem::take(&mut self.changed), self.clear);
         let buffer = &mut self.buffers[at];
@@ -607,6 +645,8 @@ impl Sheet {
 
     /// Destroys the surface, its buffers and its viewport.
     fn destroy(self, link: &Link) {
+        #[cfg(feature = "gpu")]
+        Sheet::forget_gpu(link, self.way);
         if self.viewport != 0 {
             link.wire.send(self.viewport, 0, &[]);
         }
@@ -649,7 +689,7 @@ struct Kind {
 /// The library's own title bar for a window: the title bar, its surface, and the subsurface
 /// placing it over the window.
 struct Framed {
-    title_bar: Strip,
+    title_bar: TitleBar,
     sheet: Sheet,
     sub: u32,
 }
@@ -872,7 +912,7 @@ impl Shown {
         let sub = wire.make(Interface::Subsurface);
         wire.send(link.has.subcompositor, 1, &[Arg::Uint(sub), Arg::Uint(sheet.surface), Arg::Uint(self.sheet.surface)]);
         wire.send(sub, 1, &[Arg::Int(0), Arg::Int(-decorations::HIGH)]);
-        let mut title_bar = Strip::new(Box::new(text.clone()));
+        let mut title_bar = TitleBar::new(Box::new(text.clone()));
         (title_bar.title, title_bar.filling, title_bar.active) = (self.title.clone(), self.filling, self.active);
         self.frame = Some(Framed { title_bar, sheet, sub });
         // Before the first configure nothing of the window has pixels, and a window geometry
@@ -1076,7 +1116,7 @@ struct Typing {
 /// A drag over a window from another program: its offer, the window's surface, its last
 /// position, and what it is taken as (files or text).
 #[derive(Default)]
-struct Carried {
+struct DragOver {
     offer: u32,
     surface: u32,
     at: Point,
@@ -1153,7 +1193,7 @@ struct Host<App> {
     pointer: Pointer,
     keys: Keys,
     typing: Typing,
-    carried: Carried,
+    drag_over: DragOver,
     fingers: Fingers,
     pinch: Pinch,
     pens: Pens,
@@ -1206,7 +1246,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             ui.theme.bg = Color::NONE;
         }
         let outputs = outputs.into_iter().map(|(id, name)| (id, name, 1)).collect();
-        let (keys, pointer, typing, carried) = (Keys::default(), Pointer::default(), Typing::default(), Carried::default());
+        let (keys, pointer, typing, drag_over) = (Keys::default(), Pointer::default(), Typing::default(), DragOver::default());
         let mut host = Host {
             link,
             app,
@@ -1217,7 +1257,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             pointer,
             keys,
             typing,
-            carried,
+            drag_over,
             fingers: Fingers::default(),
             pinch: Pinch::default(),
             pens: Pens::default(),
@@ -1236,6 +1276,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         // A token comes from another program: one longer than a desktop gives is none.
         let token = !host.token.is_empty() && host.token.len() <= crate::freedesktop::TOKEN;
         host.windows[0].come = token && !window.minimized && host.link.has.activation != 0;
+        #[cfg(feature = "gpu")]
+        host.ask_gpu(window.renderer);
         host.seat_up();
         host.settle(Duration::from_secs(5));
         host.windows[0].configured.then_some(host)
@@ -1322,7 +1364,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             Interface::Callback => self.called(message.object),
             Interface::WmBase => self.pinged(message),
             Interface::XdgSurface => self.configured(message),
-            Interface::Toplevel => self.told(message),
+            Interface::Toplevel => self.toplevel_event(message),
             Interface::Decoration => self.decorated(message),
             Interface::Surface => self.surfaced(message),
             Interface::Scale => self.scaled(message),
@@ -1331,7 +1373,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             Interface::Seat => self.seated(message),
             Interface::Pointer => self.pointed(message),
             Interface::Keyboard => self.keyed(message),
-            Interface::DataDevice => self.carrying(message),
+            Interface::DataDevice => self.data_device_event(message),
             Interface::DataOffer => self.offered(message),
             Interface::DataSource => self.sourced(message),
             Interface::Token => self.activate(message),
@@ -1343,6 +1385,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             Interface::TabletSeat if cfg!(feature = "touch") => self.tablets(message),
             Interface::Tablet if cfg!(feature = "touch") => self.tablet(message),
             Interface::TabletTool if cfg!(feature = "touch") => self.pen(message),
+            #[cfg(feature = "gpu")]
+            Interface::Dmabuf | Interface::DmabufFeedback | Interface::DmabufParams => self.heard_by_gpu(message),
             _ => {}
         }
     }
@@ -1393,6 +1437,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// A buffer released: its surface may draw into it.
     fn released(&mut self, id: u32) {
         let link = self.link.clone();
+        #[cfg(feature = "gpu")]
+        if self.released_by_gpu(id) {
+            return;
+        }
         for shown in &mut self.windows {
             let frames = shown.frame.iter_mut().map(|framed| &mut framed.sheet);
             if std::iter::once(&mut shown.sheet).chain(frames).any(|sheet| sheet.released(&link, id)) {
@@ -1430,7 +1478,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// `xdg_toplevel` events: configure (applied at `xdg_surface.configure`), close, and
     /// capabilities.
-    fn told(&mut self, mut message: Message) {
+    fn toplevel_event(&mut self, mut message: Message) {
         let Some(at) = self.windows.iter().position(|shown| shown.toplevel == message.object) else { return };
         match message.opcode {
             0 => {
@@ -1798,7 +1846,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// Data device events: an offer came (its types follow), the selection changed, or a drag
     /// entered, moved, left or dropped on a window, which a window takes once its app asked
     /// about drops (see `Drops`).
-    fn carrying(&mut self, mut message: Message) {
+    fn data_device_event(&mut self, mut message: Message) {
         let link = self.link.clone();
         match (message.opcode, DROPS.get()) {
             (0, _) => {
@@ -1811,11 +1859,11 @@ impl<App: FnMut(&mut Ui)> Host<App> {
                 let old = std::mem::replace(&mut link.clipboard.borrow_mut().selection, offer);
                 // The previous selection offer is destroyed, unless it is the same or is being
                 // dragged.
-                link.forget(if old != offer && old != self.carried.offer { old } else { 0 });
+                link.forget(if old != offer && old != self.drag_over.offer { old } else { 0 });
             }
             (1..=4, Some(drops)) => {
-                let taking = Taking { link: &self.link, ui: &mut self.ui, windows: &self.windows, carried: &mut self.carried, rerun: false };
-                self.rerun |= (drops.carried)(taking, message);
+                let taking = Taking { link: &self.link, ui: &mut self.ui, windows: &self.windows, drag_over: &mut self.drag_over, rerun: false };
+                self.rerun |= (drops.drag_event)(taking, message);
             }
             // Where no window accepts drops, a drag over one is refused as it comes.
             (1, None) => {
@@ -2095,7 +2143,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// Tells a window what the user did on it: its library title bar, or else its interface.
     fn tell(&mut self, at: usize, title_bar: bool, event: Event) {
         match title_bar {
-            true => self.strip_hears(at, event),
+            true => self.title_bar_event(at, event),
             false => self.hear(at, event),
         }
     }
@@ -2107,7 +2155,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// A window's title bar hears what the user did there and runs if needed; its buttons'
     /// requests are carried out.
-    fn strip_hears(&mut self, at: usize, event: Event) {
+    fn title_bar_event(&mut self, at: usize, event: Event) {
         let theme = within(&mut self.ui, self.windows[at].known, |ui| ui.theme).unwrap_or(self.ui.theme);
         let Some(framed) = self.windows[at].frame.as_mut() else { return };
         if !framed.title_bar.ui.event(event) {
@@ -2336,6 +2384,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         } else if come {
             self.forward(at);
         }
+        #[cfg(feature = "gpu")]
+        if at == 0 {
+            self.tell_renderer();
+        }
     }
 
     /// The session bus has messages, as under X: the portal and screen readers each take
@@ -2434,7 +2486,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 struct Drops {
     /// A data device drag event over a window: enter, leave, motion or drop. Says whether an
     /// interface must run.
-    carried: fn(Taking<'_>, Message) -> bool,
+    drag_event: fn(Taking<'_>, Message) -> bool,
 }
 
 /// After a run, what a Wayland window does for the app's desktop requests (see `x11::Desktop`,
@@ -2492,7 +2544,7 @@ fn stood(link: &Link, first: &mut Shown, ui: &mut Ui, session: &mut Session) -> 
 
 /// Hands the windows their drop handling, on this thread (see `Drops`).
 pub(crate) fn hand_drops() {
-    DROPS.set(Some(Drops { carried: |taking, message| taking.carried(message) }));
+    DROPS.set(Some(Drops { drag_event: |taking, message| taking.drag_event(message) }));
 }
 
 /// What taking in drops works with: the connection, the first window's interface (lending out
@@ -2501,14 +2553,14 @@ struct Taking<'a> {
     link: &'a Link,
     ui: &'a mut Ui,
     windows: &'a [Shown],
-    carried: &'a mut Carried,
+    drag_over: &'a mut DragOver,
     rerun: bool,
 }
 
 impl Taking<'_> {
     /// A data device drag event over a window: enter, leave, motion or drop. Says whether an
     /// interface must run.
-    fn carried(mut self, mut message: Message) -> bool {
+    fn drag_event(mut self, mut message: Message) -> bool {
         match message.opcode {
             1 => {
                 let (serial, surface, x, y, offer) = (message.uint(), message.uint(), message.fixed(), message.fixed(), message.uint());
@@ -2555,15 +2607,15 @@ impl Taking<'_> {
             link.wire.send(offer, 4, &[Arg::Uint(copies), Arg::Uint(copies)]);
         }
         let (Some(window), Some(kind)) = (window, kind) else { return link.forget(offer) };
-        *self.carried = Carried { offer, surface, at, kind };
+        *self.drag_over = DragOver { offer, surface, at, kind };
         self.hear(window, if kind == FILES { Event::FilesHovered(true) } else { Event::TextHovered(true) });
         self.hear(window, Event::Move(at));
     }
 
     /// The drag moved over the window: its interface hears where.
     fn moved(&mut self, at: Point) {
-        self.carried.at = at;
-        if let Some(window) = self.window_of(self.carried.surface).filter(|_| self.carried.offer != 0) {
+        self.drag_over.at = at;
+        if let Some(window) = self.window_of(self.drag_over.surface).filter(|_| self.drag_over.offer != 0) {
             self.hear(window, Event::Move(at));
         }
     }
@@ -2571,7 +2623,7 @@ impl Taking<'_> {
     /// The drag left the window: its interface hears it gone, and the pointer with it. The
     /// offer is destroyed.
     fn left(&mut self) {
-        let Carried { offer, surface, kind, .. } = std::mem::take(self.carried);
+        let DragOver { offer, surface, kind, .. } = std::mem::take(self.drag_over);
         if let Some(window) = self.window_of(surface).filter(|_| offer != 0) {
             self.hear(window, if kind == FILES { Event::FilesHovered(false) } else { Event::TextHovered(false) });
             self.hear(window, Event::Leave);
@@ -2582,7 +2634,7 @@ impl Taking<'_> {
     /// The drag was dropped over the window: it is read from the source, the window's interface
     /// gets it at the drop point, and the source hears it is finished.
     fn let_go(&mut self) {
-        let (link, Carried { offer, surface, at, kind }) = (self.link, std::mem::take(self.carried));
+        let (link, DragOver { offer, surface, at, kind }) = (self.link, std::mem::take(self.drag_over));
         let Some(window) = self.window_of(surface).filter(|_| offer != 0) else { return };
         let got = link.receive(offer, kind).unwrap_or_default();
         if link.has.data_version >= 3 {
@@ -3567,7 +3619,7 @@ mod tests {
     /// serves it until told to stop. It reports when its window shows (nothing), the pointer's
     /// position on it as it enters and moves, that it left (nothing), and when it is asked for
     /// data.
-    fn carrier(kind: &'static str, list: &'static str, shows: mpsc::Sender<Option<Point>>, asked: mpsc::Sender<()>, stop: Arc<AtomicBool>) {
+    fn drag_source_program(kind: &'static str, list: &'static str, shows: mpsc::Sender<Option<Point>>, asked: mpsc::Sender<()>, stop: Arc<AtomicBool>) {
         let wire = Wire::connect().unwrap();
         let registry = wire.make(Interface::Registry);
         wire.send(1, 1, &[Arg::Uint(registry)]);
@@ -3587,7 +3639,7 @@ mod tests {
         wire.send(compositor, 0, &[Arg::Uint(surface)]);
         wire.send(shell, 2, &[Arg::Uint(xdg), Arg::Uint(surface)]);
         wire.send(xdg, 1, &[Arg::Uint(toplevel)]);
-        wire.send(toplevel, 2, &[Arg::Text("taut carries")]);
+        wire.send(toplevel, 2, &[Arg::Text("taut drags")]);
         wire.send(surface, 6, &[]);
         let pointer = wire.make(Interface::Pointer);
         wire.send(seat, 0, &[Arg::Uint(pointer)]);
@@ -3672,16 +3724,16 @@ mod tests {
         Some((shown(window, false, describe)?, kept))
     }
 
-    /// Another program (see `carrier`) drags one `kind` over this window's left side and drops
-    /// it there: its window opens over this one's middle, is pressed there, and the pointer
-    /// moves over in steps. Returns whether that program was asked for its data. (Nothing
-    /// without test input.)
-    fn carried_over(host: &mut Windows, kind: &'static str, list: &'static str) -> Option<bool> {
+    /// Another program (see `drag_source_program`) drags one `kind` over this window's left
+    /// side and drops it there: its window opens over this one's middle, is pressed there, and
+    /// the pointer moves over in steps. Returns whether that program was asked for its data.
+    /// (Nothing without test input.)
+    fn drag_over_window(host: &mut Windows, kind: &'static str, list: &'static str) -> Option<bool> {
         let mut desk = hands()?;
         let corner = corner(host, &mut desk, 0).expect("the pointer comes over the window");
         let (stop, (says, shows), (asks, asked)) = (Arc::new(AtomicBool::new(false)), mpsc::channel(), mpsc::channel());
         let stopped = stop.clone();
-        let other = std::thread::spawn(move || carrier(kind, list, says, asks, stopped));
+        let other = std::thread::spawn(move || drag_source_program(kind, list, says, asks, stopped));
         assert_eq!(shows.recv_timeout(Duration::from_secs(10)), Ok(None), "the other program's window shows");
         lets(host, 300);
         // The other program reports where its window is, as this one does; the drop point is
@@ -3717,9 +3769,9 @@ mod tests {
     /// heard them over it, and gets the files in the list and nothing that is no file.
     #[test]
     #[ignore]
-    fn files_carried_from_another_program_are_let_go_on_a_box() {
+    fn files_dragged_from_another_program_are_dropped_on_a_box() {
         let Some(((_alone, mut host), kept)) = taker([true, false]) else { return eprintln!("no compositor: not tested") };
-        let Some(asked) = carried_over(&mut host, FILES, "# carried\r\nfile:///tmp/taut%20carried.txt\r\nhttps://example.org/no\r\n") else { return eprintln!("no fake input: not tested") };
+        let Some(asked) = drag_over_window(&mut host, FILES, "# carried\r\nfile:///tmp/taut%20carried.txt\r\nhttps://example.org/no\r\n") else { return eprintln!("no fake input: not tested") };
         assert!(asked && kept.borrow().over[0], "the box heard that files are over it, and the list was asked for");
         assert!(waits(&mut host, |_| !kept.borrow().files.is_empty()), "the files were let go");
         assert_eq!(kept.borrow().files, [PathBuf::from("/tmp/taut carried.txt")], "the file, and nothing that is no file");
@@ -3728,9 +3780,9 @@ mod tests {
     /// Text dragged from another program drops on a box whose app asks about text.
     #[test]
     #[ignore]
-    fn text_carried_from_another_program_is_let_go_on_a_box() {
+    fn text_dragged_from_another_program_is_dropped_on_a_box() {
         let Some(((_alone, mut host), kept)) = taker([false, true]) else { return eprintln!("no compositor: not tested") };
-        let Some(asked) = carried_over(&mut host, TEXT[0], "words, ünïcode 𝄞") else { return eprintln!("no fake input: not tested") };
+        let Some(asked) = drag_over_window(&mut host, TEXT[0], "words, ünïcode 𝄞") else { return eprintln!("no fake input: not tested") };
         assert!(asked && kept.borrow().over[1], "the box heard that text is over it, and the text was asked for");
         assert!(waits(&mut host, |_| kept.borrow().text.is_some()), "the text was let go");
         assert_eq!(kept.borrow().text.as_deref(), Some("words, ünïcode 𝄞"));
@@ -3741,10 +3793,10 @@ mod tests {
     /// program: the first request hands it over.)
     #[test]
     #[ignore]
-    fn a_window_whose_app_never_asks_takes_nothing_carried_in() {
+    fn a_window_whose_app_never_asks_takes_nothing_dragged_in() {
         let Some(((_alone, mut host), _)) = taker([false, false]) else { return eprintln!("no compositor: not tested") };
-        let Some(asked) = carried_over(&mut host, FILES, "file:///tmp/taut%20carried.txt\r\n") else { return eprintln!("no fake input: not tested") };
-        assert!(!asked, "the other program was never asked for what it carried");
+        let Some(asked) = drag_over_window(&mut host, FILES, "file:///tmp/taut%20carried.txt\r\n") else { return eprintln!("no fake input: not tested") };
+        assert!(!asked, "the other program was never asked for what it dragged");
         assert!(!host.ui.files_over && host.ui.files.is_empty() && DROPS.get().is_none(), "nothing of it reached the interface");
     }
 
@@ -3945,3 +3997,8 @@ mod tests {
 #[allow(dead_code, unused_attributes, unused_imports, clippy::all)]
 #[path = "../examples/gallery.rs"]
 mod gallery;
+
+// Windows shown through Vulkan (feature `gpu`): this host's half of what `gpu_x11` does for X.
+#[cfg(feature = "gpu")]
+#[path = "gpu_wayland.rs"]
+mod gpu_wayland;

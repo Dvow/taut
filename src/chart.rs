@@ -856,19 +856,19 @@ impl Ui {
     /// A position in words: its label, then each series with its value; for a pie, the slice's
     /// name, value and share; for a scatter, the dot's series and coordinates.
     fn chart_words(&self, chart: &Chart, frame: &Frame, lead: &Series, nth: usize, off: &[usize]) -> String {
-        let (months, small) = (&self.calendar_words.months, frame.up[2] / 10.0);
+        let (months, small) = (self.calendar_words_in_use().months, frame.up[2] / 10.0);
         if frame.way == Way::Pie {
             let name = chart.names.get(nth).map_or_else(|| (nth + 1).to_string(), |name| name.to_string());
             return format!("{name}: {}", slice_written(lead, nth, off));
         }
         if let Some((series, at)) = dot_of(chart, nth).filter(|_| frame.way == Way::Scatter) {
-            let across = frame.across_written(series.across(at, frame.ends), frame.across[2] / 10.0, months);
+            let across = frame.across_written(series.across(at, frame.ends), frame.across[2] / 10.0, &months);
             return format!("{}: {across}, {}", series.name, written(series.values[at], small)).trim_start_matches(": ").to_string();
         }
         let there = |series: &Series| frame.beside(series, lead, nth).map(|at| series.values[at]).filter(|value| value.is_finite());
         let row = |series: &Series| there(series).map(|value| format!("{} {}", series.name, written(value, small)).trim().to_string());
         let rows: Vec<String> = chart.series.iter().filter_map(row).collect();
-        format!("{}: {}", frame.named(chart, lead, nth, months), rows.join(", "))
+        format!("{}: {}", frame.named(chart, lead, nth, &months), rows.join(", "))
     }
 
     /// A chart's background: a faint gridline at each y tick, and the tick labels.
@@ -1011,7 +1011,7 @@ impl Ui {
     fn chart_bottom(&mut self, chart: &Chart, frame: &Frame) {
         let (t, plot, [from, to, step]) = (self.theme, frame.plot, frame.across);
         let lead = chart.lead();
-        let months = self.calendar_words.months;
+        let months = self.calendar_words_in_use().months;
         // In slots, a name under each slot with room; else a number (or time) at each tick.
         let slot = plot.w / frame.slots.max(1) as f32;
         let longest = (0..frame.slots).filter_map(|nth| lead.map(|lead| frame.named(chart, lead, nth, &months))).max_by_key(|name| name.len()).unwrap_or_default();
@@ -1033,7 +1033,7 @@ impl Ui {
     /// vertical line through the plot with a ring where it crosses each line (a ring around the
     /// dot), and beside it a tooltip with the position's label and each series' value.
     fn chart_reading(&mut self, chart: &Chart, frame: &Frame, lead: &Series, nth: usize, state: &Response, off: &[usize]) {
-        let (t, plot, months) = (self.theme, frame.plot, self.calendar_words.months);
+        let (t, plot, months) = (self.theme, frame.plot, self.calendar_words_in_use().months);
         let mut lines: Vec<(Color, String, String)> = Vec::new();
         let mut x = frame.x(lead, nth);
         let title = match frame.way {

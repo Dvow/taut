@@ -31,6 +31,10 @@ The demo (`examples/gallery.rs`; [Windows](windows.png), [Linux](linux.png)):
   private, 13.5 MB total.
 - Accepting files dropped from other programs costs about 3.5 MB on Windows, so a window only
   accepts them once its app asks.
+- Spell checking loads the system's checker the first time a checked box is typed in. On Ubuntu
+  (Enchant with Hunspell's en_US) that is about 10.7 MB more, 7.4 MB of it the program's own
+  (measured 2026-11-17 on the demo, which checks its text boxes since 0.2.1). Apps that never
+  call `ui.check_spelling` load nothing of it.
 
 A program contains only the parts it calls: icons, shadows, pictures, clipboard pictures and
 files, variable-font axes, drag out, SVG extras, PDF, printing, the tray and the system file
@@ -46,7 +50,9 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | `cff` | CFF and CFF2 fonts (most `.otf`) | not read | nothing; 17 KB | nothing; 17 KB |
 | `color-profiles` | colour profiles in picture files | colours as stored | nothing; 7 KB | nothing; 7 KB |
 | `woff2` | WOFF2 fonts (with a Brotli decoder) | not read | nothing; 95 KB | nothing; 99 KB |
-| `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | |
+| `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | 63 KB; 60 KB |
+| `gpu-draw` | the GPU draws them too ([below](#drawn-by-the-gpu)) | the CPU draws them | 124 KB; 143 KB more than `gpu` | 82 KB; 104 KB more than `gpu` |
+| `translations` | built-in words in German, Spanish, French, Japanese, Portuguese, Chinese | English until set | 24 KB; 22 KB | 37 KB; 36 KB |
 
 - Each cost is the feature alone, in `hello` and in the gallery (which reads fonts and
   pictures). `brahmic` adds 77 KB (Linux 86 KB) to `hello` with `right-to-left` already on.
@@ -97,6 +103,91 @@ Linux (Ubuntu in WSL, Xvfb, gallery, 1200×800; app CPU + X server CPU per frame
 
 - Xvfb has no DRI3, so Mesa sends every whole frame through X: that is why `Auto` keeps the CPU
   there. A real desktop with DRI3 was not measured.
+
+Linux under Wayland (GitHub's Ubuntu runner, Weston 14's GL renderer on llvmpipe, dmabufs from
+lavapipe: a software device, so its copies are CPU work too; 800×500, release build, medians of
+60 frames, three runs):
+
+| | Shared memory | Vulkan dmabufs |
+| --- | --- | --- |
+| One label changed: drawing | 5–10 µs | 33–92 µs |
+| All changed: drawing | 26–80 µs | 0.11–0.77 ms |
+| Shown (the compositor's frame callback) after | 16–25 ms | 16–25 ms |
+
+- Drawing: painting, and for dmabufs the copy into an image and its wait. Shown: Weston's repaint
+  cycle (16 ms on Xvfb, 25 ms headless), the same on both paths.
+- On a software device dmabufs only add work: `Auto` keeps shared memory. A hardware GPU was not
+  measured.
+
+## Drawn by the GPU
+
+With `gpu-draw` the GPU draws too. Windows 11, RTX 2080 Ti, 2026-11-17, the PC busy with other
+builds; a page of rounded, bordered cards with two labels each; each case a program of its own
+on a private desktop, 100 frames, best of 2. CPU per frame, µs (show: the GPU only shows; draw:
+it draws too):
+
+| | CPU (GDI) | Direct3D 11, show | Direct3D 11, draw | OpenGL, show | OpenGL, draw |
+| --- | --- | --- | --- | --- | --- |
+| 400×300, all changed | 576 | 838 | 635 | 1,003 | 820 |
+| 400×300, one label changed | 287 | 582 | 614 | 640 | 765 |
+| 1920×1080, all changed | 12,286 | 12,048 | 5,561 | 13,995 | 5,854 |
+| 1920×1080, list scrolled a row | 4,751 | 4,614 | 847 | 8,152 | 968 |
+| 1920×1080, a box moving | 549 | 831 | 788 | 984 | 1,002 |
+| 3840×2160, all changed | 66,844 | 67,917 | 47,897 | 65,807 (see below) | 50,382 |
+| 3840×2160, list scrolled a row | 11,991 | 12,411 | 947 | 26,826 | 1,119 |
+| 3840×2160, a box moving | 1,324 | 1,575 | 1,458 | 1,748 | 1,643 |
+| 3840×2160, one label changed | 1,198 | 1,477 | 1,418 | 1,709 | 1,569 |
+| Frame, 1920×1080 all changed | 33 ms | 33 ms | 17 ms | 28 ms | 21 ms |
+| Private memory, 1920×1080 | 2 MB | 100 MB | 101 MB | 105 MB | 198 MB |
+
+Direct3D 12 and Vulkan, the same page, 50 frames, one run, later that evening (the PC less
+busy: compare within this table):
+
+| | CPU (GDI) | Direct3D 11, draw | Direct3D 12, show | Direct3D 12, draw | Vulkan, show | Vulkan, draw |
+| --- | --- | --- | --- | --- | --- | --- |
+| 400×300, all changed | 459 | 545 | 894 | 812 | 1,003 | 1,005 |
+| 400×300, one label changed | 256 | 488 | 641 | 810 | 892 | 990 |
+| 1920×1080, all changed | 8,383 | 3,867 | 8,567 | 4,157 | 8,345 | 4,432 |
+| 1920×1080, list scrolled a row | 3,519 | 643 | 3,187 | 868 | 3,265 | 1,136 |
+| 3840×2160, all changed | 46,064 | 34,533 | 44,951 | 32,911 | 44,921 | 33,669 |
+| 3840×2160, list scrolled a row | 9,809 | 865 | 9,815 | 1,247 | 9,502 | 1,339 |
+| 3840×2160, one label changed | 937 | 1,144 | 1,465 | 1,372 | 1,612 | 1,522 |
+| Private memory, 1920×1080 | 2 MB | 104 MB | 150 MB | 155 MB | 193 MB | 195 MB |
+
+Gradients, filled shapes and strokes (cards of a gradient turning each frame, a filled wave and
+its outline), 30 frames, best of 2: before, the CPU drew them into patches; now the GPU's own
+math:
+
+| | CPU (GDI) | Direct3D 11, patches | Direct3D 11 | Direct3D 12 | Vulkan | OpenGL |
+| --- | --- | --- | --- | --- | --- | --- |
+| 400×300 | 1,026 | 1,236 | 551 | 882 | 1,050 | 1,200 |
+| 1920×1080 | 21,082 | 21,691 | 1,566 | 2,332 | 1,896 | 2,847 |
+| 3840×2160 | 99,161 | 149,094 | 4,504 | 7,306 | 4,357 | 5,927 |
+| Frame, 3840×2160 | 110 ms | 159 ms | 16 ms | 20 ms | 16 ms | 18 ms |
+
+- Where the CPU fills or blends many pixels (large windows, scrolling), drawing on the GPU takes
+  a fifth to a twelfth of the CPU time; with gradients and shapes, 13 to 22 times less.
+  For small changes it costs what showing costs: a present.
+- `Auto` therefore draws parts of 65,536 pixels or more (256×256) on the GPU, smaller ones on the
+  CPU: below that both cost about a present.
+- 4K, all changed: the cards' colours change every frame, so each label's run is drawn by GDI
+  again on its new colour; that is most of the 33–48 ms.
+- Direct3D 12 and Vulkan wait for each part they draw before the next; Direct3D 11 does not.
+- A shape is drawn in bands of 16 rows, each pixel visiting the edges of its band; one with
+  more than 256 edges in a band stays on the CPU. Blur (SVG filters only) stays on the CPU: a
+  drawing is drawn once and kept, so the GPU would gain nothing a frame.
+- First frames are the CPU's, as when showing. Direct3D 11 and 12 compile their HLSL on the
+  device's thread; Vulkan's SPIR-V is shipped (made there on Windows, at the first drawn frame
+  under X11); OpenGL compiles at the first drawn frame.
+- Memory: two 2048×2048 textures (glyphs and runs kept; this frame's patches, stops and edges),
+  on the GPU.
+- Within 3 levels of 255 of the CPU in tests (WARP, SwiftShader, llvmpipe, lavapipe, the RTX):
+  rounding of blends at edges and see-through fills. The gallery's walk: within 4 levels under
+  X11 (OpenGL, Vulkan); on Windows within 13 (Direct3D 11 and 12, Vulkan), on GDI's text off one
+  solid colour.
+- The first measurements of OpenGL showing at 4K timed out: the PC was so busy that the device
+  took up to 16 s and a frame up to 0.37 s, past the tool's 40 s. Run again, 4K takes 66 ms a
+  frame; the tool now measures at most 20 s once the device came.
 
 ## How fast it is
 

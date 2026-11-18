@@ -131,15 +131,26 @@ pub(crate) enum Interface {
     TabletSeat,
     Tablet,
     TabletTool,
+    /// `zwp_linux_dmabuf_v1`, its feedback, and a buffer's parameters (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    Dmabuf,
+    #[cfg(feature = "gpu")]
+    DmabufFeedback,
+    #[cfg(feature = "gpu")]
+    DmabufParams,
     /// (KWin's, through which tests move the pointer and press keys.)
     #[cfg(test)]
     FakeInput,
 }
 
 impl Interface {
-    /// Whether a compositor event to such an object carries an fd: the keymap (0), and a pipe
-    /// end to write a selection into (1).
+    /// Whether a compositor event to such an object carries an fd: the keymap (0), a pipe end
+    /// to write a selection into (1), and the table of dmabuf formats (1).
     fn takes_file(self, message: u16) -> bool {
+        #[cfg(feature = "gpu")]
+        if (self, message) == (Interface::DmabufFeedback, 1) {
+            return true;
+        }
         matches!((self, message), (Interface::Keyboard, 0) | (Interface::DataSource, 1))
     }
 }
@@ -157,6 +168,9 @@ pub(crate) enum Arg<'a> {
     Object(u32),
     /// An fd, sent as ancillary data.
     File(RawFd),
+    /// An array, as bytes.
+    #[cfg(all(test, feature = "gpu"))]
+    Bytes(&'a [u8]),
 }
 
 /// A compositor event to one of the program's objects, with its arguments to read in order.
@@ -334,6 +348,8 @@ impl Wire {
                 Arg::Nothing => message.extend_from_slice(&[0; 4]),
                 Arg::Text(text) => written(&mut message, &[text.as_bytes(), &[0]].concat()),
                 Arg::File(fd) => file = Some(*fd),
+                #[cfg(all(test, feature = "gpu"))]
+                Arg::Bytes(bytes) => written(&mut message, bytes),
             }
         }
         // (Compositors reject longer messages and disconnect the client; and the size field is

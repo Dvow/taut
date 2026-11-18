@@ -197,7 +197,7 @@ impl Ui {
     /// `beyond`), in a note over what is under it that takes no clicks; screen readers hear it
     /// when `just` typed.
     fn refuse(&mut self, of: &Response, refused: Refused, beyond: &str, just: bool) {
-        let (t, words, locale) = (self.theme, self.number_words, self.locale_in_use());
+        let (t, words, locale) = (self.theme, self.number_words, self.formats());
         let mut said = String::from(words[refused as usize]);
         if !beyond.is_empty() {
             said.push(' ');

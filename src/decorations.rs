@@ -57,19 +57,19 @@ pub(crate) enum Asked {
 
 /// One window's title bar and its state: title, maximized, and focused (the title is fainter
 /// when not).
-pub(crate) struct Strip {
+pub(crate) struct TitleBar {
     pub(crate) ui: Ui,
     pub(crate) title: String,
     pub(crate) filling: bool,
     pub(crate) active: bool,
 }
 
-impl Strip {
+impl TitleBar {
     /// A bar that writes with `text`.
     pub(crate) fn new(text: Box<dyn TextSystem>) -> Self {
         let mut ui = Ui::new(text, Box::new(LocalClipboard::default()));
         ui.shows.icon = Some(drawn);
-        Strip { ui, title: String::new(), filling: false, active: true }
+        TitleBar { ui, title: String::new(), filling: false, active: true }
     }
 
     /// Runs the bar in the window's theme; returns the button pressed, if any.
@@ -120,36 +120,36 @@ mod tests {
     use crate::text::BuiltInFont;
 
     /// A bar 400 units wide, laid out once.
-    fn strip() -> Strip {
-        let mut strip = Strip::new(Box::new(BuiltInFont));
-        strip.title = "Notes".into();
-        strip.ui.resize(Size { w: 400.0, h: HIGH as f32 }, 1.0);
-        strip.run(Theme::dark());
-        strip.run(Theme::dark());
-        strip
+    fn title_bar() -> TitleBar {
+        let mut bar = TitleBar::new(Box::new(BuiltInFont));
+        bar.title = "Notes".into();
+        bar.ui.resize(Size { w: 400.0, h: HIGH as f32 }, 1.0);
+        bar.run(Theme::dark());
+        bar.run(Theme::dark());
+        bar
     }
 
     /// Clicks the bar at `x`; returns what that asked.
-    fn click(strip: &mut Strip, x: f32) -> Option<Asked> {
+    fn click(bar: &mut TitleBar, x: f32) -> Option<Asked> {
         let mut asked = None;
         for event in [Event::Move(pt(x, 17.0)), Event::Press(Button::Left, Mods::NONE), Event::Release(Button::Left)] {
-            strip.ui.event(event);
-            asked = asked.or(strip.run(Theme::dark()));
+            bar.ui.event(event);
+            asked = asked.or(bar.run(Theme::dark()));
         }
         asked
     }
 
     #[test]
     fn the_strip_is_taken_hold_of_where_its_buttons_are_not() {
-        let strip = strip();
-        assert_eq!(strip.ui.hit_test(pt(100.0, 17.0), false), HitTest::TitleBar, "beside the title: the window moves");
-        assert_eq!(strip.ui.hit_test(pt(20.0, 17.0), false), HitTest::TitleBar, "on the title too");
-        assert_eq!(strip.ui.hit_test(pt(400.0 - BUTTON / 2.0, 17.0), false), HitTest::Client, "a button is pressed as ever");
-        assert_eq!(strip.ui.hit_test(pt(200.0, 2.0), true), HitTest::Edge(0, -1), "its top edge sizes the window");
+        let bar = title_bar();
+        assert_eq!(bar.ui.hit_test(pt(100.0, 17.0), false), HitTest::TitleBar, "beside the title: the window moves");
+        assert_eq!(bar.ui.hit_test(pt(20.0, 17.0), false), HitTest::TitleBar, "on the title too");
+        assert_eq!(bar.ui.hit_test(pt(400.0 - BUTTON / 2.0, 17.0), false), HitTest::Client, "a button is pressed as ever");
+        assert_eq!(bar.ui.hit_test(pt(200.0, 2.0), true), HitTest::Edge(0, -1), "its top edge sizes the window");
     }
 
     /// The icons match their paths drawn as icons, pixel for pixel, at every size, without the
-    /// bar carrying the path reader.
+    /// bar compiling in the path reader.
     #[test]
     fn the_buttons_shapes_are_their_paths_drawn_as_icons_are() {
         for icon in [MINIMIZE, FILL, BACK, CLOSE] {
@@ -158,16 +158,16 @@ mod tests {
                 assert_eq!(drawn(icon, px).cover, crate::paint::draw_mask(icon, px).cover, "{} at {px} pixels", icon.path);
             }
         }
-        assert!(strip().ui.shows.icon.is_some_and(|draws| std::ptr::fn_addr_eq(draws, drawn as fn(Icon, usize) -> Mask)));
+        assert!(title_bar().ui.shows.icon.is_some_and(|draws| std::ptr::fn_addr_eq(draws, drawn as fn(Icon, usize) -> Mask)));
     }
 
     #[test]
     fn each_button_asks_for_its_own() {
-        let mut strip = strip();
+        let mut bar = title_bar();
         let middle = |nth: f32| 400.0 - BUTTON * (3.0 - nth) + BUTTON / 2.0;
-        assert_eq!(click(&mut strip, middle(0.0)), Some(Asked::Minimize));
-        assert_eq!(click(&mut strip, middle(1.0)), Some(Asked::Fill));
-        assert_eq!(click(&mut strip, middle(2.0)), Some(Asked::Close));
-        assert_eq!(click(&mut strip, 100.0), None, "the strip itself is no button");
+        assert_eq!(click(&mut bar, middle(0.0)), Some(Asked::Minimize));
+        assert_eq!(click(&mut bar, middle(1.0)), Some(Asked::Fill));
+        assert_eq!(click(&mut bar, middle(2.0)), Some(Asked::Close));
+        assert_eq!(click(&mut bar, 100.0), None, "the bar itself is no button");
     }
 }

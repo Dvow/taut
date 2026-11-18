@@ -104,7 +104,7 @@ impl Ui {
         self.window_placement().is_some_and(|place| place.maximized)
     }
     /// Makes the window full screen (no frame, nothing of the system's beside it), or restores
-    /// it. (`placed` still says where it goes back to.)
+    /// it. ([`window_placement`](Self::window_placement) still says where it goes back to.)
     pub fn set_full_screen(&mut self, on: bool) {
         self.window_state.request_full_screen = Some(on);
     }

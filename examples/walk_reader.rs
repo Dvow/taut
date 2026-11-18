@@ -335,13 +335,15 @@ mod reader {
         c"window:destroy",
     ];
 
-    /// How many of the things that were checked did not hold.
+    /// How many things were checked, and how many of them did not hold.
+    static CHECKS: AtomicUsize = AtomicUsize::new(0);
     static FAILED: AtomicUsize = AtomicUsize::new(0);
 
-    /// Says whether one thing held, and keeps count of what did not.
+    /// Says whether one thing held, and keeps count.
     fn check(what: &str, fine: bool, more: &str) -> bool {
         let more = if fine || more.is_empty() { String::new() } else { format!("   [{more}]") };
         println!("{}{what}{more}", if fine { "ok   " } else { "FAIL " });
+        CHECKS.fetch_add(1, Ordering::Relaxed);
         FAILED.fetch_add(!fine as usize, Ordering::Relaxed);
         fine
     }
@@ -1376,8 +1378,8 @@ mod reader {
             eprintln!("libatspi could not get an answer: {what}");
             return ExitCode::FAILURE;
         }
-        let failed = FAILED.load(Ordering::Relaxed);
-        println!("{}", if failed == 0 { "everything held".to_string() } else { format!("{failed} failed") });
+        let (failed, checked) = (FAILED.load(Ordering::Relaxed), CHECKS.load(Ordering::Relaxed));
+        println!("{} ({checked} checks)", if failed == 0 { "everything held".to_string() } else { format!("{failed} failed") });
         if failed == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE }
     }
 }

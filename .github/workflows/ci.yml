@@ -1,4 +1,4 @@
-# Every push and pull request: the checks the owner runs, on Windows and Ubuntu, plus the
+# Every push and pull request: the checks the owner runs, on Windows, Ubuntu and macOS, plus the
 # oldest Rust taut supports, the docs as docs.rs builds them, and the package.
 name: CI
 
@@ -39,6 +39,9 @@ jobs:
       - name: Clippy, no features
         if: ${{ !cancelled() }}
         run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy, gpu without gpu-draw
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --features gpu -- -D warnings
       - name: The DLL tests/dll.rs loads
         if: ${{ !cancelled() }}
         run: cargo build --example overlay
@@ -74,6 +77,9 @@ jobs:
       - name: Clippy, no features
         if: ${{ !cancelled() }}
         run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy, gpu without gpu-draw
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --features gpu -- -D warnings
       - name: Tests, all features
         if: ${{ !cancelled() }}
         run: cargo test --all-features --no-fail-fast -- --test-threads=4
@@ -104,11 +110,92 @@ jobs:
           export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
           xvfb-run -n 192 -s "-screen 0 900x600x24" target/release/examples/walk "$RUNNER_TEMP/shots"
 
+  # Windows under Wayland shown through dmabufs: the runner has /dev/udmabuf, lavapipe exports
+  # into it, and Weston (GL) takes them; pixman Weston proves the fallback to shared memory.
+  wayland-dmabufs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # The tests fail where no device exports dmabufs, rather than fall back.
+      TAUT_DMABUF_EXPORTS: 1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Weston, lavapipe, Xvfb; and /dev/udmabuf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends weston xvfb xauth dbus \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 \
+            libx11-6 libx11-dev libxtst6 libxi6 libxkbcommon0 libfontconfig1 libfreetype6 fonts-dejavu-core
+          uname -r
+          ls -l /dev/udmabuf
+          sudo chmod 666 /dev/udmabuf
+          weston --version
+          vulkaninfo --summary 2>&1 | grep -E "deviceName|driverInfo"
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
+      - name: Build the tests
+        run: cargo test --lib --all-features --no-run
+      - name: Probe (step 1)
+        run: bash .github/waylandgpu/probe.sh
+      - name: Tests with a played compositor
+        run: cargo test --lib --all-features gpu_wayland -- --nocapture
+      - name: GL Weston on Xvfb (dmabufs, the screen read)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-x11-gl 31 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: GL Weston headless (dmabufs)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-gl 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: Pixman Weston (no dmabufs; shared memory)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: Pixman Weston on Xvfb (shared memory, the screen read)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-x11 32 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V && sw_vers
+      - uses: actions/cache@v6
+        with:
+          path: target
+          key: macos-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
+      - name: Clippy, all features
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy, no features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy, gpu without gpu-draw
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --features gpu -- -D warnings
+      - name: Window checks (real windows on the runner's screen, which is nobody's)
+        if: ${{ !cancelled() }}
+        run: TAUT_SHOTS="$RUNNER_TEMP/shots" cargo test --test macos
+      - name: Window checks, all features
+        if: ${{ !cancelled() }}
+        run: TAUT_SHOTS="$RUNNER_TEMP/shots/all-features" cargo test --all-features --test macos
+      - name: Library tests, all features
+        if: ${{ !cancelled() }}
+        run: cargo test --lib --all-features --no-fail-fast
+      - name: Library tests, no features
+        if: ${{ !cancelled() }}
+        run: cargo test --lib --no-fail-fast
+      - name: Pictures of the windows
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-pictures
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: warn
+
   msrv:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -129,12 +216,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Nightly, as docs.rs
-        run: rustup toolchain install nightly --profile minimal -t x86_64-pc-windows-msvc && rustc +nightly -V
+        run: rustup toolchain install nightly --profile minimal -t x86_64-pc-windows-msvc -t aarch64-apple-darwin && rustc +nightly -V
       - name: Docs for Linux
         run: cargo +nightly doc --all-features --no-deps --target x86_64-unknown-linux-gnu
       - name: Docs for Windows
         if: ${{ !cancelled() }}
         run: cargo +nightly doc --all-features --no-deps --target x86_64-pc-windows-msvc
+      - name: Docs for macOS
+        if: ${{ !cancelled() }}
+        run: cargo +nightly doc --all-features --no-deps --target aarch64-apple-darwin
 
   package:
     runs-on: ubuntu-latest

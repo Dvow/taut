@@ -197,8 +197,9 @@ fn ahead(_at: i64) -> i64 {
     0
 }
 
-/// Calendar and clock words: English until the app sets its own in `ui.calendar_words`. (Date
-/// and time formats and the week's first day come from the system: see
+/// Calendar and clock words: English until the app sets its own in `ui.calendar_words`, but for
+/// month and day names and AM/PM, which are the system's while `ui.locale` is `None`
+/// ([`CalendarWords::of_the_system`]). (Date and time formats and the week's first day: see
 /// [`ui.locale`](Ui::locale).)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CalendarWords {
@@ -242,7 +243,7 @@ impl Ui {
     pub fn date(&mut self, date: &mut Date) -> Response {
         let mut written = std::mem::take(&mut self.scratch);
         written.clear();
-        self.locale_in_use().write_date(&mut written, *date);
+        self.formats().write_date(&mut written, *date);
         let mut state = self.opens_calendar(&written);
         self.scratch = written;
         if let Some(day) = self.calendar(state.id, [*date; 2]) {
@@ -257,7 +258,7 @@ impl Ui {
     /// up to the day under the pointer or focus, and nothing changes. `changed` is set when a
     /// range is picked.
     pub fn date_range(&mut self, from: &mut Date, to: &mut Date) -> Response {
-        let (mut written, locale) = (std::mem::take(&mut self.scratch), self.locale_in_use());
+        let (mut written, locale) = (std::mem::take(&mut self.scratch), self.formats());
         written.clear();
         locale.write_date(&mut written, *from);
         written.push_str(" \u{2013} ");
@@ -327,7 +328,7 @@ impl Ui {
     /// The calendar's top row: the previous-month arrow, the month and year, the next-month
     /// arrow. Returns the first day of the month shown, after the arrows.
     fn calendar_month_row(&mut self) -> Date {
-        let (t, words, (year, month)) = (self.theme, self.calendar_words, self.calendar_open.month);
+        let (t, words, (year, month)) = (self.theme, self.calendar_words_in_use(), self.calendar_open.month);
         self.row().gap(6.0).open();
         let back = self.button_like(Before::Icon(LEFT), "", None, false);
         self.tell(&back, Role::Button, None, words.arrows[0]);
@@ -348,7 +349,7 @@ impl Ui {
     /// The weekday names, from the user's first weekday; then blanks for the weekdays before
     /// the 1st of `first`'s month.
     fn calendar_weekdays(&mut self, first: Date, size: [f32; 2]) {
-        let (t, words, first_day) = (self.theme, self.calendar_words, self.locale_in_use().first_weekday);
+        let (t, words, first_day) = (self.theme, self.calendar_words_in_use(), self.locale_in_use().first_weekday);
         let heading = 18f32.max(self.text.metrics(t.small_font, self.scale).height().ceil() + 2.0);
         for day in 0..7 {
             self.el().size(size[0], heading).text(words.days[(day + first_day as usize) % 7], t.small_font, t.text_faint).text_align(Align::Center).show();
@@ -439,7 +440,7 @@ impl Ui {
         let cell = self.el().key(day.days()).size(wide, high).text(NUMBERS[day.day as usize - 1], t.font, ink).text_align(Align::Center);
         cell.fill(fill).border(edge, 1.0).radius(5.0).sense().focusable().show();
         if self.listening {
-            let name = format!("{} {} {}", day.day, self.calendar_words.months[day.month as usize - 1], day.year);
+            let name = format!("{} {} {}", day.day, self.calendar_words_in_use().months[day.month as usize - 1], day.year);
             self.tell(&state, Role::Row, Some(ends || within), &name);
             self.tell_position(day.day as usize, day.month_length() as usize);
         }

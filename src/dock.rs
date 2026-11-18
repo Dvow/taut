@@ -373,7 +373,7 @@ impl Ui {
             None => dock.lay(whole, &mut tabs, &mut bars),
         }
         dock.maximized = dock.maximized.take().filter(|_| filled.is_some());
-        let area = self.seen(id);
+        let area = self.visible_rect(id);
         self.dock_keys(dock, &tabs, area);
         for (place, bar, long) in bars.iter().copied() {
             self.dock_bar(dock, place, bar, long);
@@ -392,7 +392,7 @@ impl Ui {
     /// place (Shift: previous; from outside any dock, the first place of the first); Ctrl+F4
     /// closes the focused panel if allowed.
     fn dock_keys(&mut self, dock: &mut Dock, tabs: &[(usize, Rect)], area: Rect) {
-        let on = self.seen(self.focus());
+        let on = self.visible_rect(self.focus());
         let middle = pt(on.x + on.w / 2.0, on.y + on.h / 2.0);
         let here = tabs.iter().position(|(_, room)| !on.is_empty() && room.moved(area.x, area.y).contains(middle));
         let (ahead, back) = (Mods::CTRL, Mods { ctrl: true, shift: true, alt: false });
@@ -517,7 +517,7 @@ impl Ui {
     fn dock_tab(&mut self, name: &str, front: bool, beside: [Option<&str>; 2], strip: Rect) -> Done {
         let (t, closable) = (self.theme, self.frame.closable[0].contains(&hash(name)));
         let middle = |of: Rect| if of.is_empty() { f32::NAN } else { of.x + of.w / 2.0 };
-        let [before, after] = beside.map(|other| other.map_or(f32::NAN, |other| middle(self.seen(self.id(other)))));
+        let [before, after] = beside.map(|other| other.map_or(f32::NAN, |other| middle(self.visible_rect(self.id(other)))));
         // The tab and its close button are one box in the strip, keyed by the panel's name,
         // that senses the pointer so neighbouring tabs know where it is. In a strip too narrow
         // for all its tabs, each shrinks, its name ending in "…".
@@ -528,9 +528,9 @@ impl Ui {
         }
         // Dragged a little with the button down: along the strip it passes its neighbours, off
         // the strip it drags its panel.
-        let (at, carrying) = (self.pointer().unwrap_or_default(), self.dragged_panel == name);
+        let (at, dragging) = (self.pointer().unwrap_or_default(), self.dragged_panel == name);
         let held = self.drag_delta(&tab, [0.0; 4]).is_some_and(|(gone, _)| gone.x.abs().max(gone.y.abs()) > 4.0);
-        let along = held && !carrying && strip.grow(STRAY).contains(at);
+        let along = held && !dragging && strip.grow(STRAY).contains(at);
         if held && !along {
             self.dragged_panel.clear();
             self.dragged_panel.push_str(name);
@@ -680,7 +680,7 @@ impl Ui {
         if self.dragged_panel.is_empty() {
             return;
         }
-        let (name, area) = (std::mem::take(&mut self.dragged_panel), self.seen(id));
+        let (name, area) = (std::mem::take(&mut self.dragged_panel), self.visible_rect(id));
         let at = self.pointer().unwrap_or(Point { x: -1.0, y: -1.0 });
         // The place under the pointer, in window coordinates, and its target under it.
         let under = self.docks.iter().map(|(place, room)| (*place, room.moved(area.x, area.y))).find(|(_, room)| room.contains(at));
