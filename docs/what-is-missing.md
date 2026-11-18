@@ -8,7 +8,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   arm64, on a GitHub runner). No iOS or Android; iOS and web builds stop with an error. Android
   untried.
 - macOS: the CPU draws and Core Animation shows; `Renderer` and `gpu` change nothing there. No
-  `layer_opengl` or `layer_vulkan` tests; no Metal layer.
+  `layer_opengl` or `layer_vulkan` tests; `layer_metal` is tested on its own, not in
+  `tests/renderers.rs`.
 - macOS: what an input method composes shows in a small panel at the text cursor, over the box,
   not laid into its text. A text range's place is its box's, as on Windows.
 - macOS: system notifications only for an app bundle (the notification centre serves no bare

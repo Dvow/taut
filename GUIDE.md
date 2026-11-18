@@ -1210,8 +1210,8 @@ if rerun {
 ```
 
 - `surface.upload(place)` gives a changed place as texture uploads take it (`x`, `y`, `width`,
-  `height`, `bytes`, `bytes_per_row`). Layers do it all for Direct3D 9, 11 and 12, OpenGL and
-  Vulkan (`layer_d3d9` .. `layer_vulkan`, chapter 9).
+  `height`, `bytes`, `bytes_per_row`). Layers do it all for Direct3D 9, 11 and 12, OpenGL,
+  Vulkan and Metal (`layer_d3d9` .. `layer_metal`, chapter 9).
 - Set the time before each run (`ui.set_time(clock)`, any monotonic clock) and run again when
   `ui.wake_in()` is due: double clicks, tooltips, blinking, notices and glides need it.
 - `Ui::new(platform::system_text(), ..)` uses system fonts on any surface. On Windows

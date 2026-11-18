@@ -100,6 +100,7 @@ changed ([chapter 9](docs/09-inside-another-program.md)):
 | Direct3D 12 | `layer_d3d12` | `layer.draw(&mut ui, list, area)` |
 | OpenGL 3.3+ | `layer_opengl` | `layer.draw(&mut ui)` |
 | Vulkan 1.0+ | `layer_vulkan` | `layer.draw(&mut ui, commands, area)` |
+| Metal (macOS) | `layer_metal` | `layer.draw(&mut ui, encoder, area)` |
 | wgpu, bgfx, Skia, any other | `Surface::upload` | your `write_texture` of each changed place |
 
 ## Beside other Rust libraries

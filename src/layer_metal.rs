@@ -372,10 +372,11 @@ mod tests {
         for round in 0..2 {
             let target = drawn(&mut layer, &mut ui, device, queue, size, area);
             let pixels = &layer.surface().pixels;
-            // Inside the area, the UI over grey; outside it (and past the area's width), grey.
+            // Where the area and the UI meet, the UI over grey (the UI is cut at the area's right
+            // edge, the area lower than the UI); elsewhere, grey.
             for (at, got) in target.iter().enumerate() {
                 let (x, y) = (at % size[0], at / size[0]);
-                let inside = x >= area[0] && y >= area[1] && x < area[0] + area[2] && y < area[1] + area[3];
+                let inside = x >= area[0] && y >= area[1] && x < area[0] + area[2].min(120) && y < area[1] + area[3].min(60);
                 let want = if inside { over(pixels[(y - area[1]) * 120 + x - area[0]], grey) } else { grey };
                 let near = (0..4).all(|part| (got >> (part * 8) & 255).abs_diff(want >> (part * 8) & 255) <= 1);
                 assert!(near, "round {round}: at {x}, {y} the target has {got:08x}, not {want:08x}");

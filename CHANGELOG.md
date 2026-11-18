@@ -29,7 +29,8 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   screens, locale; screen readers through NSAccessibility (text ranges, tables and trees too);
   tray icon, global hotkeys, single instance; notifications for app bundles; spell checking
   (`NSSpellChecker`); dragging out to other programs; what an input method composes shown at
-  the cursor; `emoji` from Apple Color Emoji. Gaps: [what is missing](docs/what-is-missing.md).
+  the cursor; `emoji` from Apple Color Emoji; `layer_metal`, the UI over a program's Metal
+  rendering. Gaps: [what is missing](docs/what-is-missing.md).
 
 ## 0.2.0 (2026-11-17)
 
