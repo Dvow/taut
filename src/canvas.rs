@@ -39,6 +39,9 @@ pub struct Canvas<'a> {
     /// Reused by every fill and stroke.
     cover: Vec<f32>,
     cells: Vec<u8>,
+    /// Where drawing is recorded for the GPU instead (see `gpu_draw`).
+    #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+    list: Option<&'a mut crate::gpu_draw::DrawList>,
 }
 
 impl std::fmt::Debug for Canvas<'_> {
@@ -57,9 +60,37 @@ impl<'a> Canvas<'a> {
     pub fn new(pixels: &'a mut [u32], width: usize, height: usize, origin: (i32, i32), scale: f32) -> Self {
         assert!(pixels.len() >= width * height, "the block is smaller than it says");
         let (width, height) = (width as i32, height as i32);
-        let mut canvas = Canvas { pixels, width, height, origin, scale, clip: [0; 4], visible: Rect::EMPTY, cover: Vec::new(), cells: Vec::new() };
+        let mut canvas = Canvas {
+            pixels,
+            width,
+            height,
+            origin,
+            scale,
+            clip: [0; 4],
+            visible: Rect::EMPTY,
+            cover: Vec::new(),
+            cells: Vec::new(),
+            #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+            list: None,
+        };
         canvas.restore_clip([origin.0, origin.1, origin.0 + width, origin.1 + height]);
         canvas
+    }
+    /// A canvas recording into `list` what is drawn on it, for the GPU: `width` by `height`
+    /// pixels at `origin` in the window. It has no pixels of its own.
+    #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+    #[inline]
+    pub(crate) fn recording(list: &'a mut crate::gpu_draw::DrawList, width: usize, height: usize, origin: (i32, i32), scale: f32) -> Self {
+        let mut canvas = Canvas::new(&mut [], 0, 0, origin, scale);
+        (canvas.width, canvas.height, canvas.list) = (width as i32, height as i32, Some(list));
+        canvas.restore_clip([origin.0, origin.1, origin.0 + width as i32, origin.1 + height as i32]);
+        canvas
+    }
+    /// What drawing is recorded into for the GPU, if it is.
+    #[cfg(all(windows, feature = "gpu-draw"))]
+    #[inline]
+    pub(crate) fn list(&mut self) -> Option<&mut crate::gpu_draw::DrawList> {
+        self.list.as_deref_mut()
     }
     /// Pixels per unit.
     pub fn scale(&self) -> f32 {
@@ -113,6 +144,11 @@ impl<'a> Canvas<'a> {
     /// translucent box covers (see [`El::opacity`](crate::El::opacity)). Returns their window
     /// pixel rect, for `let_through`.
     pub(crate) fn keep_under(&mut self, area: Rect, kept: &mut Vec<u32>) -> [i32; 4] {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            list.failed = true;
+            return [0; 4];
+        }
         let (s, [cx0, cy0, cx1, cy1]) = (self.scale, self.clip);
         // One pixel more all round: an edge covering half a pixel is included.
         let part = [whole(area.x * s - 1.0).max(cx0), whole(area.y * s - 1.0).max(cy0), whole(area.right() * s + 1.0).min(cx1), whole(area.bottom() * s + 1.0).min(cy1)];
@@ -125,6 +161,10 @@ impl<'a> Canvas<'a> {
     /// Blends the pixels `keep_under` last saved (the end of `kept`) back through what was
     /// drawn over them since, by `fade` (0 none, 255 fully), and removes them from `kept`.
     pub(crate) fn let_through(&mut self, [left, top, right, bottom]: [i32; 4], kept: &mut Vec<u32>, fade: u8) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if self.list.is_some() {
+            return;
+        }
         let wide = if left < right && top < bottom { (right - left) as usize } else { return };
         let from = kept.len().saturating_sub(wide * (bottom - top) as usize);
         for (y, under) in (top..bottom).zip(kept[from..].chunks_exact(wide)) {
@@ -143,10 +183,18 @@ impl<'a> Canvas<'a> {
 
     /// Fills the whole buffer.
     pub fn clear(&mut self, color: Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.failed = true;
+        }
         spread(self.pixels, color.over(0, 255));
     }
     /// Clears the clip rect to transparent.
     pub fn erase(&mut self) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.failed = true;
+        }
         let [left, top, right, bottom] = self.clip;
         for y in top..bottom.max(top) {
             spread(self.row(y, left, right.max(left)), 0);
@@ -156,6 +204,10 @@ impl<'a> Canvas<'a> {
     /// A square-cornered rectangle. Its edges snap to whole pixels, so it is crisp. (Most of
     /// what is drawn is this, so it takes the short path: whole rows of pixels.)
     pub fn rect(&mut self, r: Rect, color: Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.rect(r, color, self.scale, self.clip);
+        }
         let (s, [cx0, cy0, cx1, cy1]) = (self.scale, self.clip);
         let (left, top) = (((r.x * s).round() as i32).max(cx0), ((r.y * s).round() as i32).max(cy0));
         let (right, bottom) = (((r.right() * s).round() as i32).min(cx1), ((r.bottom() * s).round() as i32).min(cy1));
@@ -189,6 +241,10 @@ impl<'a> Canvas<'a> {
     /// A soft drop shadow around a rounded rectangle: darkest at its edge, gone at `reach`, and
     /// offset slightly down.
     pub fn shadow(&mut self, r: Rect, radius: f32, reach: f32, color: Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.shadow(r, radius, reach, color, self.scale, self.clip);
+        }
         if color.is_none() || r.is_empty() || reach <= 0.0 {
             return;
         }
@@ -220,6 +276,10 @@ impl<'a> Canvas<'a> {
 
     /// A rounded rectangle, of which only the outer `thick` is drawn (all of it for infinity).
     fn ring(&mut self, r: Rect, radius: f32, thick: f32, color: Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.ring(r, radius, thick, color, self.scale, self.clip);
+        }
         if color.is_none() || r.is_empty() {
             return;
         }
@@ -297,6 +357,11 @@ impl<'a> Canvas<'a> {
     /// straight up (90 left to right, 180 top to bottom); or, with no `turn`, radially from the
     /// centre to the edges. The first and last colours are exactly the end pixels.
     pub fn gradient(&mut self, r: Rect, radius: f32, colors: &[(f32, Color)], turn: Option<f32>) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            let area = [r.x, r.y, r.right(), r.bottom()].map(|side| whole(side * self.scale));
+            return list.patch(area, self.clip, self.scale, |canvas| canvas.gradient(r, radius, colors, turn));
+        }
         let s = self.scale;
         let (x0, y0, x1, y1) = ((r.x * s).round(), (r.y * s).round(), (r.right() * s).round(), (r.bottom() * s).round());
         let radius = (radius * s).min((x1 - x0) / 2.0).min((y1 - y0) / 2.0).max(0.0);
@@ -322,6 +387,10 @@ impl<'a> Canvas<'a> {
 
     /// A filled path, scaled by `size` and placed at `at`.
     pub fn fill(&mut self, path: &Path, at: Point, size: f32, color: Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.fill(path, at, size, color, self.scale, self.clip);
+        }
         let (s, to) = (size * self.scale, pt(at.x * self.scale, at.y * self.scale));
         if !color.is_none() {
             self.fill_with(&mut |each| path.flatten(s, to, 1.0, each), false, |_, _| color);
@@ -332,6 +401,10 @@ impl<'a> Canvas<'a> {
     /// joins. Each segment is a round-capped bar, and overlaps (at every join, and all along a
     /// curve) count once: a curve's stroke is as smooth as a straight one's.
     pub fn stroke(&mut self, path: &Path, at: Point, size: f32, width: f32, color: Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.stroke(path, at, size, width, color, self.scale, self.clip);
+        }
         let (fine, [cx0, cy0, cx1, cy1]) = (FINE as f32, self.clip);
         let (s, to) = (size * self.scale * fine, pt(at.x * self.scale * fine, at.y * self.scale * fine));
         let reach = (width * s / 2.0).max(0.5 * fine) + SOFT;
@@ -363,6 +436,10 @@ impl<'a> Canvas<'a> {
     /// each covered pixel by its window position, so a shape can be filled with a gradient, as
     /// SVG drawings are.
     pub fn fill_with(&mut self, edges: Edges, even_odd: bool, mut ink: impl FnMut(i32, i32) -> Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.fill_with(edges, even_odd, ink, self.scale, self.clip);
+        }
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         edges(&mut |a, b| {
             (x0, y0) = (x0.min(a.x).min(b.x), y0.min(a.y).min(b.y));
@@ -409,6 +486,10 @@ impl<'a> Canvas<'a> {
     }
     /// The same, clipped to rounded corners of this radius (an avatar, an image in a card).
     pub fn rounded_picture(&mut self, pixels: &[u32], width: usize, r: Rect, radius: f32) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.picture(pixels, width, r, radius, self.scale, self.clip);
+        }
         let (s, height) = (self.scale, pixels.len() / width.max(1));
         let (x0, y0, x1, y1) = (whole(r.x * s), whole(r.y * s), whole(r.right() * s), whole(r.bottom() * s));
         let [cx0, cy0, cx1, cy1] = self.clip;
@@ -465,6 +546,10 @@ impl<'a> Canvas<'a> {
     /// at `at` in window pixels: blended over what is there, or, if `solid` (no transparency),
     /// copied.
     pub fn pixels(&mut self, pixels: &[u32], width: usize, [x, y]: [i32; 2], solid: bool) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.pixels(pixels, width, [x, y], self.clip);
+        }
         let ([cx0, cy0, cx1, cy1], high) = (self.clip, (pixels.len() / width.max(1)) as i32);
         let (from, to) = (x.max(cx0), x.saturating_add(width as i32).min(cx1));
         for row in y.max(cy0)..y.saturating_add(high).min(cy1) {
@@ -485,6 +570,11 @@ impl<'a> Canvas<'a> {
     /// the colour `color` gives for its window position. So overlapping strokes are drawn into
     /// such a buffer one by one and laid down at once, with a gradient.
     pub fn fill_mask(&mut self, block: &[u32], width: usize, [x, y]: [i32; 2], mut color: impl FnMut(i32, i32) -> Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            let area = [x, y, x.saturating_add(width as i32), y.saturating_add((block.len() / width.max(1)) as i32)];
+            return list.patch(area, self.clip, self.scale, |canvas| canvas.fill_mask(block, width, [x, y], color));
+        }
         let ([cx0, cy0, cx1, cy1], high) = (self.clip, (block.len() / width.max(1)) as i32);
         let (from, to) = (x.max(cx0), x.saturating_add(width as i32).min(cx1));
         for row in y.max(cy0)..y.saturating_add(high).min(cy1) {
@@ -505,6 +595,10 @@ impl<'a> Canvas<'a> {
     /// Draws a coverage mask, one byte per pixel (0 none, 255 full): a glyph, as the text
     /// system draws it. `x` and `y` are window pixels.
     pub fn cover(&mut self, x: i32, y: i32, width: usize, cover: &[u8], color: Color) {
+        #[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.mask(x, y, width, cover, color, self.clip);
+        }
         if width == 0 || color.is_none() {
             return;
         }

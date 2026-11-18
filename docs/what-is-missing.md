@@ -39,17 +39,18 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Sticky headings stick to the nearest vertical scroll box. `frozen` and `sticky` together in one
   box are unsupported. The page scrolls vertically only. `.opacity` re-blends what's under it on
   each redraw. Stripes only in grids and columns.
-- Built-in words are English until set (`ui.calendar_words`, `files.words`, `ui.edit_words`,
-  `ui.search_word`, `ui.number_words`, `ui.widget_words`).
-- Locale: month and day names and AM/PM are the app's; fixed digit counts (2-digit day and
-  month, 4-digit year), `:` in times, digits 0–9 grouped by three; changes while running ignored.
+- Built-in words other than month and day names and AM/PM are English until set, or with
+  `translations` in six more languages only.
+- Locale: digits 0–9 only. An app's own `Locale` writes groups of three, two-digit days, months
+  and hours, and ":". Linux reads the locale once (Windows follows changes). AM/PM always
+  after the time.
 - Linux screen readers can't set number or time fields by value (typing and stepping work).
-- Recent colours are not saved. Tables don't accept paste. Windows time axes use today's UTC
-  offset. Uneven-height lists estimate unseen rows. Second windows don't show the first's meshes.
+- Pasting into tables: no pasting into new rows; a value a column refuses is skipped silently.
+  Windows time axes use today's UTC offset. Uneven-height lists estimate unseen rows. Second windows don't show the first's meshes.
   Pan-zoom text under 4 units isn't drawn.
 - Node graphs: one wire per input; no grid snap, frames, reroutes, undo, raise on pick or
   auto-pan; readers hear wires only through ports.
-- Spelling: one language per box; no repeated-word check; code box unchecked; readers get errors
+- Spelling: code box unchecked; readers get errors
   among visible words only; UI Automation's `FindAttribute` unanswered.
 
 ## Renderers
@@ -60,8 +61,12 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   Direct3D 12 and Vulkan leave their state set after `draw`.
 - Lost devices: plain Direct3D 9's `Reset` is untested (it makes no device on a desktop of its
   own; 9Ex was tested); Vulkan's loss can't be simulated.
-- `gpu`: the GPU only shows what the CPU drew. Nothing is drawn on the GPU (shapes, text,
-  blur); no HDR or Metal. See-through windows stay on the CPU.
+- `gpu`: no HDR or Metal. See-through windows stay on the CPU.
+- `gpu-draw`: Direct3D 12 and Vulkan only show; Direct3D 11 and OpenGL draw. Paths, gradients,
+  blur, scenes and SVG drawings are still drawn by the CPU (into patches); a see-through box
+  (`El::opacity`) has the CPU draw its part. GDI's text off a solid colour loses GDI's contrast
+  (black on white excepted). On Linux only llvmpipe drew in tests; on Windows WARP and an RTX
+  2080 Ti.
 - `gpu` on Windows: the first frames are the CPU's until the device is made (0.3–0.9 s here). A
   window the GPU showed can't go back to GDI: a GPU lost for good leaves it to Direct3D 11's
   software device (WARP). Direct3D 12's device loss is tested for real (`RemoveDevice`), the
@@ -69,11 +74,15 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   rectangles only with `VK_KHR_incremental_present`. OpenGL's window can't be pictured on a
   private desktop, so its tests compare the back buffer only. Smooth live resizing and tearing
   were not judged by eye.
-- `gpu` on Linux: X11 only. Wayland windows use shared memory; a GPU path needs dmabufs and a
-  GPU render node, not testable here. Vulkan tested on lavapipe and dozen (WSL); its device loss
-  is simulated. `Auto` takes only
-  a hardware device that shows frames directly (DRI3 with Mesa). Measured only under Xvfb, where
-  every frame goes through X and the GPU path costs more than the CPU's.
+- `gpu` on Linux: Vulkan tested on lavapipe and dozen (WSL); its device loss is simulated.
+  Under X, `Auto` takes only a hardware device that shows frames directly (DRI3 with Mesa).
+  Measured only under Xvfb, where every frame goes through X and the GPU path costs more than the
+  CPU's.
+- `gpu` under Wayland: Vulkan dmabufs only when asked; `Auto` keeps shared memory (cheaper on
+  the one device measured). Tested only with lavapipe exporting through `/dev/udmabuf` (GitHub's
+  Ubuntu runner) to Weston's GL renderer: no hardware GPU, Mutter, KWin or Sway, no tiled or
+  multi-plane layout. Feedback v4 and the main device only against a simulated compositor.
+  Waits for each copy before the commit (no explicit sync).
 
 ## Documents (Markdown)
 
@@ -86,7 +95,7 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 ## File dialog
 
 - The library's own unless `FileDialog::native()`: Windows, or a Linux portal (v3+).
-- Linux: no extension added to typed names. A portal silent for 5 s falls back to the library's.
+- A portal silent for 5 s falls back to the library's.
 - Windows `FileDialog::native()` without a taut window (renderer, DLL) answers nothing;
   `FileDialog { native: true, ..Default::default() }` falls back anywhere.
 

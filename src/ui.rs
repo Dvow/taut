@@ -654,7 +654,8 @@ pub struct Ui {
     pub(crate) dock_bars: Vec<(usize, Rect, f32)>,
     pub(crate) dragged_panel: String,
     pub(crate) panel_held: bool,
-    /// The words calendars and clocks are written in.
+    /// The words calendars and clocks are written in. Month and day names and AM/PM left in
+    /// English are the system's while [`locale`](Ui::locale) is `None`.
     pub calendar_words: CalendarWords,
     /// The open calendar: whose, the month shown, and a range's first picked day.
     pub(crate) calendar_open: Shown,
@@ -728,8 +729,10 @@ impl Ui {
     /// An interface drawing its text with `text` and copying to `clipboard`. (A window brings
     /// the system's; without one, [`BuiltInFont`](crate::text::BuiltInFont) and a
     /// [`LocalClipboard`](crate::LocalClipboard) do.)
+    #[cfg_attr(not(feature = "translations"), allow(clippy::let_and_return))]
     pub fn new(text: Box<dyn TextSystem>, clipboard: Box<dyn Clipboard>) -> Self {
-        Ui {
+        #[cfg_attr(not(feature = "translations"), allow(unused_mut))]
+        let mut ui = Ui {
             theme: Theme::dark(),
             edit_words: ["Cut", "Copy", "Paste", "Select all", "Add to dictionary", "Ignore"],
             frame_words: Default::default(),
@@ -880,7 +883,11 @@ impl Ui {
             under: (Vec::new(), Vec::new()),
             hiding: None,
             stops: Vec::new(),
-        }
+        };
+        // (With the feature `translations`: the user's language.)
+        #[cfg(feature = "translations")]
+        ui.translate_for_the_user();
+        ui
     }
 
     // ---- for the code that runs the window ----

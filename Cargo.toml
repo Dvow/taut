@@ -42,10 +42,18 @@ cff = []
 color-profiles = []
 # WOFF2 fonts, with a Brotli decoder. Without it, `FontFile::read` rejects them.
 woff2 = []
-# Windows shown by the GPU, loaded at run time: Direct3D 11 or 12, Vulkan or OpenGL on Windows;
-# OpenGL ES 3 (EGL) or Vulkan on Linux under X11. The CPU still draws every pixel. Without it,
+# The built-in words (menus, file dialog, calendar, bars) in German, Spanish, French, Japanese,
+# Portuguese and Simplified Chinese, taken from the user's language. Without it, English until
+# the app sets its own.
+translations = []
+# Windows shown by the GPU (Direct3D, Vulkan or OpenGL on Windows; OpenGL or Vulkan under X11;
+# Vulkan dmabufs under Wayland), loaded at run time; the CPU still draws every pixel. Without it,
 # the CPU shows them too (`Renderer`).
 gpu = []
+# Windows drawn by the GPU too, where it is faster: boxes, borders, shadows, text and pictures
+# (Direct3D 11 on Windows, OpenGL on both). Within a few levels of 255 of the CPU at edges.
+# Without it, the CPU draws every pixel.
+gpu-draw = ["gpu"]
 
 # None.
 [dependencies]

@@ -422,6 +422,18 @@ impl Shown {
         }
     }
 
+    /// Draws a recorded paint into the texture, inside `area` (left, top, right, bottom), with
+    /// what `drawing` holds: made here the first time (nothing, if it can't be). Says whether it
+    /// could: if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn draw(&mut self, drawing: &mut Option<Option<crate::gpu_draw_opengl::Pipeline>>, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
+        if self.size[0] <= 0 || !self.owner.with(self.dc) {
+            return false;
+        }
+        let made = drawing.get_or_insert_with(|| crate::gpu_draw_opengl::Pipeline::new(&mut crate::gpu_draw_windows::wgl_function, true));
+        made.as_mut().is_some_and(|pipeline| pipeline.draw(self.texture, self.size, list, area))
+    }
+
     /// Copies the texture to the back buffer, its rows from the top, and swaps it, at the
     /// screen's next refresh. Says whether that worked.
     pub(crate) fn present(&mut self, device: &Device) -> bool {

@@ -54,12 +54,13 @@ takes `&mut` to what it changes and returns what the user did.
   yet.
 - **Rust:** 1.88+. **Licence:** MIT or Apache-2.0.
 - **Features** (all off by default): `right-to-left`, `brahmic`, `emoji`, `fallback-fonts`,
-  `touch`, `cff`, `woff2`, `color-profiles`, `gpu`
+  `touch`, `cff`, `woff2`, `color-profiles`, `gpu`, `gpu-draw`, `translations`
   ([costs](docs/costs-and-speed.md#what-it-costs)).
 - **GPU or CPU:** the CPU draws every pixel; with `gpu`, the GPU shows them, byte for byte the
-  same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11
-  ([costs](docs/costs-and-speed.md#gpu-or-cpu)).
-- **State:** 0.1. Names may change before 1.0 ([changes](CHANGELOG.md),
+  same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11;
+  Vulkan (dmabufs) under Wayland, when asked ([costs](docs/costs-and-speed.md#gpu-or-cpu)). With
+  `gpu-draw`, Direct3D 11 and OpenGL draw them too, within a few levels.
+- **State:** 0.2. Names may change before 1.0 ([changes](CHANGELOG.md),
   [what is missing](docs/what-is-missing.md)).
 
 ## Examples
@@ -111,7 +112,7 @@ A label and a button, built for size on Windows, 2026-11-15:
 | --- | --- | --- | --- | --- |
 | Program | 457 KB | 8.3 MB | 5.9 MB | 7.8 MB |
 | Other crates | 0 | 179 | 159 | 245 |
-| Drawn by | CPU; shown by Direct3D 11/12, Vulkan, OpenGL or the CPU, same pixels | GPU (wgpu or OpenGL) | GPU (wgpu), or CPU | GPU (OpenGL, Skia), or CPU |
+| Drawn by | CPU; shown by Direct3D 11/12, Vulkan, OpenGL or the CPU, same pixels; or drawn by Direct3D 11 or OpenGL (`gpu-draw`) | GPU (wgpu or OpenGL) | GPU (wgpu), or CPU | GPU (OpenGL, Skia), or CPU |
 | Screen readers | own (UI Automation, AT-SPI) | AccessKit | none in 0.14 | AccessKit |
 
 [More libraries, and Dear ImGui part by part](docs/beside-other-libraries.md).

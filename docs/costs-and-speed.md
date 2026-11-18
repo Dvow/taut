@@ -46,7 +46,9 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | `cff` | CFF and CFF2 fonts (most `.otf`) | not read | nothing; 17 KB | nothing; 17 KB |
 | `color-profiles` | colour profiles in picture files | colours as stored | nothing; 7 KB | nothing; 7 KB |
 | `woff2` | WOFF2 fonts (with a Brotli decoder) | not read | nothing; 95 KB | nothing; 99 KB |
-| `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | |
+| `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | 63 KB; 60 KB |
+| `gpu-draw` | the GPU draws them too ([below](#drawn-by-the-gpu)) | the CPU draws them | 35 KB; 46 KB more than `gpu` | 24 KB; 36 KB more than `gpu` |
+| `translations` | built-in words in German, Spanish, French, Japanese, Portuguese, Chinese | English until set | 24 KB; 22 KB | 37 KB; 36 KB |
 
 - Each cost is the feature alone, in `hello` and in the gallery (which reads fonts and
   pictures). `brahmic` adds 77 KB (Linux 86 KB) to `hello` with `right-to-left` already on.
@@ -97,6 +99,55 @@ Linux (Ubuntu in WSL, Xvfb, gallery, 1200×800; app CPU + X server CPU per frame
 
 - Xvfb has no DRI3, so Mesa sends every whole frame through X: that is why `Auto` keeps the CPU
   there. A real desktop with DRI3 was not measured.
+
+Linux under Wayland (GitHub's Ubuntu runner, Weston 14's GL renderer on llvmpipe, dmabufs from
+lavapipe: a software device, so its copies are CPU work too; 800×500, release build, medians of
+60 frames, three runs):
+
+| | Shared memory | Vulkan dmabufs |
+| --- | --- | --- |
+| One label changed: drawing | 5–10 µs | 33–92 µs |
+| All changed: drawing | 26–80 µs | 0.11–0.77 ms |
+| Shown (the compositor's frame callback) after | 16–25 ms | 16–25 ms |
+
+- Drawing: painting, and for dmabufs the copy into an image and its wait. Shown: Weston's repaint
+  cycle (16 ms on Xvfb, 25 ms headless), the same on both paths.
+- On a software device dmabufs only add work: `Auto` keeps shared memory. A hardware GPU was not
+  measured.
+
+## Drawn by the GPU
+
+With `gpu-draw` the GPU draws too. Windows 11, RTX 2080 Ti, 2026-11-17, the PC busy with other
+builds; a page of rounded, bordered cards with two labels each; each case a program of its own
+on a private desktop, 100 frames, best of 2. CPU per frame, µs (show: the GPU only shows; draw:
+it draws too):
+
+| | CPU (GDI) | Direct3D 11, show | Direct3D 11, draw | OpenGL, show | OpenGL, draw |
+| --- | --- | --- | --- | --- | --- |
+| 400×300, all changed | 576 | 838 | 635 | 1,003 | 820 |
+| 400×300, one label changed | 287 | 582 | 614 | 640 | 765 |
+| 1920×1080, all changed | 12,286 | 12,048 | 5,561 | 13,995 | 5,854 |
+| 1920×1080, list scrolled a row | 4,751 | 4,614 | 847 | 8,152 | 968 |
+| 1920×1080, a box moving | 549 | 831 | 788 | 984 | 1,002 |
+| 3840×2160, all changed | 66,844 | 67,917 | 47,897 | timed out | 50,382 |
+| 3840×2160, list scrolled a row | 11,991 | 12,411 | 947 | 26,826 | 1,119 |
+| 3840×2160, a box moving | 1,324 | 1,575 | 1,458 | 1,748 | 1,643 |
+| 3840×2160, one label changed | 1,198 | 1,477 | 1,418 | 1,709 | 1,569 |
+| Frame, 1920×1080 all changed | 33 ms | 33 ms | 17 ms | 28 ms | 21 ms |
+| Private memory, 1920×1080 | 2 MB | 100 MB | 101 MB | 105 MB | 198 MB |
+
+- Where the CPU fills or blends many pixels (large windows, scrolling), drawing on the GPU takes
+  a fifth to a twelfth of the CPU time. For small changes it costs what showing costs: a
+  present.
+- `Auto` therefore draws parts of 65,536 pixels or more (256×256) on the GPU, smaller ones on the
+  CPU: below that both cost about a present.
+- 4K, all changed: the cards' colours change every frame, so each label's run is drawn by GDI
+  again on its new colour; that is most of the 48 ms.
+- First frames are the CPU's, as when showing. Shaders compile on the device's thread
+  (Direct3D 11) or at the first drawn frame (OpenGL).
+- Memory: two 2048×2048 textures (glyphs and runs kept; this frame's patches), on the GPU.
+- Within 3 levels of 255 of the CPU in tests (WARP, llvmpipe, the RTX): rounding of blends at
+  edges and see-through fills.
 
 ## How fast it is
 

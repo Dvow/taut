@@ -80,13 +80,15 @@ impl Default for Window<'_> {
 
 /// What shows a window's pixels. The CPU draws them either way, so a window looks the same,
 /// byte for byte; the GPU only shows them. `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl`
-/// overrides the app's choice.
+/// overrides the app's choice. With the feature `gpu-draw`, Direct3D 11 and OpenGL draw them
+/// too, within a few levels of 255 at edges: `Auto` large parts of a window, a path named all
+/// (`TAUT_DRAW=cpu|gpu|auto` overrides).
 ///
 /// | | GPU, best first | CPU |
 /// | --- | --- | --- |
 /// | Windows | Direct3D 11, Direct3D 12, Vulkan, OpenGL (WGL) | GDI |
 /// | Linux (X11) | OpenGL (EGL), Vulkan | X11 images |
-/// | Linux (Wayland) | none | shared memory |
+/// | Linux (Wayland) | Vulkan (dmabufs), never for `Auto` | shared memory |
 ///
 /// A path that is missing falls back along that order, then to the CPU. The GPU paths need the
 /// feature `gpu`; without it the CPU shows every window, and none of their code is compiled in.

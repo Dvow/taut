@@ -247,6 +247,61 @@ structures! {
 #[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
 pub(crate) const SUBOPTIMAL: i32 = 1_000_001_003;
 
+/// Whether `name` is among the extensions `list` fills in.
+#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[inline]
+pub(crate) fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32, name: &CStr) -> bool {
+    let all = listed(VkExtensionProperties::default(), list);
+    // SAFETY: each name is Vulkan's, ending in a zero within its array.
+    all.iter().any(|offered| unsafe { CStr::from_ptr(offered.name.as_ptr()) } == name)
+}
+
+/// What one of Vulkan's enumerations fills in: its count first, then that many.
+#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[inline]
+pub(crate) fn listed<T: Copy>(zero: T, mut fill: impl FnMut(*mut u32, *mut T) -> i32) -> Vec<T> {
+    let mut count = 0;
+    if fill(&mut count, std::ptr::null_mut()) < 0 {
+        return Vec::new();
+    }
+    let mut all = vec![zero; count as usize];
+    let result = fill(&mut count, all.as_mut_ptr());
+    all.truncate(if result < 0 { 0 } else { count as usize });
+    all
+}
+
+/// The copy of `place` (left, top, right, bottom) from pixels `width` a row into the same place
+/// of an image.
+#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[inline]
+pub(crate) fn region([left, top, right, bottom]: [i32; 4], width: i32) -> VkBufferImageCopy {
+    let at = (top as u64 * width as u64 + left as u64) * 4;
+    VkBufferImageCopy { buffer_offset: at, row_length: width as u32, layers: LAYER, offset: [left, top, 0], extent: [(right - left) as u32, (bottom - top) as u32, 1], ..Default::default() }
+}
+
+// Wayland windows shown through Vulkan (`gpu_wayland`): images made to be handed to the
+// compositor as dmabufs, in a layout both take (a DRM format modifier).
+#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+structures! {
+    VkExternalMemoryImageCreateInfo { kind: u32, next: *const c_void, handles: u32, }
+    VkImageDrmFormatModifierListCreateInfoEXT { kind: u32, next: *const c_void, count: u32, modifiers: *const u64, }
+    VkExportMemoryAllocateInfo { kind: u32, next: *const c_void, handles: u32, }
+    VkMemoryDedicatedAllocateInfo { kind: u32, next: *const c_void, image: Handle, buffer: Handle, }
+    VkImageDrmFormatModifierPropertiesEXT { kind: u32, next: *mut c_void, modifier: u64, }
+    VkImageSubresource { aspect: u32, level: u32, layer: u32, }
+    VkSubresourceLayout { offset: u64, size: u64, row_pitch: u64, array_pitch: u64, depth_pitch: u64, }
+    VkMemoryGetFdInfoKHR { kind: u32, next: *const c_void, memory: Handle, handle: u32, }
+    VkFormatProperties2 { kind: u32, next: *mut c_void, linear: u32, optimal: u32, buffer: u32, }
+    VkDrmFormatModifierPropertiesListEXT { kind: u32, next: *mut c_void, count: u32, properties: *mut VkDrmFormatModifierPropertiesEXT, }
+    VkDrmFormatModifierPropertiesEXT { modifier: u64, planes: u32, features: u32, }
+    VkPhysicalDeviceImageFormatInfo2 { kind: u32, next: *const c_void, format: u32, image_type: u32, tiling: u32, usage: u32, flags: u32, }
+    VkPhysicalDeviceExternalImageFormatInfo { kind: u32, next: *const c_void, handle: u32, }
+    VkPhysicalDeviceImageDrmFormatModifierInfoEXT { kind: u32, next: *const c_void, modifier: u64, sharing_mode: u32, family_count: u32, families: *const u32, }
+    VkImageFormatProperties2 { kind: u32, next: *mut c_void, extent: [u32; 3], levels: u32, layers: u32, samples: u32, most: u64, }
+    VkExternalImageFormatProperties { kind: u32, next: *mut c_void, features: u32, exported_from: u32, compatible: u32, }
+    VkPhysicalDeviceDrmPropertiesEXT { kind: u32, next: *mut c_void, has_primary: u32, has_render: u32, primary: [i64; 2], render: [i64; 2], }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +373,34 @@ mod tests {
             (size_of::<VkPhysicalDeviceProperties2>(), 840),
             (size_of::<VkPhysicalDeviceDriverProperties>(), 536),
             (std::mem::offset_of!(VkPhysicalDeviceDriverProperties, info), 276),
+        ];
+        for (at, (size, wanted)) in sizes.into_iter().enumerate() {
+            assert_eq!(size, wanted, "structure {at}");
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+    #[test]
+    fn what_handing_a_dmabuf_over_takes_is_laid_out_as_vulkan_lays_it_out() {
+        let sizes = [
+            (size_of::<VkExternalMemoryImageCreateInfo>(), 24),
+            (size_of::<VkImageDrmFormatModifierListCreateInfoEXT>(), 32),
+            (size_of::<VkExportMemoryAllocateInfo>(), 24),
+            (size_of::<VkMemoryDedicatedAllocateInfo>(), 32),
+            (size_of::<VkImageDrmFormatModifierPropertiesEXT>(), 24),
+            (size_of::<VkImageSubresource>(), 12),
+            (size_of::<VkSubresourceLayout>(), 40),
+            (size_of::<VkMemoryGetFdInfoKHR>(), 32),
+            (size_of::<VkFormatProperties2>(), 32),
+            (size_of::<VkDrmFormatModifierPropertiesListEXT>(), 32),
+            (size_of::<VkDrmFormatModifierPropertiesEXT>(), 16),
+            (size_of::<VkPhysicalDeviceImageFormatInfo2>(), 40),
+            (size_of::<VkPhysicalDeviceExternalImageFormatInfo>(), 24),
+            (size_of::<VkPhysicalDeviceImageDrmFormatModifierInfoEXT>(), 40),
+            (size_of::<VkImageFormatProperties2>(), 48),
+            (size_of::<VkExternalImageFormatProperties>(), 32),
+            (size_of::<VkPhysicalDeviceDrmPropertiesEXT>(), 56),
+            (std::mem::offset_of!(VkPhysicalDeviceDrmPropertiesEXT, primary), 24),
         ];
         for (at, (size, wanted)) in sizes.into_iter().enumerate() {
             assert_eq!(size, wanted, "structure {at}");

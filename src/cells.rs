@@ -351,6 +351,9 @@ impl Ui {
         if self.key(Key::Char('c'), Mods::CTRL) {
             self.grids.copy = table;
         }
+        if let Some(keys) = crate::table_paste::keys() {
+            keys(self, table, columns, shown, [row, column], rows.count);
+        }
         // Enter edits an editable cell, and is left to the app on any other. A letter typed
         // into a text or number cell starts editing with it.
         let typed = matches!(entry, CellEditor::Text | CellEditor::Number) && self.input.strokes.iter().any(|stroke| matches!(stroke, Stroke::Text(_)));

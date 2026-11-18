@@ -1,7 +1,9 @@
 //! Spell checking in text boxes: misspellings found by the system checker (so the user's own
 //! dictionary and languages apply), underlined with a wavy line in the theme's red, and
 //! corrected from the box's context menu, which offers suggestions first, then adding to the
-//! dictionary or ignoring.
+//! dictionary or ignoring. A box may be checked in several languages at once (a word is right
+//! if one of them has it). A word written twice in a row ("the the") is marked too; its menu
+//! offers the word once.
 //!
 //! A box asks for it while described ([`Ui::check_spelling`]). After each layout the words of
 //! its visible lines are looked up in what is known, and unknown words are sent to the checker:
@@ -159,6 +161,8 @@ struct Menu {
     word: Option<(Range<usize>, String, usize)>,
     offered: Vec<String>,
     seen: bool,
+    /// For a word written twice: the word once (`word` is then both).
+    single: Option<String>,
 }
 
 /// Who answers checker requests.
@@ -527,9 +531,17 @@ impl Kept {
     fn rows(&mut self, ui: &mut Ui, state: &Response) {
         let Some(language) = self.boxes.iter().find(|checked| checked.id == state.id).map(|checked| checked.language) else { return };
         if self.menu.as_ref().is_none_or(|menu| menu.of != state.id) {
-            let word = self.word_for_menu(ui, state, language);
-            let offered = word.as_ref().map_or(Vec::new(), |(_, word, _)| self.offer(language, word));
-            self.menu = Some(Menu { of: state.id, word, offered, seen: false });
+            let mut word = self.word_for_menu(ui, state, language);
+            let twice = word.as_ref().and_then(|(range, ..)| self.twice_in_box(ui, state.id, range.clone()));
+            if let Some((both, _)) = &twice {
+                word = self.spelt(ui, state.id, both.clone()).map(|spelt| (both.clone(), spelt, language));
+            }
+            let offered = match (&word, &twice) {
+                (_, Some((_, single))) => vec![single.clone()],
+                (Some((_, word, _)), None) => self.offer(language, word),
+                (None, None) => Vec::new(),
+            };
+            self.menu = Some(Menu { of: state.id, word, offered, seen: false, single: twice.map(|(.., single)| single) });
         }
         let Some(menu) = self.menu.as_mut() else { return };
         menu.seen = true;
@@ -541,7 +553,10 @@ impl Kept {
                 picked = Some(offer.clone());
             }
         }
-        let [add, ignore] = [ui.menu_item(ui.edit_words[4]).clicked, ui.menu_item(ui.edit_words[5]).clicked];
+        // (Not added to the dictionary: a word written twice is no misspelling.)
+        let add = menu.single.is_none() && ui.menu_item(ui.edit_words[4]).clicked;
+        let ignore = ui.menu_item(ui.edit_words[5]).clicked;
+        let single = menu.single.clone();
         ui.separator();
         if let Some(with) = picked {
             self.replacing = Some((state.id, range, word.clone(), with));
@@ -550,7 +565,7 @@ impl Kept {
             self.add(language, &word);
         }
         if ignore {
-            self.ignore(&word);
+            self.ignore(single.as_deref().unwrap_or(&word));
         }
         if add || ignore || self.replacing.is_some() {
             // (Focus returns to the box, where the correction goes in next pass.)
@@ -578,6 +593,29 @@ impl Kept {
         let Content::Text { start, end, .. } = ui.tree.specs.get(at as usize)?.content else { return None };
         let text = ui.tree.strings.get(start as usize..end as usize)?;
         text.get(range).map(str::to_owned)
+    }
+
+    /// Where the same word (in any case) ends just before `word`, a byte range of `text` whose box
+    /// starts at `start`, with only spaces between: a word written twice. Its start, unless the
+    /// user ignored the word.
+    fn twice(&self, text: &str, start: usize, word: Range<usize>) -> Option<usize> {
+        let spelt = &text[word.clone()];
+        let earlier = text[start..word.start].trim_end_matches([' ', '\t', '\u{a0}']);
+        let end = start + earlier.len();
+        let from = end.checked_sub(spelt.len()).filter(|from| *from >= start && text.is_char_boundary(*from) && end < word.start)?;
+        let alone = from == start || !in_word(text, step(text, from, false));
+        let ignored = self.ignored.iter().any(|ignored| ignored.to_lowercase() == spelt.to_lowercase());
+        (alone && !ignored && text[from..end].to_lowercase() == spelt.to_lowercase()).then_some(from)
+    }
+
+    /// For a word written twice at byte range `range` of box `id`'s text: the range of both,
+    /// and the word once (as written first).
+    fn twice_in_box(&self, ui: &Ui, id: Id, range: Range<usize>) -> Option<(Range<usize>, String)> {
+        let at = self.boxes.iter().find(|checked| checked.id == id)?.at;
+        let Content::Text { start, end, .. } = ui.tree.specs.get(at as usize)?.content else { return None };
+        let text = ui.tree.strings.get(start as usize..end as usize)?;
+        let from = self.twice(text, 0, range.clone())?;
+        Some((from..range.end, text[from..from + range.len()].to_owned()))
     }
 
     /// After layout: each box checked this pass has its visible words found, looked up, sent
@@ -643,7 +681,8 @@ impl Kept {
             if out || writing.is_some_and(|at| word.start <= at && at <= word.end) {
                 continue;
             }
-            if self.verdict(language, &ui.tree.strings[word.clone()]) == Verdict::Wrong {
+            let twice = !self.languages[language].none && self.twice(&ui.tree.strings, view.start, word.clone()).is_some();
+            if twice || self.verdict(language, &ui.tree.strings[word.clone()]) == Verdict::Wrong {
                 wrong.push(word);
             }
         }
@@ -803,8 +842,42 @@ impl Ui {
 /// its own; on Linux Enchant's, for whatever dictionary Enchant finds; on macOS
 /// `NSSpellChecker` (`ns_spell_checker.rs`); elsewhere none.
 pub(crate) fn system(language: &str) -> Option<Box<dyn Check>> {
-    let name = if language.is_empty() { own_language() } else { language.to_owned() };
-    Speller::open(&name).map(|speller| Box::new(speller) as Box<dyn Check>)
+    several(language, |name| Speller::open(name).map(|speller| Box::new(speller) as Box<dyn Check>))
+}
+
+/// The checkers `one` opens for each of `languages` (comma-separated; "" for the user's own),
+/// as one: none where none has one.
+fn several(languages: &str, one: Opens) -> Option<Box<dyn Check>> {
+    let named = |name: &str| if name.is_empty() { own_language() } else { name.to_owned() };
+    let mut checkers: Vec<Box<dyn Check>> = languages.split(',').filter_map(|name| one(&named(name.trim()))).collect();
+    match checkers.len() {
+        0 | 1 => checkers.pop(),
+        _ => Some(Box::new(Several(checkers))),
+    }
+}
+
+/// Checkers for several languages as one: a word is right if one of them has it.
+struct Several(Vec<Box<dyn Check>>);
+
+impl Check for Several {
+    fn wrong(&self, word: &str) -> bool {
+        self.0.iter().all(|checker| checker.wrong(word))
+    }
+    /// Each language's suggestions in turn, first ones first, each once.
+    fn offer(&mut self, word: &str) -> Vec<String> {
+        let lists: Vec<Vec<String>> = self.0.iter_mut().map(|checker| checker.offer(word)).collect();
+        let mut offers: Vec<String> = Vec::new();
+        for offer in (0..lists.iter().map(Vec::len).max().unwrap_or(0)).flat_map(|nth| lists.iter().filter_map(move |list| list.get(nth))) {
+            if offers.len() < OFFERED && !offers.contains(offer) {
+                offers.push(offer.clone());
+            }
+        }
+        offers
+    }
+    /// To the first language's dictionary.
+    fn add(&mut self, word: &str) {
+        self.0.iter_mut().take(1).for_each(|checker| checker.add(word));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1586,5 +1659,100 @@ pub(crate) mod tests {
             std::fs::write(std::path::Path::new(&folder).join(name), screen.to_png()).unwrap();
             println!("{name}: {} words marked", wrong(&ui).len());
         }
+    }
+
+    /// A German stand-in, for "de": knows only "der", "Hund", "und".
+    struct German;
+    impl Check for German {
+        fn wrong(&self, word: &str) -> bool {
+            !["der", "Hund", "und"].contains(&word)
+        }
+        fn offer(&mut self, word: &str) -> Vec<String> {
+            if word.starts_with('H') { vec!["Hund".to_owned()] } else { Vec::new() }
+        }
+        fn add(&mut self, _: &str) {}
+    }
+    /// The stand-ins by language: German for "de", none for "none", English for any other.
+    fn by_language(language: &str) -> Option<Box<dyn Check>> {
+        match language {
+            "de" => Some(Box::new(German)),
+            _ => stand_in(language),
+        }
+    }
+
+    #[test]
+    fn a_box_is_checked_in_several_languages_at_once() {
+        let mut trial = Trial::new(Page { text: "the Hund und the fox frobnicate".into(), checked: true }, |app, ui| {
+            ui.spell_with(Some("en, de"), |languages| several(languages, by_language), true);
+            ui.text_area(&mut app.text, "Notes", (4, 8));
+        });
+        trial.run();
+        // Only the word neither language has.
+        assert_eq!(trial.find(Role::TextBox, "Notes").misspelled, [[21, 31]]);
+        // Suggestions from each language in turn, each once.
+        let mut both = several("de,en", by_language).unwrap();
+        assert_eq!(both.offer("Hunf"), ["Hund"]);
+        assert_eq!(both.offer("qux"), ["quick", "quiet", "quilt"]);
+        assert!(!both.wrong("der") && !both.wrong("fox") && both.wrong("xyz"));
+        // A language with no checker counts for nothing; with none at all, nothing is checked.
+        assert!(several("none,de", by_language).is_some_and(|one| one.wrong("fox") && !one.wrong("Hund")));
+        assert!(several("none, none", by_language).is_none());
+    }
+
+    #[test]
+    fn a_word_written_twice_is_marked_and_its_menu_offers_it_once() {
+        let mut trial = trial("the the fox. the the dog, fox fox2 dog\ndog");
+        let kept = Kept::new(stand_in, true);
+        let twice = |text: &str, word: Range<usize>| kept.twice(text, 0, word);
+        assert_eq!([twice("The the", 4..7), twice("lathe the", 6..9), twice("the\tthe", 4..7), twice("the.the", 4..7), twice("the", 0..3)], [Some(0), None, Some(0), None, None]);
+        // "the the" twice, not across a line or a number, nor a word ended by a
+        // point.
+        assert_eq!(waves(&trial), [[48.0, 84.0, 0.0], [204.0, 240.0, 0.0]]);
+        let at = letters(&trial);
+        trial.right_click(pt(at.x + 60.0, at.y + 10.0));
+        assert_eq!(menu(&trial), ["the", "Ignore", "Cut", "Copy", "Paste", "Select all"], "no adding a right word to the dictionary");
+        trial.press(Role::MenuItem, "the");
+        assert_eq!((trial.app.text.as_str(), waves(&trial)), ("the fox. the the dog, fox fox2 dog\ndog", vec![[156.0, 192.0, 0.0]]));
+        trial.key("Ctrl+Z");
+        assert_eq!(trial.app.text, "the the fox. the the dog, fox fox2 dog\ndog", "undone as one");
+        // Ignored, it is no longer marked written twice.
+        trial.key("Escape");
+        trial.right_click(pt(at.x + 210.0, at.y + 10.0));
+        trial.press(Role::MenuItem, "Ignore");
+        assert!(waves(&trial).is_empty());
+        // A box in a language with no checker marks nothing, twice or not.
+        let mut none = Trial::new(Page { text: "the the".into(), checked: false }, |app, ui| {
+            ui.spell_with(Some("none"), stand_in, true);
+            ui.text_area(&mut app.text, "Notes", (4, 8));
+        });
+        none.run();
+        assert!(waves(&none).is_empty());
+    }
+
+    /// Windows' own checkers as one: "colour" is right in Canadian English, "color" in American.
+    #[cfg(windows)]
+    #[test]
+    fn windows_checks_two_languages_as_one() {
+        std::thread::spawn(|| {
+            let (wrong, _) = system_says("en-US,en-CA", &["colour", "color", "helo"]).expect("Windows has checkers for both");
+            assert_eq!(wrong, [false, false, true]);
+            let (wrong, _) = system_says("en-US, xx-YY", &["colour", "color"]).expect("the one there is");
+            assert_eq!(wrong, [true, false]);
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Enchant's checkers as one, where it has English and German dictionaries.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn enchant_checks_two_languages_as_one() {
+        enchant_brought();
+        let Some((wrong, offered)) = system_says("en_US,de_DE", &["Hund", "dog", "Huas", "helo"]) else { return eprintln!("(no Enchant here)") };
+        if system("de_DE").is_none() {
+            return eprintln!("(no German dictionary for Enchant here)");
+        }
+        assert_eq!(wrong, [false, false, true, true]);
+        assert!(offered.len() <= OFFERED);
     }
 }

@@ -49,9 +49,42 @@ pub(crate) struct Device {
     made: Made,
     /// It was asked for by `Renderer::Auto`, which a new one after a loss is too.
     fussy: bool,
+    /// Where the GPU draws the windows too, and what it records to (see `gpu_draw`).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) drawing: crate::gpu_draw::Drawing,
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) list: crate::gpu_draw::DrawList,
+    /// What OpenGL draws with: not yet tried, or what that gave.
+    #[cfg(feature = "gpu-draw")]
+    opengl: Option<Option<crate::gpu_draw_opengl::Pipeline>>,
 }
 
 impl Device {
+    /// A device of a path, asked for by `Renderer::Auto` if `fussy`. Where the feature
+    /// `gpu-draw` is on it draws the windows too, as `TAUT_DRAW` and `gpu_draw::Drawing` say.
+    fn new(made: Made, fussy: bool) -> Device {
+        #[cfg(feature = "gpu-draw")]
+        let gpu = matches!(&made, Made::D3d11(device) if device.gpu && device.drawing.is_some()) || matches!(made, Made::Gl(_));
+        #[cfg(feature = "gpu-draw")]
+        let drawing = crate::gpu_draw::Drawing::chosen(fussy, gpu, std::env::var("TAUT_DRAW").ok().as_deref());
+        #[cfg(feature = "gpu-draw")]
+        return Device { made, fussy, drawing, list: crate::gpu_draw::DrawList::default(), opengl: None };
+        #[cfg(not(feature = "gpu-draw"))]
+        Device { made, fussy }
+    }
+
+    /// Whether the GPU draws a part of a window, `area` pixels (left, top, right, bottom).
+    #[cfg(feature = "gpu-draw")]
+    #[inline]
+    pub(crate) fn draws(&self, area: [i32; 4]) -> bool {
+        let path = match &self.made {
+            Made::D3d11(device) => device.drawing.is_some(),
+            Made::Gl(_) => !matches!(self.opengl, Some(None)),
+            _ => false,
+        };
+        path && self.drawing.takes(area)
+    }
+
     /// A device on the first of `asked`'s GPU paths that has one (see `Renderer::tried`). If
     /// `fussy` (`Renderer::Auto`), none over a remote desktop. Never a software device.
     pub(crate) fn gpu(asked: Renderer, fussy: bool) -> Option<Device> {
@@ -59,7 +92,7 @@ impl Device {
         if fussy && !cfg!(test) && unsafe { GetSystemMetrics(0x1000) } != 0 {
             return None;
         }
-        asked.tried().find_map(|path| Some(Device { made: Device::of(path)?, fussy }))
+        asked.tried().find_map(|path| Some(Device::new(Device::of(path)?, fussy)))
     }
 
     /// A GPU device of `path`, if it has one.
@@ -78,7 +111,7 @@ impl Device {
 
     /// Direct3D 11's software device, WARP: the CPU, for windows that cannot go back to GDI.
     pub(crate) fn software() -> Option<Device> {
-        Some(Device { made: Made::D3d11(gpu_d3d11::Device::software()?), fussy: false })
+        Some(Device::new(Made::D3d11(gpu_d3d11::Device::software()?), false))
     }
 
     /// A device after `lost` was lost: a GPU one, its path first, if it was a GPU; else WARP.
@@ -170,6 +203,17 @@ impl Shown {
                 (Shown::Gl(shown), Made::Gl(device)) => shown.upload(device, at, size, first, pitch),
                 _ => {}
             }
+        }
+    }
+
+    /// Draws a recorded paint into what shows the window, inside `area` (left, top, right,
+    /// bottom). Says whether it could: if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn draw(&mut self, device: &mut Device, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
+        match (self, &mut device.made) {
+            (Shown::D3d11(shown), Made::D3d11(device)) => shown.draw(device, list, area),
+            (Shown::Gl(shown), Made::Gl(_)) => shown.draw(&mut device.opengl, list, area),
+            _ => false,
         }
     }
 
@@ -430,12 +474,22 @@ pub(crate) mod tests {
         let start = std::time::Instant::now();
         loop {
             let ((one, wide), (other, also)) = (picture(a), picture(b));
-            if (wide == also && one == other) || start.elapsed() > std::time::Duration::from_secs(2) {
-                return wide == also && one == other;
+            if (wide == also && alike(&one, &other)) || start.elapsed() > std::time::Duration::from_secs(2) {
+                return wide == also && alike(&one, &other);
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
             pump();
         }
+    }
+
+    /// Whether two pictures are the same in colour: byte for byte; or where the GPU draws
+    /// (`gpu-draw`), no channel further apart than it may be (see `gpu_draw`).
+    fn alike(one: &[u32], other: &[u32]) -> bool {
+        #[cfg(feature = "gpu-draw")]
+        let near = |a: u32, b: u32| [16, 8, 0].iter().all(|shift| (a >> shift & 255).abs_diff(b >> shift & 255) <= crate::gpu_draw::tests::TOLERANCE);
+        #[cfg(not(feature = "gpu-draw"))]
+        let near = |a: u32, b: u32| a & 0xff_ffff == b & 0xff_ffff;
+        one.len() == other.len() && one.iter().zip(other).all(|(a, b)| near(*a, *b))
     }
 
     /// How two windows' pixels differ: how many, and the first.
@@ -443,14 +497,16 @@ pub(crate) mod tests {
         let ((one, wide), (other, _)) = (picture(a), picture(b));
         let differing: Vec<usize> = (0..one.len().min(other.len())).filter(|at| one[*at] != other[*at]).collect();
         let first = differing.first().map(|at| (at % wide, at / wide, one[*at], other[*at]));
-        format!("{} pixels of {}, first {first:x?}", differing.len(), one.len())
+        let off = |at: &usize| [16, 8, 0].map(|shift| (one[*at] >> shift & 255).abs_diff(other[*at] >> shift & 255)).into_iter().max().unwrap_or(0);
+        let most = differing.iter().max_by_key(|at| off(at)).map(|at| (at % wide, at / wide, one[*at], other[*at]));
+        format!("{} pixels of {}, first {first:x?}, most {most:x?}", differing.len(), one.len())
     }
 
     /// Whether a presented frame has the pixels a window drawn by the CPU shows, in colour. (Its
     /// alpha byte is the strip's, which neither shows.)
     fn presented_as(presented: &(Vec<u32>, usize, Vec<RECT>), cpu: HANDLE) -> bool {
         let (shown, wide) = picture(cpu);
-        presented.1 == wide && presented.0.len() == shown.len() && presented.0.iter().zip(&shown).all(|(a, b)| a & 0xff_ffff == b & 0xff_ffff)
+        presented.1 == wide && alike(&presented.0, &shown)
     }
 
     /// The faked devices a path is tested with on this computer, and whether it can be tested

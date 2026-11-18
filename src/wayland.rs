@@ -129,16 +129,23 @@ struct Has {
     text_inputs: u32,
     gestures: u32,
     tablets: u32,
+    /// `zwp_linux_dmabuf_v1`: its global name and version, bound only for a window the GPU
+    /// shows (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    dmabuf: (u32, u32),
 }
 
 /// What all windows and the clipboard share: the connection, the globals, the clipboard, and
 /// the last input serial (which the compositor wants whenever the program asks for something
-/// only a person should start: setting the selection, moving a window, activation).
+/// only a person should start: setting the selection, moving a window, activation). And the
+/// GPU, where it shows windows (feature `gpu`).
 struct Link {
     wire: Wire,
     has: Has,
     clipboard: RefCell<ClipboardState>,
     serial: Cell<u32>,
+    #[cfg(feature = "gpu")]
+    gpu: RefCell<Option<gpu_wayland::Gpu>>,
 }
 
 /// The Wayland clipboard: whoever copied last offers it in some MIME types and hands it to any
@@ -204,7 +211,15 @@ impl Link {
         if has.compositor == 0 || has.shm == 0 || has.shell == 0 {
             return None;
         }
-        Some((Link { wire, has, clipboard: RefCell::default(), serial: Cell::new(0) }, outputs))
+        let link = Link {
+            wire,
+            has,
+            clipboard: RefCell::default(),
+            serial: Cell::new(0),
+            #[cfg(feature = "gpu")]
+            gpu: RefCell::default(),
+        };
+        Some((link, outputs))
     }
 
     /// The registry's globals: name, interface and version each. Nothing where it says nothing
@@ -355,6 +370,8 @@ fn bind(wire: &Wire, registry: u32, offered: &[(u32, String, u32)]) -> (Has, Vec
             "zwp_pointer_gestures_v1" if cfg!(feature = "touch") && has.gestures == 0 => has.gestures = bind(1, Interface::Gestures),
             "zwp_tablet_manager_v2" if cfg!(feature = "touch") && has.tablets == 0 => has.tablets = bind(1, Interface::Tablets),
             "wl_output" if *version >= 2 => outputs.push((bind(4, Interface::Output), *name)),
+            #[cfg(feature = "gpu")]
+            "zwp_linux_dmabuf_v1" => has.dmabuf = (*name, *version),
             _ => {}
         }
     }
@@ -500,6 +517,9 @@ struct Sheet {
     owed: bool,
     /// See-through: drawn on a clear background.
     clear: bool,
+    /// Shown through the GPU, or by shared memory (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    way: gpu_wayland::Way,
 }
 
 impl Sheet {
@@ -507,7 +527,21 @@ impl Sheet {
     fn new(link: &Link, clear: bool) -> Self {
         let surface = link.wire.make(Interface::Surface);
         link.wire.send(link.has.compositor, 0, &[Arg::Uint(surface)]);
-        Sheet { surface, viewport: 0, buffers: Vec::new(), units: [0; 2], pixels: [0; 2], whole: 1, waiting: 0, changed: Vec::new(), hurry: false, owed: false, clear }
+        Sheet {
+            surface,
+            viewport: 0,
+            buffers: Vec::new(),
+            units: [0; 2],
+            pixels: [0; 2],
+            whole: 1,
+            waiting: 0,
+            changed: Vec::new(),
+            hurry: false,
+            owed: false,
+            clear,
+            #[cfg(feature = "gpu")]
+            way: gpu_wayland::Way::Unasked,
+        }
     }
 
     /// Shows it at a fractional scale from now on.
@@ -570,6 +604,10 @@ impl Sheet {
         if self.changed.is_empty() || (self.waiting != 0 && !self.hurry) {
             return self.pay(link);
         }
+        #[cfg(feature = "gpu")]
+        if let Some(drawn) = self.draw_by_gpu(link, scale, paint) {
+            return drawn;
+        }
         let Some(at) = self.free(link) else { return self.pay(link) };
         let (changed, clear) = (std::mem::take(&mut self.changed), self.clear);
         let buffer = &mut self.buffers[at];
@@ -607,6 +645,8 @@ impl Sheet {
 
     /// Destroys the surface, its buffers and its viewport.
     fn destroy(self, link: &Link) {
+        #[cfg(feature = "gpu")]
+        Sheet::forget_gpu(link, self.way);
         if self.viewport != 0 {
             link.wire.send(self.viewport, 0, &[]);
         }
@@ -1236,6 +1276,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         // A token comes from another program: one longer than a desktop gives is none.
         let token = !host.token.is_empty() && host.token.len() <= crate::freedesktop::TOKEN;
         host.windows[0].come = token && !window.minimized && host.link.has.activation != 0;
+        #[cfg(feature = "gpu")]
+        host.ask_gpu(window.renderer);
         host.seat_up();
         host.settle(Duration::from_secs(5));
         host.windows[0].configured.then_some(host)
@@ -1343,6 +1385,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             Interface::TabletSeat if cfg!(feature = "touch") => self.tablets(message),
             Interface::Tablet if cfg!(feature = "touch") => self.tablet(message),
             Interface::TabletTool if cfg!(feature = "touch") => self.pen(message),
+            #[cfg(feature = "gpu")]
+            Interface::Dmabuf | Interface::DmabufFeedback | Interface::DmabufParams => self.heard_by_gpu(message),
             _ => {}
         }
     }
@@ -1393,6 +1437,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// A buffer released: its surface may draw into it.
     fn released(&mut self, id: u32) {
         let link = self.link.clone();
+        #[cfg(feature = "gpu")]
+        if self.released_by_gpu(id) {
+            return;
+        }
         for shown in &mut self.windows {
             let frames = shown.frame.iter_mut().map(|framed| &mut framed.sheet);
             if std::iter::once(&mut shown.sheet).chain(frames).any(|sheet| sheet.released(&link, id)) {
@@ -2335,6 +2383,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             link.wire.send(link.has.activation, 2, &[Arg::Text(&token), Arg::Uint(surface)]);
         } else if come {
             self.forward(at);
+        }
+        #[cfg(feature = "gpu")]
+        if at == 0 {
+            self.tell_renderer();
         }
     }
 
@@ -3945,3 +3997,8 @@ mod tests {
 #[allow(dead_code, unused_attributes, unused_imports, clippy::all)]
 #[path = "../examples/gallery.rs"]
 mod gallery;
+
+// Windows shown through Vulkan (feature `gpu`): this host's half of what `gpu_x11` does for X.
+#[cfg(feature = "gpu")]
+#[path = "gpu_wayland.rs"]
+mod gpu_wayland;

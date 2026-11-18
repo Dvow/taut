@@ -37,8 +37,9 @@
 //! and Southeast Asian scripts), `emoji` (colour emoji), `fallback-fonts` (characters a font
 //! lacks, in the font Windows would choose), `touch` (touch, pen and touchpad pinch gestures),
 //! `cff` (`.otf` fonts with PostScript outlines), `woff2` (WOFF2 web fonts),
-//! `color-profiles` (image colour profiles) and `gpu` (windows shown by the GPU, see
-//! [`Renderer`]).
+//! `color-profiles` (image colour profiles), `gpu` (windows shown by the GPU, see
+//! [`Renderer`]), `gpu-draw` (windows drawn by the GPU too, see [`Renderer`]) and
+//! `translations` (built-in words in six more languages).
 //!
 //! # Systems
 //!
@@ -103,6 +104,12 @@ pub mod gif;
 mod gpu_d3d11;
 #[cfg(all(windows, feature = "gpu"))]
 mod gpu_d3d12;
+#[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+mod gpu_draw;
+#[cfg(all(feature = "gpu-draw", not(target_os = "macos")))]
+mod gpu_draw_opengl;
+#[cfg(all(windows, feature = "gpu-draw"))]
+mod gpu_draw_windows;
 #[cfg(all(windows, feature = "gpu"))]
 mod gpu_opengl_windows;
 #[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
@@ -205,6 +212,7 @@ pub mod svg;
 mod svg_filters;
 pub mod system_fonts;
 mod table;
+mod table_paste;
 pub mod testing;
 pub mod text;
 mod text_edit;
@@ -213,6 +221,8 @@ mod toolbar;
 mod touch;
 #[cfg(windows)]
 mod touch_windows;
+#[cfg(feature = "translations")]
+mod translations;
 mod tray;
 mod tree_view;
 pub mod ui;
@@ -250,6 +260,7 @@ pub use chart::{Chart, ChartView, Series};
 pub use clock::Time;
 pub use code_editor::{CodeEditor, StringSyntax, Syntax, TokenKind};
 pub use color::Color;
+pub use color_picker::RecentColors;
 pub use date::{CalendarWords, Date};
 pub use dock::{Dock, DockNode};
 pub use drag_drop::{DragData, DropEffect};

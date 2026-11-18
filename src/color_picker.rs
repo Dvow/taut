@@ -1,7 +1,8 @@
 //! Picking a colour: a swatch that opens a picker under it. A square sets saturation and value,
 //! a strip the hue, another strip the alpha (over a checkerboard). Under them the colour as
 //! "#rrggbb" (plus two digits for alpha) and as numbers (RGB 0–255, alpha 0–100), each typed
-//! in; then the colours picked last in this window.
+//! in; then the colours picked last in this window, which an app keeps between runs
+//! ([`RecentColors`]).
 //!
 //! Tab reaches everything. Arrows move the square's ring or a strip's line by 1% (a degree of
 //! hue), ten times as far with Shift. Screen readers get the square, strips and numbers as
@@ -47,6 +48,31 @@ pub(crate) struct Picking {
     used: Vec<Color>,
 }
 
+/// The colours picked last in a window's colour pickers, newest first (at most 8): one line of
+/// text to keep between runs, `to_string()` ("#ff8800 #33aaff80"), back with `parse()`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[must_use]
+pub struct RecentColors(pub Vec<Color>);
+
+impl std::fmt::Display for RecentColors {
+    fn fmt(&self, to: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for (nth, color) in self.0.iter().enumerate() {
+            write!(to, "{}{color}", if nth > 0 { " " } else { "" })?;
+        }
+        Ok(())
+    }
+}
+
+/// Colours as written: each `#rrggbb` or `#rrggbbaa`, spaces between. An error for anything
+/// else, or more than 8.
+impl std::str::FromStr for RecentColors {
+    type Err = ();
+    fn from_str(text: &str) -> Result<Self, ()> {
+        let colors: Option<Vec<Color>> = text.split_whitespace().map(|color| color.starts_with('#').then(|| Color::parse(color)).flatten()).collect();
+        colors.filter(|colors| colors.len() <= KEPT).map(RecentColors).ok_or(())
+    }
+}
+
 /// Where the pointer is in `in_box`, each from 0 to 1, while it holds the box.
 fn fraction_in(ui: &Ui, held: &Response, in_box: Rect) -> Option<[f32; 2]> {
     let at = ui.pointer().filter(|_| held.pressed)?;
@@ -67,6 +93,16 @@ fn checks([wide, high]: [f32; 2]) -> Path {
 
 /// Colours, picked.
 impl Ui {
+    /// The colours picked last in this window's colour pickers, to keep between runs.
+    pub fn recent_colors(&self) -> RecentColors {
+        RecentColors(self.picking.used.clone())
+    }
+    /// Sets the recent colours, as kept from an earlier run (beyond 8, the oldest are dropped).
+    pub fn set_recent_colors(&mut self, colors: RecentColors) {
+        self.picking.used = colors.0;
+        self.picking.used.truncate(KEPT);
+    }
+
     /// A swatch of `color` that opens a picker under it. `changed` says when the person picked
     /// another colour.
     pub fn color_picker(&mut self, color: &mut Color) -> Response {

@@ -50,8 +50,9 @@ Popovers anchored to their button.
 - Multi-line boxes that fill their room, or leave Enter to the app (Shift+Enter: new line).
 - App Edit menus; readable and settable cursor and selection (with line and column).
 - Spell checking with the system's checker and user dictionary (Windows; Enchant on Linux;
-  `NSSpellChecker` on macOS),
-  visible words only, on a background thread; suggestions, "Add to dictionary", "Ignore".
+  `NSSpellChecker` on macOS), visible words only, on a background thread; suggestions, "Add to
+  dictionary", "Ignore"; several languages per box (`Some("en-US,de-DE")`); words written twice
+  ("the the").
   About 30 KB, only when used.
 
 ## Tables and long lists
@@ -59,7 +60,8 @@ Popovers anchored to their button.
 - Sort by heading (Shift: several columns); resize, reorder, hide columns.
 - Horizontal scrolling with pinned columns; pinned top and bottom rows.
 - One Tab stop with a cell cursor; keyboard row selection; in-place editing (text, number,
-  choice); Ctrl+C copies rows as spreadsheet text.
+  choice); Ctrl+C copies rows as spreadsheet text; Ctrl+V pastes it into editable cells;
+  Ctrl+Z and Ctrl+Y undo and redo edits and pastes (`ui.cell_changes`).
 - Lists of any length cost only visible rows, including rows of varying height.
 
 ## Panels, docks, pan and zoom, graphs
@@ -107,7 +109,12 @@ Popovers anchored to their button.
   pairs.
 - **Vertical text** (`ui.vertical_label`): UAX #50 orientation, `vert` forms, `vmtx`/`VORG`;
   matches HarfBuzz in seven CJK fonts.
-- **Dates, times, numbers** in the user's system format; overridable.
+- **Dates, times, numbers** in the user's system format (order, separators, digit counts, group
+  sizes such as 12,34,567); month and day names and AM/PM in the system's language; Windows
+  region changes followed while running; overridable.
+- **Built-in words** (menus, file dialog, calendar, bars) in German, Spanish, French, Japanese,
+  Portuguese and Simplified Chinese with `translations`, from the user's language or
+  `ui.translate("de")`.
 
 ## Drawing and pictures
 
@@ -133,7 +140,8 @@ Popovers anchored to their button.
   tool, dialog, always on top); close requests that can be refused, also at logoff.
 - Frameless windows with app-drawn title strips (real title bar on Windows: snapping works);
   full screen; transparent windows.
-- Saved state: docks, tables, panels, windows, pan-zoom views, window position, one line of text each;
+- Saved state: docks, tables, panels, windows, pan-zoom views, window position, recent colours,
+  one line of text each;
   `taut::storage` writes atomically to the settings folder.
 - Drag and drop between boxes, from other programs (files, text) and out to them (files, text,
   pictures, links).
@@ -146,6 +154,9 @@ Popovers anchored to their button.
   the screen; only changed rectangles uploaded (and presented, where the path can); a missing
   path falls back to the next; a lost device made again, else the CPU. `Window::renderer`,
   `ui.renderer()`, `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl`.
+- **Drawn by the GPU** (`gpu-draw`): Direct3D 11 and OpenGL draw boxes, borders, shadows, text and
+  pictures themselves, within a few levels of the CPU; paths and gradients go up as CPU-drawn
+  patches. Only changed parts drawn; `Auto` only large ones. `TAUT_DRAW=cpu|gpu|auto`.
 
 ## Input and accessibility
 

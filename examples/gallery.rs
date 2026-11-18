@@ -423,7 +423,7 @@ fn table(app: &mut App, ui: &mut Ui) {
     ui.row().pad((14.0, 8.0)).gap(12.0).open();
     // (The words wrap in what the tick box leaves.)
     let summary = format!(
-        "{} files, {} picked. Click a heading to sort by it and drag its edge; the arrows, Control and Shift pick rows; F2 or two clicks change a cell; Control+C copies.",
+        "{} files, {} picked. Click a heading to sort by it and drag its edge; the arrows, Control and Shift pick rows; F2 or two clicks change a cell; Control+C copies, Control+V pastes from a spreadsheet, Control+Z undoes.",
         app.files.len(),
         app.selection.len()
     );
@@ -437,8 +437,11 @@ fn table(app: &mut App, ui: &mut Ui) {
     if table.changed {
         sort(app);
     }
-    // A cell the person changed: the app puts it into its own files.
-    if let Some(change) = ui.edited_cell(&table) {
+    // Cells the person changed, pasted, or undid: the app puts them into its own files. (It
+    // says what a cell shows, for undoing.)
+    let files = &app.files;
+    let shown = |row: usize, column: usize| [files[row].0.clone(), format!("{} KB", files[row].1), files[row].2.to_string()][column].clone();
+    for change in ui.cell_changes(&table, &COLUMNS, shown) {
         let file = &mut app.files[change.row];
         match change.value {
             CellValue::Text(name) => file.0 = name,
@@ -516,6 +519,8 @@ fn list(app: &mut App, ui: &mut Ui) {
     ui.column().grow().scroll().pad(10.0).gap(6.0).open();
     ui.checkbox(&mut app.ticked, "A tick box, which the keyboard can reach with Tab and flip with Space");
     ui.paragraph("A paragraph breaks into as many lines as the width of the window needs. Under it is a box for several lines of text, then a list that scrolls.");
+    // Spelling checked in the person's language; a word written twice is marked too.
+    ui.check_spelling(None);
     ui.text_area(&mut app.notes, "Notes", (2, 6));
     // In groups of ten, each under a heading that stays at the top while its rows scroll
     // by under it, until the next heading pushes it up.
@@ -1079,6 +1084,29 @@ fn form_parts(app: &mut App, ui: &mut Ui) {
     ui.row().gap(10.0).open();
     ui.date_range(&mut app.away.0, &mut app.away.1);
     ui.close();
+    // Numbers, days and times as the person writes them; and the colours picked last, one line
+    // to keep between runs.
+    let here = format!("{} · {} · {}", ui.format_number(1_234_567.5, 1), ui.format_date(app.day), ui.format_time(app.alarm, false));
+    dim_text(ui, &here);
+    let recent = ui.recent_colors().to_string();
+    if !recent.is_empty() {
+        dim_text(ui, &format!("Kept: {recent}"));
+    }
+    // With the feature `translations`: the built-in words in another language.
+    #[cfg(feature = "translations")]
+    languages(ui);
+    ui.close();
+}
+
+/// Buttons that put the built-in words (menus, calendar, file dialog) in another language.
+#[cfg(feature = "translations")]
+fn languages(ui: &mut Ui) {
+    ui.wrapping_row().gap(6.0).open();
+    for (name, code) in [("Deutsch", "de"), ("Español", "es"), ("Français", "fr"), ("日本語", "ja"), ("Português", "pt"), ("中文", "zh")] {
+        if ui.button(name).clicked {
+            ui.translate(code);
+        }
+    }
     ui.close();
 }
 

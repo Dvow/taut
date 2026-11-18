@@ -709,6 +709,12 @@ impl GdiText {
         let (dc, units) = (self.strip.dc, &self.fonts.utf16);
         let (origin, clip) = (canvas.origin(), canvas.clip_pixels());
         let ink = color.0;
+        #[cfg(feature = "gpu-draw")]
+        if let Some(list) = canvas.list() {
+            let strip = crate::gpu_draw_windows::Strip { dc, pixels: self.strip.pixels.get(), width: self.strip.width.get(), rows: self.strip.rows.get() };
+            let at = [(x * scale).round() as i32, (y * scale).round() as i32];
+            return crate::gpu_draw_windows::run(list, &strip, handle, font, (font.size * scale).round() as i32, units, at, color, clip);
+        }
         // SAFETY: the canvas is this strip, so Windows writes into the same pixels; the DC is
         // restored after.
         unsafe {
@@ -1965,6 +1971,10 @@ impl State {
             return;
         }
         let part = rect(area.left as f32 / s, area.top as f32 / s, (area.right - area.left) as f32 / s, (area.bottom - area.top) as f32 / s);
+        #[cfg(feature = "gpu-draw")]
+        if dc == 0 && self.drawn_by_gpu(at, area, part) {
+            return;
+        }
         let mut top = area.top;
         while top < area.bottom {
             let high = rows.min(area.bottom - top);
@@ -2182,6 +2192,29 @@ impl State {
         // SAFETY: the strip holds `width` by at least `high` pixels, and the area lies within
         // it: it is no wider than its window, which is no wider than the strip.
         unsafe { shown.upload(device, [area.left, top], [area.right - area.left, high], first, width as usize) };
+    }
+
+    /// Draws `area` of window `at` (`part` in units) on the GPU, where its device draws a part
+    /// that big (see `gpu_draw`). Says whether it did; if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    fn drawn_by_gpu(&mut self, at: usize, area: RECT, part: crate::geom::Rect) -> bool {
+        let place = [area.left, area.top, area.right, area.bottom];
+        let Some(device) = self.device.as_mut().filter(|device| device.draws(place)) else { return false };
+        let (mut list, size, scale) = (std::mem::take(&mut device.list), [self.windows[at].wide, self.windows[at].high], self.windows[at].scale);
+        list.begin(size);
+        let mut canvas = Canvas::recording(&mut list, size[0] as usize, size[1] as usize, (0, 0), scale);
+        canvas.clip(part);
+        self.in_window(at, |ui, _| ui.paint(&mut canvas));
+        drop(canvas);
+        let drawn = match (self.device.as_mut(), self.windows[at].shown.as_mut()) {
+            (Some(device), Some(shown)) => !list.failed && shown.draw(device, &list, place),
+            _ => false,
+        };
+        list.finish(drawn);
+        if let Some(device) = self.device.as_mut() {
+            device.list = list;
+        }
+        drawn
     }
 
     /// Presents window `at`, `parts` of it drawn anew. A lost device is made again.
@@ -2590,6 +2623,8 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
         WM_NCHITTEST if state.windows[at].asks_hit_test => return state.hit_test(at, l),
         WM_SIZE => state.resized(at),
         WM_MOVE => state.moved(at),
+        // SAFETY: Windows sends this message with null or a setting's name.
+        WM_SETTINGCHANGE if at == 0 && unsafe { crate::locale::region_changed(l) } => state.run(),
         WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED if at == 0 => state.settings_changed(w),
         WM_DISPLAYCHANGE if at == 0 => state.screens_changed(),
         WM_ANSWERED => {

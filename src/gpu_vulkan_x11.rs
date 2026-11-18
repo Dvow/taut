@@ -180,25 +180,6 @@ impl Shows {
     }
 }
 
-/// Whether `name` is among the extensions `list` fills in.
-fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32, name: &CStr) -> bool {
-    let all = listed(VkExtensionProperties::default(), list);
-    // SAFETY: each name is Vulkan's, ending in a zero within its array.
-    all.iter().any(|offered| unsafe { CStr::from_ptr(offered.name.as_ptr()) } == name)
-}
-
-/// What one of Vulkan's enumerations fills in: its count first, then that many.
-fn listed<T: Copy>(zero: T, mut fill: impl FnMut(*mut u32, *mut T) -> i32) -> Vec<T> {
-    let mut count = 0;
-    if fill(&mut count, null_mut()) < 0 {
-        return Vec::new();
-    }
-    let mut all = vec![zero; count as usize];
-    let result = fill(&mut count, all.as_mut_ptr());
-    all.truncate(if result < 0 { 0 } else { count as usize });
-    all
-}
-
 impl Vulkan {
     /// Opens the loader and makes an instance that shows X windows, on an X connection of its
     /// own to the display of `windows`. Nothing where any of it is missing.
@@ -764,10 +745,4 @@ fn within(place: &[c_int; 4], extent: [u32; 2]) -> Option<[c_int; 4]> {
     let [left, top] = [place[0].max(0), place[1].max(0)];
     let [right, bottom] = [place[2].min(extent[0] as c_int), place[3].min(extent[1] as c_int)];
     (left < right && top < bottom).then_some([left, top, right, bottom])
-}
-
-/// The copy of `place` from pixels `width` a row into the same place of an image.
-fn region([left, top, right, bottom]: [c_int; 4], width: c_int) -> VkBufferImageCopy {
-    let at = (top as u64 * width as u64 + left as u64) * 4;
-    VkBufferImageCopy { buffer_offset: at, row_length: width as u32, layers: LAYER, offset: [left, top, 0], extent: [(right - left) as u32, (bottom - top) as u32, 1], ..Default::default() }
 }

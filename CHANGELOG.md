@@ -5,6 +5,14 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
 ## 0.2.1 (unreleased)
 
+- **Drawn by the GPU:** the feature `gpu-draw` (with `gpu`) has Direct3D 11 (Windows) and
+  OpenGL (Windows, X11) draw windows, not only show them: boxes, rounded corners, borders,
+  shadows, glyphs, icons, GDI's text and pictures. Paths, gradients, scenes and SVG drawings are
+  drawn by the CPU into patches the GPU lays in; what neither can (see-through boxes) has the
+  CPU draw that part. Within a few levels of 255 of the CPU at edges; GDI's text on a solid
+  colour is GDI's own pixels. `Renderer::Auto` draws only large parts on the GPU; a named path
+  draws all. `TAUT_DRAW=cpu|gpu|auto` overrides. Nothing breaks; without the feature nothing of
+  it is compiled in.
 - **Fixed:** a scrolled box could keep redrawing on Linux in optimised builds (its offset flipped
   between 0.0 and -0.0).
 - **Renamed, old names kept** (deprecated, removed in 0.3):
@@ -31,6 +39,25 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   (`NSSpellChecker`); dragging out to other programs; what an input method composes shown at
   the cursor; `emoji` from Apple Color Emoji; `layer_metal`, the UI over a program's Metal
   rendering. Gaps: [what is missing](docs/what-is-missing.md).
+- **GPU under Wayland:** with `gpu`, a window asking for a GPU path (`Renderer::Vulkan`, `Gpu`,
+  another named, or `TAUT_RENDERER`) is shown through Vulkan: its pixels go to the compositor as
+  dmabufs (`zwp_linux_dmabuf_v1`), byte for byte the CPU's. `Auto` keeps shared memory. Any
+  failure falls back to shared memory.
+- **Locale:** while `ui.locale` is `None`, dates, times and numbers take the system's digit
+  counts (3/7/2026), time separator and hour digits, and group sizes (12,34,567); month and day
+  names and AM/PM the app left English are the system's (`CalendarWords::of_the_system()`).
+  Windows region changes are followed while running.
+- **Translations:** the feature `translations` puts every built-in word in German, Spanish,
+  French, Japanese, Portuguese or Simplified Chinese, from the user's language;
+  `ui.translate("de")`, `FileWords::in_language("de")`.
+- **Tables:** `ui.cell_changes` gives edits, pastes, undo and redo; Ctrl+V pastes spreadsheet
+  text into editable cells, Ctrl+Z and Ctrl+Y undo and redo.
+- **Spelling:** several languages per box (`Some("en-US,de-DE")`); words written twice are
+  marked, and their menu offers the word once.
+- **Colour picker:** `ui.recent_colors()` and `ui.set_recent_colors(..)` keep the recent colours
+  between runs (`RecentColors`, one line of text).
+- **File dialog:** a name the system's dialog saves under without an ending asked for gets the
+  first (the Linux portal adds none); if that would replace a file, the dialog is asked again.
 
 ## 0.2.0 (2026-11-17)
 

@@ -76,14 +76,15 @@ impl Ui {
         written
     }
     fn write_time(&self, into: &mut String, time: Time, seconds: bool) {
-        let twelve = self.locale_in_use().twelve_hour_clock;
-        let hour = if twelve { (time.hour % 12 + 11) % 12 + 1 } else { time.hour };
-        let _ = write!(into, "{hour:02}:{:02}", time.minute);
+        let formats = self.formats();
+        let (twelve, mark) = (formats.locale.twelve_hour_clock, formats.fine.time_separator);
+        formats.write_hour(into, if twelve { (time.hour % 12 + 11) % 12 + 1 } else { time.hour });
+        let _ = write!(into, "{mark}{:02}", time.minute);
         if seconds {
-            let _ = write!(into, ":{:02}", time.second);
+            let _ = write!(into, "{mark}{:02}", time.second);
         }
         if twelve {
-            let _ = write!(into, " {}", self.calendar_words.halves[(time.hour / 12).min(1) as usize]);
+            let _ = write!(into, " {}", self.calendar_words_in_use().halves[(time.hour / 12).min(1) as usize]);
         }
     }
 
@@ -111,7 +112,7 @@ impl Ui {
         // The date: a field like the others, that opens the calendar.
         let mut written = std::mem::take(&mut self.scratch);
         written.clear();
-        self.locale_in_use().write_date(&mut written, *date);
+        self.formats().write_date(&mut written, *date);
         let opener = self.press(self.id("date"));
         if opener.clicked {
             self.open_calendar(opener.id, state.rect);
@@ -186,15 +187,16 @@ impl Ui {
 
     /// The separator between fields.
     fn time_mark(&mut self) -> &mut Self {
-        let t = self.theme;
-        self.el().text(":", t.font, t.text_dim).show();
+        let (t, mut mark) = (self.theme, [0; 4]);
+        let mark = self.formats().fine.time_separator.encode_utf8(&mut mark);
+        self.el().text(mark, t.font, t.text_dim).show();
         self
     }
 
     /// One field: a number from `least` to `most` that wraps, two digits; or the AM/PM word.
     /// Returns its response and new value.
     fn time_part(&mut self, which: usize, value: u8, [least, most]: [u8; 2], last: usize) -> (Response, u8) {
-        let (t, words) = (self.theme, self.calendar_words);
+        let (t, words) = (self.theme, self.calendar_words_in_use());
         let state = self.interact(self.id(which));
         let mut to = value as i32;
         if state.focused {
@@ -211,6 +213,10 @@ impl Ui {
         written.clear();
         let _ = match which {
             HALF => write!(written, "{}", words.halves[to as usize]),
+            HOURS => {
+                self.formats().write_hour(&mut written, to);
+                Ok(())
+            }
             _ => write!(written, "{to:02}"),
         };
         let (fill, ink) = match (state.focused, state.hovered) {
@@ -264,7 +270,7 @@ impl Ui {
     fn time_typed(&mut self, id: Id, which: usize, letter: char, value: i32, [least, most]: [u8; 2], last: bool) -> (i32, bool) {
         let lower = letter.to_lowercase().next();
         if which == HALF {
-            let picked = self.calendar_words.halves.iter().position(|word| word.chars().next().and_then(|first| first.to_lowercase().next()) == lower);
+            let picked = self.calendar_words_in_use().halves.iter().position(|word| word.chars().next().and_then(|first| first.to_lowercase().next()) == lower);
             return (picked.map_or(value, |half| half as i32), false);
         }
         let Some(digit) = letter.to_digit(10) else { return (value, false) };

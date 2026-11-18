@@ -806,7 +806,7 @@ impl Shown {
         }
     }
 
-    /// Puts a window where its app asked (see `screens::spot`): its frame's top left at a
+    /// Puts a window where its app asked (see `screens::window_origin`): its frame's top left at a
     /// desktop place, on the screen there or the nearest; in the middle of a screen, or of the
     /// window it belongs to. Else AppKit puts it in the middle of the main screen.
     fn placed(window: Obj, asked: OpenAt) {

@@ -167,6 +167,14 @@ pub(crate) struct Gpu {
     /// The display is never terminated: Mesa's d3d12 driver (WSL's) crashes at thread exit
     /// after it.
     lasting: bool,
+    /// Where the GPU draws the windows too, what it records to, and what it draws with: not yet
+    /// tried, or what that gave (see `gpu_draw`).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) drawing: crate::gpu_draw::Drawing,
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) list: Box<crate::gpu_draw::DrawList>,
+    #[cfg(feature = "gpu-draw")]
+    pipeline: Option<Option<Box<crate::gpu_draw_opengl::Pipeline>>>,
 }
 
 /// A window shown through the GPU: its surface, its texture and that texture's size in pixels.
@@ -202,7 +210,27 @@ impl Gpu {
         if display.is_null() {
             return None;
         }
-        let mut gpu = Gpu { egl, gl, display, config: null_mut(), context: null_mut(), current: null_mut(), height: -1, most: 0, swap: None, aged: false, reset: None, lost: false, lasting: false };
+        let mut gpu = Gpu {
+            egl,
+            gl,
+            display,
+            config: null_mut(),
+            context: null_mut(),
+            current: null_mut(),
+            height: -1,
+            most: 0,
+            swap: None,
+            aged: false,
+            reset: None,
+            lost: false,
+            lasting: false,
+            #[cfg(feature = "gpu-draw")]
+            drawing: crate::gpu_draw::Drawing::Never,
+            #[cfg(feature = "gpu-draw")]
+            list: Box::default(),
+            #[cfg(feature = "gpu-draw")]
+            pipeline: None,
+        };
         // SAFETY: the display was just found; the version is not asked for.
         if unsafe { (gpu.egl.eglInitialize)(display, null_mut(), null_mut()) } == 0 {
             return None;
@@ -213,6 +241,10 @@ impl Gpu {
         gpu.learn();
         let shows = gpu.window(id, size)?;
         gpu.lasting = gpu.name().starts_with("D3D12");
+        #[cfg(feature = "gpu-draw")]
+        {
+            gpu.drawing = crate::gpu_draw::Drawing::chosen(!any, !gpu.software(), std::env::var("TAUT_DRAW").ok().as_deref());
+        }
         // SAFETY: the display is open (the caller's promise).
         if (any || unsafe { gpu.direct(x) }) && gpu.program() {
             return Some((gpu, shows));
@@ -432,6 +464,25 @@ impl Gpu {
         note(&mut shows.put, place);
     }
 
+    /// Draws a recorded paint into a window's texture, inside `place` (left, top, right,
+    /// bottom), to be shown with what was put in; what it draws with is made the first time.
+    /// Says whether it could: if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn draw(&mut self, shows: &mut Shows, list: &crate::gpu_draw::DrawList, place: [c_int; 4]) -> bool {
+        if !self.current(shows.surface) {
+            return false;
+        }
+        let egl = &self.egl;
+        // SAFETY: the name ends in a zero.
+        let mut find = |name: &CStr| unsafe { (egl.eglGetProcAddress)(name.as_ptr()) }.cast_const();
+        let made = self.pipeline.get_or_insert_with(|| crate::gpu_draw_opengl::Pipeline::new(&mut find, false).map(Box::new));
+        let drawn = made.as_mut().is_some_and(|pipeline| pipeline.draw(shows.texture, shows.size, list, place));
+        if drawn {
+            note(&mut shows.put, place);
+        }
+        drawn
+    }
+
     /// Shows what was put into a window's texture since it was last shown: drawn into the back
     /// buffer where it changed (and where an older back buffer lacks), and swapped in naming
     /// those places. A device that fails is lost.
@@ -489,6 +540,12 @@ impl Gpu {
             (self.egl.eglDestroySurface)(self.display, shows.surface);
         }
         self.current = null_mut();
+    }
+
+    /// Tests: whether it has drawn windows itself (see `gpu_draw`).
+    #[cfg(all(test, feature = "gpu-draw"))]
+    pub(crate) fn has_drawn(&self) -> bool {
+        matches!(self.pipeline, Some(Some(_)))
     }
 
     /// Tests: the places the last frame named.

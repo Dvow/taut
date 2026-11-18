@@ -3005,6 +3005,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let (id, [width, height], clear, context) = (shown.id, shown.size, shown.kind.transparent, self.draws_with(at).2);
         let (left, right) = (((area.x * scale).floor() as c_int).max(0), ((area.right() * scale).ceil() as c_int).min(width));
         let (mut top, bottom) = (((area.y * scale).floor() as c_int).max(0), ((area.bottom() * scale).ceil() as c_int).min(height));
+        #[cfg(feature = "gpu-draw")]
+        if !clear && self.drawn_by_gpu(at, area, [left, top, right, bottom]) {
+            return;
+        }
         while top < bottom && left < right {
             let high = rows.min(bottom - top);
             let mut canvas = Canvas::new(&mut self.strip[..(width * high) as usize], width as usize, high as usize, (0, top), scale);
@@ -3033,6 +3037,24 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let crate::gpu_x11::Way::Gpu(shows) = &mut shown.way else { return false };
         gpu.put(shows, &self.strip, shown.size[0], place);
         true
+    }
+
+    /// Draws `area` of a window (`place` in pixels: left, top, right, bottom) on the GPU, where
+    /// the GPU shows the window and draws a part that big itself (see `gpu_draw`). Says whether
+    /// it did; if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    fn drawn_by_gpu(&mut self, at: usize, area: Rect, place: [c_int; 4]) -> bool {
+        let (scale, size) = (self.scale, self.windows[at].size);
+        let (Some(gpu), crate::gpu_x11::Way::Gpu(_)) = (self.gpu.as_mut(), &self.windows[at].way) else { return false };
+        let Some(list) = gpu.drawing(place) else { return false };
+        let mut list = std::mem::take(list);
+        list.begin(size);
+        let mut canvas = Canvas::recording(&mut list, size[0] as usize, size[1] as usize, (0, 0), scale);
+        canvas.clip(area.snap_to_pixels(scale));
+        self.windows[at].with(&mut self.ui, |ui| ui.paint(&mut canvas));
+        drop(canvas);
+        let (Some(gpu), crate::gpu_x11::Way::Gpu(shows)) = (self.gpu.as_mut(), &mut self.windows[at].way) else { return false };
+        gpu.draw(shows, list, place)
     }
 
     /// Shows what was put into a window's texture, where the GPU shows the window.
@@ -7391,6 +7413,50 @@ pub(crate) mod tests {
                     assert_eq!(differ(x, gpu), (0, None, None), "step {nth}: X and {renderer:?} show different pixels");
                 }
             }
+        }
+
+        /// Where the GPU draws too (`gpu-draw`), OpenGL's window shows what its interface paints
+        /// at every step within a few levels (see `gpu_draw`), drawn by the GPU.
+        #[cfg(feature = "gpu-draw")]
+        #[test]
+        #[ignore]
+        fn opengl_draws_what_the_cpu_paints_within_a_few_levels() {
+            let Some(((_alone, mut host), app)) = through(Renderer::OpenGL) else { return };
+            if let Some(crate::gpu_x11::Gpu::OpenGL(gpu)) = host.gpu.as_mut() {
+                gpu.drawing = crate::gpu_draw::Drawing::Always;
+            }
+            let off = |a: &c_ulong, b: &c_ulong| [16, 8, 0].map(|shift| (a >> shift & 255).abs_diff(b >> shift & 255)).into_iter().max().unwrap_or(0);
+            for nth in 0..8 {
+                let said = step(&mut host, &app, nth);
+                let (seen, must) = shown(&mut host, 0);
+                let most = seen.iter().flatten().zip(must.iter().flatten()).map(|(a, b)| off(a, b)).max().unwrap_or(0);
+                assert!(most <= crate::gpu_draw::tests::TOLERANCE as c_ulong, "{said}: a pixel {most} levels off what was painted");
+            }
+            assert!(matches!(host.gpu.as_ref(), Some(crate::gpu_x11::Gpu::OpenGL(gpu)) if gpu.has_drawn()), "drawn by the GPU");
+        }
+
+        /// Where the GPU draws too (`gpu-draw`), OpenGL draws every kind of thing as the CPU
+        /// paints it, within a few levels: boxes, borders, a shadow, an icon, pictures, text,
+        /// and what the CPU puts in patches.
+        #[cfg(feature = "gpu-draw")]
+        #[test]
+        #[ignore]
+        fn opengl_draws_every_kind_of_thing_as_the_cpu_paints_it() {
+            let mut pictures = None;
+            let window = Window { title: "taut gpu", width: 360.0, height: 160.0, renderer: Renderer::OpenGL, ..Default::default() };
+            let (_alone, mut host) = host(window, move |ui| crate::gpu_draw::tests::every_kind(ui, &mut pictures)).expect("a display");
+            settle(&mut host);
+            let Some(crate::gpu_x11::Gpu::OpenGL(gpu)) = host.gpu.as_mut() else { return eprintln!("OpenGL missing: not tested") };
+            gpu.drawing = crate::gpu_draw::Drawing::Always;
+            host.windows[0].uncovered = whole(host.windows[0].size, host.scale);
+            host.draw(0);
+            let (seen, must) = shown(&mut host, 0);
+            let off = |a: &c_ulong, b: &c_ulong| [16, 8, 0].map(|shift| (a >> shift & 255).abs_diff(b >> shift & 255)).into_iter().max().unwrap_or(0);
+            let most = seen.iter().flatten().zip(must.iter().flatten()).map(|(a, b)| off(a, b)).max().unwrap_or(0);
+            let differ = seen.iter().flatten().zip(must.iter().flatten()).filter(|(a, b)| a != b).count();
+            eprintln!("OpenGL: {differ} pixels differ, at most by {most}");
+            assert!(most <= crate::gpu_draw::tests::TOLERANCE as c_ulong, "a pixel {most} levels off what was painted");
+            assert!(matches!(host.gpu.as_ref(), Some(crate::gpu_x11::Gpu::OpenGL(gpu)) if gpu.has_drawn()), "drawn by the GPU");
         }
 
         /// A lost device is made again, and the window drawn whole through it; lost with none to

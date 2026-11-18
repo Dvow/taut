@@ -104,6 +104,48 @@ jobs:
           export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
           xvfb-run -n 192 -s "-screen 0 900x600x24" target/release/examples/walk "$RUNNER_TEMP/shots"
 
+  # Windows under Wayland shown through dmabufs: the runner has /dev/udmabuf, lavapipe exports
+  # into it, and Weston (GL) takes them; pixman Weston proves the fallback to shared memory.
+  wayland-dmabufs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # The tests fail where no device exports dmabufs, rather than fall back.
+      TAUT_DMABUF_EXPORTS: 1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Weston, lavapipe, Xvfb; and /dev/udmabuf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends weston xvfb xauth dbus \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 \
+            libx11-6 libx11-dev libxtst6 libxi6 libxkbcommon0 libfontconfig1 libfreetype6 fonts-dejavu-core
+          uname -r
+          ls -l /dev/udmabuf
+          sudo chmod 666 /dev/udmabuf
+          weston --version
+          vulkaninfo --summary 2>&1 | grep -E "deviceName|driverInfo"
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
+      - name: Build the tests
+        run: cargo test --lib --all-features --no-run
+      - name: Probe (step 1)
+        run: bash .github/waylandgpu/probe.sh
+      - name: Tests with a played compositor
+        run: cargo test --lib --all-features gpu_wayland -- --nocapture
+      - name: GL Weston on Xvfb (dmabufs, the screen read)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-x11-gl 31 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: GL Weston headless (dmabufs)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-gl 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: Pixman Weston (no dmabufs; shared memory)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+      - name: Pixman Weston on Xvfb (shared memory, the screen read)
+        if: ${{ !cancelled() }}
+        run: bash .github/waylandgpu/desk.sh weston-x11 32 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+
   macos:
     runs-on: macos-latest
     timeout-minutes: 60
