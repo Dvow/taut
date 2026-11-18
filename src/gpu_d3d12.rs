@@ -5,7 +5,8 @@
 //!   whole window (`CopyTextureRegion`): only what changed. The texture is copied to the back
 //!   buffer and presented with the changed rectangles (`Present1`, `FLIP_SEQUENTIAL`), at the
 //!   screen's refresh.
-//! - Each frame is waited for (a fence), so the upload buffer is free again for the next.
+//! - Each frame is waited for (a fence), so the upload buffer is free again for the next. A
+//!   removed software device (WARP) is waited for by `Marks` instead.
 //! - d3d12.dll and dxgi.dll are loaded from the system folder when a window first asks for
 //!   Direct3D 12. COM methods are called by their place in the vtable, as d3d12.h and
 //!   dxgi1_4.h order them.
@@ -17,6 +18,8 @@ use crate::windows::sys::{HANDLE, RECT};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -35,6 +38,7 @@ const DEVICE: [u32; 4] = named(0x1898_19F1, 0x1DB6, 0x4B57, [0xBE, 0x54, 0x18, 0
 const QUEUE: [u32; 4] = named(0x0EC8_70A6, 0x5D7E, 0x4C22, [0x8C, 0xFC, 0x5B, 0xAA, 0xE0, 0x76, 0x16, 0xED]);
 const ALLOCATOR: [u32; 4] = named(0x6102_DEE4, 0xAF59, 0x4B09, [0xB9, 0x99, 0xB4, 0x4D, 0x73, 0xF0, 0x9B, 0x24]);
 const LIST: [u32; 4] = named(0x5B16_0D0F, 0xAC1B, 0x4185, [0x8B, 0xA8, 0xB3, 0xAE, 0x42, 0xA5, 0xA4, 0x55]);
+const LIST2: [u32; 4] = named(0x38C3_E585, 0xFF17, 0x412C, [0x91, 0x50, 0x4F, 0xC6, 0xF9, 0xD7, 0x2A, 0x28]);
 const RESOURCE: [u32; 4] = named(0x6964_42BE, 0xA72E, 0x4059, [0xBC, 0x79, 0x5B, 0x5C, 0x98, 0x04, 0x0F, 0xAD]);
 const FENCE: [u32; 4] = named(0x0A75_3DCF, 0xC4D8, 0x4B91, [0xAD, 0xF6, 0xBE, 0x5A, 0x60, 0xD9, 0x5A, 0x76]);
 const FACTORY: [u32; 4] = named(0x1BC6_EA02, 0xEF36, 0x464F, [0xBF, 0x0C, 0x21, 0xCA, 0x39, 0xE5, 0x16, 0x8A]);
@@ -47,6 +51,7 @@ const COPY_SOURCE: u32 = 0x800;
 const GENERIC_READ: u32 = 0xAC3;
 const DEFAULT_HEAP: u32 = 1;
 const UPLOAD_HEAP: u32 = 2;
+const READBACK_HEAP: u32 = 3;
 /// A row of an upload's pixels starts at a multiple of this, and each upload at twice it.
 const ROW_ALIGNMENT: usize = 256;
 
@@ -145,6 +150,31 @@ fn buffer(device: Com, kind: u32, bytes: usize, state: u32) -> Option<(Com, *mut
     Some((made, there))
 }
 
+/// `D3D12_WRITEBUFFERIMMEDIATE_PARAMETER`.
+#[repr(C)]
+struct Mark {
+    at: u64,
+    value: u32,
+}
+
+/// How far a software device (WARP) really is. Once removed, its fence reads done at once, while
+/// it goes on running the commands it was given. So each command list ends by writing its
+/// number here, once all before it is done (`WriteBufferImmediate`, `MARKER_OUT`).
+struct Marks {
+    /// The command list, as `ID3D12GraphicsCommandList2`.
+    list: Com,
+    /// A buffer read back, where the CPU sees it, and its GPU address.
+    buffer: Com,
+    seen: *const AtomicU32,
+    at: u64,
+    /// The number of the last list run.
+    last: Cell<u32>,
+}
+
+/// A removed software device still ran ten seconds after it was waited for. It may write to
+/// anything Direct3D 12 made, so nothing is released from then on.
+static ADRIFT: AtomicBool = AtomicBool::new(false);
+
 /// The Direct3D 12 device a program's windows are shown with: its queue, the one command list
 /// every frame is recorded in, a fence for waiting on it, and the DXGI factory.
 pub(crate) struct Device {
@@ -157,6 +187,8 @@ pub(crate) struct Device {
     /// The fence's value last asked for.
     signalled: Cell<u64>,
     factory: Com,
+    /// Where it is a software device.
+    marks: Option<Marks>,
     /// What it draws windows with, where it does (see `gpu_draw`).
     #[cfg(feature = "gpu-draw")]
     pub(crate) drawing: Option<crate::gpu_draw_d3d12::Pipeline>,
@@ -179,6 +211,7 @@ impl Device {
             event: 0,
             signalled: Cell::new(0),
             factory: null_mut(),
+            marks: None,
             #[cfg(feature = "gpu-draw")]
             drawing: None,
         };
@@ -186,8 +219,9 @@ impl Device {
         if unsafe { factory(0, &FACTORY, &mut made.factory) } < 0 {
             return None;
         }
-        made.device = (0..16).find_map(|at| made.on_adapter(at, make))?;
-        if !made.with_queue() {
+        let software;
+        (made.device, software) = (0..16).find_map(|at| made.on_adapter(at, make))?;
+        if !made.with_queue() || (software && !made.with_marks()) {
             return None;
         }
         // Its shaders are compiled here, on the device's own thread.
@@ -199,8 +233,8 @@ impl Device {
     }
 
     /// A Direct3D 12 device on DXGI's adapter `at`, if it is a GPU and takes one (feature level
-    /// 11.0, 0xB000).
-    fn on_adapter(&self, at: u32, make: MakeDevice) -> Option<Com> {
+    /// 11.0, 0xB000); and whether it is a software device.
+    fn on_adapter(&self, at: u32, make: MakeDevice) -> Option<(Com, bool)> {
         let (mut adapter, mut described, mut device) = (null_mut(), [0u64; 40], null_mut());
         // SAFETY: the factory's EnumAdapters1 (12), the adapter's GetDesc1 (10) into room for a
         // `DXGI_ADAPTER_DESC1` (312 bytes: the vendor after the 256-byte name, the flags at 304);
@@ -208,14 +242,14 @@ impl Device {
         unsafe {
             #[cfg(test)]
             if crate::gpu_windows::tests::faked().software {
-                return tests::on_warp(self.factory, at, make);
+                return tests::on_warp(self.factory, at, make).map(|device| (device, true));
             }
             if function::<unsafe extern "system" fn(Com, u32, *mut Com) -> i32>(self.factory, 12)(self.factory, at, &mut adapter) < 0 {
                 return None;
             }
             function::<unsafe extern "system" fn(Com, *mut u64) -> i32>(adapter, 10)(adapter, described.as_mut_ptr());
             let software = described[32] as u32 == 0x1414 || described[38] as u32 & 2 != 0;
-            let made = (!software && make(adapter, 0xB000, &DEVICE, &mut device) >= 0).then_some(device);
+            let made = (!software && make(adapter, 0xB000, &DEVICE, &mut device) >= 0).then_some((device, false));
             release(adapter);
             made
         }
@@ -245,6 +279,19 @@ impl Device {
         ![self.queue, self.allocator, self.list, self.fence].iter().any(|made| made.is_null()) && self.event != 0
     }
 
+    /// Makes `marks`. Says whether it could.
+    fn with_marks(&mut self) -> bool {
+        let Some((buffer, seen)) = buffer(self.device, READBACK_HEAP, 4, COPY_DESTINATION) else { return false };
+        let mut list = null_mut();
+        // SAFETY: the list's QueryInterface (0); the buffer's GetGPUVirtualAddress (11).
+        let at = unsafe {
+            function::<Ask>(self.list, 0)(self.list, &LIST2, &mut list);
+            function::<unsafe extern "system" fn(Com) -> u64>(buffer, 11)(buffer)
+        };
+        self.marks = Some(Marks { list, buffer, seen: seen.cast(), at, last: Cell::new(0) });
+        !list.is_null()
+    }
+
     /// Whether the device is gone: removed, reset or hung (`GetDeviceRemovedReason`, 37).
     pub(crate) fn removed(&self) -> bool {
         // SAFETY: a plain query of a live device.
@@ -264,6 +311,7 @@ impl Device {
     /// Closes the command list (9), has the queue carry it out (ExecuteCommandLists, 10), and
     /// signals the fence (Signal, 14). Says whether that was taken.
     fn run(&self) -> bool {
+        let next = self.marks.as_ref().map(|marks| self.mark(marks));
         // SAFETY: the list is open, and is this device's.
         unsafe {
             if function::<unsafe extern "system" fn(Com) -> i32>(self.list, 9)(self.list) < 0 {
@@ -271,7 +319,19 @@ impl Device {
             }
             function::<unsafe extern "system" fn(Com, u32, *const Com)>(self.queue, 10)(self.queue, 1, &self.list);
         }
+        if let (Some(marks), Some(next)) = (&self.marks, next) {
+            marks.last.set(next);
+        }
         self.run_nothing()
+    }
+
+    /// Ends the open command list by writing its number to `marks`. Gives the number.
+    fn mark(&self, marks: &Marks) -> u32 {
+        let mark = Mark { at: marks.at, value: marks.last.get().wrapping_add(1) };
+        // SAFETY: the list's WriteBufferImmediate (66), after all before it (`MARKER_OUT`, 2), to
+        // a buffer read back, which is always a copy's destination.
+        unsafe { function::<unsafe extern "system" fn(Com, u32, *const Mark, *const u32)>(marks.list, 66)(marks.list, 1, &mark, &2) };
+        mark.value
     }
 
     /// Signals the fence after what the queue has (Signal, 14). Says whether that was taken.
@@ -281,19 +341,42 @@ impl Device {
         unsafe { function::<unsafe extern "system" fn(Com, Com, u64) -> i32>(self.queue, 14)(self.queue, self.fence, self.signalled.get()) >= 0 }
     }
 
-    /// Waits until the GPU has done all it was given (two seconds at most: a removed device
-    /// signals at once). Says whether it has.
+    /// Waits until the GPU has done all it was given (two seconds at most, ten once removed). Says
+    /// whether it has.
     fn wait(&self) -> bool {
         let wanted = self.signalled.get();
         // SAFETY: the fence's GetCompletedValue (8) and SetEventOnCompletion (9), with this
         // device's event.
-        unsafe {
-            if function::<unsafe extern "system" fn(Com) -> u64>(self.fence, 8)(self.fence) >= wanted {
-                return true;
+        let done = || unsafe { function::<unsafe extern "system" fn(Com) -> u64>(self.fence, 8)(self.fence) };
+        if done() < wanted {
+            // SAFETY: as above.
+            unsafe {
+                function::<unsafe extern "system" fn(Com, u64, HANDLE) -> i32>(self.fence, 9)(self.fence, wanted, self.event);
+                WaitForSingleObject(self.event as usize, 2000);
             }
-            function::<unsafe extern "system" fn(Com, u64, HANDLE) -> i32>(self.fence, 9)(self.fence, wanted, self.event);
-            WaitForSingleObject(self.event as usize, 2000) == 0
         }
+        // A removed device's fence reads all ones at once, done or not.
+        match done() {
+            u64::MAX => self.settled(),
+            done => done >= wanted,
+        }
+    }
+
+    /// After a removal, waits until the device has run every list it was given, as `marks` says
+    /// (ten seconds at most). A GPU stops at once, and Windows keeps its memory until it has.
+    /// Says whether it has; if not, nothing is released from then on (`ADRIFT`).
+    fn settled(&self) -> bool {
+        let Some(marks) = &self.marks else { return true };
+        let start = Instant::now();
+        // SAFETY: the buffer stays where it was mapped while the device lives.
+        while unsafe { (*marks.seen).load(Ordering::Acquire) } != marks.last.get() {
+            if start.elapsed() > Duration::from_secs(10) {
+                ADRIFT.store(true, Ordering::Relaxed);
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        true
     }
 }
 
@@ -307,11 +390,17 @@ impl Drop for Device {
         if !self.queue.is_null() && !self.fence.is_null() && self.run_nothing() {
             self.wait();
         }
+        if ADRIFT.load(Ordering::Relaxed) {
+            #[cfg(feature = "gpu-draw")]
+            std::mem::forget(self.drawing.take());
+            return;
+        }
         #[cfg(feature = "gpu-draw")]
         drop(self.drawing.take());
+        let marks = self.marks.take().map_or([null_mut(); 2], |marks| [marks.list, marks.buffer]);
         // SAFETY: each is held once, by this device; the event is its own.
         unsafe {
-            [self.list, self.allocator, self.fence, self.queue, self.device, self.factory].into_iter().for_each(|object| release(object));
+            [marks[0], marks[1], self.list, self.allocator, self.fence, self.queue, self.device, self.factory].into_iter().for_each(|object| release(object));
             if self.event != 0 {
                 CloseHandle(self.event as usize);
             }
@@ -373,6 +462,9 @@ impl Shown {
     pub(crate) fn fit(&mut self, device: &Device, size: [i32; 2]) -> Option<bool> {
         if size == self.size {
             return Some(false);
+        }
+        if ADRIFT.load(Ordering::Relaxed) {
+            return None;
         }
         self.size = [0; 2];
         self.waiting.clear();
@@ -507,6 +599,9 @@ impl Shown {
 
 impl Drop for Shown {
     fn drop(&mut self) {
+        if ADRIFT.load(Ordering::Relaxed) {
+            return;
+        }
         // SAFETY: each is held once, by this window; the GPU is done with them (every frame is
         // waited for).
         unsafe { [self.upload, self.picture, self.chain].into_iter().for_each(|object| release(object)) };
@@ -526,7 +621,6 @@ pub(crate) mod tests {
     }
 
     /// A device on WARP, as the paths make one when a test fakes software devices.
-    #[cfg(feature = "gpu-draw")]
     pub(crate) fn warp() -> Device {
         crate::gpu_windows::tests::fake(crate::gpu_windows::tests::Faked { software: true, ..Default::default() });
         let device = Device::gpu().expect("Direct3D 12 on WARP");
@@ -582,6 +676,11 @@ pub(crate) mod tests {
             return;
         }
         crate::gpu_windows::tests::fake(faked);
+        remove(device);
+    }
+
+    /// Removes the device for real (`ID3D12Device5::RemoveDevice`, 58).
+    fn remove(device: &Device) {
         let iid = named(0x8B4F_173B, 0x2FEA, 0x4B80, [0x8F, 0x58, 0x43, 0x07, 0x19, 0x1A, 0xB9, 0x5D]);
         let mut five = null_mut();
         unsafe {
@@ -589,6 +688,41 @@ pub(crate) mod tests {
             function::<unsafe extern "system" fn(Com)>(five, 58)(five);
             release(five);
         }
+    }
+
+    #[test]
+    fn a_removed_software_device_is_waited_for_until_it_has_run_all_it_was_given() {
+        // Removing a WARP device keeps any other from being made in the process until it is
+        // released: so in a process of its own.
+        crate::windows::tests::on_a_desktop_of_its_own("gpu_d3d12::tests::alone_a_removed_software_device_is_waited_for");
+    }
+
+    #[test]
+    #[ignore = "run by the test before it, in a process of its own"]
+    fn alone_a_removed_software_device_is_waited_for() {
+        if std::env::var_os(crate::windows::tests::ALONE).is_none() {
+            return;
+        }
+        // Copies WARP takes a while over, removed as soon as they are given.
+        let device = warp();
+        let (from, to) = (texture(&device, [4096, 4096]).expect("a texture"), texture(&device, [4096, 4096]).expect("a texture"));
+        device.open();
+        unsafe {
+            function::<unsafe extern "system" fn(Com, u32, *const Barrier)>(device.list, 26)(device.list, 1, &barrier(from, COPY_DESTINATION, COPY_SOURCE));
+            (0..8).for_each(|_| function::<unsafe extern "system" fn(Com, Com, Com)>(device.list, 17)(device.list, to, from));
+        }
+        assert!(device.run(), "the copies were taken");
+        remove(&device);
+        // Its fence reads done at once; the device may still be copying.
+        let fence = unsafe { function::<unsafe extern "system" fn(Com) -> u64>(device.fence, 8)(device.fence) };
+        let marks = device.marks.as_ref().expect("a software device keeps marks");
+        let ran = || unsafe { (*marks.seen).load(Ordering::Acquire) };
+        println!("at the removal: the fence {fence:#x}, lists run {} of {}", ran(), marks.last.get());
+        assert_eq!(fence, u64::MAX);
+        // Waited for, it has run them all: what they write to can go.
+        assert!(device.wait(), "the device was waited for");
+        assert_eq!(ran(), marks.last.get());
+        unsafe { [to, from].into_iter().for_each(|object| release(object)) };
     }
 
     /// A copy of a back buffer as presented, if a test asked: copied into a buffer read back

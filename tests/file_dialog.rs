@@ -504,8 +504,9 @@ fn a_long_folder_is_read_while_it_shows_and_costs_what_a_screenful_does() {
     files.pick(&folder);
     ui.run(&mut |ui| build(ui, &mut files, &mut got));
     let first = find_node_as(&ui, Role::Table, "").and_then(|table| table.grid).map_or(0, |grid| grid[0]);
-    assert!(first > 0 && first < 20_000, "what was read at once shows at once: {first}");
-    assert!(ui.wake_in().is_some(), "the dialog looks again while the folder is read");
+    // (The thread reading the rest may already be done on a fast disk: then all of it shows.)
+    assert!(first > 0, "what was read at once shows at once: {first}");
+    assert!(first == 20_000 || ui.wake_in().is_some(), "the dialog looks again while the folder is read");
     wait(&mut ui, &mut files, &mut got, |ui| find_node_as(ui, Role::Table, "").and_then(|table| table.grid).is_some_and(|grid| grid[0] == 20_000));
     // In the order people expect, and only the rows in view are described.
     let shown = rows(&ui);
