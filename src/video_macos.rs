@@ -7,6 +7,7 @@ use crate::video::{News, VideoError, VideoSource};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 unsafe extern "C" {
@@ -126,6 +127,56 @@ pub(crate) struct Player {
     last: Option<i64>,
     /// The file bytes were written to.
     written: Option<PathBuf>,
+    /// Seeks asked for; frames wait until the player has finished as many (`Seeked::done`):
+    /// while it decodes its way to the time asked, it hands out frames on the way.
+    seeks: u32,
+    /// What the player calls when a seek is over.
+    seeked: &'static Seeked,
+}
+
+#[link(name = "System")]
+unsafe extern "C" {
+    /// The class of blocks that live for good (`BLOCK_IS_GLOBAL`).
+    static _NSConcreteGlobalBlock: [usize; 0];
+}
+
+/// A block's descriptor: its size.
+#[repr(C)]
+struct Descriptor {
+    reserved: usize,
+    size: usize,
+}
+
+static DESCRIBED: Descriptor = Descriptor { reserved: 0, size: size_of::<Seeked>() };
+
+/// The block a seek calls when it is over, finished or not, laid out as the compiler lays one
+/// out, with the count it adds to. It lives for good: the player may call it after the
+/// `Player` is gone (some 40 bytes for each video opened).
+#[repr(C)]
+struct Seeked {
+    isa: *const c_void,
+    flags: i32,
+    reserved: i32,
+    invoke: unsafe extern "C" fn(*const Seeked, Bool),
+    descriptor: *const Descriptor,
+    done: AtomicU32,
+}
+
+// SAFETY: its count is atomic; the rest is never changed.
+unsafe impl Sync for Seeked {}
+
+impl Seeked {
+    fn new() -> &'static Seeked {
+        /// `BLOCK_IS_GLOBAL`.
+        const LIVES_ON: i32 = 1 << 28;
+        let isa = (&raw const _NSConcreteGlobalBlock).cast();
+        Box::leak(Box::new(Seeked { isa, flags: LIVES_ON, reserved: 0, invoke: Seeked::over, descriptor: &DESCRIBED, done: AtomicU32::new(0) }))
+    }
+    /// The seek is over.
+    unsafe extern "C" fn over(block: *const Seeked, _finished: Bool) {
+        // SAFETY: the player calls the block with itself, which lives for good.
+        unsafe { (*block).done.fetch_add(1, Ordering::Release) };
+    }
 }
 
 impl Player {
@@ -147,7 +198,7 @@ impl Player {
             let player: Obj = send(send::<Obj>(class(c"AVPlayer"), c"alloc", ()), c"initWithPlayerItem:", (item,));
             send::<Obj>(item, c"retain", ());
             send::<()>(player, c"setMuted:", (!sound as Bool,));
-            Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written })
+            Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written, seeks: 0, seeked: Seeked::new() })
         }
     }
 
@@ -162,10 +213,12 @@ impl Player {
         unsafe { send::<()>(self.player, c"pause", ()) };
     }
     pub(crate) fn seek(&mut self, to: Duration) {
-        self.last = None;
+        (self.last, self.seeks) = (None, self.seeks.wrapping_add(1));
         let exact = CMTime { value: 0, timescale: 1, flags: 1, epoch: 0 };
-        // SAFETY: a live player; the times are passed as the method takes them.
-        unsafe { send::<()>(self.player, c"seekToTime:toleranceBefore:toleranceAfter:", (CMTime::of(to), exact, exact)) };
+        let over: *const Seeked = self.seeked;
+        // SAFETY: a live player; the times are passed as the method takes them, and the block
+        // lives for good.
+        unsafe { send::<()>(self.player, c"seekToTime:toleranceBefore:toleranceAfter:completionHandler:", (CMTime::of(to), exact, exact, over)) };
     }
     pub(crate) fn position(&mut self) -> Duration {
         // SAFETY: a live player.
@@ -209,6 +262,9 @@ impl Player {
     /// The newest frame where there is one not given yet: its width and time, its pixels in
     /// `into`.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
+        if self.seeked.done.load(Ordering::Acquire) != self.seeks {
+            return None;
+        }
         let _pool = Pool::new();
         let mut shown = CMTime::default();
         // SAFETY: live objects; the buffer copied is ours and released.
