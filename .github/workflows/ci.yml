@@ -58,12 +58,23 @@ jobs:
     env:
       # Tests built a little optimized: the Brotli check against the system's takes 5 min a run unoptimized.
       CARGO_PROFILE_DEV_OPT_LEVEL: 1
+      # The runner has no GPU and Xvfb no DRI3: Mesa's OpenGL is llvmpipe either way. Asked for
+      # it at once, EGL doesn't first try for a hardware device and warn that there is none.
+      LIBGL_ALWAYS_SOFTWARE: 1
     steps:
       - uses: actions/checkout@v7
+      - name: The runner's image
+        id: image
+        run: echo "name=${ImageOS:-ubuntu}-${ImageVersion:-0}" >> "$GITHUB_OUTPUT"
+      # The packages downloaded by earlier runs (see .github/apt.sh).
+      - uses: actions/cache@v6
+        with:
+          path: ~/debs
+          key: debs-ubuntu-${{ steps.image.outputs.name }}-${{ hashFiles('.github/workflows/ci.yml', '.github/apt.sh') }}
+          restore-keys: debs-ubuntu-
       - name: What the tests and walks load
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
+          bash .github/apt.sh xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
             libx11-6 libxtst6 libxi6 libxrandr2 libxkbcommon0 libfontconfig1 libfreetype6 libharfbuzz0b fonts-dejavu-core \
             libegl1 libgles2 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 xclip
       - name: Rust
@@ -102,7 +113,8 @@ jobs:
           status=0
           xvfb-run -n 191 -s "-screen 0 900x600x24" dbus-run-session -- target/release/examples/walk_reader > reader.txt 2>&1 || status=$?
           pkill -f "$XDG_RUNTIME_DIR/at-spi" || true
-          grep -v "^dbus-daemon" reader.txt
+          # Not shown: the buses' own words, and dbus-run-session's when the walk kills its bus (9).
+          grep -v -e "^dbus-daemon" -e "^dbus-run-session: dbus-daemon terminated by signal 9$" reader.txt
           exit $status
       - name: Walk as a person
         if: ${{ !cancelled() }}
@@ -120,10 +132,18 @@ jobs:
       TAUT_DMABUF_EXPORTS: 1
     steps:
       - uses: actions/checkout@v7
+      - name: The runner's image
+        id: image
+        run: echo "name=${ImageOS:-ubuntu}-${ImageVersion:-0}" >> "$GITHUB_OUTPUT"
+      # The packages downloaded by earlier runs (see .github/apt.sh).
+      - uses: actions/cache@v6
+        with:
+          path: ~/debs
+          key: debs-wayland-${{ steps.image.outputs.name }}-${{ hashFiles('.github/workflows/ci.yml', '.github/apt.sh') }}
+          restore-keys: debs-wayland-
       - name: Weston, lavapipe, Xvfb; and /dev/udmabuf
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends weston xvfb xauth dbus \
+          bash .github/apt.sh weston xvfb xauth dbus \
             mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 \
             libx11-6 libx11-dev libxtst6 libxi6 libxkbcommon0 libfontconfig1 libfreetype6 fonts-dejavu-core
           uname -r

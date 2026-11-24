@@ -30,8 +30,14 @@ sleep 2
 echo "--- $desk ($renderer)"
 WAYLAND_DISPLAY=taut-wl "$@" 2>&1 | tee $XDG_RUNTIME_DIR/out.txt
 R=${PIPESTATUS[0]}
-kill $K $X 2>/dev/null
-wait $K $X 2>/dev/null
+# Weston first, and only once it has ended its X server: a Weston in an X window whose server
+# goes first ends in a fatal X error.
+kill $K 2>/dev/null
+wait $K 2>/dev/null
+if [ -n "$X" ]; then
+  kill $X 2>/dev/null
+  wait $X 2>/dev/null
+fi
 echo "--- weston said:"
 grep -iE "dmabuf|renderer|error|fail" $XDG_RUNTIME_DIR/desk.log | head -20
 if grep -q "not tested" $XDG_RUNTIME_DIR/out.txt; then

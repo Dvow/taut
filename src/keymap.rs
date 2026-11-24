@@ -273,10 +273,35 @@ mod tests {
         assert_eq!(keyboard.press(E).1, "e", "after the character, keys type as ever");
     }
 
+    /// libxkbcommon's log level for critical messages only (`XKB_LOG_LEVEL_CRITICAL`); a map
+    /// it cannot parse is logged at the level above it, as an error.
+    const CRITICAL: c_int = 10;
+
+    /// Runs `read` with libxkbcommon told to log only messages of `level` or worse, then sets
+    /// the level back to what it was. (It writes what it cannot parse to stderr: a test that
+    /// hands it nonsense on purpose keeps that out of the test's output.)
+    fn logging_only<T>(keyboard: &mut Keyboard, level: c_int, read: impl FnOnce(&mut Keyboard) -> T) -> T {
+        type Get = unsafe extern "C" fn(*mut c_void) -> c_int;
+        type Set = unsafe extern "C" fn(*mut c_void, c_int);
+        let lib = keyboard.xkb.lib;
+        let (Some(get), Some(set)) = (symbol(lib, "xkb_context_get_log_level\0"), symbol(lib, "xkb_context_set_log_level\0")) else { return read(keyboard) };
+        // SAFETY: both are libxkbcommon's functions, declared as it documents them, and called
+        // on the keyboard's own context, which outlives this.
+        let (get, set) = unsafe { (std::mem::transmute::<*mut c_void, Get>(get), std::mem::transmute::<*mut c_void, Set>(set)) };
+        // SAFETY: as above.
+        let was = unsafe { get(keyboard.context) };
+        // SAFETY: as above.
+        unsafe { set(keyboard.context, level) };
+        let read = read(keyboard);
+        // SAFETY: as above.
+        unsafe { set(keyboard.context, was) };
+        read
+    }
+
     #[test]
     fn a_map_handed_over_as_text_is_read() {
         let Some(mut keyboard) = Keyboard::new() else { return eprintln!("no libxkbcommon: not tested") };
-        assert!(!keyboard.take_map(b"not a map\0"), "nonsense is no map");
+        assert!(!logging_only(&mut keyboard, CRITICAL, |keyboard| keyboard.take_map(b"not a map\0")), "nonsense is no map");
         assert_eq!(keyboard.press(A), (None, String::new()), "with no map, keys mean nothing");
         let map = b"xkb_keymap { xkb_keycodes { <AC01> = 38; }; xkb_types { include \"basic\" }; xkb_compat { }; xkb_symbols { key <AC01> { [ q, Q ] }; }; };\0";
         assert!(keyboard.take_map(map));

@@ -32,8 +32,13 @@ desk() {
   sleep 2
   echo "######## weston $1 $2"
   WAYLAND_DISPLAY=probe-wl timeout 30 $B/show
-  kill $K $X 2>/dev/null
-  wait $K $X 2>/dev/null
+  # Weston first, and only once it has ended its X server (one going first is a fatal X error).
+  kill $K 2>/dev/null
+  wait $K 2>/dev/null
+  if [ -n "$X" ]; then
+    kill $X 2>/dev/null
+    wait $X 2>/dev/null
+  fi
   echo "-- weston said:"; grep -v "^$" $XDG_RUNTIME_DIR/weston.log | grep -iE "dmabuf|renderer|egl|error|fail|GL_RENDERER|format" | head -20
 }
 desk x11 gl 31
