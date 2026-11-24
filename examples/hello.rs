@@ -13,3 +13,11 @@ fn main() {
         ui.close();
     });
 }
+
+/// Where Android starts the app (it is a library there): see `taut::run`.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+#[allow(clippy::main_recursion)]
+extern "C" fn android_main() {
+    main()
+}

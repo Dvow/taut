@@ -1,0 +1,760 @@
+// taut's loader: runs a taut program built for wasm32-unknown-unknown in a page, with no
+// other script. It makes the page's elements (a canvas, a hidden text field, the elements
+// screen readers read), hands each DOM event to the program, and does what the program asks:
+// show pixels, measure and draw text, keep the clipboard and storage.
+//
+//   import { start } from "./taut.js";
+//   start("app.wasm", { element: document.body, fonts: { regular: "Inter.ttf" } });
+//
+// Options: `element` (the page by default; `null` for no page at all, as in tests under Node),
+// `fonts` (files by face: regular, bold, mono, italic; the browser's own otherwise), `sans` and
+// `mono` (CSS families for the browser's text), `title` (false: leave the page's title alone).
+
+const CURSORS = ["default", "pointer", "text", "ew-resize", "ns-resize", "nwse-resize", "nesw-resize", "move", "not-allowed"];
+const SANS = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+const MONO = 'ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace';
+const FACES = ["regular", "bold", "mono", "italic"];
+const KINDS = { mouse: 0, touch: 1, pen: 2 };
+const POINTER = { pointermove: 0, pointerdown: 1, pointerup: 2, pointercancel: 3, pointerleave: 4 };
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+// Loads and starts `program` (an address, or its bytes). Resolves to the page.
+export async function start(program, options = {}) {
+    const page = new Page(options);
+    const [module, fonts] = await Promise.all([compiled(program), fontFiles(options.fonts)]);
+    page.fonts = fonts;
+    const instance = await WebAssembly.instantiate(module, { taut: page.imports() });
+    page.begin(instance.exports);
+    return page;
+}
+
+async function compiled(program) {
+    if (typeof program !== "string") {
+        return WebAssembly.compile(program);
+    }
+    const response = await fetch(program);
+    if (!response.ok) {
+        throw new Error(`taut: ${program}: ${response.status}`);
+    }
+    return WebAssembly.compile(await response.arrayBuffer());
+}
+
+async function fontFiles(given) {
+    const fonts = [];
+    for (const [face, file] of Object.entries(given || {})) {
+        const at = FACES.indexOf(face);
+        const bytes = typeof file === "string" ? await (await fetch(file)).arrayBuffer() : file;
+        if (at >= 0) {
+            fonts.push([at, new Uint8Array(bytes.buffer || bytes, bytes.byteOffset || 0, bytes.byteLength)]);
+        }
+    }
+    return fonts;
+}
+
+// The modifiers held, as the program counts them: Control or Command, Shift, Alt.
+function modifiers(event) {
+    return (event.ctrlKey || event.metaKey ? 1 : 0) | (event.shiftKey ? 2 : 0) | (event.altKey ? 4 : 0);
+}
+
+export class Page {
+    constructor(options) {
+        this.options = options;
+        this.exports = null;
+        this.busy = false;
+        this.later = [];
+        this.made = null;
+        this.copied = null;
+        this.pasting = 0;
+        this.composing = false;
+        this.timer = 0;
+        this.frameAsked = false;
+        this.nodes = new Map();
+        this.told = new Map();
+        this.focusKey = "";
+        this.ownFocus = false;
+        this.fieldOn = 0;
+        this.size = [0, 0, 1];
+        this.sized = false;
+        this.pixels = null;
+        this.measure = textCanvas();
+        if (options.element !== null && typeof document !== "undefined") {
+            this.build(options.element || document.body);
+        }
+    }
+
+    // The page's elements: a box holding the canvas, the text field, what an input method
+    // composes, the readers' elements and a live region.
+    build(parent) {
+        const make = (tag, style, into) => {
+            const made = document.createElement(tag);
+            made.style.cssText = style;
+            (into || this.box).appendChild(made);
+            return made;
+        };
+        this.box = make("div", "position:relative;width:100%;height:100%;overflow:hidden;outline:none;", parent);
+        this.box.tabIndex = 0;
+        this.canvas = make("canvas", "position:absolute;left:0;top:0;touch-action:none;user-select:none;-webkit-user-select:none;");
+        this.canvas.setAttribute("aria-hidden", "true");
+        this.context = this.canvas.getContext("2d", { alpha: false });
+        this.readers = make("div", "position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;pointer-events:none;overflow:hidden;");
+        this.field = make("input", "position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;outline:none;background:transparent;color:transparent;caret-color:transparent;");
+        this.field.setAttribute("autocomplete", "off");
+        this.field.setAttribute("autocapitalize", "off");
+        this.field.setAttribute("spellcheck", "false");
+        this.field.tabIndex = -1;
+        this.compose = make("div", "position:absolute;display:none;white-space:pre;pointer-events:none;background:Canvas;color:CanvasText;border-bottom:2px solid;");
+        this.live = make("div", "position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);");
+        this.live.setAttribute("aria-live", "polite");
+        this.listen();
+    }
+
+    listen() {
+        const box = this.box;
+        for (const name of Object.keys(POINTER)) {
+            this.canvas.addEventListener(name, (event) => this.pointer(event));
+        }
+        this.canvas.addEventListener("wheel", (event) => this.wheel(event), { passive: false });
+        this.canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+        this.canvas.addEventListener("contextrestored", () => this.restored());
+        box.addEventListener("keydown", (event) => this.key(event, 1));
+        box.addEventListener("keyup", (event) => this.key(event, 0));
+        box.addEventListener("focusin", (event) => this.focused(event, 1));
+        box.addEventListener("focusout", (event) => this.focused(event, 0));
+        box.addEventListener("copy", (event) => this.copy(event));
+        box.addEventListener("cut", (event) => this.copy(event));
+        box.addEventListener("paste", (event) => this.paste(event));
+        this.field.addEventListener("input", (event) => this.input(event));
+        this.field.addEventListener("compositionstart", () => this.composed(""));
+        this.field.addEventListener("compositionupdate", (event) => this.composed(event.data || ""));
+        this.field.addEventListener("compositionend", (event) => this.composeEnd(event));
+        this.readers.addEventListener("click", (event) => this.readerAct(event, 0));
+        this.readers.addEventListener("focusin", (event) => this.readerAct(event, 1));
+        new ResizeObserver(() => this.resized()).observe(box);
+        for (const query of ["(prefers-color-scheme: dark)", "(prefers-contrast: more)", "(forced-colors: active)", "(prefers-reduced-motion: reduce)"]) {
+            matchMedia(query).addEventListener("change", () => this.looks());
+        }
+        addEventListener("pagehide", () => this.call("taut_close"));
+    }
+
+    // The program is ready: it starts, and hears the page's size and looks.
+    begin(exports) {
+        this.exports = exports;
+        this.busy = true;
+        try {
+            exports.main(0, 0);
+        } finally {
+            this.busy = false;
+        }
+        if (this.box) {
+            this.resized();
+            this.looks();
+        }
+        this.flush();
+    }
+
+    // Calls a function of the program's, or keeps the call for later while one runs (an
+    // element that takes focus from inside a call says so at once).
+    call(name, ...args) {
+        if (!this.exports) {
+            return 0;
+        }
+        if (this.busy) {
+            this.later.push([name, args]);
+            return 0;
+        }
+        this.busy = true;
+        let answer = 0;
+        try {
+            answer = this.exports[name](...args.map((arg) => (typeof arg === "string" || arg instanceof Uint8Array ? this.pass(arg) : [arg])).flat());
+        } finally {
+            this.busy = false;
+        }
+        this.flush();
+        return answer;
+    }
+
+    flush() {
+        while (!this.busy && this.later.length > 0) {
+            const [name, args] = this.later.shift();
+            this.call(name, ...args);
+        }
+    }
+
+    // Text or bytes copied into the program's memory: their place and length.
+    pass(value) {
+        const bytes = typeof value === "string" ? encoder.encode(value) : value;
+        const at = this.exports.taut_alloc(bytes.length);
+        new Uint8Array(this.exports.memory.buffer, at, bytes.length).set(bytes);
+        return [at, bytes.length];
+    }
+
+    bytes(at, length) {
+        return new Uint8Array(this.exports.memory.buffer, at, length);
+    }
+
+    text(at, length) {
+        return decoder.decode(this.bytes(at, length));
+    }
+
+    // What the program imports from the page.
+    imports() {
+        const page = this;
+        const floats = (at, values) => new Float32Array(page.exports.memory.buffer, at, values.length).set(values);
+        return {
+            present: (at, x, y, width, height) => page.present(at, x, y, width, height),
+            wake: (after) => page.wake(after),
+            set_cursor: (shape) => page.canvas && (page.canvas.style.cursor = CURSORS[shape] || "default"),
+            set_title: (at, length) => page.options.title !== false && typeof document !== "undefined" && (document.title = page.text(at, length)),
+            text_field: (x, y, width, height, on) => page.textField(x, y, width, height, on),
+            clipboard_set: (at, length) => page.copyOut(page.text(at, length)),
+            mirror: (at, length) => page.mirror(JSON.parse(page.text(at, length))),
+            log: (at, length) => console.error(page.text(at, length)),
+            now: () => performance.now(),
+            clock: () => Date.now(),
+            zone: () => -new Date().getTimezoneOffset(),
+            storage_get: (at, length) => page.storageGet(page.text(at, length)),
+            storage_set: (at, length, value, valueLength) => page.storageSet(page.text(at, length), page.text(value, valueLength)),
+            open_link: (at, length) => typeof open === "function" && open(page.text(at, length), "_blank", "noopener,noreferrer"),
+            ask_file: (at, length, saving) => saving || page.askFile(page.text(at, length)),
+            download: (name, length, at, size) => page.download(page.text(name, length), page.bytes(at, size).slice()),
+            font_file: (nth, face) => page.fontFile(nth, face),
+            take: (into) => page.take(into),
+            text_metrics: (at, length, out) => floats(out, page.metrics(page.text(at, length))),
+            text_measure: (at, length, text, textLength, stops, count) => page.measureText(page.text(at, length), page.text(text, textLength), stops, count),
+            text_draw: (at, length, text, textLength, place) => page.drawText(page.text(at, length), page.text(text, textLength), place),
+        };
+    }
+
+    // ---- pixels and frames ----
+
+    present(at, x, y, width, height) {
+        const pixels = new Uint8ClampedArray(this.exports.memory.buffer, at, width * height * 4);
+        if (this.context) {
+            this.context.putImageData(new ImageData(pixels, width, height), x, y);
+            return;
+        }
+        const [wide] = this.pixelSize();
+        for (let row = 0; row < height; row++) {
+            this.pixels.set(pixels.subarray(row * width * 4, (row + 1) * width * 4), ((y + row) * wide + x) * 4);
+        }
+    }
+
+    pixelSize() {
+        const [width, height, scale] = this.size;
+        return [Math.round(width * scale), Math.round(height * scale)];
+    }
+
+    // A frame is wanted: now (0), after a while (in ms), or never (-1).
+    wake(after) {
+        clearTimeout(this.timer);
+        if (after < 0 || typeof requestAnimationFrame !== "function") {
+            this.frameAsked = after >= 0;
+            return;
+        }
+        if (after > 0) {
+            this.timer = setTimeout(() => this.wake(0), after);
+            return;
+        }
+        if (!this.frameAsked) {
+            this.frameAsked = true;
+            requestAnimationFrame(() => this.frame());
+        }
+    }
+
+    frame() {
+        this.frameAsked = false;
+        this.call("taut_frame");
+    }
+
+    // The page's element changed size, or the screen's pixel ratio did: the canvas takes whole
+    // device pixels, and the program the size they make. (A canvas given its size again is
+    // cleared: only a new size is given. The first may come before the program is there: it
+    // hears it once it is.)
+    resized() {
+        const scale = devicePixelRatio || 1;
+        const width = Math.round(this.box.clientWidth * scale);
+        const height = Math.round(this.box.clientHeight * scale);
+        const same = width === this.canvas.width && height === this.canvas.height && scale === this.size[2];
+        if (same && this.sized) {
+            return;
+        }
+        if (!same) {
+            this.canvas.width = width;
+            this.canvas.height = height;
+        }
+        this.canvas.style.width = `${width / scale}px`;
+        this.canvas.style.height = `${height / scale}px`;
+        this.resize(width / scale, height / scale, scale);
+    }
+
+    // The browser dropped the canvas's pixels (its context was lost and is back): all of it is
+    // drawn again, as for a new size.
+    restored() {
+        this.call("taut_size", 0, 0, 1);
+        this.resize(...this.size);
+    }
+
+    // The interface's size in CSS pixels, at `scale` device pixels to one (with no page, this
+    // is how a test sizes it).
+    resize(width, height, scale) {
+        this.size = [width, height, scale];
+        this.sized = this.exports !== null;
+        if (!this.context) {
+            const [wide, high] = this.pixelSize();
+            this.pixels = new Uint8ClampedArray(wide * high * 4);
+        }
+        this.call("taut_size", width, height, scale);
+    }
+
+    // Dark, contrast, motion and accent colour, as the person set them.
+    looks() {
+        const asks = (query) => matchMedia(query).matches;
+        const contrast = asks("(forced-colors: active)") ? 2 : asks("(prefers-contrast: more)") ? 1 : 0;
+        this.call("taut_looks", asks("(prefers-color-scheme: dark)") ? 1 : 0, contrast, asks("(prefers-reduced-motion: reduce)") ? 1 : 0, accent());
+    }
+
+    // ---- input ----
+
+    pointer(event) {
+        const kind = KINDS[event.pointerType] ?? 0;
+        if (event.type === "pointerdown") {
+            event.preventDefault();
+            // (A pointer the browser no longer has can't be held: a made-up one, say.)
+            try {
+                this.canvas.setPointerCapture(event.pointerId);
+            } catch {}
+            if (!this.box.contains(document.activeElement)) {
+                this.box.focus({ preventScroll: true });
+            }
+        }
+        const place = this.canvas.getBoundingClientRect();
+        const args = [POINTER[event.type], kind, event.pointerId >>> 0, event.isPrimary ? 1 : 0, event.clientX - place.left, event.clientY - place.top, event.button, event.buttons];
+        this.call("taut_pointer", ...args, event.pressure || 0, event.tiltX || 0, event.tiltY || 0, event.twist || 0, modifiers(event));
+    }
+
+    wheel(event) {
+        event.preventDefault();
+        const place = this.canvas.getBoundingClientRect();
+        this.call("taut_wheel", event.clientX - place.left, event.clientY - place.top, event.deltaX, event.deltaY, event.deltaMode, modifiers(event));
+    }
+
+    key(event, down) {
+        if (event.isComposing || event.keyCode === 229 || this.composing) {
+            return;
+        }
+        const pastes = down && (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "v";
+        if (pastes) {
+            // The browser's paste event brings the system clipboard's text: it presses Ctrl+V.
+            // Without one (nothing to paste, or it was refused), the key goes on alone.
+            this.pasting = setTimeout(() => this.pasteless(event), 100);
+            return;
+        }
+        if (this.call("taut_key", down, event.key, event.code, modifiers(event), document.activeElement === this.field ? 1 : 0)) {
+            event.preventDefault();
+        }
+    }
+
+    pasteless(event) {
+        this.pasting = 0;
+        this.call("taut_key", 1, event.key, event.code, modifiers(event), 1);
+    }
+
+    paste(event) {
+        if (!this.pasting && document.activeElement !== this.field) {
+            return;
+        }
+        clearTimeout(this.pasting);
+        this.pasting = 0;
+        event.preventDefault();
+        this.call("taut_paste", event.clipboardData?.getData("text/plain") || "");
+    }
+
+    // The program copied: the browser's copy event (which follows Ctrl+C) puts it on the
+    // system clipboard; from a menu, the asynchronous clipboard does.
+    copyOut(text) {
+        this.copied = text;
+        navigator.clipboard?.writeText(text).catch(() => {});
+    }
+
+    copy(event) {
+        if (this.copied === null) {
+            return;
+        }
+        event.clipboardData.setData("text/plain", this.copied);
+        event.preventDefault();
+        this.copied = null;
+    }
+
+    // What the text field took: typed text; and where keys came as no key (a phone's keyboard
+    // says "Unidentified"), the deleting and new lines they made, as those keys.
+    input(event) {
+        const kind = event.inputType;
+        if (event.isComposing || this.composing || kind === "insertCompositionText") {
+            return;
+        }
+        const keys = { deleteContentBackward: "Backspace", deleteContentForward: "Delete", insertLineBreak: "Enter", insertParagraph: "Enter" };
+        if (keys[kind]) {
+            this.call("taut_key", 1, keys[kind], keys[kind], 0, 1);
+        } else if (event.data && kind.startsWith("insert")) {
+            this.call("taut_text", event.data);
+        }
+    }
+
+    composed(text) {
+        this.composing = true;
+        const shown = this.compose.style;
+        this.compose.textContent = text;
+        shown.display = text ? "block" : "none";
+        shown.left = this.field.style.left;
+        shown.top = this.field.style.top;
+        shown.font = `${parseFloat(this.field.style.height) * 0.8}px ${SANS}`;
+    }
+
+    composeEnd(event) {
+        this.composing = false;
+        this.compose.style.display = "none";
+        this.call("taut_text", event.data || "");
+    }
+
+    focused(event, on) {
+        if (this.box.contains(event.relatedTarget)) {
+            return;
+        }
+        this.call("taut_focus", on);
+        if (on) {
+            this.clipboardIn();
+        }
+    }
+
+    // The system clipboard's text, for a menu's Paste: read only where the person already let
+    // the page (never asked for here).
+    async clipboardIn() {
+        try {
+            const allowed = await navigator.permissions.query({ name: "clipboard-read" });
+            if (allowed.state === "granted") {
+                this.call("taut_clipboard", await navigator.clipboard.readText());
+            }
+        } catch {}
+    }
+
+    // Where text is typed now (CSS pixels), if anywhere: 1 text, 2 a password (no input
+    // method sees it).
+    textField(x, y, width, height, on) {
+        const field = this.field;
+        if (!field) {
+            return;
+        }
+        Object.assign(field.style, { left: `${x}px`, top: `${y}px`, width: `${Math.max(width, 1)}px`, height: `${Math.max(height, 1)}px`, fontSize: `${height * 0.8}px` });
+        if (on !== this.fieldOn) {
+            field.type = on === 2 ? "password" : "text";
+            field.value = "";
+        }
+        this.fieldOn = on;
+        this.placeFocus();
+    }
+
+    // ---- what screen readers read ----
+
+    // The program's nodes, as far as they changed: each an element with its role, name, states
+    // and place, nested as the nodes are.
+    mirror(said) {
+        if (!this.readers) {
+            this.heldOnly(said);
+            return;
+        }
+        for (const node of said.nodes) {
+            this.node(node);
+        }
+        if (said.order) {
+            this.reorder(said.order);
+        }
+        for (const node of said.nodes) {
+            this.place(this.nodes.get(node.k));
+        }
+        this.focusKey = said.focus;
+        this.placeFocus();
+        if (said.say.length > 0) {
+            this.live.textContent = "";
+            setTimeout(() => (this.live.textContent = said.say.join(". ")), 50);
+        }
+    }
+
+    // With no page: the nodes kept as told, for a test to read (`told`, `focusKey`).
+    heldOnly(said) {
+        for (const node of said.nodes) {
+            this.told.set(node.k, node);
+        }
+        const kept = new Set((said.order || []).map(([key]) => key));
+        for (const key of this.told.keys()) {
+            if (said.order && !kept.has(key)) {
+                this.told.delete(key);
+            }
+        }
+        this.focusKey = said.focus;
+    }
+
+    element(key) {
+        let made = this.nodes.get(key);
+        if (!made) {
+            made = document.createElement("div");
+            made.style.cssText = "position:absolute;overflow:hidden;white-space:pre;";
+            made.dataset.key = key;
+            made.appendChild(document.createTextNode(""));
+            made.said = { a: [] };
+            this.nodes.set(key, made);
+        }
+        return made;
+    }
+
+    node(node) {
+        const made = this.element(node.k);
+        const was = made.said;
+        if (node.r) {
+            made.setAttribute("role", node.r);
+        } else {
+            made.removeAttribute("role");
+        }
+        if (node.n) {
+            made.setAttribute("aria-label", node.n);
+        } else {
+            made.removeAttribute("aria-label");
+        }
+        for (const [name] of was.a) {
+            made.removeAttribute(name);
+        }
+        for (const [name, value] of node.a) {
+            made.setAttribute(name, value);
+        }
+        made.firstChild.data = node.t;
+        if (node.f) {
+            made.tabIndex = -1;
+        } else {
+            made.removeAttribute("tabindex");
+        }
+        made.said = node;
+        if (node.k === this.focusKey && this.fieldOn) {
+            this.fieldText(node);
+        }
+    }
+
+    // The nodes in order, each after its parent: elements put in their parents, those gone
+    // taken away.
+    reorder(order) {
+        const kept = new Set(order.map(([key]) => key));
+        for (const [key, made] of this.nodes) {
+            if (!kept.has(key)) {
+                made.remove();
+                this.nodes.delete(key);
+            }
+        }
+        for (const [key, parent] of order) {
+            const made = this.element(key);
+            made.parentKey = parent;
+            (parent ? this.element(parent) : this.readers).appendChild(made);
+        }
+        for (const [key] of order) {
+            this.place(this.nodes.get(key));
+        }
+    }
+
+    // An element where its part is drawn: from its parent's corner.
+    place(made) {
+        const node = made.said;
+        const parent = made.parentKey ? this.nodes.get(made.parentKey)?.said : null;
+        const [left, top] = parent ? [parent.x ?? 0, parent.y ?? 0] : [0, 0];
+        Object.assign(made.style, { left: `${(node.x ?? 0) - left}px`, top: `${(node.y ?? 0) - top}px`, width: `${node.w ?? 0}px`, height: `${node.h ?? 0}px` });
+    }
+
+    // The keyboard goes where the interface has it: the text field while text is typed, else
+    // the focused node's element, else the box. Only while the page's keyboard is in the box.
+    placeFocus() {
+        const here = document.activeElement;
+        if (!this.box || !this.box.contains(here)) {
+            return;
+        }
+        const node = this.nodes.get(this.focusKey);
+        const wanted = this.fieldOn ? this.field : node && node.tabIndex === -1 ? node : this.box;
+        if (wanted === this.field && node) {
+            this.field.setAttribute("aria-label", node.said.n || "");
+            this.fieldText(node.said);
+        }
+        if (wanted !== here) {
+            this.ownFocus = true;
+            wanted.focus({ preventScroll: true });
+            this.ownFocus = false;
+        }
+    }
+
+    // The text field holds the focused text box's text, the selection where it is, so a reader
+    // reads it; never while an input method composes in it.
+    fieldText(node) {
+        if (this.composing || this.fieldOn === 2) {
+            return;
+        }
+        if (this.field.value !== node.t) {
+            this.field.value = node.t;
+        }
+    }
+
+    readerAct(event, action) {
+        if (this.ownFocus) {
+            return;
+        }
+        const made = event.target.closest?.("[data-key]");
+        if (made) {
+            this.call("taut_reader", made.dataset.key, action);
+        }
+    }
+
+    // ---- text ----
+
+    font(css) {
+        const [style, family] = css.split("\n");
+        const named = family === "sans" ? this.options.sans || SANS : family === "mono" ? this.options.mono || MONO : `"${family}", ${this.options.sans || SANS}`;
+        return `${style} ${named}`;
+    }
+
+    metrics(css) {
+        const context = this.measure;
+        if (!context) {
+            return [0, 0, 0, 0];
+        }
+        context.font = this.font(css);
+        const line = context.measureText("Hg");
+        return [line.fontBoundingBoxAscent, line.fontBoundingBoxDescent, context.measureText("H").actualBoundingBoxAscent, context.measureText("x").actualBoundingBoxAscent];
+    }
+
+    // A line's width, and each character's end into `stops` (from the line's start: so kerning
+    // and shaping count, as drawn). Past 256 characters, each one's own width added up.
+    measureText(css, text, stops, count) {
+        const context = this.measure;
+        if (!context) {
+            return 0;
+        }
+        context.font = this.font(css);
+        const ends = new Float32Array(this.exports.memory.buffer, stops, count);
+        let [so_far, at, sum] = ["", 0, 0];
+        for (const letter of text) {
+            so_far += letter;
+            sum += count > 256 ? context.measureText(letter).width : 0;
+            ends[at++] = count > 256 ? sum : context.measureText(so_far).width;
+        }
+        return count > 256 ? sum : context.measureText(text).width;
+    }
+
+    // Draws a line in white on clear, keeps its pixels for `take`, and says where its left
+    // edge and baseline are, and its size.
+    drawText(css, text, place) {
+        const context = this.measure;
+        if (!context) {
+            return 0;
+        }
+        context.font = this.font(css);
+        const sizes = context.measureText(text);
+        const left = Math.ceil(Math.max(0, sizes.actualBoundingBoxLeft)) + 1;
+        const width = Math.ceil(left + Math.max(sizes.width, sizes.actualBoundingBoxRight)) + 2;
+        const ascent = Math.ceil(Math.max(sizes.fontBoundingBoxAscent, sizes.actualBoundingBoxAscent)) + 1;
+        const height = ascent + Math.ceil(Math.max(sizes.fontBoundingBoxDescent, sizes.actualBoundingBoxDescent)) + 1;
+        const canvas = context.canvas;
+        canvas.width = Math.max(canvas.width, width);
+        canvas.height = Math.max(canvas.height, height);
+        context.clearRect(0, 0, width, height);
+        context.font = this.font(css);
+        context.fillStyle = "#fff";
+        context.textBaseline = "alphabetic";
+        context.fillText(text, left, ascent);
+        this.made = context.getImageData(0, 0, width, height).data;
+        new Float32Array(this.exports.memory.buffer, place, 4).set([left, ascent, width, height]);
+        return this.made.length;
+    }
+
+    take(into) {
+        if (this.made) {
+            this.bytes(into, this.made.length).set(this.made);
+        }
+        this.made = null;
+    }
+
+    fontFile(nth, face) {
+        const font = (this.fonts || [])[nth];
+        if (!font) {
+            return 0;
+        }
+        new Uint32Array(this.exports.memory.buffer, face, 1)[0] = font[0];
+        this.made = font[1];
+        return font[1].length;
+    }
+
+    // ---- storage and files ----
+
+    storageGet(key) {
+        try {
+            const value = localStorage.getItem(key);
+            if (value === null) {
+                return -1;
+            }
+            this.made = encoder.encode(value);
+            return this.made.length;
+        } catch {
+            return -1;
+        }
+    }
+
+    storageSet(key, value) {
+        try {
+            localStorage.setItem(key, value);
+            return 1;
+        } catch {
+            return 0;
+        }
+    }
+
+    // The browser's file picker; what is picked is read and handed over, or nothing.
+    askFile(accept) {
+        const picker = document.createElement("input");
+        picker.type = "file";
+        picker.accept = accept;
+        picker.addEventListener("change", async () => {
+            const file = picker.files[0];
+            const bytes = file ? new Uint8Array(await file.arrayBuffer()) : new Uint8Array();
+            this.call("taut_file", file ? file.name : "", bytes);
+        });
+        picker.addEventListener("cancel", () => this.call("taut_file", "", new Uint8Array()));
+        picker.click();
+    }
+
+    download(name, bytes) {
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(new Blob([bytes]));
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    }
+}
+
+// The canvas text is measured and drawn on: one of its own, read back often.
+function textCanvas() {
+    if (typeof OffscreenCanvas === "function") {
+        return new OffscreenCanvas(64, 32).getContext("2d", { willReadFrequently: true });
+    }
+    if (typeof document === "undefined") {
+        return null;
+    }
+    const canvas = document.createElement("canvas");
+    return canvas.getContext("2d", { willReadFrequently: true });
+}
+
+// The person's accent colour as 0xRRGGBB, where the browser knows it (CSS `AccentColor`);
+// else -1.
+function accent() {
+    if (typeof CSS === "undefined" || !CSS.supports("color", "AccentColor")) {
+        return -1;
+    }
+    const probe = document.createElement("div");
+    probe.style.color = "AccentColor";
+    document.body.appendChild(probe);
+    const [red, green, blue] = getComputedStyle(probe).color.match(/\d+/g).map(Number);
+    probe.remove();
+    return (red << 16) | (green << 8) | blue;
+}

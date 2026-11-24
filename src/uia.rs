@@ -176,9 +176,12 @@ struct Automation {
     /// `SysAllocStringLen`, `SysFreeString`.
     text: unsafe extern "system" fn(*const u16, u32) -> Text,
     free_text: unsafe extern "system" fn(Text),
-    /// `SafeArrayCreateVector`, `SafeArrayPutElement`.
+    /// `SafeArrayCreateVector`, `SafeArrayPutElement`; `SafeArrayGetUBound`,
+    /// `SafeArrayGetElement`.
     numbers: unsafe extern "system" fn(u16, i32, u32) -> *mut c_void,
     put: unsafe extern "system" fn(*mut c_void, *const i32, *const c_void) -> i32,
+    last: unsafe extern "system" fn(*mut c_void, u32, *mut i32) -> i32,
+    get: unsafe extern "system" fn(*mut c_void, *const i32, *mut c_void) -> i32,
     /// `UiaGetReservedNotSupportedValue` (an unsupported text attribute) and
     /// `UiaGetReservedMixedAttributeValue` (mixed).
     unknown: unsafe extern "system" fn(*mut *mut c_void) -> i32,
@@ -212,6 +215,8 @@ impl Automation {
                 free_text: found(ole, c"SysFreeString")?,
                 numbers: found(ole, c"SafeArrayCreateVector")?,
                 put: found(ole, c"SafeArrayPutElement")?,
+                last: found(ole, c"SafeArrayGetUBound")?,
+                get: found(ole, c"SafeArrayGetElement")?,
                 unknown: found(core, c"UiaGetReservedNotSupportedValue")?,
                 mixed: found(core, c"UiaGetReservedMixedAttributeValue")?,
             })
@@ -294,6 +299,8 @@ enum Ask {
     Pick(Id),
     /// Scroll its container so it shows.
     Show(Id),
+    /// Show a table's row (by its table and index), and select it: alone, or toggled.
+    Row(Id, u32, Option<bool>),
 }
 
 /// The thread's windows that were asked for their elements, and whether the interface keeps its
@@ -405,8 +412,22 @@ pub(crate) fn tell(hwnd: HANDLE, ui: &Ui) {
     // (A first telling changes nothing anybody could have known. And the copy is made only
     // where it differs: copying a long page is most of the cost. A list of the same turn is
     // not even compared.)
-    let turn = ui.access_version();
+    let (turn, from) = (ui.access_version(), ui.access_moved_from());
+    // (Moved only, as by a scroll: what shows is all that changed.)
+    let moved = from == Some(tree.turn.get()) && was.len() == news.len() && had_keyboard == keyboard && !tree.fresh.get();
     let kept = tree.turn.replace(turn) == turn && was.len() == news.len();
+    if moved {
+        let shows = |node: &AccessNode| Value::Truth(!node.visible);
+        let flips = was.iter().zip(news).filter(|(was, now)| was.visible != now.visible);
+        let changes: Vec<Change> = flips.map(|(was, now)| Change::Property(now.id, OFF_THE_SCREEN, shows(was), shows(now))).collect();
+        accessibility::follow_move(&mut was, news);
+        drop(was);
+        // SAFETY: a call without arguments.
+        if !changes.is_empty() && unsafe { (tree.automation.listening)() } != 0 {
+            changes.into_iter().for_each(|change| raise(&tree, change));
+        }
+        return;
+    }
     let (fresh, unchanged) = (tree.fresh.replace(false), kept || *was == news);
     let same = fresh || (unchanged && had_keyboard == keyboard);
     let changes = if same { Vec::new() } else { changes(&was, had_keyboard, news, keyboard) };
@@ -507,6 +528,7 @@ fn compare(old: &AccessNode, new: &AccessNode, changes: &mut Vec<Change>) {
         (ENABLED, Value::Truth(old.enabled), Value::Truth(new.enabled)),
         (STATUS, sort_status(old), sort_status(new)),
         (ROW_COUNT, counts(old, 0), counts(new, 0)),
+        (OFF_THE_SCREEN, Value::Truth(!old.visible), Value::Truth(!new.visible)),
         (COLUMN_COUNT, counts(old, 1), counts(new, 1)),
     ];
     let id = new.id;
@@ -565,6 +587,7 @@ pub(crate) fn work(hwnd: HANDLE, ui: &mut Ui) {
         Some(Ask::Open(id, open)) => ui.open_for_reader(id, open),
         Some(Ask::Pick(id)) => ui.pick_for_reader(id),
         Some(Ask::Show(id)) => ui.show_for_reader(id),
+        Some(Ask::Row(table, row, pick)) => ui.row_for_reader(table, row, pick),
         None => {}
     }
 }
@@ -924,7 +947,7 @@ fn way(node: &AccessNode, pattern: i32) -> Option<usize> {
         (10005, Role::Fold | Role::ComboBox | Role::Submenu) => Some(FOLD),
         (10005, Role::TreeItem) if node.expanded.is_some() => Some(FOLD),
         (10010, Role::TreeItem) if node.on.is_some() => Some(CHOICE),
-        (10001, Role::Tree) => Some(SELECTION),
+        (10001, Role::Tree | Role::Table) => Some(SELECTION),
         (10010, Role::RadioButton | Role::Tab | Role::Row | Role::MenuItemRadio) => Some(CHOICE),
         (10010, Role::TableRow) if node.on.is_some() => Some(CHOICE),
         (10006, Role::Table) => Some(GRID),
@@ -935,7 +958,7 @@ fn way(node: &AccessNode, pattern: i32) -> Option<usize> {
         (10015, Role::CheckBox | Role::Switch) => Some(TICK),
         (10015, Role::Button) if node.on.is_some() => Some(TICK),
         (10015, Role::MenuItem) if node.on.is_some() => Some(TICK),
-        (10014, Role::TextBox | Role::PasswordBox) => Some(TEXT),
+        (10014, _) if node.reads_text() => Some(TEXT),
         _ => None,
     }
 }
@@ -1013,17 +1036,22 @@ impl Provider {
         let table = table.ok_or(NOT_DONE)?;
         Ok(find(&nodes, table).map(|found| nodes[found].id))
     }
-    /// The provider of this table's cell at a row and column, from 0. None for a row out of
-    /// view (a long table tells only visible rows); an error for a row or column the table
-    /// lacks.
+    /// The provider of this table's cell at a row and column, from 0. A row of a long table
+    /// not told (it tells rows in view) is scrolled into view first: the window is asked. None
+    /// where it still is not; an error for a row or column the table lacks.
     fn cell(&self, row: i32, column: i32) -> Result<*mut Face, i32> {
         let [rows, columns] = self.thing(|node| node.grid.unwrap_or_default())?;
         let place = [row as u32, column as u32];
         if row < 0 || column < 0 || place[0] >= rows || place[1] >= columns {
             return Err(NO_SUCH);
         }
-        let cell = self.in_table(|nodes, table| accessibility::cell_at(nodes, table, place))?;
-        Ok(cell.map_or(std::ptr::null_mut(), |id| Provider::of(&self.tree, id, THING)))
+        let find = |nodes: &[AccessNode], table: usize| accessibility::cell_at(nodes, table, place);
+        if self.in_table(find)?.is_none() {
+            // (Not done, the window was busy: none.)
+            let table = self.in_table(|_, table| Some(table))?.unwrap_or(self.id);
+            _ = self.tree.ask(Ask::Row(table, place[0], None));
+        }
+        Ok(self.in_table(find)?.map_or(std::ptr::null_mut(), |id| Provider::of(&self.tree, id, THING)))
     }
     /// A `SAFEARRAY` of the column headings: for a table, all in order; for a cell, its
     /// column's.
@@ -1091,7 +1119,7 @@ impl Provider {
     }
     /// How many characters the box holds.
     fn length(&self) -> Result<u32, i32> {
-        self.thing(|node| node.value.chars().count() as u32)
+        self.thing(|node| node.text().chars().count() as u32)
     }
 
     /// A property of the element, by id. (The window's own come from Windows' host provider.)
@@ -1206,6 +1234,14 @@ impl Provider {
         Ok(Provider::of(&self.tree, id, PLACE))
     }
 
+    /// The character at a screen point in this text, else the caret.
+    fn letter_at(&self, spot: Spot) -> Result<u32, i32> {
+        let (scale, corner) = (self.tree.scale.get() as f64, self.tree.corner());
+        let at = pt(((spot.x - corner.x as f64) / scale) as f32, ((spot.y - corner.y as f64) / scale) as f32);
+        let caret = self.selected()?[1];
+        self.thing(|node| node.letter_at(at).unwrap_or(caret))
+    }
+
     /// The focused element, if any.
     fn with_keyboard(&self) -> *mut Face {
         let on = self.tree.nodes.borrow().iter().find(|node| node.focused).map(|node| node.id);
@@ -1225,9 +1261,10 @@ impl Provider {
     /// tree item as Control+Space does, anything else as a click. (One of a single-selection
     /// set cannot be unselected: another is selected instead.)
     fn pick_too(&self, more: bool) -> Result<(), i32> {
-        match self.thing(|node| (node.role, node.on == Some(true)))? {
-            (_, on) if on == more => Ok(()),
-            (Role::TreeItem, _) => self.ask(Ask::Pick(self.id)),
+        match self.thing(|node| (node.role, node.on == Some(true), node.position))? {
+            (_, on, _) if on == more => Ok(()),
+            (Role::TreeItem, ..) => self.ask(Ask::Pick(self.id)),
+            (Role::TableRow, _, Some([nth, _])) => self.ask(Ask::Row(self.in_table(|_, table| Some(table))?.unwrap_or(0), nth - 1, Some(false))),
             _ if more => self.ask(Ask::Press(self.id)),
             _ => Err(NOT_DONE),
         }
@@ -1242,17 +1279,25 @@ impl Provider {
             _ => self.ask(Ask::Press(self.id)),
         }
     }
-    /// The provider of a tree item's tree. (None for anything else.)
+    /// The provider of a tree item's tree, or a table row's table. (None for anything else.)
     fn item_tree(&self) -> Result<*mut Face, i32> {
         let nodes = self.tree.nodes.borrow();
         let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
-        Ok(accessibility::tree_of(&nodes, at).map_or(std::ptr::null_mut(), |tree| Provider::of(&self.tree, nodes[tree].id, THING)))
+        let table = nodes[at].parent.filter(|table| nodes[at].role == Role::TableRow && nodes[*table].role == Role::Table);
+        let found = accessibility::tree_of(&nodes, at).or(table);
+        Ok(found.map_or(std::ptr::null_mut(), |found| Provider::of(&self.tree, nodes[found].id, THING)))
     }
-    /// A `SAFEARRAY` of the providers of this tree's selected items, among those told.
+    /// A `SAFEARRAY` of the providers of this tree's selected items, or this table's selected
+    /// rows, among those told.
     fn tree_selection(&self) -> Result<*mut c_void, i32> {
         let nodes = self.tree.nodes.borrow();
         let at = self.at(&nodes)?.ok_or(NO_SUCH)?;
-        let ids: Vec<Id> = nodes.iter().filter(|item| item.parent == Some(at) && item.on == Some(true)).map(|item| item.id).collect();
+        let rows = &nodes[at].selected_rows;
+        let picked = |item: &AccessNode| match item.role {
+            Role::TableRow => item.position.is_some_and(|[nth, _]| rows.iter().any(|[from, to]| (*from..*to).contains(&(nth - 1)))),
+            _ => item.on == Some(true),
+        };
+        let ids: Vec<Id> = nodes.iter().filter(|item| item.parent == Some(at) && picked(item)).map(|item| item.id).collect();
         Ok(self.providers(&ids))
     }
 
@@ -1392,7 +1437,8 @@ impl Provider {
         // SAFETY: as for `answer`.
         unsafe { answer(this, &mut (), |provider| provider.pick_too(false)) }
     }
-    /// Its selection container: a tree item's tree. (Not told for anything else.)
+    /// Its selection container: a tree item's tree, a table row's table. (Not told for anything
+    /// else.)
     unsafe extern "system" fn among(this: *mut Face, out: *mut *mut Face) -> i32 {
         // SAFETY: as for `answer`.
         unsafe { answer(this, out, |provider| provider.item_tree()) }
@@ -1416,10 +1462,10 @@ impl Provider {
         // SAFETY: as for `answer`.
         unsafe { answer(this, out, |provider| provider.tree_selection()) }
     }
-    /// Whether a tree allows multiple selection.
+    /// Whether a tree allows multiple selection; a table does.
     unsafe extern "system" fn many(this: *mut Face, out: *mut i32) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| provider.thing(|node| (node.on == Some(true)) as i32)) }
+        unsafe { answer(this, out, |provider| provider.thing(|node| (node.on == Some(true) || node.role == Role::Table) as i32)) }
     }
     /// Whether selection is required: never.
     unsafe extern "system" fn required(this: *mut Face, out: *mut i32) -> i32 {
@@ -1505,21 +1551,21 @@ impl Provider {
         // SAFETY: as for `answer`.
         unsafe { answer(this, out, |provider| Ok(provider.stretches(provider.selected()?))) }
     }
-    /// The visible ranges: all text is said to be. (Which part of a long text shows is not
-    /// told.)
+    /// The visible range: from the first character that shows to the last.
     unsafe extern "system" fn in_view(this: *mut Face, out: *mut *mut c_void) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(provider.stretches([0, provider.length()?]))) }
+        unsafe { answer(this, out, |provider| Ok(provider.stretches(provider.thing(AccessNode::shown_letters)?))) }
     }
     /// `RangeFromChild`: a text box has no children.
     unsafe extern "system" fn of_child(this: *mut Face, _child: *mut Face, out: *mut *mut Stretch) -> i32 {
         // SAFETY: as for `answer`.
         unsafe { answer(this, out, |_| Err(NO_SUCH)) }
     }
-    /// `RangeFromPoint`: the caret. (Character positions are not told.)
-    unsafe extern "system" fn at_spot(this: *mut Face, _spot: Spot, out: *mut *mut Stretch) -> i32 {
+    /// `RangeFromPoint`: empty, before the character at a screen point (the nearest on its
+    /// line); the caret where letters are not known.
+    unsafe extern "system" fn at_spot(this: *mut Face, spot: Spot, out: *mut *mut Stretch) -> i32 {
         // SAFETY: as for `answer`.
-        unsafe { answer(this, out, |provider| Ok(Stretch::made(&provider.tree, provider.id, [provider.selected()?[1]; 2]))) }
+        unsafe { answer(this, out, |provider| Ok(Stretch::made(&provider.tree, provider.id, [provider.letter_at(spot)?; 2]))) }
     }
     unsafe extern "system" fn all_text(this: *mut Face, out: *mut *mut Stretch) -> i32 {
         // SAFETY: as for `answer`.
@@ -1543,17 +1589,47 @@ impl WindowTree {
     }
 }
 
+/// What a text's units are found by besides its characters: its misspelled words, and where
+/// its lines start (as wrapped).
+#[derive(Default)]
+struct Marks {
+    wrong: Vec<[u32; 2]>,
+    lines: Vec<u32>,
+}
+
 /// Whether a text unit starts at character `at`: character (0), format (1: where a misspelled
-/// word of `wrong` starts or ends), word (2: after whitespace; trailing space belongs to the
-/// word), line or paragraph (3, 4: after a line break). Of every other unit (page, document)
+/// word starts or ends), word (2: after whitespace; trailing space belongs to the word), line
+/// (3: as wrapped), paragraph (4: after a line break). Of every other unit (page, document)
 /// there is one: all the text. Both ends of the text start every unit.
-fn starts(text: &[char], unit: i32, at: usize, wrong: &[[u32; 2]]) -> bool {
+fn starts(text: &[char], unit: i32, at: usize, marks: &Marks) -> bool {
     match unit {
         _ if at == 0 || at >= text.len() => true,
         0 => true,
-        1 => wrong.iter().any(|word| word.contains(&(at as u32))),
+        1 => marks.wrong.iter().any(|word| word.contains(&(at as u32))),
         2 => text[at - 1] == '\n' || text[at - 1].is_whitespace() && !text[at].is_whitespace(),
-        3 | 4 => text[at - 1] == '\n',
+        3 => marks.lines.binary_search(&(at as u32)).is_ok(),
+        4 => text[at - 1] == '\n',
+        _ => false,
+    }
+}
+
+/// Whether a value sought among annotation types holds the spelling error: one number
+/// (`VT_I4`, 3), or an array of them (`VT_ARRAY | VT_I4`, 0x2003).
+fn asks_wrong(value: &Variant) -> bool {
+    let Some(automation) = automation() else { return false };
+    match value.kind {
+        // SAFETY: a `VT_I4` holds a number.
+        3 => (unsafe { value.held.number }) == SPELT_WRONG,
+        // SAFETY: a `VT_ARRAY | VT_I4` holds a one-dimensional array of numbers, read one at
+        // a time into room for one.
+        0x2003 => unsafe {
+            let (row, mut last) = (value.held.object, -1);
+            (automation.last)(row, 1, &mut last);
+            (0..=last).any(|at| {
+                let mut number = 0_i32;
+                (automation.get)(row, &at, (&raw mut number).cast()) == 0 && number == SPELT_WRONG
+            })
+        },
         _ => false,
     }
 }
@@ -1570,21 +1646,21 @@ fn marked(wrong: &[[u32; 2]], [from, to]: [u32; 2]) -> Option<&'static [i32]> {
     }
 }
 /// The start of the unit `at` lies in, and of the next.
-fn start_before(text: &[char], unit: i32, at: usize, wrong: &[[u32; 2]]) -> usize {
-    (0..=at.min(text.len())).rev().find(|at| starts(text, unit, *at, wrong)).unwrap_or(0)
+fn start_before(text: &[char], unit: i32, at: usize, marks: &Marks) -> usize {
+    (0..=at.min(text.len())).rev().find(|at| starts(text, unit, *at, marks)).unwrap_or(0)
 }
-fn start_after(text: &[char], unit: i32, at: usize, wrong: &[[u32; 2]]) -> usize {
-    (at + 1..=text.len()).find(|at| starts(text, unit, *at, wrong)).unwrap_or(text.len())
+fn start_after(text: &[char], unit: i32, at: usize, marks: &Marks) -> usize {
+    (at + 1..=text.len()).find(|at| starts(text, unit, *at, marks)).unwrap_or(text.len())
 }
 /// Moves `count` units from `at` (back for a negative count), as far as there are: where it
 /// ends, and how many it moved.
-fn gone_by(text: &[char], unit: i32, at: usize, count: i32, wrong: &[[u32; 2]]) -> (usize, i32) {
+fn gone_by(text: &[char], unit: i32, at: usize, count: i32, marks: &Marks) -> (usize, i32) {
     let (mut at, mut went) = (at.min(text.len()), 0);
     while went < count && at < text.len() {
-        (at, went) = (start_after(text, unit, at, wrong), went + 1);
+        (at, went) = (start_after(text, unit, at, marks), went + 1);
     }
     while went > count && at > 0 {
-        (at, went) = (start_before(text, unit, at - 1, wrong), went - 1);
+        (at, went) = (start_before(text, unit, at - 1, marks), went - 1);
     }
     (at, went)
 }
@@ -1692,12 +1768,12 @@ impl Stretch {
     /// Reads something of its box. (An error once the box or window is gone.)
     fn of_box<T>(&self, read: impl FnOnce(&AccessNode) -> T) -> Result<T, i32> {
         let nodes = self.tree.nodes.borrow();
-        let found = nodes.iter().find(|node| node.id == self.id && matches!(node.role, Role::TextBox | Role::PasswordBox));
+        let found = nodes.iter().find(|node| node.id == self.id && node.reads_text());
         found.filter(|_| self.tree.hwnd.get() != 0).map(read).ok_or(GONE)
     }
     /// Its box's text now, in characters; and its two ends inside that.
     fn letters(&self) -> Result<(Vec<char>, [usize; 2]), i32> {
-        let letters: Vec<char> = self.of_box(|node| node.value.chars().collect())?;
+        let letters: Vec<char> = self.of_box(|node| node.text().chars().collect())?;
         let ends = self.ends.get().map(|end| (end as usize).min(letters.len()));
         Ok((letters, ends))
     }
@@ -1708,32 +1784,32 @@ impl Stretch {
     /// `ExpandToEnclosingUnit`.
     fn widened(&self, unit: i32) -> Result<(), i32> {
         let (letters, [from, _]) = self.letters()?;
-        let wrong = self.wrong()?;
-        let from = start_before(&letters, unit, from, &wrong);
-        self.put([from, start_after(&letters, unit, from, &wrong).max(from)]);
+        let marks = self.marks()?;
+        let from = start_before(&letters, unit, from, &marks);
+        self.put([from, start_after(&letters, unit, from, &marks).max(from)]);
         Ok(())
     }
     /// Moves by `count` units: an empty range as it is, any other as the one unit starting
     /// where it lands. Returns how many it moved.
     fn went(&self, unit: i32, count: i32) -> Result<i32, i32> {
         let (letters, [from, to]) = self.letters()?;
-        let wrong = self.wrong()?;
-        let (mut at, mut went) = gone_by(&letters, unit, from, count, &wrong);
+        let marks = self.marks()?;
+        let (mut at, mut went) = gone_by(&letters, unit, from, count, &marks);
         // (A non-empty range stops at the last unit: the text's end is a caret position, not a
         // unit.)
         if from != to && went > 0 && at >= letters.len() {
-            (at, went) = (start_before(&letters, unit, at - 1, &wrong), went - 1);
+            (at, went) = (start_before(&letters, unit, at - 1, &marks), went - 1);
         }
         if count != 0 {
-            self.put([at, if from == to { at } else { start_after(&letters, unit, at, &wrong).max(at) }]);
+            self.put([at, if from == to { at } else { start_after(&letters, unit, at, &marks).max(at) }]);
         }
         Ok(went)
     }
     /// Moves one end by `count` units; an end passing the other takes it along.
     fn end_went(&self, end: i32, unit: i32, count: i32) -> Result<i32, i32> {
         let (letters, mut ends) = self.letters()?;
-        let wrong = self.wrong()?;
-        let (at, went) = gone_by(&letters, unit, ends[(end != 0) as usize], count, &wrong);
+        let marks = self.marks()?;
+        let (at, went) = gone_by(&letters, unit, ends[(end != 0) as usize], count, &marks);
         ends[(end != 0) as usize] = at;
         self.put(if ends[0] > ends[1] { [at, at] } else { ends });
         Ok(went)
@@ -1769,7 +1845,7 @@ impl Stretch {
         if look == READ_ONLY {
             return Ok(automation.variant(&Value::Truth(!usable)));
         }
-        let marks = if look == MARKS { Some(marked(&self.wrong()?, self.ends.get())) } else { None };
+        let marks = if look == MARKS { Some(marked(&self.marks()?.wrong, self.ends.get())) } else { None };
         if let Some(Some(marks)) = marks {
             // SAFETY: Windows makes an array of so many `VT_I4` (3) and copies one in at a time
             // from where pointed; it goes in a `VT_ARRAY | VT_I4` (0x2003) value for the
@@ -1787,24 +1863,31 @@ impl Stretch {
         unsafe { if marks.is_some() { (automation.mixed)(&mut answer) } else { (automation.unknown)(&mut answer) } };
         Ok(Variant { kind: if answer.is_null() { 0 } else { 13 }, unused: [0; 3], held: Held { object: answer } })
     }
-    /// The misspelled words in its box ([`AccessNode::misspelled`]).
-    fn wrong(&self) -> Result<Vec<[u32; 2]>, i32> {
-        self.of_box(|node| node.misspelled.clone())
+    /// Its box's misspelled words ([`AccessNode::misspelled`]) and lines.
+    fn marks(&self) -> Result<Marks, i32> {
+        self.of_box(|node| Marks { wrong: node.misspelled.clone(), lines: node.line_starts() })
     }
-    /// Its bounding rectangles as a `SAFEARRAY` (left, top, width, height): its box's, for want
-    /// of each letter's; empty while the range is.
+    /// Its bounding rectangles as a `SAFEARRAY` (left, top, width, height, each in a row): one
+    /// per line it shows on, as drawn; an empty range's, the cursor's place there.
     fn on_screen(&self) -> Result<*mut c_void, i32> {
-        let (rect, [from, to]) = (self.of_box(|node| node.rect)?, self.ends.get());
+        let lines = self.of_box(|node| node.range_rects(self.ends.get()))?;
         let (scale, corner, automation) = (self.tree.scale.get(), self.tree.corner(), self.tree.automation);
-        let numbers = [corner.x as f32 + rect.x * scale, corner.y as f32 + rect.y * scale, rect.w * scale, rect.h * scale].map(f64::from);
-        let count = if from == to { 0 } else { 4 };
+        let numbers: Vec<f64> = lines.iter().flat_map(|line| [corner.x as f32 + line.x * scale, corner.y as f32 + line.y * scale, line.w * scale, line.h * scale]).map(f64::from).collect();
         // SAFETY: Windows makes an array of `VT_R8` (5) and copies one in at a time from where
         // pointed.
         unsafe {
-            let row = (automation.numbers)(5, 0, count);
-            (0..count as i32).for_each(|at| _ = (automation.put)(row, &at, (&raw const numbers[at as usize]).cast()));
+            let row = (automation.numbers)(5, 0, numbers.len() as u32);
+            (0..numbers.len() as i32).for_each(|at| _ = (automation.put)(row, &at, (&raw const numbers[at as usize]).cast()));
             Ok(row)
         }
+    }
+    /// `FindAttribute` for misspelled words (annotation types holding a spelling error): the
+    /// first wholly in the range, or the last, backward. Nothing for other attributes.
+    fn found_wrong(&self, look: i32, value: &Variant, backward: bool) -> Result<*mut Stretch, i32> {
+        let [from, to] = self.ends.get();
+        let mut words = self.marks()?.wrong.into_iter().filter(|[start, end]| from <= *start && *end <= to && look == MARKS && asks_wrong(value));
+        let word = if backward { words.next_back() } else { words.next() };
+        Ok(word.map_or(std::ptr::null_mut(), |word| Stretch::made(&self.tree, self.id, word)))
     }
     /// Has its box select it: the window is asked. (Not a disabled box, nor a password box.)
     fn selects(&self) -> Result<(), i32> {
@@ -1865,10 +1948,10 @@ impl Stretch {
         // SAFETY: as for `about`.
         unsafe { about(this, &mut (), |stretch| stretch.widened(unit)) }
     }
-    /// `FindAttribute`: never found, as attributes are not told.
-    unsafe extern "system" fn find_look(this: *mut Stretch, _look: i32, _value: Variant, _backward: i32, out: *mut *mut Stretch) -> i32 {
+    /// `FindAttribute`: misspelled words (see `found_wrong`).
+    unsafe extern "system" fn find_look(this: *mut Stretch, look: i32, value: Variant, backward: i32, out: *mut *mut Stretch) -> i32 {
         // SAFETY: as for `about`.
-        unsafe { about(this, out, |stretch| stretch.of_box(|_| std::ptr::null_mut())) }
+        unsafe { about(this, out, |stretch| stretch.found_wrong(look, &value, backward != 0)) }
     }
     unsafe extern "system" fn find_text(this: *mut Stretch, text: *const u16, backward: i32, any_case: i32, out: *mut *mut Stretch) -> i32 {
         // SAFETY: as for `about`; the text is NUL-terminated and read up to there.
@@ -1960,7 +2043,9 @@ unsafe fn answer<T>(this: *mut Face, out: *mut T, ask: impl FnOnce(&Provider) ->
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::accessibility::Letters;
     use crate::geom::rect;
+    use std::sync::Arc;
 
     #[link(name = "oleaut32")]
     unsafe extern "system" {
@@ -1995,7 +2080,7 @@ pub(crate) mod tests {
     fn ledger() -> Vec<AccessNode> {
         let cell = |id: Id, name: &str, row: usize, place: [u32; 2]| AccessNode { grid: Some(place), ..thing(id, Role::Cell, name, Some(row)) };
         vec![
-            AccessNode { grid: Some([40, 2]), rect: rect(0.0, 0.0, 200.0, 100.0), ..thing(1, Role::Table, "", None) },
+            AccessNode { grid: Some([40, 2]), rect: rect(0.0, 0.0, 200.0, 100.0), selected_rows: vec![[10, 11]], ..thing(1, Role::Table, "", None) },
             AccessNode { position: Some([1, 2]), sorted: Some(false), ..thing(2, Role::ColumnHeader, "Name", Some(0)) },
             AccessNode { position: Some([2, 2]), ..thing(3, Role::ColumnHeader, "Size", Some(0)) },
             AccessNode { position: Some([11, 40]), on: Some(true), ..thing(4, Role::TableRow, "a.txt, 3 KB", Some(0)) },
@@ -2488,6 +2573,55 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_text_is_read_by_its_lines_as_wrapped_and_its_letters_where_drawn() {
+        // "one two\nthree" wrapped after "one ": three lines of letters 10 wide and 20 high,
+        // "three" spelt wrong.
+        let line_of = |letter: usize| [0, 4, 8].iter().rposition(|start| *start <= letter).unwrap();
+        let places = (0..13).map(|letter| rect(((letter - [0, 4, 8][line_of(letter)]) * 10) as f32, line_of(letter) as f32 * 20.0, 10.0, 20.0)).collect();
+        let letters = Some(Arc::new(Letters { key: 0, lines: vec![0, 4, 8], places }));
+        let (area, wrong) = (rect(0.0, 0.0, 200.0, 60.0), vec![[8, 13]]);
+        let node = AccessNode { letters, text_rect: area, rect: area, seen: area, misspelled: wrong, ..notes() };
+        let tree = made_tree(vec![node]);
+        let text = Held::of(&tree, 6).way(10014).unwrap();
+        // Lines as wrapped; paragraphs as typed.
+        let piece = Kept(Stretch::made(&tree, 6, [1, 1]));
+        assert_eq!([piece.widened(3), piece.gone(3, 1).1, piece.gone(3, 1).1, piece.widened(4)], ["one ", "two\n", "three", "three"]);
+        // A range over two lines lies in two rectangles (at two pixels per unit).
+        let mut row = std::ptr::null_mut();
+        let span = Kept(Stretch::made(&tree, 6, [2, 6]));
+        assert_eq!(unsafe { (span.table().lies)(span.0, &mut row) }, 0);
+        let numbers: Vec<f64> = (0..)
+            .map_while(|at: i32| {
+                let mut number = 0.0f64;
+                (unsafe { SafeArrayGetElement(row, &at, (&raw mut number).cast()) } == 0).then_some(number)
+            })
+            .collect();
+        unsafe { SafeArrayDestroy(row) };
+        assert_eq!(numbers, [40.0, 0.0, 40.0, 40.0, 0.0, 40.0, 40.0, 40.0]);
+        // The letter at a point, as an empty range before it.
+        let mut at = std::ptr::null_mut();
+        assert_eq!(unsafe { (text.table::<TextTable>().at_spot)(text.0, Spot { x: 10.0, y: 100.0 }, &mut at) }, 0);
+        assert_eq!(Kept(at).ends(), [8, 8]);
+        // The misspelled word is found, asked for as a number or as an array of them.
+        let whole = Kept(Stretch::made(&tree, 6, [0, 13]));
+        let sought = Variant { kind: 3, unused: [0; 3], held: super::Held { number: SPELT_WRONG } };
+        let mut found = std::ptr::null_mut();
+        assert_eq!(unsafe { (whole.table().find_look)(whole.0, MARKS, sought, 0, &mut found) }, 0);
+        assert_eq!(Kept(found).ends(), [8, 13]);
+        let other = Variant { held: super::Held { number: 60002 }, ..sought };
+        assert_eq!(unsafe { ((whole.table().find_look)(whole.0, MARKS, other, 1, &mut found), found.is_null()) }, (0, true));
+        let array = unsafe { (tree.automation.numbers)(3, 0, 2) };
+        for (at, number) in [(0, 60002), (1, SPELT_WRONG)] {
+            unsafe { (tree.automation.put)(array, &at, (&raw const number).cast()) };
+        }
+        let among = Variant { kind: 0x2003, unused: [0; 3], held: super::Held { object: array } };
+        assert_eq!(unsafe { (whole.table().find_look)(whole.0, MARKS, among, 1, &mut found) }, 0);
+        assert_eq!(Kept(found).ends(), [8, 13]);
+        unsafe { SafeArrayDestroy(array) };
+        tree.hwnd.set(0);
+    }
+
+    #[test]
     fn what_is_out_of_view_is_told_as_off_the_screen_and_can_be_brought_into_view() {
         let mut things = everything();
         things[4].visible = false;
@@ -2514,7 +2648,8 @@ pub(crate) mod tests {
         let (spelt, plain): (Option<&[i32]>, Option<&[i32]>) = (Some(&[SPELT_WRONG]), Some(&[]));
         assert_eq!(marks, [spelt, spelt, plain, plain, None, None, spelt, plain]);
         // By format units the text is five pieces: around the two words.
-        let starts_of = (0..=text.len()).filter(|at| starts(&text, 1, *at, &wrong)).collect::<Vec<_>>();
+        let marks = Marks { wrong: wrong.to_vec(), ..Marks::default() };
+        let starts_of = (0..=text.len()).filter(|at| starts(&text, 1, *at, &marks)).collect::<Vec<_>>();
         assert_eq!(starts_of, [0, 4, 9, 14, 19, 22]);
         // And so a screen reader is told, through a text box's range.
         let tree = made_tree(vec![AccessNode { value: text.iter().collect(), misspelled: wrong.to_vec(), ..thing(6, Role::TextBox, "Letter", None) }]);
@@ -2540,17 +2675,25 @@ pub(crate) mod tests {
     #[test]
     fn a_text_is_gone_through_by_the_letter_the_word_and_the_line() {
         let text: Vec<char> = "one  two\nthree".chars().collect();
-        let all = |unit: i32| (0..=text.len()).filter(|at| starts(&text, unit, *at, &[])).collect::<Vec<_>>();
+        // (Its lines as laid out: as typed.)
+        let lines = Marks { lines: vec![0, 9], ..Marks::default() };
+        let all = |unit: i32| (0..=text.len()).filter(|at| starts(&text, unit, *at, &lines)).collect::<Vec<_>>();
         // Every position starts a character; a word starts after whitespace, which belongs to
         // the word before; a line after a line break; the document once.
         assert_eq!((all(0).len(), all(2)), (15, vec![0, 5, 9, 14]));
         assert_eq!((all(3), all(4), all(6), all(1)), (vec![0, 9, 14], vec![0, 9, 14], vec![0, 14], vec![0, 14]));
-        assert_eq!((start_before(&text, 2, 6, &[]), start_after(&text, 2, 6, &[]), start_before(&text, 3, 8, &[]), start_after(&text, 3, 9, &[])), (5, 9, 0, 14));
+        assert_eq!((start_before(&text, 2, 6, &lines), start_after(&text, 2, 6, &lines), start_before(&text, 3, 8, &lines), start_after(&text, 3, 9, &lines)), (5, 9, 0, 14));
         // Moving on and back by units, as far as there are, and how many.
-        let gone =
-            [gone_by(&text, 2, 0, 2, &[]), gone_by(&text, 2, 0, 9, &[]), gone_by(&text, 0, 14, -3, &[]), gone_by(&text, 3, 10, -1, &[]), gone_by(&text, 3, 9, -1, &[]), gone_by(&text, 2, 7, 0, &[])];
+        let gone = [
+            gone_by(&text, 2, 0, 2, &lines),
+            gone_by(&text, 2, 0, 9, &lines),
+            gone_by(&text, 0, 14, -3, &lines),
+            gone_by(&text, 3, 10, -1, &lines),
+            gone_by(&text, 3, 9, -1, &lines),
+            gone_by(&text, 2, 7, 0, &lines),
+        ];
         assert_eq!(gone, [(9, 2), (14, 3), (11, -3), (9, -1), (0, -1), (7, 0)]);
-        assert_eq!((gone_by(&[], 2, 0, 1, &[]), gone_by(&text, 0, 99, -1, &[])), ((0, 0), (13, -1)));
+        assert_eq!((gone_by(&[], 2, 0, 1, &lines), gone_by(&text, 0, 99, -1, &lines)), ((0, 0), (13, -1)));
     }
 
     #[test]
@@ -2603,8 +2746,9 @@ pub(crate) mod tests {
             [Some([4, 7]), None, Some([2, 3]), Some([12, 13]), None]
         );
         assert_eq!(selected.found("three", false, false).map(|found| found.ends()), None, "only in the stretch that is asked");
-        // Its rectangle is its box's (at two pixels per unit); an empty one has none.
-        assert_eq!((selected.lies(), cursor.lies().0), ((4, 240.0), 0));
+        // Its rectangle is its box's (at two pixels per unit), where its letters are not known;
+        // an empty one's, the cursor's.
+        assert_eq!((selected.lies(), cursor.lies().0), ((4, 240.0), 4));
         // Attributes: read-only is known; all else is unsupported.
         let mut looks = [std::mem::MaybeUninit::<Variant>::zeroed(); 2];
         unsafe {
@@ -2665,8 +2809,14 @@ pub(crate) mod tests {
         let row = Held::of(&tree, 4);
         assert_eq!((row.property(TAKES_KEYBOARD), row.property(NTH), row.property(OF_SO_MANY)), (Ok(Value::Truth(true)), Ok(Value::Number(11)), Ok(Value::Number(40))));
         assert_eq!(row.way(TO_PICK).map(|way| way.get(way.table::<ChoiceTable>().picked)), Some(Ok(1)));
+        // The table lists its selected rows, and allows many; a row is selected among them.
+        let picks = table.way(10001).unwrap();
+        assert_eq!((names_in(picks.get(picks.table::<SelectionTable>().selection).unwrap()), picks.get(picks.table::<SelectionTable>().many)), (vec!["a.txt, 3 KB".to_string()], Ok(1)));
+        let among = row.way(TO_PICK).map(|way| Held(way.get(way.table::<ChoiceTable>().among).unwrap()));
+        assert!(among.is_some_and(|among| std::ptr::eq(among.provider(), table.provider())));
         // The table: row and column counts; a cell by row and column. (A cell of a row out of
-        // view is unavailable; one of a row or column it lacks is an invalid argument.)
+        // view is shown first; here, with no window, it stays unavailable. One of a row or
+        // column it lacks is an invalid argument.)
         let grid = table.way(TO_GO_THROUGH).unwrap();
         let (rows, columns) = (grid.get(grid.table::<GridTable>().rows), grid.get(grid.table::<GridTable>().columns));
         let item = |row: i32, column: i32| {
@@ -2710,7 +2860,7 @@ pub(crate) mod tests {
         // A cell no longer in the table (its row scrolled out) is gone.
         tree.nodes.borrow_mut().truncate(6);
         assert_eq!((place.get(place.table::<InGridTable>().row), item(11, 0)), (Err(GONE), (0, None)));
-        drop((table, size, kinds, row, grid, headed, cell, place, in_grid, under, button, name));
+        drop((table, size, kinds, row, picks, grid, headed, cell, place, in_grid, under, button, name));
         assert!(tree.out.borrow().is_empty() && Rc::strong_count(&tree) == 1, "every provider was freed when the last let go of it");
     }
 
@@ -2881,8 +3031,9 @@ pub(crate) mod tests {
         assert_eq!(changed(|now| now[8].on = Some(false)), [property(9, TICKED, Value::Number(1), Value::Number(0))]);
         assert_eq!(changed(|now| now[7].on = Some(true)), [property(8, UNFOLDED, Value::Number(0), Value::Number(1))]);
         assert_eq!(changed(|now| now[6].on = Some(true)), [property(7, IS_SELECTED, Value::Truth(false), Value::Truth(true)), Change::Picked(7)]);
-        // Position is asked when wanted, not raised.
+        // Position is asked when wanted, not raised; scrolled out of view or into it is.
         assert_eq!(changed(|now| now[2].rect.y += 40.0), []);
+        assert_eq!(changed(|now| now[2].visible = false), [property(3, OFF_THE_SCREEN, Value::Truth(false), Value::Truth(true))]);
         // Elements come and go: reported by their parent. A new element has no property
         // changes.
         assert_eq!(changed(|now| now.push(thing(12, Role::Button, "New", None))), [Change::Children(0)]);

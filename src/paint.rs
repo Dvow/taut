@@ -369,6 +369,11 @@ impl Painter<'_> {
             if font.decoration != Decoration::None {
                 self.rule(canvas, rect(x, y - place.lift, cut.map_or(line.width, |_| inside.w), place.line_height), font, color);
             }
+            #[cfg(feature = "right-to-left")]
+            if let Some([at, other]) = cursor {
+                self.caret(canvas, [x + at, x + other], y, place.line_height);
+            }
+            #[cfg(not(feature = "right-to-left"))]
             if let Some(at) = cursor {
                 canvas.rect(rect(x + at, y, 1.0, place.line_height), self.theme.text);
             }
@@ -381,6 +386,18 @@ impl Painter<'_> {
 }
 
 impl Painter<'_> {
+    /// The text cursor on a line `high` tall from `y`, at `at`: where directions meet it is
+    /// split, its upper half there and its lower half at `other`.
+    #[cfg(feature = "right-to-left")]
+    fn caret(&self, canvas: &mut Canvas, [at, other]: [f32; 2], y: f32, high: f32) {
+        let split = (at - other).abs() >= 0.5;
+        let upper = if split { (high / 2.0).round() } else { high };
+        canvas.rect(rect(at, y, 1.0, upper), self.theme.text);
+        if split {
+            canvas.rect(rect(other, y + upper, 1.0, high - upper), self.theme.text);
+        }
+    }
+
     /// A font's decoration line for one line of text in `line`: just under the letters, or
     /// through the middle of the x-height. A fourteenth of the letters' height thick, at least
     /// a pixel.
@@ -415,7 +432,7 @@ impl Painter<'_> {
 /// Where in `inside` something `size` large is drawn: all of it; or keeping its aspect
 /// (`keep_aspect`), as large as fits, centred. (Something of no size covers all of it, as
 /// nothing.)
-fn fit_aspect(inside: Rect, [wide, high]: [f32; 2], keep_aspect: bool) -> Rect {
+pub(crate) fn fit_aspect(inside: Rect, [wide, high]: [f32; 2], keep_aspect: bool) -> Rect {
     if !keep_aspect || wide <= 0.0 || high <= 0.0 {
         return inside;
     }

@@ -27,6 +27,10 @@ impl Selection {
     pub fn is_empty(&self) -> bool {
         self.spans.is_empty()
     }
+    /// The selected ranges, in order.
+    pub(crate) fn spans(&self) -> &[Range<usize>] {
+        &self.spans
+    }
     /// The rows that are selected, lowest first.
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.spans.iter().flat_map(|span| span.clone())

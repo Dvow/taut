@@ -969,7 +969,7 @@ mod tests {
         let text = "xy \u{5d0}\u{5d2}";
         let mut marked = Vec::new();
         let at = crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, false, [1, 5], Some(5), true, &mut marked);
-        assert_eq!((at, marked.clone()), (Some(38.0), vec![[12.0, 28.0], [38.0, 45.0]]));
+        assert_eq!((at, marked.clone()), (Some([38.0; 2]), vec![[12.0, 28.0], [38.0, 45.0]]));
         // A selection continuing past the line covers the line end's room: at its right in an
         // LTR paragraph, at its left in an RTL one.
         let at = crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, false, [3, 9], None, false, &mut marked);
@@ -979,6 +979,56 @@ mod tests {
         // Text with nothing RTL behaves as before.
         crate::text::marks(&mut writer, "abc", 0, 36.0, Font::new(16.0), 1.0, false, [1, 2], None, false, &mut marked);
         assert_eq!(marked, [[12.0, 24.0]]);
+        // Between the space and the alef directions meet: the cursor shows at the alef (its
+        // right) and at the space (its right), the one it stands by first.
+        let mut at = |after: bool| crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, false, [3, 3], Some(3), after, &mut Vec::new());
+        assert_eq!([at(true), at(false)], [Some([45.0, 28.0]), Some([28.0, 45.0])]);
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn where_directions_meet_the_cursor_is_split_in_two_halves() {
+        use crate::surface::Surface;
+        use crate::{Event, Key};
+        let mut ui = crate::ui::Ui::new(Box::new(crate::bidi::tests::hebrew()), Box::new(LocalClipboard::default()));
+        ui.resize(crate::geom::Size { w: 160.0, h: 50.0 }, 1.0);
+        let (mut text, mut first) = ("xy \u{5d0}\u{5d2}".to_string(), true);
+        let mut build = |ui: &mut crate::ui::Ui| {
+            ui.column().pad(6.0).open();
+            let typed = ui.text_box(&mut text, "");
+            if std::mem::take(&mut first) {
+                ui.set_focus(typed.id);
+            }
+            ui.close();
+        };
+        // After every step only what changed is drawn again, and that is what a full draw gives.
+        let mut screen = Surface::draw(&mut ui, 64);
+        let mut step = |ui: &mut crate::ui::Ui, key: Option<Key>| {
+            key.into_iter().for_each(|key| _ = ui.event(Event::Key(key, Mods::NONE)));
+            let changed = ui.run(&mut build);
+            screen.redraw(ui, changed);
+            let fresh = Surface::draw(ui, 64);
+            assert!(screen.pixels == fresh.pixels, "drawing only what changed ({changed:?}) left the window different");
+            fresh
+        };
+        step(&mut ui, None);
+        // At the start, one cursor; three to the right, where the space meets the alef, two.
+        let start = step(&mut ui, Some(Key::Home));
+        let split = [Key::Right, Key::Right, Key::Right].map(|key| step(&mut ui, Some(key))).into_iter().last().unwrap();
+        let mut columns = std::collections::BTreeMap::<usize, [usize; 2]>::new();
+        for (at, _) in start.pixels.iter().zip(&split.pixels).enumerate().filter(|(_, (one, other))| one != other) {
+            let (x, y) = (at % start.width, at / start.width);
+            let rows = columns.entry(x).or_insert([y, y]);
+            *rows = [rows[0].min(y), rows[1].max(y)];
+        }
+        // The first column is the cursor at the start; then one half at each place, the
+        // Hebrew's width apart, one under the other.
+        let halves: Vec<(usize, [usize; 2])> = columns.into_iter().skip(1).collect();
+        assert_eq!(halves.len(), 2, "{halves:?}");
+        let ((left, low), (right, high)) = (halves[0], halves[1]);
+        assert_eq!(right - left, 14, "the Hebrew between, in the box's 14 units");
+        assert!(low[1] < high[0] || high[1] < low[0], "{halves:?}");
+        assert_eq!(low[1].max(high[1]) - low[0].min(high[0]), low[1] - low[0] + high[1] - high[0] + 1);
     }
 
     #[test]

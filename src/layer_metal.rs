@@ -46,6 +46,8 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// The widest and tallest texture every Mac's Metal makes (asking for more aborts the program).
+const MOST: usize = 16_384;
 /// `MTLPixelFormatBGRA8Unorm`: the UI's pixels, `0xAARRGGBB` words in memory.
 const BGRA8: usize = 80;
 /// Texture usage: read by shaders. Storage: private to the GPU.
@@ -216,6 +218,10 @@ impl Layer {
     #[inline]
     unsafe fn make_texture(&mut self) -> Result<(), Error> {
         let (width, height) = (self.surface.width, self.surface.height);
+        if width.max(height) > MOST {
+            self.surface = Surface::default();
+            return Err(Error { operation: "making the texture", message: format!("no texture of {width} by {height} pixels: {MOST} at most") });
+        }
         // SAFETY: a descriptor for a plain 2D texture of one level; the old texture (+1) is
         // released, the new one (+1) kept.
         unsafe {

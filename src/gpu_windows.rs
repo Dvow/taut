@@ -234,6 +234,17 @@ impl Shown {
         drawn
     }
 
+    /// What the window keeps of HDR, where its path presents in scRGB: Direct3D 11 and 12 (see
+    /// `hdr_windows`).
+    #[cfg(feature = "hdr")]
+    pub(crate) fn hdr(&mut self) -> Option<&mut crate::hdr_windows::Hdr> {
+        match self {
+            Shown::D3d11(shown) => Some(&mut shown.hdr),
+            Shown::D3d12(shown) => Some(&mut shown.hdr),
+            _ => None,
+        }
+    }
+
     /// Shows what was put in, `dirty` being what changed, at the screen's next refresh. Says
     /// whether that worked.
     pub(crate) fn present(&mut self, device: &Device, dirty: &[RECT]) -> bool {
@@ -363,10 +374,10 @@ pub(crate) mod tests {
 
     #[test]
     fn the_users_choice_goes_over_the_apps() {
-        let said = [Some("cpu"), Some("GPU"), Some("d3d11"), Some("D3D12"), Some("vulkan"), Some("OpenGL"), Some(""), Some("metal"), None];
+        let said = [Some("cpu"), Some("GPU"), Some("d3d11"), Some("D3D12"), Some("vulkan"), Some("OpenGL"), Some("Metal"), Some(""), Some("glide"), None];
         for asked in [Renderer::Auto, Renderer::Cpu, Renderer::Gpu, Renderer::Vulkan] {
             let chosen = said.map(|said| asked.chosen(said));
-            assert_eq!(chosen, [Renderer::Cpu, Renderer::Gpu, Renderer::Direct3D11, Renderer::Direct3D12, Renderer::Vulkan, Renderer::OpenGL, asked, asked, asked]);
+            assert_eq!(chosen, [Renderer::Cpu, Renderer::Gpu, Renderer::Direct3D11, Renderer::Direct3D12, Renderer::Vulkan, Renderer::OpenGL, Renderer::Metal, asked, asked, asked]);
         }
     }
 

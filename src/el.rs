@@ -387,6 +387,18 @@ impl El<'_> {
         self.spec.fill = color;
         self
     }
+    /// How bright it and what it holds show on an HDR screen, in times SDR white: 2.0 is twice
+    /// as bright as white text. Capped at [`Ui::headroom`]. SDR screens show it as described,
+    /// as do builds without the feature `hdr`.
+    #[doc(alias("hdr", "nits", "edr"))]
+    #[cfg_attr(not(feature = "hdr"), allow(unused_variables))]
+    pub fn brightness(self, times: f32) -> Self {
+        #[cfg(feature = "hdr")]
+        if times.is_finite() && times > 0.0 && times != 1.0 {
+            self.ui.light.bright.push((self.ui.tree.specs.len() as u32, times));
+        }
+        self
+    }
     /// A vertical gradient fill, top to bottom. (Replaces other content: put children inside.)
     #[inline]
     pub fn gradient(self, top: Color, bottom: Color) -> Self {

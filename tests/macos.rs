@@ -21,7 +21,7 @@ mod mac {
     use std::rc::Rc;
     use std::time::{Duration, Instant};
     use taut::geom::{Point, Size, pt};
-    use taut::{Event, FileDialog, LocalClipboard, Mods, Rect, SecondWindow, Surface, Ui, Window};
+    use taut::{Event, FileDialog, LocalClipboard, Mods, Rect, Renderer, SecondWindow, Surface, Ui, Window};
 
     type Obj = *mut c_void;
 
@@ -323,8 +323,28 @@ mod mac {
         button.rect
     }
 
-    /// Compares a window with its interface drawn afresh, and keeps pictures of both.
+    /// Whether the GPU may draw parts of windows too (`gpu-draw`, unless `TAUT_DRAW=cpu`): edges
+    /// may then differ by a few levels.
+    fn drawn_by_gpu() -> bool {
+        cfg!(feature = "gpu-draw") && std::env::var("TAUT_DRAW").map_or(true, |said| said != "cpu")
+    }
+
+    /// Two pictures of a window's view on the screen, `width` wide, without the window's rounded
+    /// bottom corners (`reach` pixels square each): where they differ, as `differ` says.
+    fn differ_but_corners(a: &[u32], b: &[u32], width: usize, reach: usize) -> (usize, u32) {
+        let height = a.len() / width.max(1);
+        let corner = |at: usize| at / width + reach >= height && (at % width < reach || at % width + reach >= width);
+        let cut = |picture: &[u32]| picture.iter().enumerate().map(|(at, pixel)| if corner(at) { 0 } else { *pixel }).collect::<Vec<u32>>();
+        differ(&cut(a), &cut(b))
+    }
+
+    /// Compares a window with its interface drawn afresh, and keeps pictures of both. A window
+    /// Metal shows is read from the screen (its layer's own picture is the CPU's, from before),
+    /// which shows the very pixels, but in the window's rounded bottom corners.
     fn compare(steps: &mut Steps, ui: &Ui, window: Obj, name: &str, events: &[Event], describe: impl FnMut(&mut Ui)) {
+        if ui.renderer() != Renderer::Cpu {
+            return compare_on_screen(steps, ui, window, name, events, describe);
+        }
         let Some((width, pixels, alpha)) = shown(window) else { return steps.check(false, || format!("{name}: the window shows no picture")) };
         let fresh = afresh(ui.size(), ui.scale(), events, describe);
         save(&format!("{name}-window.png"), width, &pixels);
@@ -342,6 +362,21 @@ mod mac {
             }
             None => println!("    {name}: no picture of the screen to be had"),
         }
+    }
+
+    /// `compare` for a window Metal shows: what the screen shows of it, but its rounded bottom
+    /// corners; the very pixels, or within a few levels where the GPU draws too.
+    fn compare_on_screen(steps: &mut Steps, ui: &Ui, window: Obj, name: &str, events: &[Event], describe: impl FnMut(&mut Ui)) {
+        let Some((width, pixels)) = on_screen(window) else { return steps.check(false, || format!("{name}: no picture of the screen to be had")) };
+        let fresh = afresh(ui.size(), ui.scale(), events, describe);
+        save(&format!("{name}-screen.png"), width, &pixels);
+        save(&format!("{name}-afresh.png"), fresh.width, &fresh.pixels);
+        let height = pixels.len() / width.max(1);
+        steps.check((width, height) == (fresh.width, fresh.height), || format!("{name}: the screen shows {width} by {height}, afresh {} by {}", fresh.width, fresh.height));
+        let (count, most) = differ_but_corners(&pixels, &fresh.pixels, width, (24.0 * ui.scale()) as usize);
+        println!("    {name}, through {:?}: {count} pixels differ from afresh on the screen, by up to {most}", ui.renderer());
+        let fine = if drawn_by_gpu() { most <= 4 } else { count == 0 };
+        steps.check(fine, || format!("{name}: through {:?}, {count} pixels differ from the interface drawn afresh, by up to {most}", ui.renderer()));
     }
 
     /// A window opens with what the library draws; a click posted as a person's presses its
@@ -554,6 +589,110 @@ mod mac {
         ui.column().pad(12.0).gap(6.0).open();
         (0..6).for_each(|line| _ = ui.label(&format!("Line {line} of a window that grows")));
         ui.close();
+    }
+
+    /// The window's bottom right corner dragged as a person would (posted to the system's event
+    /// stream): the window is run at sizes on the way, and at the end shows what its interface
+    /// drawn afresh shows. (Through Metal, frames go with Core Animation's transaction meanwhile.)
+    fn a_window_dragged_by_its_corner_is_drawn_at_each_size() -> Vec<String> {
+        let sizes = Rc::new(RefCell::new(Vec::<Size>::new()));
+        let seen = sizes.clone();
+        let mut settled = Instant::now();
+        let window = Window { title: "Dragged", width: 300.0, height: 180.0, position: Some((100, 100)), ..Default::default() };
+        let mut failed = check(window, move |steps, ui| {
+            lines(ui);
+            let Some(window) = window_titled("Dragged") else { return };
+            if seen.borrow().last() != Some(&ui.size()) {
+                seen.borrow_mut().push(ui.size());
+                settled = Instant::now();
+            }
+            match steps.step {
+                0 if ui.renderer() == shown_by(Renderer::Auto) && steps.waited(500) => {
+                    let frame = rect_of(window, c"frame");
+                    let main: Obj = items(send(class(c"NSScreen"), c"screens", ()))[0];
+                    let top = rect_of(main, c"frame").size.height;
+                    let corner = NSPoint { x: frame.origin.x + frame.size.width - 2.0, y: top - frame.origin.y - 2.0 };
+                    post_drag(corner, NSPoint { x: corner.x + 90.0, y: corner.y + 60.0 });
+                    steps.next();
+                }
+                // Once the size has stayed the same a while: the drag is over.
+                1 if ui.size().w >= 380.0 && settled.elapsed() > Duration::from_millis(800) && steps.waited(1500) => {
+                    compare(steps, ui, window, "dragged", &[], lines);
+                    steps.next();
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        });
+        let sizes = sizes.take();
+        println!("    {} sizes run: {:?} to {:?}", sizes.len(), sizes.first(), sizes.last());
+        if sizes.len() < 4 {
+            failed.push(format!("the window was run at {} sizes while dragged, not at each on the way", sizes.len()));
+        }
+        failed
+    }
+
+    /// What shows a window Metal shows when asked (feature `gpu`): else the CPU.
+    fn shown_by(asked: Renderer) -> Renderer {
+        if cfg!(feature = "gpu") && asked != Renderer::Cpu { Renderer::Metal } else { Renderer::Cpu }
+    }
+
+    /// The counter at one place on the screen, shown as `renderer` says: what the screen shows
+    /// of it, before and after a click.
+    fn screen_pictures(renderer: Renderer) -> (Vec<String>, Vec<(usize, Vec<u32>)>) {
+        let pictures = Rc::new(RefCell::new(Vec::new()));
+        let kept = pictures.clone();
+        let mut count = 0;
+        let window = Window { title: "Shown", width: 360.0, height: 200.0, position: Some((140, 120)), renderer, ..Default::default() };
+        let failed = check(window, move |steps, ui| {
+            let button = counter(&mut count, ui);
+            let middle = pt(button.x + button.w / 2.0, button.y + button.h / 2.0);
+            let Some(window) = window_titled("Shown") else { return };
+            match steps.step {
+                0 if ui.renderer() == shown_by(renderer) && steps.waited(500) => {
+                    kept.borrow_mut().extend(on_screen(window));
+                    post_mouse(window, middle, 1);
+                    post_mouse(window, middle, 2);
+                    steps.next();
+                }
+                1 if count == 1 => steps.next(),
+                2 if steps.waited(500) => {
+                    kept.borrow_mut().extend(on_screen(window));
+                    steps.check(ui.renderer() == shown_by(renderer), || format!("{renderer:?}: shown by {:?}", ui.renderer()));
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        });
+        (failed, pictures.take())
+    }
+
+    /// The same window shown by the CPU, then by Metal at the same place: the screen shows the
+    /// same pixels, before and after a click (with `gpu-draw`, within a few levels where the GPU
+    /// drew edges), and the interface is told it is Metal.
+    fn metal_shows_on_the_screen_what_the_cpu_shows() -> Vec<String> {
+        let (mut failed, cpu) = screen_pictures(Renderer::Cpu);
+        let (more, metal) = screen_pictures(Renderer::Gpu);
+        failed.extend(more);
+        let drawn = drawn_by_gpu();
+        let most_off = if drawn { 4 } else { 0 };
+        if cpu.len() != 2 || metal.len() != 2 {
+            failed.push(format!("pictures of the screen: {} by the CPU, {} by Metal, not 2 each", cpu.len(), metal.len()));
+        }
+        for (nth, ((width, by_cpu), (_, by_metal))) in cpu.iter().zip(&metal).enumerate() {
+            save(&format!("shown-{nth}-cpu.png"), *width, by_cpu);
+            save(&format!("shown-{nth}-metal.png"), *width, by_metal);
+            if by_cpu.len() != by_metal.len() {
+                failed.push(format!("picture {nth}: {} pixels by the CPU, {} by Metal", by_cpu.len(), by_metal.len()));
+                continue;
+            }
+            let (count, most) = differ(by_cpu, by_metal);
+            println!("    picture {nth} ({width} wide): {count} pixels differ between the CPU and Metal, by up to {most}");
+            if most > most_off || (!drawn && count > 0) {
+                failed.push(format!("picture {nth}: {count} pixels differ between the CPU and Metal, by up to {most}"));
+            }
+        }
+        failed
     }
 
     /// A window opens where its app says, and its app is told where it is, which screens there
@@ -1430,12 +1569,14 @@ mod mac {
     pub fn main() {
         unsafe { objc_setExceptionPreprocessor(thrown) };
         type Check = fn() -> Vec<String>;
-        let checks: [(&str, Check); 16] = [
+        let checks: [(&str, Check); 18] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
+            ("metal shows on the screen what the CPU shows", metal_shows_on_the_screen_what_the_cpu_shows),
             ("keys and an input method's text reach the focused box", keys_and_an_input_methods_text_reach_the_focused_box),
             ("the clipboard is the system's", the_clipboard_is_the_systems),
             ("a second window opens, and its close button closes it", a_second_window_opens_and_its_close_button_closes_it),
             ("a window opens where asked, and is drawn whole at a new size", a_window_opens_where_asked_and_is_drawn_whole_at_a_new_size),
+            ("a window dragged by its corner is drawn at each size", a_window_dragged_by_its_corner_is_drawn_at_each_size),
             ("files let go on a window reach its app", files_let_go_on_a_window_reach_its_app),
             ("a drag out of the window reaches another program", a_drag_out_of_the_window_reaches_another_program),
             ("a see-through window is clear where nothing is drawn", a_see_through_window_is_clear_where_nothing_is_drawn),

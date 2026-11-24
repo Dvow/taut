@@ -1,5 +1,5 @@
-//! taut under a program's own renderer: the Direct3D 9, 11 and 12, OpenGL and Vulkan layers,
-//! and the examples using them, checked against the surface they show. A gallery frame,
+//! taut under a program's own renderer: the Direct3D 9, 11 and 12, OpenGL, Vulkan and Metal
+//! layers, and the examples using them, checked against the surface they show. A gallery frame,
 //! rendered over a known image, is read back and compared with the surface composited over that
 //! image by hand; a change updates the texture where it changed and nowhere else; the interface
 //! lies at the program's viewport and inside it; the state a layer sets for drawing is restored
@@ -7,9 +7,10 @@
 //!
 //! Nothing is drawn on screen. Direct3D 11 and 12 render on Windows' software rasterizer
 //! (WARP); Direct3D 9Ex on the graphics card, in a program of its own started on a desktop of
-//! its own; OpenGL through the example's own WGL on a never-shown window, and on Linux through
-//! EGL with no display (Mesa's llvmpipe); Vulkan on the system's first device (lavapipe in the
-//! tests on Linux). A test needing an X display says so, and runs on its own:
+//! its own; OpenGL through the example's own WGL on a never-shown window, on Linux through
+//! EGL with no display (Mesa's llvmpipe), on macOS through CGL with no window; Vulkan on the
+//! system's first device (lavapipe in the tests on Linux; none on macOS without a Vulkan
+//! loader); Metal on the system's device. A test needing an X display says so, and runs on its own:
 //! `xvfb-run cargo test --test renderers -- --ignored`. With `TAUT_PICTURES` naming a folder,
 //! each renderer's gallery frame is saved there.
 use std::ffi::c_void;
@@ -106,7 +107,7 @@ fn off(got: &[u32], surface: &Surface, under: &[u32]) -> (u32, usize) {
 const TOLERANCE: u32 = 1;
 
 /// The rows of a picture `width` wide, the last first: OpenGL counts rows from the bottom.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code))]
 fn upside_down(pixels: &[u32], width: usize) -> Vec<u32> {
     pixels.rchunks(width).flatten().copied().collect()
 }
@@ -710,8 +711,7 @@ functions!(Checks {
     glScissor: fn(i32, i32, i32, i32);
 });
 
-// (macOS: no context of the kind made here.)
-#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+#[cfg(any(windows, all(unix, not(any(target_os = "ios", target_os = "android")))))]
 mod open_gl {
     use super::*;
     use std::ffi::CStr;
@@ -735,12 +735,68 @@ mod open_gl {
         super::opengl::wgl::context(window);
         (Box::new(super::opengl::wgl::find), window)
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     pub fn context() -> (Find, super::opengl::egl::Context) {
         use super::opengl::egl;
         let context = egl::context(egl::PLATFORM_SURFACELESS, std::ptr::null_mut(), None).expect("EGL gives no OpenGL 3.3 of the core profile without a display");
         let find = context.egl.eglGetProcAddress;
         (Box::new(move |name| unsafe { find(name.as_ptr()) }), context)
+    }
+    /// macOS: a CGL context of OpenGL's core profile (4.1), with no window; functions found in
+    /// the OpenGL framework, which this links.
+    #[cfg(target_os = "macos")]
+    pub fn context() -> (Find, cgl::Context) {
+        let context = cgl::Context::new().expect("CGL gives an OpenGL 4.1 core profile context");
+        (Box::new(|name| unsafe { cgl::dlsym(-2isize as *mut c_void, name.as_ptr()) }.cast_const()), context)
+    }
+
+    /// CGL, as CGLTypes.h and CGLCurrent.h declare it.
+    #[cfg(target_os = "macos")]
+    pub mod cgl {
+        use std::ffi::{c_char, c_void};
+
+        #[link(name = "OpenGL", kind = "framework")]
+        unsafe extern "C" {
+            fn CGLChoosePixelFormat(attributes: *const i32, format: *mut *mut c_void, count: *mut i32) -> i32;
+            fn CGLDestroyPixelFormat(format: *mut c_void) -> i32;
+            fn CGLCreateContext(format: *mut c_void, share: *mut c_void, context: *mut *mut c_void) -> i32;
+            fn CGLDestroyContext(context: *mut c_void) -> i32;
+            fn CGLSetCurrentContext(context: *mut c_void) -> i32;
+        }
+        unsafe extern "C" {
+            pub fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+        }
+
+        /// `kCGLPFAOpenGLProfile`, `kCGLOGLPVersion_GL4_Core`.
+        const PROFILE: i32 = 99;
+        const CORE_4: i32 = 0x4100;
+
+        /// A context, current on the thread that made it until it goes.
+        pub struct Context(*mut c_void);
+
+        impl Context {
+            pub fn new() -> Option<Context> {
+                let (mut format, mut count, mut context) = (std::ptr::null_mut(), 0, std::ptr::null_mut());
+                unsafe {
+                    CGLChoosePixelFormat([PROFILE, CORE_4, 0].as_ptr(), &mut format, &mut count);
+                    if format.is_null() {
+                        return None;
+                    }
+                    CGLCreateContext(format, std::ptr::null_mut(), &mut context);
+                    CGLDestroyPixelFormat(format);
+                    (!context.is_null() && CGLSetCurrentContext(context) == 0).then_some(Context(context))
+                }
+            }
+        }
+
+        impl Drop for Context {
+            fn drop(&mut self) {
+                unsafe {
+                    CGLSetCurrentContext(std::ptr::null_mut());
+                    CGLDestroyContext(self.0);
+                }
+            }
+        }
     }
 
     /// Skipped in CI on Windows (`TAUT_CI`): its runners have only Windows' OpenGL 1.1, with no core
@@ -980,7 +1036,7 @@ mod open_gl {
 
 /// The example's own window on X, through EGL: on a display made for the test by xvfb-run,
 /// never on anybody's desktop (the tests check that the display is one xvfb-run made).
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod on_x11 {
     use super::opengl::Program;
     use super::opengl::egl::{self, XEvent, Xlib, dlopen, dlsym};
@@ -2110,5 +2166,219 @@ mod on_vulkan {
         let got = drawn_whole(&mut vulkan, &mut gallery.ui, &under);
         let (most, _) = off(&got, &Surface::draw(&mut gallery.ui, 64), &under);
         assert!(most <= TOLERANCE, "made again: off by {most}");
+    }
+}
+
+/// The Metal layer (macOS), on the system's device: the program's target a shared texture,
+/// filled and read by hand; the layer's own texture reached through blits.
+#[cfg(target_os = "macos")]
+mod on_metal {
+    use super::*;
+    use std::ffi::{CStr, c_char};
+    use taut::layer_metal::Layer;
+
+    type Obj = *mut c_void;
+
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_getClass(name: *const c_char) -> Obj;
+        fn sel_registerName(name: *const c_char) -> *const c_void;
+        fn objc_msgSend();
+        fn objc_autoreleasePoolPush() -> *mut c_void;
+        fn objc_autoreleasePoolPop(pool: *mut c_void);
+    }
+    #[link(name = "Metal", kind = "framework")]
+    unsafe extern "C" {
+        fn MTLCreateSystemDefaultDevice() -> Obj;
+    }
+
+    trait Args {
+        unsafe fn send<R>(self, to: Obj, name: *const c_void) -> R;
+    }
+    macro_rules! args {
+        ($($arg:ident),*) => {
+            impl<$($arg),*> Args for ($($arg,)*) {
+                #[allow(non_snake_case)]
+                unsafe fn send<R>(self, to: Obj, name: *const c_void) -> R {
+                    let ($($arg,)*) = self;
+                    let call = unsafe { std::mem::transmute::<unsafe extern "C" fn(), unsafe extern "C" fn(Obj, *const c_void $(, $arg)*) -> R>(objc_msgSend) };
+                    unsafe { call(to, name $(, $arg)*) }
+                }
+            }
+        };
+    }
+    args!();
+    args!(A);
+    args!(A, B);
+    args!(A, B, C);
+    args!(A, B, C, D);
+    args!(A, B, C, D, E, F, G, H, I);
+
+    fn send<R>(to: Obj, name: &CStr, args: impl Args) -> R {
+        unsafe { args.send(to, sel_registerName(name.as_ptr())) }
+    }
+    fn class(name: &CStr) -> Obj {
+        unsafe { objc_getClass(name.as_ptr()) }
+    }
+
+    /// `MTLOrigin`, `MTLSize`; `MTLRegion`; `MTLClearColor`.
+    #[repr(C)]
+    struct Three([usize; 3]);
+    #[repr(C)]
+    struct Region(Three, Three);
+
+    /// `MTLPixelFormatBGRA8Unorm`.
+    const BGRA8: usize = 80;
+
+    /// The layer, on the system's device and a queue of it.
+    struct Metal {
+        layer: Layer,
+        device: Obj,
+        queue: Obj,
+    }
+
+    impl Metal {
+        /// Nothing, where the system has no Metal device.
+        fn new() -> Option<Metal> {
+            let device = unsafe { MTLCreateSystemDefaultDevice() };
+            if device.is_null() {
+                return None;
+            }
+            let queue: Obj = send(device, c"newCommandQueue", ());
+            let layer = unsafe { Layer::new(device, queue, BGRA8) }.unwrap_or_else(|failed| panic!("{failed}"));
+            Some(Metal { layer, device, queue })
+        }
+
+        /// A texture `width` by `height`, BGRA, the processor's to fill and read too (shared), drawn into and read by shaders.
+        fn shared(&self, width: usize, height: usize) -> Obj {
+            let described: Obj = send(class(c"MTLTextureDescriptor"), c"texture2DDescriptorWithPixelFormat:width:height:mipmapped:", (BGRA8, width, height, 0u8));
+            send::<()>(described, c"setUsage:", (4usize | 1,));
+            send::<()>(described, c"setStorageMode:", (0usize,));
+            send(self.device, c"newTextureWithDescriptor:", (described,))
+        }
+
+        /// Runs `work` on a command buffer of the queue, and waits for it.
+        fn commands(&self, work: &mut dyn FnMut(Obj)) {
+            let commands: Obj = send(self.queue, c"commandBuffer", ());
+            work(commands);
+            send::<()>(commands, c"commit", ());
+            send::<()>(commands, c"waitUntilCompleted", ());
+            assert_eq!(send::<usize>(commands, c"status", ()), 4, "the commands completed");
+        }
+
+        /// The layer's texture copied to or from a shared buffer of its size: `pixels` put in
+        /// first (`into`), or read out after.
+        fn through_buffer(&self, pixels: &mut [u32], into: bool) {
+            let (texture, surface) = (self.layer.texture(), self.layer.surface());
+            let (width, height) = (surface.width, surface.height);
+            let buffer: Obj = send(self.device, c"newBufferWithLength:options:", (width * height * 4, 0usize));
+            let there: *mut u32 = send(buffer, c"contents", ());
+            if into {
+                unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), there, pixels.len()) };
+            }
+            self.commands(&mut |commands| {
+                let blit: Obj = send(commands, c"blitCommandEncoder", ());
+                let (row, image, size, at) = (width * 4, width * height * 4, Three([width, height, 1]), Three([0, 0, 0]));
+                if into {
+                    send::<()>(
+                        blit,
+                        c"copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:",
+                        (buffer, 0usize, row, image, size, texture, 0usize, 0usize, at),
+                    );
+                } else {
+                    send::<()>(
+                        blit,
+                        c"copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:",
+                        (texture, 0usize, 0usize, at, size, buffer, 0usize, row, image),
+                    );
+                }
+                send::<()>(blit, c"endEncoding", ());
+            });
+            if !into {
+                unsafe { std::ptr::copy_nonoverlapping(there, pixels.as_mut_ptr(), pixels.len()) };
+            }
+            send::<()>(buffer, c"release", ());
+        }
+    }
+
+    impl Drop for Metal {
+        fn drop(&mut self) {
+            [self.queue, self.device].into_iter().for_each(|held| send::<()>(held, c"release", ()));
+        }
+    }
+
+    impl Renderer for Metal {
+        fn update(&mut self, ui: &mut Ui) {
+            let pool = unsafe { objc_autoreleasePoolPush() };
+            unsafe { self.layer.update(ui) }.unwrap_or_else(|failed| panic!("{failed}"));
+            // The copy is on the queue: what reads the texture next comes after it.
+            unsafe { objc_autoreleasePoolPop(pool) };
+        }
+        fn drawn(&mut self, ui: &mut Ui, under: &[u32], [width, height]: [usize; 2], [x, y, wide, high]: [i32; 4]) -> Vec<u32> {
+            let pool = unsafe { objc_autoreleasePoolPush() };
+            let target = self.shared(width, height);
+            let whole = Region(Three([0, 0, 0]), Three([width, height, 1]));
+            send::<()>(target, c"replaceRegion:mipmapLevel:withBytes:bytesPerRow:", (whole, 0usize, under.as_ptr(), width * 4));
+            let layer = &mut self.layer;
+            let commands: Obj = send(self.queue, c"commandBuffer", ());
+            let pass: Obj = send(class(c"MTLRenderPassDescriptor"), c"renderPassDescriptor", ());
+            let attachment: Obj = send(send::<Obj>(pass, c"colorAttachments", ()), c"objectAtIndexedSubscript:", (0usize,));
+            send::<()>(attachment, c"setTexture:", (target,));
+            send::<()>(attachment, c"setLoadAction:", (1usize,));
+            send::<()>(attachment, c"setStoreAction:", (1usize,));
+            let encoder: Obj = send(commands, c"renderCommandEncoderWithDescriptor:", (pass,));
+            let area = [x, y, wide, high].map(|side| side as usize);
+            unsafe { layer.draw(ui, encoder, area) }.unwrap_or_else(|failed| panic!("{failed}"));
+            send::<()>(encoder, c"endEncoding", ());
+            send::<()>(commands, c"commit", ());
+            send::<()>(commands, c"waitUntilCompleted", ());
+            let mut got = vec![0u32; width * height];
+            let whole = Region(Three([0, 0, 0]), Three([width, height, 1]));
+            send::<()>(target, c"getBytes:bytesPerRow:fromRegion:mipmapLevel:", (got.as_mut_ptr(), width * 4, whole, 0usize));
+            send::<()>(target, c"release", ());
+            unsafe { objc_autoreleasePoolPop(pool) };
+            got
+        }
+        fn fill(&mut self, pixels: &[u32]) {
+            self.through_buffer(&mut pixels.to_vec(), true);
+        }
+        fn texture(&mut self) -> Vec<u32> {
+            let mut got = vec![0u32; self.layer.surface().pixels.len()];
+            self.through_buffer(&mut got, false);
+            got
+        }
+        fn surface(&self) -> &Surface {
+            self.layer.surface()
+        }
+    }
+
+    #[test]
+    fn metal_shows_the_surface_over_what_was_drawn() {
+        let Some(mut metal) = Metal::new() else { return println!("no Metal device here: nothing to check") };
+        shows_the_surface_over_what_was_drawn(&mut metal, "Metal");
+    }
+
+    #[test]
+    fn metal_is_given_only_the_places_that_changed() {
+        let Some(mut metal) = Metal::new() else { return println!("no Metal device here: nothing to check") };
+        is_given_only_the_places_that_changed(&mut metal, "Metal");
+    }
+
+    #[test]
+    fn metal_lies_at_the_programs_viewport() {
+        let Some(mut metal) = Metal::new() else { return println!("no Metal device here: nothing to check") };
+        lies_at_the_programs_viewport(&mut metal, "Metal");
+    }
+
+    /// What goes wrong comes back as a value: an interface wider than Metal's textures (which
+    /// Metal itself would answer by ending the program).
+    #[test]
+    fn metal_says_what_went_wrong() {
+        let Some(metal) = Metal::new() else { return println!("no Metal device here: nothing to check") };
+        let mut layer = unsafe { Layer::new(metal.device, metal.queue, BGRA8) }.unwrap();
+        let failed = unsafe { layer.update(&mut nothing(16_385, 2)) }.expect_err("an interface wider than Metal's textures is not drawn");
+        println!("{failed}");
+        assert_eq!(failed.operation, "making the texture");
+        assert!(failed.message.contains("16384"), "what Metal can make is said");
     }
 }

@@ -10,6 +10,8 @@
 //! file. To draw text, the canvas rasterizes each glyph once per size into a coverage mask,
 //! then reuses the mask. Small glyphs are first hinted vertically, as FreeType's light hinting
 //! does (see `hinting.rs`), unless the app asks for unhinted glyphs ([`AppFonts::unhinted`]).
+//! With the feature `hinting`, a TrueType font's own instructions do it where it has them
+//! (`truetype_hinting.rs`).
 //!
 //! The file is read in place and trusted in nothing: every offset and count is checked, and no
 //! glyph may cost more work than a real one. A damaged font is no font, or has blank glyphs; it
@@ -19,7 +21,9 @@
 //! Pairs are kerned as HarfBuzz kerns left-to-right text: by the pairs `GPOS` lists under its
 //! `kern` feature for the characters' script, or by `kern` where `GPOS` has no such feature. A
 //! pair is looked up in the file on each request, by binary search through a few lists, with
-//! nothing precomputed; drawn text caches the pairs it met.
+//! nothing precomputed; drawn text caches the pairs it met. With the feature `shaping`, a
+//! window's text is shaped instead, as a page's is (`shaping.rs`): each line once, kept by its
+//! text; its glyphs still land on whole pixels.
 //!
 //! An emoji font has more, which `emoji.rs` draws with. Its glyphs are coloured in one or more
 //! of four ways: as layered outlines, each filled with a palette colour (`COLR` v0 and `CPAL`),
@@ -32,9 +36,7 @@
 //! so it can be memory-mapped instead of read ([`FontFile::open`]): on Linux only a system
 //! font, which is replaced, never truncated, while in use.
 //!
-//! Not done: a font's own hinting instructions (glyphs are hinted from their outlines, the same
-//! for every font), and left-to-right kerning beyond pairs or that moves glyphs off their
-//! position (what `shaping.rs` does for right-to-left text). `morx` is not read.
+//! Not done: `morx` is not read.
 use crate::canvas::{Canvas, coverage};
 use crate::color::Color;
 use crate::geom::{Point, pt};
@@ -59,6 +61,7 @@ const LARGEST: f32 = 65536.0;
 /// Approximate cache size in bytes. Beyond it all are dropped and redrawn as needed.
 const CACHE_LIMIT: usize = 4 << 20;
 /// The initial capacity of the kerning pair cache per size.
+#[cfg(not(feature = "shaping"))]
 const PAIRS: usize = 256;
 
 /// A slice of a font file. Numbers in it are big-endian. Reading outside it gives `None`, which
@@ -150,7 +153,7 @@ unsafe extern "system" {
     fn UnmapViewOfFile(at: *const u8) -> i32;
     fn CloseHandle(handle: usize) -> i32;
 }
-#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+#[cfg(all(any(target_os = "linux", target_os = "android"), target_pointer_width = "64"))]
 unsafe extern "C" {
     fn mmap(at: *mut std::ffi::c_void, long: usize, protect: i32, flags: i32, file: i32, from: i64) -> *mut std::ffi::c_void;
     fn munmap(at: *mut std::ffi::c_void, long: usize) -> i32;
@@ -164,7 +167,7 @@ impl Lying {
         // On Linux, a mapped file another program truncates kills this one on the next read
         // past the new end. So only files the user cannot write are mapped: system files, which
         // are replaced (a new file moved into place), never truncated. Others are read.
-        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        #[cfg(all(any(target_os = "linux", target_os = "android"), target_pointer_width = "64"))]
         if !Lying::untouchable(file) {
             return None;
         }
@@ -180,16 +183,16 @@ impl Lying {
         };
         // SAFETY: the file is open. Linux maps all of it read-only (1) and private (2),
         // returning -1 on failure.
-        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        #[cfg(all(any(target_os = "linux", target_os = "android"), target_pointer_width = "64"))]
         let at = unsafe { mmap(std::ptr::null_mut(), long, 1, 2, std::os::fd::AsRawFd::as_raw_fd(file), 0) }.cast_const().cast::<u8>();
-        #[cfg(not(any(windows, all(target_os = "linux", target_pointer_width = "64"))))]
+        #[cfg(not(any(windows, all(any(target_os = "linux", target_os = "android"), target_pointer_width = "64"))))]
         let at = std::ptr::null::<u8>();
         (!at.is_null() && at as isize != -1).then_some(Lying { at, long })
     }
 
     /// Whether a file is unwritable by this process's user: a system file (owned by root,
     /// writable by nobody else), with this process not running as root.
-    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    #[cfg(all(any(target_os = "linux", target_os = "android"), target_pointer_width = "64"))]
     fn untouchable(file: &std::fs::File) -> bool {
         use std::os::unix::fs::MetadataExt;
         let (Ok(file), Ok(me)) = (file.metadata(), std::fs::metadata("/proc/self")) else { return false };
@@ -204,7 +207,7 @@ impl Drop for Lying {
         unsafe {
             UnmapViewOfFile(self.at);
         }
-        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        #[cfg(all(any(target_os = "linux", target_os = "android"), target_pointer_width = "64"))]
         unsafe {
             munmap(self.at.cast_mut().cast(), self.long);
         }
@@ -496,7 +499,7 @@ impl FontFile {
     }
 
     /// A glyph's bytes in `glyf`: `None` for a charstring font.
-    fn points(&self, glyph: u16) -> Option<Bytes<'_>> {
+    pub(crate) fn points(&self, glyph: u16) -> Option<Bytes<'_>> {
         let Shapes::Points(points) = &self.shapes else { return None };
         points.bytes(Bytes(&self.file), glyph)
     }
@@ -560,12 +563,16 @@ const READ: [&[u8; 4]; 28] = [
     b"CBDT", b"CBLC", b"COLR", b"CPAL", b"sbix", b"SVG ",
 ];
 
-/// Of the tables a font has (`has`), those read here, in `READ` order: only these are
-/// decompressed from WOFF, and taken from a font Windows provides. (An East Asian font also has
-/// embedded bitmaps and hinting instructions: a third of it.)
+/// Of the tables a font has (`has`), those read here, in `READ` order (and with the feature
+/// `hinting`, its programs and what they read): only these are decompressed from WOFF, and taken
+/// from a font Windows provides. (An East Asian font also has embedded bitmaps and hinting
+/// instructions: a third of it.)
 pub(crate) fn taken(has: impl Fn(&[u8; 4]) -> bool) -> impl Iterator<Item = &'static [u8; 4]> {
     let coloured = [b"CBDT", b"COLR", b"sbix", b"SVG "].into_iter().any(&has);
-    READ.into_iter().take(if coloured { READ.len() } else { 22 }).filter(move |name| has(name))
+    let read = READ.into_iter().take(if coloured { READ.len() } else { 22 });
+    #[cfg(feature = "hinting")]
+    let read = read.chain([b"cvt ", b"fpgm", b"prep", b"cvar", b"VVAR", b"OS/2", b"vhea"]);
+    read.filter(move |name| has(name))
 }
 
 /// The header of a font file of these tables (each with its length), which follow in order: the
@@ -1035,7 +1042,7 @@ impl FontFile {
         let unseen = |letter: char| matches!(letter, '\u{200c}' | '\u{200d}' | '\u{e0000}'..='\u{e007f}' | '\u{fe00}'..='\u{fe0f}');
         letters.chars().all(|letter| unseen(letter) || self.glyph(letter) != 0).then_some(())?;
         // (On macOS the system's emoji font joins sequences in `morx`: CoreText shapes them.)
-        #[cfg(target_os = "macos")]
+        #[cfg(target_vendor = "apple")]
         if let Some(pen) = crate::core_text::sequence(self, letters, glyphs) {
             return Some(pen);
         }
@@ -1340,13 +1347,13 @@ impl Placing {
 /// more points or commands it may take.
 pub(crate) struct Sketch {
     pub path: Path,
-    reach: [f32; 4],
+    pub reach: [f32; 4],
     room: usize,
 }
 
 impl Sketch {
     /// Empty, with bounds the first point sets.
-    fn new() -> Sketch {
+    pub fn new() -> Sketch {
         Sketch { path: Path::new(), reach: [f32::MAX, f32::MAX, f32::MIN, f32::MIN], room: MOST }
     }
     /// Deducts points from the glyph's budget. `None` once it exceeds any real glyph.
@@ -1518,9 +1525,9 @@ fn lay(dots: &mut [Dot], [onto, from, own]: [usize; 3]) -> Option<()> {
 
 /// A `glyf` point: its flags as stored, and its position.
 #[derive(Clone, Copy)]
-struct Dot {
-    flags: u8,
-    at: Point,
+pub(crate) struct Dot {
+    pub flags: u8,
+    pub at: Point,
 }
 
 /// A simple `glyf` glyph: its points are appended to `dots`, transformed, and each contour's
@@ -1576,7 +1583,7 @@ fn step(data: Bytes, at: &mut usize, flags: u8) -> Option<f32> {
 
 /// One closed contour of a `glyf` glyph. Its points are on-curve or control points. Between two
 /// consecutive control points lies an implied on-curve point, halfway.
-fn outline(dots: &[Dot], sketch: &mut Sketch) {
+pub(crate) fn outline(dots: &[Dot], sketch: &mut Sketch) {
     let (Some(first), Some(last)) = (dots.first(), dots.last()) else { return };
     let (on, half) = (|dot: &Dot| dot.flags & 1 != 0, |a: Point, b: Point| pt((a.x + b.x) / 2.0, (a.y + b.y) / 2.0));
     // It starts at an on-curve point: the first, else the last, else halfway between.
@@ -1604,8 +1611,9 @@ fn outline(dots: &[Dot], sketch: &mut Sketch) {
 
 /// One glyph at one size, as cached once drawn.
 struct Letter {
-    /// Its glyph id and its character's script: what kerning depends on.
+    /// Its glyph id and its character's script: what kerning depends on (unshaped).
     glyph: u16,
+    #[cfg(not(feature = "shaping"))]
     script: u8,
     /// Its advance, in whole pixels.
     advance: f32,
@@ -1622,16 +1630,33 @@ struct Letter {
 impl Letter {
     /// Rasterizes a character, as `glyph` of the file, at a pixel size. Its outline is filled,
     /// white on transparent, into a mask just large enough; each pixel's alpha is its coverage.
-    /// A `hinted` one is hinted first (see `hinting.rs`).
-    fn drawn(file: &FontFile, glyph: u16, letter: char, pixels: f32, hinted: bool) -> Letter {
+    /// A `hinted` one is hinted first: with the feature `hinting`, as `own` gives it, by the
+    /// font's instructions (`Some(None)`: left unhinted by them); else by `hinting.rs`.
+    fn drawn(file: &FontFile, glyph: u16, letter: char, pixels: f32, hinted: bool, #[cfg(feature = "hinting")] own: Own) -> Letter {
         let unit = pixels / file.units;
-        let mut sketch = file.sketch(glyph, Placing::sized(unit, 0.0));
-        if let Some((path, reach)) = (hinted && crate::hinting::fits(letter)).then(|| crate::hinting::set(&sketch.path, file, unit)).flatten() {
+        #[cfg(feature = "hinting")]
+        let (instructed, mut sketch) = match own {
+            Some(Some((path, reach))) => (true, Sketch { path, reach, room: 0 }),
+            own => (own.is_some(), file.sketch(glyph, Placing::sized(unit, 0.0))),
+        };
+        #[cfg(not(feature = "hinting"))]
+        let (instructed, mut sketch) = (false, file.sketch(glyph, Placing::sized(unit, 0.0)));
+        if let Some((path, reach)) = (hinted && !instructed && crate::hinting::fits(letter)).then(|| crate::hinting::set(&sketch.path, file, unit)).flatten() {
             (sketch.path, sketch.reach) = (path, reach);
         }
         let (left, top) = (sketch.reach[0].floor(), sketch.reach[1].floor());
         let (wide, tall) = (sketch.reach[2].ceil() - left, sketch.reach[3].ceil() - top);
-        let mut letter = Letter { glyph, script: script(letter), advance: (file.width(glyph) * unit).round(), left, top, width: 0, cover: Vec::new(), large: wide * tall > LARGEST };
+        let mut letter = Letter {
+            glyph,
+            #[cfg(not(feature = "shaping"))]
+            script: script(letter),
+            advance: (file.width(glyph) * unit).round(),
+            left,
+            top,
+            width: 0,
+            cover: Vec::new(),
+            large: wide * tall > LARGEST,
+        };
         if letter.large || wide * tall == 0.0 {
             return letter;
         }
@@ -1659,20 +1684,45 @@ struct Drawn {
     pixels: f32,
     letters: Vec<Letter>,
     /// Each character's glyph index among them, from 1 (0: not drawn yet). Characters are paged
-    /// by 256: only pages used exist, and lookup needs no search.
+    /// by 256: only pages used exist, and lookup needs no search. (Unshaped.)
+    #[cfg(not(feature = "shaping"))]
     pages: Vec<Option<Box<[u32; 256]>>>,
+    /// Each shaped glyph's index among them likewise, by glyph id (feature `shaping`).
+    #[cfg(feature = "shaping")]
+    shapes: Vec<Option<Box<[u32; 256]>>>,
     /// Kerning of glyph pairs met in text, in whole pixels: per pair its two glyph indices (two
     /// bytes each), and the value. Open addressing on a hash of the pair, so lookup barely
     /// searches. `met` counts the pairs; there is always room for a third as many again.
+    /// (Unshaped.)
+    #[cfg(not(feature = "shaping"))]
     pairs: Vec<(u32, f32)>,
+    #[cfg(not(feature = "shaping"))]
     met: usize,
+    /// The font's programs run for this size (see `truetype_hinting.rs`).
+    #[cfg(feature = "hinting")]
+    hints: crate::truetype_hinting::Hints,
+}
+
+/// A glyph hinted by its font's instructions: its outline in pixels and its bounds; `Some(None)`
+/// where they leave it unhinted; `None` where they don't apply.
+#[cfg(feature = "hinting")]
+type Own = Option<Option<(Path, [f32; 4])>>;
+
+/// How small glyphs are hinted: not at all, by `hinting.rs`, or by the font's own instructions
+/// where it has them (feature `hinting`) and `hinting.rs` elsewhere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Hinting {
+    Off,
+    Auto,
+    Own,
 }
 
 impl Drawn {
     /// The glyph index for a character, rasterizing it if new, in the font's form for a
     /// language where `forms` is set. Its memory (page slot, page, glyph) is added to
-    /// `cache_bytes`. A `hinted` glyph is hinted.
-    fn letter(&mut self, file: &FontFile, letter: char, hinted: bool, forms: Forms, cache_bytes: &mut usize) -> usize {
+    /// `cache_bytes`. It is hinted as `hinting` says.
+    #[cfg(not(feature = "shaping"))]
+    fn letter(&mut self, file: &FontFile, letter: char, hinting: Hinting, forms: Forms, cache_bytes: &mut usize) -> usize {
         let (page, at) = (letter as usize >> 8, letter as usize & 255);
         if self.pages.len() <= page {
             *cache_bytes += (page + 1 - self.pages.len()) * size_of::<Option<Box<[u32; 256]>>>();
@@ -1684,7 +1734,41 @@ impl Drawn {
         let place = &mut self.pages[page].get_or_insert_with(|| Box::new([0; 256]))[at];
         if *place == 0 {
             let glyph = forms.map_or_else(|| file.glyph(letter), |(forms, language)| forms(file, letter, language));
-            let drawn = Letter::drawn(file, glyph, letter, self.pixels, hinted);
+            // (Hinted by the font's own instructions with the feature `hinting`.)
+            #[cfg(feature = "hinting")]
+            let own = if hinting == Hinting::Own { self.hints.glyph(file, self.pixels, glyph) } else { None };
+            #[cfg(feature = "hinting")]
+            let drawn = Letter::drawn(file, glyph, letter, self.pixels, hinting != Hinting::Off, own);
+            #[cfg(not(feature = "hinting"))]
+            let drawn = Letter::drawn(file, glyph, letter, self.pixels, hinting != Hinting::Off);
+            *cache_bytes += size_of::<Letter>() + drawn.cover.len();
+            self.letters.push(drawn);
+            *place = self.letters.len() as u32;
+        }
+        *place as usize - 1
+    }
+
+    /// The index of a glyph shaping gave, rasterizing it if new: hinted as `letter`, the
+    /// character it stands for (first), would be. Its memory is added to `cache_bytes`.
+    #[cfg(feature = "shaping")]
+    fn shaped(&mut self, file: &FontFile, glyph: u16, letter: char, hinting: Hinting, cache_bytes: &mut usize) -> usize {
+        let (page, at) = (glyph as usize >> 8, glyph as usize & 255);
+        if self.shapes.len() <= page {
+            *cache_bytes += (page + 1 - self.shapes.len()) * size_of::<Option<Box<[u32; 256]>>>();
+            self.shapes.resize_with(page + 1, || None);
+        }
+        if self.shapes[page].is_none() {
+            *cache_bytes += size_of::<[u32; 256]>();
+        }
+        let place = &mut self.shapes[page].get_or_insert_with(|| Box::new([0; 256]))[at];
+        if *place == 0 {
+            // (Hinted by the font's own instructions with the feature `hinting`.)
+            #[cfg(feature = "hinting")]
+            let own = if hinting == Hinting::Own { self.hints.glyph(file, self.pixels, glyph) } else { None };
+            #[cfg(feature = "hinting")]
+            let drawn = Letter::drawn(file, glyph, letter, self.pixels, hinting != Hinting::Off, own);
+            #[cfg(not(feature = "hinting"))]
+            let drawn = Letter::drawn(file, glyph, letter, self.pixels, hinting != Hinting::Off);
             *cache_bytes += size_of::<Letter>() + drawn.cover.len();
             self.letters.push(drawn);
             *place = self.letters.len() as u32;
@@ -1694,6 +1778,7 @@ impl Drawn {
 
     /// The kerning between a glyph and the one before, in whole pixels. Asking the font
     /// searches its subtables; a pair asked before is cached, which is most pairs of any text.
+    #[cfg(not(feature = "shaping"))]
     fn closer(&mut self, file: &FontFile, left: usize, right: usize, cache_bytes: &mut usize) -> f32 {
         if file.kerning.lists.is_empty() {
             return 0.0;
@@ -1721,6 +1806,7 @@ impl Drawn {
 
     /// Doubles the pair table and rehashes the pairs met. (The extra memory is added to
     /// `cache_bytes`.)
+    #[cfg(not(feature = "shaping"))]
     fn widen(&mut self, cache_bytes: &mut usize) {
         let room = vec![(u32::MAX, 0.0); (self.pairs.len() * 2).max(PAIRS)];
         let met = std::mem::replace(&mut self.pairs, room);
@@ -1734,6 +1820,7 @@ impl Drawn {
 
 /// A pair's slot in the table, or the free slot it goes in. (The size is a power of two with
 /// free slots always; a free one holds glyph 65535 paired with itself, never stored.)
+#[cfg(not(feature = "shaping"))]
 fn place(pairs: &[(u32, f32)], pair: u32) -> usize {
     let (jumble, last) = (pair.wrapping_mul(0x9e37_79b1), pairs.len() - 1);
     let mut at = (jumble ^ jumble >> 15) as usize & last;
@@ -1760,29 +1847,75 @@ pub struct AppFonts {
     /// The glyphs drawn so far, and their approximate memory.
     drawn: Vec<Drawn>,
     cache_bytes: usize,
-    /// Whether small text is hinted (see `smooth`).
-    hinted: bool,
+    /// How small text is hinted (see `unhinted`, `autohinted`).
+    hinting: Hinting,
     /// The language whose localized forms are used (see `language`): none until the app asks.
     forms: Forms,
+    /// What shaping keeps (feature `shaping`).
+    #[cfg(feature = "shaping")]
+    shaped: Shaped,
+}
+
+/// What shaping keeps for app fonts: each file's plan per script, by file; the runs shaped so
+/// far, by file and text, in that order; and roughly how many bytes those take.
+#[cfg(feature = "shaping")]
+#[derive(Default)]
+struct Shaped {
+    plans: Vec<(usize, Script, Plan)>,
+    runs: Vec<(usize, Box<str>, Box<[Placed]>)>,
+    bytes: usize,
+}
+
+/// Roughly how many bytes of shaped runs are kept: a window of 10,000 rows of a few labels each.
+/// Past it, all are dropped and shaped again as needed.
+#[cfg(feature = "shaping")]
+const RUNS_LIMIT: usize = 16 << 20;
+
+/// A glyph of a shaped run, as cached in 16 bytes: its id; the character it stands for (its
+/// first, by index in the run, and itself, which hinting depends on); and its advance and
+/// offset from the pen (right and up), in font units.
+#[cfg(feature = "shaping")]
+struct Placed {
+    glyph: u16,
+    from: u16,
+    letter: char,
+    advance: i16,
+    offset: [i16; 2],
 }
 
 impl std::fmt::Debug for AppFonts {
     /// The file count, and whether hinting is on.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AppFonts").field("files", &self.files.len()).field("hinted", &self.hinted).finish_non_exhaustive()
+        f.debug_struct("AppFonts").field("files", &self.files.len()).field("hinted", &(self.hinting != Hinting::Off)).finish_non_exhaustive()
     }
 }
 
 impl AppFonts {
     /// Text drawn with this file, for every face.
     pub fn new(regular: FontFile) -> Self {
-        AppFonts { files: vec![regular], faces: [0; 4], other: None, drawn: Vec::new(), cache_bytes: 0, hinted: true, forms: None }
+        AppFonts {
+            files: vec![regular],
+            faces: [0; 4],
+            other: None,
+            drawn: Vec::new(),
+            cache_bytes: 0,
+            hinting: Hinting::Own,
+            forms: None,
+            #[cfg(feature = "shaping")]
+            shaped: Shaped::default(),
+        }
     }
     /// Unhinted glyphs at every size: for text that scales smoothly, as in a zoomed view.
     /// (Otherwise small text's baseline, x-height and cap-height snap to whole pixels, keeping
     /// it sharp; so glyph height changes in pixel steps as size changes.)
     pub fn unhinted(self) -> Self {
-        AppFonts { hinted: false, ..self }
+        AppFonts { hinting: Hinting::Off, ..self }
+    }
+    /// Small text hinted from its outlines (`hinting.rs`, as FreeType's autohinter) even where
+    /// a font has hinting instructions of its own. (With the feature `hinting`, those are run
+    /// otherwise; without it, this is how every font is hinted.)
+    pub fn autohinted(self) -> Self {
+        AppFonts { hinting: Hinting::Auto, ..self }
     }
     /// Glyphs in the files' localized forms for a language, where they have some: Serbian б,
     /// Romanian ș with a comma, Japanese forms of CJK characters.
@@ -1790,7 +1923,14 @@ impl AppFonts {
     /// language, [`Ui::set_language`](crate::Ui::set_language), overrides it.) Without it, the
     /// default forms. Page text ([`Paper::language`](crate::Paper::language)) uses the same.
     pub fn language(self, language: Language) -> Self {
-        AppFonts { forms: Some((crate::shaping::local, language)), drawn: Vec::new(), cache_bytes: 0, ..self }
+        AppFonts {
+            forms: Some((crate::shaping::local, language)),
+            drawn: Vec::new(),
+            cache_bytes: 0,
+            #[cfg(feature = "shaping")]
+            shaped: Shaped::default(),
+            ..self
+        }
     }
     /// Characters the files lack are drawn by `other`, at the same size and baseline: usually
     /// the system's text, which has a font for every script.
@@ -1822,18 +1962,28 @@ impl AppFonts {
     /// the final pen position is returned. Measuring and drawing both go through here, so they
     /// agree. A run of characters the file lacks goes to `each` as one piece for the fallback,
     /// where there is one: it returns that piece's width in pixels.
+    #[cfg(not(feature = "shaping"))]
     fn along(&mut self, text: &str, font: Font, scale: f32, mut each: impl FnMut(Written, f32) -> f32) -> f32 {
         if self.cache_bytes > CACHE_LIMIT {
             self.drawn.clear();
             self.cache_bytes = 0;
         }
-        let AppFonts { files, faces, other, drawn, cache_bytes, hinted, forms } = self;
+        let AppFonts { files, faces, other, drawn, cache_bytes, hinting, forms, .. } = self;
         let (which, pixels) = (faces.get(font.face.number() as usize).copied().unwrap_or(0), font.size * scale);
         let file = &files[which];
         // Sizes compare by bits, so NaN is still one size.
         let known = drawn.iter().position(|drawn| drawn.file == which && drawn.pixels.to_bits() == pixels.to_bits()).unwrap_or(drawn.len());
         if known == drawn.len() {
-            drawn.push(Drawn { file: which, pixels, letters: Vec::new(), pages: Vec::new(), pairs: Vec::new(), met: 0 });
+            drawn.push(Drawn {
+                file: which,
+                pixels,
+                letters: Vec::new(),
+                pages: Vec::new(),
+                pairs: Vec::new(),
+                met: 0,
+                #[cfg(feature = "hinting")]
+                hints: Default::default(),
+            });
             *cache_bytes += size_of::<Drawn>();
         }
         let drawn = &mut drawn[known];
@@ -1845,7 +1995,7 @@ impl AppFonts {
             if pictures && at >= theirs {
                 theirs = at + crate::emoji::picture(letter, &text[at..]);
             }
-            let now = drawn.letter(file, letter, *hinted, *forms, cache_bytes);
+            let now = drawn.letter(file, letter, *hinting, *forms, cache_bytes);
             // A missing character waits for following ones like it.
             if (drawn.letters[now].glyph == 0 || at < theirs) && other.is_some() {
                 (lacking, before) = (if lacking.is_empty() { at } else { lacking.start }..at + letter.len_utf8(), None);
@@ -1859,12 +2009,230 @@ impl AppFonts {
         }
         pen + left_to(other, &text[lacking], pen, &mut each)
     }
+
+    /// The same, shaped (feature `shaping`): each character's end is said too.
+    #[cfg(feature = "shaping")]
+    fn along(&mut self, text: &str, font: Font, scale: f32, each: impl FnMut(Written, f32) -> f32) -> f32 {
+        if self.cache_bytes > CACHE_LIMIT {
+            self.drawn.clear();
+            self.cache_bytes = 0;
+        }
+        let (which, pixels) = (self.faces.get(font.face.number() as usize).copied().unwrap_or(0), font.size * scale);
+        let known = self.drawn_at(which, pixels);
+        self.along_shaped(text, which, known, each)
+    }
+
+    /// How a line is laid: each glyph with its pen position and rise, and the line's width, in
+    /// pixels at one pixel per unit.
+    #[cfg(all(test, feature = "shaping"))]
+    pub(crate) fn laid(&mut self, text: &str, font: Font) -> (Vec<(u16, [f32; 2])>, f32) {
+        let mut glyphs = Vec::new();
+        let wide = self.along(text, font, 1.0, |written, pen| match written {
+            Written::Own(_, letter, rise) => (glyphs.push((letter.glyph, [pen, rise])), 0.0).1,
+            _ => 0.0,
+        });
+        (glyphs, wide)
+    }
+
+    /// The glyphs drawn of file `which` at a pixel size: their index, added if new. (Sizes
+    /// compare by bits, so NaN is still one size.)
+    #[cfg(feature = "shaping")]
+    fn drawn_at(&mut self, which: usize, pixels: f32) -> usize {
+        let known = self.drawn.iter().position(|drawn| drawn.file == which && drawn.pixels.to_bits() == pixels.to_bits()).unwrap_or(self.drawn.len());
+        if known == self.drawn.len() {
+            self.drawn.push(Drawn {
+                file: which,
+                pixels,
+                letters: Vec::new(),
+                shapes: Vec::new(),
+                #[cfg(feature = "hinting")]
+                hints: Default::default(),
+            });
+            self.cache_bytes += size_of::<Drawn>();
+        }
+        known
+    }
+
+    /// `along`, shaped (feature `shaping`): each run of one script that file `which` has every
+    /// character of is shaped as on a page (`shaping.rs`), and its glyphs laid in whole pixels;
+    /// the rest goes to the fallback as unshaped. `known` is the file's drawn glyphs at the
+    /// size.
+    #[cfg(feature = "shaping")]
+    fn along_shaped(&mut self, text: &str, which: usize, known: usize, mut each: impl FnMut(Written, f32) -> f32) -> f32 {
+        let pictures = self.other.is_some() && !crate::emoji::plain(text);
+        let (mut pen, mut at) = (0.0, 0);
+        while at < text.len() {
+            let (long, own) = piece(&self.files[which], &text[at..], self.other.is_some(), pictures);
+            let run = &text[at..at + long];
+            pen += match own {
+                true => self.lay_run(which, known, run, pen, &mut each),
+                false => left_to(&mut self.other, run, pen, &mut each),
+            };
+            at += long;
+        }
+        pen
+    }
+
+    /// Walks a run shaped in file `which` from `pen`: each glyph at its place, then each
+    /// character's end. Returns its width. A glyph's advance is whole pixels as an unshaped
+    /// one's is, plus what shaping added to it (rounded as a running sum, so a pair's kerning
+    /// split over two glyphs rounds as one); a glyph with none (a mark) is placed from the last
+    /// that has one, by their distance in the font.
+    #[cfg(feature = "shaping")]
+    fn lay_run(&mut self, which: usize, known: usize, run: &str, pen: f32, each: &mut impl FnMut(Written, f32) -> f32) -> f32 {
+        let at = self.shaped_run(which, run);
+        let AppFonts { files, drawn, shaped, cache_bytes, hinting, .. } = self;
+        let (file, drawn, placed) = (&files[which], &mut drawn[known], &shaped.runs[at].2);
+        let unit = drawn.pixels / file.units;
+        let (mut x, mut exact, mut added, mut base, mut spans) = (0.0, 0, 0.0, (0.0, 0), Vec::with_capacity(placed.len()));
+        for one in placed.iter() {
+            let n = drawn.shaped(file, one.glyph, one.letter, *hinting, cache_bytes);
+            let letter = &drawn.letters[n];
+            let (advance, offset) = (one.advance as i32, one.offset.map(i32::from));
+            let more = if advance == 0 { 0.0 } else { advance as f32 - file.width(one.glyph) };
+            let wide = if advance == 0 { 0.0 } else { letter.advance + ((added + more) * unit).round() - (added * unit).round() };
+            added += more;
+            let left = match advance {
+                0 => base.0 + ((exact + offset[0] - base.1) as f32 * unit).round(),
+                _ => x + (offset[0] as f32 * unit).round(),
+            };
+            if advance != 0 {
+                base = (left, exact + offset[0]);
+            }
+            each(Written::Own(file, letter, (offset[1] as f32 * unit).round()), pen + left);
+            spans.push((one.from as u32, [x, x + wide]));
+            (x, exact) = (x + wide, exact + advance);
+        }
+        for end in ends(run, &spans) {
+            each(Written::End, pen + end);
+        }
+        x
+    }
+
+    /// The cache index of a run shaped in file `which`, by the plan for its script and the
+    /// language asked for: shaped now if new.
+    #[cfg(feature = "shaping")]
+    fn shaped_run(&mut self, which: usize, run: &str) -> usize {
+        if self.shaped.bytes > RUNS_LIMIT {
+            (self.shaped.runs, self.shaped.bytes) = (Vec::new(), 0);
+        }
+        let Shaped { plans, runs, bytes } = &mut self.shaped;
+        let at = match runs.binary_search_by(|(file, text, _)| (*file, &**text).cmp(&(which, run))) {
+            Ok(at) => return at,
+            Err(at) => at,
+        };
+        let script = run.chars().find_map(Script::of).unwrap_or(Script::None);
+        let language = self.forms.map_or(Language::NONE, |(_, language)| language);
+        let plan = match plans.iter().position(|(file, known, _)| *file == which && *known == script) {
+            Some(plan) => plan,
+            None => {
+                plans.push((which, script, Plan::of(&self.files[which], script, false, language)));
+                plans.len() - 1
+            }
+        };
+        let mut laid = Vec::new();
+        self.files[which].shape(&plans[plan].2, run, &mut laid);
+        let letters: Vec<char> = run.chars().collect();
+        // (Font units fit 16 bits; a damaged font's are held there.)
+        let short = |units: i32| units.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let place = |one: &crate::shaping::Laid| Placed {
+            glyph: one.glyph,
+            from: one.from as u16,
+            letter: letters.get(one.from as usize).copied().unwrap_or(' '),
+            advance: short(one.advance),
+            offset: one.offset.map(short),
+        };
+        let placed: Box<[Placed]> = laid.iter().map(place).collect();
+        *bytes += run.len() + size_of_val(&*placed) + size_of::<(usize, Box<str>, Box<[Placed]>)>();
+        runs.insert(at, (which, run.into(), placed));
+        at
+    }
 }
 
-/// A line's pieces as walked: a glyph of the app's font, or a run the font lacks, for the
-/// fallback.
+/// The piece at the start of `rest` that goes one way: grapheme clusters a file has every
+/// character of, in one script (characters of none join it), at most what is shaped at once;
+/// or, with a `fallback`, those it lacks and emoji (where `pictures` may be). Its length, and
+/// whether it is the file's.
+#[cfg(feature = "shaping")]
+fn piece(file: &FontFile, rest: &str, fallback: bool, pictures: bool) -> (usize, bool) {
+    let (mut long, mut count, mut script, mut own) = (0, 0, None, None);
+    while long < rest.len() && count < crate::shaping::LONGEST - 64 {
+        let here = &rest[long..];
+        let first = here.chars().next().unwrap_or(' ');
+        let picture = if pictures { crate::emoji::picture(first, here) } else { 0 };
+        let size = if picture > 0 { picture } else { crate::text::cluster(here).max(1) };
+        let has = picture == 0 && (!fallback || here[..size].chars().all(|letter| crate::paper::unseen(letter) || file.glyph(letter) != 0));
+        let named = here[..size].chars().find_map(Script::of);
+        let apart = matches!((script, named), (Some(one), Some(other)) if one != other);
+        if own.is_some_and(|was| was != has || (has && apart)) {
+            break;
+        }
+        (own, script, long, count) = (Some(has), script.or(named), long + size, count + here[..size].chars().count());
+    }
+    (long, own.unwrap_or(true))
+}
+
+/// Each character's end in a shaped run, from its start: the grapheme clusters from a glyph's
+/// character to the next glyph's share its span (`spans`: each glyph's character and pen span)
+/// evenly, as a ligature's components do.
+#[cfg(feature = "shaping")]
+fn ends(run: &str, spans: &[(u32, [f32; 2])]) -> Vec<f32> {
+    let mut own: Vec<Option<[f32; 2]>> = vec![None; run.chars().count()];
+    for (from, [left, right]) in spans.iter().copied() {
+        if let Some(span) = own.get_mut(from as usize) {
+            *span = Some(span.map_or([left, right], |[l, r]| [l.min(left), r.max(right)]));
+        }
+    }
+    // The clusters: their first character and how many.
+    let (mut clusters, mut at, mut n) = (Vec::new(), 0, 0);
+    while at < run.len() {
+        let size = crate::text::cluster(&run[at..]).max(1);
+        let count = run[at..at + size].chars().count();
+        clusters.push((n, count));
+        (at, n) = (at + size, n + count);
+    }
+    let span_of = |(first, count): (usize, usize)| own[first..first + count].iter().flatten().copied().reduce(|[l, r], [left, right]| [l.min(left), r.max(right)]);
+    let mut ends = vec![0.0; own.len()];
+    let mut k = 0;
+    while k < clusters.len() {
+        let [left, right] = span_of(clusters[k]).unwrap_or([0.0; 2]);
+        let shared = clusters[k + 1..].iter().take_while(|cluster| span_of(**cluster).is_none()).count() + 1;
+        for (m, (first, count)) in clusters[k..k + shared].iter().copied().enumerate() {
+            let end = left + ((right - left) * (m + 1) as f32 / shared as f32).round();
+            ends[first..first + count].iter_mut().for_each(|one| *one = end);
+        }
+        k += shared;
+    }
+    ends
+}
+
+#[cfg(feature = "hinting")]
+impl AppFonts {
+    /// Cap-height and x-height in pixels as a font's instructions draw them (the tops of its
+    /// "H" and "x"), if they hint at this size.
+    fn instructed_heights(&mut self, font: Font, scale: f32) -> Option<[Option<f32>; 2]> {
+        (self.hinting == Hinting::Own).then_some(())?;
+        // (Walking no text makes the size's cache, where its programs' state is kept.)
+        self.along("", font, scale, |_, _| 0.0);
+        let (which, pixels) = (self.faces.get(font.face.number() as usize).copied().unwrap_or(0), font.size * scale);
+        let drawn = self.drawn.iter_mut().find(|drawn| drawn.file == which && drawn.pixels.to_bits() == pixels.to_bits())?;
+        drawn.hints.applies(&self.files[which], pixels).then_some(())?;
+        let mut tops = Vec::new();
+        self.along("Hx", font, scale, |written, _| {
+            let top = |letter: &Letter| (letter.glyph != 0 && !letter.cover.is_empty()).then_some(-letter.top);
+            tops.extend(if let Written::Own(_, letter, ..) = written { Some(top(letter)) } else { None });
+            0.0
+        });
+        (tops.len() == 2).then(|| [tops[0], tops[1]])
+    }
+}
+
+/// A line's pieces as walked: a glyph of the app's font, with how far it is raised; the end of
+/// a character of the font, where shaped; or a run the font lacks, for the fallback.
 enum Written<'a> {
-    Own(&'a FontFile, &'a Letter),
+    Own(&'a FontFile, &'a Letter, #[cfg(feature = "shaping")] f32),
+    #[cfg(feature = "shaping")]
+    End,
     Other(&'a mut dyn TextSystem, &'a str),
 }
 
@@ -1904,10 +2272,15 @@ impl TextSystem for AppFonts {
         if let Some(other) = self.all_by(font) {
             return other.metrics(font, scale);
         }
+        #[cfg(feature = "hinting")]
+        let own = self.instructed_heights(font, scale);
+        #[cfg(not(feature = "hinting"))]
+        let own = None;
         let file = &self.files[self.faces.get(font.face.number() as usize).copied().unwrap_or(0)];
         let exact = file.metrics(font.size * scale);
         let whole = |of: f32| of.round() / scale;
-        let [cap, small] = self.hinted.then(|| crate::hinting::heights(file, font.size * scale / file.units)).flatten().unwrap_or_default();
+        let auto = || (self.hinting != Hinting::Off).then(|| crate::hinting::heights(file, font.size * scale / file.units)).flatten();
+        let [cap, small] = own.or_else(auto).unwrap_or_default();
         let (cap, small) = (cap.map_or(whole(exact.cap_height), |cap| cap / scale), small.map_or(whole(exact.x_height), |small| small / scale));
         Metrics { ascent: whole(exact.ascent), descent: whole(exact.descent), cap_height: cap, x_height: small }
     }
@@ -1917,10 +2290,16 @@ impl TextSystem for AppFonts {
             return other.measure(text, font, scale, stops);
         }
         let end = self.along(text, font, scale, |written, pen| match written {
+            // (Unshaped, each glyph is a character, which ends at its advance.)
+            #[cfg(not(feature = "shaping"))]
             Written::Own(_, letter) => {
                 stops.iter_mut().for_each(|stops| stops.push((pen + letter.advance) / scale));
                 0.0
             }
+            #[cfg(feature = "shaping")]
+            Written::Own(..) => 0.0,
+            #[cfg(feature = "shaping")]
+            Written::End => (stops.iter_mut().for_each(|stops| stops.push(pen / scale)), 0.0).1,
             Written::Other(other, piece) => measured_by(other, piece, font, scale, pen, stops.as_deref_mut()),
         });
         end / scale
@@ -1931,6 +2310,10 @@ impl TextSystem for AppFonts {
         if let Some((_, own)) = self.forms.as_mut().filter(|(_, own)| *own != language) {
             *own = language;
             (self.drawn, self.cache_bytes) = (Vec::new(), 0);
+            #[cfg(feature = "shaping")]
+            {
+                self.shaped = Shaped::default();
+            }
         }
         if let Some(other) = self.other.as_mut() {
             other.set_language(language);
@@ -1955,7 +2338,12 @@ impl TextSystem for AppFonts {
         let lower = self.other.as_mut().map_or(0.0, |other| ascent - other.metrics(font, scale).ascent);
         let (left, line) = ((x * scale).round(), (y * scale).round() + (ascent * scale).round());
         self.along(text, font, scale, |written, pen| match written {
+            #[cfg(not(feature = "shaping"))]
             Written::Own(file, letter) => (letter.lay(canvas, file, left + pen, line, font.size, color), 0.0).1,
+            #[cfg(feature = "shaping")]
+            Written::Own(file, letter, rise) => (letter.lay(canvas, file, left + pen, line - rise, font.size, color), 0.0).1,
+            #[cfg(feature = "shaping")]
+            Written::End => 0.0,
             Written::Other(other, piece) => {
                 other.draw(canvas, piece, (left + pen) / scale, y + lower, font, color);
                 measured_by(other, piece, font, scale, pen, None)
@@ -2527,10 +2915,11 @@ pub(crate) mod tests {
     fn measuring_goes_by_whole_pixels_and_agrees_with_drawing() {
         let (mut fonts, font) = (AppFonts::new(read(&tables())), Font::new(16.0));
         assert_eq!(fonts.metrics(font, 1.0), Metrics { ascent: 13.0, descent: 3.0, cap_height: (CAP / 64.0).round(), x_height: 0.0 });
-        // "A" is 7 pixels wide and "B" 9; "AB" is 2 closer and "BA" 1 apart.
-        let mut stops = Vec::new();
+        // "A" is 7 pixels wide and "B" 9; "AB" is 2 closer and "BA" 1 apart. (Shaped, half of
+        // a pair's kerning goes to each glyph, as HarfBuzz has it for this older table.)
+        let (mut stops, first) = (Vec::new(), if cfg!(feature = "shaping") { 6.0 } else { 7.0 });
         assert_eq!(fonts.measure("AB BA", font, 1.0, Some(&mut stops)), 35.0);
-        assert_eq!(stops, [7.0, 14.0, 18.0, 27.0, 35.0]);
+        assert_eq!(stops, [first, 14.0, 18.0, 27.0, 35.0]);
         assert_eq!(fonts.measure("", font, 1.0, Some(&mut stops)), 0.0);
         assert_eq!(stops.len(), 5, "nothing is added to the list for no text");
         // The last "A" is drawn where measuring puts it: its box ends a pixel before its
@@ -2543,7 +2932,7 @@ pub(crate) mod tests {
         // so 8.
         let (mut stops, small) = (Vec::new(), Font::new(10.0));
         assert_eq!(fonts.measure("AB", small, 1.5, Some(&mut stops)), 13.0 / 1.5);
-        assert_eq!(stops, [7.0 / 1.5, 13.0 / 1.5]);
+        assert_eq!(stops, [first / 1.5, 13.0 / 1.5]);
         assert_eq!(fonts.metrics(small, 1.5), Metrics { ascent: 8.0, descent: 2.0, cap_height: (CAP * 15.0 / 1024.0).round() / 1.5, x_height: 0.0 });
         // Drawn 2 units in, "A" starts 3 pixels in and "B" 5 further, 7.5 pixels wide and high;
         // baseline 12 pixels down.
@@ -2555,6 +2944,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(feature = "shaping")]
+    fn a_line_is_shaped_once_for_every_size() {
+        let (mut fonts, font) = (AppFonts::new(read(&tables())), Font::new(16.0));
+        let text = "AB BA ABBA";
+        let wide = fonts.measure(text, font, 1.0, None);
+        let (runs, kept) = (fonts.shaped.runs.len(), [fonts.cache_bytes, fonts.shaped.bytes]);
+        assert_eq!([fonts.measure(text, font, 1.0, None), fonts.measure(text, font, 1.0, None)], [wide; 2]);
+        assert_eq!((runs, fonts.shaped.runs.len(), [fonts.cache_bytes, fonts.shaped.bytes]), (1, 1, kept));
+        // A run is kept in its text, 16 bytes a glyph, and its record.
+        assert_eq!(kept[1], text.len() + 10 * 16 + size_of::<(usize, Box<str>, Box<[Placed]>)>());
+        // Another size shapes nothing again; another text does.
+        fonts.measure(text, Font::new(20.0), 1.5, None);
+        assert_eq!(fonts.shaped.runs.len(), 1);
+        fonts.measure("BBB", font, 1.0, None);
+        assert_eq!(fonts.shaped.runs.len(), 2);
+    }
+
+    #[test]
+    #[cfg(not(feature = "shaping"))]
     fn the_pairs_of_a_text_are_remembered_however_many_they_are() {
         let (file, mut fonts, font) = (read(&tables()), AppFonts::new(read(&tables())), Font::new(16.0));
         // Every pair of thirty characters: "A" and "B", kerned with each other, and others the
@@ -3358,7 +3766,7 @@ pub(crate) mod tests {
         assert!(FontFile::open(folder.join("empty.ttf")).is_none());
         std::fs::remove_dir_all(&folder).unwrap();
         // A system font is mapped on Linux too; unless the user can write it (some CI images ship fonts as 0777).
-        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        #[cfg(all(any(target_os = "linux", target_os = "android"), target_pointer_width = "64"))]
         for path in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf"].iter().filter(|path| std::path::Path::new(path).exists()) {
             let untouchable = Lying::untouchable(&std::fs::File::open(path).unwrap());
             assert!(FontFile::open(path).is_some_and(|font| matches!(font.file, Held::Lying(_)) == untouchable), "{path}");
@@ -3382,7 +3790,7 @@ pub(crate) mod tests {
         }
         drop(font);
         // And so is a copy of a real system font.
-        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        #[cfg(all(any(target_os = "linux", target_os = "android"), target_pointer_width = "64"))]
         for path in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/noto/NotoSans-Regular.ttf"].iter().filter(|path| std::path::Path::new(path).exists()) {
             std::fs::copy(path, &copy).unwrap();
             let font = FontFile::open(&copy).expect("the font opens");

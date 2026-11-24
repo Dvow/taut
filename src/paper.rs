@@ -19,6 +19,7 @@ use crate::color::Color;
 use crate::font_file::FontFile;
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::path::Path;
+use crate::pdf_structure::{Bookmark, Part};
 use crate::pen::{Full, Inked, Paint, Pen, fully};
 use crate::scripts::Language;
 use crate::shaping::{LONGEST, Laid, Plan, Script};
@@ -56,7 +57,7 @@ pub struct Paper {
     pub language: Language,
     pub(crate) pages: Vec<Sheet>,
     /// The page marks go on.
-    on: usize,
+    pub(crate) on: usize,
     /// The font files text uses, each once; the app's own, by face; and system font lookups
     /// done: a face, a character (zero for the face's own font), and the font found, if any.
     pub(crate) files: Vec<FontFile>,
@@ -69,14 +70,32 @@ pub struct Paper {
     /// document uses.
     pub(crate) pictures: Vec<Picture>,
     pub(crate) named: Vec<(String, u32)>,
+    /// The colour profiles pictures came with (an ICC profile), by picture.
+    pub(crate) profiles: Vec<(u32, Vec<u8>)>,
     /// Link destinations in the pages: a name, the page, and the offset down it.
     pub(crate) anchors: Vec<(String, usize, f32)>,
     /// The JPEG decoder for drawing pages: handed over by the first JPEG placed (`jpeg`), so a
     /// program that prints without one carries no JPEG decoder.
-    unpack: Option<Unpack>,
+    pub(crate) unpack: Option<Unpack>,
     /// Kept only to reuse memory: shaped glyphs, and a bidirectional line's order.
     laid: Vec<Laid>,
     order: crate::bidi::Order,
+    /// The pages' structure (`pdf_structure.rs`): its parts, the document first; those open,
+    /// innermost last; and the bookmarks its headings make.
+    pub(crate) parts: Vec<Part>,
+    pub(crate) open: Vec<u32>,
+    pub(crate) bookmarks: Vec<Bookmark>,
+    /// The language of text from now on, named in BCP 47 ("" for none), as a viewer is told.
+    pub(crate) said: String,
+    /// What only some files need, handed over by the calls asking for it (so a program that
+    /// asks for none carries none of it): form fields (`pdf_forms.rs`), PDF/A
+    /// (`pdf_archive.rs`), encryption (`pdf_lock.rs`).
+    pub(crate) forms: Option<crate::pdf::Forms>,
+    pub(crate) archive: Option<crate::pdf::Archive>,
+    pub(crate) lock: Option<crate::pdf::Lock>,
+    /// Printing: whether a page larger than the sheet is scaled down to fit it, rather than
+    /// printed at its size over several sheets.
+    pub shrink_to_fit: bool,
 }
 
 /// Decodes a JPEG file into its width and pixels.
@@ -103,6 +122,8 @@ pub(crate) enum Mark {
     /// A link rectangle: to a URL, or `#` and a destination name in the pages
     /// ([`Paper::anchor`]).
     Link(Rect, String),
+    /// A form field (`pdf_forms.rs`).
+    Field(Box<crate::pdf_forms::Field>),
 }
 
 /// A shape and how it is drawn: its stroke pen (none for a fill), with the dashes stored
@@ -177,7 +198,16 @@ impl Paper {
 
     /// No pages yet.
     pub fn new() -> Self {
-        Paper { language: Language::of_the_system(), ..Paper::default() }
+        let said = crate::scripts::system_language().replace('_', "-");
+        Paper { language: Language::of_the_system(), said, ..Paper::default() }
+    }
+
+    /// Text from now on is in this language, named in BCP 47 ("de", "sr-Latn", "zh-Hant-HK"):
+    /// its localized glyph forms ([`Paper::language`]), and what a viewer or screen reader is
+    /// told. ("" for none.)
+    pub fn set_language(&mut self, name: &str) {
+        self.language = if name.is_empty() { Language::NONE } else { Language::named(name) };
+        self.said = name.trim().replace('_', "-");
     }
 
     /// The largest page side, in units: 200 inches, PDF's maximum (14,400 points).
@@ -215,6 +245,7 @@ impl Paper {
             self.page(Paper::A4);
         }
         self.pages[self.on].marks.push(mark);
+        self.own_mark();
     }
 
     // ---- shapes ----
@@ -301,13 +332,28 @@ impl Paper {
     /// not decode are embedded as pixels.) False for a file this cannot read as JPEG.
     pub fn jpeg(&mut self, file: &[u8], r: Rect) -> bool {
         self.unpack = Some(crate::jpeg::decode);
-        if let Some(picture) = passed(file) {
+        if let Some((picture, profile)) = passed(file) {
             self.pictures.push(picture);
-            self.put(Mark::Picture(self.pictures.len() as u32 - 1, r));
+            let at = self.pictures.len() as u32 - 1;
+            self.profiles.extend(profile.map(|profile| (at, profile)));
+            self.put(Mark::Picture(at, r));
             return true;
         }
         let Some((width, pixels)) = crate::jpeg::decode(file) else { return false };
         self.picture(width, &pixels, r);
+        true
+    }
+    /// A PNG file stretched over `r`, upright per its EXIF orientation, with its colour
+    /// profile: a viewer shows its colours as the file means them. (With the feature
+    /// `color-profiles`, they are converted to sRGB here instead.) False for a file this cannot
+    /// read as PNG.
+    pub fn png(&mut self, file: &[u8], r: Rect) -> bool {
+        let Some((width, pixels)) = crate::png::decode(file) else { return false };
+        let before = self.pictures.len();
+        let Some(at) = self.keep_picture(width, &pixels) else { return false };
+        let profile = png_profile(file).filter(|_| !cfg!(feature = "color-profiles") && at as usize == before);
+        self.profiles.extend(profile.map(|profile| (at, profile)));
+        self.put(Mark::Picture(at, r));
         true
     }
     /// Supplies the picture a document names `name` (see [`Paper::markdown`]), as `picture`
@@ -325,6 +371,7 @@ impl Paper {
         let text = crate::platform::system_text();
         let mut ui = Ui::new(text, Box::new(crate::platform::LocalClipboard::default()));
         ui.theme = crate::theme::Theme::light();
+        ui.set_screen_reader(true);
         ui.resize(Size { w: r.w.max(1.0), h: r.h.max(1.0) }, FINE);
         // (Run until nothing changes: what one run measures, the next lays out.)
         for _ in 0..4 {
@@ -334,7 +381,43 @@ impl Paper {
         }
         let drawn = crate::surface::Surface::draw(&mut ui, 64);
         let pixels: Vec<u32> = drawn.pixels.iter().map(|pixel| unmixed(*pixel)).collect();
+        // (A picture told as what the window tells screen readers.)
+        let said = Paper::told(&ui);
+        self.begin_tag(crate::pdf_structure::Tag::Figure);
+        self.describe(&said);
         self.picture(drawn.width, &pixels, r);
+        self.end();
+    }
+    /// What a window would tell screen readers of an interface: each part's role and name, in
+    /// order, a sentence each. A picture of the window is described by it.
+    fn told(ui: &Ui) -> String {
+        let mut said = Vec::new();
+        for node in ui.access_nodes() {
+            let (name, value) = (node.name.trim(), node.value.trim());
+            let role = match node.role {
+                crate::Role::Text | crate::Role::Paragraph | crate::Role::Heading => "",
+                crate::Role::Button => "button",
+                crate::Role::CheckBox => "check box",
+                crate::Role::Switch => "switch",
+                crate::Role::RadioButton => "radio button",
+                crate::Role::TextBox | crate::Role::PasswordBox => "text box",
+                crate::Role::ComboBox => "combo box",
+                crate::Role::Slider => "slider",
+                crate::Role::Link => "link",
+                crate::Role::Tab => "tab",
+                _ => "",
+            };
+            let on = match node.on {
+                Some(true) if !role.is_empty() => ", on",
+                Some(false) if !role.is_empty() => ", off",
+                _ => "",
+            };
+            let line = [name, role, value].iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(", ");
+            if !line.is_empty() {
+                said.push(format!("{line}{on}."));
+            }
+        }
+        said.join(" ")
     }
     /// An icon ([`Icon`]) over `r` in a colour: stroked at its own width, or filled.
     pub fn icon(&mut self, icon: Icon, r: Rect, color: Color) {
@@ -605,22 +688,26 @@ impl Paper {
                 Mark::Clip(r) => held.push(canvas.clip(*r)),
                 Mark::Unclip => held.pop().into_iter().for_each(|before| canvas.restore_clip(before)),
                 Mark::Link(..) => {}
+                Mark::Field(field) => self.forms.into_iter().for_each(|forms| (forms.draw)(self, field, canvas)),
             }
         }
     }
 
-    /// Glyphs, each filled from its outline.
-    fn draw_words(&self, words: &Words, canvas: &mut Canvas) {
+    /// Glyphs, each filled from its outline; with the feature `emoji`, in a colour font, its COLR
+    /// layers each in its colour (or the text's), or its bitmap.
+    pub(crate) fn draw_words(&self, words: &Words, canvas: &mut Canvas) {
         let file = &self.files[words.font as usize];
-        let unit = file.unit(words.size);
+        let (unit, coloured) = (file.unit(words.size), cfg!(feature = "emoji") && file.pictured());
         for glyph in &words.glyphs {
-            let (path, _) = file.outline_through(glyph.id, [unit, 0.0, 0.0, -unit, glyph.at.x, glyph.at.y]);
-            canvas.fill(&path, pt(0.0, 0.0), 1.0, words.color);
+            if coloured && coloured_glyph(file, words, glyph, canvas) {
+                continue;
+            }
+            canvas.fill(&file.outline_through(glyph.id, [unit, 0.0, 0.0, -unit, glyph.at.x, glyph.at.y]).0, pt(0.0, 0.0), 1.0, words.color);
         }
     }
 
     /// A picture stretched over `r`: a JPEG decoded first.
-    fn draw_picture(&self, at: u32, r: Rect, canvas: &mut Canvas) {
+    pub(crate) fn draw_picture(&self, at: u32, r: Rect, canvas: &mut Canvas) {
         match &self.pictures[at as usize] {
             Picture::Pixels { width, pixels } => canvas.picture(pixels, *width, r),
             Picture::Jpeg { file, .. } => self.unpack.and_then(|unpack| unpack(file)).into_iter().for_each(|(width, pixels)| canvas.picture(&pixels, width, r)),
@@ -644,7 +731,7 @@ impl Paper {
 
 impl Drawn {
     /// Draws it on a canvas in page units, as a window draws an app shape.
-    fn draw(&self, canvas: &mut Canvas) {
+    pub(crate) fn draw(&self, canvas: &mut Canvas) {
         let pen = self.pen.map(|pen| Pen { dashes: &self.dashes, ..pen });
         let paint = match &self.paint {
             PagePaint::Color(color) => Paint::Color(*color),
@@ -657,9 +744,25 @@ impl Drawn {
     }
 }
 
+/// Draws a colour glyph: its COLR layers, each in its colour (or the text's), or its bitmap.
+/// False for a glyph without colour.
+fn coloured_glyph(file: &FontFile, words: &Words, glyph: &Glyph, canvas: &mut Canvas) -> bool {
+    let unit = file.unit(words.size);
+    let place = [unit, 0.0, 0.0, -unit, glyph.at.x, glyph.at.y];
+    if let Some(layers) = file.layers(glyph.id) {
+        layers.for_each(|(layer, colour)| canvas.fill(&file.outline_through(layer, place).0, pt(0.0, 0.0), 1.0, colour.unwrap_or(words.color)));
+        return true;
+    }
+    let bitmap = file.bitmap(glyph.id, 4096.0).and_then(|bitmap| Some((crate::png::decode(bitmap.png)?, bitmap.pixels, [bitmap.left, bitmap.top])));
+    let Some(((width, pixels), size, [left, top])) = bitmap.filter(|((width, _), size, _)| *width > 0 && *size > 0.0) else { return false };
+    let by = words.size / size;
+    canvas.picture(&pixels, width, rect(glyph.at.x + left * by, glyph.at.y - top * by, width as f32 * by, (pixels.len() / width) as f32 * by));
+    true
+}
+
 /// Whether a character is invisible: a joiner, or a variation selector. Such a character joins
 /// its run.
-fn unseen(letter: char) -> bool {
+pub(crate) fn unseen(letter: char) -> bool {
     matches!(letter, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{fe00}'..='\u{fe0f}' | '\u{e0000}'..='\u{e007f}' | '\u{e0100}'..='\u{e01ef}')
 }
 
@@ -676,12 +779,29 @@ fn unmixed(pixel: u32) -> u32 {
     }
 }
 
+/// A PNG file's colour profile (`iCCP`, compressed), unless it says it is sRGB.
+fn png_profile(file: &[u8]) -> Option<Vec<u8>> {
+    let mut at = 8;
+    while let Some(long) = file.get(at..at + 4).map(|four| u32::from_be_bytes([four[0], four[1], four[2], four[3]]) as usize) {
+        let (name, body) = (file.get(at + 4..at + 8)?, file.get(at + 8..at + 8 + long)?);
+        match name {
+            b"sRGB" | b"IDAT" => return None,
+            b"iCCP" => {
+                let packed = body.get(body.iter().position(|byte| *byte == 0)? + 2..)?;
+                return crate::png::inflate(packed, 1 << 22);
+            }
+            _ => at += 12 + long,
+        }
+    }
+    None
+}
+
 /// A JPEG file as embeddable in PDF verbatim: 8-bit samples, baseline or progressive (decodable
-/// by every viewer), with one, three, or four components (CMYK as Adobe writes it). None for
-/// anything else.
-pub(crate) fn passed(file: &[u8]) -> Option<Picture> {
+/// by every viewer), with one, three, or four components (CMYK as Adobe writes it); and its
+/// colour profile, if it has one (in pieces, each numbered). None for anything else.
+pub(crate) fn passed(file: &[u8]) -> Option<(Picture, Option<Vec<u8>>)> {
     let mut rest = file.strip_prefix(&[0xFF, 0xD8])?;
-    let (mut frame, mut adobe, mut turn) = (None, false, 1);
+    let (mut frame, mut adobe, mut turn, mut pieces) = (None, false, 1, Vec::new());
     while let Some((kind, body, after)) = part(rest) {
         rest = after;
         match kind {
@@ -689,16 +809,19 @@ pub(crate) fn passed(file: &[u8]) -> Option<Picture> {
             0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => return None,
             0xDA | 0xD9 => break,
             0xE1 => turn = crate::exif_orientation::turn(body).unwrap_or(turn),
+            0xE2 => pieces.extend(body.strip_prefix(b"ICC_PROFILE\0").and_then(|piece| Some((*piece.first()?, piece.get(2..)?)))),
             0xEE => adobe |= body.starts_with(b"Adobe"),
             _ => {}
         }
     }
+    pieces.sort_by_key(|(nth, _)| *nth);
+    let profile: Vec<u8> = pieces.iter().flat_map(|(_, piece)| piece.iter().copied()).collect();
     // (A frame header gives the sample precision, height, width, and component count.)
     let frame = frame?;
     let (depth, high, wide, planes) = (*frame.first()?, u16::from_be_bytes([*frame.get(1)?, *frame.get(2)?]), u16::from_be_bytes([*frame.get(3)?, *frame.get(4)?]), *frame.get(5)?);
     let fits = depth == 8 && high > 0 && wide > 0 && (planes == 1 || planes == 3 || (planes == 4 && adobe)) && (1..=8).contains(&turn);
     let size = if turn >= 5 { [high as usize, wide as usize] } else { [wide as usize, high as usize] };
-    fits.then(|| Picture::Jpeg { file: file.to_vec(), size, planes, adobe, turn })
+    fits.then(|| (Picture::Jpeg { file: file.to_vec(), size, planes, adobe, turn }, Some(profile).filter(|profile| !profile.is_empty())))
 }
 
 /// The next JPEG segment: its marker, its content, and the file after it.

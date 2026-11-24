@@ -29,14 +29,16 @@ pub(crate) fn loader() -> Option<Find> {
         let library = unsafe { LoadLibraryExW(name.as_ptr(), 0, 0x800) };
         if library == 0 { std::ptr::null_mut() } else { unsafe { GetProcAddress(library, c"vkGetInstanceProcAddr".as_ptr().cast()) as *mut c_void } }
     };
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     let found = {
         // SAFETY: the name ends in a zero (2: `RTLD_NOW`); the library is never closed.
         let library = unsafe { crate::x11::dlopen(c"libvulkan.so.1".as_ptr(), 2) };
         (!library.is_null()).then(|| crate::x11::symbol(library, "vkGetInstanceProcAddr\0")).flatten().unwrap_or(std::ptr::null_mut())
     };
-    // macOS has no Vulkan of its own.
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "android")]
+    let found = crate::android::vulkan_loader();
+    // Apple's systems have no Vulkan of their own, nor has a page.
+    #[cfg(any(target_vendor = "apple", target_family = "wasm"))]
     let found = std::ptr::null_mut::<c_void>();
     // SAFETY: the loader's function is declared as vulkan_core.h declares it.
     (!found.is_null()).then(|| unsafe { std::mem::transmute::<*const c_void, Find>(found.cast_const()) })
@@ -179,7 +181,7 @@ pub(crate) fn named(result: i32) -> &'static str {
 
 // Windows shown through Vulkan (feature `gpu`: `gpu_vulkan_windows`, `gpu_vulkan_x11`): the
 // instance, devices, surfaces and swap chains.
-#[cfg(all(feature = "gpu", not(target_os = "macos")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
 structures! {
     VkApplicationInfo { kind: u32, next: *const c_void, name: *const c_char, version: u32, engine: *const c_char, engine_version: u32, api_version: u32, }
     VkInstanceCreateInfo { kind: u32, next: *const c_void, flags: u32, application: *const VkApplicationInfo, layer_count: u32, layers: *const *const c_char, extension_count: u32, extensions: *const *const c_char, }
@@ -198,25 +200,25 @@ structures! {
     VkPresentInfoKHR { kind: u32, next: *const c_void, wait_count: u32, waits: *const Handle, count: u32, swapchains: *const Handle, indices: *const u32, results: *mut i32, }
 }
 
-#[cfg(all(feature = "gpu", not(target_os = "macos"), any(windows, feature = "gpu-draw")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android")), any(windows, feature = "gpu-draw")))]
 pub(crate) const LAYOUT_TRANSFER_SOURCE: u32 = 6;
-#[cfg(all(feature = "gpu", not(target_os = "macos")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) const LAYOUT_PRESENT: u32 = 1_000_001_002;
-#[cfg(all(feature = "gpu", not(target_os = "macos"), any(windows, feature = "gpu-draw")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android")), any(windows, feature = "gpu-draw")))]
 pub(crate) const ACCESS_TRANSFER_READ: u32 = 0x800;
-#[cfg(all(feature = "gpu", not(target_os = "macos")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) const STAGE_BOTTOM: u32 = 0x2000;
 // Kinds of use of an image or buffer.
-#[cfg(all(feature = "gpu", not(target_os = "macos")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) const USAGE_TRANSFER_SOURCE: u32 = 0x1;
-#[cfg(all(feature = "gpu", not(target_os = "macos")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) const USAGE_TRANSFER_DESTINATION: u32 = 0x2;
 // Results.
 #[cfg(all(windows, feature = "gpu"))]
 pub(crate) const DEVICE_LOST: i32 = -4;
-#[cfg(all(feature = "gpu", not(target_os = "macos")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) const OUT_OF_DATE: i32 = -1_000_001_004;
-#[cfg(all(feature = "gpu", not(target_os = "macos")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
 /// One layer of an image's colour: aspect, level, first layer, layers.
 pub(crate) const LAYER: [u32; 4] = [0x1, 0, 0, 1];
 
@@ -229,7 +231,7 @@ pub(crate) fn name(of: &[c_char; 256]) -> &[u8] {
     bytes.split(|byte| *byte == 0).next().unwrap_or_default()
 }
 
-#[cfg(all(feature = "gpu", not(target_os = "macos"), any(windows, feature = "gpu-draw")))]
+#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android")), any(windows, feature = "gpu-draw")))]
 structures! {
     VkImageCopy { source_layers: [u32; 4], source_offset: [i32; 3], destination_layers: [u32; 4], destination_offset: [i32; 3], extent: [u32; 3], }
 }
@@ -241,18 +243,18 @@ structures! {
 
 // X windows shown through Vulkan (`gpu_vulkan_x11`): their surfaces, and what a device's driver
 // is.
-#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 structures! {
     VkXlibSurfaceCreateInfoKHR { kind: u32, next: *const c_void, flags: u32, display: *mut c_void, window: std::ffi::c_ulong, }
     VkPhysicalDeviceProperties2 { kind: u32, next: *mut c_void, properties: VkPhysicalDeviceProperties, }
     VkPhysicalDeviceDriverProperties { kind: u32, next: *mut c_void, id: u32, name: [c_char; 256], info: [c_char; 256], conformance: [u8; 4], }
 }
 
-#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 pub(crate) const SUBOPTIMAL: i32 = 1_000_001_003;
 
 /// Whether `name` is among the extensions `list` fills in.
-#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 #[inline]
 pub(crate) fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32, name: &CStr) -> bool {
     let all = listed(VkExtensionProperties::default(), list);
@@ -261,7 +263,7 @@ pub(crate) fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32
 }
 
 /// What one of Vulkan's enumerations fills in: its count first, then that many.
-#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 #[inline]
 pub(crate) fn listed<T: Copy>(zero: T, mut fill: impl FnMut(*mut u32, *mut T) -> i32) -> Vec<T> {
     let mut count = 0;
@@ -276,7 +278,7 @@ pub(crate) fn listed<T: Copy>(zero: T, mut fill: impl FnMut(*mut u32, *mut T) ->
 
 /// The copy of `place` (left, top, right, bottom) from pixels `width` a row into the same place
 /// of an image.
-#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 #[inline]
 pub(crate) fn region([left, top, right, bottom]: [i32; 4], width: i32) -> VkBufferImageCopy {
     let at = (top as u64 * width as u64 + left as u64) * 4;
@@ -285,7 +287,7 @@ pub(crate) fn region([left, top, right, bottom]: [i32; 4], width: i32) -> VkBuff
 
 // Wayland windows shown through Vulkan (`gpu_wayland`): images made to be handed to the
 // compositor as dmabufs, in a layout both take (a DRM format modifier).
-#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 structures! {
     VkExternalMemoryImageCreateInfo { kind: u32, next: *const c_void, handles: u32, }
     VkImageDrmFormatModifierListCreateInfoEXT { kind: u32, next: *const c_void, count: u32, modifiers: *const u64, }
@@ -335,7 +337,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "gpu", not(target_os = "macos")))]
+    #[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn what_showing_a_window_takes_is_laid_out_as_vulkan_lays_it_out() {
         let sizes = [
@@ -369,7 +371,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
     #[test]
     fn an_x_surface_and_a_drivers_name_are_laid_out_as_vulkan_lays_them_out() {
         let sizes = [
@@ -383,7 +385,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
     #[test]
     fn what_handing_a_dmabuf_over_takes_is_laid_out_as_vulkan_lays_it_out() {
         let sizes = [

@@ -79,7 +79,7 @@ impl Default for Window<'_> {
 }
 
 /// What shows a window's pixels. The CPU draws them either way, so a window looks the same,
-/// byte for byte; the GPU only shows them. `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl`
+/// byte for byte; the GPU only shows them. `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl|metal`
 /// overrides the app's choice. With the feature `gpu-draw`, every GPU path draws them too, within
 /// a few levels of 255 at edges: `Auto` large parts of a window, a path named all
 /// (`TAUT_DRAW=cpu|gpu|auto` overrides).
@@ -89,6 +89,7 @@ impl Default for Window<'_> {
 /// | Windows | Direct3D 11, Direct3D 12, Vulkan, OpenGL (WGL) | GDI |
 /// | Linux (X11) | OpenGL (EGL), Vulkan | X11 images |
 /// | Linux (Wayland) | Vulkan (dmabufs), never for `Auto` | shared memory |
+/// | macOS | Metal | Core Animation |
 ///
 /// A path that is missing falls back along that order, then to the CPU. The GPU paths need the
 /// feature `gpu`; without it the CPU shows every window, and none of their code is compiled in.
@@ -115,19 +116,28 @@ pub enum Renderer {
     Vulkan,
     /// OpenGL: WGL on Windows, EGL on Linux.
     OpenGL,
+    /// Metal and a `CAMetalLayer` (macOS).
+    Metal,
 }
 
 /// The GPU paths this system has, best first.
 #[cfg(all(windows, feature = "gpu"))]
 const BEST: [Renderer; 4] = [Renderer::Direct3D11, Renderer::Direct3D12, Renderer::Vulkan, Renderer::OpenGL];
-#[cfg(all(unix, feature = "gpu"))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 #[allow(dead_code)] // (X11 has one path so far.)
 const BEST: [Renderer; 2] = [Renderer::OpenGL, Renderer::Vulkan];
+/// A page has none: the canvas shows the CPU's pixels.
+#[cfg(all(target_family = "wasm", feature = "gpu"))]
+const BEST: [Renderer; 0] = [];
+#[cfg(all(target_os = "macos", feature = "gpu"))]
+const BEST: [Renderer; 1] = [Renderer::Metal];
+#[cfg(all(target_os = "ios", feature = "gpu"))]
+const BEST: [Renderer; 0] = [];
 
 impl Renderer {
     /// The renderer the user names in `TAUT_RENDERER` (`asked`, any case), over the app's
     /// choice.
-    #[cfg(all(feature = "gpu", not(target_os = "macos")))]
+    #[cfg(all(feature = "gpu", not(any(target_os = "ios", target_os = "android"))))]
     pub(crate) fn chosen(self, asked: Option<&str>) -> Renderer {
         match asked.map(str::to_ascii_lowercase).as_deref() {
             Some("cpu") => Renderer::Cpu,
@@ -136,14 +146,15 @@ impl Renderer {
             Some("d3d12") => Renderer::Direct3D12,
             Some("vulkan") => Renderer::Vulkan,
             Some("opengl") => Renderer::OpenGL,
+            Some("metal") => Renderer::Metal,
             _ => self,
         }
     }
 
     /// The GPU paths a window asking for this tries, in turn: the one named, then the system's,
     /// best first. None for the CPU.
-    #[cfg(feature = "gpu")]
-    #[cfg_attr(unix, allow(dead_code))] // (X11 has one path so far.)
+    #[cfg(all(feature = "gpu", not(target_os = "android")))]
+    #[cfg_attr(unix, allow(dead_code))] // (X11 has one path so far; macOS one.)
     pub(crate) fn tried(self) -> impl Iterator<Item = Renderer> {
         let named = BEST.into_iter().filter(move |path| *path == self);
         named.chain(BEST.into_iter().filter(move |path| *path != self && self != Renderer::Cpu))
@@ -153,7 +164,7 @@ impl Renderer {
 /// Whether windows asking for `asked` ask the GPU, as `TAUT_RENDERER` says if set: nothing
 /// for the CPU, else whether any device will do (`Gpu`, or a path named) or only one that shows
 /// frames directly (`Auto`).
-#[cfg(all(unix, not(target_os = "macos"), feature = "gpu"))]
+#[cfg(all(unix, not(any(target_os = "ios", target_os = "android")), feature = "gpu"))]
 pub(crate) fn wants_gpu(asked: Renderer) -> Option<bool> {
     match asked.chosen(std::env::var("TAUT_RENDERER").ok().as_deref()) {
         Renderer::Cpu => None,
@@ -218,6 +229,7 @@ pub trait Clipboard {
 /// [`Ui::clipboard_files`](crate::Ui::clipboard_files), through `hand_pictures_and_files`), and
 /// reached no other way: a program that never does is built without it, and its clipboard holds
 /// text alone.
+#[cfg_attr(target_os = "android", allow(dead_code))] // (A text-only clipboard there.)
 pub(crate) struct PicturesAndFiles<C> {
     pub picture: TakesPicture<C>,
     pub set_picture: fn(&mut C, usize, &[u32]),
@@ -226,6 +238,7 @@ pub(crate) struct PicturesAndFiles<C> {
 }
 
 /// Takes a picture off the clipboard: its width and pixels.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 type TakesPicture<C> = fn(&mut C) -> Option<(usize, Vec<u32>)>;
 
 impl<C> Clone for PicturesAndFiles<C> {
@@ -240,12 +253,14 @@ impl<C> Copy for PicturesAndFiles<C> {}
 pub(crate) fn hand_pictures_and_files() {
     #[cfg(windows)]
     crate::windows::hand_pictures_and_files();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     crate::x11::hand_pictures_and_files();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     crate::wayland::hand_pictures_and_files();
     #[cfg(target_os = "macos")]
     crate::macos::hand_pictures_and_files();
+    #[cfg(target_os = "ios")]
+    crate::ios::hand_pictures_and_files();
 }
 
 /// Hands the windows their drop handling (files and text dragged in from other programs), on
@@ -258,9 +273,9 @@ pub(crate) fn hand_pictures_and_files() {
 pub(crate) fn hand_drops() {
     #[cfg(windows)]
     crate::windows::hand_drops();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     crate::x11::hand_drops();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     crate::wayland::hand_drops();
     #[cfg(target_os = "macos")]
     crate::macos_files::hand_drops();
@@ -273,7 +288,7 @@ pub(crate) fn hand_drops() {
 pub(crate) fn enable_drag_out() {
     #[cfg(windows)]
     crate::windows::enable_drag_out();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     crate::x11::enable_drag_out();
     #[cfg(target_os = "macos")]
     crate::macos_drag_out::enable();
@@ -286,7 +301,7 @@ pub(crate) fn enable_drag_out() {
 pub(crate) fn hand_file_dialog() {
     #[cfg(windows)]
     crate::windows::hand_file_dialog();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     crate::portal::hand_file_dialog();
     #[cfg(target_os = "macos")]
     crate::macos_files::hand_file_dialog();
@@ -303,12 +318,21 @@ pub(crate) fn hand_file_dialog() {
 pub(crate) fn hand_desktop() {
     #[cfg(windows)]
     crate::windows::hand_desktop();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     crate::x11::hand_desktop();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     crate::wayland::hand_desktop();
     #[cfg(target_os = "macos")]
     crate::macos_shell::hand_desktop();
+}
+
+/// Seconds since 1970, UTC, by the system's clock: what `SystemTime::now()` gives, and in a
+/// browser too, where the standard library has no clock (and `SystemTime::now()` panics).
+pub fn unix_time() -> f64 {
+    #[cfg(target_family = "wasm")]
+    return crate::web_host::unix_ms() / 1000.0;
+    #[allow(unreachable_code)]
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64())
 }
 
 /// An in-process clipboard, for where there is no system to ask: what is copied stays inside
@@ -361,6 +385,10 @@ impl Clipboard for LocalClipboard {
 /// let mut ui = taut::Ui::new(taut::platform::system_text(), Box::new(taut::LocalClipboard::default()));
 /// ```
 pub fn system_text() -> Box<dyn crate::text::TextSystem> {
+    // A page's fonts, where it gave the loader some.
+    #[cfg(target_family = "wasm")]
+    return crate::web_host::system_text();
+    #[allow(unreachable_code)]
     match SystemText::new() {
         Some(text) => Box::new(text),
         None => Box::new(crate::text::BuiltInFont),
@@ -370,18 +398,33 @@ pub fn system_text() -> Box<dyn crate::text::TextSystem> {
 #[cfg(windows)]
 pub use crate::windows::{Messages, SystemClipboard};
 // Every system has these, each its own: the docs mark them as no single system's.
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "android")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::android::{Waker, run};
+#[cfg(target_os = "android")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::android_text::SystemText;
+#[cfg(target_vendor = "apple")]
 #[cfg_attr(docsrs, doc(auto_cfg = false))]
 pub use crate::core_text::SystemText;
+#[cfg(target_os = "ios")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::ios::{Waker, run};
 #[cfg(target_os = "macos")]
 #[cfg_attr(docsrs, doc(auto_cfg = false))]
 pub use crate::macos::{Waker, run};
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 #[cfg_attr(docsrs, doc(auto_cfg = false))]
 pub use crate::wayland::run;
+#[cfg(target_family = "wasm")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::web_host::{Waker, run};
+#[cfg(target_family = "wasm")]
+#[cfg_attr(docsrs, doc(auto_cfg = false))]
+pub use crate::web_text::SystemText;
 #[cfg(windows)]
 #[cfg_attr(docsrs, doc(auto_cfg = false))]
 pub use crate::windows::{SystemText, Waker, run};
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 #[cfg_attr(docsrs, doc(auto_cfg = false))]
 pub use crate::x11::{SystemText, Waker};

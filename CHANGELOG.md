@@ -3,6 +3,116 @@
 Changes an app can notice, newest first. Before 1.0, a new minor version (0.1 → 0.2) may need
 code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
+## Unreleased
+
+- **The web:** taut builds for `wasm32-unknown-unknown` and runs in a page's `<canvas>`, with
+  no crates (no wasm-bindgen, no web-sys). `taut::web::LOADER` is the loader, a JavaScript
+  module served beside the program; `examples/web_page.rs` writes a page and serves a built
+  program. The CPU draws as everywhere; changed places go up through `putImageData`, a frame
+  only when something changed. Mouse, wheel, touchpad pinch, fingers and pens, keys, focus,
+  cursor shapes, resizing; typing and input methods through a hidden text field; copy and paste
+  through the browser's clipboard events. Text is the browser's (`fillText`), or the font files
+  the page gives the loader. Screen readers read hidden elements with ARIA roles, names and
+  states, kept in step by sending only what changed. `storage` keeps files in `localStorage`;
+  the system file dialog is the browser's picker (`web::picked`); saving downloads
+  (`web::download`). `taut::run` returns at once there. New example `web_notes`.
+- **`platform::unix_time()`:** seconds since 1970 by the system's clock, in a browser too
+  (where `SystemTime::now()` panics).
+- **iOS and iPadOS:** `taut::run` opens a UIKit window filling its scene (`aarch64-apple-ios`,
+  `aarch64-apple-ios-sim`). Text by CoreText; the safe area and the keyboard kept clear;
+  rotation and iPad multitasking sizes; dark mode, Dynamic Type, more contrast, less motion.
+  Fingers are `Event::Touch` with `touch` (else the first finger is the mouse); Apple Pencil,
+  trackpad and mouse are the mouse; hardware keys, input methods and the system's edit actions
+  work; screen readers read `UIAccessibilityElement`s. Going to the background is
+  `Event::Minimized`. `run` never returns there. `examples/ios_bundle.rs` builds an example as
+  an app for the simulator or a device.
+- **Tagged PDF** (PDF/UA-1): a `Paper` has a structure, as a window tells screen readers:
+  `Paper::begin(Role)`, `begin_heading`, `begin_decoration`, `describe`, `end`. Reading order,
+  alt text, table column headings, language (`Paper::set_language`). `Paper::markdown` tags
+  every block and repeats a table's headings on each page; `Paper::interface` describes its
+  picture by what the window tells readers. Headings make the outline (bookmarks).
+- **PDF/A-2b** (`Paper::archive`), **form fields** (`text_field`, `tick_field`,
+  `choice_field`) and **AES-256 encryption** (`Paper::encrypt`): each carried only by programs
+  that call it.
+- With `emoji`, colour emoji go into PDF in colour (COLR layers as shapes, bitmaps as pictures),
+  and print so; JPEG and PNG
+  (`Paper::png`) keep their colour profiles; a font's licence (`fsType`) decides how it goes in.
+- **Printing:** `taut::print_laid` lays pages out for the paper picked. Windows prints shapes and
+  text, needs no active window, and prints a page larger than the sheet on several sheets
+  (`Paper::shrink_to_fit` shrinks it instead, as before). On Linux the portal's dialog shows
+  over the program's window.
+- **Metal on macOS:** with the feature `gpu`, Metal shows the windows (a `CAMetalLayer`, only
+  changed places uploaded), byte for byte the CPU's pixels; with `gpu-draw` it draws them too,
+  as the other paths do. `Renderer::Metal`, `TAUT_RENDERER=metal`; `Auto`, `Gpu` and any path
+  named mean Metal there. A lost device is made again, else the CPU shows; a window on a screen
+  of another GPU moves every window to it. Without the features nothing of it is compiled in.
+- **Fixed:** `layer_metal` asked Metal for a texture wider or taller than 16,384 pixels, which
+  ends the program; it now returns an error.
+- **Video:** the feature `video` plays video and sound (files, addresses, bytes) through the
+  system's player, loaded at run time: Media Foundation, GStreamer, AVFoundation. `Video`
+  opens, plays, pauses, seeks, loops and tells the end; `ui.video` shows its newest frame,
+  redrawing only its box; `ui.video_controls` adds play, position, time, mute and volume, for
+  keyboard and screen readers. Example `player`. Without the feature nothing of it is
+  compiled in.
+- **Screen readers read text by line as wrapped**, and get each letter's place: UI Automation
+  (line unit, `GetBoundingRectangles`, `RangeFromPoint`, visible range), AT-SPI
+  (`GetStringAtOffset` by line, `GetCharacterExtents`, `GetRangeExtents`,
+  `GetOffsetAtPoint`), macOS (`AXLineForIndex`, `AXRangeForLine`, `AXBoundsForRange`,
+  `AXRangeForPosition`). Plain text, headings and paragraphs are read so too, not only text
+  boxes.
+- **Long tables:** a reader reaches any row through the table (it scrolls into view) and selects
+  rows through it (UI Automation `Selection`, AT-SPI `AddRowSelection`/`RemoveRowSelection`).
+  **`ui.tell_selection(&selection)`** inside a table tells every selected row, in view or not.
+- **Misspellings** are told for all of a box's text (up to 64 KB), not only visible words; UI
+  Automation's `FindAttribute` finds them.
+- Scrolling in or out of view is told on Windows too (`IsOffscreen` changes).
+- Tree items an app put in no tree (`ui.tree`) are told in one: Orca reads their levels.
+- A scroll costs less while a reader listens: providers follow a move instead of copying the
+  list, and the walk finds each box's role without a search.
+- **HDR:** the feature `hdr` (with `gpu`) shows boxes and pictures brighter than SDR white on
+  HDR screens. `El::brightness(times)`, `Ui::add_hdr_picture` (linear light) and PQ or HLG
+  PNGs (`cICP`) give the light; `Ui::headroom` says how much the screen shows. Direct3D 11 and
+  12 present such windows in scRGB, Wayland in PQ through its colour management; the screen's
+  SDR white and peak are followed. Everything else stays at the system's SDR white, and SDR
+  screens get the same pixels. Without the feature, nothing of it is compiled in.
+- **Node graphs:** inputs that take several wires (`Node::multi_input`, `Graph::wires_into`);
+  a grid, drawn and snapped to (`Graph::grid`); frames that carry the nodes in them
+  (`Graph::frames`, `Frame`; Ctrl+G frames the selection); bends on wires
+  (`Graph::reroutes`, `Reroute`; double-click a wire); undo and redo of every edit (Ctrl+Z,
+  Ctrl+Y, Ctrl+Shift+Z; `Graph::undo`, `redo`, `save_undo_step` for the app's own edits); a
+  pressed node under another comes on top (to the end of `nodes`); dragging near the view's
+  edge pans it; F shows the selection. Wires are buttons readers hear by both ends, reached by
+  Tab after a node's ports (Enter follows, B bends, Delete removes). New actions:
+  `Rerouted`, `Framed`, `Undone`, `Redone`, `WireDropped`. `Graph::unwire` removes a
+  wire with its bends; `Graph::snapped` puts a point on the grid.
+- `GraphWords` has six more words (`many`, `wire`, `bend`, `frame`, `undone`,
+  `redone`): one written out in full needs them (`..GraphWords::default()` does not).
+- **Android:** `taut::run` opens the window of a `NativeActivity` (Android 11 and later). The
+  app exports `android_main`, which calls `main`; `run` returns and the interface runs on the
+  main looper. CPU frames into the window (`ANativeWindow_lock`) inside the system bars,
+  cutout and soft keyboard; touch, mouse, pen, keys and the back button; the soft keyboard and
+  its text; the clipboard's text; dark mode, accent colour, text size and animations off from
+  the system; Roboto and the system's fallback fonts from `/system/fonts`; screen readers
+  through an `AccessibilityNodeProvider`. The few Java classes this needs are written as a DEX
+  file at run time; the app has no Java. `examples/apk.rs` packs an example as an APK.
+- **TrueType hinting** (feature `hinting`, off by default): small text of a TrueType font that
+  carries hinting instructions is hinted by them, as FreeType's default interpreter (version
+  40) does: vertically only, close to Windows' ClearType natural mode. The same points as
+  FreeType 2.14.3 for every glyph of 19 Windows and Linux fonts at 8–20 px. Variable fonts vary
+  their control values (`cvar`). `AppFonts::autohinted()` keeps the autohinter. Fonts without
+  instructions, and every font without the feature, are hinted as before.
+- **Shaped app fonts** (feature `shaping`): text in app fonts is shaped as on pages:
+  ligatures, contextual forms, marks placed and stacked on their letters, kerning beyond pairs.
+  A line is shaped once and kept; glyphs still sit on whole pixels. The system's text (GDI,
+  FreeType) takes the window's language forms (`locl`): Serbian б, Romanian ș. Without the
+  feature nothing changes.
+- **Shaping:** random alternates (`rand`) as HarfBuzz picks them; Syriac's abbreviation mark
+  stretched over its word (`stch`); a font's positioning under `calt`, `liga` and the other
+  default features (Bahnschrift raises a hyphen between capitals). Pages change where fonts
+  have these.
+- **Split cursor:** where right-to-left and left-to-right text meet, the cursor shows at both
+  places, half high each (`right-to-left`).
+
 ## 0.2.2 (2026-11-24)
 
 - **`ui.plot_lines`** draws a smooth curve through the values (`Path::smooth_through`), not

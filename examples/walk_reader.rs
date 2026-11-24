@@ -15,17 +15,17 @@
 //! by dbus-broker, say, where the launcher would start dbus-daemon), set AT_SPI_BUS_ADDRESS, as
 //! a desktop may, and list the processes running it in TAUT_WALK_BUS_PIDS.
 
-#[cfg(not(all(unix, not(target_os = "macos"))))]
+#[cfg(not(all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 fn main() {
     println!("the screen reader's walk goes over AT-SPI, which is how windows are read on Linux: there is nothing for it to walk on this system");
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn main() -> std::process::ExitCode {
     reader::walk()
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod reader {
     use std::cell::RefCell;
     use std::ffi::{CStr, c_char, c_int, c_uchar, c_uint, c_ulong, c_void};
@@ -1036,8 +1036,8 @@ mod reader {
 
     /// The page with the table: libatspi, by its own functions for tables, reads it as a
     /// table of all its rows and its columns, a cell at a row in view and a column, where
-    /// the cell says it is, under the heading of its column. A row out of view has no cells
-    /// to be had.
+    /// the cell says it is, under the heading of its column. A cell in a row out of view is
+    /// had too: the table scrolls to it first.
     fn a_table(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
         let (atspi, frame) = (&reader.atspi, landmarks.frame);
         reader.press(reader.find(frame, PAGE_TAB, "Table")?)?;
@@ -1073,7 +1073,14 @@ mod reader {
             &what,
         );
         check("    and it is in a row of the table", reader.role(reader.ask(&atspi.atspi_accessible_get_parent, cell)?)? == TABLE_ROW && reader.name(cell)?.ends_with(" KB"), &what);
-        check("  a row out of view has no cell to be had", at(4000, 0)?.is_none(), "");
+        let far = at(4000, 0)?;
+        let (mut row, mut column, mut problem) = (-1, -1, null_mut());
+        if !far.is_none() {
+            // SAFETY: as above.
+            let placed = unsafe { (atspi.atspi_table_cell_get_position.call)(far, &mut row, &mut column, &mut problem) };
+            reader.answered(atspi.atspi_table_cell_get_position.name, placed, problem)?;
+        }
+        check("  a cell in a row out of view is had too, the table scrolled to it", !far.is_none() && (row, column) == (4000, 0), &format!("at {row},{column}"));
         Ok(())
     }
 

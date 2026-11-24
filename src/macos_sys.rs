@@ -1,6 +1,6 @@
-//! macOS's own interfaces, declared by hand: the Objective-C runtime, and what the windows, text
-//! and clipboard use of CoreFoundation and CoreGraphics. AppKit is reached through messages
-//! (`send`), its classes by name; nothing here is a crate.
+//! macOS's and iOS's own interfaces, declared by hand: the Objective-C runtime, and what the
+//! windows, text and clipboard use of CoreFoundation and CoreGraphics. AppKit and UIKit are
+//! reached through messages (`send`), their classes by name; nothing here is a crate.
 //!
 //! A message is sent through `objc_msgSend` cast to the method's own C signature, as the
 //! compiler does. Methods returning a rectangle use `objc_msgSend_stret` on x86-64, where a
@@ -52,6 +52,7 @@ pub(crate) struct NSRange {
 }
 
 /// `NSNotFound`: a range that is none.
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) const NOT_FOUND: usize = isize::MAX as usize;
 
 /// Type encodings of the methods the library's classes add: what the runtime says of them to
@@ -88,6 +89,7 @@ unsafe extern "C" {
     /// How a layer shows its picture: at its top left, unscaled.
     pub(crate) static kCAGravityTopLeft: Obj;
 }
+#[cfg(target_os = "macos")]
 #[link(name = "AppKit", kind = "framework")]
 unsafe extern "C" {
     /// `NSApp`'s pasteboard type names, and the run loop mode events are taken in.
@@ -136,6 +138,7 @@ unsafe extern "C" {
 /// A CGImage's pixels as the library keeps them: 32 bits, `0xAARRGGBB` premultiplied in a
 /// little-endian word (`kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst`); and a
 /// solid one's, the same without alpha (`kCGImageAlphaNoneSkipFirst`).
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) const PREMULTIPLIED: u32 = 2 << 12 | 2;
 pub(crate) const SOLID: u32 = 2 << 12 | 6;
 /// `kCFStringEncodingUTF8`.
@@ -240,6 +243,7 @@ pub(crate) fn made_class(name: &CStr, superclass: &CStr, methods: &[(&CStr, *con
 }
 
 /// Adds methods to a class made before.
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) fn add_methods(class: Obj, methods: &[(&CStr, *const c_void, &str)]) {
     for (name, imp, types) in methods {
         let types = std::ffi::CString::new(*types).unwrap_or_default();

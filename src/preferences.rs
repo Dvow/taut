@@ -193,7 +193,7 @@ mod sys {
 /// theme's dark variant. High contrast: a theme of that name, as GNOME names them
 /// ("HighContrastInverse" is the dark one). Reduced motion: animations switched off. (Larger
 /// text comes through the screen scale, which the window already follows.)
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) fn of_x_settings(settings: &[u8]) -> Option<Preferences> {
     let ends_first = *settings.first()? == 0;
     let number = |at: usize, len: usize| {
@@ -308,7 +308,7 @@ pub(crate) mod tests {
     }
 
     /// A value among XSETTINGS.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     pub(crate) enum Kept<'a> {
         Number(u32),
         Text(&'a str),
@@ -316,7 +316,7 @@ pub(crate) mod tests {
     }
 
     /// XSETTINGS as the settings daemon writes them, in either byte order.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     pub(crate) fn settings_of(ends_first: bool, list: &[(&str, Kept)]) -> Vec<u8> {
         let number = |value: u32, len: usize| if ends_first { value.to_le_bytes()[..len].to_vec() } else { value.to_be_bytes()[4 - len..].to_vec() };
         let mut bytes = vec![!ends_first as u8, 0, 0, 0];
@@ -334,7 +334,7 @@ pub(crate) mod tests {
         bytes
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn the_desktops_settings_say_what_the_person_asked_for() {
         use Kept::{Colour, Number, Text};

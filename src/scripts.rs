@@ -156,7 +156,7 @@ fn systems_of(name: &str) -> Vec<[u8; 4]> {
 
 /// The system language's name as Windows has it ("sr-Cyrl-RS").
 #[cfg(windows)]
-fn system_language() -> String {
+pub(crate) fn system_language() -> String {
     let mut name = [0u16; 85];
     // SAFETY: the system writes at most the given number of characters into room that has them,
     // and returns how many with the terminating zero.
@@ -173,7 +173,7 @@ unsafe extern "system" {
 /// The language the environment names ("sr_RS.UTF-8" is "sr_RS"), as the C library looks it up
 /// for `LC_CTYPE`; nothing for "C".
 #[cfg(not(windows))]
-fn system_language() -> String {
+pub(crate) fn system_language() -> String {
     let named = ["LC_ALL", "LC_CTYPE", "LANG"].iter().find_map(|variable| std::env::var(variable).ok().filter(|name| !name.is_empty())).unwrap_or_default();
     let name = named.split(['.', '@']).next().unwrap_or_default();
     if matches!(name, "C" | "POSIX") { String::new() } else { name.to_string() }

@@ -501,7 +501,7 @@ impl Ui {
 
     /// The table the open box is in, for screen readers: the index of the note it was told by.
     /// (None outside a table, or while nobody listens.)
-    fn open_table_note(&self) -> Option<usize> {
+    pub(crate) fn open_table_note(&self) -> Option<usize> {
         let columns = self.open.last().filter(|_| self.listening)?.columns;
         // (The table's scrolling body is the outermost box with its columns; the table is that
         // box's parent.)
@@ -546,6 +546,10 @@ impl Ui {
         // told as a selected row, and no more.)
         if self.notes.len() > told {
             self.tell_selected(picked);
+            // (A screen reader asked to select it: as a click does, or a Control+click.)
+            if let Some(alone) = self.reader_picks(told) {
+                (state.clicked, self.input.mods, self.again) = (true, if alone { Mods::NONE } else { Mods::CTRL }, true);
+            }
             return state;
         }
         self.tell(&state, Role::Row, Some(picked), "");
@@ -565,10 +569,10 @@ impl Ui {
     pub fn rows(&mut self, count: usize, row: f32) -> Range<usize> {
         let row = if row > 0.0 { row.max(self.text.metrics(self.theme.font, self.scale).height().ceil()) } else { row };
         // (In a table told to a screen reader, these are so many more of its rows, described or
-        // not.)
-        if let Some(rows) = self.open_table_note().and_then(|table| self.table_row_count(table)) {
-            *rows += count as u32;
-        }
+        // not. One of them a screen reader asked for shows.)
+        let table = self.open_table_note();
+        let before = table.and_then(|table| self.table_row_count(table)).map(|rows| std::mem::replace(rows, *rows + count as u32));
+        let reader = self.reader_row(table, before, count);
         let (id, page) = (self.next_id(), self.open.first().map_or(0, |open| open.at));
         // The nearest vertically scrolling ancestor: what it shows is visible.
         let within = self.open.iter().rev().map(|open| open.at).find(|at| self.tree.specs[*at as usize].frame.scroll[1]).unwrap_or(page);
@@ -577,7 +581,7 @@ impl Ui {
         let (left_out, mut above) = self.rows_left_out(within, id, count, row, read);
         let high = row as f64;
         // (A row the app asked to see is scrolled into view: `scroll_to_row`.)
-        if let Some(asked) = self.row_asked().filter(|asked| *asked < count && row > 0.0) {
+        if let Some(asked) = reader.or_else(|| self.row_asked()).filter(|asked| *asked < count && row > 0.0) {
             above = self.list_into_view(within, above, read[1], asked as f64 * high, high);
         }
         let rows = if row > 0.0 { ((above / high) as usize).min(count)..(((above + read[1] as f64) / high).ceil() as usize).min(count) } else { 0..0 };

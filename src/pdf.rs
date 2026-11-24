@@ -41,42 +41,170 @@ impl Paper {
     }
 }
 
-/// A PDF being written: its bytes so far, and each object's offset by number (0 is none).
-struct File {
+/// A PDF being written: its bytes so far, each object's offset by number (0 is none), and once
+/// it is encrypted, the key and what seals strings and streams with it (`pdf_lock.rs`).
+pub(crate) struct File {
     bytes: Vec<u8>,
     at: Vec<usize>,
+    sealed: Option<([u8; 32], Seal)>,
 }
+
+/// Encrypts the bytes of a string or stream with the file's key.
+pub(crate) type Seal = fn(&[u8; 32], &[u8]) -> Vec<u8>;
 
 impl File {
     /// A number for an object written later.
-    fn number(&mut self) -> u32 {
+    pub(crate) fn number(&mut self) -> u32 {
         self.at.push(0);
         self.at.len() as u32 - 1
     }
-    /// Writes an object.
-    fn object(&mut self, number: u32, body: &str) {
+    /// Writes an object (its strings encrypted, once the file is).
+    pub(crate) fn object(&mut self, number: u32, body: &str) {
+        let body = self.sealed_strings(body);
+        self.at[number as usize] = self.bytes.len();
+        self.bytes.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
+    }
+    /// Writes an object as it is, never encrypted: what encryption itself is written with.
+    fn plain_object(&mut self, number: u32, body: &str) {
         self.at[number as usize] = self.bytes.len();
         self.bytes.extend_from_slice(format!("{number} 0 obj\n{body}\nendobj\n").as_bytes());
     }
     /// Writes a stream: its dictionary besides the length, and its bytes, compressed.
-    fn stream(&mut self, number: u32, dict: &str, data: &[u8]) {
+    pub(crate) fn stream(&mut self, number: u32, dict: &str, data: &[u8]) {
         let packed = crate::png::zlib_compress(data);
         self.raw(number, &format!("{dict} /Filter /FlateDecode"), &packed);
     }
-    /// Writes a stream whose bytes are already in final form (compressed already).
-    fn raw(&mut self, number: u32, dict: &str, data: &[u8]) {
+    /// Writes a stream whose bytes are already in final form (compressed already); encrypted,
+    /// once the file is.
+    pub(crate) fn raw(&mut self, number: u32, dict: &str, data: &[u8]) {
+        let dict = self.sealed_strings(dict);
+        let sealed = self.sealed.map(|(key, seal)| seal(&key, data));
+        let data = sealed.as_deref().unwrap_or(data);
         self.at[number as usize] = self.bytes.len();
         self.bytes.extend_from_slice(format!("{number} 0 obj\n<< {dict} /Length {} >>\nstream\n", data.len()).as_bytes());
         self.bytes.extend_from_slice(data);
         self.bytes.extend_from_slice(b"\nendstream\nendobj\n");
     }
+    /// An object's text with each string in it encrypted, as hex, once the file is. (Strings
+    /// here are `(…)` with backslash escapes, or `<…>` in hex.)
+    fn sealed_strings(&self, body: &str) -> String {
+        let Some((key, seal)) = self.sealed else { return body.to_string() };
+        let (bytes, mut out, mut at) = (body.as_bytes(), Vec::with_capacity(body.len() * 2), 0);
+        while at < bytes.len() {
+            let string = match (bytes[at], bytes.get(at + 1)) {
+                (b'(', _) => Some(literal(bytes, at)),
+                (b'<', Some(next)) if *next != b'<' => Some(hex(bytes, at)),
+                _ => None,
+            };
+            // (Anything else as it is: a dictionary's `<<` both brackets at once.)
+            let Some((plain, end)) = string else {
+                let step = if bytes[at] == b'<' { 2.min(bytes.len() - at) } else { 1 };
+                out.extend_from_slice(&bytes[at..at + step]);
+                at += step;
+                continue;
+            };
+            out.push(b'<');
+            out.extend(seal(&key, &plain).iter().flat_map(|byte| format!("{byte:02x}").into_bytes()));
+            out.push(b'>');
+            at = end;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
 }
 
-/// How a font's glyphs are encoded: as a subset font, each glyph two bytes (its new id); or as
-/// Type 3 fonts, each glyph one byte in one of them. Each used glyph with its encoding.
+/// A literal string's bytes from its opening bracket, and where it ends: escapes undone, inner
+/// brackets kept.
+fn literal(bytes: &[u8], from: usize) -> (Vec<u8>, usize) {
+    let (mut plain, mut depth, mut at) = (Vec::new(), 0, from);
+    while at < bytes.len() {
+        let byte = bytes[at];
+        at += 1;
+        match byte {
+            b'\\' => {
+                plain.push(bytes.get(at).copied().unwrap_or(b'\\'));
+                at += 1;
+            }
+            b'(' if depth == 0 => depth = 1,
+            b'(' => (depth, _) = (depth + 1, plain.push(byte)),
+            b')' if depth == 1 => return (plain, at),
+            b')' => (depth, _) = (depth - 1, plain.push(byte)),
+            _ => plain.push(byte),
+        }
+    }
+    (plain, at)
+}
+
+/// A hex string's bytes from its opening angle bracket, and where it ends.
+fn hex(bytes: &[u8], from: usize) -> (Vec<u8>, usize) {
+    let end = bytes[from..].iter().position(|byte| *byte == b'>').map_or(bytes.len(), |end| from + end + 1);
+    let digits: Vec<u8> = bytes[from + 1..end.saturating_sub(1).max(from + 1)].iter().filter_map(|byte| (*byte as char).to_digit(16).map(|digit| digit as u8)).collect();
+    (digits.chunks(2).map(|pair| pair[0] << 4 | pair.get(1).copied().unwrap_or(0)).collect(), end)
+}
+
+/// Form fields' writing and drawing, handed over by the first field (`pdf_forms.rs`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Forms {
+    /// Writes a field mark's annotation (page, mark, the page's object, the shared resources,
+    /// its parent-tree key): gives back its number.
+    pub write: fn(&mut File, &Paper, &mut Shared, [usize; 2], [u32; 3]) -> u32,
+    /// Draws a field as a viewer shows it.
+    pub draw: fn(&Paper, &crate::pdf_forms::Field, &mut crate::canvas::Canvas),
+}
+
+/// PDF/A: the colour profile of the colours the file uses (sRGB), made by `pdf_archive.rs`.
+pub(crate) type Archive = fn() -> Vec<u8>;
+
+/// Encryption: the passwords and what is allowed, and how to write it (`pdf_lock.rs`).
+#[derive(Clone, Debug)]
+pub(crate) struct Lock {
+    pub user: String,
+    pub owner: String,
+    pub allowed: u32,
+    /// Gives the file's key, what seals with it, and the encryption dictionary.
+    pub make: fn(&Lock) -> ([u8; 32], Seal, String),
+}
+
+/// How a font's glyphs are encoded: as a subset font, each glyph two bytes (its new id), and
+/// whether its notdef glyph is drawn in a Type 3 font of its own; or as Type 3 fonts, each glyph
+/// one byte in one of them. Each used glyph with its encoding.
 enum Coded {
-    Whole(BTreeMap<u16, u16>),
+    Whole(BTreeMap<u16, u16>, bool),
     Drawn(BTreeMap<u16, (u32, u8)>),
+}
+
+/// The part number of a font's Type 3 font holding only its notdef glyph.
+const NOTDEF: u32 = u32::MAX;
+
+/// A font's resource name: `/F` and its index, and for a Type 3 part, its number (`n` for the
+/// notdef's).
+fn font_name(font: u32, part: Option<u32>) -> String {
+    match part {
+        None => format!("/F{font}"),
+        Some(NOTDEF) => format!("/F{font}-n"),
+        Some(part) => format!("/F{font}-{part}"),
+    }
+}
+
+/// How a font may go in a file, by its `OS/2` table's `fsType`: as a subset (most fonts);
+/// only with every glyph (bit 8: no subsetting); or not as a font at all, only as shapes, where
+/// its licence allows no embedding (bit 1, unless bit 2 or 3 allows printing or editing) or
+/// only of bitmaps (bit 9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Embedding {
+    Subset,
+    Every,
+    Shapes,
+}
+
+/// A font's embedding, by its licence.
+fn embedding(font: &FontFile) -> Embedding {
+    let kind = font_table(font, b"OS/2").u16(8).unwrap_or(0);
+    let refused = kind & 0x000E == 0x0002 || kind & 0x0200 != 0;
+    match (refused, kind & 0x0100 != 0) {
+        (true, _) => Embedding::Shapes,
+        (false, true) => Embedding::Every,
+        (false, false) => Embedding::Subset,
+    }
 }
 
 /// A gradient on a page: the shape's fill and bounds, for a shape on a page of this height in
@@ -96,31 +224,128 @@ struct Gradient {
 /// object number once written (0 until then).
 type State = (Option<[u8; 2]>, u32);
 
-/// What pages share: each font's encoding, the graphics states, and the gradients, by the marks
-/// they belong to (page and index).
-struct Shared {
+/// What pages share: each font's encoding, the graphics states, the gradients, by the marks
+/// they belong to (page and index); and the annotations.
+pub(crate) struct Shared {
     coded: Vec<Option<Coded>>,
     states: Vec<State>,
     gradients: BTreeMap<(usize, usize), Gradient>,
+    pub annotations: Annotations,
+}
+
+/// The annotations (links, fields) written: per page, per mark, its object number and its key
+/// in the parent tree (from the page count on, in the order written); and how many.
+#[derive(Default)]
+pub(crate) struct Annotations {
+    pub by_mark: Vec<Vec<Option<(u32, u32)>>>,
+    pub count: u32,
+}
+
+impl Annotations {
+    /// Room for each page's marks.
+    fn of(paper: &Paper) -> Annotations {
+        Annotations { by_mark: paper.pages.iter().map(|sheet| vec![None; sheet.marks.len()]).collect(), count: 0 }
+    }
+    /// The next annotation's key in the parent tree.
+    pub(crate) fn next_key(&self) -> u32 {
+        self.by_mark.len() as u32 + self.count
+    }
+    /// Notes an annotation of a mark, under the next key.
+    pub(crate) fn add(&mut self, [page, mark]: [usize; 2], number: u32) {
+        self.by_mark[page][mark] = Some((number, self.next_key()));
+        self.count += 1;
+    }
+    /// A mark's annotation, if written: its number and key.
+    pub(crate) fn get(&self, page: u32, mark: u32) -> Option<(u32, u32)> {
+        self.by_mark.get(page as usize)?.get(mark as usize).copied().flatten()
+    }
 }
 
 /// Writes a paper's pages as a PDF file.
 fn write(paper: &Paper) -> Vec<u8> {
-    let mut file = File { bytes: b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec(), at: vec![0] };
+    let mut file = File { bytes: b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n".to_vec(), at: vec![0], sealed: None };
     let (catalog, tree, info, resources) = (file.number(), file.number(), file.number(), file.number());
-    let mut shared = Shared { coded: Vec::new(), states: Vec::new(), gradients: BTreeMap::new() };
+    let locked = paper.lock.as_ref().map(|lock| {
+        let (key, seal, said) = (lock.make)(lock);
+        let number = file.number();
+        file.plain_object(number, &said);
+        file.sealed = Some((key, seal));
+        number
+    });
+    let mut shared = Shared { coded: Vec::new(), states: Vec::new(), gradients: BTreeMap::new(), annotations: Annotations::of(paper) };
     let fonts = write_fonts(&mut file, paper, &mut shared);
     let pictures = write_pictures(&mut file, paper);
     let (shadings, patterns) = write_gradients(&mut file, paper, &mut shared);
-    let kids = write_pages(&mut file, paper, &mut shared, [tree, resources]);
+    let marked = crate::pdf_structure::marked(paper);
+    let kids = write_pages(&mut file, paper, &mut shared, &marked, [tree, resources]);
     let states = write_states(&mut file, &mut shared.states);
     file.object(resources, &format!("<< /Font << {fonts}>> /XObject << {pictures}>> /ExtGState << {states}>> /Shading << {shadings}>> /Pattern << {patterns}>> >>"));
     let kids_listed: String = kids.iter().map(|kid| format!("{kid} 0 R ")).collect();
     file.object(tree, &format!("<< /Type /Pages /Kids [{kids_listed}] /Count {} >>", kids.len()));
-    file.object(catalog, &format!("<< /Type /Catalog /Pages {tree} 0 R >>"));
-    let title = if paper.title.is_empty() { String::new() } else { format!("/Title {} ", text(&paper.title)) };
+    let structure = crate::pdf_structure::write_structure(&mut file, paper, &marked, &kids, &shared.annotations);
+    let outline = crate::pdf_structure::write_outline(&mut file, paper, &kids);
+    let title = match (paper.title.is_empty(), paper.bookmarks.first()) {
+        (false, _) => paper.title.clone(),
+        (true, Some(first)) => first.title.clone(),
+        (true, None) => String::new(),
+    };
+    let mut said = format!("<< /Type /Catalog /Pages {tree} 0 R /Metadata {} 0 R /ViewerPreferences << /DisplayDocTitle true >>", write_metadata(&mut file, paper, &title));
+    if let Some(structure) = structure {
+        said.push_str(&format!(" /MarkInfo << /Marked true >> /StructTreeRoot {structure} 0 R"));
+    }
+    if let Some(first) = paper.parts.first().filter(|first| !first.language.is_empty()) {
+        said.push_str(&format!(" /Lang {}", text(&first.language)));
+    }
+    if let Some(outline) = outline {
+        said.push_str(&format!(" /Outlines {outline} 0 R /PageMode /UseOutlines"));
+    }
+    if let Some(profile) = paper.archive {
+        said.push_str(&format!(" /OutputIntents [{} 0 R]", write_intent(&mut file, profile)));
+    }
+    if paper.forms.is_some() {
+        let fields = paper.pages.iter().enumerate().flat_map(|(page, sheet)| sheet.marks.iter().enumerate().map(move |(at, mark)| (page, at, mark)));
+        let fields: String =
+            fields.filter(|(.., mark)| matches!(mark, Mark::Field(_))).filter_map(|(page, at, _)| shared.annotations.get(page as u32, at as u32)).map(|(number, _)| format!("{number} 0 R ")).collect();
+        said.push_str(&format!(" /AcroForm << /Fields [{fields}] /DR {resources} 0 R /DA (/F0 0 Tf 0 g) >>"));
+    }
+    file.object(catalog, &format!("{said} >>"));
+    let title = if title.is_empty() { String::new() } else { format!("/Title {} ", text(&title)) };
     file.object(info, &format!("<< {title}/Producer (taut) >>"));
-    finish(file, catalog, info)
+    finish(file, [catalog, info, locked.unwrap_or(0)])
+}
+
+/// Writes the document's metadata (XMP, as PDF/A and PDF/UA ask, unencrypted): its title, its
+/// producer, and the standards it meets. Gives back its number.
+fn write_metadata(file: &mut File, paper: &Paper, title: &str) -> u32 {
+    let number = file.number();
+    let escaped = title.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let language = paper.parts.first().map_or("x-default", |first| if first.language.is_empty() { "x-default" } else { first.language.as_str() });
+    let archived = if paper.archive.is_some() { "<pdfaid:part>2</pdfaid:part><pdfaid:conformance>B</pdfaid:conformance>" } else { "" };
+    let accessible = if paper.parts.is_empty() { "" } else { "<pdfuaid:part>1</pdfuaid:part>" };
+    // (PDF/A knows the properties of a few schemas; others, as PDF/UA's, are described.)
+    let described = match (archived.is_empty(), accessible.is_empty()) {
+        (false, false) => UA_SCHEMA,
+        _ => "",
+    };
+    let packet = format!(
+        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\" xmlns:pdfaid=\"http://www.aiim.org/pdfa/ns/id/\" xmlns:pdfuaid=\"http://www.aiim.org/pdfua/ns/id/\"><dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{escaped}</rdf:li></rdf:Alt></dc:title><dc:language><rdf:Bag><rdf:li>{language}</rdf:li></rdf:Bag></dc:language><pdf:Producer>taut</pdf:Producer>{archived}{accessible}</rdf:Description>{described}</rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>"
+    );
+    // (Metadata stays readable in an encrypted file only where the encryption says so: here it
+    // is encrypted with the rest, as is the default.)
+    file.raw(number, "/Type /Metadata /Subtype /XML", packet.as_bytes());
+    number
+}
+
+/// PDF/UA's identification schema described for PDF/A, which knows only some schemas of its own.
+const UA_SCHEMA: &str = "<rdf:Description rdf:about=\"\" xmlns:pdfaExtension=\"http://www.aiim.org/pdfa/ns/extension/\" xmlns:pdfaSchema=\"http://www.aiim.org/pdfa/ns/schema#\" xmlns:pdfaProperty=\"http://www.aiim.org/pdfa/ns/property#\"><pdfaExtension:schemas><rdf:Bag><rdf:li rdf:parseType=\"Resource\"><pdfaSchema:schema>PDF/UA identification schema</pdfaSchema:schema><pdfaSchema:namespaceURI>http://www.aiim.org/pdfua/ns/id/</pdfaSchema:namespaceURI><pdfaSchema:prefix>pdfuaid</pdfaSchema:prefix><pdfaSchema:property><rdf:Seq><rdf:li rdf:parseType=\"Resource\"><pdfaProperty:name>part</pdfaProperty:name><pdfaProperty:valueType>Integer</pdfaProperty:valueType><pdfaProperty:category>internal</pdfaProperty:category><pdfaProperty:description>Part of ISO 14289 followed</pdfaProperty:description></rdf:li></rdf:Seq></pdfaSchema:property></rdf:li></rdf:Bag></pdfaExtension:schemas></rdf:Description>";
+
+/// Writes PDF/A's output intent: the colours meant are sRGB, by its profile. Gives back its
+/// number.
+fn write_intent(file: &mut File, profile: Archive) -> u32 {
+    let (intent, colours) = (file.number(), file.number());
+    file.stream(colours, "/N 3", &profile());
+    file.object(intent, &format!("<< /Type /OutputIntent /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB IEC61966-2.1) /Info (sRGB IEC61966-2.1) /DestOutputProfile {colours} 0 R >>"));
+    intent
 }
 
 /// Writes each font the pages use: its encoding goes into `shared`; gives back the resource
@@ -129,7 +354,7 @@ fn write_fonts(file: &mut File, paper: &Paper, shared: &mut Shared) -> String {
     let mut fonts = String::new();
     for (at, font) in paper.files.iter().enumerate() {
         let used = used(paper, at as u32);
-        let coded = (!used.is_empty()).then(|| write_font(file, font, at, &used, &mut fonts));
+        let coded = (!used.is_empty()).then(|| write_font(file, font, at, &used, &mut fonts, paper.archive.is_some()));
         shared.coded.push(coded);
     }
     fonts
@@ -139,7 +364,19 @@ fn write_fonts(file: &mut File, paper: &Paper, shared: &mut Shared) -> String {
 fn write_pictures(file: &mut File, paper: &Paper) -> String {
     let mut pictures = String::new();
     for (at, picture) in paper.pictures.iter().enumerate() {
-        let number = write_picture(file, picture);
+        // (For PDF/A, a CMYK photo as pixels: its inks would need a profile of their own.)
+        let unpacked = match picture {
+            Picture::Jpeg { file: jpeg, planes: 4, turn: 1, .. } if paper.archive.is_some() => paper.unpack.and_then(|unpack| unpack(jpeg)),
+            _ => None,
+        };
+        let profile = paper.profiles.iter().find(|(of, _)| *of == at as u32).map(|(_, profile)| profile.as_slice()).filter(|_| unpacked.is_none());
+        let components = match picture {
+            Picture::Jpeg { planes, .. } => *planes as usize,
+            Picture::Pixels { .. } => 3,
+        };
+        let space = profile.and_then(|profile| write_profile(file, profile, components));
+        let pixels = unpacked.map(|(width, pixels)| Picture::Pixels { width, pixels });
+        let number = write_picture(file, pixels.as_ref().unwrap_or(picture), [paper.archive.is_some() as usize], space.as_deref());
         pictures.push_str(&format!("/I{at} {number} 0 R "));
     }
     pictures
@@ -168,21 +405,40 @@ fn write_gradients(file: &mut File, paper: &Paper, shared: &mut Shared) -> (Stri
     (shadings, patterns)
 }
 
-/// Writes the pages, each with its content and links, under the page tree `tree` with the
-/// shared `resources`; gives back their object numbers. (Each has its number first: a link may
-/// point to a later page.)
-fn write_pages(file: &mut File, paper: &Paper, shared: &mut Shared, [tree, resources]: [u32; 2]) -> Vec<u32> {
+/// Writes the pages, each with its content, links and fields, under the page tree `tree` with
+/// the shared `resources`; gives back their object numbers. (Each has its number first: a link
+/// may point to a later page.) A page says its key in the parent tree (its index), and that
+/// Tab goes through its links and fields in structure order.
+fn write_pages(file: &mut File, paper: &Paper, shared: &mut Shared, marked: &crate::pdf_structure::Marked, [tree, resources]: [u32; 2]) -> Vec<u32> {
     let kids: Vec<u32> = paper.pages.iter().map(|_| file.number()).collect();
     for (page, sheet) in paper.pages.iter().enumerate() {
         let contents = file.number();
-        let drawn = content(paper, page, shared);
+        let drawn = content(paper, page, shared, marked);
         file.stream(contents, "", &drawn);
-        let links = write_links(file, paper, page, &kids);
+        let mut annotations = write_links(file, paper, page, &kids, shared, marked);
+        annotations.push_str(&write_fields(file, paper, page, shared, [kids[page], resources]));
         let (w, h) = (sheet.size.w * POINT, sheet.size.h * POINT);
-        let annots = if links.is_empty() { String::new() } else { format!(" /Annots [{links}]") };
-        file.object(kids[page], &format!("<< /Type /Page /Parent {tree} 0 R /MediaBox [0 0 {} {}] /Resources {resources} 0 R /Contents {contents} 0 R{annots} >>", num(w), num(h)));
+        let annots = if annotations.is_empty() { String::new() } else { format!(" /Annots [{annotations}] /Tabs /S") };
+        let structured = if paper.parts.is_empty() { String::new() } else { format!(" /StructParents {page}") };
+        file.object(kids[page], &format!("<< /Type /Page /Parent {tree} 0 R /MediaBox [0 0 {} {}] /Resources {resources} 0 R /Contents {contents} 0 R{annots}{structured} >>", num(w), num(h)));
     }
     kids
+}
+
+/// Writes a page's form fields, through the writer the first field handed over; gives back
+/// their numbers.
+fn write_fields(file: &mut File, paper: &Paper, page: usize, shared: &mut Shared, [kid, resources]: [u32; 2]) -> String {
+    let Some(forms) = paper.forms else { return String::new() };
+    let mut fields = String::new();
+    for (at, mark) in paper.pages[page].marks.iter().enumerate() {
+        if let Mark::Field(_) = mark {
+            let key = shared.annotations.next_key();
+            let number = (forms.write)(file, paper, shared, [page, at], [kid, resources, key]);
+            shared.annotations.add([page, at], number);
+            fields.push_str(&format!("{number} 0 R "));
+        }
+    }
+    fields
 }
 
 /// Writes the opacities, known once every page is written; gives back the resource entries.
@@ -196,8 +452,9 @@ fn write_states(file: &mut File, states: &mut [State]) -> String {
     states.iter().enumerate().map(|(at, (_, number))| format!("/G{at} {number} 0 R ")).collect()
 }
 
-/// Writes the cross-reference table and the trailer, which points at it.
-fn finish(mut file: File, catalog: u32, info: u32) -> Vec<u8> {
+/// Writes the cross-reference table and the trailer, which points at it (and at the encryption
+/// dictionary, if any).
+fn finish(mut file: File, [catalog, info, locked]: [u32; 3]) -> Vec<u8> {
     let table = file.bytes.len();
     let mut out = format!("xref\n0 {}\n0000000000 65535 f \n", file.at.len());
     for at in &file.at[1..] {
@@ -205,19 +462,35 @@ fn finish(mut file: File, catalog: u32, info: u32) -> Vec<u8> {
     }
     // (The file's two identifiers: here the same, a hash of its content.)
     let mark = format!("{:016x}{:016x}", crate::id::hash(&file.bytes), crate::id::hash((&file.bytes, file.at.len())));
-    out.push_str(&format!("trailer\n<< /Size {} /Root {catalog} 0 R /Info {info} 0 R /ID [<{mark}> <{mark}>] >>\nstartxref\n{table}\n%%EOF\n", file.at.len()));
+    let encrypt = if locked == 0 { String::new() } else { format!(" /Encrypt {locked} 0 R") };
+    out.push_str(&format!("trailer\n<< /Size {} /Root {catalog} 0 R /Info {info} 0 R{encrypt} /ID [<{mark}> <{mark}>] >>\nstartxref\n{table}\n%%EOF\n", file.at.len()));
     file.bytes.extend_from_slice(out.as_bytes());
     file.bytes
 }
 
 // ---- what is drawn on a page ----
 
-/// A page's content stream operators.
-fn content(paper: &Paper, page: usize, shared: &mut Shared) -> Vec<u8> {
+/// A page's content stream operators: each mark marked as content of its part (by number), or
+/// as an artifact.
+fn content(paper: &Paper, page: usize, shared: &mut Shared, marked: &crate::pdf_structure::Marked) -> Vec<u8> {
     let sheet = &paper.pages[page];
     let mut out = format!("q {} 0 0 {} 0 {} cm\n", num(POINT), num(-POINT), num(sheet.size.h * POINT));
-    let mut held = 0;
+    let (mut held, mut open) = (0, None);
     for (place, mark) in sheet.marks.iter().enumerate() {
+        let now = match mark {
+            Mark::Clip(_) | Mark::Unclip | Mark::Link(..) | Mark::Field(_) => None,
+            _ => Some(marked.number[page][place].unwrap_or(u32::MAX)),
+        };
+        // (A clip's save and restore never fall inside marked content.)
+        if open.is_some() && (now.is_some() || matches!(mark, Mark::Clip(_) | Mark::Unclip)) && open != now {
+            out.push_str("EMC\n");
+            open = None;
+        }
+        if let Some(number) = now.filter(|now| open != Some(*now)) {
+            let tag = marked.owner[page][place].map_or("", |part| paper.parts[part as usize].tag.name());
+            out.push_str(&if number == u32::MAX { "/Artifact BMC\n".to_string() } else { format!("/{tag} << /MCID {number} >> BDC\n") });
+            open = Some(number);
+        }
         match mark {
             Mark::Shape(drawn) => shape(&mut out, drawn, shared.gradients.get(&(page, place)), &mut shared.states),
             Mark::Words(words) => write_words(&mut out, words, &paper.files[words.font as usize], shared.coded[words.font as usize].as_ref(), &mut shared.states),
@@ -230,11 +503,37 @@ fn content(paper: &Paper, page: usize, shared: &mut Shared) -> Vec<u8> {
                 held -= 1;
                 out.push_str("Q\n");
             }
-            Mark::Unclip | Mark::Link(..) => {}
+            Mark::Unclip | Mark::Link(..) | Mark::Field(_) => {}
         }
+    }
+    if open.is_some() {
+        out.push_str("EMC\n");
     }
     out.push_str(&"Q\n".repeat(held + 1));
     out.into_bytes()
+}
+
+/// Marks drawn as a page draws them, in page units: shapes of one colour, words and clips (a
+/// field's look).
+pub(crate) fn drawn_marks(paper: &Paper, marks: &[Mark], shared: &mut Shared) -> String {
+    let (mut out, mut held) = (String::new(), 0);
+    for mark in marks {
+        match mark {
+            Mark::Shape(drawn) => shape(&mut out, drawn, None, &mut shared.states),
+            Mark::Words(words) => write_words(&mut out, words, &paper.files[words.font as usize], shared.coded[words.font as usize].as_ref(), &mut shared.states),
+            Mark::Clip(r) => {
+                held += 1;
+                out.push_str(&format!("q {} {} {} {} re W n\n", num(r.x), num(r.y), num(r.w.max(0.0)), num(r.h.max(0.0))));
+            }
+            Mark::Unclip if held > 0 => {
+                held -= 1;
+                out.push_str("Q\n");
+            }
+            _ => {}
+        }
+    }
+    out.push_str(&"Q\n".repeat(held));
+    out
 }
 
 /// The graphics state with fill opacity `solid[0]` and stroke opacity `solid[1]` (0 to 255), by
@@ -339,7 +638,8 @@ fn write_words(out: &mut String, words: &Words, font: &FontFile, coded: Option<&
     let (mut named, mut rise, mut x) = (None, 0.0, first.at.x);
     for glyph in &words.glyphs {
         let (part, code) = match coded {
-            Coded::Whole(map) => (None, format!("{:04x}", map.get(&glyph.id).copied().unwrap_or(0))),
+            Coded::Whole(_, true) if glyph.id == 0 => (Some(NOTDEF), "00".to_string()),
+            Coded::Whole(map, _) => (None, format!("{:04x}", map.get(&glyph.id).copied().unwrap_or(0))),
             Coded::Drawn(map) => {
                 let (part, code) = map.get(&glyph.id).copied().unwrap_or((0, 0));
                 (Some(part), format!("{code:02x}"))
@@ -347,7 +647,7 @@ fn write_words(out: &mut String, words: &Words, font: &FontFile, coded: Option<&
         };
         if named != Some(part) {
             out.push_str(if named.is_some() { "] TJ " } else { "" });
-            out.push_str(&format!("/F{}{} {} Tf [", words.font, part.map_or(String::new(), |part| format!("-{part}")), num(words.size)));
+            out.push_str(&format!("{} {} Tf [", font_name(words.font, part), num(words.size)));
             named = Some(part);
         }
         let up = first.at.y - glyph.at.y;
@@ -397,10 +697,23 @@ fn placed_picture(out: &mut String, picture: &Picture, at: u32, r: Rect) {
 
 // ---- fonts ----
 
+/// Every mark on the pages, and those of the fields' looks.
+fn every_mark(paper: &Paper) -> impl Iterator<Item = &Mark> {
+    paper.pages.iter().flat_map(|sheet| &sheet.marks).flat_map(|mark| std::iter::once(mark).chain(looks_of(mark)))
+}
+
+/// A field's looks' marks (none for another mark).
+fn looks_of(mark: &Mark) -> Vec<&Mark> {
+    match mark {
+        Mark::Field(field) => field.looks.iter().flatten().collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The glyphs of font `font` the pages show, each with the text it first stood for.
 fn used(paper: &Paper, font: u32) -> BTreeMap<u16, String> {
     let mut used = BTreeMap::new();
-    for mark in paper.pages.iter().flat_map(|sheet| &sheet.marks) {
+    for mark in every_mark(paper) {
         let Mark::Words(words) = mark else { continue };
         if words.font != font {
             continue;
@@ -417,17 +730,36 @@ fn used(paper: &Paper, font: u32) -> BTreeMap<u16, String> {
 }
 
 /// Writes a font's used glyphs: as a subset TrueType font where it is one at its default
-/// position, else as Type 3 fonts; and adds it to the font resources. Returns its encoding.
-fn write_font(file: &mut File, font: &FontFile, at: usize, used: &BTreeMap<u16, String>, fonts: &mut String) -> Coded {
-    if let Some((program, new_ids)) = cut_down(font, used).filter(|_| font.varied.is_none()) {
+/// position, its licence allows (`embedding`), and none of them has colour; else as Type 3
+/// fonts. Adds it to the font resources. Returns its encoding. (A subset's notdef glyph, shown
+/// for letters no font has, goes in a Type 3 font of its own: PDF/A and PDF/UA forbid showing a
+/// font's notdef.)
+fn write_font(file: &mut File, font: &FontFile, at: usize, used: &BTreeMap<u16, String>, fonts: &mut String, archived: bool) -> Coded {
+    let embed = embedding(font);
+    let coloured = cfg!(feature = "emoji") && font.pictured() && used.keys().any(|glyph| font.layers(*glyph).is_some() || font.bitmap(*glyph, BITMAP).is_some());
+    let every: BTreeMap<u16, String>;
+    let kept = match embed {
+        Embedding::Every => {
+            every = (0..font_table(font, b"maxp").u16(4).unwrap_or(0)).map(|glyph| (glyph, used.get(&glyph).cloned().unwrap_or_default())).collect();
+            &every
+        }
+        _ => used,
+    };
+    let whole = (font.varied.is_none() && embed != Embedding::Shapes && !coloured).then(|| cut_down(font, kept)).flatten();
+    if let Some((program, new_ids)) = whole {
         let number = whole_font(file, font, &program, &new_ids, used);
         fonts.push_str(&format!("/F{at} {number} 0 R "));
-        return Coded::Whole(new_ids);
+        let missing = used.contains_key(&0);
+        if missing {
+            let number = drawn_font(file, font, &[0], used, archived);
+            fonts.push_str(&format!("{} {number} 0 R ", font_name(at as u32, Some(NOTDEF))));
+        }
+        return Coded::Whole(new_ids, missing);
     }
     let mut map = BTreeMap::new();
     let glyphs: Vec<u16> = used.keys().copied().collect();
     for (part, some) in glyphs.chunks(256).enumerate() {
-        let number = drawn_font(file, font, some, used);
+        let number = drawn_font(file, font, some, used, archived);
         fonts.push_str(&format!("/F{at}-{part} {number} 0 R "));
         map.extend(some.iter().enumerate().map(|(code, glyph)| (*glyph, (part as u32, code as u8))));
     }
@@ -461,20 +793,19 @@ fn whole_font(file: &mut File, font: &FontFile, program: &[u8], new_ids: &BTreeM
     top
 }
 
-/// Writes up to 256 glyphs as a Type 3 font, one byte per glyph: each glyph's outline, filled
-/// in the text colour. Returns its number.
-fn drawn_font(file: &mut File, font: &FontFile, glyphs: &[u16], used: &BTreeMap<u16, String>) -> u32 {
+/// The pixel size asked of a font's bitmaps: its largest.
+const BITMAP: f32 = 4096.0;
+
+/// Writes up to 256 glyphs as a Type 3 font, one byte per glyph: each glyph as `glyph_drawn`
+/// draws it. Returns its number.
+fn drawn_font(file: &mut File, font: &FontFile, glyphs: &[u16], used: &BTreeMap<u16, String>, archived: bool) -> u32 {
     let (top, map) = (file.number(), file.number());
-    let k = font.unit(1000.0);
-    let (mut procs, mut names, mut widths) = (String::new(), String::new(), String::new());
+    let (mut procs, mut names, mut widths, mut images) = (String::new(), String::new(), String::new(), String::new());
     let mut whole = Rect::EMPTY;
     for (code, glyph) in glyphs.iter().enumerate() {
-        let (outline, _) = font.outline_through(*glyph, [k, 0.0, 0.0, k, 0.0, 0.0]);
-        let (wide, around) = (width(font, *glyph), outline.bounds());
+        let wide = width(font, *glyph);
+        let (drawn, around) = glyph_drawn(file, font, *glyph, [code, archived as usize], &mut images);
         whole = if whole.is_empty() { around } else { whole.union(around) };
-        let mut drawn = format!("{} 0 {} {} {} {} d1\n", num(wide), num(around.x), num(around.y), num(around.right()), num(around.bottom()));
-        path(&mut drawn, &outline);
-        drawn.push_str("f\n");
         let number = file.number();
         file.stream(number, "", drawn.as_bytes());
         procs.push_str(&format!("/g{code} {number} 0 R "));
@@ -487,11 +818,58 @@ fn drawn_font(file: &mut File, font: &FontFile, glyphs: &[u16], used: &BTreeMap<
     file.object(
         top,
         &format!(
-            "<< /Type /Font /Subtype /Type3 /FontBBox {bounds} /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << {procs}>> /Encoding << /Type /Encoding /Differences [0 {names}] >> /FirstChar 0 /LastChar {} /Widths [{widths}] /Resources << >> /ToUnicode {map} 0 R >>",
+            "<< /Type /Font /Subtype /Type3 /FontBBox {bounds} /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << {procs}>> /Encoding << /Type /Encoding /Differences [0 {names}] >> /FirstChar 0 /LastChar {} /Widths [{widths}] /Resources << /XObject << {images}>> >> /ToUnicode {map} 0 R >>",
             glyphs.len() - 1
         ),
     );
     top
+}
+
+/// A glyph as a Type 3 font draws it, in thousandths of an em: with the feature `emoji`, its
+/// COLR layers, each in its colour (or the text's), or its bitmap as a picture (written now,
+/// named `/B` and its code in `images`); else its outline, in the text colour. Also its
+/// bounds. (`[code, archived]`: its code in the font, and whether the file is PDF/A.)
+fn glyph_drawn(file: &mut File, font: &FontFile, glyph: u16, [code, archived]: [usize; 2], images: &mut String) -> (String, Rect) {
+    match cfg!(feature = "emoji") {
+        true => coloured_glyph(file, font, glyph, [code, archived], images).unwrap_or_else(|| outline_glyph(font, glyph)),
+        false => outline_glyph(font, glyph),
+    }
+}
+
+/// A glyph's outline in the text colour, as a Type 3 font draws it; and its bounds.
+fn outline_glyph(font: &FontFile, glyph: u16) -> (String, Rect) {
+    let (k, wide) = (font.unit(1000.0), width(font, glyph));
+    let (outline, _) = font.outline_through(glyph, [k, 0.0, 0.0, k, 0.0, 0.0]);
+    let around = outline.bounds();
+    let mut drawn = format!("{} 0 {} {} {} {} d1\n", num(wide), num(around.x), num(around.y), num(around.right()), num(around.bottom()));
+    path(&mut drawn, &outline);
+    drawn.push_str("f\n");
+    (drawn, around)
+}
+
+/// A colour glyph as a Type 3 font draws it: its COLR layers, or its bitmap. None for a glyph
+/// without colour.
+fn coloured_glyph(file: &mut File, font: &FontFile, glyph: u16, [code, archived]: [usize; 2], images: &mut String) -> Option<(String, Rect)> {
+    let (k, wide) = (font.unit(1000.0), width(font, glyph));
+    if let Some(layers) = font.layers(glyph) {
+        let (mut drawn, mut around) = (format!("{} 0 d0\n", num(wide)), Rect::EMPTY);
+        for (layer, colour) in layers {
+            let (outline, _) = font.outline_through(layer, [k, 0.0, 0.0, k, 0.0, 0.0]);
+            around = if around.is_empty() { outline.bounds() } else { around.union(outline.bounds()) };
+            drawn.push_str(&colour.map_or(String::new(), |colour| format!("q {} rg\n", rgb(colour))));
+            path(&mut drawn, &outline);
+            drawn.push_str(if colour.is_some() { "f Q\n" } else { "f\n" });
+        }
+        return Some((drawn, around));
+    }
+    let bitmap = font.bitmap(glyph, BITMAP).and_then(|bitmap| Some((crate::png::decode(bitmap.png)?, bitmap.pixels, [bitmap.left, bitmap.top])));
+    let ((width, pixels), size, [left, top]) = bitmap.filter(|((width, _), size, _)| *width > 0 && *size > 0.0)?;
+    let number = write_picture(file, &Picture::Pixels { width, pixels: pixels.clone() }, [archived], None);
+    images.push_str(&format!("/B{code} {number} 0 R "));
+    // (A bitmap pixel is a thousandth of an em times 1000 over its pixels to the em.)
+    let (by, high) = (1000.0 / size, (pixels.len() / width) as f32);
+    let r = Rect { x: left * by, y: (top - high) * by, w: width as f32 * by, h: high * by };
+    Some((format!("{} 0 d0\nq {} 0 0 {} {} {} cm /B{code} Do Q\n", num(wide), num(r.w), num(r.h), num(r.x), num(r.y)), r))
 }
 
 /// A ToUnicode CMap from each glyph's code (`width` bytes) to its text, for viewers to find and
@@ -722,37 +1100,62 @@ fn font_file(tables: Vec<(&[u8; 4], Vec<u8>)>) -> Vec<u8> {
 // ---- pictures ----
 
 /// Writes a picture: its colours (PNG Up-filtered rows, which compress photos far smaller), and
-/// alpha where any pixel is not opaque; or a JPEG as is. Returns its number.
-fn write_picture(file: &mut File, picture: &Picture) -> u32 {
+/// alpha where any pixel is not opaque; or a JPEG as is. Returns its number. For PDF/A
+/// (`archived`), not smoothed when enlarged. Its colours in `space`, where it has a profile.
+fn write_picture(file: &mut File, picture: &Picture, [archived]: [usize; 1], space: Option<&str>) -> u32 {
+    let smooth = if archived != 0 { "" } else { " /Interpolate true" };
     let number = file.number();
     match picture {
         Picture::Jpeg { file: jpeg, size, planes, adobe, turn } => {
             let stored = if *turn >= 5 { [size[1], size[0]] } else { *size };
-            let (space, decode) = match (planes, adobe) {
+            let (device, decode) = match (planes, adobe) {
                 (1, _) => ("/DeviceGray", ""),
                 (4, true) => ("/DeviceCMYK", " /Decode [1 0 1 0 1 0 1 0]"),
                 _ => ("/DeviceRGB", ""),
             };
+            let space = space.unwrap_or(device);
             file.raw(number, &format!("/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace {space} /BitsPerComponent 8{decode} /Filter /DCTDecode", stored[0], stored[1]), jpeg);
         }
         Picture::Pixels { width, pixels } => {
             let height = pixels.len() / width;
             let clear = pixels.iter().any(|pixel| pixel >> 24 != 255);
-            let mask = clear.then(|| {
-                let solid: Vec<u8> = pixels.iter().map(|pixel| (pixel >> 24) as u8).collect();
-                let number = file.number();
-                file.stream(number, &format!("/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceGray /BitsPerComponent 8 /DecodeParms << /Predictor 12 /Colors 1 /Columns {width} >> /Interpolate true"), &upward::<1>(*width, &solid));
-                format!(" /SMask {number} 0 R")
-            });
+            let mask = clear.then(|| write_mask(file, *width, pixels, smooth));
             let colours: Vec<u8> = pixels.iter().flat_map(|pixel| [(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8]).collect();
+            let space = space.unwrap_or("/DeviceRGB");
             let dict = format!(
-                "/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /DecodeParms << /Predictor 12 /Colors 3 /Columns {width} >> /Interpolate true{}",
+                "/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace {space} /BitsPerComponent 8 /DecodeParms << /Predictor 12 /Colors 3 /Columns {width} >>{smooth}{}",
                 mask.unwrap_or_default()
             );
             file.stream(number, &dict, &upward::<3>(*width, &colours));
         }
     }
     number
+}
+
+/// Writes how solid a picture's pixels are, as a grey picture: gives back the picture's entry
+/// for it.
+fn write_mask(file: &mut File, width: usize, pixels: &[u32], smooth: &str) -> String {
+    let (solid, height): (Vec<u8>, usize) = (pixels.iter().map(|pixel| (pixel >> 24) as u8).collect(), pixels.len() / width);
+    let number = file.number();
+    let dict =
+        format!("/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceGray /BitsPerComponent 8 /DecodeParms << /Predictor 12 /Colors 1 /Columns {width} >>{smooth}");
+    file.stream(number, &dict, &upward::<1>(width, &solid));
+    format!(" /SMask {number} 0 R")
+}
+
+/// Writes a picture's colour profile as an ICC-based colour space, for a picture of
+/// `components` colours: the space's name, or none where the profile is of another kind.
+fn write_profile(file: &mut File, profile: &[u8], components: usize) -> Option<String> {
+    let kind = match profile.get(16..20)? {
+        b"RGB " => 3,
+        b"GRAY" => 1,
+        b"CMYK" => 4,
+        _ => return None,
+    };
+    (kind == components).then_some(())?;
+    let number = file.number();
+    file.stream(number, &format!("/N {kind}"), profile);
+    Some(format!("[/ICCBased {number} 0 R]"))
 }
 
 /// Rows of `N`-byte pixels as PNG's Up filter stores them: each row begins with 2, and each
@@ -854,11 +1257,12 @@ fn function(stops: &[(f32, Color)], color: impl Fn(Color) -> String) -> String {
 
 // ---- links ----
 
-/// Writes a page's links: returns their array, for the page to reference.
-fn write_links(file: &mut File, paper: &Paper, page: usize, kids: &[u32]) -> String {
+/// Writes a page's links: returns their array, for the page to reference. Each says what it
+/// leads to (its words, else its address) and its key in the parent tree; it prints.
+fn write_links(file: &mut File, paper: &Paper, page: usize, kids: &[u32], shared: &mut Shared, marked: &crate::pdf_structure::Marked) -> String {
     let height = paper.pages[page].size.h;
     let mut links = String::new();
-    for mark in &paper.pages[page].marks {
+    for (at, mark) in paper.pages[page].marks.iter().enumerate() {
         let Mark::Link(r, to) = mark else { continue };
         let action = match to.strip_prefix('#') {
             Some(name) => {
@@ -870,7 +1274,14 @@ fn write_links(file: &mut File, paper: &Paper, page: usize, kids: &[u32]) -> Str
         };
         let number = file.number();
         let rect = [r.x * POINT, (height - r.bottom()) * POINT, r.right() * POINT, (height - r.y) * POINT].map(num).join(" ");
-        file.object(number, &format!("<< /Type /Annot /Subtype /Link /Rect [{rect}] /Border [0 0 0] {action} >>"));
+        let owner = marked.owner[page][at];
+        let said = owner.map(|part| crate::pdf_structure::words_of(paper, part)).filter(|said| !said.is_empty()).unwrap_or_else(|| to.clone());
+        let key = shared.annotations.next_key();
+        let keyed = if owner.is_some() { format!(" /StructParent {key}") } else { String::new() };
+        if owner.is_some() {
+            shared.annotations.add([page, at], number);
+        }
+        file.object(number, &format!("<< /Type /Annot /Subtype /Link /Rect [{rect}] /Border [0 0 0] /F 4 /Contents {}{keyed} {action} >>", text(&said)));
         links.push_str(&format!("{number} 0 R "));
     }
     links
@@ -879,7 +1290,7 @@ fn write_links(file: &mut File, paper: &Paper, page: usize, kids: &[u32]) -> Str
 // ---- writing numbers and texts ----
 
 /// A number as PDF writes it: at most four decimals, no unneeded ones. (NaN is 0.)
-fn num(value: f32) -> String {
+pub(crate) fn num(value: f32) -> String {
     if !value.is_finite() {
         return "0".into();
     }
@@ -904,7 +1315,7 @@ fn rgb(color: Color) -> String {
 }
 
 /// A text string a viewer shows (a title): UTF-16BE after its byte order mark, in hex.
-fn text(string: &str) -> String {
+pub(crate) fn text(string: &str) -> String {
     let units: String = string.encode_utf16().map(|unit| format!("{unit:04X}")).collect();
     format!("<FEFF{units}>")
 }
@@ -990,7 +1401,7 @@ pub(crate) mod tests {
 
     /// A PDF file's objects, as its own cross-reference table locates them: each one's number
     /// and bytes, from its number to `endobj`. Fails where the table and file disagree.
-    fn objects(file: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    pub(crate) fn objects(file: &[u8]) -> Vec<(u32, Vec<u8>)> {
         let at = |what: &[u8]| file.windows(what.len()).rposition(|bytes| bytes == what).unwrap_or_else(|| panic!("no {:?}", String::from_utf8_lossy(what)));
         let line = |from: usize| String::from_utf8_lossy(&file[from..]).lines().next().unwrap_or("").to_string();
         let table: usize = line(at(b"startxref\n") + 10).parse().unwrap();
@@ -1010,7 +1421,7 @@ pub(crate) mod tests {
     }
 
     /// A stream object's bytes, decompressed where compressed.
-    fn streamed(object: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn streamed(object: &[u8]) -> Option<Vec<u8>> {
         let from = object.windows(10).position(|bytes| bytes == b">>\nstream\n")? + 10;
         let said = String::from_utf8_lossy(&object[..from]).into_owned();
         let long: usize = said[said.find("/Length ")? + 8..].split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?;
@@ -1295,5 +1706,179 @@ pub(crate) mod readers {
             let (mean, far) = apart.expect("the same size");
             assert!(mean < 1.5 && far < 0.01, "{reader}, page {page}: {mean} {far}");
         }
+    }
+}
+
+#[cfg(test)]
+mod samples {
+    use crate::markdown::Markdown;
+    use crate::paper::Paper;
+
+    /// Writes sample files where `TAUT_PDF_OUT` says, for readers and checkers outside the
+    /// tests (veraPDF): the sample, a document, a form, each kept (PDF/A) and locked.
+    #[test]
+    #[ignore = "writes files for checkers outside the tests"]
+    fn write_samples() {
+        let Some(folder) = std::env::var_os("TAUT_PDF_OUT") else { return };
+        let folder = std::path::PathBuf::from(folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let document = || {
+            let mut paper = Paper::new();
+            paper.title = "The guide".into();
+            paper.markdown(&Markdown::parse(include_str!("../GUIDE.md")), Paper::A4, 72.0);
+            paper
+        };
+        let emoji = || {
+            let mut paper = super::tests::sample();
+            let places = ["C:/Windows/Fonts/seguiemj.ttf", "/usr/share/fonts/noto/NotoColorEmoji.ttf", "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"];
+            if let Some(font) = super::tests::font_at(&places) {
+                paper.font(crate::text::Face::named("Emoji"), font);
+            }
+            let font = crate::text::Font { face: crate::text::Face::named("Emoji"), ..crate::text::Font::new(32.0) };
+            paper.text("\u{1f600}\u{1f389}\u{1f44d}", 40.0, 740.0, font, crate::color::Color::BLACK);
+            paper
+        };
+        type Make = fn() -> Paper;
+        let makes: [(&str, Make); 4] = [("sample", super::tests::sample), ("document", document), ("form", crate::pdf_forms::tests::form), ("emoji", emoji)];
+        for (name, make) in makes {
+            std::fs::write(folder.join(format!("{name}.pdf")), make().to_pdf()).unwrap();
+            let mut kept = make();
+            kept.archive();
+            std::fs::write(folder.join(format!("{name}-kept.pdf")), kept.to_pdf()).unwrap();
+            let mut locked = make();
+            locked.encrypt("open sesame", "owner");
+            std::fs::write(folder.join(format!("{name}-locked.pdf")), locked.to_pdf()).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod fonts_pictures_kept_locked {
+    use super::tests::latin;
+    use crate::color::Color;
+    use crate::font_file::FontFile;
+    use crate::geom::rect;
+    use crate::paper::Paper;
+    use crate::text::{Face, Font};
+
+    /// A font file with its `OS/2` licence bits set to `kind`.
+    fn licensed(kind: u16) -> Option<FontFile> {
+        let font = latin()?;
+        let mut bytes = font.bytes().0.to_vec();
+        let at = crate::font_file::listed(font.bytes(), font.start, b"OS/2")?.start;
+        bytes[at + 8..at + 10].copy_from_slice(&kind.to_be_bytes());
+        FontFile::read(bytes)
+    }
+
+    /// A page of words in a font.
+    fn written(font: FontFile, words: &str) -> String {
+        let mut paper = Paper::new();
+        paper.font(Face::Regular, font);
+        paper.text(words, 10.0, 10.0, Font::new(20.0), Color::BLACK);
+        String::from_utf8_lossy(&paper.to_pdf()).into_owned()
+    }
+
+    #[test]
+    fn a_fonts_licence_says_how_it_goes_in() {
+        let Some(free) = licensed(0) else { return eprintln!("no font file here: not tested") };
+        let (subset, whole) = (written(free, "Hello"), written(licensed(0x0100).unwrap(), "Hello"));
+        assert!(subset.contains("/CIDFontType2") && whole.contains("/CIDFontType2"));
+        assert!(whole.len() > subset.len() * 4, "no subsetting: every glyph, {} bytes against {}", whole.len(), subset.len());
+        // Not to be embedded, or only as bitmaps: shapes; printing allowed: a subset.
+        for kind in [0x0002, 0x0200] {
+            let shapes = written(licensed(kind).unwrap(), "Hello");
+            assert!(shapes.contains("/Subtype /Type3") && !shapes.contains("/CIDFontType2"), "{kind:#x}");
+        }
+        assert!(written(licensed(0x0004).unwrap(), "Hello").contains("/CIDFontType2"));
+    }
+
+    #[test]
+    fn a_letter_no_font_has_is_not_the_fonts_own_notdef() {
+        let Some(font) = latin() else { return eprintln!("no font file here: not tested") };
+        let file = written(font, "A\u{10fffd}B");
+        assert!(file.contains("/F0-n ") && file.contains("/CIDFontType2"), "the box drawn in a font of its own");
+    }
+
+    #[test]
+    #[cfg(feature = "emoji")]
+    fn emoji_go_in_in_colour() {
+        let places = ["C:/Windows/Fonts/seguiemj.ttf", "/mnt/c/Windows/Fonts/seguiemj.ttf", "/usr/share/fonts/noto/NotoColorEmoji.ttf", "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"];
+        let Some(font) = super::tests::font_at(&places) else { return eprintln!("no emoji font here: not tested") };
+        let layered = font.layers(font.glyph('\u{1f600}')).is_some();
+        let mut paper = Paper::new();
+        paper.page(crate::geom::Size { w: 300.0, h: 80.0 });
+        paper.font(Face::named("Emoji"), font);
+        paper.text("\u{1f600}\u{1f389}\u{1f44d}", 10.0, 10.0, Font { face: Face::named("Emoji"), ..Font::new(40.0) }, Color::BLACK);
+        let file = paper.to_pdf();
+        let text = String::from_utf8_lossy(&file);
+        assert!(text.contains("/Subtype /Type3"), "a font of drawn glyphs");
+        let procs: Vec<String> = super::tests::objects(&file)
+            .iter()
+            .filter_map(|(_, object)| super::tests::streamed(object))
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .filter(|proc| proc.contains(" d0\n"))
+            .collect();
+        assert_eq!(procs.len(), 3, "each glyph in colour");
+        match layered {
+            true => assert!(procs.iter().all(|proc| proc.matches(" rg\n").count() >= 2), "layers in their colours"),
+            false => assert!(procs.iter().all(|proc| proc.contains(" Do Q")), "bitmaps as pictures"),
+        }
+        // Drawn by readers as taut draws them.
+        for (reader, page, apart) in crate::pdf::readers::compared(&paper, 2.0) {
+            let (mean, _) = apart.expect("the same size");
+            assert!(mean < 6.0, "{reader}, page {page}: {mean}");
+        }
+    }
+
+    #[test]
+    fn a_picture_keeps_its_colour_profile() {
+        let read = |name: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pictures").join(name)).unwrap();
+        let mut paper = Paper::new();
+        assert!(paper.jpeg(&read("p3.jpg"), rect(0.0, 0.0, 100.0, 100.0)) && paper.png(&read("p3.png"), rect(0.0, 120.0, 100.0, 100.0)));
+        assert!(paper.jpeg(&read("plain.jpg"), rect(0.0, 240.0, 100.0, 100.0)));
+        let file = String::from_utf8_lossy(&paper.to_pdf()).into_owned();
+        // (With the feature, the PNG's colours are made sRGB as it is read.)
+        let profiled = if cfg!(feature = "color-profiles") { 1 } else { 2 };
+        assert_eq!(file.matches("/ColorSpace [/ICCBased ").count(), profiled, "the photo and the PNG keep theirs");
+        assert_eq!(file.matches("/N 3 /Filter /FlateDecode").count(), profiled);
+        assert!(!paper.png(b"no PNG", rect(0.0, 0.0, 1.0, 1.0)));
+    }
+
+    #[test]
+    fn a_kept_file_says_what_it_is_and_depends_on_nothing() {
+        let mut paper = super::tests::sample();
+        let read = |name: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pictures").join(name)).unwrap();
+        paper.jpeg(&read("inks.jpg"), rect(0.0, 0.0, 48.0, 37.0));
+        paper.archive();
+        let file = String::from_utf8_lossy(&paper.to_pdf()).into_owned();
+        assert!(file.contains("<pdfaid:part>2</pdfaid:part><pdfaid:conformance>B</pdfaid:conformance>") && file.contains("/OutputIntents [") && file.contains("/S /GTS_PDFA1"));
+        assert!(!file.contains("/Interpolate") && !file.contains("/DeviceCMYK"), "nothing left to the viewer; the CMYK photo as pixels");
+        assert!(file.contains("pdfaSchema:prefix>pdfuaid<"), "PDF/UA's schema described");
+    }
+
+    /// The text `pdftotext` reads from an encrypted file with a password (`-upw`: the user's,
+    /// `-opw`: the owner's); nothing where it is refused, or not installed (then `Err`).
+    fn text_with(file: &[u8], [whose, password]: [&str; 2]) -> Result<Option<String>, ()> {
+        let path = std::env::temp_dir().join(format!("taut-locked-{}-{}{whose}.pdf", std::process::id(), password.len()));
+        std::fs::write(&path, file).unwrap();
+        let ran = std::process::Command::new("pdftotext").args([whose, password]).arg(&path).arg("-").output();
+        let _ = std::fs::remove_file(&path);
+        let ran = ran.map_err(|_| ())?;
+        Ok(ran.status.success().then(|| String::from_utf8_lossy(&ran.stdout).into_owned()))
+    }
+
+    #[test]
+    fn a_locked_file_opens_with_its_password_only() {
+        let mut paper = super::tests::sample();
+        paper.encrypt("open sesame", "owner");
+        let file = paper.to_pdf();
+        let text = String::from_utf8_lossy(&file);
+        assert!(text.contains("/Filter /Standard /V 5 /R 6") && text.contains("/Encrypt "));
+        assert!(!text.contains(&super::text("A sample, ünïcödé")) && !text.contains("example.com"), "strings are encrypted");
+        assert_eq!(super::tests::objects(&file).len(), super::tests::objects(&super::tests::sample().to_pdf()).len() + 1);
+        let Ok(opened) = text_with(&file, ["-upw", "open sesame"]) else { return eprintln!("no pdftotext here: not read back") };
+        assert!(opened.is_some_and(|said| said.contains("Hello, PDF")), "it opens with the password");
+        assert_eq!(text_with(&file, ["-upw", "wrong"]), Ok(None), "and not without");
+        assert!(text_with(&file, ["-opw", "owner"]).unwrap().is_some_and(|said| said.contains("Hello, PDF")), "or with the owner's");
     }
 }

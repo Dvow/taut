@@ -144,16 +144,21 @@ extern "C" fn view_focused(view: Obj, _: Sel) -> Obj {
     found.unwrap_or(view)
 }
 
-/// The element at a point on the screen: the last one there (content comes after its group).
-extern "C" fn view_hit(view: Obj, _: Sel, at: NSPoint) -> Obj {
-    asked(view);
+/// A point on the screen, in a view's units.
+fn in_view(view: Obj, at: NSPoint) -> crate::geom::Point {
     // SAFETY: the screen point turned into the window's, then the (flipped) view's.
     let inside: NSPoint = unsafe {
         let window: Obj = send(view, c"window", ());
         let on_window = send_rect(window, c"convertRectFromScreen:", (NSRect { origin: at, size: NSSize::default() },)).origin;
         send(view, c"convertPoint:fromView:", (on_window, std::ptr::null_mut::<c_void>()))
     };
-    let point = crate::geom::pt(inside.x as f32, inside.y as f32);
+    crate::geom::pt(inside.x as f32, inside.y as f32)
+}
+
+/// The element at a point on the screen: the last one there (content comes after its group).
+extern "C" fn view_hit(view: Obj, _: Sel, at: NSPoint) -> Obj {
+    asked(view);
+    let point = in_view(view, at);
     let found =
         TOLD.with_borrow(|told| told.iter().find(|told| told.view == view).and_then(|told| told.nodes.iter().rposition(|node| node.visible && node.seen.contains(point)).map(|at| told.elements[at])));
     found.unwrap_or(view)
@@ -249,7 +254,11 @@ extern "C" fn window(element: Obj, _: Sel) -> Obj {
 /// Where a node is on the screen, in AppKit's screen points.
 extern "C" fn frame(element: Obj, _: Sel) -> NSRect {
     let place = with_node(element, |told, at| (told.view, crate::accessibility::view(&told.nodes, at)));
-    let Some((view, rect)) = place else { return NSRect::default() };
+    place.map_or(NSRect::default(), |(view, rect)| on_screen(view, rect))
+}
+
+/// A rectangle of a view, in AppKit's screen points.
+fn on_screen(view: Obj, rect: crate::geom::Rect) -> NSRect {
     let rect = NSRect::new(f64::from(rect.x), f64::from(rect.y), f64::from(rect.w), f64::from(rect.h));
     // SAFETY: the view's rectangle turned into its window's, then the screen's.
     unsafe {
@@ -332,7 +341,7 @@ extern "C" fn set_value(element: Obj, _: Sel, value: Obj) {
 /// for each new node and let go of with its node; the system hears that the layout changed,
 /// where focus went, and what the app announced.
 pub(crate) fn keep(view: Obj, ui: &Ui) {
-    let version = ui.access_version();
+    let (version, moved_from) = (ui.access_version(), ui.access_moved_from());
     let nodes = ui.access_nodes();
     let focus_before = TOLD.with_borrow(|told| told.iter().find(|told| told.view == view).and_then(|told| told.nodes.iter().find(|node| node.focused).map(|node| node.id)));
     let changed = TOLD.with_borrow_mut(|told| {
@@ -341,11 +350,20 @@ pub(crate) fn keep(view: Obj, ui: &Ui) {
             told.len() - 1
         });
         let told = &mut told[at];
-        (std::mem::replace(&mut told.version, version) != version).then(|| renew(told, nodes))
+        let was = std::mem::replace(&mut told.version, version);
+        // (Moved only, as by a scroll: where its elements lie changed, and no more.)
+        if moved_from == Some(was) && told.nodes.len() == nodes.len() {
+            crate::accessibility::follow_move(&mut told.nodes, nodes);
+            return Some(None);
+        }
+        (was != version).then(|| Some(renew(told, nodes)))
     });
     // SAFETY: the system is told of elements of the library's, and of its view.
     unsafe {
-        if let Some(gone) = changed {
+        if changed == Some(None) {
+            NSAccessibilityPostNotification(view, NSAccessibilityLayoutChangedNotification);
+        }
+        if let Some(Some(gone)) = changed {
             gone.into_iter().for_each(|element| NSAccessibilityPostNotification(element, NSAccessibilityUIElementDestroyedNotification));
             NSAccessibilityPostNotification(view, NSAccessibilityLayoutChangedNotification);
             let focus = nodes.iter().find(|node| node.focused).map(|node| node.id);
@@ -423,6 +441,7 @@ fn structure_methods() -> Vec<(&'static CStr, *const c_void, String)> {
         (c"accessibilityRangeForLine:", range_for_line as *const c_void, format!("{RANGE}@:q")),
         (c"accessibilityRangeForIndex:", range_for_index as *const c_void, format!("{RANGE}@:q")),
         (c"accessibilityFrameForRange:", frame_for_range as *const c_void, format!("{RECT}@:{RANGE}")),
+        (c"accessibilityRangeForPosition:", range_for_position as *const c_void, format!("{RANGE}@:{POINT}")),
         (c"accessibilityRowCount", row_count as *const c_void, count.clone()),
         (c"accessibilityColumnCount", column_count as *const c_void, count.clone()),
         (c"accessibilityRows", rows as *const c_void, object.clone()),
@@ -446,7 +465,8 @@ fn structure_methods() -> Vec<(&'static CStr, *const c_void, String)> {
 
 /// Which roles each of those answers for: the rest are not offered to readers.
 fn roles_for(name: &CStr) -> Option<&'static [Role]> {
-    const TEXT: &[Role] = &[Role::TextBox, Role::PasswordBox];
+    const TEXT: &[Role] = &[Role::TextBox, Role::PasswordBox, Role::Text, Role::Heading, Role::Paragraph, Role::Code];
+    const BOXES: &[Role] = &[Role::TextBox, Role::PasswordBox];
     let found: &[Role] = match name.to_bytes() {
         b"accessibilityRowCount" | b"accessibilityColumnCount" | b"accessibilityColumnHeaderUIElements" | b"accessibilityCellForColumn:row:" => &[Role::Table],
         b"accessibilityRows" | b"accessibilityVisibleRows" | b"accessibilitySelectedRows" => &[Role::Table, Role::Tree],
@@ -455,10 +475,10 @@ fn roles_for(name: &CStr) -> Option<&'static [Role]> {
         b"accessibilityColumnIndexRange" => &[Role::Cell, Role::ColumnHeader],
         b"accessibilitySortDirection" => &[Role::ColumnHeader],
         b"accessibilityDisclosureLevel" | b"isAccessibilityDisclosed" | b"setAccessibilityDisclosed:" | b"accessibilityDisclosedByRow" | b"accessibilityDisclosedRows" => &[Role::TreeItem],
-        b"accessibilityStringForRange:" | b"accessibilityAttributedStringForRange:" | b"accessibilityFrameForRange:" => TEXT,
+        b"accessibilityStringForRange:" | b"accessibilityAttributedStringForRange:" | b"accessibilityFrameForRange:" | b"accessibilityRangeForPosition:" => TEXT,
         b"accessibilityLineForIndex:" | b"accessibilityRangeForLine:" | b"accessibilityRangeForIndex:" => TEXT,
-        b"accessibilityNumberOfCharacters" | b"accessibilitySelectedTextRange" | b"setAccessibilitySelectedTextRange:" | b"accessibilitySelectedText" => TEXT,
-        b"accessibilityVisibleCharacterRange" | b"accessibilityInsertionPointLineNumber" => TEXT,
+        b"accessibilityNumberOfCharacters" | b"accessibilityVisibleCharacterRange" => TEXT,
+        b"accessibilitySelectedTextRange" | b"setAccessibilitySelectedTextRange:" | b"accessibilitySelectedText" | b"accessibilityInsertionPointLineNumber" => BOXES,
         _ => return None,
     };
     Some(found)
@@ -490,9 +510,9 @@ fn chars_to(text: &str, unit: usize) -> u32 {
     count
 }
 
-/// A text box's text, if the element is one.
+/// The text of a text box or of plain text, if the element is one.
 fn text_of_box(element: Obj) -> Option<String> {
-    with_node(element, |told, at| matches!(told.nodes[at].role, Role::TextBox | Role::PasswordBox).then(|| told.nodes[at].value.clone())).flatten()
+    with_node(element, |told, at| told.nodes[at].reads_text().then(|| told.nodes[at].text().to_string())).flatten()
 }
 
 /// The part of a text a UTF-16 range covers, cut to its end.
@@ -528,19 +548,23 @@ extern "C" fn selected_text(element: Obj, _: Sel) -> Obj {
     text_of_box(element).map_or(std::ptr::null_mut(), |text| ns_string(&piece(&text, selection(element))))
 }
 
+/// The characters that show.
 extern "C" fn whole_range(element: Obj, _: Sel) -> NSRange {
-    NSRange { location: 0, length: text_of_box(element).map_or(0, |text| text.encode_utf16().count()) }
+    let shown = with_node(element, |told, at| (told.nodes[at].text().to_string(), told.nodes[at].shown_letters()));
+    let Some((text, [from, to])) = shown else { return NSRange::default() };
+    let start = units(&text, from as usize);
+    NSRange { location: start, length: units(&text, to as usize) - start }
 }
 
-/// The line (from 0) a UTF-16 unit of a text is on.
-fn line_of(text: &str, unit: usize) -> isize {
-    text.encode_utf16().take(unit).filter(|unit| *unit == u16::from(b'\n')).count() as isize
+/// The line (from 0, as wrapped) a UTF-16 unit of an element's text is on.
+fn line_of(element: Obj, unit: usize) -> isize {
+    with_node(element, |told, at| told.nodes[at].line_of(chars_to(told.nodes[at].text(), unit)) as isize).unwrap_or(0)
 }
 
 extern "C" fn cursor_line(element: Obj, _: Sel) -> isize {
     let Some(text) = text_of_box(element) else { return 0 };
     let cursor = with_node(element, |told, at| told.nodes[at].caret.map_or(0, |[_, cursor]| cursor)).unwrap_or(0);
-    line_of(&text, units(&text, cursor as usize))
+    line_of(element, units(&text, cursor as usize))
 }
 
 extern "C" fn string_for(element: Obj, _: Sel, range: NSRange) -> Obj {
@@ -569,21 +593,15 @@ extern "C" fn attributed_for(element: Obj, _: Sel, range: NSRange) -> Obj {
 }
 
 extern "C" fn line_for(element: Obj, _: Sel, unit: isize) -> isize {
-    text_of_box(element).map_or(0, |text| line_of(&text, unit.max(0) as usize))
+    line_of(element, unit.max(0) as usize)
 }
 
-/// A line's range, from 0, with its line break.
+/// A line's range (from 0, as wrapped), with its line break. Past the last, empty at the end.
 extern "C" fn range_for_line(element: Obj, _: Sel, line: isize) -> NSRange {
-    let Some(text) = text_of_box(element) else { return NSRange::default() };
-    let mut start = 0;
-    for (nth, piece) in text.split_inclusive('\n').enumerate() {
-        let long = piece.encode_utf16().count();
-        if nth as isize == line {
-            return NSRange { location: start, length: long };
-        }
-        start += long;
-    }
-    NSRange { location: start, length: 0 }
+    let found = with_node(element, |told, at| (told.nodes[at].text().to_string(), told.nodes[at].line_range(line.max(0) as usize)));
+    let Some((text, range)) = found else { return NSRange::default() };
+    let [from, to] = range.unwrap_or([text.chars().count() as u32; 2]).map(|letter| units(&text, letter as usize));
+    NSRange { location: from, length: to - from }
 }
 
 /// The character holding a UTF-16 unit: one or two units.
@@ -594,9 +612,26 @@ extern "C" fn range_for_index(element: Obj, _: Sel, unit: isize) -> NSRange {
     NSRange { location: units(&text, nth), length }
 }
 
-/// Where a piece of the text is: its box, as UI Automation has it.
-extern "C" fn frame_for_range(element: Obj, name: Sel, _: NSRange) -> NSRect {
-    frame(element, name)
+/// Where a piece of the text is drawn: the box around its letters.
+extern "C" fn frame_for_range(element: Obj, _: Sel, range: NSRange) -> NSRect {
+    let place = |told: &Told, at: usize| {
+        let (node, text) = (&told.nodes[at], told.nodes[at].text());
+        let [from, to] = [chars_to(text, range.location), chars_to(text, range.location + range.length)];
+        let letters = (from..to.max(from + 1)).map(|letter| node.letter_rect(letter)).reduce(|one, other| one.union(other));
+        (told.view, letters.unwrap_or(node.rect))
+    };
+    with_node(element, place).map_or(NSRect::default(), |(view, rect)| on_screen(view, rect))
+}
+
+/// The character at a point on the screen: empty where none is.
+extern "C" fn range_for_position(element: Obj, _: Sel, at: NSPoint) -> NSRange {
+    let letter = |told: &Told, at_node: usize| {
+        let node = &told.nodes[at_node];
+        let letter = node.letter_at(in_view(told.view, at))?;
+        let (text, length) = (node.text(), node.text().chars().nth(letter as usize).map_or(0, char::len_utf16));
+        Some(NSRange { location: units(text, letter as usize), length })
+    };
+    with_node(element, letter).flatten().unwrap_or_default()
 }
 
 /// A table's or tree's rows (its items), by node index.
@@ -626,9 +661,16 @@ extern "C" fn headings(element: Obj, _: Sel) -> Obj {
     with_node(element, heads).unwrap_or(std::ptr::null_mut())
 }
 
+/// A table's cell. One of a long table's row not told (it tells rows in view) is none, and the
+/// row is scrolled into view, its cell there once the window has run.
 extern "C" fn cell_for(element: Obj, _: Sel, column: isize, row: isize) -> Obj {
     let place = [row.max(0) as u32, column.max(0) as u32];
-    with_node(element, |told, at| crate::accessibility::cell_at(&told.nodes, at, place).map_or(std::ptr::null_mut(), |cell| told.elements[cell])).unwrap_or(std::ptr::null_mut())
+    let found = with_node(element, |told, at| (crate::accessibility::cell_at(&told.nodes, at, place).map(|cell| told.elements[cell]), told.nodes[at].grid.unwrap_or_default()));
+    let Some((cell, [rows, columns])) = found else { return std::ptr::null_mut() };
+    if cell.is_none() && place[0] < rows && place[1] < columns {
+        act(element, move |ui, table| ui.row_for_reader(table, place[0], None));
+    }
+    cell.unwrap_or(std::ptr::null_mut())
 }
 
 /// A table row's index among all rows; a tree item's among its tree's items told.

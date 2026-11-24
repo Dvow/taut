@@ -72,6 +72,9 @@ pub fn single_instance(name: &str) -> bool {
     return crate::windows_shell::first_copy(name, &packed);
     #[cfg(unix)]
     return linux::first_copy(name, &packed);
+    // A page is always the first: there is no other copy to hand a start to.
+    #[cfg(target_family = "wasm")]
+    let _ = (name, packed);
     #[allow(unreachable_code)]
     true
 }
@@ -95,6 +98,7 @@ pub(crate) fn came(tokens: Tokens, start: Relaunch) {
 }
 
 /// The tokens to come forward with, if a start came since last asked.
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) fn forward() -> Option<Tokens> {
     FORWARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
 }
@@ -146,15 +150,24 @@ fn of_bytes(bytes: &[u8]) -> Option<OsString> {
     let (units, rest) = bytes.as_chunks::<2>();
     rest.is_empty().then(|| OsString::from_wide(&units.iter().map(|unit| u16::from_le_bytes(*unit)).collect::<Vec<_>>()))
 }
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn bytes_of(word: &OsStr) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     word.as_bytes().to_vec()
 }
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn of_bytes(bytes: &[u8]) -> Option<OsString> {
     use std::os::unix::ffi::OsStringExt;
     Some(OsString::from_vec(bytes.to_vec()))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn bytes_of(word: &OsStr) -> Vec<u8> {
+    word.as_encoded_bytes().to_vec()
+}
+#[cfg(not(any(windows, unix)))]
+fn of_bytes(bytes: &[u8]) -> Option<OsString> {
+    String::from_utf8(bytes.to_vec()).ok().map(OsString::from)
 }
 
 /// Single instance.
@@ -175,7 +188,7 @@ impl Ui {
 pub(crate) mod linux {
     use super::{MOST, PATIENCE, came, unpacked};
     use std::ffi::c_int;
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     use std::ffi::c_void;
     use std::io::Read;
     use std::os::fd::AsRawFd;
@@ -186,32 +199,32 @@ pub(crate) mod linux {
     unsafe extern "C" {
         fn flock(fd: c_int, how: c_int) -> c_int;
         fn send(fd: c_int, bytes: *const u8, len: usize, flags: c_int) -> isize;
-        #[cfg(target_os = "macos")]
+        #[cfg(target_vendor = "apple")]
         fn setsockopt(fd: c_int, level: c_int, name: c_int, value: *const c_void, len: u32) -> c_int;
     }
 
     /// macOS: a socket that never raises SIGPIPE (`SOL_SOCKET`, `SO_NOSIGPIPE`). Elsewhere each
     /// send says so itself (`NO_SIGNAL`).
     fn quiet(stream: &UnixStream) {
-        #[cfg(target_os = "macos")]
+        #[cfg(target_vendor = "apple")]
         // SAFETY: an option of a socket this program holds, set from a 4-byte one.
         unsafe {
             setsockopt(stream.as_raw_fd(), 0xffff, 0x1022, (&1i32 as *const i32).cast(), 4)
         };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(target_vendor = "apple"))]
         let _ = stream;
     }
     /// Exclusive lock, without waiting (`LOCK_EX | LOCK_NB`); and a send that fails instead of
     /// raising SIGPIPE when the other end is gone (`MSG_NOSIGNAL`; macOS has no such flag, and
     /// sets it on the socket instead, see `quiet`).
     const ALONE: c_int = 2 | 4;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_vendor = "apple"))]
     const NO_SIGNAL: c_int = 0x4000;
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     const NO_SIGNAL: c_int = 0;
     /// The longest name kept as it is in the socket path: macOS's paths hold 104 bytes, and its
     /// temporary folder takes half.
-    const NAMED: usize = if cfg!(target_os = "macos") { 32 } else { 64 };
+    const NAMED: usize = if cfg!(target_vendor = "apple") { 32 } else { 64 };
     /// The first copy's reply to a start it took.
     const TAKEN: u8 = b'y';
 
@@ -220,7 +233,7 @@ pub(crate) mod linux {
     /// name that would make the socket path too long, or holds a slash, becomes a hash.
     pub(crate) fn place(name: &str) -> Option<PathBuf> {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|folder| !folder.is_empty());
-        #[cfg(target_os = "macos")]
+        #[cfg(target_vendor = "apple")]
         let runtime = runtime.or_else(|| std::env::var_os("TMPDIR").filter(|folder| !folder.is_empty()));
         let mut folder = PathBuf::from(runtime?);
         if let Some(app) = std::env::var_os("FLATPAK_ID").filter(|app| !app.is_empty()) {
@@ -326,7 +339,7 @@ pub(crate) mod tests {
     }
 
     /// Starts no run took, for a test whose app takes none.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     pub(crate) fn queued() -> std::sync::MutexGuard<'static, Vec<Relaunch>> {
         CAME.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -364,7 +377,7 @@ pub(crate) mod tests {
         assert_eq!(unpacked(&packed(&Tokens::default(), &given)).map(|(_, read)| read), Some(given));
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn words_that_are_not_text_on_linux_are_handed_over_as_they_are() {
         use std::os::unix::ffi::OsStringExt;
@@ -391,7 +404,7 @@ pub(crate) mod tests {
 }
 
 /// Single instance on Linux, with real processes: this test program, started again.
-#[cfg(all(test, unix, not(target_os = "macos")))]
+#[cfg(all(test, unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod linux_tests {
     use super::*;
     use std::io::{BufRead, BufReader};

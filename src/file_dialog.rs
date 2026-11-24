@@ -398,9 +398,10 @@ impl FileDialog {
     /// at once with nothing. For the system's where possible and the library's anywhere else:
     /// `FileDialog { native: true, ..Default::default() }`.)
     pub fn native() -> Self {
-        #[cfg(windows)]
+        // (A page's is the browser's picker: it has no folders to show the library's in.)
+        #[cfg(any(windows, target_family = "wasm"))]
         let own = None;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_family = "wasm")))]
         let own = Some(Ui::own_file_dialog as Own);
         FileDialog::new(true, own)
     }

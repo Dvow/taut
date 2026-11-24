@@ -32,10 +32,11 @@
 //! the direction-independent features, plus vertical forms (`vert`); each glyph advances as the
 //! font's `vmtx` says, centred in the column (see `vertical_text.rs`).
 //!
-//! Not done: fallback mark positioning for fonts without `GPOS`; stretching Syriac's
-//! abbreviation mark over its letters (`stch` places its pieces without repeating them); random
-//! alternates (`rand`); and language-specific kerning in the window's text (`font_file.rs`
-//! kerns by script only).
+//! Random alternates (`rand`) are picked by HarfBuzz's generator, seeded alike for every run:
+//! the same text gets the same glyphs. Syriac's abbreviation mark is cut into pieces (`stch`)
+//! and its repeating pieces repeated to span the rest of its word.
+//!
+//! Not done: fallback mark positioning for fonts without `GPOS`.
 use crate::bidi::{Kind, kind, mirrored};
 use crate::font_file::{Asked, Bytes, FontFile, class, covered, lists_at, lookup_at, lookups};
 use crate::scripts::{ARABIC, HEBREW, Language, SYRIAC};
@@ -104,6 +105,8 @@ const MIDDLE_TWO: u32 = 1 << 16;
 pub(crate) const FRACTION: u32 = 1 << 17;
 pub(crate) const NUMERATOR: u32 = 1 << 18;
 pub(crate) const DENOMINATOR: u32 = 1 << 19;
+/// Marks the steps of `rand`, whose alternates are picked at random. No glyph has it.
+pub(crate) const RANDOM: u32 = 1 << 20;
 
 /// A feature: its tag, the glyphs it applies to, and whether a joiner between glyphs stops its
 /// rules matching (Arabic's joining features ask that).
@@ -114,7 +117,7 @@ type Feature = (&'static [u8; 4], u32, bool);
 /// font's `rvrn`.)
 const ARABIC_STAGES: [&[Feature]; 13] = [
     &[(b"rvrn", ALL, false)],
-    &[(b"rtla", ALL, false), (b"rtlm", MIRROR, false), (b"frac", FRACTION, false), (b"numr", NUMERATOR, false), (b"dnom", DENOMINATOR, false), (b"stch", ALL, false)],
+    &[(b"rtla", ALL, false), (b"rtlm", MIRROR, false), (b"frac", FRACTION, false), (b"numr", NUMERATOR, false), (b"dnom", DENOMINATOR, false), (b"rand", ALL | RANDOM, false), (b"stch", ALL, false)],
     &[(b"ccmp", ALL, true), (b"locl", ALL, true)],
     &[(b"isol", ALONE, false)],
     &[(b"fina", LAST, false)],
@@ -151,6 +154,7 @@ const LEFTWARD: [&[Feature]; 2] = [
         (b"frac", FRACTION, false),
         (b"numr", NUMERATOR, false),
         (b"dnom", DENOMINATOR, false),
+        (b"rand", ALL | RANDOM, false),
         (b"ccmp", ALL, false),
         (b"locl", ALL, false),
         (b"rlig", ALL, false),
@@ -168,6 +172,7 @@ const RIGHTWARD: [&[Feature]; 2] = [
         (b"frac", FRACTION, false),
         (b"numr", NUMERATOR, false),
         (b"dnom", DENOMINATOR, false),
+        (b"rand", ALL | RANDOM, false),
         (b"ccmp", ALL, false),
         (b"locl", ALL, false),
         (b"rlig", ALL, false),
@@ -179,11 +184,24 @@ const RIGHTWARD: [&[Feature]; 2] = [
 ];
 /// Vertical text's features, in two stages (HarfBuzz's: `vert` is looked up separately, see
 /// `Plan::downward`).
-const DOWNWARD: [&[Feature]; 2] =
-    [&[(b"rvrn", ALL, false)], &[(b"frac", FRACTION, false), (b"numr", NUMERATOR, false), (b"dnom", DENOMINATOR, false), (b"ccmp", ALL, false), (b"locl", ALL, false), (b"rlig", ALL, false)]];
-/// And its `GPOS` features: mark positioning.
-const DOWNWARD_MOVES: [Feature; 7] =
-    [(b"frac", FRACTION, false), (b"numr", NUMERATOR, false), (b"dnom", DENOMINATOR, false), (b"abvm", ALL, false), (b"blwm", ALL, false), (b"mark", ALL, true), (b"mkmk", ALL, true)];
+const DOWNWARD: [&[Feature]; 2] = [
+    &[(b"rvrn", ALL, false)],
+    &[(b"frac", FRACTION, false), (b"numr", NUMERATOR, false), (b"dnom", DENOMINATOR, false), (b"rand", ALL | RANDOM, false), (b"ccmp", ALL, false), (b"locl", ALL, false), (b"rlig", ALL, false)],
+];
+/// And its `GPOS` features: the same ones, and mark positioning.
+const DOWNWARD_MOVES: [Feature; 11] = [
+    (b"frac", FRACTION, false),
+    (b"numr", NUMERATOR, false),
+    (b"dnom", DENOMINATOR, false),
+    (b"rand", ALL | RANDOM, false),
+    (b"ccmp", ALL, false),
+    (b"locl", ALL, false),
+    (b"rlig", ALL, false),
+    (b"abvm", ALL, false),
+    (b"blwm", ALL, false),
+    (b"mark", ALL, true),
+    (b"mkmk", ALL, true),
+];
 
 /// The lookups of the first feature named `name` in a table, under any script.
 fn anywhere(table: Bytes, name: &[u8; 4]) -> Option<Vec<u16>> {
@@ -198,8 +216,10 @@ fn anywhere(table: Bytes, name: &[u8; 4]) -> Option<Vec<u16>> {
     Some(found)
 }
 
-/// The `GPOS` features, all in one stage.
-const MOVES: [Feature; 14] = [
+/// The `GPOS` features, all in one stage: as HarfBuzz looks every feature it applies up in
+/// both tables, a font's contextual positioning under `calt` (a hyphen raised between capitals)
+/// counts too.
+const MOVES: [Feature; 22] = [
     (b"ltra", ALL, false),
     (b"ltrm", ALL, false),
     (b"rtla", ALL, false),
@@ -207,10 +227,18 @@ const MOVES: [Feature; 14] = [
     (b"frac", FRACTION, false),
     (b"numr", NUMERATOR, false),
     (b"dnom", DENOMINATOR, false),
+    (b"rand", ALL | RANDOM, false),
+    (b"ccmp", ALL, false),
+    (b"locl", ALL, false),
     (b"abvm", ALL, false),
     (b"blwm", ALL, false),
     (b"mark", ALL, true),
     (b"mkmk", ALL, true),
+    (b"rlig", ALL, false),
+    (b"calt", ALL, false),
+    (b"clig", ALL, false),
+    (b"liga", ALL, false),
+    (b"rclt", ALL, false),
     (b"curs", ALL, false),
     (b"dist", ALL, false),
     (b"kern", ALL, false),
@@ -271,7 +299,23 @@ pub(crate) struct Plan {
     /// Unicode vertical forms use those.
     pub downward: bool,
     pub upright_forms: bool,
+    /// Whether the font cuts stretching marks into pieces (`stch`, Arabic and Syriac): see
+    /// `stretched`.
+    pub stretch: bool,
+    /// Each step's digest (see `digest`): the `GSUB` steps in stage order, then the `GPOS`
+    /// ones. (Where missing, every glyph is tried.)
+    #[cfg(feature = "shaping")]
+    pub digests: Vec<Digest>,
 }
+
+/// A lookup's digest: bit `glyph % 512` set for each glyph a subtable of it may start at (all
+/// set where that is not known). A glyph without its bit is passed over at once, as HarfBuzz's
+/// digests pass it: most lookups of a font apply to few of its glyphs.
+#[cfg(feature = "shaping")]
+pub(crate) type Digest = [u64; 8];
+/// The digest of a lookup that may start anywhere.
+#[cfg(feature = "shaping")]
+const EVERY: Digest = [u64::MAX; 8];
 
 /// Composes and decomposes for a font: each character with its text index, returned as the font
 /// is to have them, with the indices of combining grapheme joiners the lookups skip (see
@@ -314,7 +358,7 @@ impl Plan {
         let found = forms.iter().flatten().map(|lookup| Step { lookup: *lookup, mask: ALL, joiners: true, non_joiners: true, syllable: false });
         swaps[1] = merged(swaps[1].iter().copied().chain(found).collect());
         let moves = steps(moving, asked, &DOWNWARD_MOVES);
-        Plan { swaps, moves, kerned: true, leftward: false, joins: false, downward: true, upright_forms: forms.is_none(), ..plan }
+        Plan { swaps, moves, kerned: true, leftward: false, joins: false, downward: true, upright_forms: forms.is_none(), stretch: false, ..plan }.digested(font)
     }
 
     /// The lookups alone, without composition: for emoji, which need none.
@@ -332,7 +376,23 @@ impl Plan {
         let asked: Asked = (&names, &languages, font.place());
         let swaps = stages.iter().map(|features| steps(swapping, asked, features)).collect();
         let kerned = lookups(moving, asked, &[b"kern"]).is_some();
-        Plan { swaps, moves: steps(moving, asked, &MOVES), kerned, leftward, joins, ..Plan::default() }
+        let stretch = joins && lookups(swapping, asked, &[b"stch"]).is_some();
+        Plan { swaps, moves: steps(moving, asked, &MOVES), kerned, leftward, joins, stretch, ..Plan::default() }.digested(font)
+    }
+
+    /// The plan with its steps' digests, from the font's tables (with `shaping`, whose windows
+    /// shape every line; without, every glyph is tried).
+    #[cfg(feature = "shaping")]
+    pub fn digested(self, font: &FontFile) -> Plan {
+        let (swaps, moves) = (font.table(b"GSUB"), font.table(b"GPOS"));
+        let swapped = self.swaps.iter().flatten().map(|step| digest(swaps, step.lookup, false));
+        let digests = swapped.chain(self.moves.iter().map(|step| digest(moves, step.lookup, true))).collect();
+        Plan { digests, ..self }
+    }
+    /// The plan as it is: without `shaping`, no digests.
+    #[cfg(not(feature = "shaping"))]
+    pub fn digested(self, _font: &FontFile) -> Plan {
+        self
     }
 }
 
@@ -439,6 +499,8 @@ pub(crate) struct Laid {
     pub position: u8,
     pub syllable: u8,
     pub whole: u16,
+    /// A piece of a stretching mark: fixed (1) or repeating (2), see `stretched`.
+    stretch: u8,
 }
 
 impl Laid {
@@ -550,10 +612,24 @@ impl FontFile {
         let gdef = self.table(b"GDEF");
         glyphs.iter_mut().for_each(|laid| laid.props = props(gdef, laid.glyph, laid.props));
         let (swaps, moves) = (self.table(b"GSUB"), self.table(b"GPOS"));
-        let mut shaper = Shaper { gdef, leftward, serial: 0, positions: Vec::new(), work: WORK };
+        let mut shaper = Shaper {
+            gdef,
+            leftward,
+            serial: 0,
+            positions: Vec::new(),
+            work: WORK,
+            random: 1,
+            #[cfg(feature = "shaping")]
+            digests: plan.digests.iter(),
+        };
         for (n, stage) in plan.swaps.iter().enumerate() {
             for step in stage {
                 shaper.carry(swaps, false, *step, glyphs);
+            }
+            // (`stch` runs in the second stage: what it multiplied is a stretching mark's
+            // pieces, odd components repeating.)
+            if cfg!(feature = "right-to-left") && plan.stretch && n == 1 {
+                glyphs.iter_mut().filter(|laid| laid.props & MULTIPLIED != 0).for_each(|laid| laid.stretch = 1 + laid.lig_comp % 2);
             }
             if let Some(syllabic) = syllabic {
                 crate::brahmic::pause(self, syllabic, n, glyphs);
@@ -595,7 +671,59 @@ impl FontFile {
         if leftward {
             glyphs.reverse();
         }
+        if cfg!(feature = "right-to-left") && glyphs.iter().any(|laid| laid.stretch != 0) {
+            self.stretched(text, glyphs, leftward);
+        }
         glyphs.iter().map(|laid| laid.advance).sum()
+    }
+
+    /// Spans each stretching mark's pieces (glyphs in visual order) over the rest of its word,
+    /// as HarfBuzz 14.5 does: the word is the letters, marks, figures and symbols after it
+    /// (left of it, in right-to-left text). Its repeating pieces repeat as often as fill that
+    /// width, overlapping evenly where one more is needed, at most 256 glyphs; the whole is
+    /// centred on what is left over.
+    fn stretched(&self, text: &str, glyphs: &mut Vec<Laid>, leftward: bool) {
+        let letters: Vec<char> = text.chars().collect();
+        let word = |laid: &Laid| laid.ignorable() || letters.get(laid.from as usize).is_some_and(|letter| wordish(*letter));
+        // (HarfBuzz goes from the mark at the word's start, its last glyph right to left.)
+        if !leftward {
+            glyphs.reverse();
+        }
+        let (mut out, mut end) = (Vec::with_capacity(glyphs.len()), glyphs.len());
+        while end > 0 {
+            if glyphs[end - 1].stretch == 0 {
+                out.push(glyphs[end - 1]);
+                end -= 1;
+                continue;
+            }
+            let start = glyphs[..end].iter().rposition(|laid| laid.stretch == 0).map_or(0, |at| at + 1);
+            let before = glyphs[..start].iter().rposition(|laid| laid.stretch != 0 || !word(laid)).map_or(0, |at| at + 1);
+            let total = glyphs[before..start].iter().map(|laid| laid.advance as i64).sum();
+            self.spread(&glyphs[start..end], total, leftward, &mut out);
+            end = start;
+        }
+        if leftward {
+            out.reverse();
+        }
+        *glyphs = out;
+    }
+
+    /// One stretching mark's pieces spread over `total` font units, added to `out` last first.
+    fn spread(&self, pieces: &[Laid], total: i64, leftward: bool, out: &mut Vec<Laid>) {
+        let width = |laid: &Laid| self.width(laid.glyph) as i64;
+        let [fixed, repeating] = [1, 2].map(|kind| pieces.iter().filter(|laid| laid.stretch == kind).map(width).sum::<i64>());
+        let counts = [1, 2].map(|kind| pieces.iter().filter(|laid| laid.stretch == kind).count() as i64);
+        let [copies, overlap, rest] = repeats(total - fixed, repeating, counts);
+        let mut x = rest / 2;
+        for laid in pieces.iter().rev() {
+            let repeat = if laid.stretch == 2 { 1 + copies } else { 1 };
+            for n in 0..repeat {
+                let skip = if n > 0 { overlap } else { 0 };
+                x -= if leftward { width(laid) - skip } else { 0 };
+                out.push(Laid { advance: 0, offset: [x as i32, laid.offset[1]], ..*laid });
+                x += if leftward { 0 } else { width(laid) - skip };
+            }
+        }
     }
 
     /// Each character's glyph, in HarfBuzz's order: a character with a variation selector the
@@ -785,6 +913,11 @@ struct Shaper<'a> {
     positions: Vec<usize>,
     /// How many more subtables may be tried (see `WORK`).
     work: usize,
+    /// The random generator's state, for `rand`.
+    random: u32,
+    /// The digests of the steps still to apply, in order (see `Plan::digests`).
+    #[cfg(feature = "shaping")]
+    digests: std::slice::Iter<'a, Digest>,
 }
 
 /// A lookup being applied: its table, whether it is `GPOS`, its flags, its mark filtering set
@@ -853,6 +986,8 @@ impl<'a> Shaper<'a> {
     /// Applies one lookup along the run: at each glyph it applies to, the first subtable
     /// covering that glyph acts. (Reverse chaining lookups go from the last glyph back.)
     fn carry(&mut self, table: Bytes<'a>, moves: bool, step: Step, glyphs: &mut Vec<Laid>) {
+        #[cfg(feature = "shaping")]
+        let digest = self.digests.next().copied().unwrap_or(EVERY);
         let Some(at) = lookup_at(table, step.lookup) else { return };
         let (flags, count) = (table.u16(at + 2).unwrap_or(0), table.u16(at + 4).unwrap_or(0) as usize);
         let marks = if flags & MARK_SET != 0 { table.u16(at + 6 + count * 2).unwrap_or(0) } else { 0 };
@@ -867,7 +1002,11 @@ impl<'a> Shaper<'a> {
                 false if n >= glyphs.len() || glyphs.len() > limit.min(LONGEST * GROWTH) => return,
                 false => {}
             }
-            let fits = glyphs[n].mask & step.mask != 0 && self.keeps(&doing, doing.flags, &glyphs[n]) && self.spend(count);
+            #[cfg(feature = "shaping")]
+            let seen = digest[(glyphs[n].glyph as usize >> 6) & 7] >> (glyphs[n].glyph & 63) & 1 != 0;
+            #[cfg(not(feature = "shaping"))]
+            let seen = true;
+            let fits = seen && glyphs[n].mask & step.mask != 0 && self.keeps(&doing, doing.flags, &glyphs[n]) && self.spend(count);
             let here = Doing { syllable: glyphs[n].syllable, ..doing };
             let next = if fits { self.apply(&here, at, glyphs, n) } else { None };
             n = match (backward, next) {
@@ -897,7 +1036,7 @@ impl<'a> Shaper<'a> {
         match (doing.moves, kind) {
             (false, 1) => one_for_one(gdef, list, glyphs, n),
             (false, 2) => one_for_several(gdef, list, glyphs, n),
-            (false, 3) => one_of_several(gdef, list, glyphs, n),
+            (false, 3) => one_of_several(gdef, list, glyphs, n, (doing.step.mask & RANDOM != 0).then_some(&mut self.random)),
             (false, 4) => self.ligature(doing, list, glyphs, n),
             (false, 8) => backward_rule(self, doing, list, glyphs, n),
             (true, 1) => moved(list, glyphs, n),
@@ -1446,11 +1585,17 @@ fn one_for_one(gdef: Bytes, list: Bytes, glyphs: &mut [Laid], n: usize) -> Optio
 }
 
 /// Alternate substitution: the first alternate takes its place, as HarfBuzz does for enabled
-/// features (which select the first).
-fn one_of_several(gdef: Bytes, list: Bytes, glyphs: &mut [Laid], n: usize) -> Option<usize> {
+/// features (which select the first); for `rand` (`random`), one at random by HarfBuzz's
+/// generator (`minstd_rand` in 32 bits).
+fn one_of_several(gdef: Bytes, list: Bytes, glyphs: &mut [Laid], n: usize, random: Option<&mut u32>) -> Option<usize> {
     let nth = covered(list, list.u16(2)? as usize, glyphs[n].glyph)?;
     let set = list.u16(6 + nth * 2).filter(|_| list.u16(4).is_some_and(|count| nth < count as usize))? as usize;
-    let glyph = list.u16(set + 2).filter(|_| list.u16(set).is_some_and(|count| count > 0))?;
+    let count = list.u16(set).filter(|count| *count > 0)? as u32;
+    let pick = random.map_or(0, |state| {
+        *state = state.wrapping_mul(48271) % 2_147_483_647;
+        *state % count
+    });
+    let glyph = list.u16(set + 2 + pick as usize * 2)?;
     swap(gdef, &mut glyphs[n], glyph);
     Some(n + 1)
 }
@@ -1466,6 +1611,10 @@ fn one_for_several(gdef: Bytes, list: Bytes, glyphs: &mut Vec<Laid>, n: usize) -
     let nth = covered(list, list.u16(2)? as usize, glyphs[n].glyph)?;
     let row = list.u16(6 + nth * 2).filter(|_| list.u16(4).is_some_and(|count| nth < count as usize))? as usize;
     let count = list.u16(row)? as usize;
+    if count == 1 {
+        swap(gdef, &mut glyphs[n], list.u16(row + 2)?);
+        return Some(n + 1);
+    }
     let old = glyphs[n];
     let mut new = Vec::with_capacity(count);
     for m in 0..count {
@@ -1475,7 +1624,9 @@ fn one_for_several(gdef: Bytes, list: Bytes, glyphs: &mut Vec<Laid>, n: usize) -
         let guess = if old.props & LIGATURE != 0 { (old.props & !(LIGATURE | MARK | 0xff00)) | BASE } else { old.props };
         laid.props = guess | MULTIPLIED;
         swap(gdef, &mut laid, list.u16(row + 2 + m * 2)?);
-        (laid.lig_id, laid.lig_comp, laid.lig_base) = (0, m.min(15) as u8, false);
+        if old.lig_id == 0 {
+            (laid.lig_comp, laid.lig_base) = (m as u8 & 15, false);
+        }
         new.push(laid);
     }
     glyphs.splice(n..n + 1, new);
@@ -1545,6 +1696,83 @@ fn follow(glyphs: &mut [Laid], child: usize, parent: usize, leftward: bool, down
     match downward {
         true => glyphs[child].offset[1] -= between,
         false => glyphs[child].offset[0] += between,
+    }
+}
+
+/// How a stretching mark's repeating pieces (`repeating` font units wide in all) fill
+/// `remaining` units, with `counts` fixed and repeating pieces, as HarfBuzz 14.5 has it: how
+/// many more copies of each, how far each copy overlaps the one before, and the room left to
+/// centre in.
+fn repeats(remaining: i64, repeating: i64, [fixed, repeated]: [i64; 2]) -> [i64; 3] {
+    let mut copies = if remaining > repeating && repeating > 0 { remaining / repeating - 1 } else { 0 };
+    let (mut overlap, mut rest) = (0, remaining);
+    if remaining - repeating * (copies + 1) > 0 && repeated > 0 {
+        copies += 1;
+        let excess = (copies + 1) * repeating - remaining;
+        if excess > 0 {
+            (overlap, rest) = (excess / (copies * repeated), 0);
+        }
+    }
+    let most = if repeated > 0 && fixed + repeated < 256 { (256 - fixed - repeated) / repeated } else { 0 };
+    [copies.min(most), overlap, rest]
+}
+
+/// Whether a character belongs to the word a stretching mark spans: HarfBuzz's test by general
+/// category, closely: letters other than capital and small ones, marks, figures and symbols;
+/// not spaces, punctuation or controls.
+fn wordish(letter: char) -> bool {
+    let punctuation = matches!(letter,
+        '!'..='#' | '%'..='*' | ','..='/' | ':' | ';' | '?' | '@' | '['..=']' | '_' | '{' | '}' | '\u{a1}' | '\u{a7}' | '\u{ab}' | '\u{b6}' | '\u{b7}' | '\u{bb}'
+            | '\u{bf}' | '\u{60c}' | '\u{60d}' | '\u{61b}' | '\u{61d}'..='\u{61f}' | '\u{66a}'..='\u{66d}' | '\u{6d4}' | '\u{700}'..='\u{70d}' | '\u{2010}'..='\u{2027}'
+            | '\u{2030}'..='\u{2043}' | '\u{2045}'..='\u{2051}' | '\u{2053}'..='\u{205e}' | '\u{3001}'..='\u{3003}' | '\u{3008}'..='\u{3011}');
+    !(punctuation || letter.is_whitespace() || letter.is_control() || letter.is_uppercase() || letter.is_lowercase())
+}
+
+/// A lookup's digest in its table (`GPOS` where `moves`): of the coverage each subtable starts
+/// with, that of the glyph it is applied at.
+#[cfg(feature = "shaping")]
+fn digest(table: Bytes, lookup: u16, moves: bool) -> Digest {
+    let Some(at) = lookup_at(table, lookup) else { return EVERY };
+    let mut digest = [0; 8];
+    for (kind, list) in lists_at(table, at, if moves { 9 } else { 7 }) {
+        let Some(coverage) = first_coverage(table, list, kind, moves) else { return EVERY };
+        if !covering(table, coverage, &mut digest) {
+            return EVERY;
+        }
+    }
+    digest
+}
+
+/// Where a subtable's coverage of its first glyph is: in a contextual rule of format 3, that of
+/// its first input glyph; in any other, at its offset 2.
+#[cfg(feature = "shaping")]
+fn first_coverage(table: Bytes, list: usize, kind: u16, moves: bool) -> Option<usize> {
+    let (context, chained) = if moves { (7, 8) } else { (5, 6) };
+    let input = match (kind, table.u16(list)?) {
+        (kind, 3) if kind == context => list + 2,
+        (kind, 3) if kind == chained => list + 4 + table.u16(list + 2)? as usize * 2,
+        _ => return Some(list + table.u16(list + 2).filter(|offset| *offset != 0)? as usize),
+    };
+    table.u16(input).filter(|count| *count > 0)?;
+    let first = if kind == context { input + 4 } else { input + 2 };
+    Some(list + table.u16(first).filter(|offset| *offset != 0)? as usize)
+}
+
+/// Sets the digest bits of a coverage table's glyphs: whether it could be read.
+#[cfg(feature = "shaping")]
+fn covering(table: Bytes, at: usize, digest: &mut Digest) -> bool {
+    let (Some(format), Some(count)) = (table.u16(at), table.u16(at + 2)) else { return false };
+    let mut set = |first: u16, last: u16| match last.saturating_sub(first) >= 511 {
+        true => *digest = EVERY,
+        false => (first..=last).for_each(|glyph| digest[(glyph as usize >> 6) & 7] |= 1 << (glyph & 63)),
+    };
+    match format {
+        1 => (0..count as usize).all(|n| table.u16(at + 4 + n * 2).map(|glyph| set(glyph, glyph)).is_some()),
+        2 => (0..count as usize).all(|n| match (table.u16(at + 4 + n * 6), table.u16(at + 6 + n * 6)) {
+            (Some(first), Some(last)) if first <= last => (set(first, last), true).1,
+            _ => false,
+        }),
+        _ => false,
     }
 }
 
@@ -2309,6 +2537,86 @@ pub(crate) mod held {
         assert_eq!(pen as f32, font.advance('A', 1024.0) + font.advance('B', 1024.0) + font.kerning('A', 'B', 1024.0));
     }
 
+    /// Words an app font in a window is to shape: ligatures, contextual forms, kerning, and
+    /// accents composed or stacked, Vietnamese typed letter by letter too.
+    #[cfg(feature = "shaping")]
+    const WINDOWED: &str = "office affluent fjord fifty waffle flight fi fl ff ffi ffl Th ct st -> --> <= 12:30 A-Z AVATAR Typography Toyota
+        Việt Nguyễn Tiếng Vie\u{323}\u{302}t Nguye\u{302}\u{303}n Tie\u{302}\u{301}ng a\u{308}\u{301} x\u{301}y e\u{323}\u{302}\u{301} \u{1ec7}\u{301}
+        Ελληνικά ἀρχῇ α\u{313}\u{342} Привет Ђорђе й и\u{306} 1⁄2 3⁄4 ǅ ĳ";
+
+    /// A window's app font, as a page: its glyphs at one pixel per font unit (and the width),
+    /// in the form `ours` gives.
+    #[cfg(feature = "shaping")]
+    fn windowed(window: &mut crate::font_file::AppFonts, units: f32, word: &str) -> Shaped {
+        let (glyphs, wide) = window.laid(word, crate::text::Font::new(units));
+        (glyphs.iter().map(|(glyph, [x, y])| (*glyph, [*x as i32, *y as i32])).collect(), wide as i32)
+    }
+
+    #[test]
+    #[cfg(feature = "shaping")]
+    fn an_app_font_in_a_window_shapes_as_a_page_does() {
+        #[allow(unused_mut)]
+        let mut fonts: Vec<(std::path::PathBuf, u32)> = western().into_iter().map(|path| (path, 0)).collect();
+        #[cfg(target_os = "linux")]
+        fonts.extend(self::fonts());
+        let (mut tried, mut ligated, mut differ) = (0, 0, Vec::new());
+        let open = |path: &std::path::Path, face: u32| FontFile::open(path).and_then(|font| if face == 0 { Some(font) } else { font.nth(face as usize) });
+        for (path, face) in fonts {
+            let (Some(font), Some(other)) = (open(&path, face), open(&path, face)) else { continue };
+            let mut window = crate::font_file::AppFonts::new(other);
+            let words: Vec<String> = WINDOWED.split_whitespace().filter(|word| word.chars().all(|letter| font.glyph(letter) != 0)).map(String::from).collect();
+            #[cfg(target_os = "linux")]
+            let Some(theirs) = super::harfbuzz::harfbuzz_in(&path, face, &words, "") else { return eprintln!("no HarfBuzz on this system: not tested") };
+            #[cfg(not(target_os = "linux"))]
+            let theirs = vec![(Vec::new(), 0); words.len()];
+            let mut plans = Vec::new();
+            for (word, theirs) in words.iter().zip(theirs) {
+                let (page, own) = (ours(&font, &mut plans, word, Language::NONE), windowed(&mut window, font.units(), word));
+                let held = cfg!(not(target_os = "linux")) || own == theirs;
+                differ.extend((own != page || !held).then(|| format!("{}: {word}: {own:?}, page {page:?}, HarfBuzz {theirs:?}", path.display())));
+                ligated += (word.chars().all(char::is_alphabetic) && own.0.len() < word.chars().count()) as usize;
+                tried += 1;
+            }
+        }
+        println!("{tried} words and fonts held, {ligated} ligated, {} differ", differ.len());
+        differ.iter().take(12).for_each(|line| println!("  {line}"));
+        assert!(differ.is_empty(), "{} words differ", differ.len());
+        // (Calibri, Cambria and the like ligate "fi"; a system with none of them has nothing to
+        // show here.)
+        assert!(tried == 0 || ligated > 0 || !western().iter().any(|path| path.ends_with("calibri.ttf")), "no word ligated");
+    }
+
+    /// A `GSUB` table with one feature, `rand`, under Latin: an alternate substitution of glyph
+    /// 1 ("A") by glyph 2, 3 or 5.
+    fn random() -> Vec<u8> {
+        let alternates = words(&[1, 16, 1, 8, 3, 2, 3, 5, 1, 1, 1]);
+        positions(&[(b"latn", &[0])], &[(b"rand", &[0])], &[(3, vec![alternates])])
+    }
+
+    #[test]
+    fn random_alternates_are_picked_as_harfbuzz_picks_them() {
+        let mut tables = [tables(), vec![(*b"GSUB", random())]].concat();
+        tables.sort_by_key(|(name, _)| *name);
+        let made = file(&[0, 1, 0, 0], &tables);
+        let font = FontFile::read(made.clone()).unwrap();
+        let word = "AAAAAAAAAAAA";
+        let picked = |word: &str| ours(&font, &mut Vec::new(), word, Language::NONE).0.iter().map(|(glyph, _)| *glyph).collect::<Vec<_>>();
+        // Each "A" is one of its alternates, not always the same; the same run always gets the
+        // same ones; and a run starts the generator afresh.
+        let mine = picked(word);
+        assert!(mine.iter().all(|glyph| [2, 3, 5].contains(glyph)) && mine.iter().any(|glyph| *glyph != mine[0]), "{mine:?}");
+        assert_eq!([picked(word), picked("AA")], [mine.clone(), mine[..2].to_vec()]);
+        #[cfg(target_os = "linux")]
+        {
+            let path = std::env::temp_dir().join(format!("taut-random-{}.ttf", std::process::id()));
+            std::fs::write(&path, &made).unwrap();
+            let theirs = super::harfbuzz::harfbuzz_in(&path, 0, &[word.to_string()], "");
+            std::fs::remove_file(&path).ok();
+            let Some(theirs) = theirs else { return eprintln!("no HarfBuzz on this system: not tested") };
+            assert_eq!(ours(&font, &mut Vec::new(), word, Language::NONE), theirs[0]);
+        }
+    }
+
     /// Words tested against HarfBuzz in every font with their letters: Latin, Greek and
     /// Cyrillic everyday words, kerning pairs, ligatures and accented letters; fractions;
     /// characters with variation selectors (emoji text or picture presentation, Phags-pa's
@@ -2316,7 +2624,7 @@ pub(crate) mod held {
     /// language, where fonts have forms of their own.
     #[cfg(target_os = "linux")]
     const WORDS: &str = "
-        AVATAR WAVE Typography Toyota LTAV TA Te To Tr Ty Va Vo Wa Yo AT Ay F. P, r. y. 'A' \"Yes\" (Hi) [J] {j}
+        AVATAR WAVE Typography Toyota LTAV TA Te To Tr Ty Va Vo Wa Yo AT Ay F. P, r. y. A-Z 12:30 -> 'A' \"Yes\" (Hi) [J] {j}
         office affluent fjord fifty waffle flight shuffle fi fl ff ffi ffl Th ct st
         Straße naïve façade ÆØÅ Œuvre Ångström Dvořák Łódź Zürich Cañón Þórr ðæ Việt Nguyễn Tiếng ǅ Ǆ ĳ ŉ ǰ
         Καλημέρα ΑΥΤΟ Ελληνικά ΤΑΥΤΟΤΗΤΑ ψυχή ἀρχῇ ΆΈΉΊΌΎΏ ϋΰ Ὦ ᾯ
@@ -2325,6 +2633,7 @@ pub(crate) mod held {
         ☺\u{fe0e} ☺\u{fe0f} ❤\u{fe0e} ❤\u{fe0f} #\u{fe0f}\u{20e3} ↔\u{fe0e} ✌\u{fe0f} ©\u{fe0e} ™\u{fe0f} 0\u{fe0f}\u{20e3}
         ꡖ\u{fe00} ꡜ\u{fe00} ꡞ\u{fe00} ꡟ\u{fe00} ꡠ\u{fe00} ꡀꡖ\u{fe00} ꡀꡨ\u{fe00} ꡀꡁꡂ
         ᠠ\u{180b} ᠠ\u{180c}ᠠ ᠠᠠ\u{180c}ᠠ ᠠᠡ\u{180b} ᠨ\u{180b}ᠠ ᠠᠨ\u{180d}ᠠ ᠭ\u{180b}ᠠ ᠠᠭ\u{180d}ᠠ ᠮᠣᠩᠭᠣᠯ ᠬᠡᠯᠡ ᠪᠢᠴᠢᠭ
+        \u{70f}\u{710}\u{712}\u{713}\u{715} \u{710}\u{70f}\u{712}\u{713}\u{715}\u{717}\u{718} \u{721}\u{70f}\u{72b}\u{71d}\u{71a}\u{710} \u{70f}\u{710} \u{70f}\u{712}\u{712}\u{712}\u{712}\u{712}\u{712}\u{712}\u{712}
         =sr бгдпт Ђорђе шта
         =mk бгдпт ѓќ
         =bg вдгжзийклптцчшщъю
@@ -2376,6 +2685,9 @@ pub(crate) mod held {
             "noto/NotoColorEmoji.ttf",
             "noto/NotoSansMongolian-Regular.ttf",
             "noto/NotoSansPhagsPa-Regular.ttf",
+            "noto/NotoSansSyriac-Regular.ttf",
+            "noto/NotoSansSyriacEastern-Regular.ttf",
+            "noto/NotoSansSyriacWestern-Regular.ttf",
             "Adwaita/AdwaitaSans-Regular.ttf",
             "Adwaita/AdwaitaMono-Regular.ttf",
         ];
@@ -2404,6 +2716,7 @@ pub(crate) mod held {
             "monbaiti",
             "phagspa",
             "bahnschrift",
+            "estre",
         ];
         let named = std::env::var("TAUT_HELD_FONTS").unwrap_or_default();
         let all = linux

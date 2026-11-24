@@ -4,12 +4,12 @@
 use crate::path::Path;
 
 /// Set for a test run by itself in a process of its own.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 const ALONE: &str = "TAUT_TEST_ALONE";
 
 /// Runs one ignored test in a process of its own (this program again) and ends it after
 /// `seconds`. Gives back what it printed, or why it failed.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn alone(test: &str, seconds: u64, env: &[(&str, &str)]) -> Result<String, String> {
     let mut started = std::process::Command::new(std::env::current_exe().unwrap());
     started.args(["--exact", test, "--ignored", "--nocapture", "--test-threads=1"]).env(ALONE, "1");
@@ -53,7 +53,7 @@ fn a_letter_of_very_many_points_takes_little_time_to_set_on_whole_pixels() {
 
 // ---- single_instance.rs, on Linux ----
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod single_instance {
     use super::{ALONE, alone};
 
@@ -116,7 +116,7 @@ mod single_instance {
 
 // ---- freedesktop.rs: what comes over the session bus ----
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod bus {
     use super::{ALONE, alone};
     use crate::atspi::tests::{Peer, packed};

@@ -211,6 +211,109 @@ jobs:
           path: ${{ runner.temp }}/shots
           if-no-files-found: warn
 
+  # taut in a browser: clippy for wasm32-unknown-unknown, Rust 1.88 for it, the pages under Node
+  # and headless Chrome (tests/web.rs), and the programs' sizes.
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust, with the web's target
+        run: rustup toolchain install stable --profile minimal -c clippy -t wasm32-unknown-unknown && rustup default stable && rustc -V
+      - uses: actions/cache@v6
+        with:
+          path: target
+          key: web-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
+      - name: Clippy for the web
+        run: |
+          cargo clippy --lib --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy --lib --all-features --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy --target wasm32-unknown-unknown --example hello --example gallery --example web_notes -- -D warnings
+      - name: Rust 1.88 for the web
+        if: ${{ !cancelled() }}
+        run: rustup toolchain install 1.88.0 --profile minimal -t wasm32-unknown-unknown && cargo +1.88.0 check --lib --all-features --target wasm32-unknown-unknown
+      - name: The font both sides of the pixel checks draw with, and colour emoji for the browser
+        if: ${{ !cancelled() }}
+        run: bash .github/apt.sh fonts-dejavu-core fonts-noto-color-emoji
+      - name: Pages under Node and headless Chrome
+        if: ${{ !cancelled() }}
+        run: node --version && google-chrome --version && cargo test --test web -- --nocapture
+      - name: Sizes (the release profile of docs/costs-and-speed.md)
+        if: ${{ !cancelled() }}
+        env:
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: s
+          CARGO_PROFILE_RELEASE_LTO: true
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
+          CARGO_PROFILE_RELEASE_PANIC: abort
+          CARGO_PROFILE_RELEASE_STRIP: true
+        run: cargo build --release --target wasm32-unknown-unknown --example hello --example gallery && ls -l target/wasm32-unknown-unknown/release/examples/*.wasm
+
+  # iOS: clippy for devices and the simulator, the oldest Rust, and the checks in the simulator
+  # (tests/ios.rs: the gallery against the Mac's drawing and its own, parts driven, readers, dark
+  # mode, the background).
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy -t aarch64-apple-ios -t aarch64-apple-ios-sim && rustup default stable && rustc -V && xcodebuild -version
+      - uses: actions/cache@v6
+        with:
+          path: target
+          key: ios-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
+      - name: Clippy for devices, all features
+        run: cargo clippy --all-targets --all-features --target aarch64-apple-ios -- -D warnings
+      - name: Clippy for devices, no features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --target aarch64-apple-ios -- -D warnings
+      - name: Clippy for the simulator, touch
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --features touch --target aarch64-apple-ios-sim -- -D warnings
+      - name: Rust 1.88 for devices
+        if: ${{ !cancelled() }}
+        run: rustup toolchain install 1.88.0 --profile minimal -t aarch64-apple-ios && cargo +1.88.0 check --all-targets --all-features --target aarch64-apple-ios
+      - name: In the simulator
+        if: ${{ !cancelled() }}
+        run: TAUT_IOS_SIMULATOR=1 TAUT_SHOTS="$RUNNER_TEMP/ios" cargo test --test ios
+      - name: Pictures of the simulator
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-pictures
+          path: ${{ runner.temp }}/ios
+          if-no-files-found: warn
+
+  macos-gpu:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V
+      - uses: actions/cache@v6
+        with:
+          path: target
+          key: macos-gpu-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
+      - name: Metal without gpu-draw
+        run: cargo test --lib --features gpu -- gpu_metal layer_metal
+      - name: Layers under a program's own renderer (Metal, OpenGL through CGL)
+        if: ${{ !cancelled() }}
+        run: cargo test --all-features --test renderers -- --test-threads=1
+      - name: Window checks, Metal showing
+        if: ${{ !cancelled() }}
+        run: TAUT_SHOTS="$RUNNER_TEMP/shots/metal" cargo test --features gpu --test macos
+      - name: Window checks, Metal drawing every part
+        if: ${{ !cancelled() }}
+        run: TAUT_DRAW=gpu TAUT_SHOTS="$RUNNER_TEMP/shots/metal-draw" cargo test --all-features --test macos
+      - name: Pictures of the windows
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-gpu-pictures
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: warn
+
   msrv:
     strategy:
       fail-fast: false
@@ -228,6 +331,73 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo check --all-targets
 
+  # Android: built for the emulator and phones, packed as APKs (examples/apk.rs), and the
+  # gallery run on an Android 15 emulator (src/android_text.rs): its first page against the
+  # Linux frame, taps, keys, typing, rotation, home and back, and what uiautomator reads.
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustup target add x86_64-linux-android aarch64-linux-android && rustc -V
+      - uses: actions/cache@v6
+        with:
+          path: target
+          key: android-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
+      - name: Clippy for Android, all features
+        run: cargo clippy --all-targets --all-features --target x86_64-linux-android -- -D warnings
+      - name: Clippy for Android, no features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --target x86_64-linux-android -- -D warnings
+      - name: Rust 1.88 for Android
+        if: ${{ !cancelled() }}
+        run: rustup toolchain install 1.88.0 --profile minimal -t x86_64-linux-android && cargo +1.88.0 check --all-targets --target x86_64-linux-android
+      - name: The Android parts' tests here (the SDK's dexdump reads the DEX file)
+        if: ${{ !cancelled() }}
+        run: cargo test --lib android_
+      - name: The gallery and hello as APKs, for the emulator and for phones
+        run: |
+          export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
+          cargo run --example apk -- gallery --target x86_64-linux-android --features touch
+          cargo run --example apk -- hello --target aarch64-linux-android
+          cargo run --example apk -- gallery --target aarch64-linux-android --features touch --out target/apk/gallery-arm64.apk
+          ls -l target/*-linux-android/release/lib*.so target/apk/*.apk
+      - name: KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: An emulator, Android 15
+        timeout-minutes: 20
+        run: |
+          TOOLS=$ANDROID_HOME/cmdline-tools/latest/bin
+          ADB=$ANDROID_HOME/platform-tools/adb
+          # (avdmanager and the emulator look in different places unless told.)
+          export ANDROID_AVD_HOME=$HOME/.android/avd
+          mkdir -p $ANDROID_AVD_HOME
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> $GITHUB_ENV
+          yes | $TOOLS/sdkmanager --licenses > /dev/null || true
+          $TOOLS/sdkmanager "emulator" "platform-tools" "system-images;android-35;google_apis;x86_64" > /dev/null
+          echo no | $TOOLS/avdmanager create avd -n taut -k "system-images;android-35;google_apis;x86_64" -d pixel_6 --force
+          nohup $ANDROID_HOME/emulator/emulator -avd taut -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -camera-back none -camera-front none > emulator.log 2>&1 &
+          timeout 300 $ADB wait-for-device
+          for i in $(seq 1 150); do [ "$($ADB shell getprop sys.boot_completed | tr -d '\r')" = 1 ] && break; sleep 2; done
+          $ADB shell wm dismiss-keyguard || true
+          $ADB shell settings put global hide_error_dialogs 1 || true
+          sleep 10
+      - name: The gallery on the emulator
+        run: TAUT_ANDROID_APK=$PWD/target/apk/gallery.apk TAUT_PICTURES=$PWD/android cargo test --lib the_gallery_on_an_android_emulator -- --nocapture
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: android
+          path: |
+            android/*.png
+            android/*.xml
+            android/logcat.txt
+            emulator.log
+
   docs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -236,7 +406,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Nightly, as docs.rs
-        run: rustup toolchain install nightly --profile minimal -t x86_64-pc-windows-msvc -t aarch64-apple-darwin && rustc +nightly -V
+        run: rustup toolchain install nightly --profile minimal -t x86_64-pc-windows-msvc -t aarch64-apple-darwin -t aarch64-apple-ios -t aarch64-linux-android && rustc +nightly -V
       - name: Docs for Linux
         run: cargo +nightly doc --all-features --no-deps --target x86_64-unknown-linux-gnu
       - name: Docs for Windows
@@ -245,6 +415,15 @@ jobs:
       - name: Docs for macOS
         if: ${{ !cancelled() }}
         run: cargo +nightly doc --all-features --no-deps --target aarch64-apple-darwin
+      - name: Docs for the web
+        if: ${{ !cancelled() }}
+        run: rustup target add --toolchain nightly wasm32-unknown-unknown && cargo +nightly doc --all-features --no-deps --target wasm32-unknown-unknown
+      - name: Docs for iOS
+        if: ${{ !cancelled() }}
+        run: cargo +nightly doc --all-features --no-deps --target aarch64-apple-ios
+      - name: Docs for Android
+        if: ${{ !cancelled() }}
+        run: cargo +nightly doc --all-features --no-deps --target aarch64-linux-android
 
   package:
     runs-on: ubuntu-latest
@@ -255,3 +434,28 @@ jobs:
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Package (the file list builds on its own)
         run: cargo package
+
+  # Video through each system's own player (feature `video`), a missing player failing
+  # (TAUT_VIDEO=required): GStreamer's base and good plugins on Ubuntu; on the Mac also the checks
+  # on the main thread, where AVFoundation's run loop turns (tests/video_macos.rs).
+  video:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      TAUT_VIDEO: required
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V
+      - name: GStreamer
+        if: runner.os == 'Linux'
+        run: bash .github/apt.sh gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+      - name: Video tests
+        run: cargo test --features video --lib video::tests
+      - name: Video on the main thread
+        if: ${{ runner.os == 'macOS' && !cancelled() }}
+        run: cargo test --features video --test video_macos

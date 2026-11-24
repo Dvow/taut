@@ -152,9 +152,12 @@ pub(crate) fn local_now() -> [i32; 6] {
     [moment.year + 1900, moment.month + 1, moment.day, moment.hour, moment.minute, moment.second]
 }
 
-/// Without a system to ask, UTC.
+/// Without a system to ask, UTC. (A page asks the browser's clock and time zone.)
 #[cfg(not(any(windows, unix)))]
 pub(crate) fn local_now() -> [i32; 6] {
+    #[cfg(target_family = "wasm")]
+    let since = (crate::web_host::unix_seconds() as i64 + crate::web_host::zone_ahead()).max(0) as u64;
+    #[cfg(not(target_family = "wasm"))]
     let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
     let (day, of_day) = (Date::from_days((since / 86_400) as i64), (since % 86_400) as i32);
     [day.year, day.month as i32, day.day as i32, of_day / 3600, of_day / 60 % 60, of_day % 60]
@@ -194,6 +197,9 @@ fn ahead(_at: i64) -> i64 {
 
 #[cfg(not(any(windows, unix)))]
 fn ahead(_at: i64) -> i64 {
+    #[cfg(target_family = "wasm")]
+    return crate::web_host::zone_ahead();
+    #[allow(unreachable_code)]
     0
 }
 

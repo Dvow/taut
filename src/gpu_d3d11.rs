@@ -186,12 +186,14 @@ impl Drop for Device {
 /// the device draws windows, else only copied.
 #[inline]
 fn drawn(device: &Device) -> u32 {
+    // (Read by shaders too where it may be presented in scRGB: `hdr_windows`.)
+    let read = if cfg!(feature = "hdr") { 0x8 } else { 0 };
     #[cfg(feature = "gpu-draw")]
     if device.drawing.is_some() {
-        return 0x20;
+        return 0x20 | read;
     }
     let _ = device;
-    0
+    read
 }
 
 /// A window's swap chain, and the texture holding all of the window's pixels.
@@ -204,6 +206,11 @@ pub(crate) struct Shown {
     /// The view the GPU draws into the texture through, where its device draws (null if not).
     #[cfg(feature = "gpu-draw")]
     target: Com,
+    /// Its HDR, and the pass to scRGB once tried (see `hdr_windows`).
+    #[cfg(feature = "hdr")]
+    pub(crate) hdr: crate::hdr_windows::Hdr,
+    #[cfg(feature = "hdr")]
+    pass: Option<Option<crate::hdr_windows::Pass11>>,
 }
 
 impl Shown {
@@ -218,6 +225,10 @@ impl Shown {
             size: [0; 2],
             #[cfg(feature = "gpu-draw")]
             target: null_mut(),
+            #[cfg(feature = "hdr")]
+            hdr: Default::default(),
+            #[cfg(feature = "hdr")]
+            pass: None,
         };
         type MakeChain = unsafe extern "system" fn(Com, Com, HANDLE, *const ChainDescription, *const c_void, Com, *mut Com) -> i32;
         // SAFETY: the factory's CreateSwapChainForHwnd (15) for a live window; its
@@ -307,6 +318,10 @@ impl Shown {
         if self.picture.is_null() {
             return true;
         }
+        #[cfg(feature = "hdr")]
+        if !self.go_hdr(device) {
+            return false;
+        }
         let dirty = inside(dirty, self.size);
         let (changed, mut back) = (Changed { count: dirty.len() as u32, rects: dirty.as_ptr(), scroll: null(), offset: null() }, null_mut());
         // SAFETY: the swap chain's GetBuffer (9) gives its back buffer, released after the
@@ -316,13 +331,40 @@ impl Shown {
             if function::<unsafe extern "system" fn(Com, u32, *const [u32; 4], *mut Com) -> i32>(self.chain, 9)(self.chain, 0, &TEXTURE, &mut back) < 0 {
                 return false;
             }
-            function::<unsafe extern "system" fn(Com, Com, Com)>(device.context, 47)(device.context, back, self.picture);
-            #[cfg(test)]
-            tests::keep(device, back, self.size, self.chain, dirty);
+            #[cfg(feature = "hdr")]
+            let lit = self.lit(device, back);
+            #[cfg(not(feature = "hdr"))]
+            let lit = false;
+            if !lit {
+                function::<unsafe extern "system" fn(Com, Com, Com)>(device.context, 47)(device.context, back, self.picture);
+                #[cfg(test)]
+                tests::keep(device, back, self.size, self.chain, dirty);
+            }
             release(back);
             function::<unsafe extern "system" fn(Com, u32, u32, *const Changed) -> i32>(self.chain, 22)(self.chain, 1, 0, &changed)
         };
         presented >= 0
+    }
+
+    /// Puts the swap chain in scRGB where the window is lit on an HDR screen, its pass made first,
+    /// and back where not. Says whether that worked.
+    #[cfg(feature = "hdr")]
+    fn go_hdr(&mut self, device: &Device) -> bool {
+        if self.hdr.wanted() && self.pass.is_none() {
+            self.pass = Some(crate::hdr_windows::Pass11::new(device.device));
+        }
+        self.hdr.switch(self.chain, self.size, self.pass.as_ref().is_some_and(Option::is_some))
+    }
+
+    /// Draws the texture into `back` in scRGB, where the swap chain is. Says whether it did: if
+    /// not, the texture is copied.
+    #[cfg(feature = "hdr")]
+    fn lit(&mut self, device: &Device, back: Com) -> bool {
+        let Some(Some(pass)) = self.pass.as_mut().filter(|_| self.hdr.on) else { return false };
+        let drawn = pass.draw([device.device, device.context], &mut self.hdr, self.picture, back, self.size);
+        #[cfg(test)]
+        crate::hdr_windows::tests::keep(device.device, device.context, back, self.size);
+        drawn
     }
 }
 

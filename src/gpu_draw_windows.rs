@@ -13,7 +13,7 @@ use crate::gpu_draw::{DrawList, Fast, SHADING, SIDE};
 use crate::gpu_windows::{function_in, system_library};
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, TextureDescription, function, release};
 use crate::text::Font;
-use crate::windows::sys::{GdiFlush, HANDLE, IntersectClipRect, RestoreDC, SaveDC, SelectObject, SetBkMode, SetTextColor, SetViewportOrgEx, TextOutW};
+use crate::windows::sys::{ExtTextOutW, GdiFlush, HANDLE, IntersectClipRect, RestoreDC, SaveDC, SelectObject, SetBkMode, SetTextColor, SetViewportOrgEx};
 use std::ffi::{CStr, c_char, c_void};
 use std::hash::{Hash, Hasher};
 use std::ptr::{null, null_mut};
@@ -21,6 +21,7 @@ use std::ptr::{null, null_mut};
 #[link(name = "gdi32")]
 unsafe extern "system" {
     fn GetTextExtentPoint32W(dc: HANDLE, text: *const u16, length: i32, size: *mut [i32; 2]) -> i32;
+    fn GetTextExtentPointI(dc: HANDLE, glyphs: *const u16, length: i32, size: *mut [i32; 2]) -> i32;
 }
 
 /// `D3DCompile`, as d3dcompiler.h declares it.
@@ -305,18 +306,21 @@ pub(crate) struct Strip {
     pub(crate) rows: i32,
 }
 
-/// A line of text in GDI's `handle` (`font` at `px` pixels), its top left at `at` in window
-/// pixels, recorded as a run, drawn by GDI into the strip once and kept. On a solid colour
+/// A line of text in GDI's `handle` (`font` at `px` pixels), as UTF-16 units or (`true`)
+/// glyphs, its top left at `at` in window pixels, recorded as a run, drawn by GDI into the strip once and kept. On a solid colour
 /// (`DrawList::run_on`) it is drawn on that colour: the pixels GDI gives the CPU. On anything
 /// else (`DrawList::run`), black on white for dark ink, white on black for light, each channel's
 /// distance from the background being how much it covers: GDI's contrast is then lost.
 #[allow(clippy::too_many_arguments)] // (What GDI's own drawing takes, and the list.)
-pub(crate) fn run(list: &mut DrawList, strip: &Strip, handle: HANDLE, font: Font, px: i32, units: &[u16], at: [i32; 2], ink: Color, clip: [i32; 4]) {
+pub(crate) fn run(list: &mut DrawList, strip: &Strip, handle: HANDLE, font: Font, px: i32, (units, glyphs): (&[u16], bool), at: [i32; 2], ink: Color, clip: [i32; 4]) {
     let mut size = [0i32; 2];
     // SAFETY: the strip's DC is alive; the font is a live GDI font; the text is as long as said.
     unsafe {
         SelectObject(strip.dc, handle);
-        GetTextExtentPoint32W(strip.dc, units.as_ptr(), units.len() as i32, &mut size);
+        match glyphs {
+            true => GetTextExtentPointI(strip.dc, units.as_ptr(), units.len() as i32, &mut size),
+            false => GetTextExtentPoint32W(strip.dc, units.as_ptr(), units.len() as i32, &mut size),
+        };
     }
     // Room for what overhangs the advance: italics, ClearType's fringes.
     let pad = [size[1] / 4 + 2, 2];
@@ -335,9 +339,9 @@ pub(crate) fn run(list: &mut DrawList, strip: &Strip, handle: HANDLE, font: Font
     let middle = [at[0] + size[0] / 2, at[1] + size[1] / 2];
     if let Some(under) = list.solid_under([middle[0], middle[1], middle[0] + 1, middle[1] + 1]) {
         let mut hash = Fast(0x6f6e_7275);
-        (font.face, px, units, under.0, text).hash(&mut hash);
+        (font.face, px, units, glyphs, under.0, text).hash(&mut hash);
         let how = [under.0, text, 0, 0];
-        if list.run_on(hash.finish(), corner, whole, under, clip, |texels| drawn(strip, handle, units, pad, whole, how, texels)) {
+        if list.run_on(hash.finish(), corner, whole, under, clip, |texels| drawn(strip, handle, (units, glyphs), pad, whole, how, texels)) {
             return;
         }
     }
@@ -345,15 +349,15 @@ pub(crate) fn run(list: &mut DrawList, strip: &Strip, handle: HANDLE, font: Font
     let dark = (ink.0 >> 16 & 255) * 299 + (ink.0 >> 8 & 255) * 587 + (ink.0 & 255) * 114 < 128_000;
     let how = if dark { [0x00ff_ffff, 0, 0x00ff_ffff, 0] } else { [0, 0x00ff_ffff, 0, 0] };
     let mut hash = Fast(0x7275_6e73);
-    (font.face, px, units, dark).hash(&mut hash);
-    list.run(hash.finish(), corner, whole, ink, clip, |texels| drawn(strip, handle, units, pad, whole, how, texels));
+    (font.face, px, units, glyphs, dark).hash(&mut hash);
+    list.run(hash.finish(), corner, whole, ink, clip, |texels| drawn(strip, handle, (units, glyphs), pad, whole, how, texels));
 }
 
-/// Has GDI draw `units` in `handle`, `pad` in from the top left, on a background `whole` big;
-/// and reads the pixels back into `texels`. `how` is the background, the text's colour, and
-/// what each pixel is xor-ed and or-ed with. A run larger than the strip is drawn a strip-sized
-/// tile at a time.
-fn drawn(strip: &Strip, handle: HANDLE, units: &[u16], pad: [i32; 2], whole: [i32; 2], how: [u32; 4], texels: &mut [u32]) {
+/// Has GDI draw `units` (glyphs, where so marked) in `handle`, `pad` in from the top left, on a
+/// background `whole` big; and reads the pixels back into `texels`. `how` is the background,
+/// the text's colour, and what each pixel is xor-ed and or-ed with. A run larger than the strip
+/// is drawn a strip-sized tile at a time.
+fn drawn(strip: &Strip, handle: HANDLE, (units, glyphs): (&[u16], bool), pad: [i32; 2], whole: [i32; 2], how: [u32; 4], texels: &mut [u32]) {
     let ([wide, high], [background, text, flip, set]) = (whole.map(|side| side as usize), how);
     let [tile_wide, tile_high] = [strip.width as usize, strip.rows as usize];
     // SAFETY: the strip holds `rows` rows of `width` pixels; nothing else uses them now.
@@ -372,7 +376,8 @@ fn drawn(strip: &Strip, handle: HANDLE, units: &[u16], pad: [i32; 2], whole: [i3
             SelectObject(strip.dc, handle);
             SetBkMode(strip.dc, 1);
             SetTextColor(strip.dc, text);
-            TextOutW(strip.dc, pad[0] - left as i32, pad[1] - top as i32, units.as_ptr(), units.len() as i32);
+            let options = if glyphs { 0x10 } else { 0 };
+            ExtTextOutW(strip.dc, pad[0] - left as i32, pad[1] - top as i32, options, null(), units.as_ptr(), units.len() as u32, null());
             RestoreDC(strip.dc, saved);
             GdiFlush();
         }

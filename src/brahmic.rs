@@ -27,7 +27,7 @@
 //!
 //! Not done: Mongolian's vertical forms.
 use crate::font_file::{Asked, Bytes, FontFile, lookups};
-use crate::shaping::{ALL, DENOMINATOR, FRACTION, Laid, NUMERATOR, Plan, Step, Zeroing, chosen, merged, unicode};
+use crate::shaping::{ALL, DENOMINATOR, FRACTION, Laid, NUMERATOR, Plan, RANDOM, Step, Zeroing, chosen, merged, unicode};
 
 // ---- the scripts ----
 
@@ -894,9 +894,9 @@ const PLAIN_STAGES: &[(&[Feature], Pause)] =
 const MOVES: &[Feature] =
     &[(b"ltra", ALL, 0), (b"ltrm", ALL, 0), (b"abvm", ALL, 0), (b"blwm", ALL, 0), (b"mark", ALL, BY_JOINERS), (b"mkmk", ALL, BY_JOINERS), (b"curs", ALL, 0), (b"dist", ALL, 0), (b"kern", ALL, 0)];
 
-/// The first stage's features besides the direction ones: variable font substitutions, and
-/// fractions.
-const FIRST: [Feature; 4] = [(b"rvrn", ALL, 0), (b"frac", FRACTION, 0), (b"numr", NUMERATOR, 0), (b"dnom", DENOMINATOR, 0)];
+/// The first stage's features besides the direction ones: variable font substitutions,
+/// fractions, and random alternates.
+const FIRST: [Feature; 5] = [(b"rvrn", ALL, 0), (b"frac", FRACTION, 0), (b"numr", NUMERATOR, 0), (b"dnom", DENOMINATOR, 0), (b"rand", ALL | RANDOM, 0)];
 /// The right-to-left direction features (instead of `ltra` and `ltrm`): the second only on a
 /// bracket the font has no mirrored glyph for.
 const LEFTWARD: [Feature; 2] = [(b"rtla", ALL, 0), (b"rtlm", crate::shaping::MIRROR, 0)];
@@ -1018,6 +1018,7 @@ pub(crate) fn plan(font: &FontFile, n: u8, language: crate::scripts::Language) -
         syllabic: Some(Box::new(syllabic)),
         ..Plan::default()
     }
+    .digested(font)
 }
 
 // ---- the characters ----

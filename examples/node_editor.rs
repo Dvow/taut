@@ -1,12 +1,13 @@
 //! A small node editor: numbers and words, sums of them, and a display, each a node on a
-//! canvas; wired together, they compute. Right-clicking the canvas adds a node there (on a
-//! node, removes it); the buttons above the canvas add one in the middle. Wire an output to an
-//! input by dragging between them, or by keyboard: Enter on a port, arrows to the target port,
-//! Enter.
+//! canvas with a grid; wired together, they compute. Right-clicking the canvas adds a node there
+//! (on a node, removes it); so does Shift+A, by name; the buttons above the canvas add one in
+//! the middle, and undo and redo. A wire let go on nothing offers a node to take it. Wire an
+//! output to an input by dragging between them, or by keyboard: Enter on a port, arrows to the
+//! target port, Enter.
 //!   cargo run -p taut --example node_editor
 #![windows_subsystem = "windows"]
 use taut::geom::{Point, pt, rect};
-use taut::{Font, Graph, GraphAction, Node, Role, Ui, Window};
+use taut::{Font, Frame, Graph, GraphAction, Key, Mods, Node, Role, Ui, Window};
 
 /// What a node does.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,13 +21,23 @@ pub enum Does {
     Subtract,
     Multiply,
     Divide,
+    /// Adds every number wired into it.
+    Total,
     /// Shows a number large, under the words wired into it.
     Show,
 }
 
 /// Every kind of node, by the name it is added by.
-const KINDS: [(Does, &str); 7] =
-    [(Does::Number, "Number"), (Does::Words, "Words"), (Does::Add, "Add"), (Does::Subtract, "Subtract"), (Does::Multiply, "Multiply"), (Does::Divide, "Divide"), (Does::Show, "Show")];
+const KINDS: [(Does, &str); 8] = [
+    (Does::Number, "Number"),
+    (Does::Words, "Words"),
+    (Does::Add, "Add"),
+    (Does::Subtract, "Subtract"),
+    (Does::Multiply, "Multiply"),
+    (Does::Divide, "Divide"),
+    (Does::Total, "Total"),
+    (Does::Show, "Show"),
+];
 /// What goes through the ports: numbers, and words. (Words do not go into a number.)
 const NUMBER: &str = "number";
 const WORDS: &str = "words";
@@ -51,11 +62,14 @@ pub struct Step {
     out: Option<Value>,
 }
 
-/// The editor: its graph, and where its menu was asked for (the node, and the point of the
-/// canvas).
+/// The editor: its graph; where its menu was asked for (the node, and the point of the
+/// canvas); the port a wire let go on nothing came from (node, port, and whether an output), for
+/// the node added next; and whether the search for a node to add is open.
 pub struct Sums {
     graph: Graph<Step>,
     menu: (Option<usize>, Point),
+    dropped: Option<(usize, usize, bool)>,
+    finding: bool,
 }
 
 /// A node that does `does`, its corner at `at` on the canvas.
@@ -66,15 +80,18 @@ fn node(does: Does, at: Point) -> Node<Step> {
         Does::Number => node.output("Value", NUMBER),
         Does::Words => node.output("Words", WORDS),
         Does::Show => node.input("Value", NUMBER).input("Caption", WORDS).width(180.0),
+        Does::Total => node.multi_input("Values", NUMBER).output("Total", NUMBER),
         _ => node.input("A", NUMBER).input("B", NUMBER).output("Result", NUMBER).width(180.0),
     }
 }
 
-/// Two numbers added and shown under a caption, and a node to multiply that is not wired yet.
+/// Two numbers in a frame, added and shown under a caption, and a node to multiply that is not
+/// wired yet.
 impl Default for Sums {
     fn default() -> Self {
         let mut graph = Graph::new();
-        graph.kinds = vec![NUMBER, WORDS];
+        (graph.kinds, graph.grid) = (vec![NUMBER, WORDS], 20.0);
+        graph.frames.push(Frame::new("Inputs", rect(20.0, -20.0, 200.0, 320.0)));
         let mut first = node(Does::Number, pt(40.0, 40.0));
         first.data.number = 3.0;
         let mut second = node(Does::Number, pt(40.0, 190.0));
@@ -88,7 +105,7 @@ impl Default for Sums {
             graph.wire(from, to);
         }
         work_out(&mut graph);
-        Sums { graph, menu: (None, pt(0.0, 0.0)) }
+        Sums { graph, menu: (None, pt(0.0, 0.0)), dropped: None, finding: false }
     }
 }
 
@@ -117,6 +134,15 @@ fn input(graph: &Graph<Step>, node: usize, port: usize) -> Option<&Value> {
     graph.wire_into((node, port)).and_then(|wire| graph.nodes[wire.from.0].data.out.as_ref())
 }
 
+/// Every number wired into an input, added.
+fn total(graph: &Graph<Step>, node: usize, port: usize) -> f64 {
+    let numbers = graph.wires_into((node, port)).filter_map(|wire| match graph.nodes[wire.from.0].data.out {
+        Some(Value::Number(number)) => Some(number),
+        _ => None,
+    });
+    numbers.sum()
+}
+
 /// What comes out of a node, from what is wired into it.
 fn output(graph: &Graph<Step>, node: usize) -> Option<Value> {
     let step = &graph.nodes[node].data;
@@ -133,6 +159,7 @@ fn output(graph: &Graph<Step>, node: usize) -> Option<Value> {
         Does::Subtract => both(|a, b| a - b),
         Does::Multiply => both(|a, b| a * b),
         Does::Divide => both(|a, b| a / b),
+        Does::Total => Some(Value::Number(total(graph, node, 0))),
         Does::Show => a.map(Value::Number),
     }
 }
@@ -156,7 +183,8 @@ fn shown(out: &Option<Value>) -> String {
     }
 }
 
-/// The editor's window: the buttons that add nodes, and the canvas with the graph on it.
+/// The editor's window: the buttons that add nodes, undo and redo, and the canvas with the
+/// graph on it.
 pub fn describe(app: &mut Sums, ui: &mut Ui) {
     let room = ui.size();
     ui.row().pad(8.0).gap(6.0).open();
@@ -167,22 +195,34 @@ pub fn describe(app: &mut Sums, ui: &mut Ui) {
             add(app, does, pt(sight.x + sight.w / 2.0 - 80.0, sight.y + sight.h / 2.0 - 60.0));
         }
     }
+    ui.spacer();
+    ui.set_enabled(app.graph.can_undo());
+    let undone = ui.button("Undo").clicked && app.graph.undo();
+    ui.set_enabled(app.graph.can_redo());
+    let redone = ui.button("Redo").clicked && app.graph.redo();
+    ui.set_enabled(true);
     ui.close();
+    if undone || redone {
+        work_out(&mut app.graph);
+    }
     let mut changed = false;
     while let Some(n) = ui.graph(&mut app.graph, "Sums") {
         changed |= body(ui, &mut app.graph, n);
         ui.close();
     }
+    // (A wire let go on nothing opens the same menu, and the node added takes it.)
     match app.graph.action {
-        GraphAction::Menu { node, at } => {
-            app.menu = (node, at);
-            let pointer = ui.pointer().unwrap_or_default();
-            ui.open_popup(MENU, rect(pointer.x, pointer.y, 0.0, 0.0));
-        }
+        GraphAction::Menu { node, at } => (app.menu, app.dropped) = ((node, at), None),
+        GraphAction::WireDropped { port, output, at } => (app.menu, app.dropped) = ((None, at), Some((port.0, port.1, output))),
         GraphAction::None | GraphAction::Selected | GraphAction::Moved => {}
         _ => changed = true,
     }
+    if matches!(app.graph.action, GraphAction::Menu { .. } | GraphAction::WireDropped { .. }) {
+        let pointer = ui.pointer().unwrap_or_default();
+        ui.open_popup(MENU, rect(pointer.x, pointer.y, 0.0, 0.0));
+    }
     menu(app, ui);
+    find(app, ui);
     if changed {
         work_out(&mut app.graph);
         ui.rerun();
@@ -201,6 +241,7 @@ fn menu(app: &mut Sums, ui: &mut Ui) {
     match app.menu {
         (Some(node), _) => {
             if ui.menu_item("Delete\tDelete").clicked && node < app.graph.nodes.len() {
+                app.graph.save_undo_step();
                 app.graph.remove(node);
                 work_out(&mut app.graph);
             }
@@ -216,11 +257,31 @@ fn menu(app: &mut Sums, ui: &mut Ui) {
     ui.close();
 }
 
-/// Adds a node that does `does` at `at` on the canvas, selected by itself.
+/// Shift+A: a search for a kind of node to add, in the middle of what is in sight.
+fn find(app: &mut Sums, ui: &mut Ui) {
+    if ui.key(Key::Char('a'), Mods::SHIFT) {
+        let sight = app.graph.view.visible_rect(ui.size());
+        let middle = pt(sight.x + sight.w / 2.0 - 80.0, sight.y + sight.h / 2.0 - 60.0);
+        (app.finding, app.menu, app.dropped) = (true, (None, middle), None);
+    }
+    let names = KINDS.map(|(_, name)| name);
+    if let Some(picked) = ui.command_palette(&mut app.finding, &names) {
+        add(app, KINDS[picked].0, app.menu.1);
+    }
+}
+
+/// Adds a node that does `does` at `at` on the canvas (on the grid), selected by itself: an
+/// edit undo takes back. It takes the wire let go on nothing, if it can.
 fn add(app: &mut Sums, does: Does, at: Point) {
+    app.graph.save_undo_step();
     app.graph.nodes.iter_mut().for_each(|node| node.selected = false);
-    let added = app.graph.add(node(does, at));
+    let added = app.graph.add(node(does, app.graph.snapped(at)));
     app.graph.nodes[added].selected = true;
+    if let Some((from, port, output)) = app.dropped.take() {
+        let ports = if output { app.graph.nodes[added].inputs.len() } else { app.graph.nodes[added].outputs.len() };
+        // (Into its first port that takes it.)
+        let _ = (0..ports).any(|other| if output { app.graph.wire((from, port), (added, other)) } else { app.graph.wire((added, other), (from, port)) });
+    }
     work_out(&mut app.graph);
 }
 
@@ -307,5 +368,37 @@ mod tests {
         trial.right_click(title);
         trial.press(Role::MenuItem, "Delete");
         assert!(!trial.app.graph.nodes.iter().any(|node| node.title == "Divide"));
+    }
+
+    #[test]
+    fn a_wire_let_go_on_nothing_and_a_search_add_nodes_and_undo_takes_them_back() {
+        let mut trial = Trial::new(Sums::default(), describe);
+        trial.resize(900.0, 600.0, 1.0);
+        let nodes = trial.app.graph.nodes.len();
+        // From the sum's output onto bare canvas: the menu, and the node picked takes the wire.
+        let from = trial.center_of(Role::Button, "Result, number out, to Show: Value");
+        trial.drag(from, pt(from.x + 40.0, 520.0));
+        trial.press(Role::MenuItem, "Total");
+        let total = trial.app.graph.nodes.len() - 1;
+        assert_eq!((trial.app.graph.nodes.len(), trial.app.graph.nodes[total].title.as_str()), (nodes + 1, "Total"));
+        assert!(trial.app.graph.wires_into((total, 0)).any(|wire| wire.from.0 == 2), "{:?}", trial.app.graph.wires);
+        // A second number into the same input: the total is of both.
+        let four = trial.center_of(Role::Button, "Value, number out, to Add: B");
+        let values = trial.center_of(Role::Button, "Values, number in, several, from Add: Result");
+        trial.drag(four, values);
+        assert!(trial.has(Role::Text, "= 11"), "7 and 4: {}", trial.dump());
+        // Shift and A: a search; Enter adds the first that matches.
+        trial.key("Shift+A");
+        trial.type_text("mul");
+        trial.key("Enter");
+        assert_eq!(trial.app.graph.nodes.last().map(|node| node.title.as_str()), Some("Multiply"));
+        // Undo takes back the node, the wire, then the other node.
+        trial.press(Role::Button, "Undo");
+        trial.press(Role::Button, "Undo");
+        assert!(trial.has(Role::Text, "= 7") && !trial.has(Role::Text, "= 11"), "{}", trial.dump());
+        trial.press(Role::Button, "Undo");
+        assert_eq!(trial.app.graph.nodes.len(), nodes);
+        trial.press(Role::Button, "Redo");
+        assert_eq!(trial.app.graph.nodes.len(), nodes + 1);
     }
 }

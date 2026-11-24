@@ -541,6 +541,9 @@ pub struct Ui {
     /// What shows the window: the GPU or the CPU.
     #[cfg(feature = "gpu")]
     pub(crate) renderer: Renderer,
+    /// Its bright boxes, the pictures' gain maps, and its screen (see `hdr`).
+    #[cfg(feature = "hdr")]
+    pub(crate) light: crate::hdr::Light,
     pub(crate) notes: Vec<Note>,
     pub(crate) noted: String,
     pub(crate) access_nodes: Vec<AccessNode>,
@@ -548,6 +551,8 @@ pub struct Ui {
     /// The long-list rows described this run while a screen reader listens: each row's box, and
     /// its position and count, from 1.
     pub(crate) access_rows: Vec<(u32, [u32; 2])>,
+    /// What screen readers ask of tables, and what the app told of their selections.
+    pub(crate) table_reading: crate::accessibility::TableReading,
     /// The second windows, each its own interface. While one is described: the first window's
     /// interface (they swap places), which window this is, and whether the user asked to close it.
     pub(crate) seconds: Vec<Kept>,
@@ -849,11 +854,14 @@ impl Ui {
             listening: false,
             #[cfg(feature = "gpu")]
             renderer: Renderer::Cpu,
+            #[cfg(feature = "hdr")]
+            light: Default::default(),
             notes: Vec::new(),
             noted: String::new(),
             access_nodes: Vec::new(),
             visible_access_nodes: Default::default(),
             access_rows: Vec::new(),
+            table_reading: Default::default(),
             seconds: Vec::new(),
             first: None,
             kept_at: 0,
@@ -1171,8 +1179,11 @@ impl Ui {
         self.scenes.begin();
         self.icons.clear();
         self.blends.clear();
+        #[cfg(feature = "hdr")]
+        self.light.bright.clear();
         self.notes.clear();
         self.access_rows.clear();
+        self.table_reading.told.clear();
         self.noted.clear();
         self.reachable.clear();
         self.rovers.clear();
@@ -1659,14 +1670,26 @@ impl Ui {
         let paragraph = self.tree.strings[start..line.start].rfind('\n').map_or(start, |at| start + at + 1);
         let leftward = crate::bidi::leftward(&self.tree.strings[paragraph..end as usize]);
         let (text, after) = (&self.tree.strings[line.start..line.end], self.edit.after);
-        let x = crate::text::marks(self.text.as_mut(), text, line.start, line.width, font, self.scale, leftward, [0; 2], Some(cursor), after, &mut Vec::new()).unwrap_or(0.0);
+        let carets = crate::text::marks(self.text.as_mut(), text, line.start, line.width, font, self.scale, leftward, [0; 2], Some(cursor), after, &mut Vec::new()).unwrap_or_default();
+        #[cfg(feature = "right-to-left")]
+        let [x, other] = carets;
+        #[cfg(not(feature = "right-to-left"))]
+        let x = carets;
         let inside = self.tree.rect_of(at).inset(spec.frame.pad);
         let side = [0.0, 0.5, 1.0, 0.0][side as usize];
-        let x = x + ((inside.w - line.width).max(0.0) * if leftward { 1.0 - side } else { side }).round();
+        let shift = ((inside.w - line.width).max(0.0) * if leftward { 1.0 - side } else { side }).round();
+        let x = x + shift;
         self.edit.laid_out(lines, start, pt(inside.x, inside.y), place.line_height, inside.w);
         let spot = rect(inside.x + x, inside.y + row as f32 * place.line_height, 1.0, place.line_height);
-        // The cursor is marked by itself, so its blinking redraws only it.
+        // The cursor is marked by itself (both its halves, where split), so its blinking redraws
+        // only it.
+        #[cfg(not(feature = "right-to-left"))]
         self.marks.push((hash((at, spec.caret, spot.x.to_bits(), spot.y.to_bits())), spot.grow(1.0)));
+        #[cfg(feature = "right-to-left")]
+        {
+            let both = spot.union(rect(inside.x + (other + shift), spot.y, 1.0, spot.h));
+            self.marks.push((hash((at, spec.caret, spot.x.to_bits(), other.to_bits(), spot.y.to_bits())), both.grow(1.0)));
+        }
         self.ime_area = Some(spot);
         if std::mem::take(&mut self.edit.reveal) {
             self.show(at, spot);
@@ -2136,13 +2159,22 @@ impl Ui {
     /// dropped is kept while the window is open.
     pub fn drop_picture(&mut self, picture: Picture) {
         self.again |= self.pictures.take(picture.0).is_some();
+        #[cfg(feature = "hdr")]
+        self.light.maps.remove(&picture.0);
     }
     /// Takes a picture in from a file's bytes (`include_bytes!`, or read from disk): PNG, JPEG,
     /// GIF, WebP, BMP or ICO, told apart by their first bytes. (An animation's first frame; an
     /// icon's largest picture.) A photo is turned upright per its EXIF orientation, and with
-    /// the feature `color-profiles` converted from its embedded colour profile. Nothing if none
-    /// of these, or damaged.
+    /// the feature `color-profiles` converted from its embedded colour profile; with the feature
+    /// `hdr`, a PNG brighter than SDR white (PQ or HLG, by its `cICP` chunk) is shown so on HDR
+    /// screens. Nothing if none of these, or damaged.
     pub fn add_picture_file(&mut self, file: &[u8]) -> Option<Picture> {
+        #[cfg(feature = "hdr")]
+        if let Some((width, pixels, gains)) = crate::hdr::read_png(file) {
+            let picture = self.add_picture(width, pixels);
+            self.light.keep_map(picture, width, gains);
+            return Some(picture);
+        }
         read_picture(file).map(|(width, pixels)| self.add_picture(width, pixels))
     }
     /// Takes an animation in from a GIF, APNG or animated WebP file's bytes, to show with
@@ -2215,6 +2247,8 @@ impl Ui {
         self.again |= (width, pixels.len()) != (stored.width, stored.pixels.len());
         (stored.width, stored.pixels, stored.version) = (width, pixels, stored.version + 1);
         stored.smaller.clear();
+        #[cfg(feature = "hdr")]
+        self.light.maps.remove(&picture.0);
     }
 }
 

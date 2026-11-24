@@ -16,6 +16,7 @@ pub struct Notification(pub(crate) u32);
 
 /// A notification still to be shown: its number, title, text and picture (width in pixels, and
 /// pixels).
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) struct Out {
     pub number: u32,
     pub title: String,

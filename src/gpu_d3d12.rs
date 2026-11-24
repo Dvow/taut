@@ -83,16 +83,16 @@ struct ResourceDescription {
 /// `D3D12_TEXTURE_COPY_LOCATION`: a texture's first subresource (`kind` 0), or a placed
 /// footprint in a buffer (1): its offset, format, width, height, depth and row pitch.
 #[repr(C)]
-struct Place {
-    resource: Com,
-    kind: u32,
-    offset: u64,
-    footprint: [u32; 5],
+pub(crate) struct Place {
+    pub(crate) resource: Com,
+    pub(crate) kind: u32,
+    pub(crate) offset: u64,
+    pub(crate) footprint: [u32; 5],
 }
 
 /// `D3D12_RESOURCE_BARRIER`, a transition of a whole resource.
 #[repr(C)]
-struct Barrier {
+pub(crate) struct Barrier {
     kind: u32,
     flags: u32,
     resource: Com,
@@ -102,7 +102,7 @@ struct Barrier {
 }
 
 /// A transition of all of `resource` from `before` to `after`.
-fn barrier(resource: Com, before: u32, after: u32) -> Barrier {
+pub(crate) fn barrier(resource: Com, before: u32, after: u32) -> Barrier {
     Barrier { kind: 0, flags: 0, resource, subresource: 0xFFFF_FFFF, before, after }
 }
 
@@ -124,6 +124,14 @@ fn texture(device: &Device, size: [i32; 2]) -> Option<Com> {
     committed(device.device, DEFAULT_HEAP, &described, COPY_DESTINATION)
 }
 
+/// A texture `size` pixels of `format` in the GPU's own memory, to copy to first: an HDR
+/// window's gains (`hdr_windows`).
+#[cfg(feature = "hdr")]
+pub(crate) fn texture_of(device: Com, size: [i32; 2], format: u32) -> Option<Com> {
+    let described = ResourceDescription { dimension: 3, alignment: 0, width: size[0] as u64, height: size[1] as u32, depth: 1, mip_levels: 1, format, samples: [1, 0], layout: 0, flags: 0 };
+    committed(device, DEFAULT_HEAP, &described, COPY_DESTINATION)
+}
+
 /// How a window's texture is made: drawn into where the device draws windows, else only
 /// copied.
 #[inline]
@@ -138,7 +146,7 @@ fn drawn(device: &Device) -> u32 {
 
 /// A buffer of `bytes` in a heap of `kind` (upload or read back), starting in `state`, and where
 /// the CPU sees it.
-fn buffer(device: Com, kind: u32, bytes: usize, state: u32) -> Option<(Com, *mut u8)> {
+pub(crate) fn buffer(device: Com, kind: u32, bytes: usize, state: u32) -> Option<(Com, *mut u8)> {
     let described = ResourceDescription { dimension: 1, alignment: 0, width: bytes as u64, height: 1, depth: 1, mip_levels: 1, format: 0, samples: [1, 0], layout: 1, flags: 0 };
     let (made, mut there) = (committed(device, kind, &described, state)?, null_mut());
     // SAFETY: the buffer's Map (8), with nothing read (an empty range).
@@ -431,6 +439,11 @@ pub(crate) struct Shown {
     waiting: Vec<Waiting>,
     /// Width and height in pixels of the swap chain and the texture.
     size: [i32; 2],
+    /// Its HDR, and the pass to scRGB once tried (see `hdr_windows`).
+    #[cfg(feature = "hdr")]
+    pub(crate) hdr: crate::hdr_windows::Hdr,
+    #[cfg(feature = "hdr")]
+    pass: Option<Option<crate::hdr_windows::Pass12>>,
 }
 
 impl Shown {
@@ -439,7 +452,20 @@ impl Shown {
     pub(crate) fn new(device: &Device, hwnd: HANDLE, size: [i32; 2]) -> Option<Shown> {
         let [width, height] = size.map(|side| side.max(1) as u32);
         let described = ChainDescription { width, height, format: B8G8R8A8_UNORM, stereo: 0, sample_count: 1, sample_quality: 0, usage: 0x20, buffers: 2, scaling: 1, effect: 3, alpha: 3, flags: 0 };
-        let mut shown = Shown { chain: null_mut(), picture: null_mut(), upload: null_mut(), written: null_mut(), room: 0, next: 0, waiting: Vec::new(), size: [0; 2] };
+        let mut shown = Shown {
+            chain: null_mut(),
+            picture: null_mut(),
+            upload: null_mut(),
+            written: null_mut(),
+            room: 0,
+            next: 0,
+            waiting: Vec::new(),
+            size: [0; 2],
+            #[cfg(feature = "hdr")]
+            hdr: Default::default(),
+            #[cfg(feature = "hdr")]
+            pass: None,
+        };
         type MakeChain = unsafe extern "system" fn(Com, Com, HANDLE, *const ChainDescription, *const c_void, Com, *mut Com) -> i32;
         let mut chain = null_mut();
         // SAFETY: the factory's CreateSwapChainForHwnd (15) for a live window, on the queue; its
@@ -554,6 +580,10 @@ impl Shown {
         if self.picture.is_null() {
             return true;
         }
+        #[cfg(feature = "hdr")]
+        if !self.go_hdr(device) {
+            return false;
+        }
         let (dirty, mut back) = (inside(dirty, self.size), null_mut());
         let changed = Changed { count: dirty.len() as u32, rects: dirty.as_ptr(), scroll: null(), offset: null() };
         // SAFETY: the swap chain's GetCurrentBackBufferIndex (36) and GetBuffer (9).
@@ -565,8 +595,14 @@ impl Shown {
         }
         #[cfg(test)]
         let kept = tests::Kept::new(device, back, self.size, self.chain, dirty);
+        #[cfg(feature = "hdr")]
+        let (pass, constants, size) = (self.lit(device), self.hdr.constants(), self.size);
         let picture = self.picture;
         let to_back = |list: Com| {
+            #[cfg(feature = "hdr")]
+            if let Some(pass) = &pass {
+                return pass.record(device.device, list, picture, back, size, constants);
+            }
             let before = [barrier(picture, COPY_DESTINATION, COPY_SOURCE), barrier(back, PRESENT, COPY_DESTINATION)];
             let after = [barrier(picture, COPY_SOURCE, COPY_DESTINATION), barrier(back, COPY_DESTINATION, PRESENT)];
             type Barriers = unsafe extern "system" fn(Com, u32, *const Barrier);
@@ -593,7 +629,44 @@ impl Shown {
         let done = device.run_nothing() && device.wait();
         #[cfg(test)]
         kept.read();
+        #[cfg(feature = "hdr")]
+        self.lit_ran(pass);
         taken && presented >= 0 && done
+    }
+
+    /// Puts the swap chain in scRGB where the window is lit on an HDR screen, its pass made first,
+    /// and back where not. Says whether that worked.
+    #[cfg(feature = "hdr")]
+    fn go_hdr(&mut self, device: &Device) -> bool {
+        if self.hdr.wanted() && self.pass.is_none() {
+            self.pass = Some(crate::hdr_windows::Pass12::new(device.device));
+        }
+        self.hdr.switch(self.chain, self.size, self.pass.as_ref().is_some_and(Option::is_some))
+    }
+
+    /// The pass to scRGB, its gains ready, taken out while the frame is recorded: where the swap
+    /// chain is in scRGB.
+    #[cfg(feature = "hdr")]
+    fn lit(&mut self, device: &Device) -> Option<crate::hdr_windows::Pass12> {
+        if !self.hdr.on {
+            return None;
+        }
+        let mut pass = self.pass.as_mut()?.take()?;
+        if pass.prepare(device.device, &mut self.hdr.gains) {
+            return Some(pass);
+        }
+        self.pass = Some(Some(pass));
+        None
+    }
+
+    /// Puts the pass back once its frame ran.
+    #[cfg(feature = "hdr")]
+    fn lit_ran(&mut self, pass: Option<crate::hdr_windows::Pass12>) {
+        let Some(mut pass) = pass else { return };
+        pass.ran();
+        #[cfg(test)]
+        crate::hdr_windows::tests::read_kept();
+        self.pass = Some(Some(pass));
     }
 }
 

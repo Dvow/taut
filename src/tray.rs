@@ -92,6 +92,7 @@ impl Tray {
     /// icon was described and what changed of it, which the system is now told; from here on
     /// nothing has changed and nothing was described. (What the person did that no run took is
     /// dropped.)
+    #[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
     pub(crate) fn settle(&mut self) -> (bool, u8) {
         if self.described && self.rows_described < self.rows.len() {
             self.rows.truncate(self.rows_described);
@@ -203,6 +204,7 @@ impl Ui {
 /// alpha-weighted mean of those it covers (so a clear pixel's colour does not bleed at an
 /// edge), or where the picture is smaller, the pixel it lies on. Pixels are `0xAARRGGBB`, not
 /// premultiplied. For systems that want one exact size.
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) fn sized(width: usize, pixels: &[u32], side: usize) -> Vec<u32> {
     let (wide, high) = (width.max(1), (pixels.len() / width.max(1)).max(1));
     let mut made = Vec::with_capacity(side * side);
@@ -218,6 +220,7 @@ pub(crate) fn sized(width: usize, pixels: &[u32], side: usize) -> Vec<u32> {
 
 /// The mean of some rows and columns of a picture `wide` pixels wide (outside it, pixels are
 /// clear).
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 fn mean(pixels: &[u32], wide: usize, rows: std::ops::Range<usize>, columns: std::ops::Range<usize>) -> u32 {
     let (mut sums, mut count) = ([0u64; 4], 0u64);
     for y in rows {
@@ -237,6 +240,7 @@ fn mean(pixels: &[u32], wide: usize, rows: std::ops::Range<usize>, columns: std:
 
 /// The icon picture that best fits where the system shows `side` pixels: the smallest at least
 /// that wide, else the widest; resized to exactly that.
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) fn fitting(pictures: &[(usize, Vec<u32>)], side: usize) -> Option<Vec<u32>> {
     let fits = pictures.iter().filter(|(width, _)| *width >= side).min_by_key(|(width, _)| *width);
     let (width, pixels) = fits.or(pictures.iter().max_by_key(|(width, _)| *width))?;

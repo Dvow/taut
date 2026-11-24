@@ -118,9 +118,9 @@ impl Program {
 fn main() {
     #[cfg(windows)]
     wgl::run();
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     egl::run();
-    #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+    #[cfg(not(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
     println!("this example opens its window through WGL on Windows and through EGL on X11: there is neither here");
 }
 
@@ -318,7 +318,7 @@ pub mod wgl {
 }
 
 /// Declares a system library's functions, found by name when it is opened.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 macro_rules! library {
     ($set:ident, $file:literal, { $($name:ident: fn($($arg:ty),*) -> $out:ty;)* }) => {
         /// Functions of a system library, found by name.
@@ -342,7 +342,7 @@ macro_rules! library {
 
 /// The program on Linux: a window of X's, and a context on it through EGL. Both libraries
 /// are opened by name, and declared as EGL/egl.h and X11/Xlib.h declare them.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 pub mod egl {
     use super::Program;
     use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};

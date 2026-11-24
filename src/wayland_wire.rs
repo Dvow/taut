@@ -138,6 +138,20 @@ pub(crate) enum Interface {
     DmabufFeedback,
     #[cfg(feature = "gpu")]
     DmabufParams,
+    /// `wp_color_manager_v1`, an output's and a surface's colour objects, an image description,
+    /// its information, and a parametric description's creator (feature `hdr`).
+    #[cfg(feature = "hdr")]
+    ColorManager,
+    #[cfg(feature = "hdr")]
+    ColorOutput,
+    #[cfg(feature = "hdr")]
+    ColorSurface,
+    #[cfg(feature = "hdr")]
+    Description,
+    #[cfg(feature = "hdr")]
+    DescriptionInfo,
+    #[cfg(feature = "hdr")]
+    DescriptionCreator,
     /// (KWin's, through which tests move the pointer and press keys.)
     #[cfg(test)]
     FakeInput,
@@ -145,8 +159,13 @@ pub(crate) enum Interface {
 
 impl Interface {
     /// Whether a compositor event to such an object carries an fd: the keymap (0), a pipe end
-    /// to write a selection into (1), and the table of dmabuf formats (1).
+    /// to write a selection into (1), the table of dmabuf formats (1), and an image
+    /// description's ICC profile (1).
     fn takes_file(self, message: u16) -> bool {
+        #[cfg(feature = "hdr")]
+        if (self, message) == (Interface::DescriptionInfo, 1) {
+            return true;
+        }
         #[cfg(feature = "gpu")]
         if (self, message) == (Interface::DmabufFeedback, 1) {
             return true;

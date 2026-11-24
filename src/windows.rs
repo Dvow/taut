@@ -374,6 +374,11 @@ pub(crate) mod sys {
         pub fn SetBkMode(dc: HANDLE, mode: i32) -> i32;
         pub fn TextOutW(dc: HANDLE, x: i32, y: i32, text: *const u16, len: i32) -> i32;
         pub fn GetTextExtentExPointW(dc: HANDLE, text: *const u16, len: i32, max: i32, fit: *mut i32, each: *mut i32, size: *mut POINT) -> i32;
+        pub fn ExtTextOutW(dc: HANDLE, x: i32, y: i32, options: u32, rect: *const core::ffi::c_void, text: *const u16, len: u32, dx: *const i32) -> i32;
+        #[cfg(feature = "shaping")]
+        pub fn GetTextExtentExPointI(dc: HANDLE, glyphs: *const u16, len: i32, max: i32, fit: *mut i32, each: *mut i32, size: *mut POINT) -> i32;
+        #[cfg(feature = "shaping")]
+        pub fn GetGlyphIndicesW(dc: HANDLE, text: *const u16, len: i32, glyphs: *mut u16, flags: u32) -> u32;
         pub fn GetTextMetricsW(dc: HANDLE, metrics: *mut TEXTMETRICW) -> i32;
         pub fn GetTextFaceW(dc: HANDLE, room: i32, name: *mut u16) -> i32;
         pub fn SaveDC(dc: HANDLE) -> i32;
@@ -571,11 +576,46 @@ struct Fonts {
     each: Vec<i32>,
     /// A line's pieces by the font each uses (see `system_fonts::pieces`).
     pieces: Vec<(std::ops::Range<usize>, Face)>,
+    /// The language's forms in these fonts (see `system_forms`).
+    #[cfg(feature = "shaping")]
+    forms: crate::system_forms::Forms,
 }
 
 impl Fonts {
     fn new(dc: HANDLE) -> Self {
-        Fonts { dc, made: HashMap::new(), utf16: Vec::new(), each: Vec::new(), pieces: Vec::new() }
+        #[cfg(feature = "shaping")]
+        let forms = crate::system_forms::Forms::new();
+        Fonts {
+            dc,
+            made: HashMap::new(),
+            utf16: Vec::new(),
+            each: Vec::new(),
+            pieces: Vec::new(),
+            #[cfg(feature = "shaping")]
+            forms,
+        }
+    }
+
+    /// Puts a line's glyphs in `utf16` in place of its characters where the language's forms
+    /// change it (feature `shaping`), if the font `handle` is the one read: says whether it
+    /// did. (GDI draws and measures glyphs as it does characters, without its fallback fonts,
+    /// which such a line needs none of.)
+    #[cfg(feature = "shaping")]
+    fn in_forms(&mut self, handle: HANDLE, face: Face, text: &str) -> bool {
+        if let Some(glyphs) = self.forms.glyphs(face, text).filter(|glyphs| glyphs.len() == self.utf16.len()) {
+            let mut chosen = vec![0u16; glyphs.len()];
+            // SAFETY: both are as long as the length passed.
+            unsafe {
+                SelectObject(self.dc, handle);
+                GetGlyphIndicesW(self.dc, self.utf16.as_ptr(), self.utf16.len() as i32, chosen.as_mut_ptr(), 1);
+            }
+            if glyphs.iter().zip(&chosen).all(|([own, _], chosen)| own == chosen) {
+                self.utf16.clear();
+                self.utf16.extend(glyphs.iter().map(|[_, form]| form));
+                return true;
+            }
+        }
+        false
     }
 
     /// The system font for this face at this pixel size, made on first use. (Used at once,
@@ -632,12 +672,17 @@ impl Fonts {
         let (handle, _) = self.font(font, scale);
         self.utf16.clear();
         self.utf16.extend(text.encode_utf16());
+        // (Glyphs in place of the characters, where the language's forms change the line.)
+        #[cfg(feature = "shaping")]
+        let measure = if self.in_forms(handle, font.face, text) { GetTextExtentExPointI } else { GetTextExtentExPointW };
+        #[cfg(not(feature = "shaping"))]
+        let measure = GetTextExtentExPointW;
         self.each.resize(self.utf16.len(), 0);
         let mut size = POINT::default();
         // SAFETY: both buffers are as long as the length passed.
         unsafe {
             SelectObject(self.dc, handle);
-            GetTextExtentExPointW(self.dc, self.utf16.as_ptr(), self.utf16.len() as i32, 0, std::ptr::null_mut(), self.each.as_mut_ptr(), &mut size);
+            measure(self.dc, self.utf16.as_ptr(), self.utf16.len() as i32, 0, std::ptr::null_mut(), self.each.as_mut_ptr(), &mut size);
         }
         // Windows counts UTF-16 units; a character outside the BMP is two.
         let ends = text.chars().scan(0, |unit, c| Some(std::mem::replace(unit, *unit + c.len_utf16()) + c.len_utf16() - 1));
@@ -681,6 +726,11 @@ impl TextSystem for GdiText {
         self.fonts.measure(text, font, scale, stops)
     }
 
+    #[cfg(feature = "shaping")]
+    fn set_language(&mut self, language: crate::scripts::Language) {
+        self.fonts.forms.set(language);
+    }
+
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
         if !crate::system_fonts::pieces(text, font.face, &mut self.fonts.pieces) {
             return self.draw_one(canvas, text, x, y, font, color);
@@ -706,6 +756,10 @@ impl GdiText {
         let (handle, _) = self.fonts.font(font, scale);
         self.fonts.utf16.clear();
         self.fonts.utf16.extend(text.encode_utf16());
+        #[cfg(feature = "shaping")]
+        let glyphs = self.fonts.in_forms(handle, font.face, text);
+        #[cfg(not(feature = "shaping"))]
+        let glyphs = false;
         let (dc, units) = (self.strip.dc, &self.fonts.utf16);
         let (origin, clip) = (canvas.origin(), canvas.clip_pixels());
         let ink = color.0;
@@ -713,7 +767,7 @@ impl GdiText {
         if let Some(list) = canvas.list() {
             let strip = crate::gpu_draw_windows::Strip { dc, pixels: self.strip.pixels.get(), width: self.strip.width.get(), rows: self.strip.rows.get() };
             let at = [(x * scale).round() as i32, (y * scale).round() as i32];
-            return crate::gpu_draw_windows::run(list, &strip, handle, font, (font.size * scale).round() as i32, units, at, color, clip);
+            return crate::gpu_draw_windows::run(list, &strip, handle, font, (font.size * scale).round() as i32, (units, glyphs), at, color, clip);
         }
         // SAFETY: the canvas is this strip, so Windows writes into the same pixels; the DC is
         // restored after.
@@ -724,7 +778,10 @@ impl GdiText {
             SelectObject(dc, handle);
             SetBkMode(dc, 1);
             SetTextColor(dc, (ink >> 16 & 0xff) | (ink & 0xff00) | (ink & 0xff) << 16);
-            TextOutW(dc, (x * scale).round() as i32, (y * scale).round() as i32, units.as_ptr(), units.len() as i32);
+            match glyphs {
+                true => ExtTextOutW(dc, (x * scale).round() as i32, (y * scale).round() as i32, 0x10, std::ptr::null(), units.as_ptr(), units.len() as u32, std::ptr::null()),
+                false => TextOutW(dc, (x * scale).round() as i32, (y * scale).round() as i32, units.as_ptr(), units.len() as i32),
+            };
             RestoreDC(dc, saved);
             GdiFlush();
         }
@@ -746,8 +803,15 @@ struct Glyph {
 /// needs.
 pub struct SystemText {
     fonts: Fonts,
-    glyphs: HashMap<(Face, i32, char), Glyph>,
+    glyphs: HashMap<Pictured, Glyph>,
 }
+
+/// A glyph picture's key: face, size, character; and with `shaping`, the glyph of its language
+/// form (0 for none).
+#[cfg(feature = "shaping")]
+type Pictured = (Face, i32, char, u16);
+#[cfg(not(feature = "shaping"))]
+type Pictured = (Face, i32, char);
 
 impl SystemText {
     /// The system's text: Segoe UI, and the first monospaced font installed. Nothing where
@@ -759,13 +823,19 @@ impl SystemText {
         (dc != 0).then(|| SystemText { fonts: Fonts::new(dc), glyphs: HashMap::new() })
     }
 
-    fn glyph(&mut self, font: Font, scale: f32, letter: char) -> &Glyph {
+    /// A character's glyph picture; with `shaping`, that of glyph `form` where not 0.
+    fn glyph(&mut self, font: Font, scale: f32, letter: char, #[cfg(feature = "shaping")] form: u16) -> &Glyph {
         let ((handle, _), px, dc) = (self.fonts.font(font, scale), (font.size * scale).round() as i32, self.fonts.dc);
+        // (A glyph is asked for by its id with `GGO_GLYPH_INDEX`, 0x80.)
+        #[cfg(feature = "shaping")]
+        let (key, code, how) = ((font.face, px, letter, form), if form == 0 { letter as u32 } else { form as u32 }, if form == 0 { 6 } else { 6 | 0x80 });
+        #[cfg(not(feature = "shaping"))]
+        let (key, code, how) = ((font.face, px, letter), letter as u32, 6);
         // Past `GLYPHS` pictures all are dropped and remade on demand.
-        if self.glyphs.len() >= GLYPHS && !self.glyphs.contains_key(&(font.face, px, letter)) {
+        if self.glyphs.len() >= GLYPHS && !self.glyphs.contains_key(&key) {
             self.glyphs.clear();
         }
-        self.glyphs.entry((font.face, px, letter)).or_insert_with(|| {
+        self.glyphs.entry(key).or_insert_with(|| {
             // Upright, unscaled, 65 grey levels (`GGO_GRAY8_BITMAP`, 6), rows padded to four
             // bytes.
             let (mut m, upright) = (GLYPHMETRICS::default(), [0, 1, 0, 0, 0, 0, 0, 1]);
@@ -773,9 +843,9 @@ impl SystemText {
             // that size.
             let shades = unsafe {
                 SelectObject(dc, handle);
-                let size = GetGlyphOutlineW(dc, letter as u32, 6, &mut m, 0, std::ptr::null_mut(), &upright);
+                let size = GetGlyphOutlineW(dc, code, how, &mut m, 0, std::ptr::null_mut(), &upright);
                 let mut shades = vec![0u8; if size == u32::MAX { 0 } else { size as usize }];
-                GetGlyphOutlineW(dc, letter as u32, 6, &mut m, shades.len() as u32, shades.as_mut_ptr(), &upright);
+                GetGlyphOutlineW(dc, code, how, &mut m, shades.len() as u32, shades.as_mut_ptr(), &upright);
                 shades
             };
             let (width, row) = (m.wide as usize, (m.wide as usize + 3) & !3);
@@ -811,13 +881,25 @@ impl TextSystem for SystemText {
         self.fonts.measure(text, font, scale, stops)
     }
 
+    #[cfg(feature = "shaping")]
+    fn set_language(&mut self, language: crate::scripts::Language) {
+        self.fonts.forms.set(language);
+    }
+
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
         let scale = canvas.scale();
         let ascent = (self.fonts.font(font, scale).1.ascent * scale).round() as i32;
         let (mut pen, line) = ((x * scale).round() as i32, (y * scale).round() as i32 + ascent);
+        // (The language's forms, where the line takes some: each in the face's own font.)
+        #[cfg(feature = "shaping")]
+        let mut forms = self.fonts.forms.glyphs(font.face, text).unwrap_or_default().into_iter();
         for letter in text.chars() {
             // A letter the face's font lacks comes from its fallback.
-            let glyph = self.glyph(Font { face: crate::system_fonts::face_for(font.face, letter), ..font }, scale, letter);
+            let face = Font { face: crate::system_fonts::face_for(font.face, letter), ..font };
+            #[cfg(feature = "shaping")]
+            let glyph = self.glyph(face, scale, letter, forms.next().map_or(0, |[own, form]| if form == own { 0 } else { form }));
+            #[cfg(not(feature = "shaping"))]
+            let glyph = self.glyph(face, scale, letter);
             canvas.cover(pen + glyph.left, line - glyph.top, glyph.width, &glyph.cover, color);
             pen += glyph.advance;
         }
@@ -1660,6 +1742,13 @@ impl State {
             uia::tell(window.hwnd, ui);
             uia::announce(window.hwnd, ui);
             window.changed(ui);
+            // What lights the window, on its screen (see `hdr_windows`); a new headroom is the
+            // app's to hear.
+            #[cfg(feature = "hdr")]
+            if crate::hdr_windows::light(window.hwnd, window.shown.as_mut(), [window.wide, window.high], ui) {
+                // SAFETY: posts to a live window.
+                unsafe { PostMessageW(window.hwnd, WM_WAKE, 0, 0) };
+            }
             ui.changed();
             window.asks_hit_test = window.edges || ui.window_state.title_bar != 0;
             window.keep_ime_off(ui.password_focused());
@@ -1885,6 +1974,8 @@ impl State {
     /// The screens or a work area changed: the interface is told, and runs if it is news, for
     /// the app to hear.
     fn screens_changed(&mut self) {
+        #[cfg(feature = "hdr")]
+        self.follow_screens();
         if self.ui.set_screens(screens()) {
             self.run();
         }
@@ -2057,8 +2148,32 @@ impl State {
     /// A system setting changed: if it concerns how windows look and move, or a work area
     /// (`what` is `SPI_SETWORKAREA`, 0x2F), the interface is told and runs for the app to hear.
     fn settings_changed(&mut self, what: usize) {
+        // (A screen's SDR white is among them.)
+        #[cfg(feature = "hdr")]
+        self.follow_screens();
         if self.ui.set_preferences(crate::preferences::of_windows()) | (what == 0x2F && self.ui.set_screens(screens())) {
             self.run();
+        }
+    }
+    /// Windows said screens or their settings changed: each window's screen is read again (see
+    /// `hdr_windows`). Where a window's headroom changed, the interface runs, for its app to
+    /// hear.
+    #[cfg(feature = "hdr")]
+    fn follow_screens(&mut self) {
+        crate::hdr_windows::screens_changed();
+        self.light_windows();
+    }
+    /// Takes in what lights each window, on its screen, as a run does (see `hdr_windows`): for a
+    /// device that came or was made again. Where a window's headroom changed, the interface
+    /// runs.
+    #[cfg(feature = "hdr")]
+    fn light_windows(&mut self) {
+        let lit = |ui: &mut Ui, window: &mut Open| crate::hdr_windows::light(window.hwnd, window.shown.as_mut(), [window.wide, window.high], ui);
+        // (Every window, not only up to the first with news.)
+        let news: Vec<bool> = (0..self.windows.len()).map(|at| self.in_window(at, lit) == Some(true)).collect();
+        if news.contains(&true) {
+            // SAFETY: posts to the first window, which is alive.
+            unsafe { PostMessageW(self.windows[0].hwnd, WM_WAKE, 0, 0) };
         }
     }
     /// Window `at` moved: its interface is told and runs, so its app hears.
@@ -2123,6 +2238,8 @@ impl State {
         if self.windows.iter().all(|window| window.shown.is_none()) {
             self.device = None;
         }
+        #[cfg(feature = "hdr")]
+        self.light_windows();
     }
 
     /// Has the device show window `at`, if there is one and it can; a new window is then cloaked
@@ -2238,6 +2355,8 @@ impl State {
             // SAFETY: the window is alive.
             unsafe { InvalidateRect(self.windows[at].hwnd, std::ptr::null(), 0) };
         }
+        #[cfg(feature = "hdr")]
+        self.light_windows();
     }
 }
 
@@ -3614,6 +3733,36 @@ pub(crate) mod tests {
         unsafe { DestroyWindow(hwnd) };
     }
 
+    /// A window's text, drawn by GDI, takes the language's forms (feature `shaping`): Serbian
+    /// б, г, д, п, т in Bahnschrift, where installed.
+    #[cfg(feature = "shaping")]
+    #[test]
+    fn a_windows_text_takes_the_languages_forms() {
+        use crate::scripts::Language;
+        let face = Face::named("Bahnschrift");
+        let serbian = |file: crate::font_file::FontFile| crate::shaping::local(&file, '\u{431}', Language::named("sr")) != file.glyph('\u{431}');
+        if !crate::system_fonts::file_for(face, 'a').is_some_and(serbian) {
+            return eprintln!("no Bahnschrift with Serbian forms here: not tested");
+        }
+        let (word, font) = ("\u{431}\u{433}\u{434}\u{43f}\u{442}", Font { face, ..Font::new(24.0) });
+        let drawn = |language: Language| {
+            // SAFETY: a memory DC of the test's own.
+            let dc = unsafe { CreateCompatibleDC(0) };
+            let strip = Rc::new(Strip { dc, bitmap: Cell::new(0), pixels: Cell::new(std::ptr::null_mut()), width: Cell::new(0), rows: Cell::new(0) });
+            strip.fit(200);
+            let mut text = GdiText { strip: strip.clone(), fonts: Fonts::new(strip.dc) };
+            text.set_language(language);
+            let (width, rows) = (strip.width.get() as usize, strip.rows.get() as usize);
+            // SAFETY: the strip holds `rows` rows of `width` pixels, and nothing else uses them.
+            let pixels = unsafe { std::slice::from_raw_parts_mut(strip.pixels.get(), width * rows) };
+            pixels.fill(0xff00_0000);
+            text.draw(&mut Canvas::new(pixels, width, rows, (0, 0), 1.0), word, 2.0, 2.0, font, Color::WHITE);
+            (pixels.to_vec(), text.measure(word, font, 1.0, None))
+        };
+        let [own, plain, russian] = [Language::named("sr"), Language::NONE, Language::named("ru")].map(drawn);
+        assert!(own.0 != plain.0 && plain == russian && own.1 > 0.0);
+    }
+
     /// Text measured and drawn at every size a pan-and-zoom view zooms through keeps at most
     /// `MADE` GDI fonts and `GLYPHS` glyph pictures; what is dropped comes back the same.
     #[test]
@@ -3623,6 +3772,9 @@ pub(crate) mod tests {
         (1..=600).for_each(|px| _ = text.measure("Wide", Font::new(px as f32), 1.0, None));
         assert!(text.fonts.made.len() <= MADE, "{} fonts kept", text.fonts.made.len());
         for (px, letter) in (4..=40).flat_map(|px| (0x41..0x16d).filter_map(char::from_u32).map(move |letter| (px, letter))) {
+            #[cfg(feature = "shaping")]
+            text.glyph(Font::new(px as f32), 1.0, letter, 0);
+            #[cfg(not(feature = "shaping"))]
             text.glyph(Font::new(px as f32), 1.0, letter);
         }
         assert!(text.glyphs.len() <= GLYPHS, "{} pictures of letters kept", text.glyphs.len());

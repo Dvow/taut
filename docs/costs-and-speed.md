@@ -44,18 +44,26 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | --- | --- | --- | --- | --- |
 | `right-to-left` | Hebrew, Arabic, Persian, Urdu in Unicode order; Arabic joined | letters left to right, as typed | 206 KB; 135 KB | 193 KB; 144 KB |
 | `brahmic` | Indic and South-East Asian scripts shaped by syllable | system text: whole on Windows, letter by letter on Linux | 280 KB; 209 KB | 277 KB; 228 KB |
+| `shaping` | app fonts shaped as pages are; the system's text in the language's forms | glyph by glyph, pairs kerned; default forms | 178 KB; 154 KB | 202 KB; 166 KB |
 | `emoji` | colour emoji from the system font | plain letters: text colour on Windows; outlines if any on Linux | 142 KB; 55 KB | 140 KB; 71 KB |
 | `fallback-fonts` | Windows: missing letters in the font Windows would pick | Windows' linked fonts (Linux always uses Fontconfig) | 38 KB; 28 KB | nothing |
 | `touch` | touch, pen and pinch gestures | a finger is the system's mouse (Wayland: the first finger) | 30 KB; 12 KB | 40 KB; 19 KB |
 | `cff` | CFF and CFF2 fonts (most `.otf`) | not read | nothing; 17 KB | nothing; 17 KB |
 | `color-profiles` | colour profiles in picture files | colours as stored | nothing; 7 KB | nothing; 7 KB |
 | `woff2` | WOFF2 fonts (with a Brotli decoder) | not read | nothing; 95 KB | nothing; 99 KB |
+| `hinting` | TrueType fonts' own hinting instructions run | every font autohinted | nothing; 93 KB | nothing; 96 KB |
 | `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | 63 KB; 60 KB |
 | `gpu-draw` | the GPU draws them too ([below](#drawn-by-the-gpu)) | the CPU draws them | 124 KB; 143 KB more than `gpu` | 82 KB; 104 KB more than `gpu` |
+| `hdr` | boxes and pictures brighter than SDR white on HDR screens | shown at SDR white | 21 KB; 21 KB more than `gpu` | 20 KB; 21 KB more than `gpu` |
 | `translations` | built-in words in German, Spanish, French, Japanese, Portuguese, Chinese | English until set | 24 KB; 22 KB | 37 KB; 36 KB |
+| `video` | video and sound by the system's player (`Video`) | none | nothing; nothing | nothing; nothing |
 
+- `video` costs only where a video is opened: the `player` example is 88 KB more than `hello`
+  on Windows, 52 KB on Linux (2026-11-24).
 - Each cost is the feature alone, in `hello` and in the gallery (which reads fonts and
   pictures). `brahmic` adds 77 KB (Linux 86 KB) to `hello` with `right-to-left` already on.
+- `hinting`: a fresh page of text at 9–13 px takes Segoe UI 5.7 ms (3.6 autohinted), Arial
+  24 ms (3.5): Arial runs about 3,000 instructions a glyph.
 - `hello`: 457 KB on Windows, 758 KB on Linux; `bench`: 492 KB and 582 KB (2026-11-15).
 - Linux is larger by Rust's backtrace support (about 165 KB) and by carrying X11, Wayland and
   AT-SPI, since which is needed is known only at run time.
@@ -118,6 +126,35 @@ lavapipe: a software device, so its copies are CPU work too; 800×500, release b
   cycle (16 ms on Xvfb, 25 ms headless), the same on both paths.
 - On a software device dmabufs only add work: `Auto` keeps shared memory. A hardware GPU was not
   measured.
+
+macOS (GitHub's runner: macOS 26.7, a VM with Apple's paravirtual GPU, one screen at scale 1;
+2026-11-24; the cards page of [Drawn by the GPU](#drawn-by-the-gpu); each case a program of its own, 100 frames, best of 2). CPU
+per frame, µs (show: Metal only shows; draw: it draws too, `TAUT_DRAW=gpu`):
+
+| | CPU (Core Animation) | Metal, show | Metal, draw |
+| --- | --- | --- | --- |
+| 400×300, all changed | 721 | 1,231 | 1,189 |
+| 400×300, one label changed | 685 | 1,124 | 1,382 |
+| 400×300, list scrolled a row | 883 | 2,164 | 1,104 |
+| 400×300, gradients and shapes | 1,254 | 3,054 | 1,584 |
+| 1024×645 (all the screen), all changed | 3,575 | 3,134 | 1,279 |
+| 1024×645, one label changed | 3,299 | 1,349 | 1,664 |
+| 1024×645, list scrolled a row | 4,448 | 4,754 | 1,535 |
+| 1024×645, a box moving | 3,410 | 1,553 | 1,631 |
+| 1024×645, gradients and shapes | 7,780 | 7,834 | 1,576 |
+| Most memory (whole process), 1024×645 | 97 MB | 100–108 MB | 95 MB |
+| GPU shows it from | | 0.15–0.27 s | 0.16–0.59 s |
+
+- The CPU path hands Core Animation a new picture of the whole window every frame (a copy of
+  all its pixels); Metal uploads only the changed places: at 1024×645 a small change costs a
+  third to a half.
+- Each Metal frame costs about 0.5 ms more in the driver (a VM's here), so small windows cost
+  more on Metal, as on Windows.
+- Drawing on the GPU takes a third to a fifth of the CPU's time where much changes.
+- Metal's frames wait for the screen (16.7 ms at 60 Hz); the CPU path's are handed over as fast as
+  they come (0.7–9 ms), more than the screen shows.
+- First frames are the CPU's: Metal is opened (its shaders compiled with `gpu-draw`) on a thread
+  of its own.
 
 ## Drawn by the GPU
 

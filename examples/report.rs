@@ -5,7 +5,7 @@
 //!   cargo run -p taut --example report
 //!   cargo run -p taut --example report -- report.pdf   (writes the file, and shows nothing)
 #![windows_subsystem = "windows"]
-use taut::{Align, Chart, Color, Font, Length, Markdown, Paper, Path, Pen, PrintJob, PrintOutcome, Series, Ui, Window, geom::rect};
+use taut::{Align, Chart, Color, Font, Length, Markdown, Paper, Path, Pen, PrintJob, PrintOutcome, Role, Series, Ui, Window, geom::rect};
 
 /// The months, and what was sold in each, and what came back.
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -46,17 +46,26 @@ pub fn paper() -> Paper {
     paper.title = "The year in sales".into();
     paper.page(Paper::A4);
     let (black, dim) = (Color::rgb(0x1a202c), Color::rgb(0x4a5568));
+    // (A screen reader reads the parts in this order: the heading, what the chart shows, the
+    // report's words.)
+    paper.begin_heading(1);
     paper.text("The year in sales", 72.0, 72.0, Font::new(28.0).bold(), black);
+    paper.end();
     paper.text("Things sold and things that came back, by month", 72.0, 116.0, Font::new(14.0), dim);
+    paper.begin(Role::Picture);
+    paper.describe("A chart by month: sales rose from 412 in January to 820 in December; returns from 21 to 41.");
     chart(&mut paper, rect(72.0, 170.0, Paper::A4.w - 144.0, 420.0));
+    paper.end();
     paper.markdown(&Markdown::parse(&words()), Paper::A4, 72.0);
-    // A number at the foot of every page.
+    // A number at the foot of every page: decoration, which readers skip.
     let pages = paper.pages();
     for page in 0..pages {
         paper.set_page(page);
         let number = format!("{} of {pages}", page + 1);
         let wide = paper.measure(&number, Font::new(11.0));
+        paper.begin_decoration();
         paper.text(&number, (Paper::A4.w - wide) / 2.0, Paper::A4.h - 48.0, Font::new(11.0), dim);
+        paper.end();
     }
     paper
 }

@@ -52,10 +52,31 @@ fn main() {
 
 On Linux, a window is a Wayland window where a compositor answers, else X11;
 `TAUT_BACKEND=x11` forces X. On macOS, an AppKit window, run from the main thread; Command and
-Control are both `ctrl`.
+Control are both `ctrl`. On iOS, a UIKit window filling its scene, run from the main thread;
+`run` never returns. `examples/ios_bundle.rs` makes an example an app.
+
+On Android, the app is a library `NativeActivity` loads. It exports `android_main`, which calls
+`main`; `run` opens the activity's window and returns, and the interface runs on the main
+looper. Build with the feature `touch`: without it a finger is the mouse and lists don't scroll
+by dragging.
+
+```rust,ignore
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+extern "C" fn android_main() {
+    main()
+}
+```
+
+`cargo run --example apk -- hello --target aarch64-linux-android --features touch` packs an
+example as a signed APK with the SDK's tools (`examples/apk.rs`).
+
+On the web, the same program built for `wasm32-unknown-unknown` draws in a page's `<canvas>`;
+`run` returns at once. `cargo run --example web_page -- <program>.wasm` writes the page and its
+loader beside the program and serves them. What differs there: [`taut::web`](https://docs.rs/taut/latest/taut/web/).
 
 Features (off by default) cover what the calls can't reveal: `right-to-left`, `brahmic`,
-`touch`, `emoji`, `fallback-fonts`, `cff`, `woff2`, `color-profiles`
+`shaping`, `touch`, `emoji`, `fallback-fonts`, `cff`, `woff2`, `hinting`, `color-profiles`
 (`taut = { version = "0.2", features = ["emoji"] }`). Costs: `docs/costs-and-speed.md`.
 
 ## Three rules
@@ -602,9 +623,10 @@ fn plan(ui: &mut Ui, view: &mut PanZoom, rooms: &[(Rect, &str)]) {
 ```
 
 A node graph is a pan-zoom area of wired nodes. The app owns the `Graph` (nodes with typed ports and
-data; wires); `ui.graph` yields each visible node for the app's parts. Users pick (click, rubber
-band), move, wire by dragging (where the app's `fits` allows), delete and copy (Delete; Ctrl+C,
-X, V, D), also by keyboard (Tab between nodes, Left and Right round ports, Enter starts a wire).
+data; wires, bends, frames, a grid); `ui.graph` yields each visible node for the app's parts. Users
+pick (click, rubber band), move, wire by dragging (where `can_connect` allows), delete and copy
+(Delete; Ctrl+C, X, V, D), frame (Ctrl+G), bend wires (double-click) and undo (Ctrl+Z, Ctrl+Y),
+also by keyboard (Tab between nodes, Left and Right round ports and wires, Enter starts a wire).
 `graph.action` says what happened:
 
 ```rust
@@ -616,16 +638,21 @@ fn sums(ui: &mut Ui, graph: &mut Graph<f64>) {
         ui.number(&mut graph.nodes[n].data, 1.0);
         ui.close();
     }
-    // Selected, moved, connected or disconnected, deleted, pasted, or the right button for a menu.
+    // Selected, moved, connected or disconnected, deleted, pasted, rerouted, framed, undone, a
+    // wire let go on nothing, or the right button for a menu.
     if let GraphAction::Connected(wire) = graph.action {
         let _ = wire; // work out what follows from it
     }
 }
 
 let mut graph = Graph::new();
+graph.grid = 20.0; // drawn; what the user moves snaps to it
 graph.add(Node::new("Number", 40.0, 40.0, 3.0).output("Value", "number"));
-graph.add(Node::new("Twice", 260.0, 40.0, 0.0).input("A", "number").output("Result", "number"));
+graph.add(Node::new("Sum", 260.0, 40.0, 0.0).multi_input("All", "number").output("Result", "number"));
 graph.wire((0, 0), (1, 0));
+// An edit of the app's own: kept first, so Ctrl+Z takes it back.
+graph.save_undo_step();
+graph.add(Node::new("Number", 40.0, 160.0, 4.0).output("Value", "number"));
 ```
 
 Only visible nodes are described; a minimap shows the rest. `examples/node_editor.rs` is a full editor.
@@ -701,27 +728,50 @@ fn help(ui: &mut Ui, page: &Markdown) {
 
 A `Paper` is pages of any size in window units (1/96 inch; `Paper::A4` is 793.7 × 1122.5) with
 shapes, gradients, text, pictures and links. Text is searchable and shaped, in system or app fonts
-(`paper.font(Face::Regular, file)`), in `paper.language` (`Language::named("ja")`); fonts are
-subset. Markdown breaks between blocks and rows. A window's content goes on a page as a 300 dpi
-picture: `paper.interface(rect(72.0, 72.0, 400.0, 300.0), &mut |ui| ui.label("Shown"))`.
+(`paper.font(Face::Regular, file)`), in the language `paper.set_language("ja")` names; fonts are
+subset as their licences allow; colour emoji in colour with the feature `emoji`. Markdown breaks between blocks and rows,
+and repeats a table's headings on each page. A window's content goes on a page as a 300 dpi
+picture, described by what it tells screen readers:
+`paper.interface(rect(72.0, 72.0, 400.0, 300.0), &mut |ui| ui.label("Shown"))`.
+
+The file is tagged (PDF/UA): parts open and close as boxes do, `begin(Role::..)` to `end()`,
+and readers read them in that order; headings are bookmarks too. Words outside any part are a
+paragraph each; shapes outside a picture part are decoration. `paper.markdown` tags everything.
+
+| Call | What the file gets |
+| --- | --- |
+| `paper.begin_heading(1)`, `paper.begin(Role::Table)`, `paper.end()` | a heading (and bookmark), a table, … |
+| `paper.begin(Role::Picture)`, `paper.describe("Sales rose")` | a picture readers are told of |
+| `paper.begin_decoration()` | page numbers, running heads: skipped by readers |
+| `paper.text_field(r, "Name", "", font)`, `tick_field`, `choice_field` | form fields to fill in |
+| `paper.jpeg(file, r)`, `paper.png(file, r)` | photos with their colour profiles |
+| `paper.archive()` | PDF/A-2b, for keeping |
+| `paper.encrypt("password", "owner")` | AES-256: opens with the password; changes need the owner's |
 
 ```rust
-use taut::{Color, Font, Markdown, Paper, Path, Pen, PrintJob, PrintOutcome, Ui, geom::rect};
+use taut::{Color, Font, Markdown, Paper, Path, Pen, PrintJob, PrintOutcome, Role, Ui, geom::rect};
 
 fn report(notes: &Markdown) -> Paper {
     let mut paper = Paper::new();
     paper.title = "Report".into(); // what a reader shows as its name
     paper.page(Paper::A4); // what is drawn goes on the page begun last
+    paper.begin_heading(1);
     paper.text("Sales", 72.0, 72.0, Font::new(28.0).bold(), Color::BLACK);
+    paper.end();
+    paper.begin(Role::Picture);
+    paper.describe("Sales rose, then fell a little");
     let mut line = Path::new();
     line.move_to(72.0, 300.0).line_to(200.0, 220.0).line_to(320.0, 260.0);
     paper.outline(&line, Pen::new(3.0), Color::rgb(0x2b6cb0));
+    paper.end();
     paper.link(rect(72.0, 72.0, 90.0, 34.0), "https://example.com");
     // The notes on pages of their own; then a number at the foot of every page.
     paper.markdown(notes, Paper::A4, 72.0);
     for page in 0..paper.pages() {
         paper.set_page(page);
+        paper.begin_decoration();
         paper.text(&format!("{}", page + 1), 390.0, 1080.0, Font::new(11.0), Color::BLACK);
+        paper.end();
     }
     paper
 }
@@ -731,9 +781,19 @@ fn save_or_print(ui: &mut Ui, notes: &Markdown, printing: &mut Option<PrintJob>)
         let _ = std::fs::write("report.pdf", report(notes).to_pdf());
     }
     // The system's print dialog, in which the person picks a printer, pages and copies.
-    // The call returns at once; what came of it is known a run or many later.
+    // The call returns at once; what came of it is known a run or many later. A page larger
+    // than the sheet goes on several (`paper.shrink_to_fit` shrinks it instead).
     if ui.button("Print").clicked {
         *printing = Some(taut::print(report(notes), "Report"));
+    }
+    // Or laid out for the paper picked in the dialog.
+    if ui.button("Print notes").clicked {
+        let notes = notes.clone();
+        *printing = Some(taut::print_laid("Notes", move |sheet| {
+            let mut paper = Paper::new();
+            paper.markdown(&notes, sheet, 72.0);
+            paper
+        }));
     }
     if let Some(done) = printing.as_ref().and_then(PrintJob::outcome) {
         let _sent = done == PrintOutcome::Sent; // or Closed by the person, or Unable: no printing here
@@ -831,11 +891,12 @@ Reopen the window there with `Window { .. }.with_placement(saved.window)` ("Wher
 | Where a window is | `ui.window_placement()` (save on close) · `Window { .. }.with_placement(saved)` restores it · `SecondWindow::new(420.0, 300.0).position(x, y).min_size(200.0, 120.0)` · `ui.screens()`, `ui.screen()`, `Window { screen: Some(1), .. }`, `.on_screen(1)`: "Screens, kinds of second window, and closing" |
 | Clipboard | `ui.copy(text)` · `ui.clipboard()` · `ui.copy_picture(width, &pixels)` · `ui.clipboard_picture()` · `ui.copy_files(&paths)` · `ui.clipboard_files()` |
 | Files and links | `taut::open_with_system(path_or_link)`: default program, on its own thread |
+| Video (feature `video`) | `Video::open(path)` (or an address, or bytes) · `Video::open_silent(…)` opens no sound device · `video.play()`, `pause()`, `seek(time)`, `position()`, `length()`, `size()`, `set_volume(0.0..=1.0)`, `set_muted(on)`, `set_looping(on)`, `set_fill(on)`, `ended()` (true once per end), `error()` · `ui.video(&mut video)` → a box: `.grow().show()`; only it redraws per frame · `ui.video_controls(&mut video)`: play, position, time, mute, volume · `ui.drop_video(video)` |
 | Pictures | `ui.add_picture_file(bytes)` (PNG, JPEG, GIF, WebP, BMP, ICO) · `ui.add_picture(width, pixels)` · `ui.set_picture(picture, width, pixels)` · `ui.drop_picture(picture)` · `ui.picture_size`, `ui.animation_size`, `ui.drawing_size` · SVG: `ui.add_drawing(svg_text)`, `.drawing(drawing, color)`, `ui.drop_drawing` · animations: `ui.add_animation(bytes)`, `.animation(animation)`, `ui.drop_animation` · decode: `png::decode`, `svg::decode(text, width, height)`, `gif::decode`, `webp::decode`, `bmp::decode`, `bmp::decode_icon` · encode: `png::encode(width, pixels)` (`None` unless whole rows), `png::encode_rgba`, `jpeg::encode(width, &pixels, quality)`, `bmp::encode_icon(&[(width, &pixels), …])` · SVG extras, once: `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()` |
 | 3D scenes | `ui.add_mesh(points, triangles)` once (`ui.set_mesh`, `ui.color_mesh(mesh, colors)`), then `.scene(&camera, &[mesh.filled(color), other.outlined(color).centered_at([x, y, z])])` · `Camera::look_at(from, at)` `.up(..)` `.fov(degrees)` `.orthographic(units_high)` `.depth_range(near, far)` `.light_from(direction)`; `Camera::from_matrix(rows)` · mesh: `.filled` `.outlined` `.centered_at` `.transform(rows)` `.unlit()` `.one_sided()` · `camera.project(point, rect)` · `ui.drop_mesh(mesh)` · "Scenes" |
-| App fonts | `ui.set_fonts(AppFonts::new(FontFile::read(bytes)?))` once, `.bold(..)`, `.mono(..)`; missing letters fall back to system text · `ui.set_text_system(..)`: files only · icon fonts: `.shape(&font.outline('\u{e88a}', 16.0), color)` · emoji: `ui.emoji_in_full()`; `ui.set_emoji(FontFile::read(bytes)?)` or `FontFile::open(path)`; after `ui.set_text_system(Box::new(own))`, `Box::new(Emoji::around(Box::new(own)))` · variable: `.with_variation(b"wght", 700.0)`, `.named("SemiBold Condensed")`; collections: `.nth(1)`, `.named("Cambria Math")`; `.axes()`, `.faces()` · custom `TextSystem`s are ordered and shaped too (`BidiText`) · `AppFonts::new(file).unhinted()`: no hinting · language forms: `ui.set_language(Language::named("sr"))` (default `Language::of_the_system()`), `AppFonts::new(file).language(..)` |
+| App fonts | `ui.set_fonts(AppFonts::new(FontFile::read(bytes)?))` once, `.bold(..)`, `.mono(..)`; missing letters fall back to system text · `ui.set_text_system(..)`: files only · icon fonts: `.shape(&font.outline('\u{e88a}', 16.0), color)` · emoji: `ui.emoji_in_full()`; `ui.set_emoji(FontFile::read(bytes)?)` or `FontFile::open(path)`; after `ui.set_text_system(Box::new(own))`, `Box::new(Emoji::around(Box::new(own)))` · variable: `.with_variation(b"wght", 700.0)`, `.named("SemiBold Condensed")`; collections: `.nth(1)`, `.named("Cambria Math")`; `.axes()`, `.faces()` · custom `TextSystem`s are ordered and shaped too (`BidiText`) · `AppFonts::new(file).unhinted()`: no hinting · `.autohinted()`: the autohinter even where a font has its own instructions (feature `hinting`) · language forms: `ui.set_language(Language::named("sr"))` (default `Language::of_the_system()`), `AppFonts::new(file).language(..)` |
 | The window | `ui.set_title(text)` · `ui.quit()` · `ui.set_on_top(true)` · `ui.bring_to_front()` · `ui.window_focused()`, `ui.window_minimized()`, `ui.system_dark()` · `Window { minimized: true, .. }` · `Window { icons: &[(32, &pixels)], .. }` (Windows default: the exe's icon 1) · `ui.minimize()` · `ui.set_maximized(true)`, `ui.maximized()` · `ui.set_full_screen(true)`, `ui.full_screen()` · "Kinds of window" |
-| Screen readers | Custom parts: `ui.tell(&response, Role::CheckBox, Some(on), "")` (role, state, name if no text) · `ui.tell_text(&response, name, value)` · `ui.tell_value(&response, Role::Slider, [value, min, max])` (or `Role::SpinButton`) · then: `ui.tell_shortcut("Ctrl+O")`, `ui.tell_position(nth, count)`, `ui.tell_step(step)`, `ui.tell_tree_item(level, expanded)` (`Role::TreeItem` in a `Role::Tree` box), `ui.tell_level(level)` · `ui.tell_choice(&response, open, chosen)` · `ui.announce("Saved")` · `ui.tell_separately(&part)` · `ui.show_for_reader(id)` · tests: `ui.set_screen_reader(true)`, `ui.access_nodes()` (all; `node.visible`), `ui.visible_access_nodes()` (visible) · wordless parts take the label before them; else name them with `ui.tell(&part, role, None, "Name")` |
+| Screen readers | Custom parts: `ui.tell(&response, Role::CheckBox, Some(on), "")` (role, state, name if no text) · `ui.tell_text(&response, name, value)` · `ui.tell_value(&response, Role::Slider, [value, min, max])` (or `Role::SpinButton`) · then: `ui.tell_shortcut("Ctrl+O")`, `ui.tell_position(nth, count)`, `ui.tell_step(step)`, `ui.tell_tree_item(level, expanded)` (`Role::TreeItem`; told in a tree), `ui.tell_level(level)` · `ui.tell_choice(&response, open, chosen)` · `ui.announce("Saved")` · `ui.tell_separately(&part)` · in a table: `ui.tell_selection(&selection)` · `ui.show_for_reader(id)` · tests: `ui.set_screen_reader(true)`, `ui.access_nodes()` (all; `node.visible`), `ui.visible_access_nodes()` (visible) · wordless parts take the label before them; else name them with `ui.tell(&part, role, None, "Name")` |
 | Dates, times, numbers | System format, read on first use · `ui.locale = Some(Locale { twelve_hour_clock: false, ..Locale::of_the_system() })`; `Locale::PLAIN` (2026-11-30, 14:05, 1234.5) · `ui.format_date(date)`, `ui.format_time(time, seconds)`, `ui.format_number(1234.5, 1)` · words: `ui.calendar_words` (month and day names and AM/PM the system's while `ui.locale` is `None`; `CalendarWords::of_the_system()`), `ui.number_words` · `Date::today()`, `Time::now()`, `date.days()`, `Date::from_days(n)`, `date.add_months(1)`, `time.seconds()` |
 | Looks | `ui.theme` · `ui.system_theme()` · `Theme::light()`, `Theme::high_contrast(ContrastColors::DARK)`, `.accented(color)`, `.dense()`, `.roomy()`, `.text_scaled(by)`: "Looks" |
 | Built-in words | `ui.widget_words`: breadcrumb overflow, close buttons of tags and banners, pagination, done steps (English by default) · feature `translations`: every built-in word in the user's language (de, es, fr, ja, pt, zh), `ui.translate("fr")`, `FileWords::in_language("fr")` |
@@ -971,11 +1032,12 @@ fn main() {
 
 - `Renderer::Auto` (the default): the best GPU path when the feature is on and the computer has
   a GPU of its own, not over a remote desktop. `Gpu`: over a remote desktop too. `Cpu`: never.
-- `Direct3D11`, `Direct3D12`, `Vulkan`, `OpenGL`: that path first, then the others, best
-  first (Windows: Direct3D 11, 12, Vulkan, OpenGL; X11: OpenGL, then Vulkan), then the CPU.
+- `Direct3D11`, `Direct3D12`, `Vulkan`, `OpenGL`, `Metal`: that path first, then the others,
+  best first (Windows: Direct3D 11, 12, Vulkan, OpenGL; X11: OpenGL, then Vulkan), then the CPU.
+  macOS has one: Metal.
 - Wayland: any GPU path asked for is Vulkan, handing the compositor dmabufs; `Auto` keeps
   shared memory.
-- `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl` overrides the app.
+- `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl|metal` overrides the app.
 - `ui.renderer()` says which path shows the window (`Direct3D11`, …): `Cpu` until the device
   is made, and after a lost device that can't be made again.
 - Whole frames, in step with the screen; only changed rectangles are uploaded and presented.
@@ -987,10 +1049,39 @@ colour emoji into patches it lays in.
 
 - Pixels within a few levels of 255 of the CPU's, at edges; GDI's text on a solid colour is
   GDI's own.
-- Every GPU path draws: Direct3D 11 and 12, Vulkan (Windows, X11, Wayland) and OpenGL.
+- Every GPU path draws: Direct3D 11 and 12, Vulkan (Windows, X11, Wayland), OpenGL and Metal.
 - `Renderer::Auto` draws large parts on the GPU and small ones on the CPU; a path named draws
   all. `TAUT_DRAW=cpu|gpu|auto` overrides.
 - Costs: [drawn by the GPU](docs/costs-and-speed.md#drawn-by-the-gpu).
+
+With the feature `hdr`, boxes and pictures can be brighter than SDR white where the screen is
+HDR:
+
+```rust,no_run
+use taut::{Color, Window};
+
+fn main() {
+    // Linear light, 1.0 being SDR white: a ramp from black to four times white.
+    let ramp: Vec<[f32; 4]> = (0..64).map(|x| [x as f32 / 16.0, x as f32 / 16.0, x as f32 / 16.0, 1.0]).collect();
+    let mut picture = None;
+    taut::run(Window::default(), move |ui| {
+        let ramp = *picture.get_or_insert_with(|| ui.add_hdr_picture(64, &ramp));
+        ui.el().size(120.0, 40.0).fill(Color::WHITE).brightness(3.0).show();
+        ui.el().picture(ramp).size(256.0, 16.0).show();
+        ui.label(&format!("Up to {} times SDR white here", ui.headroom()));
+    });
+}
+```
+
+- `El::brightness(times)`: the box and what it holds, so many times SDR white.
+- `ui.add_hdr_picture`: linear red, green, blue and alpha. `ui.add_picture_file` reads PQ and
+  HLG PNGs (`cICP`).
+- `ui.headroom()`: how many times SDR white the window's screen shows; 1.0 on an SDR screen.
+  Brighter is capped there.
+- The rest stays at the system's SDR white. SDR screens, the CPU and builds without the feature
+  show what is brighter at white, the same pixels as before.
+- Direct3D 11 and 12 present in scRGB; Wayland hands over PQ through its colour management.
+  Vulkan, OpenGL, X11 and macOS show SDR.
 
 ## Screens, kinds of second window, and closing
 
@@ -1159,6 +1250,7 @@ fn main() {
   folder.
 - macOS: `NSStatusItem` (its menu on a right click), `RegisterEventHotKey` (Ctrl is Command), a
   socket in the temporary folder; `UNUserNotificationCenter`, for an app bundle only.
+- Android: none of it. No tray, notifications or hotkeys; `hide_window` does nothing.
 - Unused, none of it is compiled in.
 
 ## Scenes

@@ -145,7 +145,7 @@ impl Named {
     }
 
     /// Its X keysym, and its name, which is how the portal is told of a key.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     pub(crate) fn keysym(self) -> (u32, String) {
         let named = |number: u32, name: &str| (number, name.to_string());
         match self {
@@ -179,7 +179,7 @@ impl Named {
 impl Combo {
     /// The key as the portal takes it: modifiers in capitals, then the key's name, joined by
     /// `+` ("CTRL+ALT+n", "LOGO+F12").
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     pub(crate) fn trigger(self) -> String {
         let mut written = String::new();
         for (bit, word) in [(CTRL, "CTRL+"), (ALT, "ALT+"), (SHIFT, "SHIFT+"), (LOGO, "LOGO+")] {
@@ -196,8 +196,9 @@ impl Combo {
 pub(crate) enum Registration {
     New,
     // Only the portal answers later.
-    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(any(windows, target_vendor = "apple", target_os = "android"), allow(dead_code))]
     Pending,
+    #[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
     Registered,
     Refused,
 }
@@ -206,6 +207,7 @@ pub(crate) enum Registration {
 pub(crate) struct Wanted {
     pub combo: Combo,
     /// Its own id, for the system to report it by (Windows), or the portal (as text).
+    #[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
     pub number: u32,
     pub state: Registration,
     /// Named this run; pressed since a run last asked.
@@ -228,6 +230,7 @@ thread_local! {
 impl Hotkeys {
     /// After a run: keys not named are dropped (released through `give_back`, if held), and
     /// those named must be named again next run.
+    #[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
     pub(crate) fn settle(&mut self, mut give_back: impl FnMut(&Wanted)) {
         self.keys.iter().filter(|wanted| !wanted.requested).for_each(&mut give_back);
         self.keys.retain(|wanted| wanted.requested);
@@ -236,6 +239,7 @@ impl Hotkeys {
 
     /// A key was pressed, as the system reports it by id: the next run that asks hears it.
     /// Returns whether it is one of the app's.
+    #[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
     pub(crate) fn pressed(&mut self, number: u32) -> bool {
         let found = self.keys.iter_mut().find(|wanted| wanted.number == number && wanted.state == Registration::Registered);
         found.map(|wanted| wanted.pressed = true).is_some()
@@ -303,7 +307,7 @@ mod tests {
         assert_eq!(["F1", "F24", "Ctrl+a", "Ctrl+9", "Ctrl+PageDown", "Play", "Previous"].map(numbers), [0x70, 0x87, 0x41, 0x39, 0x22, 0xB3, 0xB1]);
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn keys_have_the_numbers_and_names_x_and_the_portal_know_them_by() {
         let numbers = |written: &str| combo(written).unwrap().key.keysym().0;

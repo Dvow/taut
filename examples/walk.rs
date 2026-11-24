@@ -21,7 +21,7 @@
 //!   `xvfb-run -a -s "-screen 0 900x600x24" target/release/examples/walk`. Needs libXtst, xclip,
 //!   libatspi, at-spi2-core, gdbus and dbus; it starts a session bus of its own when none is set.
 
-#![cfg_attr(not(any(windows, all(unix, not(target_os = "macos")))), allow(dead_code))]
+#![cfg_attr(not(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))), allow(dead_code))]
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -244,15 +244,15 @@ fn main() {
         std::process::exit(1);
     }
     std::fs::create_dir_all(&folder).expect("the folder for the pictures could not be made");
-    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+    #[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
     let tell = std::env::var_os("TAUT_WALK_TELL").is_some();
     #[cfg(windows)]
     let driver = windows::start(&folder, &program);
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     let driver = x11::start(&folder, &program);
-    #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+    #[cfg(not(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
     return println!("there is no walk for this system yet");
-    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+    #[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
     {
         let mut walk = Walk { driver, failed: Vec::new(), held: 0, tell };
         steps(&mut walk);
@@ -1078,7 +1078,7 @@ mod windows {
 }
 
 /// Linux: XTest, AT-SPI, and pictures of the screen.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod x11 {
     use super::{Driver, Key, Kind, Node, Rect, rest};
     use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_ulong, c_void};

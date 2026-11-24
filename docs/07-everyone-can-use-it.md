@@ -94,6 +94,8 @@ assert_eq!(nodes, [(Role::Button, "Add a song", None), (Role::Switch, "Loud", So
   says which). Readers can reach the whole page and scroll to what they read.
 - A part inside something told as one (a button in a `Role::Row`) is exposed separately with
   `ui.tell_separately(&part)`.
+- A long table describes only rows in view; `ui.tell_selection(&selection)` inside it tells
+  readers every selected row. A reader asking for another row scrolls it into view.
 
 ## Dark, light and high contrast
 

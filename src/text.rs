@@ -596,11 +596,12 @@ pub(crate) fn caret(clusters: &[ShownCluster], at: usize, after: bool) -> f32 {
 }
 
 /// What is marked on an edited line: the ranges its selection covers, each left to right (in
-/// `marked`); and where the cursor shows, if on this line. The line is `line`, `wide` units
-/// wide, starting at byte `start` of its text, in a right-to-left (`leftward`) paragraph or
-/// not. The selection is bytes `from` to `to`: one continuing past the line's end includes room
-/// for the line break, on the paragraph's ending side. The cursor is at byte `at`, shown as
-/// `caret` says (`after`).
+/// `marked`); and where the cursor shows, if on this line: as `caret` says (`after`), and
+/// where it shows the other way. Those two differ where directions meet, and a split cursor
+/// shows at both. The line is `line`, `wide` units wide, starting at byte `start` of its
+/// text, in a right-to-left (`leftward`) paragraph or not. The selection is bytes `from` to
+/// `to`: one continuing past the line's end includes room for the line break, on the
+/// paragraph's ending side. The cursor is at byte `at`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn marks(
     text: &mut dyn TextSystem,
@@ -614,7 +615,7 @@ pub(crate) fn marks(
     at: Option<usize>,
     after: bool,
     marked: &mut Vec<[f32; 2]>,
-) -> Option<f32> {
+) -> Option<Carets> {
     marked.clear();
     let end = start + line.len();
     let selected = from < to && from <= end && to > start;
@@ -625,7 +626,7 @@ pub(crate) fn marks(
             let right = if to > end { wide + 4.0 } else { width(to) };
             marked.push([width(from), right]);
         }
-        return at.map(width);
+        return at.map(width).map(alone);
     }
     let mut places = Vec::new();
     text.places(line, font, scale, leftward, &mut places);
@@ -643,7 +644,35 @@ pub(crate) fn marks(
             }
         }
     }
-    at.map(|at| caret(&clusters, at, after))
+    // (Without `right-to-left` every line shows as typed: the cursor is never split.)
+    at.map(|at| carets(&clusters, at, after))
+}
+
+/// Where a cursor shows on a line (see `marks`): with `right-to-left`, where it stands and
+/// where it would stand the other way, which differ where directions meet; without, one place.
+#[cfg(feature = "right-to-left")]
+pub(crate) type Carets = [f32; 2];
+#[cfg(not(feature = "right-to-left"))]
+pub(crate) type Carets = f32;
+
+/// The places of a cursor at byte `at` among a line's clusters, as `caret` has them.
+#[cfg(feature = "right-to-left")]
+fn carets(clusters: &[ShownCluster], at: usize, after: bool) -> Carets {
+    [caret(clusters, at, after), caret(clusters, at, !after)]
+}
+#[cfg(not(feature = "right-to-left"))]
+fn carets(clusters: &[ShownCluster], at: usize, after: bool) -> Carets {
+    caret(clusters, at, after)
+}
+
+/// A cursor at one place only.
+#[cfg(feature = "right-to-left")]
+fn alone(x: f32) -> Carets {
+    [x; 2]
+}
+#[cfg(not(feature = "right-to-left"))]
+fn alone(x: f32) -> Carets {
+    x
 }
 
 // ---- the built-in font ----

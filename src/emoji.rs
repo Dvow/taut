@@ -423,13 +423,21 @@ fn system(full: bool) -> Option<FontFile> {
 /// text is in use), or on macOS the one CoreText draws in, if it has colour glyphs and a
 /// smiling face; else the first such font in the font folders. User fonts come before system
 /// ones, and a folder's files before its subfolders.
-#[cfg(not(windows))]
+/// A page has no font files of the system's: the browser's own text draws emoji.
+#[cfg(target_family = "wasm")]
+fn system(_full: bool) -> Option<FontFile> {
+    None
+}
+
+#[cfg(not(any(windows, target_family = "wasm")))]
 fn system(full: bool) -> Option<FontFile> {
     use std::path::PathBuf;
     let smiles = |font: &FontFile| (font.pictured() || full && font.pictured_newer()) && font.set("\u{1f600}", &mut Vec::new()).is_some();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
     let named = crate::x11::emoji_file().and_then(FontFile::open).filter(smiles);
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "android")]
+    let named = crate::android_text::emoji_file().filter(smiles);
+    #[cfg(target_vendor = "apple")]
     let named = crate::core_text::emoji_file().filter(smiles);
     if named.is_some() {
         return named;
@@ -453,7 +461,7 @@ fn system(full: bool) -> Option<FontFile> {
 
 /// Whether a file may be a colour font: by its name, and by colour table tags among its first
 /// bytes, where a font lists its tables. (So not every font has to be opened and parsed.)
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_family = "wasm")))]
 fn coloured(path: &std::path::Path) -> bool {
     use std::io::Read;
     let kind = path.extension().and_then(|kind| kind.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -719,7 +727,8 @@ mod tests {
         // elsewhere.
         let letters = FontFile::read(file(&[0, 1, 0, 0], &coloured(&[]))).unwrap();
         let mut fonts = AppFonts::new(letters).fallback(Box::new(own()));
-        assert_eq!(measured(&mut fonts, "AB"), (14.0, vec![7.0, 14.0]));
+        // (Shaped, half of the pair's kerning goes to each.)
+        assert_eq!(measured(&mut fonts, "AB"), (14.0, vec![if cfg!(feature = "shaping") { 6.0 } else { 7.0 }, 14.0]));
         assert_eq!(measured(&mut fonts, "A1B"), (22.0, vec![7.0, 13.0, 22.0]));
         assert_eq!(measured(&mut fonts, "A1\u{fe0f}\u{20e3}B"), (22.0, vec![7.0, 13.0, 13.0, 13.0, 22.0]));
         assert_eq!(measured(&mut fonts, "A\u{1f1e6}\u{1f1e7}\u{1f600}B"), (33.0, vec![7.0, 17.0, 17.0, 24.0, 33.0]));
@@ -914,7 +923,7 @@ mod tests {
     /// Where the desktop has Fontconfig, it names an emoji font file that exists; and if that
     /// is a colour font, the system has an emoji font. (A machine without one is named some
     /// other, which is not taken for one.)
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn the_font_the_desktop_names_for_emoji_is_asked_first() {
         // The desktop is asked as system text is found.

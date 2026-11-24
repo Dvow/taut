@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 /// | Windows | `%APPDATA%\app` (roaming) |
 /// | Linux   | `$XDG_CONFIG_HOME/app`, else `~/.config/app` |
 /// | macOS   | `~/Library/Application Support/app` |
+/// | Web     | `/storage/app`, kept in the page's `localStorage` |
 ///
 /// Not created here: [`write()`] makes it. `None` if `app` cannot be one folder's name (empty,
 /// `.`, `..`, or with `/`, `\` or `:`), or the system names no user folder.
@@ -38,8 +39,10 @@ fn folder_with(app: &str, var: impl Fn(&str) -> Option<OsString>) -> Option<Path
     let home = set(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
     let base = if cfg!(windows) {
         set("APPDATA").or_else(|| home.map(|home| home.join("AppData").join("Roaming")))
-    } else if cfg!(target_os = "macos") {
+    } else if cfg!(target_vendor = "apple") {
         home.map(|home| home.join("Library").join("Application Support"))
+    } else if cfg!(target_family = "wasm") {
+        Some(PathBuf::from("/storage"))
     } else {
         set("XDG_CONFIG_HOME").or_else(|| home.map(|home| home.join(".config")))
     };
@@ -49,7 +52,13 @@ fn folder_with(app: &str, var: impl Fn(&str) -> Option<OsString>) -> Option<Path
 /// Writes `text` into `file` whole or not at all: into a file beside it, which then replaces
 /// it. If the program stops or the disk is full, `file` is as it was (a stopped program may
 /// leave `file` + its process id + `.new` beside it). Creates the folder if missing.
+///
+/// On the web, `file` is a key of the page's `localStorage`, written whole; a file under
+/// `/downloads` (where a file dialog saves on the web) is a download instead.
 pub fn write(file: &Path, text: &str) -> io::Result<()> {
+    #[cfg(target_family = "wasm")]
+    return on_the_web::write(file, text);
+    #[allow(unreachable_code)]
     let name = file.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a file needs a name"))?;
     let folder = file.parent().filter(|folder| !folder.as_os_str().is_empty()).unwrap_or(Path::new("."));
     std::fs::create_dir_all(folder)?;
@@ -71,9 +80,36 @@ pub fn write(file: &Path, text: &str) -> io::Result<()> {
     done
 }
 
-/// What was written into `file`; `None` if it is missing or not text.
+/// What was written into `file`; `None` if it is missing or not text. (On the web, from the
+/// page's `localStorage`, or a file the person picked: `/picked/<name>`.)
 pub fn read(file: &Path) -> Option<String> {
+    #[cfg(target_family = "wasm")]
+    return on_the_web::read(file);
+    #[allow(unreachable_code)]
     std::fs::read_to_string(file).ok()
+}
+
+/// Files in a page: `localStorage`, picked files, downloads.
+#[cfg(target_family = "wasm")]
+mod on_the_web {
+    use std::io;
+    use std::path::Path;
+
+    pub fn write(file: &Path, text: &str) -> io::Result<()> {
+        if let Ok(name) = file.strip_prefix("/downloads") {
+            crate::web_host::save_as(&name.to_string_lossy(), text.as_bytes());
+            return Ok(());
+        }
+        let kept = file.file_name().is_some() && crate::web_host::store(&file.to_string_lossy(), text);
+        if kept { Ok(()) } else { Err(io::Error::other("the page's storage refused it")) }
+    }
+
+    pub fn read(file: &Path) -> Option<String> {
+        match file.starts_with("/picked") {
+            true => crate::web_host::picked(file).and_then(|bytes| String::from_utf8(bytes).ok()),
+            false => crate::web_host::stored(&file.to_string_lossy()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -93,7 +129,7 @@ mod tests {
             // No variable for it: the same folder through the user's profile.
             assert_eq!(folder_with("Notes", vars(&[("USERPROFILE", r"C:\Users\a")])), Some(PathBuf::from(r"C:\Users\a\AppData\Roaming\Notes")));
             assert_eq!(folder_with("Notes", vars(&[("APPDATA", ""), ("USERPROFILE", r"C:\Users\a")])), Some(PathBuf::from(r"C:\Users\a\AppData\Roaming\Notes")));
-        } else if cfg!(target_os = "macos") {
+        } else if cfg!(target_vendor = "apple") {
             assert_eq!(folder_with("Notes", vars(&[("HOME", "/Users/a")])), Some(PathBuf::from("/Users/a/Library/Application Support/Notes")));
         } else {
             assert_eq!(folder_with("Notes", vars(&[("XDG_CONFIG_HOME", "/home/a/settings"), ("HOME", "/home/a")])), Some(PathBuf::from("/home/a/settings/Notes")));

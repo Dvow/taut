@@ -740,9 +740,9 @@ fn spliced(text: &str, from: i32, to: i32, with: &str) -> String {
 }
 
 /// The text unit around a character: the character itself (`unit` 0), its word with what
-/// follows up to the next word (1), or its line with its end (else). Sentences are treated as
-/// lines.
-fn stretch(letters: &[char], at: i32, unit: u32) -> [usize; 2] {
+/// follows up to the next word (1), its paragraph with its line break (2), or its line as
+/// wrapped (3: lines start at `lines`). Sentences are treated as paragraphs.
+fn stretch(letters: &[char], at: i32, unit: u32, lines: &[u32]) -> [usize; 2] {
     let at = (at.max(0) as usize).min(letters.len());
     if unit == 0 || letters.is_empty() {
         return [at, (at + 1).min(letters.len())];
@@ -750,6 +750,7 @@ fn stretch(letters: &[char], at: i32, unit: u32) -> [usize; 2] {
     let starts = |place: usize| match unit {
         _ if place == 0 => true,
         1 => letters[place].is_alphanumeric() && !letters[place - 1].is_alphanumeric(),
+        3 => lines.binary_search(&(place as u32)).is_ok(),
         _ => letters[place - 1] == '\n',
     };
     let from = (0..=at.min(letters.len() - 1)).rev().find(|place| starts(*place)).unwrap_or(0);
@@ -980,6 +981,18 @@ enum Act {
     Pick,
     /// Scroll its container so it shows.
     Show,
+    /// Show a row of a table (the thing), and select it: alone, or toggled.
+    Row(u32, Option<bool>),
+}
+
+/// A call answered once the window has run: who asked, the serial of the call, and the cell
+/// asked for: its window, its table, row and column.
+struct Waiting {
+    asker: String,
+    serial: u32,
+    window: Id,
+    table: Id,
+    place: [u32; 2],
 }
 
 /// A slider moving to a value a screen reader set: stepped as the keyboard steps it, the UI
@@ -1017,13 +1030,27 @@ pub(crate) struct Readers {
     /// The last path number assigned.
     last: u32,
     reach: Option<Reach>,
+    /// Calls to answer after the next run.
+    waiting: Vec<Waiting>,
 }
 
 impl Readers {
     /// Starts asking, over the session bus, whether anyone listens, and subscribes to changes.
     /// Nothing waits: the reply comes when it comes, and without a session bus, never.
     pub(crate) fn new(session: Option<&mut Bus>) -> Self {
-        let mut readers = Readers { desk: None, asked: [0; 4], name: String::new(), desktop: Default::default(), embedded: false, listeners: None, id: 0, frames: Vec::new(), last: 0, reach: None };
+        let mut readers = Readers {
+            desk: None,
+            asked: [0; 4],
+            name: String::new(),
+            desktop: Default::default(),
+            embedded: false,
+            listeners: None,
+            id: 0,
+            frames: Vec::new(),
+            last: 0,
+            reach: None,
+            waiting: Vec::new(),
+        };
         let Some(bus) = session else { return readers };
         bus.ask("AddMatch", &format!("type='signal',sender='{LAUNCHER}',path='{LAUNCHER_PATH}',interface='{PROPERTIES}',member='PropertiesChanged'"));
         bus.ask("AddMatch", &format!("type='signal',sender='{BUS}',interface='{BUS}',member='NameOwnerChanged',arg0='{LAUNCHER}'"));
@@ -1117,6 +1144,7 @@ impl Readers {
         let Some(message) = Message::read(bytes) else { return };
         let (mut body, mut values) = (message.body, Pack::default());
         match message.kind {
+            CALL if self.later(&message, deeds) => {}
             CALL => {
                 let kinds = self.reply(&message, &mut values, origin, deeds);
                 self.desk.iter_mut().for_each(|bus| bus.answer(&message, kinds, &values));
@@ -1197,10 +1225,17 @@ impl Readers {
             news.push(News { of: of.clone(), kind: if active { "Window:Activate:" } else { "Window:Deactivate:" }, numbers: [0; 2], value: Any::Text(title.into()) });
             news.push(News { of, kind: "Object:StateChanged:active", numbers: [active as i32, 0], value: Any::Number(0) });
         }
-        // (A list of the same turn is not even compared.)
-        let version = ui.access_version();
-        let kept = std::mem::replace(&mut frame.version, version) == version;
-        if turned || !kept && frame.nodes != ui.access_nodes() {
+        // (A list of the same turn is not even compared. One only moved, as by a scroll, has
+        // only what shows changed.)
+        let (version, now) = (ui.access_version(), ui.access_nodes());
+        let was = std::mem::replace(&mut frame.version, version);
+        let moved = !turned && ui.access_moved_from() == Some(was) && frame.nodes.len() == now.len();
+        if moved {
+            let flips = frame.nodes.iter().zip(now).enumerate().filter(|(_, (was, now))| was.visible != now.visible);
+            let path = |at: usize| path_of(frame.number, Some(frame.numbers[at]));
+            news.extend(flips.map(|(at, (_, now))| News { of: path(at), kind: "Object:StateChanged:showing", numbers: [now.visible as i32, 0], value: Any::Number(0) }));
+            accessibility::follow_move(&mut frame.nodes, now);
+        } else if turned || was != version && frame.nodes != now {
             let (numbers, changed) = differ(frame, ui.access_nodes(), active, &mut self.last);
             news.extend(changed);
             frame.numbers = numbers;
@@ -1216,7 +1251,42 @@ impl Readers {
         let window = path_of(frame.number, None);
         news.extend(ui.announced().iter().map(|words| News { of: window.clone(), kind: "Object:Announcement:", numbers: [1, 0], value: Any::Text(words.clone()) }));
         news.into_iter().for_each(|news| self.tell(news));
+        self.answer_waiting(known);
         self.step(ui, known)
+    }
+
+    /// Whether a call is to be answered after the next run: a table's cell in a row not told (a
+    /// long table tells rows in view). The row is then shown.
+    fn later(&mut self, call: &Message, deeds: &mut Vec<Deed>) -> bool {
+        let (mut asked, which) = (call.body, self.which(call.path));
+        let (TABLE, "GetAccessibleAt", Some(which @ Which::Thing(at, table))) = (call.interface, call.member, which) else { return false };
+        let (Some(row), Some(column), Some(node)) = (asked.i32(), asked.i32(), self.node(which).filter(|node| node.role == Role::Table)) else { return false };
+        let [rows, columns] = node.grid.unwrap_or_default();
+        let place = [row as u32, column as u32];
+        if row < 0 || column < 0 || place[0] >= rows || place[1] >= columns || accessibility::cell_at(&self.frames[at].nodes, table, place).is_some() {
+            return false;
+        }
+        let (window, table) = (self.frames[at].known, node.id);
+        self.waiting.push(Waiting { asker: call.sender.into(), serial: call.serial, window, table, place });
+        deeds.push(Deed { window, thing: table, act: Act::Row(place[0], None) });
+        true
+    }
+    /// Answers the calls waiting on a window that has just run.
+    fn answer_waiting(&mut self, window: Id) {
+        let (done, kept): (Vec<Waiting>, Vec<Waiting>) = std::mem::take(&mut self.waiting).into_iter().partition(|waiting| waiting.window == window);
+        let mut values = Pack::default();
+        self.waiting = kept;
+        let Some(at) = self.frames.iter().position(|frame| frame.known == window) else { return };
+        for Waiting { asker, serial, table, place, .. } in done {
+            let nodes = &self.frames[at].nodes;
+            let cell = nodes.iter().position(|node| node.id == table && node.role == Role::Table).and_then(|table| accessibility::cell_at(nodes, table, place));
+            let path = cell.map_or(NOTHING.into(), |cell| self.path(Which::Thing(at, cell)));
+            values.bytes.clear();
+            values.object(&self.name, &path);
+            if let Some(bus) = &mut self.desk {
+                bus.send(Header { kind: ANSWER, answers: serial, to: &asker, kinds: "(so)", ..Default::default() }, &values.bytes);
+            }
+        }
     }
 
     /// A window not reported before: a child of the application from now on.
@@ -1255,6 +1325,7 @@ impl Readers {
             Act::Open(open) => ui.open_for_reader(deed.thing, open),
             Act::Pick => ui.pick_for_reader(deed.thing),
             Act::Show => ui.show_for_reader(deed.thing),
+            Act::Row(row, pick) => ui.row_for_reader(deed.thing, row, pick),
             Act::Reach(to) => {
                 self.reach = Some(Reach { window: deed.window, thing: deed.thing, to, off: f32::INFINITY, left: 100 });
                 self.step(ui, deed.window);
@@ -1367,8 +1438,15 @@ impl Readers {
     fn interfaces(&self, which: Which) -> Vec<&'static str> {
         let Some(node) = self.node(which) else { return vec![ACCESSIBLE, if which == Which::Program { APPLICATION } else { COMPONENT }] };
         let (types, moves) = (matches!(node.role, Role::TextBox | Role::PasswordBox), node.value_range.is_some());
-        let also =
-            [(pressed(node), ACTION), (moves, VALUE), (types, TEXT), (types, EDITABLE), (node.role == Role::Table, TABLE), (node.role == Role::Cell, TABLE_CELL), (node.role == Role::Tree, SELECTION)];
+        let also = [
+            (pressed(node), ACTION),
+            (moves, VALUE),
+            (node.reads_text(), TEXT),
+            (types, EDITABLE),
+            (node.role == Role::Table, TABLE),
+            (node.role == Role::Cell, TABLE_CELL),
+            (node.role == Role::Tree, SELECTION),
+        ];
         [ACCESSIBLE, COMPONENT].into_iter().chain(also.into_iter().filter_map(|(has, name)| has.then_some(name))).collect()
     }
 
@@ -1422,9 +1500,9 @@ impl Readers {
             (APPLICATION, Some(which)) => application(which, call.member, &mut asked, values),
             (COMPONENT, Some(which)) => self.component(which, call.member, &mut asked, values, origin, deeds),
             (ACTION, Some(which)) => self.action(which, call.member, &mut asked, values, deeds),
-            (TEXT, Some(which)) => self.text(which, call.member, &mut asked, values),
+            (TEXT, Some(which)) => self.text(which, call.member, &mut asked, values, origin),
             (EDITABLE, Some(which)) => self.editable(which, call.member, &mut asked, values, deeds),
-            (TABLE, Some(which)) => self.table(which, call.member, &mut asked, values),
+            (TABLE, Some(which)) => self.table(which, call.member, &mut asked, values, deeds),
             (TABLE_CELL, Some(which)) => self.cell(which, call.member, values),
             (SELECTION, Some(which)) => self.selection(which, call.member, &mut asked, values, deeds),
             (PROPERTIES | ACCESSIBLE | APPLICATION | COMPONENT | ACTION | TEXT | EDITABLE | TABLE | TABLE_CELL | SELECTION, None) => return Err(GONE),
@@ -1484,7 +1562,7 @@ impl Readers {
             (VALUE, "MaximumValue") => values.kinds("d").f64(amount[2]),
             // The step size: zero for values without steps.
             (VALUE, "MinimumIncrement") => values.kinds("d").f64(node?.step as f64),
-            (TEXT, "CharacterCount") => values.kinds("i").i32(node?.value.chars().count() as i32),
+            (TEXT, "CharacterCount") => values.kinds("i").i32(node?.text().chars().count() as i32),
             // The caret position in the text, while focused: else -1.
             (TEXT, "CaretOffset") => values.kinds("i").i32(node?.caret.map_or(-1, |caret| caret[1] as i32)),
             // A table: its total rows and visible columns, its selected row count; no caption,
@@ -1509,18 +1587,16 @@ impl Readers {
         let (Which::Thing(at, thing), Some(frame)) = (which, self.frame(which)) else { return None };
         accessibility::table_of(&frame.nodes, thing).map(|table| Which::Thing(at, table))
     }
-    /// A table's selected rows among those reported, each by its index among all its rows, from
-    /// 0.
+    /// A table's selected rows, each by its index among all its rows, from 0: all, where the
+    /// app told them; else among those reported.
     fn selected_rows(&self, which: Which) -> Vec<i32> {
-        let (Which::Thing(_, table), Some(frame)) = (which, self.frame(which)) else { return Vec::new() };
-        accessibility::rows_of(&frame.nodes, table).filter(|(row, _)| frame.nodes[*row].on == Some(true)).map(|(_, number)| number as i32).collect()
+        self.node(which).map_or(Vec::new(), |table| table.selected_rows.iter().flat_map(|[from, to]| *from as i32..*to as i32).collect())
     }
 
-    /// The table interface: the cell at a row and column, cell indices, a column's header, the
-    /// selected rows. (Of a large table only visible rows are reported: a cell of another row
-    /// is no object, and is answered as null.) Read-only by row and column: no row is selected
-    /// or deselected through it.
-    fn table(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack) -> Option<&'static str> {
+    /// The table interface: the cell at a row and column (of a long table's row not reported,
+    /// once shown: see `later`), cell indices, a column's header, the selected rows; selecting
+    /// a row or deselecting one, as a Control+click does.
+    fn table(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack, deeds: &mut Vec<Deed>) -> Option<&'static str> {
         let (Which::Thing(at, table), frame) = (which, self.frame(which)?) else { return None };
         let [rows, columns] = self.node(which).filter(|node| node.role == Role::Table)?.grid.unwrap_or_default().map(|number| number as i32);
         let object = |thing: Option<usize>| thing.map_or(NOTHING.into(), |thing| self.path(Which::Thing(at, thing)));
@@ -1545,7 +1621,13 @@ impl Readers {
             "IsRowSelected" => ("b", values.u32(selected.contains(&asked.i32()?) as u32)),
             "IsColumnSelected" => ("b", values.u32(0)),
             "IsSelected" => ("b", values.u32(Some((asked.i32()?, asked.i32()?)).is_some_and(|(row, column)| in_table(row, column) && selected.contains(&row)) as u32)),
-            "AddRowSelection" | "AddColumnSelection" | "RemoveRowSelection" | "RemoveColumnSelection" => ("b", values.u32(0)),
+            "AddRowSelection" | "RemoveRowSelection" => {
+                let (row, adds, node) = (asked.i32()?, member == "AddRowSelection", self.node(which)?);
+                let toggles = (0..rows).contains(&row) && node.enabled && selected.contains(&row) != adds;
+                deeds.extend(toggles.then_some(Deed { window: frame.known, thing: node.id, act: Act::Row(row as u32, Some(false)) }));
+                ("b", values.u32(toggles as u32))
+            }
+            "AddColumnSelection" | "RemoveColumnSelection" => ("b", values.u32(0)),
             "GetRowColumnExtentsAtIndex" => {
                 let index = asked.i32()?;
                 let ([row, column], fits) = (place(index), (0..rows * columns).contains(&index));
@@ -1699,10 +1781,26 @@ impl Readers {
         Some(answer.0)
     }
 
-    /// The text interface of a text box: all text, the unit around a character, one character,
-    /// or the selection. (Character extents aren't known here: those queries aren't answered.)
-    fn text(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack) -> Option<&'static str> {
-        let letters: Vec<char> = self.node(which).filter(|node| matches!(node.role, Role::TextBox | Role::PasswordBox))?.value.chars().collect();
+    /// A text's characters as placed in the window, in pixels from the corner of a coordinate
+    /// type (see `counted_from`): one, or a range.
+    fn letters_in(&self, which: Which, [from, to]: [u32; 2], kind: u32, origin: &dyn Fn(Id) -> [i32; 2]) -> Option<[i32; 4]> {
+        let (node, frame, [left, top]) = (self.node(which)?, self.frame(which)?, self.counted_from(which, kind, origin));
+        let place = (from..to.max(from + 1)).map(|letter| node.letter_rect(letter)).reduce(|one, other| one.union(other))?;
+        let [x, y, right, bottom] = [place.x, place.y, place.right(), place.bottom()].map(|units| (units * frame.scale).round() as i32);
+        Some([x - left, y - top, right - x, bottom - y])
+    }
+    /// The character at a point, in pixels from the corner of a coordinate type: -1 where none.
+    fn letter_at(&self, which: Which, [x, y]: [i32; 2], kind: u32, origin: &dyn Fn(Id) -> [i32; 2]) -> i32 {
+        let (Some(node), Some(frame), [left, top]) = (self.node(which), self.frame(which), self.counted_from(which, kind, origin)) else { return -1 };
+        node.letter_at(pt((x + left) as f32 / frame.scale, (y + top) as f32 / frame.scale)).map_or(-1, |letter| letter as i32)
+    }
+
+    /// The text interface of a text box and of plain text: all text, the unit around a
+    /// character (lines as wrapped), one character, where characters are, the character at a
+    /// point, or the selection.
+    fn text(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack, origin: &dyn Fn(Id) -> [i32; 2]) -> Option<&'static str> {
+        let node = self.node(which).filter(|node| node.reads_text())?;
+        let (letters, lines): (Vec<char>, Vec<u32>) = (node.text().chars().collect(), node.line_starts());
         let (count, read) = (letters.len() as i32, |from: usize, to: usize| letters[from.min(to)..to].iter().collect::<String>());
         let within = |at: i32| if at < 0 { count } else { at.min(count) } as usize;
         let answer = match member {
@@ -1717,10 +1815,20 @@ impl Readers {
             // A unit around a character, by granularity (five kinds) or, the older way, by
             // boundary type (seven kinds).
             "GetStringAtOffset" | "GetTextAtOffset" => {
-                let units: &[u32] = if member == "GetStringAtOffset" { &[0, 1, 2, 2, 2] } else { &[0, 1, 1, 2, 2, 2, 2] };
-                let [from, to] = stretch(&letters, asked.i32()?, *units.get(asked.u32()? as usize)?);
+                let units: &[u32] = if member == "GetStringAtOffset" { &[0, 1, 2, 3, 2] } else { &[0, 1, 1, 2, 2, 3, 3] };
+                let [from, to] = stretch(&letters, asked.i32()?, *units.get(asked.u32()? as usize)?, &lines);
                 ("sii", values.text(&read(from, to)).i32s(&[from as i32, to as i32]))
             }
+            // Where a character, or a range of them, lies; and which lies at a point.
+            "GetCharacterExtents" => {
+                let at = asked.i32()?.clamp(0, count) as u32;
+                ("iiii", values.i32s(&self.letters_in(which, [at, at + 1], asked.u32()?, origin)?))
+            }
+            "GetRangeExtents" => {
+                let ends = [within(asked.i32()?) as u32, within(asked.i32()?) as u32];
+                ("iiii", values.i32s(&self.letters_in(which, [ends[0].min(ends[1]), ends[0].max(ends[1])], asked.u32()?, origin)?))
+            }
+            "GetOffsetAtPoint" => ("i", values.i32(self.letter_at(which, [asked.i32()?, asked.i32()?], asked.u32()?, origin))),
             // Attributes around a character, as a run: a misspelled word is "invalid: spelling"
             // (as on the web and in GTK); the rest has none.
             "GetAttributes" | "GetAttributeRun" => {
@@ -2055,9 +2163,9 @@ pub(crate) mod tests {
         let number = |r: &mut Readers, peer: &mut Peer, name: &str| number_in(&peer.property(r, &table, TABLE, name));
         assert_eq!(["NRows", "NColumns", "NSelectedRows", "NSelectedColumns"].map(|name| number(r, &mut peer, name)), [301.0, 3.0, 1.0, 0.0]);
         assert_eq!(path_in(&peer.property(r, &table, TABLE, "Caption"), true), NOTHING);
-        // A cell by row and column; null for a row out of view, or a missing one.
+        // A cell by row and column; null for a missing one.
         let at = |r: &mut Readers, peer: &mut Peer, row: i32, column: i32| path_in(&peer.get(r, &table, TABLE, "GetAccessibleAt", &[row, column]).1, false);
-        assert_eq!([at(r, &mut peer, 3, 1), at(r, &mut peer, 200, 0), at(r, &mut peer, 3, 3), at(r, &mut peer, -1, 0)], [cell.clone(), NOTHING.into(), NOTHING.into(), NOTHING.into()]);
+        assert_eq!([at(r, &mut peer, 3, 1), at(r, &mut peer, 3, 3), at(r, &mut peer, -1, 0)], [cell.clone(), NOTHING.into(), NOTHING.into()]);
         // Cell indices along the rows, and back.
         let ask = |r: &mut Readers, peer: &mut Peer, member: &str, numbers: &[i32], count: usize| numbers_in(&peer.get(r, &table, TABLE, member, numbers).1, count);
         assert_eq!(
@@ -2094,6 +2202,15 @@ pub(crate) mod tests {
         let pairs: Vec<(String, String)> = std::iter::from_fn(|| (noted.at < end).then(|| Some((noted.take(8, 0).and(noted.text())?.to_string(), noted.text()?.to_string()))).flatten()).collect();
         assert!(pairs.contains(&("sort".into(), "descending".into())), "{pairs:?}");
 
+        // A row is added to the selection, or taken out, as a Control+click does: where it
+        // is not so already.
+        let toggles = |r: &mut Readers, peer: &mut Peer, member: &str, row: i32| {
+            let (deeds, fine, _, answer) = peer.ask(r, &table, TABLE, member, "i", Pack::default().i32(row));
+            (fine, body(&answer).u32(), deeds.into_iter().map(|deed| deed.act).collect::<Vec<_>>())
+        };
+        assert_eq!(toggles(r, &mut peer, "AddRowSelection", 5), (true, Some(1), vec![Act::Row(5, Some(false))]));
+        assert_eq!(toggles(r, &mut peer, "RemoveRowSelection", 3), (true, Some(1), vec![Act::Row(3, Some(false))]));
+        assert_eq!(toggles(r, &mut peer, "RemoveRowSelection", 5), (true, Some(0), vec![]));
         // Another row is selected and the sort reversed: the old row is deselected, the new one
         // selected, and the header's attribute changes.
         kept.sort = vec![(1, false)];
@@ -2105,6 +2222,21 @@ pub(crate) mod tests {
         let heard = |name: &str, kind: &str, number: i32| news.contains(&(name.to_string(), kind.to_string(), number));
         assert!(heard("file 2, 4, Open", "Object:StateChanged:selected", 0) && heard("file 3, 6, Open", "Object:StateChanged:selected", 1), "{news:?}");
         assert!(heard("Size", "Object:AttributesChanged:", 0) && !news.iter().any(|(_, kind, _)| kind.ends_with(":pressed")), "{news:?}");
+
+        // A cell of a row out of view is answered once the row is shown: after the window ran.
+        peer.serial += 1;
+        let (serial, fields) = (peer.serial, [(1, "o", table.as_str()), (2, "s", TABLE), (3, "s", "GetAccessibleAt"), (7, "s", ":1.7"), (8, "g", "ii")]);
+        peer.send(&packed(CALL, serial, &fields, Pack::default().i32s(&[200, 0])));
+        let deeds = readers.turn(&|_| [0; 2]);
+        assert!(peer.messages().is_empty() && deeds.len() == 1, "not answered yet");
+        deeds.into_iter().for_each(|deed| readers.act(&mut ui, deed));
+        ui.run(&mut |ui| accounts(ui, &mut kept, 3));
+        readers.keep(&mut ui, 0, "Settings window", [420, 300], 1.0);
+        let answers = |bytes: &Vec<u8>| Message::read(bytes).is_some_and(|message| message.answers == serial);
+        let answer = peer.messages().into_iter().find(answers).expect("an answer");
+        assert_eq!(path_in(&answer, false), path(&readers, Role::Cell, "file 199"));
+        let shown = readers.frames[0].nodes.iter().find(|node| node.name == "file 199").unwrap();
+        assert!(shown.visible);
     }
 
     /// An object's attributes (`GetAttributes`), as name-value pairs.
@@ -2809,7 +2941,7 @@ pub(crate) mod tests {
         assert_eq!((paths.len(), said.len()), (8, 8));
         let common = 1 << ENABLED | 1 << SENSITIVE | 1 << SHOWING | 1 << VISIBLE;
         let expected = [
-            (29, "label", "Settings", common, vec![ACCESSIBLE, COMPONENT]),
+            (29, "label", "Settings", common, vec![ACCESSIBLE, COMPONENT, TEXT]),
             (43, "button", "Apply", common | 1 << FOCUSABLE, vec![ACCESSIBLE, COMPONENT, ACTION]),
             (7, "check box", "Dark", common | 1 << FOCUSABLE | 1 << CHECKABLE, vec![ACCESSIBLE, COMPONENT, ACTION]),
             (44, "radio button", "Small", common | 1 << FOCUSABLE | 1 << CHECKABLE | 1 << CHECKED, vec![ACCESSIBLE, COMPONENT, ACTION]),
@@ -3286,7 +3418,8 @@ pub(crate) mod tests {
         assert_eq!(text(&mut peer, r, 0, -1), "One two,  thr\u{e9}e\nfour");
         assert_eq!(text(&mut peer, r, 10, 15), "thr\u{e9}e");
         assert_eq!((text(&mut peer, r, 15, 99), text(&mut peer, r, 7, 3), text(&mut peer, r, 40, 50)), ("\nfour".to_string(), String::new(), String::new()));
-        // A unit around a character: the character, its word with what follows, its line.
+        // A unit around a character: the character, its word with what follows, its line as
+        // drawn (a one-line box shows all on one), its paragraph as typed.
         let around = |peer: &mut Peer, r: &mut Readers, member: &str, at: i32, unit: i32| {
             let (kinds, answer) = peer.get(r, &name, TEXT, member, &[at, unit]);
             let mut stretch = body(&answer);
@@ -3298,14 +3431,16 @@ pub(crate) mod tests {
         assert_eq!(around(&mut peer, r, "GetStringAtOffset", 5, 1), s("two,  ", 4, 10));
         assert_eq!(around(&mut peer, r, "GetStringAtOffset", 8, 1), s("two,  ", 4, 10), "what is between words goes with the word before");
         assert_eq!(around(&mut peer, r, "GetStringAtOffset", 0, 1), s("One ", 0, 4));
-        assert_eq!(around(&mut peer, r, "GetStringAtOffset", 12, 3), s("One two,  thr\u{e9}e\n", 0, 16));
-        assert_eq!(around(&mut peer, r, "GetStringAtOffset", 17, 3), s("four", 16, 20));
+        assert_eq!(around(&mut peer, r, "GetStringAtOffset", 12, 3), s("One two,  thr\u{e9}e\nfour", 0, 20));
+        assert_eq!(around(&mut peer, r, "GetStringAtOffset", 12, 4), s("One two,  thr\u{e9}e\n", 0, 16));
+        assert_eq!(around(&mut peer, r, "GetStringAtOffset", 17, 2), s("four", 16, 20));
         assert_eq!(around(&mut peer, r, "GetStringAtOffset", 17, 4), s("four", 16, 20));
         assert_eq!(around(&mut peer, r, "GetStringAtOffset", 20, 0), s("", 20, 20), "after the last letter there is none");
-        assert_eq!(around(&mut peer, r, "GetStringAtOffset", -1, 3), s("One two,  thr\u{e9}e\n", 0, 16));
+        assert_eq!(around(&mut peer, r, "GetStringAtOffset", -1, 4), s("One two,  thr\u{e9}e\n", 0, 16));
         // The older boundary-type way.
         assert_eq!(around(&mut peer, r, "GetTextAtOffset", 5, 2), s("two,  ", 4, 10));
-        assert_eq!(around(&mut peer, r, "GetTextAtOffset", 5, 5), s("One two,  thr\u{e9}e\n", 0, 16));
+        assert_eq!(around(&mut peer, r, "GetTextAtOffset", 5, 3), s("One two,  thr\u{e9}e\n", 0, 16));
+        assert_eq!(around(&mut peer, r, "GetTextAtOffset", 5, 5), s("One two,  thr\u{e9}e\nfour", 0, 20));
         assert_eq!(around(&mut peer, r, "GetTextAtOffset", 13, 0), s("\u{e9}", 13, 14));
         let (_, fine, ..) = peer.ask(r, &name, TEXT, "GetStringAtOffset", "iu", Pack::default().i32(0).u32(9));
         assert!(!fine, "there is no ninth kind of stretch");
@@ -3316,20 +3451,35 @@ pub(crate) mod tests {
         // An unfocused box has no selection.
         let (_, answer) = peer.get(r, &name, TEXT, "GetNSelections", &[]);
         assert_eq!(body(&answer).i32(), Some(0));
-        // What isn't known here isn't answered: a selection not selected, setting the caret,
-        // attributes, character extents.
-        for (member, numbers) in [("GetSelection", &[0][..]), ("SetCaretOffset", &[3]), ("GetCharacterExtents", &[3, 0]), ("GetOffsetAtPoint", &[5, 5, 1])] {
+        // What isn't known here isn't answered: a selection not selected, setting the caret.
+        for (member, numbers) in [("GetSelection", &[0][..]), ("SetCaretOffset", &[3])] {
             let (_, fine, ..) = peer.ask(r, &name, TEXT, member, &"i".repeat(numbers.len()), Pack::default().i32s(numbers));
             assert!(!fine, "{member}");
         }
+        // Where its letters are drawn, in the window (1): each inside the box, one after
+        // another; a range around them; and the letter at a point.
+        let boxed = numbers_in(&peer.get(r, &name, COMPONENT, "GetExtents", &[1]).1, 4);
+        let letter = |peer: &mut Peer, r: &mut Readers, at: i32| numbers_in(&peer.get(r, &name, TEXT, "GetCharacterExtents", &[at, 1]).1, 4);
+        let (first, third) = (letter(&mut peer, r, 0), letter(&mut peer, r, 2));
+        assert!(first[2] > 0 && first[3] > 0 && first[0] >= boxed[0] && first[1] >= boxed[1] && first[1] + first[3] <= boxed[1] + boxed[3], "{first:?} in {boxed:?}");
+        assert!(third[0] > first[0] && third[1] == first[1], "{first:?} {third:?}");
+        let range = numbers_in(&peer.get(r, &name, TEXT, "GetRangeExtents", &[0, 3, 1]).1, 4);
+        assert_eq!(range, [first[0], first[1], third[0] + third[2] - first[0], first[3]]);
+        let (_, at) = peer.get(r, &name, TEXT, "GetOffsetAtPoint", &[third[0] + third[2] / 2, third[1] + third[3] / 2, 1]);
+        let (_, nowhere) = peer.get(r, &name, TEXT, "GetOffsetAtPoint", &[boxed[0] - 5, 0, 1]);
+        assert_eq!((body(&at).i32(), body(&nowhere).i32()), (Some(2), Some(-1)));
+        // Plain text is read the same way; a button has no text interface.
+        assert_eq!(body(&peer.get(r, &path_of(r, "Settings"), TEXT, "GetText", &[0, -1]).1).text(), Some("Settings"));
         let (_, fine, ..) = peer.ask(r, &path_of(r, "Apply"), TEXT, "GetText", "ii", Pack::default().i32s(&[0, -1]));
         assert!(!fine, "a button has no text to type in");
 
         // The units themselves, at their edges.
         let letters: Vec<char> = "ab  cd\n\nef".chars().collect();
-        assert_eq!([stretch(&letters, 0, 1), stretch(&letters, 3, 1), stretch(&letters, 4, 1), stretch(&letters, 10, 1)], [[0, 4], [0, 4], [4, 8], [8, 10]]);
-        assert_eq!([stretch(&letters, 0, 2), stretch(&letters, 6, 2), stretch(&letters, 7, 2), stretch(&letters, 99, 2)], [[0, 7], [0, 7], [7, 8], [8, 10]]);
-        assert_eq!([stretch(&[], 0, 0), stretch(&[], 5, 1), stretch(&[], -5, 2)], [[0, 0]; 3]);
+        assert_eq!([stretch(&letters, 0, 1, &[]), stretch(&letters, 3, 1, &[]), stretch(&letters, 4, 1, &[]), stretch(&letters, 10, 1, &[])], [[0, 4], [0, 4], [4, 8], [8, 10]]);
+        assert_eq!([stretch(&letters, 0, 2, &[]), stretch(&letters, 6, 2, &[]), stretch(&letters, 7, 2, &[]), stretch(&letters, 99, 2, &[])], [[0, 7], [0, 7], [7, 8], [8, 10]]);
+        assert_eq!([stretch(&[], 0, 0, &[]), stretch(&[], 5, 1, &[]), stretch(&[], -5, 2, &[])], [[0, 0]; 3]);
+        // Lines as wrapped, where they start.
+        assert_eq!([stretch(&letters, 1, 3, &[0, 4, 8]), stretch(&letters, 5, 3, &[0, 4, 8]), stretch(&letters, 9, 3, &[0, 4, 8])], [[0, 4], [4, 8], [8, 10]]);
         assert_eq!([byte_at("a\u{17c}b", 0), byte_at("a\u{17c}b", 2), byte_at("a\u{17c}b", 3), byte_at("a\u{17c}b", 9), byte_at("a\u{17c}b", -1), byte_at("a\u{17c}b", i32::MIN)], [0, 3, 4, 4, 4, 4]);
         assert_eq!([spliced("abc", 1, 2, "X"), spliced("abc", 2, 1, "X"), spliced("abc", -1, -1, "X"), spliced("", 0, 5, "X")], ["aXc", "aXc", "abcX", "X"]);
         let was_now = |was: &str, now: &str| retyped(was, now);

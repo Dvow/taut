@@ -24,8 +24,11 @@
 //! index ([`FontFile::nth`]) or by name, as a variable font's named instance is
 //! ([`FontFile::named`]).
 //!
-//! Not done: `cvar` (it varies hints, and nothing is hinted here); `VVAR`, for vertical text;
-//! `GSUB` `FeatureVariations`; and `COLR` variations, which its own reader handles.
+//! With the feature `hinting`, `cvar` varies the control values a font's instructions read
+//! (see `truetype_hinting.rs`).
+//!
+//! Not done: `VVAR`, for vertical text; `GSUB` `FeatureVariations`; and `COLR` variations,
+//! which its own reader handles.
 use crate::font_file::{Bytes, FontFile, first_not, listed};
 use crate::geom::{Point, pt};
 use std::ops::Range;
@@ -480,6 +483,43 @@ impl Varied {
         let row = table.filter(|at| list.u16(at + 4) == Some(0x8000)).and_then(|at| Some((list.u16(at)?, list.u16(at + 2)?)));
         let store = all.within(&self.store);
         row.and_then(|(outer, inner)| delta(store, outer, inner, &self.place)).map_or(0.0, f32::round)
+    }
+}
+
+#[cfg(feature = "hinting")]
+impl Varied {
+    /// `cvar`'s deltas for a font's `count` control values at this position, in font units.
+    /// Its tuples are as `gvar`'s for one glyph (after a version), each with its own peak; a
+    /// value a tuple doesn't list doesn't move. A damaged table moves what it got to.
+    pub fn controls(&self, table: Bytes, count: usize) -> Vec<f32> {
+        let mut moved = vec![0.0; count];
+        _ = self.controls_moved(table, &mut moved);
+        moved
+    }
+
+    /// The body of `controls`.
+    fn controls_moved(&self, table: Bytes, moved: &mut [f32]) -> Option<()> {
+        (table.u32(0)? == 0x0001_0000).then_some(())?;
+        let (lists, mut at, axes) = (table.u16(4)?, table.u16(6)? as usize, self.place.len());
+        let shared = if lists & 0x8000 != 0 { numbers(table, &mut at)? } else { Some(Vec::new()) };
+        let mut head = 8;
+        for _ in 0..lists & 0x0fff {
+            let (long, index) = (table.u16(head)? as usize, table.u16(head + 2)?);
+            (index & 0x8000 != 0).then_some(())?;
+            let (peak, after) = (table.part(head + 4, axes * 2)?, head + 4 + axes * 2);
+            let ends = if index & 0x4000 != 0 { Some((table.part(after, axes * 2)?, table.part(after + axes * 2, axes * 2)?)) } else { None };
+            let (say, mut list) = (say(peak, ends, &self.place), at..at.checked_add(long)?);
+            (head, at) = (after + if ends.is_some() { axes * 4 } else { 0 }, list.end);
+            if say == 0.0 {
+                continue;
+            }
+            let own = Bytes(table.0.get(..list.end)?);
+            let named = if index & 0x2000 != 0 { numbers(own, &mut list.start)? } else { shared.clone() };
+            let by = steps(own, &mut list.start, named.as_ref().map_or(moved.len(), Vec::len))?;
+            let named = named.unwrap_or_else(|| (0..moved.len()).collect());
+            named.into_iter().zip(by).for_each(|(n, by)| moved.get_mut(n).into_iter().for_each(|value| *value += by * say));
+        }
+        Some(())
     }
 }
 

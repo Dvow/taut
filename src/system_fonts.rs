@@ -100,6 +100,7 @@ fn family(name: &str) -> Option<u16> {
 }
 
 /// A family's name, by index.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn name(family: u16) -> String {
     held(&FAMILIES).get(usize::from(family)).map_or_else(String::new, |name| name.to_string())
 }
@@ -205,13 +206,19 @@ pub fn styles(family: &str) -> Vec<Style> {
 }
 
 /// The system's fonts, each family and style: all, or one family's.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn listed(family: Option<&str>) -> Vec<(String, Style)> {
     crate::x11::listed(family.map(escaped).as_deref())
 }
 
+/// The system's fonts on Android: the named families of `fonts.xml`.
+#[cfg(target_os = "android")]
+fn listed(family: Option<&str>) -> Vec<(String, Style)> {
+    crate::android_text::listed(family)
+}
+
 /// The fonts CoreText has.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn listed(family: Option<&str>) -> Vec<(String, Style)> {
     crate::core_text::listed(family)
 }
@@ -225,20 +232,26 @@ fn listed(_family: Option<&str>) -> Vec<(String, Style)> {
 /// The font a face draws a character with, read from the system's file: the face's own, or its
 /// fallback if that lacks the character, as system text does. For drawings that render text in
 /// system fonts. `None` if the system provides no file.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::FontFile> {
     crate::x11::file_for(face, letter).and_then(crate::font_file::FontFile::open)
 }
 
+/// The same on Android: the first of the system's fonts that has it.
+#[cfg(target_os = "android")]
+pub(crate) fn file_for(_face: Face, letter: char) -> Option<crate::font_file::FontFile> {
+    crate::android_text::file_for(letter)
+}
+
 /// The same from the file CoreText draws the character from.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::FontFile> {
     crate::core_text::file_for(face, letter).and_then(crate::font_file::FontFile::open)
 }
 
-/// How CoreText is asked for a face's font: the family named, if any (else the system's font
-/// for face `of`), and the style.
-#[cfg(target_os = "macos")]
+/// How CoreText (or a browser) is asked for a face's font: the family named, if any (else the
+/// system's font for face `of`), and the style.
+#[cfg(any(target_vendor = "apple", target_family = "wasm"))]
 pub(crate) fn asked(face: Face) -> (Option<String>, Face, Style) {
     let kept = kept(face);
     (kept.family.map(name), kept.of, kept.style)
@@ -353,7 +366,7 @@ fn tables(dc: isize) -> Option<Vec<u8>> {
 // ---- Linux: what Fontconfig is asked ----
 
 /// Fontconfig's weights: its value, its name, and the 100 to 900 weight of each.
-#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+#[cfg(any(test, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 const WEIGHTS: [(u16, u8, &str); 12] = [
     (100, 0, "thin"),
     (200, 40, "extralight"),
@@ -370,14 +383,14 @@ const WEIGHTS: [(u16, u8, &str); 12] = [
 ];
 
 /// A Fontconfig weight on the 100 to 900 scale: the nearest named one.
-#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+#[cfg(any(test, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 pub(crate) fn weight_of(fontconfig: i32) -> u16 {
     WEIGHTS.iter().min_by_key(|(_, own, _)| (i32::from(*own) - fontconfig).abs()).map_or(400, |(weight, ..)| *weight)
 }
 
 /// The Fontconfig pattern for a face: a family name, or the desktop's generic ("sans",
 /// "monospace"), with the style.
-#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+#[cfg(any(test, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 pub(crate) fn pattern(face: Face) -> String {
     let kept = kept(face);
     let family = kept.family.map(name);
@@ -385,14 +398,14 @@ pub(crate) fn pattern(face: Face) -> String {
 }
 
 /// A family and style as a Fontconfig pattern: "Noto Serif:weight=bold:slant=italic".
-#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+#[cfg(any(test, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 fn pattern_of(family: Option<&str>, style: Style) -> String {
     let (_, _, weight) = WEIGHTS.iter().min_by_key(|(own, ..)| own.abs_diff(style.weight)).copied().unwrap_or(WEIGHTS[5]);
     escaped(family.unwrap_or_default()) + ":weight=" + weight + if style.italic { ":slant=italic" } else { "" }
 }
 
 /// A family name escaped for Fontconfig: its special characters backslash-escaped.
-#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+#[cfg(any(test, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 fn escaped(family: &str) -> String {
     let mut escaped = String::with_capacity(family.len());
     for letter in family.chars() {
@@ -1311,7 +1324,7 @@ mod on_windows {
     }
 }
 
-#[cfg(all(test, unix, not(target_os = "macos")))]
+#[cfg(all(test, unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod on_linux {
     use super::*;
     use crate::TextSystem;

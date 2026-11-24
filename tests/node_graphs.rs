@@ -359,18 +359,29 @@ fn of_a_thousand_nodes_only_those_in_sight_are_described() {
 }
 
 /// How long a run takes that describes a graph of a thousand nodes again and draws what
-/// changed, as the pointer goes back and forth: at its own size, and with all of it in
-/// sight (where each is a plain box). `cargo test --release --test node_graphs -- --ignored
-/// --nocapture how_long`
+/// changed, as the pointer goes back and forth: at its own size; with all of it in sight
+/// (where each is a plain box); with the keyboard in it (its wires are then buttons); and on a
+/// grid, with 25 frames and a bend in every tenth wire. `cargo test --release --test
+/// node_graphs -- --ignored --nocapture how_long`
 #[test]
 #[ignore]
 fn how_long_a_graph_of_a_thousand_nodes_takes() {
-    for all in [false, true] {
+    for (case, what) in ["the nodes in sight of 1,000", "all 1,000 nodes in sight", "the keyboard in it", "a grid, 25 frames, 100 bends"].into_iter().enumerate() {
         let (mut ui, mut app) = (window(1.0), thousand());
+        if case == 3 {
+            app.graph.grid = 20.0;
+            app.graph.frames = (0..25).map(|n| taut::Frame::new("Frame", rect((n % 5) as f32 * 1600.0, (n / 5) as f32 * 1000.0, 1500.0, 900.0))).collect();
+            let at = |n: usize| pt((n % 40) as f32 * 200.0 + 180.0, (n / 40) as f32 * 200.0 + 100.0);
+            app.graph.reroutes = (0..100).map(|n| taut::Reroute { wire: app.graph.wires[n * 10], at: at(n * 10) }).collect();
+        }
         settle(&mut ui, |ui| show(ui, &mut app));
-        if all {
+        if case == 1 {
             does(&mut ui, Event::Move(pt(180.0, 180.0)), |ui| show(ui, &mut app));
             key(&mut ui, Key::Char('1'), Mods::SHIFT, |ui| show(ui, &mut app));
+            settle(&mut ui, |ui| show(ui, &mut app));
+        }
+        if case == 2 {
+            click(&mut ui, title(&app, 0), |ui| show(ui, &mut app));
             settle(&mut ui, |ui| show(ui, &mut app));
         }
         let mut best = std::time::Duration::MAX;
@@ -381,7 +392,281 @@ fn how_long_a_graph_of_a_thousand_nodes_takes() {
             ui.screen.redraw(&mut ui.ui, changed);
             best = best.min(started.elapsed());
         }
-        let what = if all { "all 1,000 nodes in sight" } else { "the nodes in sight of 1,000" };
         println!("{what}: {} millionths of a second to describe the graph again and draw what changed", best.as_micros());
     }
+}
+
+/// A point a share `t` along the wire from `a` to `b`, as the graph draws it: it leaves `a`
+/// rightward and comes into `b` from the left.
+fn along_wire(a: Point, b: Point, t: f32) -> Point {
+    let reach = ((b.x - a.x).abs() / 2.0).max(40.0);
+    let (c, d, s) = (pt(a.x + reach, a.y), pt(b.x - reach, b.y), 1.0 - t);
+    let [wa, wc, wd, wb] = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
+    pt(a.x * wa + c.x * wc + d.x * wd + b.x * wb, a.y * wa + c.y * wc + d.y * wd + b.y * wb)
+}
+
+/// Clicks twice at `at`, a moment apart: a double click.
+fn double_click(ui: &mut Window, app: &mut App, at: Point) {
+    for (step, event) in
+        [Event::Move(at), Event::Press(Button::Left, Mods::NONE), Event::Release(Button::Left), Event::Press(Button::Left, Mods::NONE), Event::Release(Button::Left)].into_iter().enumerate()
+    {
+        ui.set_time(std::time::Duration::from_millis(10_000 + 50 * step as u64));
+        does(ui, event, |ui| show(ui, app));
+    }
+}
+
+/// Whether a pixel next to `at` (or it) is `color`.
+fn near(ui: &Window, at: Point, color: taut::Color) -> bool {
+    (-1..=1).any(|dy| (-1..=1).any(|dx| pixel(ui, pt(at.x + dx as f32, at.y + dy as f32)) == color.0 & 0xff_ffff))
+}
+
+/// The titles of the nodes, in order.
+fn titles(app: &App) -> Vec<&str> {
+    app.graph.nodes.iter().map(|node| node.title.as_str()).collect()
+}
+
+#[test]
+fn an_input_the_app_makes_for_several_takes_every_wire_given_it() {
+    let (mut ui, mut app) = (window(1.0), app());
+    app.graph.nodes[2] = Node::new("Sum", 240.0, 60.0, 0.0).multi_input("All", "number").input("B", "number");
+    ui.set_screen_reader(true);
+    settle(&mut ui, |ui| show(ui, &mut app));
+    drag(&mut ui, port(&app, 0, 0, true), port(&app, 2, 0, false), |ui| show(ui, &mut app));
+    drag(&mut ui, port(&app, 1, 0, true), port(&app, 2, 0, false), |ui| show(ui, &mut app));
+    let wires = [Wire { from: (0, 0), to: (2, 0) }, Wire { from: (1, 0), to: (2, 0) }];
+    assert_eq!(app.graph.wires, wires, "the second goes in beside the first");
+    assert_eq!(app.graph.wires_into((2, 0)).collect::<Vec<_>>(), wires);
+    // Again from the same output: nothing changes. Into the one-wire input, the second replaces
+    // the first.
+    drag(&mut ui, port(&app, 0, 0, true), port(&app, 2, 0, false), |ui| show(ui, &mut app));
+    assert_eq!(app.graph.wires.len(), 2);
+    expect_node(&ui, "All, number in, several, from One: Value, Two: Value");
+    // Pressed, it gives up its last wire.
+    drag(&mut ui, port(&app, 2, 0, false), pt(215.0, 270.0), |ui| show(ui, &mut app));
+    assert_eq!(app.graph.wires, wires[..1]);
+}
+
+#[test]
+fn on_a_grid_nodes_bends_and_frames_snap_to_it_and_it_is_drawn() {
+    let (mut ui, mut app) = (window(1.0), app());
+    app.graph.grid = 20.0;
+    settle(&mut ui, |ui| show(ui, &mut app));
+    // A line every 20 units, under everything.
+    let t = ui.theme;
+    assert_eq!(pixel(&ui, pt(200.0, 230.0)), t.line.0 & 0xff_ffff);
+    assert_eq!(pixel(&ui, pt(210.0, 230.0)), t.bg.0 & 0xff_ffff);
+    let from = title(&app, 0);
+    drag(&mut ui, from, pt(from.x + 33.0, from.y + 7.0), |ui| show(ui, &mut app));
+    assert_eq!(app.graph.nodes[0].position, pt(60.0, 20.0), "20 and 33 is 53: the nearest line is at 60");
+    key(&mut ui, Key::Right, Mods::NONE, |ui| show(ui, &mut app));
+    assert_eq!(app.graph.nodes[0].position, pt(80.0, 20.0), "an arrow moves it a line");
+}
+
+#[test]
+fn a_frame_carries_the_nodes_in_it_resizes_by_its_corner_and_the_keys_do_both() {
+    let (mut ui, mut app) = (window(1.0), app());
+    (app.graph.nodes[0].position, app.graph.nodes[1].position) = (pt(20.0, 80.0), pt(20.0, 170.0));
+    app.graph.frames.push(taut::Frame::new("Inputs", rect(10.0, 40.0, 190.0, 230.0)));
+    ui.set_screen_reader(true);
+    settle(&mut ui, |ui| show(ui, &mut app));
+    // Under the nodes, its title a button.
+    let named = expect_node_as(&ui, Role::Button, "Frame: Inputs");
+    drag(&mut ui, middle(named.rect), pt(middle(named.rect).x + 30.0, middle(named.rect).y + 10.0), |ui| show(ui, &mut app));
+    assert_eq!(app.graph.frames[0].rect, rect(40.0, 50.0, 190.0, 230.0));
+    assert_eq!((app.graph.nodes[0].position, app.graph.nodes[1].position, app.graph.nodes[2].position), (pt(50.0, 90.0), pt(50.0, 180.0), pt(240.0, 60.0)), "the two in it go along");
+    // Its corner makes it smaller, down to a least size.
+    let corner = pt(40.0 + 190.0 - 6.0, 50.0 + 230.0 - 6.0);
+    drag(&mut ui, corner, pt(corner.x - 150.0, corner.y - 60.0), |ui| show(ui, &mut app));
+    assert_eq!(app.graph.frames[0].rect, rect(40.0, 50.0, 80.0, 170.0));
+    // By keys: arrows move it, with Shift they resize it, Delete takes it away (the nodes stay).
+    let named = expect_node_as(&ui, Role::Button, "Frame: Inputs");
+    click(&mut ui, middle(named.rect), |ui| show(ui, &mut app));
+    key(&mut ui, Key::Down, Mods::NONE, |ui| show(ui, &mut app));
+    key(&mut ui, Key::Right, Mods::SHIFT, |ui| show(ui, &mut app));
+    assert_eq!(app.graph.frames[0].rect, rect(40.0, 60.0, 90.0, 170.0));
+    assert_eq!(app.graph.nodes[0].position, pt(50.0, 90.0), "the node no longer has its middle in it");
+    key(&mut ui, Key::Delete, Mods::NONE, |ui| show(ui, &mut app));
+    assert!(app.graph.frames.is_empty() && app.graph.nodes.len() == 4);
+    assert_eq!(app.did.last(), Some(&GraphAction::Framed));
+}
+
+#[test]
+fn control_g_frames_what_is_selected_and_f_shows_it() {
+    let (mut ui, mut app) = (window(1.0), app());
+    settle(&mut ui, |ui| show(ui, &mut app));
+    click(&mut ui, title(&app, 0), |ui| show(ui, &mut app));
+    key(&mut ui, Key::Char('g'), Mods::CTRL, |ui| show(ui, &mut app));
+    let frame = app.graph.frames[0].rect;
+    let one = app.graph.nodes[0].position;
+    assert_eq!((frame.x, frame.y, frame.w), (one.x - 24.0, one.y - 24.0 - 29.0, 160.0 + 48.0), "around it, with room for a title");
+    assert_eq!(app.did.last(), Some(&GraphAction::Framed));
+    // F: the selection as near as fits, but no nearer than its own size; with none, all of it.
+    key(&mut ui, Key::Char('f'), Mods::NONE, |ui| show(ui, &mut app));
+    assert_eq!(app.graph.view.zoom, 1.0);
+    key(&mut ui, Key::Escape, Mods::NONE, |ui| show(ui, &mut app));
+    key(&mut ui, Key::Char('f'), Mods::NONE, |ui| show(ui, &mut app));
+    assert!(app.graph.view.zoom < 0.2, "{:?}", app.graph.view);
+}
+
+#[test]
+fn a_double_click_bends_a_wire_there_the_bend_moves_and_goes_again() {
+    let (mut ui, mut app) = (window(1.0), app());
+    app.graph.wire((0, 0), (2, 0));
+    settle(&mut ui, |ui| show(ui, &mut app));
+    let (a, b) = (port(&app, 0, 0, true), port(&app, 2, 0, false));
+    let on = along_wire(a, b, 0.25);
+    double_click(&mut ui, &mut app, on);
+    let wire = Wire { from: (0, 0), to: (2, 0) };
+    assert_eq!(app.graph.reroutes.len(), 1);
+    assert_eq!((app.graph.reroutes[0].wire, app.did.last()), (wire, Some(&GraphAction::Rerouted(wire))));
+    // Dragged far down, the wire goes through it there.
+    drag(&mut ui, on, pt(on.x, 240.0), |ui| show(ui, &mut app));
+    let bend = app.graph.reroutes[0].at;
+    assert_eq!(bend, pt(on.x, 240.0));
+    let wire_color = taut::Color::series(0, ui.theme.bg);
+    assert!(near(&ui, along_wire(a, bend, 0.5), wire_color) && near(&ui, along_wire(bend, b, 0.5), wire_color), "the wire goes through it");
+    assert!(!near(&ui, along_wire(a, b, 0.5), wire_color), "and no longer the short way");
+    double_click(&mut ui, &mut app, bend);
+    assert!(app.graph.reroutes.is_empty());
+}
+
+#[test]
+fn wires_are_told_to_readers_and_reached_by_tab_followed_bent_and_removed_by_keys() {
+    let (mut ui, mut app) = (window(1.0), app());
+    app.graph.wire((0, 0), (2, 0));
+    app.graph.wire((0, 0), (2, 1));
+    ui.set_screen_reader(true);
+    settle(&mut ui, |ui| show(ui, &mut app));
+    click(&mut ui, title(&app, 0), |ui| show(ui, &mut app));
+    // The title, its port, then its wires (once: Right goes round them), then its button.
+    key(&mut ui, Key::Tab, Mods::NONE, |ui| show(ui, &mut app));
+    key(&mut ui, Key::Tab, Mods::NONE, |ui| show(ui, &mut app));
+    assert_eq!(focused_name(&ui), "Wire, One: Value to Sum: A");
+    key(&mut ui, Key::Right, Mods::NONE, |ui| show(ui, &mut app));
+    assert_eq!(focused_name(&ui), "Wire, One: Value to Sum: B");
+    assert_eq!(focused_node(&ui).unwrap().shortcut, "Delete");
+    key(&mut ui, Key::Tab, Mods::NONE, |ui| show(ui, &mut app));
+    assert_eq!(focused_name(&ui), "Add one");
+    // Enter follows a wire to its input.
+    key(&mut ui, Key::Tab, Mods::SHIFT, |ui| show(ui, &mut app));
+    key(&mut ui, Key::Enter, Mods::NONE, |ui| show(ui, &mut app));
+    ui.run(&mut |ui| show(ui, &mut app));
+    assert_eq!(focused_name(&ui), "A, number in, from One: Value");
+    // B bends one in its middle, and the bend is told and moved by arrows; Delete takes it
+    // away, then the wire.
+    click(&mut ui, title(&app, 0), |ui| show(ui, &mut app));
+    key(&mut ui, Key::Tab, Mods::NONE, |ui| show(ui, &mut app));
+    key(&mut ui, Key::Tab, Mods::NONE, |ui| show(ui, &mut app));
+    let wire = focused_name(&ui);
+    assert!(wire.starts_with("Wire, One: Value to Sum"), "{wire}");
+    key(&mut ui, Key::Char('b'), Mods::NONE, |ui| show(ui, &mut app));
+    ui.run(&mut |ui| show(ui, &mut app));
+    assert_eq!(app.graph.reroutes.len(), 1);
+    assert!(focused_name(&ui).starts_with("Bend, One: Value to Sum"), "{}", focused_name(&ui));
+    let was = app.graph.reroutes[0].at;
+    key(&mut ui, Key::Down, Mods::NONE, |ui| show(ui, &mut app));
+    assert_eq!(app.graph.reroutes[0].at, pt(was.x, was.y + 10.0));
+    key(&mut ui, Key::Delete, Mods::NONE, |ui| show(ui, &mut app));
+    ui.run(&mut |ui| show(ui, &mut app));
+    assert!(app.graph.reroutes.is_empty() && focused_name(&ui) == wire, "{}", focused_name(&ui));
+    key(&mut ui, Key::Delete, Mods::NONE, |ui| show(ui, &mut app));
+    assert_eq!(app.graph.wires.len(), 1);
+    assert!(ui.announced().iter().any(|said| said.starts_with("Unwired One: Value to Sum")), "{:?}", ui.announced());
+}
+
+#[test]
+fn every_edit_undoes_and_redoes_and_the_app_can_keep_its_own() {
+    let (mut ui, mut app) = (window(1.0), app());
+    app.graph.nodes[1].position = pt(20.0, 220.0);
+    settle(&mut ui, |ui| show(ui, &mut app));
+    let start = app.graph.clone();
+    let positions = |app: &App| app.graph.nodes.iter().map(|node| node.position).collect::<Vec<_>>();
+    // A wire, a move, two moves by key (one step), a copy beside it, the original deleted (the
+    // keyboard is on it).
+    drag(&mut ui, port(&app, 0, 0, true), port(&app, 2, 0, false), |ui| show(ui, &mut app));
+    let one = title(&app, 0);
+    drag(&mut ui, one, pt(one.x + 10.0, one.y), |ui| show(ui, &mut app));
+    key(&mut ui, Key::Down, Mods::NONE, |ui| show(ui, &mut app));
+    key(&mut ui, Key::Down, Mods::NONE, |ui| show(ui, &mut app));
+    key(&mut ui, Key::Char('d'), Mods::CTRL, |ui| show(ui, &mut app));
+    key(&mut ui, Key::Delete, Mods::NONE, |ui| show(ui, &mut app));
+    assert_eq!(titles(&app), ["Two", "Sum", "Far", "One"]);
+    let end = (positions(&app), app.graph.wires.clone());
+    let undo = |ui: &mut Window, app: &mut App| key(ui, Key::Char('z'), Mods::CTRL, |ui| show(ui, app));
+    undo(&mut ui, &mut app);
+    assert_eq!((titles(&app).len(), app.did.last()), (5, Some(&GraphAction::Undone)));
+    undo(&mut ui, &mut app);
+    assert_eq!(titles(&app).len(), 4);
+    undo(&mut ui, &mut app);
+    assert_eq!(app.graph.nodes[0].position, pt(30.0, 20.0), "both keys at once");
+    undo(&mut ui, &mut app);
+    undo(&mut ui, &mut app);
+    assert_eq!((positions(&app), app.graph.wires.len()), (start.nodes.iter().map(|node| node.position).collect::<Vec<_>>(), 0));
+    assert!(!app.graph.can_undo());
+    for _ in 0..5 {
+        key(&mut ui, Key::Char('y'), Mods::CTRL, |ui| show(ui, &mut app));
+    }
+    assert_eq!((positions(&app), app.graph.wires.clone()), end);
+    assert_eq!(app.did.last(), Some(&GraphAction::Redone));
+    // An edit of the app's own, kept by it: undone as any other, and it drops what was undone.
+    undo(&mut ui, &mut app);
+    app.graph.save_undo_step();
+    app.graph.add(Node::new("New", 300.0, 200.0, 0.0));
+    assert!(!app.graph.can_redo());
+    undo(&mut ui, &mut app);
+    assert!(!titles(&app).contains(&"New"));
+}
+
+#[test]
+fn a_node_pressed_under_another_comes_on_top_and_its_wires_go_with_it() {
+    let (mut ui, mut app) = (window(1.0), app());
+    // Two under Sum's corner, wired into it.
+    app.graph.nodes[1].position = pt(200.0, 130.0);
+    app.graph.wire((0, 0), (2, 0));
+    app.graph.wire((1, 0), (2, 1));
+    settle(&mut ui, |ui| show(ui, &mut app));
+    // Two's title, where Sum does not cover it.
+    click(&mut ui, pt(220.0, 144.0), |ui| show(ui, &mut app));
+    assert_eq!(titles(&app), ["One", "Sum", "Far", "Two"]);
+    assert_eq!(app.graph.wires, [Wire { from: (0, 0), to: (1, 0) }, Wire { from: (3, 0), to: (1, 1) }]);
+    assert!(app.graph.nodes[3].selected);
+    // One, under nothing, stays where it is; Sum, under Two now, comes up again.
+    click(&mut ui, title(&app, 0), |ui| show(ui, &mut app));
+    assert_eq!(titles(&app), ["One", "Sum", "Far", "Two"]);
+    click(&mut ui, pt(380.0, 74.0), |ui| show(ui, &mut app));
+    assert_eq!(titles(&app), ["One", "Far", "Two", "Sum"]);
+}
+
+#[test]
+fn dragging_near_the_edge_pans_the_view_and_what_is_dragged_stays_under_the_pointer() {
+    let (mut ui, mut app) = (window(1.0), app());
+    settle(&mut ui, |ui| show(ui, &mut app));
+    let from = title(&app, 0);
+    let edge = pt(400.0, from.y);
+    for event in [Event::Move(from), Event::Press(Button::Left, Mods::NONE), Event::Move(edge)] {
+        does(&mut ui, event, |ui| show(ui, &mut app));
+    }
+    let started = app.graph.view.x;
+    for step in 1..=5 {
+        ui.set_time(std::time::Duration::from_millis(1000 + 50 * step));
+        assert!(ui.wake_in().is_some(), "it asks to run again");
+        ui.run(&mut |ui| show(ui, &mut app));
+    }
+    assert!(app.graph.view.x > started + 50.0, "{:?}", app.graph.view);
+    let under = app.graph.view.to_window(pt(app.graph.nodes[0].position.x + 40.0, 0.0), rect(0.0, 0.0, 410.0, 290.0));
+    assert!((under.x - edge.x).abs() < 1.0, "{under:?}");
+    does(&mut ui, Event::Release(Button::Left), |ui| show(ui, &mut app));
+    let stopped = app.graph.view.x;
+    ui.set_time(std::time::Duration::from_millis(5000));
+    ui.run(&mut |ui| show(ui, &mut app));
+    assert_eq!(app.graph.view.x, stopped);
+}
+
+#[test]
+fn a_new_wire_let_go_on_nothing_asks_the_app_for_a_node_there() {
+    let (mut ui, mut app) = (window(1.0), app());
+    settle(&mut ui, |ui| show(ui, &mut app));
+    drag(&mut ui, port(&app, 0, 0, true), pt(215.0, 240.0), |ui| show(ui, &mut app));
+    assert_eq!(app.did.last(), Some(&GraphAction::WireDropped { port: (0, 0), output: true, at: pt(215.0, 240.0) }));
+    assert!(app.graph.wires.is_empty());
 }

@@ -9,12 +9,19 @@
 //! lines continue onto the next page. Links lead where they did in the window (a link to one of
 //! the document's headings, to its place in the pages); pictures are those the app gave the
 //! paper by name ([`Paper::set_picture`]).
+//!
+//! Each block is a part of the pages' structure (`pdf_structure.rs`), as a window tells it to
+//! screen readers: headings (also bookmarks), paragraphs, lists of items (a number as their
+//! label), quotes, code, tables with their column headings, pictures described by their words,
+//! and links. Backgrounds, rules, bullets and a table's headings repeated on a later page are
+//! decoration.
 use crate::color::Color;
 use crate::geom::{Rect, Size, rect};
 use crate::layout::Align;
 use crate::markdown::Markdown;
 use crate::markdown_view::{Sizes, font_of, least, quoted, rules_for, sizes, slug, worded};
 use crate::paper::{Mark, Paper};
+use crate::pdf_structure::Tag;
 use crate::rich_text::{Bit, Kind, Laid, Room, THING, TextStyle, Thing, face_of, heights, lay};
 use crate::text::{Font, Metrics, TextSystem};
 use crate::theme::Theme;
@@ -39,7 +46,8 @@ impl TextSystem for Measured<'_> {
 
 /// An open container block while its content is laid out: its content's x and width, the gap
 /// between children, how many it has had; and where it began (page and y), where a quote's bar
-/// starts. For a list: the width of its item marks, and its nesting depth.
+/// starts. For a list: the width of its item marks, and its nesting depth. How many structure
+/// parts it opened (ended with it); for a numbered item, its label part.
 #[derive(Clone, Copy)]
 struct Open {
     block: usize,
@@ -50,6 +58,8 @@ struct Open {
     top: (usize, f32),
     marks: f32,
     depth: u32,
+    parts: u32,
+    label: Option<u32>,
 }
 
 /// A document being laid out on pages: the paper, the document, its theme and sizes, the page
@@ -81,7 +91,7 @@ impl Paper {
         self.page(size);
         let t = Theme::light();
         let margin = margin.max(0.0).min(size.w.min(size.h) / 3.0);
-        let whole = Open { block: 0, x: margin, w: (size.w - 2.0 * margin).max(1.0), gap: sizes(&t).gap, count: 0, top: (first, margin), marks: 0.0, depth: 0 };
+        let whole = Open { block: 0, x: margin, w: (size.w - 2.0 * margin).max(1.0), gap: sizes(&t).gap, count: 0, top: (first, margin), marks: 0.0, depth: 0, parts: 0, label: None };
         let mut pages = Pages { size: sizes(&t), t, doc, sheet: size, margin, laid: Laid::default(), fonts: Vec::new(), open: vec![whole], page: first, y: margin, mark: None, paper: self };
         let mut at = 1;
         while at < doc.writing.blocks.len() {
@@ -145,6 +155,7 @@ impl Pages<'_> {
                 Kind::Item { .. } if self.mark == Some(self.open[done].block) => self.empty_item(done),
                 _ => {}
             }
+            (0..self.open[done].parts).for_each(|_| self.paper.end());
             self.open.pop();
         }
     }
@@ -175,12 +186,12 @@ impl Pages<'_> {
         }
         let (x, w, size) = (up.x, up.w, self.size);
         match block.kind {
-            Kind::Quote => self.enter(Open { block: at, x: x + 3.0 + size.inset, w: w - 3.0 - size.inset, gap: size.gap, count: 0, top: (self.page, self.y), marks: 0.0, depth: up.depth }),
-            Kind::List { numbered, tight } => self.list(at, numbered, tight, x, w),
-            Kind::Item { .. } => {
-                self.mark = Some(at);
-                self.enter(Open { block: at, x, w, gap: up.gap, count: 0, top: (self.page, self.y), marks: up.marks, depth: up.depth });
+            Kind::Quote => {
+                self.paper.begin_tag(Tag::Quote);
+                self.enter(Open { block: at, x: x + 3.0 + size.inset, w: w - 3.0 - size.inset, gap: size.gap, count: 0, top: (self.page, self.y), marks: 0.0, depth: up.depth, parts: 1, label: None });
             }
+            Kind::List { numbered, tight } => self.list(at, numbered, tight, x, w),
+            Kind::Item { .. } => self.item(at, up, x, w),
             Kind::Table => return self.table(at, x, w),
             Kind::Rule => {
                 self.room_for(1.0);
@@ -191,6 +202,17 @@ impl Pages<'_> {
             _ => {}
         }
         at + 1
+    }
+
+    /// Opens a list item, block `at` in `up`: its label (a number) and then its body, as parts.
+    fn item(&mut self, at: usize, up: Open, x: f32, w: f32) {
+        self.mark = Some(at);
+        let numbered = matches!(self.doc.writing.blocks[self.doc.writing.blocks[at].parent as usize].kind, Kind::List { numbered: true, .. });
+        self.paper.begin_tag(Tag::Item);
+        let label = numbered.then(|| self.paper.begin_tag(Tag::Label));
+        self.paper.open.truncate(self.paper.open.len() - label.is_some() as usize);
+        self.paper.begin_tag(Tag::Body);
+        self.enter(Open { block: at, x, w, gap: up.gap, count: 0, top: (self.page, self.y), marks: up.marks, depth: up.depth, parts: 2, label });
     }
 
     /// Opens a container block.
@@ -210,7 +232,8 @@ impl Pages<'_> {
         };
         let depth = self.open.last().map_or(0, |up| up.depth) + 1;
         let gap = if tight { self.size.close } else { self.size.gap };
-        self.enter(Open { block: at, x: x + marks, w: w - marks, gap, count: 0, top: (self.page, self.y), marks, depth });
+        self.paper.begin_tag(Tag::List);
+        self.enter(Open { block: at, x: x + marks, w: w - marks, gap, count: 0, top: (self.page, self.y), marks, depth, parts: 1, label: None });
     }
 
     /// The bits of a block of words or code, into `laid` (cleared first).
@@ -325,10 +348,16 @@ impl Pages<'_> {
             self.paper.set_page(first);
             self.paper.anchor(&slug(words), placed.first().map_or(self.y, |(_, y)| *y));
         }
+        self.paper.begin_tag(match kind {
+            Kind::Heading(level) => Tag::Heading(level.clamp(1, 6)),
+            Kind::Code(_) => Tag::Code,
+            _ => Tag::Paragraph,
+        });
         for (row, (page, top)) in rows.iter().enumerate().map(|(n, row)| (*row, placed[n])) {
             self.paper.set_page(page);
             self.write_row(&row, x, top);
         }
+        self.paper.end();
         if under > 0.0 {
             self.paper.set_page(self.page);
             self.paper.rect(rect(x, self.y + under - 1.0, w, 1.0), self.t.line);
@@ -369,13 +398,19 @@ impl Pages<'_> {
                 let (before, after) = (if frag.into <= 0.0 { crate::rich_text::PAD } else { 0.0 }, if frag.words[1] >= bit.words[1] { crate::rich_text::PAD } else { 0.0 });
                 self.paper.rounded(rect(left - before, y, frag.wide + before + after, bit.above + bit.below), 3.0, bit.back);
             }
+            let link = self.doc.links.get(bit.link.wrapping_sub(1) as usize).map(|(to, _)| to.as_str());
+            if link.is_some() {
+                self.paper.begin_tag(Tag::Link);
+            }
+            let said = self.doc.writing.words.get(bit.words[0] as usize..bit.words[1] as usize).unwrap_or("");
             match bit.thing {
-                Thing::Picture(picture, _) => self.paper.put(Mark::Picture(picture.0, rect(left, y, frag.wide, frag.high))),
+                Thing::Picture(picture, _) => figure(self.paper, said, picture.0, rect(left, y, frag.wide, frag.high)),
                 Thing::Icon(icon) => self.paper.icon(icon, rect(left, y, frag.high, frag.high), bit.color),
                 _ => _ = self.paper.line(&self.doc.writing.words[frag.words[0] as usize..frag.words[1] as usize], left, base, bit.font, bit.color),
             }
-            if let Some((to, _)) = self.doc.links.get(bit.link.wrapping_sub(1) as usize) {
+            if let Some(to) = link {
                 self.paper.link(rect(left, top, frag.wide, row.high), to);
+                self.paper.end();
             }
         }
     }
@@ -395,7 +430,11 @@ impl Pages<'_> {
             (None, true) => {
                 let said = format!("{number}.");
                 let wide = self.paper.measure(&said, t.font);
+                // (Its number is its label.)
+                let depth = self.paper.open.len();
+                self.paper.open.extend(open.label);
                 self.paper.line(&said, open.x - 6.0 - wide, base, t.font, t.text_dim);
+                self.paper.open.truncate(depth);
             }
             (None, false) => {
                 let dot = rect(open.x - room / 2.0 - 3.0, middle - 3.0, 6.0, 6.0);
@@ -433,9 +472,13 @@ impl Pages<'_> {
         let total: f32 = wants.iter().sum();
         let narrowed = if total > w { w / total } else { 1.0 };
         let widths: Vec<f32> = wants.iter().map(|want| (want * narrowed).floor()).collect();
+        // (A heading row is repeated at the top of each later page the table goes on to.)
+        let head = rows.first().copied().filter(|row| matches!(self.doc.writing.blocks[*row].kind, Kind::Row { head: true }));
+        self.paper.begin_tag(Tag::Table);
         for (n, row) in rows.iter().enumerate() {
-            self.table_row(*row, x, &widths, n == 0);
+            self.table_row(*row, x, &widths, n == 0, head);
         }
+        self.paper.end();
         // The rule under the last row.
         self.paper.rect(rect(x, self.y - 1.0, widths.iter().sum(), 1.0), self.t.line);
         end
@@ -457,16 +500,11 @@ impl Pages<'_> {
     }
 
     /// A table row with its cells in columns `widths` wide from `x`: on the next page if it
-    /// does not fit (with a rule under the part on this page), with its rules above, around and
+    /// does not fit (with a rule under the part on this page, and the table's heading row
+    /// `head` again at the top of the next, as decoration), with its rules above, around and
     /// between cells.
-    fn table_row(&mut self, row: usize, x: f32, widths: &[f32], first: bool) {
-        let head = matches!(self.doc.writing.blocks[row].kind, Kind::Row { head: true });
-        let mut laid = Vec::new();
-        for (column, cell) in self.cells(row).into_iter().enumerate() {
-            let pad = self.rows(cell, widths.get(column).copied().unwrap_or(0.0)).1;
-            let high = self.laid.rows.iter().map(|row| row.high).sum::<f32>() + 2.0 * pad[1];
-            laid.push((std::mem::take(&mut self.laid), pad, high));
-        }
+    fn table_row(&mut self, row: usize, x: f32, widths: &[f32], first: bool, head: Option<usize>) {
+        let laid = self.lay_row(row, widths);
         let (high, wide, line) = (laid.iter().map(|(_, _, high)| *high).fold(1.0, f32::max), widths.iter().sum::<f32>(), self.t.line);
         let (page, before) = (self.page, self.y);
         self.room_for(high);
@@ -475,7 +513,33 @@ impl Pages<'_> {
             self.paper.rect(rect(x, before - 1.0, wide, 1.0), line);
             self.paper.set_page(self.page);
         }
+        if let Some(head) = head.filter(|head| self.page != page && !first && *head != row) {
+            let laid = self.lay_row(head, widths);
+            self.paper.begin_decoration();
+            self.put_row(head, laid, x, widths);
+            self.paper.end();
+        }
+        self.put_row(row, laid, x, widths);
+    }
+
+    /// A table row's cells laid out in their columns: each one's rows, padding and height.
+    fn lay_row(&mut self, row: usize, widths: &[f32]) -> Vec<(Laid, [f32; 2], f32)> {
+        let mut laid = Vec::new();
+        for (column, cell) in self.cells(row).into_iter().enumerate() {
+            let pad = self.rows(cell, widths.get(column).copied().unwrap_or(0.0)).1;
+            let high = self.laid.rows.iter().map(|row| row.high).sum::<f32>() + 2.0 * pad[1];
+            laid.push((std::mem::take(&mut self.laid), pad, high));
+        }
+        laid
+    }
+
+    /// A table row's laid-out cells where the document has come to: its background if a
+    /// heading row, rules, and each cell's words (a heading row's told as column headings).
+    fn put_row(&mut self, row: usize, laid: Vec<(Laid, [f32; 2], f32)>, x: f32, widths: &[f32]) {
+        let head = matches!(self.doc.writing.blocks[row].kind, Kind::Row { head: true });
+        let (high, wide, line) = (laid.iter().map(|(_, _, high)| *high).fold(1.0, f32::max), widths.iter().sum::<f32>(), self.t.line);
         let top = self.y;
+        self.paper.begin_tag(Tag::Row);
         if head {
             self.paper.rect(rect(x, top, wide, high), self.t.hover);
         }
@@ -483,17 +547,28 @@ impl Pages<'_> {
         let mut left = x;
         for (column, (cell, pad, _)) in laid.into_iter().enumerate() {
             self.laid = cell;
+            self.paper.begin_tag(if head { Tag::Head } else { Tag::Cell });
             let mut y = top + pad[1];
             for row in self.laid.rows.clone() {
                 self.write_row(&row, left, y);
                 y += row.high;
             }
+            self.paper.end();
             self.paper.rect(rect(left, top, 1.0, high), line);
             left += widths.get(column).copied().unwrap_or(0.0);
         }
         self.paper.rect(rect(left - 1.0, top, 1.0, high), line);
+        self.paper.end();
         self.y = top + high;
     }
+}
+
+/// A picture at `r`, described by its words.
+fn figure(paper: &mut Paper, said: &str, picture: u32, r: Rect) {
+    paper.begin_tag(Tag::Figure);
+    paper.describe(said.trim());
+    paper.put(Mark::Picture(picture, r));
+    paper.end();
 }
 
 impl Paper {

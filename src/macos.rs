@@ -21,6 +21,10 @@
 //!
 //! Places on the desktop are in points from the top left of the main screen, as CoreGraphics
 //! has them: the desktop's own pixels here are points.
+//!
+//! With the feature `gpu`, Metal shows the windows instead (`gpu_metal`): the CPU's pixels of
+//! the places a run changed go into a texture on the GPU, or with `gpu-draw` the GPU draws large
+//! ones itself, and a `CAMetalLayer` over the view's layer presents each frame.
 use crate::color::Color;
 use crate::core_text::SystemText;
 use crate::event::{Button, Cursor, Event, Key, Mods};
@@ -733,6 +737,9 @@ struct Shown {
     kind: WindowKind,
     /// It is minimized now.
     minimized: bool,
+    /// How it is shown: by the CPU, or through Metal (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    way: crate::gpu_metal::Way,
 }
 
 /// What a window opens with.
@@ -782,7 +789,21 @@ impl Shown {
                 (drops.take)(view);
             }
             let (frameless, kind) = (opening.frameless, opening.kind);
-            Shown { known: opening.known, window, view, title: opening.title.into(), size, scale, surface: Surface::default(), see_through: opening.transparent, frameless, kind, minimized: false }
+            Shown {
+                known: opening.known,
+                window,
+                view,
+                title: opening.title.into(),
+                size,
+                scale,
+                surface: Surface::default(),
+                see_through: opening.transparent,
+                frameless,
+                kind,
+                minimized: false,
+                #[cfg(feature = "gpu")]
+                way: crate::gpu_metal::Way::Unasked,
+            }
         }
     }
 
@@ -944,6 +965,9 @@ struct Host<App> {
     start: Instant,
     /// The window the pointer is over, if any.
     over: Option<Obj>,
+    /// The GPU the windows are shown through (feature `gpu`), as far as it is open.
+    #[cfg(feature = "gpu")]
+    metal: crate::gpu_metal::Metal,
 }
 
 impl<App: FnMut(&mut Ui)> Host<App> {
@@ -969,7 +993,19 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         ui.set_preferences(preferences());
         ui.set_screens(screens());
         ui.set_native_file_dialog(true);
-        let mut host = Host { app, ui, windows: vec![first], rerun: true, done: false, start: Instant::now(), over: None };
+        #[cfg(feature = "gpu")]
+        let metal = crate::gpu_metal::Metal::new(window.renderer);
+        let mut host = Host {
+            app,
+            ui,
+            windows: vec![first],
+            rerun: true,
+            done: false,
+            start: Instant::now(),
+            over: None,
+            #[cfg(feature = "gpu")]
+            metal,
+        };
         host.turn();
         let shown = &host.windows[0];
         // SAFETY: plain requests of the application and the window.
@@ -1120,6 +1156,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     fn keep_up(&mut self) {
         for at in (1..self.windows.len()).rev() {
             if !self.ui.windows().any(|(known, ..)| self.windows[at].known == Some(known)) {
+                #[cfg(feature = "gpu")]
+                self.metal.unshow(&mut self.windows[at].way);
                 self.windows.remove(at).close();
             }
         }
@@ -1202,8 +1240,13 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         }
     }
 
-    /// Draws what changed in a window and hands its pixels to the window.
+    /// Draws what changed in a window and hands its pixels to the window (or to Metal, where it
+    /// shows the window).
     fn draw(&mut self, at: usize) {
+        #[cfg(feature = "gpu")]
+        if self.through_gpu(at) {
+            return;
+        }
         let shown = &mut self.windows[at];
         let surface = &mut shown.surface;
         let changed = within(&mut self.ui, shown.known, |ui| {
@@ -1223,6 +1266,142 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     }
 }
 
+/// A window as Metal shows it (feature `gpu`).
+#[cfg(feature = "gpu")]
+impl Shown {
+    /// Its pixels' size, as its interface draws it.
+    fn pixels(&self) -> [usize; 2] {
+        [(self.size.w * self.scale).round() as usize, (self.size.h * self.scale).round() as usize]
+    }
+
+    /// Its view's bounds, in points.
+    fn bounds(&self) -> NSRect {
+        // SAFETY: a view answers its bounds.
+        unsafe { send_rect(self.view, c"bounds", ()) }
+    }
+
+    /// Whether its edge is being dragged.
+    fn live(&self) -> bool {
+        // SAFETY: a view answers this.
+        unsafe { send::<Bool>(self.view, c"inLiveResize", ()) != 0 }
+    }
+}
+
+/// What Metal does for the windows (feature `gpu`).
+#[cfg(feature = "gpu")]
+impl<App: FnMut(&mut Ui)> Host<App> {
+    /// Brings the GPU in line with the windows: a lost one, or one another GPU should replace,
+    /// is let go; one being opened is taken in when ready, or asked for; each window not yet
+    /// asked is shown through it. Says whether one was let go.
+    fn mend(&mut self) -> bool {
+        let moved = self.moved();
+        let lost = moved || self.metal.gpu.as_ref().is_some_and(|gpu| gpu.lost);
+        if lost {
+            self.let_go();
+        }
+        self.metal.keep_opening();
+        (0..self.windows.len()).for_each(|at| self.ask_gpu(at));
+        self.ui.renderer = self.metal.gpu.as_ref().map_or(crate::platform::Renderer::Cpu, crate::gpu_metal::Gpu::renderer);
+        lost
+    }
+
+    /// Whether a window is on a screen another GPU drives: that one is opened next.
+    fn moved(&mut self) -> bool {
+        let Some(gpu) = &self.metal.gpu else { return false };
+        let shows = self.windows.iter().filter_map(|shown| if let crate::gpu_metal::Way::Gpu(shows) = &shown.way { Some(shows) } else { None });
+        let Some(device) = shows.into_iter().find_map(|shows| gpu.moved(shows)) else { return false };
+        self.metal.prefer(device);
+        true
+    }
+
+    /// Lets go of the GPU, each window's part first: each is asked again, and drawn whole.
+    fn let_go(&mut self) {
+        for shown in &mut self.windows {
+            self.metal.unshow(&mut shown.way);
+            (shown.way, shown.surface) = (crate::gpu_metal::Way::Unasked, Surface::default());
+        }
+        self.metal.let_go();
+        self.ui.renderer = crate::platform::Renderer::Cpu;
+    }
+
+    /// Shows a window not yet asked through the GPU, where there is one and the window is not
+    /// see-through (it is then drawn whole); else the CPU does.
+    fn ask_gpu(&mut self, at: usize) {
+        let shown = &mut self.windows[at];
+        let Some(gpu) = self.metal.gpu.as_mut().filter(|_| matches!(shown.way, crate::gpu_metal::Way::Unasked)) else { return };
+        if shown.see_through {
+            return shown.way = crate::gpu_metal::Way::Cpu;
+        }
+        // SAFETY: a view answers its layer.
+        let under: Obj = unsafe { send(shown.view, c"layer", ()) };
+        let made = gpu.window(under, shown.bounds(), shown.pixels(), shown.scale);
+        shown.way = made.map_or(crate::gpu_metal::Way::Cpu, crate::gpu_metal::Way::Gpu);
+    }
+
+    /// Draws what changed in a window through the GPU, where it shows the window: each place
+    /// by the CPU into the window's pixels, then put up; or with `gpu-draw` drawn by the GPU.
+    /// All of it at a new size. Says whether the GPU showed it; if not, the CPU is to.
+    fn through_gpu(&mut self, at: usize) -> bool {
+        let Host { ui, windows, metal, .. } = self;
+        let (Some(gpu), shown) = (metal.gpu.as_mut(), &mut windows[at]) else { return false };
+        let (size, scale, bounds, live, units) = (shown.pixels(), shown.scale, shown.bounds(), shown.live(), shown.size);
+        let Shown { way, surface, known, .. } = shown;
+        let crate::gpu_metal::Way::Gpu(shows) = way else { return false };
+        if shows.size() != (size, scale) && !gpu.fit(shows, bounds, size, scale) {
+            if let crate::gpu_metal::Way::Gpu(shows) = std::mem::replace(way, crate::gpu_metal::Way::Cpu) {
+                gpu.forget(shows);
+            }
+            *surface = Surface::default();
+            return false;
+        }
+        let (whole, everything) = (shows.take_whole(), crate::geom::rect(0.0, 0.0, units.w, units.h));
+        let changed = within(ui, *known, |ui| {
+            let places: Vec<Rect> = ui.changes().collect();
+            let places = if whole { vec![everything] } else { places };
+            places.iter().for_each(|place| draw_place(gpu, shows, surface, ui, *place, (size, scale)));
+            ui.changed();
+            !places.is_empty()
+        });
+        if changed == Some(true) {
+            gpu.show(shows, live);
+        }
+        true
+    }
+}
+
+/// Draws one place a run changed (`place`, in units) into a window Metal shows, `size` pixels
+/// at `scale`: by the GPU where it draws a part that big (`gpu-draw`), else by the CPU into the
+/// window's pixels, which then go up.
+#[cfg(feature = "gpu")]
+fn draw_place(gpu: &mut crate::gpu_metal::Gpu, shows: &mut crate::gpu_metal::Shows, surface: &mut Surface, ui: &mut Ui, place: Rect, (size, scale): ([usize; 2], f32)) {
+    let snapped = place.snap_to_pixels(scale);
+    let edge = |at: f32, most: usize| ((at * scale).round().max(0.0) as usize).min(most);
+    let pixels = [edge(snapped.x, size[0]), edge(snapped.y, size[1]), edge(snapped.right(), size[0]), edge(snapped.bottom(), size[1])];
+    if pixels[0] >= pixels[2] || pixels[1] >= pixels[3] {
+        return;
+    }
+    #[cfg(feature = "gpu-draw")]
+    if drawn_by_gpu(gpu, shows, ui, snapped, pixels.map(|side| side as i32), (size, scale)) {
+        return;
+    }
+    surface.redraw(ui, place);
+    gpu.put(shows, surface, pixels);
+}
+
+/// Draws `area` of a window (`place` in pixels: left, top, right, bottom) on the GPU, where it
+/// draws a part that big itself (see `gpu_draw`). Says whether it did; if not, the CPU is to.
+#[cfg(feature = "gpu-draw")]
+fn drawn_by_gpu(gpu: &mut crate::gpu_metal::Gpu, shows: &mut crate::gpu_metal::Shows, ui: &mut Ui, area: Rect, place: [i32; 4], (size, scale): ([usize; 2], f32)) -> bool {
+    let Some(list) = gpu.drawing(place) else { return false };
+    let mut list = std::mem::take(list);
+    list.begin(size.map(|side| side as i32));
+    let mut canvas = crate::canvas::Canvas::recording(&mut list, size[0], size[1], (0, 0), scale);
+    canvas.clip(area);
+    ui.paint(&mut canvas);
+    drop(canvas);
+    gpu.draw(shows, list, place)
+}
+
 impl<App: FnMut(&mut Ui)> Turns for Host<App> {
     /// One turn: takes in what happened, runs the interface if needed, and draws what changed.
     fn turn(&mut self) {
@@ -1234,13 +1413,24 @@ impl<App: FnMut(&mut Ui)> Turns for Host<App> {
         if self.rerun {
             self.describe();
         }
+        #[cfg(feature = "gpu")]
+        self.mend();
         (0..self.windows.len()).for_each(|at| self.draw(at));
+        // A device lost while drawing: the windows are drawn again, whole, through a new one or
+        // by the CPU.
+        #[cfg(feature = "gpu")]
+        if self.mend() {
+            (0..self.windows.len()).for_each(|at| self.draw(at));
+        }
         TURNING.set(false);
     }
 }
 
 impl<App> Drop for Host<App> {
     fn drop(&mut self) {
+        // The GPU goes first, while the windows are there.
+        #[cfg(feature = "gpu")]
+        self.windows.iter_mut().for_each(|shown| self.metal.unshow(&mut shown.way));
         self.windows.drain(..).for_each(Shown::close);
         HEARD.with_borrow_mut(Vec::clear);
     }

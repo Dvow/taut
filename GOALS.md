@@ -7,7 +7,7 @@ What taut aims to be, and how each aim is checked.
 | Goal | Means | Checked by |
 | --- | --- | --- |
 | **General** | Nothing is made for one particular app. General means (boxes, shapes, pointer and keys on any box) come before special parts. | Reading the change: a part only one app could use does not go in. |
-| **Portable** | The same interface code everywhere; only the window, text and clipboard differ by system. Runs in its own window, as a texture under any renderer, or in a DLL. | Tests on Windows, Ubuntu and Arch Linux; macOS windows in `tests/macos.rs` on a Mac runner; `tests/dll.rs` drives the DLL; every interface test draws into a `Surface`. |
+| **Portable** | The same interface code everywhere; only the window, text and clipboard differ by system. Runs in its own window, in a browser page, as a texture under any renderer, or in a DLL. | Tests on Windows, Ubuntu and Arch Linux; macOS windows in `tests/macos.rs` on a Mac runner; iOS in its simulator; the gallery on an Android emulator on a Linux runner; the web examples in headless Chrome and Edge and under Node (`tests/web.rs`); `tests/dll.rs` drives the DLL; every interface test draws into a `Surface`. |
 | **Light** | Zero dependencies. No frame loop. A program carries only what it calls; what can't be told from the calls is a feature, off by default. Outside data is bounded by its cost, not just its count. | `examples/walk` measures memory, size and idle CPU (zero); [costs](docs/costs-and-speed.md#what-it-costs). |
 | **Fast** | In every category (describe, lay out, redraw, full draw, event to pixels, idle) at least as fast as Dear ImGui at every window size. | `examples/bench` before and after every core change; [speed](docs/costs-and-speed.md#how-fast-it-is). |
 | **Complete** | What Dear ImGui and egui can do, taut can do. A feature works by keyboard and pointer, at every scale, on every system, with and without its feature flag, and is tested. | [Beside Dear ImGui](docs/beside-other-libraries.md#beside-dear-imgui), [what is missing](docs/what-is-missing.md), `tests/accessibility.rs`. |
@@ -24,12 +24,12 @@ What taut aims to be, and how each aim is checked.
   cursors, focus, open menus.
 - Text is drawn by the system's engine (GDI, FreeType), or from font files the app supplies.
 - Small letters of the library's own fonts snap to whole pixels vertically, as FreeType's light
-  hinting does; never horizontally.
+  hinting does (with `hinting`, by a TrueType font's own instructions where it has them, as
+  FreeType's interpreter does); never horizontally.
 - Every public type implements `Debug`; value types are `#[must_use]`; growing enums and
   `Response` are `#[non_exhaustive]`.
 - Files from other programs are read, never memory-mapped. Writes to pipes never raise
   SIGPIPE.
-- iOS and Android come after Windows, Linux and macOS are complete; nothing may rule them out.
 
 ## Contributing
 
@@ -47,5 +47,4 @@ A change is ready when:
 
 ## What is left
 
-- Back ends for Android and iOS.
 - The rest of [what is missing](docs/what-is-missing.md).

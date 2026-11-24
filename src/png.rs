@@ -326,6 +326,51 @@ pub fn decode(png: &[u8]) -> Option<(usize, Vec<u32>)> {
 /// A PNG chunk as read: its four-letter name and its data.
 type Chunk<'a> = (&'a [u8], &'a [u8]);
 
+/// A PNG's samples as stored, for pictures brighter than SDR white (see `hdr`): its size, bit
+/// depth and colour type, its rows unfiltered, one after another, and its chunks.
+#[cfg(feature = "hdr")]
+pub(crate) struct Samples<'a> {
+    pub size: [usize; 2],
+    pub depth: usize,
+    pub kind: u8,
+    pub rows: Vec<u8>,
+    chunks: Vec<Chunk<'a>>,
+}
+
+#[cfg(feature = "hdr")]
+impl Samples<'_> {
+    /// The data of its first chunk of a name; empty where none.
+    pub fn chunk(&self, called: &[u8]) -> &[u8] {
+        first(&self.chunks, called)
+    }
+}
+
+/// A PNG's samples (see `Samples`). Nothing for an interlaced or damaged one, or one of a
+/// palette or under eight bits.
+#[cfg(feature = "hdr")]
+pub(crate) fn samples(png: &[u8]) -> Option<Samples<'_>> {
+    let (chunks, true) = chunks(png)? else { return None };
+    let ([width, height], stored) = Stored::of(&chunks)?;
+    if stored.passes || stored.kind == 3 || stored.depth < 8 {
+        return None;
+    }
+    let step = [1, 0, 3, 0, 2, 0, 4][stored.kind as usize] * stored.depth / 8;
+    let (row, packed) = (width.checked_mul(step)?, chunks.iter().filter(|(name, _)| *name == b"IDAT").flat_map(|(_, body)| body.iter().copied()).collect::<Vec<u8>>());
+    let needed = (row + 1).checked_mul(height)?;
+    let mut raw = inflate(&packed, needed)?;
+    if raw.len() < needed {
+        return None;
+    }
+    let (mut rows, mut above) = (Vec::with_capacity(row * height), vec![0u8; row]);
+    for line in raw.chunks_exact_mut(row + 1).take(height) {
+        let (rule, line) = line.split_first_mut()?;
+        unfilter(*rule, line, &above, step)?;
+        rows.extend_from_slice(line);
+        above.copy_from_slice(line);
+    }
+    Some(Samples { size: [width, height], depth: stored.depth, kind: stored.kind, rows, chunks })
+}
+
 /// A PNG file's chunks, each as name and data, up to the end or the first truncated one; and
 /// whether none was. Nothing for a file without the PNG signature.
 fn chunks(png: &[u8]) -> Option<(Vec<Chunk<'_>>, bool)> {

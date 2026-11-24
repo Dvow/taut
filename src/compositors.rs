@@ -20,7 +20,7 @@
 //! PipeWire frames are grabbed by GStreamer (`gst-launch-1.0` with its PipeWire element): the
 //! only external program the tests run.
 #[cfg(test)]
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) mod tests {
     use crate::atspi::{ANSWER, Bus, FAILED, NEWS, PROPERTIES, Pack, Value};
     use crate::geom::{Point, pt};

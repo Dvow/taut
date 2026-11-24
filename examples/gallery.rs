@@ -437,6 +437,8 @@ fn table(app: &mut App, ui: &mut Ui) {
     if table.changed {
         sort(app);
     }
+    // Screen readers are told every picked row, in view or not.
+    ui.tell_selection(&app.selection);
     // Cells the person changed, pasted, or undid: the app puts them into its own files. (It
     // says what a cell shows, for undoing.)
     let files = &app.files;
@@ -806,7 +808,7 @@ fn charts(app: &mut App, ui: &mut Ui) {
     ui.chart_view(&mut app.view, &Chart::of(&dots), 560.0, 220.0);
     // The last minute, a value every tenth of a second: only what changed is drawn again.
     ui.toggle(&mut app.live, "Live");
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64());
+    let now = taut::platform::unix_time();
     if app.live && now - app.fed >= 0.1 {
         let next = app.load.last().copied().unwrap_or(0.5) + ((now * 7.3).sin() * 0.08) as f32;
         app.load.remove(0);
@@ -1324,7 +1326,7 @@ pub fn app() -> App {
         dots: [0, 1, 2, 3].map(|row| (0..80u32).map(|n| chance(n + 80 * row)).collect()),
         live: false,
         load: (0..600).map(|nth| 0.5 + (nth as f32 / 40.0).sin() * 0.2).collect(),
-        fed: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64()),
+        fed: taut::platform::unix_time(),
         folders: TreeView::default(),
         writing: Markdown::parse(WRITING),
     }
@@ -1427,4 +1429,12 @@ const SYLLABLES: [&str; 15] = [
 fn main() {
     let mut app = app();
     taut::run(Window { title: "taut gallery", width: 900.0, height: 600.0, min_width: 280.0, min_height: 220.0, ..Default::default() }, move |ui| describe(&mut app, ui));
+}
+
+/// Where Android starts the app (it is a library there): see `taut::run`.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+#[allow(clippy::main_recursion)]
+extern "C" fn android_main() {
+    main()
 }

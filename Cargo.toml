@@ -3,7 +3,7 @@ name = "taut"
 version = "0.2.2"
 edition = "2024"
 rust-version = "1.88"
-description = "A Rust GUI library for Windows, Linux and macOS that aims to be small, fast and accessible, with zero dependencies and nothing compiled in that your program doesn't use."
+description = "A Rust GUI library for Windows, Linux, macOS, iOS and the web that aims to be small, fast and accessible, with zero dependencies and nothing compiled in that your program doesn't use."
 license = "(MIT OR Apache-2.0) AND Unicode-3.0"
 repository = "https://github.com/Dvow/taut"
 homepage = "https://dvow.github.io/taut/"
@@ -25,11 +25,15 @@ right-to-left = []
 # Engine, shaped by syllable. Without it, the system's text draws them (whole on Windows, letter
 # by letter on Linux).
 brahmic = []
+# App fonts shaped as pages are: ligatures, contextual forms, marks placed on letters, kerning
+# beyond pairs; and the system's text in the language's forms. Without it, app fonts draw glyph
+# by glyph, kerned by pairs, and the system's text in its default forms.
+shaping = []
 # Touch, pen and touchpad-pinch gestures (Windows, X11 via XInput 2, Wayland). Without it, a
 # finger is the system's mouse.
 touch = []
-# Colour emoji in all text, from the system's emoji font. Without it, emoji are plain letters
-# (`Ui::set_emoji` and `Ui::emoji_in_full` still give colour).
+# Colour emoji in all text, from the system's emoji font, and in PDF files. Without it, emoji are
+# plain letters (`Ui::set_emoji` and `Ui::emoji_in_full` still give colour).
 emoji = []
 # Windows: letters a font lacks drawn in the font Windows would pick. Without it, Windows' linked
 # fonts are used in windows; `SystemText` on a surface and SVG text show missing-glyph boxes.
@@ -37,6 +41,10 @@ emoji = []
 fallback-fonts = []
 # CFF and CFF2 fonts (most `.otf` files). Without it, `FontFile::read` rejects them.
 cff = []
+# Small text of TrueType fonts that carry hinting instructions hinted by them, as FreeType's
+# default interpreter does (vertically). Without it, every font is hinted as FreeType's
+# autohinter does.
+hinting = []
 # Colour profiles and PNG gamma/chromaticities converted to the screen's colours. Without it,
 # pictures are shown as if sRGB.
 color-profiles = []
@@ -47,13 +55,21 @@ woff2 = []
 # the app sets its own.
 translations = []
 # Windows shown by the GPU (Direct3D, Vulkan or OpenGL on Windows; OpenGL or Vulkan under X11;
-# Vulkan dmabufs under Wayland), loaded at run time; the CPU still draws every pixel. Without it,
+# Vulkan dmabufs under Wayland; Metal on macOS), loaded at run time; the CPU still draws every
+# pixel. Without it,
 # the CPU shows them too (`Renderer`).
 gpu = []
 # Windows drawn by the GPU too, where it is faster: boxes, borders, shadows, text, pictures,
-# gradients, shapes and strokes (Direct3D 11 and 12, Vulkan and OpenGL). Within a few levels of
+# gradients, shapes and strokes (Direct3D 11 and 12, Vulkan, OpenGL and Metal). Within a few levels of
 # 255 of the CPU at edges. Without it, the CPU draws every pixel.
 gpu-draw = ["gpu"]
+# Video and sound files played by the system's player (Media Foundation, GStreamer,
+# AVFoundation), loaded at run time: `Video`, `ui.video`. Without it, none of that code.
+video = []
+# Colours and pictures brighter than SDR white (`El::brightness`, `Ui::add_hdr_picture`, PQ and
+# HLG PNGs), shown so on HDR screens: Direct3D 11 and 12 present them in scRGB. Without it, they
+# show at SDR white.
+hdr = ["gpu"]
 
 # None.
 [dependencies]
@@ -64,6 +80,22 @@ gpu-draw = ["gpu"]
 name = "macos"
 harness = false
 
+# iOS in the simulator, from a Mac: UIKit runs only on the main thread too.
+[[test]]
+name = "ios"
+harness = false
+
+# Videos on a Mac: AVFoundation plays only while the main thread's run loop turns.
+[[test]]
+name = "video_macos"
+harness = false
+required-features = ["video"]
+
+# A video player.
+[[example]]
+name = "player"
+required-features = ["video"]
+
 # The library in a DLL with a C interface.
 [[example]]
 name = "overlay"
@@ -73,5 +105,5 @@ crate-type = ["cdylib"]
 # need.
 [package.metadata.docs.rs]
 all-features = true
-targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "aarch64-apple-ios", "aarch64-linux-android", "wasm32-unknown-unknown"]
 rustdoc-args = ["--cfg", "docsrs"]

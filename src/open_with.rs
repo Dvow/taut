@@ -18,12 +18,16 @@ use std::ffi::OsStr;
 /// link can name a program or a file on another computer, which the system would run.
 pub fn open_with_system(what: impl AsRef<OsStr>) {
     let what = what.as_ref().to_os_string();
+    // A page opens a link in a new tab.
+    #[cfg(target_family = "wasm")]
+    return crate::web_host::open(&what.to_string_lossy());
+    #[cfg(not(target_family = "wasm"))]
     std::thread::spawn(move || opened(&what));
 }
 
 /// Whether `text` is a link: a scheme of two letters or more (a letter, then letters, digits,
 /// `+`, `-` or `.`), then a colon. A drive path such as `C:` is not.
-#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+#[cfg(any(test, target_os = "ios", target_os = "android", all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 fn is_link(text: &str) -> bool {
     let Some((scheme, _)) = text.split_once(':') else { return false };
     let fits = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.');
@@ -71,9 +75,16 @@ fn opened(what: &OsStr) -> bool {
 
 /// Hands `what` to the portal on the session bus if it is a link, else (or with no portal) to
 /// `xdg-open`. Says whether either took it.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn opened(what: &OsStr) -> bool {
     open_by(what, crate::atspi::Bus::session(), OsStr::new("xdg-open"))
+}
+
+/// Hands a link to the app Android opens it with. Says whether one took it. (Files are not
+/// opened: an app shares a file through a content provider of its own.)
+#[cfg(target_os = "android")]
+fn opened(what: &OsStr) -> bool {
+    what.to_str().is_some_and(|link| is_link(link) && crate::android::open_link(link))
 }
 
 /// Hands `what` to `open`, which opens it as a double click in Finder does. Says whether it
@@ -85,8 +96,15 @@ fn opened(what: &OsStr) -> bool {
     std::process::Command::new("/usr/bin/open").arg(what).status().is_ok_and(|status| status.success())
 }
 
+/// Hands a link to the system (`UIApplication openURL:`), on the main thread. Files have no
+/// program to open them on iOS: says it took none.
+#[cfg(target_os = "ios")]
+fn opened(what: &OsStr) -> bool {
+    what.to_str().is_some_and(|text| is_link(text) && crate::ios::open_link(text))
+}
+
 /// The same over `bus`, with `opener` for what the portal does not take.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn open_by(what: &OsStr, bus: Option<crate::atspi::Bus>, opener: &OsStr) -> bool {
     let link = what.to_str().filter(|text| is_link(text) && !text.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("file:")));
     if link.zip(bus).is_some_and(|(link, bus)| portal_opens(bus, link)) {
@@ -103,17 +121,17 @@ fn open_by(what: &OsStr, bus: Option<crate::atspi::Bus>, opener: &OsStr) -> bool
 }
 
 /// The portal, its object path, and the method that opens a link.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 const OPEN_URI: &str = "org.freedesktop.portal.OpenURI";
 
 /// Asks the portal to open `link` for no window in particular and waits a while. Says whether
 /// it took it: it answers at once with its request (it may then ask the person which program to
 /// use, which is not waited for), or that it cannot; with no portal, the bus says so.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn portal_opens(mut bus: crate::atspi::Bus, link: &str) -> bool {
     use crate::atspi::{ANSWER, FAILED, Pack};
     let mut asks = Pack::default();
@@ -149,7 +167,7 @@ mod tests {
     /// A stand-in for whatever the system would start: built in a folder whose name has a space
     /// and a non-ASCII letter, it writes what it was handed (one per line) into `opened.txt`
     /// beside itself, and shows nothing.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code))]
     fn stand_in(name: &str) -> PathBuf {
         let folder = std::env::current_exe().unwrap().parent().unwrap().join(format!("stand in \u{e9} {name}"));
         _ = std::fs::remove_dir_all(&folder);
@@ -168,7 +186,7 @@ mod tests {
 
     /// What the stand-in at `program` was handed, once it ran; nothing if it did not run within
     /// a few seconds.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code))]
     fn handed(program: &Path) -> Option<String> {
         let note = program.with_file_name("opened.txt");
         let since = std::time::Instant::now();
@@ -194,7 +212,7 @@ mod tests {
 
     /// A portal played by a test thread on a private bus: it notes each link it is asked to
     /// open, and takes it or (`refuses`) says it cannot.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     fn portal(address: &str, refuses: bool) -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
         use crate::atspi::{BUS, BUS_PATH, Bus, CALL, Pack};
         let mut bus = Bus::open(address).expect("the test's own bus");
@@ -231,7 +249,7 @@ mod tests {
     /// A link goes to the portal only; a link the portal refuses, and a file, go to `xdg-open`
     /// (a stand-in here), each as given.
     #[test]
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     fn a_link_goes_to_the_portal_and_a_file_to_xdg_open() {
         let Some(own) = crate::portal::tests::OwnBus::start() else { return eprintln!("no dbus-daemon here: the portal is not tried") };
         let opener = stand_in("xdg-open");

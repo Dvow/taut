@@ -30,6 +30,7 @@ pub struct Screen {
 
 /// Where an app asked a window to open, as handed on by whoever shows it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) enum OpenAt {
     /// Wherever the system, or the windows already open, would put it.
     #[default]
@@ -44,6 +45,7 @@ pub(crate) enum OpenAt {
 
 /// How much of a window's top strip must lie on a screen for its place to count as there, in
 /// pixels: enough of the title to grab.
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 const TITLE: Rect = rect(0.0, 0.0, 160.0, 30.0);
 
 /// Which screen an area of the desktop is on: the one with most of it, or if none has any, the
@@ -69,6 +71,7 @@ pub(crate) fn nearest(screens: &[Screen], area: Rect) -> Option<usize> {
 /// system can create it there at that screen's scale. `size` gives the window's size with
 /// frame, in pixels at a scale. Nothing if the app asked for no place or there are no screens:
 /// then the system places it.
+#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) fn window_origin(screens: &[Screen], asked: OpenAt, size: impl Fn(f32) -> [f32; 2]) -> Option<(usize, Point)> {
     let (on, middle) = match asked {
         OpenAt::Any => return None,

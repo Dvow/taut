@@ -49,6 +49,9 @@ const REMEMBERED: usize = 50_000;
 const OFFER_WAIT: Duration = Duration::from_millis(150);
 /// A line longer than this, in bytes, has only its horizontally visible words checked.
 const LONG_LINE: usize = 2000;
+/// While a screen reader listens, a box's text up to this many bytes is checked whole; a longer
+/// one, as far as it shows.
+const TOLD_WHOLE: usize = 65_536;
 /// The wavelength and height of the wavy underline, in units.
 const WAVE: f32 = 4.0;
 const RISE: f32 = 1.0;
@@ -85,8 +88,8 @@ pub(crate) struct Hooks {
     pub settle: fn(&mut Ui),
     /// Draws one box's wavy lines, in a colour.
     pub wavy: Wavy,
-    /// The visible misspellings in the box of an id, as byte ranges of its text, in order: for
-    /// screen readers.
+    /// The misspellings in the box of an id, as byte ranges of its text, in order: for screen
+    /// readers. All of them while one listens; else those visible.
     pub wrong: fn(&Spelling, Id) -> Vec<Range<usize>>,
 }
 
@@ -95,9 +98,14 @@ pub(crate) type Wavy = fn(&mut Canvas, &Spelling, u32);
 
 static HOOKS: Hooks = Hooks { noted, rows, typed, settle, wavy, wrong };
 
-/// The visible misspellings found in box `id` when it was last processed (see `Hooks::wrong`).
+/// The misspellings found in box `id` when it was last processed (see `Hooks::wrong`): all,
+/// while a screen reader listens; else the visible ones.
 fn wrong(spelling: &Spelling, id: Id) -> Vec<Range<usize>> {
-    let found = spelling.kept.as_ref().and_then(|kept| kept.downcast_ref::<Kept>()).and_then(|kept| kept.found.iter().find(|found| found.id == id));
+    let kept = spelling.kept.as_ref().and_then(|kept| kept.downcast_ref::<Kept>());
+    if let Some((.., all)) = kept.and_then(|kept| kept.told.iter().find(|told| told.0 == id)) {
+        return all.clone();
+    }
+    let found = kept.and_then(|kept| kept.found.iter().find(|found| found.id == id));
     let mut words: Vec<Range<usize>> = found.map_or(Vec::new(), |found| found.spots.iter().map(|(bytes, _)| bytes.clone()).collect());
     words.sort_by_key(|word| word.start);
     words
@@ -191,6 +199,9 @@ struct Kept {
     ignores: u64,
     /// The words to send to a checker from this pass, not yet sent: each with its language.
     asking: Vec<(usize, String)>,
+    /// While a screen reader listens: each checked box's misspellings in all its text (see
+    /// `told_in`), with a hash of what they were found from.
+    told: Vec<(Id, u64, Vec<Range<usize>>)>,
     /// This run's wavy lines in window coordinates, each with the box whose text it underlines,
     /// in description order; and their colour, the theme's red.
     wrong: Vec<(u32, Rect)>,
@@ -252,6 +263,7 @@ impl Kept {
             ignored: Vec::new(),
             ignores: 0,
             asking: Vec::new(),
+            told: Vec::new(),
             wrong: Vec::new(),
             red: Color::NONE,
             checking,
@@ -628,9 +640,13 @@ impl Kept {
         }
         self.red = ui.theme.red;
         self.wrong.clear();
-        let boxes = std::mem::take(&mut self.boxes);
+        let (boxes, mut was_told) = (std::mem::take(&mut self.boxes), std::mem::take(&mut self.told));
         let mut found = Vec::with_capacity(boxes.len());
         for checked in &boxes {
+            if ui.listening && Self::checked_whole(ui, checked) {
+                let told = self.told_in(ui, checked, &mut was_told);
+                self.told.push(told);
+            }
             let Some((area, now)) = self.find(ui, checked) else { continue };
             self.wrong.extend(now.waves.iter().map(|wave| (checked.at, *wave)));
             // (The lines are a mark of their own: so they redraw when misspellings come or go
@@ -642,6 +658,36 @@ impl Kept {
         (self.found, self.boxes, self.next) = (found, boxes, None);
         self.boxes.clear();
         self.send_and_take();
+    }
+
+    /// Whether a box's text is short enough to be checked whole (see `TOLD_WHOLE`).
+    fn checked_whole(ui: &Ui, checked: &Checked) -> bool {
+        matches!(ui.tree.specs[checked.at as usize].content, Content::Text { start, end, .. } if (end - start) as usize <= TOLD_WHOLE)
+    }
+    /// While a screen reader listens: the misspellings in all of a checked box's text, seen or
+    /// not, as byte ranges of it (as far as known, unknown words sent). Not the word being
+    /// written. Taken from `was` where its text and what is known are unchanged.
+    fn told_in(&mut self, ui: &mut Ui, checked: &Checked, was: &mut Vec<(Id, u64, Vec<Range<usize>>)>) -> (Id, u64, Vec<Range<usize>>) {
+        let Content::Text { start, end, .. } = ui.tree.specs[checked.at as usize].content else { return (checked.id, 0, Vec::new()) };
+        let (start, end) = (start as usize, end as usize);
+        let typing = ui.focus == checked.id && ui.edit.id == checked.id && ui.edit.writing && ui.edit.cursor == ui.edit.anchor;
+        let writing = typing.then_some(start + ui.edit.cursor);
+        let key = hash((&ui.tree.strings[start..end], self.languages[checked.language].version, self.ignores, writing));
+        if let Some(at) = was.iter().position(|(id, made, _)| *id == checked.id && *made == key) {
+            return was.swap_remove(at);
+        }
+        let (mut found, mut wrong) = (Vec::new(), Vec::new());
+        words(&ui.tree.strings[start..end], &mut found);
+        for word in found.into_iter().map(|word| start + word.start..start + word.end) {
+            if writing.is_some_and(|at| word.start <= at && at <= word.end) {
+                continue;
+            }
+            let twice = !self.languages[checked.language].none && self.twice(&ui.tree.strings, start, word.clone()).is_some();
+            if twice || self.verdict(checked.language, &ui.tree.strings[word.clone()]) == Verdict::Wrong {
+                wrong.push(word.start - start..word.end - start);
+            }
+        }
+        (checked.id, key, wrong)
     }
 
     /// A checked box's visible content and the window area it covers: reused where nothing it
@@ -883,15 +929,15 @@ impl Check for Several {
 #[cfg(target_os = "macos")]
 use crate::ns_spell_checker::{Speller, own_language};
 
-#[cfg(not(any(windows, unix)))]
+#[cfg(any(target_os = "ios", target_os = "android", not(any(windows, unix))))]
 struct Speller;
-#[cfg(not(any(windows, unix)))]
+#[cfg(any(target_os = "ios", target_os = "android", not(any(windows, unix))))]
 impl Speller {
     fn open(_: &str) -> Option<Speller> {
         None
     }
 }
-#[cfg(not(any(windows, unix)))]
+#[cfg(any(target_os = "ios", target_os = "android", not(any(windows, unix))))]
 impl Check for Speller {
     fn wrong(&self, _: &str) -> bool {
         false
@@ -901,7 +947,7 @@ impl Check for Speller {
     }
     fn add(&mut self, _: &str) {}
 }
-#[cfg(not(any(windows, unix)))]
+#[cfg(any(target_os = "ios", target_os = "android", not(any(windows, unix))))]
 fn own_language() -> String {
     String::new()
 }
@@ -1030,12 +1076,12 @@ impl Drop for Speller {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 use crate::x11::{dlclose, dlopen, library, symbol};
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 use std::ffi::{c_char, c_int, c_void};
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 library!(Enchant, ["libenchant-2.so.2", "libenchant-2.so"], {
     fn enchant_broker_init() -> *mut c_void;
     fn enchant_broker_free(*mut c_void);
@@ -1049,7 +1095,7 @@ library!(Enchant, ["libenchant-2.so.2", "libenchant-2.so"], {
 
 /// The user's language as the environment names the messages locale (glibc's lookup), in
 /// Enchant's form ("de_AT"); English where none, or "C".
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn own_language() -> String {
     let named = ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"].iter().find_map(|variable| std::env::var(variable).ok().filter(|name| !name.is_empty()));
     let name = named.as_deref().and_then(|name| name.split(':').next()).and_then(|name| name.split(['.', '@']).next()).unwrap_or("");
@@ -1057,33 +1103,33 @@ fn own_language() -> String {
 }
 
 /// Enchant as it stays loaded (see `enchant`).
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 struct Loaded(Enchant);
 // SAFETY: it is a library's function table, which Enchant allows from any thread: each checker
 // has its own broker, used only by the checking thread.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 unsafe impl Send for Loaded {}
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 unsafe impl Sync for Loaded {}
 
 /// Enchant, loaded on the first checker request and never unloaded: loading registers GObject
 /// types, and GLib, which stays, cannot register them twice (the program would abort). None
 /// where missing.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn enchant() -> Option<&'static Enchant> {
     static LOADED: std::sync::OnceLock<Option<Loaded>> = std::sync::OnceLock::new();
     LOADED.get_or_init(|| Enchant::open().map(Loaded)).as_ref().map(|loaded| &loaded.0)
 }
 
 /// Enchant's checker for one language: its broker, and the dictionary it found.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 struct Speller {
     enchant: &'static Enchant,
     broker: *mut c_void,
     dictionary: *mut c_void,
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 impl Speller {
     /// Enchant's checker for the language of this name, if Enchant exists and finds a
     /// dictionary.
@@ -1103,7 +1149,7 @@ impl Speller {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 impl Check for Speller {
     fn wrong(&self, word: &str) -> bool {
         // SAFETY: the dictionary is alive, and given the word's length.
@@ -1131,7 +1177,7 @@ impl Check for Speller {
     }
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 impl Drop for Speller {
     fn drop(&mut self) {
         // SAFETY: both came from this Enchant, which stays loaded, and are freed once.
@@ -1258,6 +1304,13 @@ pub(crate) mod tests {
         trial.app = Page { text: "the quikc brown fox".into(), checked: false };
         trial.run();
         assert!(trial.find(Role::TextBox, "Notes").misspelled.is_empty());
+        // In a box of twenty lines, of which eight show, a word spelt wrong on the last is
+        // told too, though not marked.
+        let mut text = "the quick brown fox\n".repeat(19);
+        text.push_str("the lazy dgo");
+        let trial = self::trial(&text);
+        let start = text.chars().count() as u32 - 3;
+        assert_eq!((&trial.find(Role::TextBox, "Notes").misspelled[..], waves(&trial)), (&[[start, start + 3]][..], vec![]));
     }
 
     #[test]
@@ -1508,7 +1561,7 @@ pub(crate) mod tests {
 
     /// Misspelled English words by the system checker, if it has this language: its verdicts,
     /// and its suggestions for the first.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code))]
     fn system_says(language: &str, words: &[&str]) -> Option<(Vec<bool>, Vec<String>)> {
         let mut checker = system(language)?;
         let wrong = words.iter().map(|word| checker.wrong(word)).collect();
@@ -1536,7 +1589,7 @@ pub(crate) mod tests {
 
     /// Where Enchant is not installed but unpacked into a folder (`TAUT_ENCHANT_PREFIX`): it is
     /// told to find its modules there, and kept open so it remembers.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     fn enchant_brought() {
         use std::os::unix::ffi::OsStrExt;
         let Some(prefix) = std::env::var_os("TAUT_ENCHANT_PREFIX") else { return };
@@ -1552,7 +1605,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn enchant_checks_english_and_offers_the_right_words() {
         enchant_brought();
@@ -1574,7 +1627,7 @@ pub(crate) mod tests {
 
     /// Adds a word to Enchant's personal dictionary: in a test-only folder Enchant takes as the
     /// user's (`ENCHANT_CONFIG_DIR`), in a separate process. Never the user's real one.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn a_word_added_goes_to_the_persons_own_dictionary() {
         if std::env::var_os("TAUT_SPELL_FOLDER").is_some() {
@@ -1603,7 +1656,7 @@ pub(crate) mod tests {
             assert!(added.lines().any(|line| line == "zorkmidian"), "the dictionary has: {added:?}\n{said}");
         }
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     #[ignore]
     fn adding_a_word_in_a_folder_of_its_own() {
@@ -1630,7 +1683,7 @@ pub(crate) mod tests {
     #[ignore]
     fn a_picture_of_the_marks() {
         let Some(folder) = std::env::var_os("TAUT_SPELL_SHOTS") else { return };
-        #[cfg(all(unix, not(target_os = "macos")))]
+        #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
         enchant_brought();
         for (scale, name) in [(1.0, "marks-100.png"), (1.5, "marks-150.png"), (2.0, "marks-200.png")] {
             let Some(text) = system_text() else { return };
@@ -1744,7 +1797,7 @@ pub(crate) mod tests {
     }
 
     /// Enchant's checkers as one, where it has English and German dictionaries.
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn enchant_checks_two_languages_as_one() {
         enchant_brought();

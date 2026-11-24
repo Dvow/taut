@@ -43,7 +43,8 @@ fn describe(ui: &mut Ui) {
 **System text:** GDI on Windows (Segoe UI; monospace: Cascadia Mono, Consolas or Courier New),
 FreeType and Fontconfig on Linux, with the user's smoothing settings.
 
-**App fonts:** TrueType, OpenType, WOFF (WOFF2 with `woff2`; CFF outlines with `cff`). Set once,
+**App fonts:** TrueType, OpenType, WOFF (WOFF2 with `woff2`; CFF outlines with `cff`; their own
+hinting instructions with `hinting`). Set once,
 in the first run:
 
 ```rust
@@ -60,7 +61,8 @@ fn own_fonts(ui: &mut Ui) -> Option<()> {
 
 - `ui.set_fonts` falls back to system text for missing letters;
   `ui.set_text_system(Box::new(AppFonts::new(..)))` uses only the files. Embed with `include_bytes!`.
-- Kerned by the file; small letters snap vertically to whole pixels (`.smooth()` turns it off).
+- Kerned by the file; with `shaping`, shaped fully (ligatures, marks). Small letters snap
+  vertically to whole pixels (`.smooth()` turns it off).
 - Icon fonts: `.shape(&font.outline('\u{e88a}', 16.0), color)`.
 
 **Scripts:** enable what users may type or files may hold:
@@ -273,10 +275,14 @@ assert!(report().to_pdf().starts_with(b"%PDF-"));
 ```
 
 - A `Paper` can be built and written on another thread.
-- Text is shaped as in the window, fonts subset.
-- `paper.markdown(..)` lays out a document; `paper.interface(..)` places a window's content as a
-  picture.
+- Text is shaped as in the window, fonts subset as their licences allow, emoji in colour (with
+  `emoji`).
+- The file is tagged for screen readers (PDF/UA): `paper.begin(Role::..)` to `paper.end()`
+  makes parts; headings are bookmarks. `paper.markdown(..)` tags a whole document.
+- `paper.archive()` makes PDF/A-2b; `paper.encrypt(..)` AES-256; `paper.text_field(..)` forms.
+- `paper.interface(..)` places a window's content as a picture, described as readers are told it.
 - The print dialog is the system's; `PrintJob::outcome` reports the outcome a run or more later.
+  `taut::print_laid` lays pages out for the paper picked.
 
 ## Summary
 

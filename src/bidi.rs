@@ -1309,13 +1309,19 @@ pub(crate) fn system(face: Face, letter: char) -> Option<FontFile> {
 
 /// The system font for a character in a face: elsewhere, the file Fontconfig picks, the
 /// desktop's choice.
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) fn system(face: Face, letter: char) -> Option<FontFile> {
     crate::x11::file_for(face, letter).and_then(FontFile::open).filter(|font| font.glyph(letter) != 0)
 }
 
+/// The same on Android: the first of the system's fonts that has it, in `fonts.xml`'s order.
+#[cfg(target_os = "android")]
+pub(crate) fn system(_face: Face, letter: char) -> Option<FontFile> {
+    crate::android_text::file_for(letter)
+}
+
 /// The same on macOS: the file CoreText draws the character from.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub(crate) fn system(face: Face, letter: char) -> Option<FontFile> {
     crate::core_text::file_for(face, letter).and_then(FontFile::open).filter(|font| font.glyph(letter) != 0)
 }

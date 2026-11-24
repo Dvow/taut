@@ -4,12 +4,32 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Systems
 
-- Windows, X11, Wayland and macOS (tested on Windows 11, Ubuntu 26.04, Arch Linux; macOS 26 on
-  arm64, on a GitHub runner). No iOS or Android; iOS and web builds stop with an error. Android
-  untried.
-- macOS: the CPU draws and Core Animation shows; `Renderer` and `gpu` change nothing there. No
-  `layer_opengl` or `layer_vulkan` tests; `layer_metal` is tested on its own, not in
-  `tests/renderers.rs`.
+- Windows, X11, Wayland, macOS, iOS, Android and the web (tested on Windows 11, Ubuntu 26.04,
+  Arch Linux; on GitHub runners macOS 26 on arm64, iOS 26 in its simulator and Android 15 on an
+  x86-64 emulator; Edge and Chrome, headless).
+- Android: one window, the activity's; second windows are not shown. The CPU draws and shows:
+  `Renderer` and `gpu` change nothing. No tray, notifications, hotkeys, drag and drop,
+  printing, spell checking, system file dialog or pictures and files on the clipboard. What an
+  input method composes is typed into the box as it goes, not underlined. `open_with_system`
+  opens links only. `Face::named` fonts are not looked up. Untried: TalkBack itself (nodes read
+  with `uiautomator`), a real phone, arm64 beyond building.
+- Web: one window, the page's; no second windows, tray, hotkeys, system notifications, drag and
+  drop with other programs, printing, one running copy, GPU paths or threads. Clipboard: text
+  only; a menu's Paste has the page's last copy or paste unless the person let the page read the
+  clipboard. Files: the browser's picker opens one file, read whole into memory; saving is a
+  download. The person's fonts aren't listed (`system_fonts::families` is empty). Code after
+  `taut::run` runs at once. Readers: tested against the DOM, not with a screen reader itself.
+- macOS: `layer_vulkan` untested (no Vulkan loader or MoltenVK on the runner).
+- iOS: the CPU draws and Core Animation shows; `Renderer` and `gpu` change nothing. No tray,
+  hotkeys, notifications, second windows, drops, drag out or system file dialog. Links open,
+  files don't. Without `touch`, only the first finger works, as the mouse.
+- iOS: the keyboard sees only what an input method composes: no autocorrection, predictions or
+  automatic capitals. A long press opens the library's menu, not the system's edit menu. Reading
+  the clipboard asks the person, except through the system's Paste.
+- iOS and Android: readers get no wrapped lines, letter places or rows out of view of long tables
+  yet.
+- iOS: checked in the simulator only, through the methods UIKit calls: not on a device, not with
+  VoiceOver itself, real touches or a real hardware keyboard.
 - macOS: what an input method composes shows in a small panel at the text cursor, over the box,
   not laid into its text. A text range's place is its box's, as on Windows.
 - macOS: system notifications only for an app bundle (the notification centre serves no bare
@@ -48,20 +68,24 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Pasting into tables: no pasting into new rows; a value a column refuses is skipped silently.
   Windows time axes use today's UTC offset. Uneven-height lists estimate unseen rows. Second windows don't show the first's meshes.
   Pan-zoom text under 4 units isn't drawn.
-- Node graphs: one wire per input; no grid snap, frames, reroutes, undo, raise on pick or
-  auto-pan; readers hear wires only through ports.
+- Node graphs: frames don't nest or hold other frames; only the first 64 inputs of a node can
+  take several wires; a wire's bends are reached by keys only while its output's node is in
+  view; undo keeps a copy of the graph per step (100 steps or 100,000 nodes in all).
 - Spelling: code box unchecked; readers get errors
   among visible words only; UI Automation's `FindAttribute` unanswered.
 
 ## Renderers
 
-- Layers for Direct3D 9, 11 and 12, OpenGL 3.3 and Vulkan; others through `Surface::upload`
-  (chapter 9). None for Metal.
+- Layers for Direct3D 9, 11 and 12, OpenGL 3.3, Vulkan and Metal; others through
+  `Surface::upload` (chapter 9).
 - Layers draw into single-sample targets; Vulkan only in a render pass (not dynamic rendering).
   Direct3D 12 and Vulkan leave their state set after `draw`.
 - Lost devices: plain Direct3D 9's `Reset` is untested (it makes no device on a desktop of its
   own; 9Ex was tested); Vulkan's loss can't be simulated.
-- `gpu`: no HDR or Metal. See-through windows stay on the CPU.
+- `gpu`: see-through windows stay on the CPU.
+- `hdr`: Vulkan, OpenGL, X11 and macOS show SDR. HDR pictures only from PNG (`cICP`): not
+  AVIF, JPEG XL or Ultra HDR JPEGs. Gain maps are sampled nearest, not smoothed. Tested on
+  HDR screens faked: this PC's are SDR, and no compositor on the test bed has an HDR output.
 - `gpu-draw`: scenes, SVG drawings (their blur too: drawn once, then kept), colour emoji, fills
   of other inks and shapes of over 256 edges in 16 rows are drawn by the CPU (into patches). A
   see-through box (`El::opacity`) has the CPU draw its part: the GPU has no layers yet. GDI's
@@ -80,6 +104,9 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   Under X, `Auto` takes only a hardware device that shows frames directly (DRI3 with Mesa).
   Measured only under Xvfb, where every frame goes through X and the GPU path costs more than the
   CPU's.
+- `gpu` on macOS: tested only on GitHub's runner (a VM's paravirtual Apple GPU, one screen at
+  scale 1): a window moving to a screen of another GPU, a removed GPU (loss simulated) and Retina
+  scales in a window untried; x86-64 Macs untried. Frames wait for the screen (60 Hz there).
 - `gpu` under Wayland: Vulkan dmabufs only when asked; `Auto` keeps shared memory (cheaper on
   the one device measured). Tested only with lavapipe exporting through `/dev/udmabuf` (GitHub's
   Ubuntu runner) to Weston's GL renderer: no hardware GPU, Mutter, KWin or Sway, no tiled or
@@ -103,18 +130,23 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Text and fonts
 
-- No split cursor at direction changes.
 - Vertical text: labels only, no editing, breaks only at line ends, no tate-chu-yoko or ruby.
-- Window fonts don't compose marks, apply `rand` or `stch`, or form ligatures; they apply `locl`
-  and kern by pairs (pages shape fully). System text gets no language forms.
+- Without `shaping`, app fonts draw glyph by glyph, kerned by pairs (pages shape fully); system
+  text keeps its default forms. With it, language forms in system text skip lines with marks,
+  letters from fallback fonts, or scripts shaped by syllable; not on macOS.
+- Marks in fonts without `GPOS` are not placed by HarfBuzz's fallback.
+- `shaping` shapes each line the first time it is seen (15–40 µs in Segoe UI or Calibri: 0.4 s
+  for a window of 10,000 new rows) and keeps up to 16 MB of runs; a full draw takes about 40%
+  longer.
 - `brahmic`: Thai, Lao, Khmer, Myanmar break by word only on Windows. Scripts with no Windows
   font need an app font. A bare Ubuntu has none.
 - Emoji: `COLR` v1 and SVG only on request; variable emoji fonts at default; sRGB mixing; no
   flags on Windows; no emoji font, plain letters.
 - IME window placement verified on Linux with a real IME, on Windows only by reading back.
-- Fonts' hinting instructions are not run (small Latin, Greek, Cyrillic are auto-hinted
-  vertically). Pair kerning only. `cvar`, `VVAR`, variable `COLR` and vertical-metric variations
-  not read. Variable fonts and `CFF2` checked only with hand-made fonts.
+- Fonts' hinting instructions run only with `hinting` (else small Latin, Greek, Cyrillic are
+  auto-hinted), vertically only; at a variable font's instance about 1 glyph in 400 lands 1/64
+  px off FreeType's. `VVAR`, variable `COLR` and vertical-metric variations not read. `CFF2`
+  checked only with hand-made fonts.
 - Fallback glyphs that overhang aren't clipped; Linux fallback line metrics aren't matched.
 - Named faces are kept for the program's life; names over 128 bytes match nothing; beyond 4,096
   families or 65,536 faces, new names use the system font.
@@ -139,14 +171,28 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - `add_picture_file` includes every decoder; call one decoder (`jpeg::decode`) and
   `add_picture` to include only that one.
 
+## Video
+
+- No player on iOS, Android or the web yet: `Video::open` gives `VideoError::NoPlayer`.
+- No captions, no choice of sound or caption track, no playback speed.
+- Frames are copied through the CPU into a picture, also with `gpu`.
+- Windows: decoded in software (no Direct3D device given to Media Foundation), so only what
+  Windows decodes so: H.264, MPEG-4 Part 2, and what its extensions add; not MJPEG. N editions need
+  the Media Feature Pack. `open_silent` plays muted.
+- Linux: needs GStreamer's `playbin` and `appsink` and the plugins of the file's codecs; a
+  missing one is `VideoError::NoPlayer` or `video.error()`.
+- macOS: `open_silent` plays muted; bytes are played from a temporary file. Checked only on
+  GitHub's runner.
+- Tested with small made files (lossless H.264, MJPEG, Theora); playback of large files not
+  measured.
+
 ## PDF and printing
 
-- No outline, tags, forms, encryption or PDF/A. Emoji as outlines; colour profiles dropped;
-  font permissions unchecked; non-TrueType and positioned variable fonts as shapes; table
-  headings not repeated.
-- Windows prints pixels, needs an active window, shrinks oversized pages. Linux: the portal's
-  paper choice doesn't re-lay pages; the dialog isn't parented.
-- Printing tested only against stand-ins.
+- Non-TrueType and positioned variable fonts as shapes; COLR v1 and SVG emoji as their plain
+  outlines. Forms: no signatures, scripts or radio groups. PDF/UA not claimed in a reader's sense
+  beyond what veraPDF checks.
+- Pages from `print` (not `print_laid`) aren't laid out again for the paper picked.
+- Printing tested only against stand-ins (a metafile on Windows, a private bus on Linux).
 
 ## Windows
 
@@ -172,11 +218,12 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 - Checked with UI Automation and libatspi clients in real windows; never with a real screen
   reader.
-- Long tables expose visible rows only; no selection through the table interface; Windows
-  tables don't list their selection.
-- Text is read by typed lines, not wrapped ones; letter positions not exposed.
-- While a reader listens, a scroll moves every told element: 10,000 rows take 6.1 ms per scroll
-  instead of 3.0 (an idle run 1.1 ms instead of 1.0). No cost without a reader. Long lists still
-  cost only visible rows.
-- No events when content scrolls in or out of view.
-- A hand-written `ui.tree` needs a box told as `Role::Tree` for Orca to read levels.
+- Long tables: a row out of view is reached by scrolling it into view (no UI Automation
+  virtualized items; on macOS its cell comes on the next ask). Windows lists the selected rows
+  in view.
+- Letter places only for text that shows and is one box's (not `ui.words` pieces or a row read
+  as one); elsewhere lines are as typed.
+- Misspellings told for all of a box's text up to 64 KB; past that, the visible words.
+- While a reader listens, a scroll walks every box: 10,000 rows take 1.6 times as long per
+  scroll (9.7 ms instead of 6.2, measured on a busy PC). No cost without a reader. Long lists
+  still cost only visible rows.

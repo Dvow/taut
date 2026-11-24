@@ -370,7 +370,7 @@ pub(crate) mod tests {
 
     /// A tree as the library's parts describe it, for screen reader tests: ten folders, the
     /// second with three notes, the others empty.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code))]
     pub(crate) fn grove(ui: &mut Ui, tree: &mut TreeView) {
         let under = |under: Option<usize>| match under {
             None => (0..10).map(|n| TreeItem::with_children(n, format!("folder {n}"))).collect(),
@@ -385,7 +385,7 @@ pub(crate) mod tests {
     }
     /// That tree in a UI with a screen reader listening, the second folder expanded and its
     /// second note selected, after two runs.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code))]
     pub(crate) fn grown() -> (Ui, TreeView) {
         let mut ui = Ui::new(Box::new(crate::text::BuiltInFont), Box::new(crate::platform::LocalClipboard::default()));
         ui.resize(crate::geom::Size { w: 300.0, h: 400.0 }, 1.0);

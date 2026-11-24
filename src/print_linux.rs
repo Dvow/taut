@@ -1,6 +1,7 @@
 //! Printing on Linux: the desktop portal (`org.freedesktop.portal.Print`) shows its print
-//! dialog (`PreparePrint`), then prints the pages, handed over as an open PDF file it reads
-//! (`Print`).
+//! dialog (`PreparePrint`) over the program's window, then prints the pages, handed over as an
+//! open PDF file it reads (`Print`). Pages laid out on asking ([`print_laid`]) are laid out
+//! for the paper picked in the dialog.
 //!
 //! The portal is reached over the program's own connection to the session bus, from a thread of
 //! its own: the dialog stays up as long as the person likes while the window goes on. A file
@@ -8,8 +9,9 @@
 //! the windows' connection does not (nothing else it asks takes a file). With no bus, no
 //! portal, or a portal that cannot print, nothing is printed.
 use crate::atspi::{ANSWER, CALL, FAILED, Message, NEWS, Pack, Unpack};
+use crate::geom::Size;
 use crate::paper::Paper;
-use crate::print::{PrintOutcome, tell};
+use crate::print::{Pages, PrintOutcome, tell};
 use std::ffi::{c_int, c_void};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -65,13 +67,13 @@ struct Beside {
     files: [c_int; 4],
 }
 
-/// Prints from a thread of its own, through the portal on the session bus.
-pub(crate) fn ask(paper: Paper, title: &str, outcome: Arc<Mutex<Option<PrintOutcome>>>) {
-    let (file, title) = (paper.to_pdf(), title.to_string());
-    let size = paper.size(0);
+/// Prints from a thread of its own, through the portal on the session bus, its dialog over the
+/// program's window.
+pub(crate) fn ask(pages: Pages, title: &str, outcome: Arc<Mutex<Option<PrintOutcome>>>) {
+    let (title, parent) = (title.to_string(), crate::print::parent());
     let address = std::env::var("DBUS_SESSION_BUS_ADDRESS").ok().filter(|address| !address.is_empty());
     let address = address.or_else(|| std::env::var("XDG_RUNTIME_DIR").ok().map(|folder| format!("unix:path={folder}/bus")));
-    std::thread::spawn(move || tell(&outcome, address.map_or(PrintOutcome::Unable, |address| print_through(&address, &file, &title, [size.w, size.h]))));
+    std::thread::spawn(move || tell(&outcome, address.map_or(PrintOutcome::Unable, |address| print_through(&address, pages, &title, &parent))));
 }
 
 /// The program's own connection to a bus, which passes file descriptors: what arrived but is
@@ -276,34 +278,41 @@ fn plain(coded: &str) -> Vec<u8> {
     bytes
 }
 
-/// Prints a PDF through the portal on the bus at `address`: its dialog first, for a first page
-/// of `size` units, then the file, handed over open. Says what came of it.
-pub(crate) fn print_through(address: &str, file: &[u8], title: &str, size: [f32; 2]) -> PrintOutcome {
+/// Prints through the portal on the bus at `address`: its dialog first, over `parent` (as the
+/// portal names windows; "" for none), for the first page's size (or A4, for pages laid out on
+/// asking); then the pages, laid out for the paper picked where they are on asking, handed over
+/// open as a PDF file. Says what came of it.
+pub(crate) fn print_through(address: &str, mut pages: Pages, title: &str, parent: &str) -> PrintOutcome {
     let Some(mut line) = Line::open(address) else { return PrintOutcome::Unable };
-    let token = match line.request(&prepared(title, size, "taut_print_1"), "PreparePrint", "ssa{sv}a{sv}a{sv}", "taut_print_1", None) {
-        Some((0, token)) => token,
+    let size = match &pages {
+        Pages::Ready(paper) => paper.size(0),
+        Pages::Laid(_) => Paper::A4,
+    };
+    let (token, sheet) = match line.request(&prepared(parent, title, [size.w, size.h], "taut_print_1"), "PreparePrint", "ssa{sv}a{sv}a{sv}", "taut_print_1", None) {
+        Some((0, token, sheet)) => (token, sheet),
         Some(_) => return PrintOutcome::Closed,
         None => return PrintOutcome::Unable,
     };
-    let Some(held) = held_file(file) else { return PrintOutcome::Unable };
+    let file = pages.for_sheet(sheet).to_pdf();
+    let Some(held) = held_file(&file) else { return PrintOutcome::Unable };
     let mut handed = Pack::default();
     handed.text("").text(title).u32(0).open(8);
     handed.pad(8).text("handle_token").kinds("s").text("taut_print_2");
     handed.pad(8).text("token").kinds("u").u32(token);
     handed.close();
     match line.request(&handed, "Print", "ssha{sv}", "taut_print_2", Some(held.as_raw_fd())) {
-        Some((0, _)) => PrintOutcome::Sent,
+        Some((0, ..)) => PrintOutcome::Sent,
         Some(_) => PrintOutcome::Closed,
         None => PrintOutcome::Unable,
     }
 }
 
-/// The `PreparePrint` arguments: no parent window, the title, no settings, a page of `size`
+/// The `PreparePrint` arguments: the parent window, the title, no settings, a page of `size`
 /// units (in mm, with orientation), and the request's handle token.
-fn prepared(title: &str, size: [f32; 2], token: &str) -> Pack {
+fn prepared(parent: &str, title: &str, size: [f32; 2], token: &str) -> Pack {
     let millimetres = |units: f32| f64::from(units) * 25.4 / 96.0;
     let mut asked = Pack::default();
-    asked.text("").text(title).open(8).close();
+    asked.text(parent).text(title).open(8).close();
     asked.open(8);
     asked.pad(8).text("Width").kinds("d").f64(millimetres(size[0]));
     asked.pad(8).text("Height").kinds("d").f64(millimetres(size[1]));
@@ -318,9 +327,9 @@ fn prepared(title: &str, size: [f32; 2], token: &str) -> Pack {
 impl Line {
     /// Calls the portal for something it answers later as a request named `token`, subscribing
     /// to its response before calling. Gives back the response code (0: done, 1: cancelled by
-    /// the person, 2: other) and the token the portal gives (0 if none). Nothing if the portal
-    /// is absent or refused the call.
-    fn request(&mut self, asked: &Pack, member: &str, kinds: &str, token: &str, file: Option<RawFd>) -> Option<(u32, u32)> {
+    /// the person, 2: other), the token the portal gives (0 if none), and the paper picked, if
+    /// said. Nothing if the portal is absent or refused the call.
+    fn request(&mut self, asked: &Pack, member: &str, kinds: &str, token: &str, file: Option<RawFd>) -> Option<(u32, u32, Option<Size>)> {
         let path = format!("{REQUESTS}/{}/{token}", self.me.trim_start_matches(':').replace('.', "_"));
         let rule = format!("type='signal',interface='{REQUEST}',member='Response',path='{path}'");
         let mut said = Pack::default();
@@ -347,21 +356,41 @@ impl Line {
     }
 }
 
-/// A request's response code and the portal's "token", from its `Response` signal: the code,
-/// then results as name and variant.
-fn ended(mut said: Unpack) -> Option<(u32, u32)> {
+/// A request's response code, the portal's "token", and the paper picked, from its `Response`
+/// signal: the code, then results as name and variant.
+fn ended(mut said: Unpack) -> Option<(u32, u32, Option<Size>)> {
     let how = said.u32()?;
     let end = said.list(8)?;
-    let mut token = 0;
+    let (mut token, mut sheet) = (0, None);
     while said.at < end {
         said.take(8, 0)?;
         let (name, kinds) = (said.text()?, said.kinds()?);
         match (name, kinds) {
             ("token", "u") => token = said.u32()?,
+            ("page-setup", "a{sv}") => sheet = paper_of(&mut said),
             _ => said.skip(kinds)?,
         }
     }
-    Some((how, token))
+    Some((how, token, sheet))
+}
+
+/// The paper a page setup names, in units: its width and height (in mm, upright), across where
+/// it is turned. Nothing where it doesn't say.
+fn paper_of(said: &mut Unpack) -> Option<Size> {
+    let end = said.list(8)?;
+    let (mut sides, mut across) = ([0.0f64; 2], false);
+    while said.at < end {
+        said.take(8, 0)?;
+        let (name, kinds) = (said.text()?, said.kinds()?);
+        match (name, kinds) {
+            ("Width", "d") => sides[0] = said.f64()?,
+            ("Height", "d") => sides[1] = said.f64()?,
+            ("Orientation", "s") => across = said.text()?.ends_with("landscape"),
+            _ => said.skip(kinds)?,
+        }
+    }
+    let [w, h] = sides.map(|side| (side * 96.0 / 25.4) as f32);
+    (w > 0.0 && h > 0.0).then_some(if across { Size { w: h, h: w } } else { Size { w, h } })
 }
 
 /// A file of the program's own holding `bytes`, open for the portal to read from the start:
@@ -389,7 +418,7 @@ mod tests {
     use super::*;
     use crate::atspi::{ANSWER, CALL, FAILED, Message, NEWS, Pack};
     use crate::portal::tests::OwnBus;
-    use crate::print::PrintOutcome;
+    use crate::print::{Pages, PrintOutcome};
     use std::io::Read;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -402,8 +431,8 @@ mod tests {
         prints: bool,
     }
 
-    /// What a stand-in portal was asked: each call by name, title and options; and the bytes of
-    /// each file it was handed.
+    /// What a stand-in portal was asked: each call by name, parent, title and options; and the
+    /// bytes of each file it was handed.
     #[derive(Default)]
     struct Heard {
         calls: Vec<String>,
@@ -444,7 +473,7 @@ mod tests {
     /// request as `stand` says (reading a file handed over). Says whether it is done printing.
     fn play(line: &mut Line, call: &Message, stand: Stand, heard: &Mutex<Heard>) -> bool {
         let mut said = call.body;
-        let (_, title) = (said.text(), said.text().unwrap_or("").to_string());
+        let (parent, title) = (said.text().unwrap_or("").to_string(), said.text().unwrap_or("").to_string());
         let mut fields = Vec::new();
         if call.member == "PreparePrint" {
             said.skip("a{sv}").expect("its settings");
@@ -453,7 +482,7 @@ mod tests {
             fields.push(format!("file {}", said.u32().unwrap_or(9)));
         }
         fields.extend(entries(&mut said));
-        heard.lock().unwrap().calls.push(format!("{} {title} | {}", call.member, fields.join(" | ")));
+        heard.lock().unwrap().calls.push(format!("{} [{parent}] {title} | {}", call.member, fields.join(" | ")));
         let token = fields.iter().find_map(|entry| entry.strip_prefix("handle_token=")).unwrap_or("none").to_string();
         let request = format!("{REQUESTS}/{}/{token}", call.sender.trim_start_matches(':').replace('.', "_"));
         let sender = call.sender.to_string();
@@ -487,7 +516,12 @@ mod tests {
         end.u32(how).open(8);
         end.pad(8).text("token").kinds("u").u32(7);
         end.pad(8).text("settings").kinds("a{sv}").open(8).close();
-        end.close();
+        // (US Letter, turned.)
+        end.pad(8).text("page-setup").kinds("a{sv}").open(8);
+        end.pad(8).text("Width").kinds("d").f64(215.9);
+        end.pad(8).text("Height").kinds("d").f64(279.4);
+        end.pad(8).text("Orientation").kinds("s").text("landscape");
+        end.close().close();
         let fields = [
             (1, "o", FieldValue::Text(&request)),
             (2, "s", FieldValue::Text(REQUEST)),
@@ -517,26 +551,56 @@ mod tests {
         found
     }
 
+    /// Pages of a size, with a rectangle on.
+    fn pages(size: Size) -> Paper {
+        let mut paper = Paper::new();
+        paper.page(size);
+        paper.rect(crate::geom::rect(10.0, 10.0, 50.0, 50.0), crate::color::Color::BLACK);
+        paper
+    }
+
     #[test]
     fn the_portal_shows_its_dialog_and_is_handed_the_pages_as_a_file() {
         let Some(own) = OwnBus::start() else { return eprintln!("no dbus-daemon to start a bus with: not tested") };
         let (heard, thread) = stand_in(&own.address, Stand { ends: 0, prints: true });
-        let file = b"%PDF-1.7 a file of the test's own".to_vec();
-        assert_eq!(print_through(&own.address, &file, "A report", [793.7, 1122.5]), PrintOutcome::Sent);
+        let file = pages(Paper::A4).to_pdf();
+        assert_eq!(print_through(&own.address, Pages::Ready(Box::new(pages(Paper::A4))), "A report", "x11:2a00007"), PrintOutcome::Sent);
         thread.join().unwrap();
         let heard = heard.lock().unwrap();
         assert_eq!(heard.files, [file], "the portal read the file it was handed, all of it");
         assert_eq!(
             heard.calls,
-            ["PreparePrint A report | Width=210.0 | Height=297.0 | Orientation=portrait | handle_token=taut_print_1 | modal=1", "Print A report | file 0 | handle_token=taut_print_2 | token=7",]
+            [
+                "PreparePrint [x11:2a00007] A report | Width=210.0 | Height=297.0 | Orientation=portrait | handle_token=taut_print_1 | modal=1",
+                "Print [] A report | file 0 | handle_token=taut_print_2 | token=7",
+            ]
         );
+    }
+
+    #[test]
+    fn pages_are_laid_out_for_the_paper_picked() {
+        let Some(own) = OwnBus::start() else { return eprintln!("no dbus-daemon to start a bus with: not tested") };
+        let (heard, thread) = stand_in(&own.address, Stand { ends: 0, prints: true });
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let told = asked.clone();
+        let laid = Pages::Laid(Box::new(move |sheet| {
+            told.lock().unwrap().push(sheet);
+            pages(sheet)
+        }));
+        assert_eq!(print_through(&own.address, laid, "Laid", ""), PrintOutcome::Sent);
+        thread.join().unwrap();
+        // The picked paper is Letter, turned: laid out across, and only once.
+        let sheet = asked.lock().unwrap()[0];
+        assert!((sheet.w - 1056.0).abs() < 0.1 && (sheet.h - 816.0).abs() < 0.1 && asked.lock().unwrap().len() == 1, "{sheet:?}");
+        assert_eq!(heard.lock().unwrap().files, [pages(sheet).to_pdf()]);
+        assert!(heard.lock().unwrap().calls[0].contains("Width=210.0 | Height=297.0"), "the dialog offered A4 first");
     }
 
     #[test]
     fn a_dialog_the_person_closes_prints_nothing() {
         let Some(own) = OwnBus::start() else { return eprintln!("no dbus-daemon to start a bus with: not tested") };
         let (heard, thread) = stand_in(&own.address, Stand { ends: 1, prints: true });
-        assert_eq!(print_through(&own.address, b"%PDF", "Closed", [816.0, 600.0]), PrintOutcome::Closed);
+        assert_eq!(print_through(&own.address, Pages::Ready(Box::new(pages(Size { w: 816.0, h: 600.0 }))), "Closed", ""), PrintOutcome::Closed);
         thread.join().unwrap();
         let heard = heard.lock().unwrap();
         assert_eq!((heard.calls.len(), heard.files.len()), (1, 0), "only the dialog was asked for");
@@ -548,12 +612,13 @@ mod tests {
         let Some(own) = OwnBus::start() else { return eprintln!("no dbus-daemon to start a bus with: not tested") };
         // No portal on the bus; a portal without printing; and no bus.
         let since = Instant::now();
-        assert_eq!(print_through(&own.address, b"%PDF", "Nobody", [100.0, 100.0]), PrintOutcome::Unable);
+        let page = || Pages::Ready(Box::new(pages(Size { w: 100.0, h: 100.0 })));
+        assert_eq!(print_through(&own.address, page(), "Nobody", ""), PrintOutcome::Unable);
         assert!(since.elapsed() < Duration::from_secs(5), "the bus says at once that nobody has the name");
         let (_, thread) = stand_in(&own.address, Stand { ends: 0, prints: false });
-        assert_eq!(print_through(&own.address, b"%PDF", "No printing", [100.0, 100.0]), PrintOutcome::Unable);
+        assert_eq!(print_through(&own.address, page(), "No printing", ""), PrintOutcome::Unable);
         thread.join().unwrap();
-        assert_eq!(print_through("unix:path=/nonexistent/bus", b"%PDF", "No bus", [100.0, 100.0]), PrintOutcome::Unable);
+        assert_eq!(print_through("unix:path=/nonexistent/bus", page(), "No bus", ""), PrintOutcome::Unable);
     }
 
     #[test]

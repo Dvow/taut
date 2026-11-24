@@ -1,7 +1,7 @@
 //! Fuzzer finds in the library's own Wayland host, as a compositor might send them: the window
 //! runs for real (`taut::run`) against a compositor played here at the other end of a socket
 //! passed as `WAYLAND_SOCKET`. Regression tests: each failed before its fix.
-#![cfg(all(unix, not(target_os = "macos")))]
+#![cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;

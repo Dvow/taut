@@ -586,20 +586,40 @@ impl Fonts {
     /// A glyph of `face` in font `at`, `px` pixels high: drawn by FreeType from that font, or
     /// the fallback where it lacks the character. (Where none has it, the font's .notdef,
     /// usually a box. Line ends, tabs and the like are no font's characters and not looked
-    /// for.)
-    fn draw(&mut self, face: Face, at: usize, px: u32, c: char) -> Glyph {
+    /// for.) Or, with `form` not 0, that glyph of the font: the character's form in a language.
+    fn draw(&mut self, face: Face, at: usize, px: u32, c: char, #[cfg(feature = "shaping")] form: u16) -> Glyph {
         let from = if self.has(at, c) || c.is_control() { at } else { self.stand_in(face, c).unwrap_or(at) };
         let font = self.sized(from, px);
         // SAFETY: FreeType renders into the face's own glyph slot, read here before anything
         // else is drawn. `FT_LOAD_RENDER` (4) with `FT_LOAD_NO_BITMAP` (8): rows of one byte
         // per pixel.
         unsafe {
-            if (self.ft.FT_Load_Char)(font, c as c_ulong, 4 | 8) != 0 {
+            #[cfg(feature = "shaping")]
+            let failed = if form != 0 { self.load_glyph(font, form) } else { (self.ft.FT_Load_Char)(font, c as c_ulong, 4 | 8) != 0 };
+            #[cfg(not(feature = "shaping"))]
+            let failed = (self.ft.FT_Load_Char)(font, c as c_ulong, 4 | 8) != 0;
+            if failed {
                 return Glyph { width: 0, left: 0, top: 0, advance: px as f32 / 2.0, cover: Vec::new() };
             }
             let slot = &*(*font).glyph;
             Glyph { width: slot.bitmap.width as usize, left: slot.left, top: slot.top, advance: slot.advance[0] as f32 / 64.0, cover: slot.bitmap.cover() }
         }
+    }
+}
+
+#[cfg(feature = "shaping")]
+impl Fonts {
+    /// Renders glyph `glyph` of a font as `draw` does a character (with `FT_Load_Glyph`,
+    /// found when first needed): whether that failed.
+    ///
+    /// # Safety
+    /// The font is open and sized.
+    unsafe fn load_glyph(&self, font: *mut FaceRec, glyph: u16) -> bool {
+        type Load = unsafe extern "C" fn(*mut FaceRec, c_uint, c_int) -> c_int;
+        let Some(load) = symbol(self.ft.lib, "FT_Load_Glyph\0") else { return true };
+        // SAFETY: the function is FreeType's, declared as it documents it; the font is as the
+        // caller promises.
+        unsafe { std::mem::transmute::<*mut c_void, Load>(load)(font, glyph as c_uint, 4 | 8) != 0 }
     }
 }
 
@@ -634,8 +654,18 @@ pub struct SystemText {
     files: HashMap<Face, (CString, c_long)>,
     /// The open font each face uses.
     faces: HashMap<Face, usize>,
-    glyphs: HashMap<(Face, u32, char), Glyph>,
+    glyphs: HashMap<Pictured, Glyph>,
+    /// The language's forms in these fonts (see `system_forms`).
+    #[cfg(feature = "shaping")]
+    forms: crate::system_forms::Forms,
 }
+
+/// A glyph's key: face, size, character; and with `shaping`, the glyph of its language form (0
+/// for none).
+#[cfg(feature = "shaping")]
+type Pictured = (Face, u32, char, u16);
+#[cfg(not(feature = "shaping"))]
+type Pictured = (Face, u32, char);
 
 impl SystemText {
     /// The system's text, as Fontconfig names the fonts and FreeType draws them. Nothing where
@@ -651,7 +681,14 @@ impl SystemText {
         // And the emoji font file, for whatever draws emoji: see `emoji_file`.
         EMOJI_FILE.get_or_init(|| catalog.file_of("emoji").map(|(file, _)| PathBuf::from(std::ffi::OsStr::from_bytes(file.as_bytes()))));
         let fonts = Fonts { ft, library, open: Vec::new(), spares: HashMap::new() };
-        let mut text = SystemText { fonts, files, faces: HashMap::new(), glyphs: HashMap::new() };
+        let mut text = SystemText {
+            fonts,
+            files,
+            faces: HashMap::new(),
+            glyphs: HashMap::new(),
+            #[cfg(feature = "shaping")]
+            forms: crate::system_forms::Forms::new(),
+        };
         text.open(Face::Regular).then_some(text)
     }
 
@@ -676,9 +713,24 @@ impl SystemText {
     }
 
     /// A glyph of what `face` gave: rasterized when first asked for, and kept.
+    #[cfg(not(feature = "shaping"))]
     fn glyph(&mut self, (which, at, px): (Face, usize, u32), c: char) -> &Glyph {
         let fonts = &mut self.fonts;
         self.glyphs.entry((which, px, c)).or_insert_with(|| fonts.draw(which, at, px, c))
+    }
+    /// The same, or that of its language form `form` (where not 0).
+    #[cfg(feature = "shaping")]
+    fn glyph(&mut self, (which, at, px): (Face, usize, u32), c: char, form: u16) -> &Glyph {
+        let fonts = &mut self.fonts;
+        self.glyphs.entry((which, px, c, form)).or_insert_with(|| fonts.draw(which, at, px, c, form))
+    }
+
+    /// Each character's form in a line, where it takes some (0 where none): see
+    /// `system_forms`.
+    #[cfg(feature = "shaping")]
+    fn forms(&mut self, face: Face, text: &str) -> impl Iterator<Item = u16> + use<> {
+        let glyphs = self.forms.glyphs(face, text).unwrap_or_default();
+        glyphs.into_iter().map(|[own, form]| if form == own { 0 } else { form })
     }
 }
 
@@ -696,14 +748,28 @@ impl TextSystem for SystemText {
         let size = unsafe { &*(*self.fonts.sized(at, px)).size };
         let (ascent, descent) = ((size.ascender as f32 / 64.0).ceil() / scale, (-size.descender as f32 / 64.0).ceil() / scale);
         // Cap height and x-height: how far "H" and "x" reach above the baseline.
+        #[cfg(feature = "shaping")]
+        let [cap, small] = ['H', 'x'].map(|letter| self.glyph((which, at, px), letter, 0).top.max(0) as f32 / scale);
+        #[cfg(not(feature = "shaping"))]
         let [cap, small] = ['H', 'x'].map(|letter| self.glyph((which, at, px), letter).top.max(0) as f32 / scale);
         Metrics { ascent, descent, cap_height: cap, x_height: small }
     }
 
+    #[cfg(feature = "shaping")]
+    fn set_language(&mut self, language: crate::scripts::Language) {
+        self.forms.set(language);
+    }
+
     fn measure(&mut self, text: &str, font: Font, scale: f32, mut stops: Option<&mut Vec<f32>>) -> f32 {
         let (with, mut x) = (self.face(font, scale), 0.0);
+        #[cfg(feature = "shaping")]
+        let mut forms = self.forms(with.0, text);
         for c in text.chars() {
-            x += self.glyph(with, c).advance;
+            #[cfg(feature = "shaping")]
+            let g = self.glyph(with, c, forms.next().unwrap_or(0));
+            #[cfg(not(feature = "shaping"))]
+            let g = self.glyph(with, c);
+            x += g.advance;
             if let Some(stops) = stops.as_deref_mut() {
                 stops.push(x / scale);
             }
@@ -715,7 +781,12 @@ impl TextSystem for SystemText {
         let scale = canvas.scale();
         let ascent = (self.metrics(font, scale).ascent * scale).round() as i32;
         let (with, mut pen, top) = (self.face(font, scale), (x * scale).round(), (y * scale).round() as i32 + ascent);
+        #[cfg(feature = "shaping")]
+        let mut forms = self.forms(with.0, text);
         for c in text.chars() {
+            #[cfg(feature = "shaping")]
+            let g = self.glyph(with, c, forms.next().unwrap_or(0));
+            #[cfg(not(feature = "shaping"))]
             let g = self.glyph(with, c);
             canvas.cover(pen as i32 + g.left, top - g.top, g.width, &g.cover, color);
             pen += g.advance;
@@ -2171,6 +2242,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             let at = window_origin(&found, asked, |_| size.map(|side| side as f32)).map(|(_, at)| (at.x as i32, at.y as i32));
             let (id, kind) = new_window(&conn.x, display, size, least, at, [window.frameless, window.transparent]);
             (conn.window, conn.icons) = (id, pictured(window.icons));
+            crate::print::set_parent(format!("x11:{id:x}"));
             let conn = Rc::new(conn);
             let x = &conn.x;
             // Only a window manager maximizes a window: with none, the window opens at its size
@@ -4284,8 +4356,14 @@ pub(crate) mod tests {
         let (font, with) = (Font::new(14.0), text.face(Font::new(14.0), 1.0));
         let lacking: Vec<char> = ['\u{2192}', '\u{2603}', '\u{5d0}', '\u{e01}', '\u{4e2d}', '\u{e0ff}'].into_iter().filter(|c| !text.fonts.has(with.1, *c)).collect();
         let Some(c) = lacking.into_iter().find(|c| text.fonts.stand_in(with.0, *c).is_some()) else { return eprintln!("the desktop's font lacks nothing another font has: not tested") };
+        #[cfg(feature = "shaping")]
+        let (found, missing) = (text.glyph(with, c, 0).cover.clone(), text.glyph(with, '\u{10ffff}', 0).cover.clone());
+        #[cfg(not(feature = "shaping"))]
         let (found, missing) = (text.glyph(with, c).cover.clone(), text.glyph(with, '\u{10ffff}').cover.clone());
         assert!(found.iter().any(|cover| *cover > 0) && found != missing, "{c:?} is drawn, and not as a box");
+        #[cfg(feature = "shaping")]
+        let (advance, mut stops) = (text.glyph(with, c, 0).advance, Vec::new());
+        #[cfg(not(feature = "shaping"))]
         let (advance, mut stops) = (text.glyph(with, c).advance, Vec::new());
         let (a, wide) = (text.measure("a", font, 1.0, None), text.measure(&format!("a{c}a"), font, 1.0, Some(&mut stops)));
         assert_eq!((wide, stops), (a + advance + a, vec![a, a + advance, a + advance + a]));

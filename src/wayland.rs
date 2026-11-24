@@ -133,6 +133,9 @@ struct Has {
     /// shows (feature `gpu`).
     #[cfg(feature = "gpu")]
     dmabuf: (u32, u32),
+    /// `wp_color_manager_v1` (feature `hdr`).
+    #[cfg(feature = "hdr")]
+    colors: u32,
 }
 
 /// What all windows and the clipboard share: the connection, the globals, the clipboard, and
@@ -401,6 +404,8 @@ fn bind(wire: &Wire, registry: u32, offered: &[(u32, String, u32)]) -> (Has, Vec
             "wl_output" if *version >= 2 => outputs.push((bind(4, Interface::Output), *name)),
             #[cfg(feature = "gpu")]
             "zwp_linux_dmabuf_v1" => has.dmabuf = (*name, *version),
+            #[cfg(feature = "hdr")]
+            "wp_color_manager_v1" if has.colors == 0 => has.colors = bind(1, Interface::ColorManager),
             _ => {}
         }
     }
@@ -490,6 +495,10 @@ impl TextSystem for SharedText {
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
         self.0.borrow_mut().draw(canvas, text, x, y, font, color)
     }
+    #[cfg(feature = "shaping")]
+    fn set_language(&mut self, language: crate::scripts::Language) {
+        self.0.borrow_mut().set_language(language)
+    }
 }
 
 /// A `wl_shm` buffer of pixels, so many wide and high. The compositor holds it from commit
@@ -549,6 +558,9 @@ struct Sheet {
     /// Shown through the GPU, or by shared memory (feature `gpu`).
     #[cfg(feature = "gpu")]
     way: gpu_wayland::Way,
+    /// Its HDR (feature `hdr`).
+    #[cfg(feature = "hdr")]
+    lit: hdr_wayland::Lit,
 }
 
 impl Sheet {
@@ -570,6 +582,8 @@ impl Sheet {
             clear,
             #[cfg(feature = "gpu")]
             way: gpu_wayland::Way::Unasked,
+            #[cfg(feature = "hdr")]
+            lit: Default::default(),
         }
     }
 
@@ -605,6 +619,10 @@ impl Sheet {
     /// The compositor released one of the buffers. Says whether it was this surface's. (One of
     /// a size the surface no longer has is destroyed.)
     fn released(&mut self, link: &Link, id: u32) -> bool {
+        #[cfg(feature = "hdr")]
+        if self.lit.released(link, id, self.pixels) {
+            return true;
+        }
         let Some(at) = self.buffers.iter().position(|buffer| buffer.id == id) else { return false };
         self.buffers[at].busy = false;
         if self.buffers[at].size != self.pixels {
@@ -632,6 +650,10 @@ impl Sheet {
     fn draw(&mut self, link: &Link, scale: f32, paint: &mut dyn FnMut(&mut Canvas)) -> bool {
         if self.changed.is_empty() || (self.waiting != 0 && !self.hurry) {
             return self.pay(link);
+        }
+        #[cfg(feature = "hdr")]
+        if let Some(drawn) = self.draw_lit(link, scale, paint) {
+            return drawn;
         }
         #[cfg(feature = "gpu")]
         if let Some(drawn) = self.draw_by_gpu(link, scale, paint) {
@@ -676,6 +698,8 @@ impl Sheet {
     fn destroy(self, link: &Link) {
         #[cfg(feature = "gpu")]
         Sheet::forget_gpu(link, self.way);
+        #[cfg(feature = "hdr")]
+        self.lit.destroy(link);
         if self.viewport != 0 {
             link.wire.send(self.viewport, 0, &[]);
         }
@@ -1244,6 +1268,9 @@ struct Host<App> {
     start: Instant,
     session: Session,
     heard: bool,
+    /// The compositor's colour management and screens (feature `hdr`).
+    #[cfg(feature = "hdr")]
+    colors: hdr_wayland::Colors,
 }
 
 impl<App: FnMut(&mut Ui)> Host<App> {
@@ -1301,6 +1328,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             start: Instant::now(),
             session,
             heard: true,
+            #[cfg(feature = "hdr")]
+            colors: Default::default(),
         };
         // A token comes from another program: one longer than a desktop gives is none.
         let token = !host.token.is_empty() && host.token.len() <= crate::freedesktop::TOKEN;
@@ -1416,6 +1445,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             Interface::TabletTool if cfg!(feature = "touch") => self.pen(message),
             #[cfg(feature = "gpu")]
             Interface::Dmabuf | Interface::DmabufFeedback | Interface::DmabufParams => self.heard_by_gpu(message),
+            #[cfg(feature = "hdr")]
+            Interface::Shm | Interface::ColorManager | Interface::ColorOutput | Interface::Description | Interface::DescriptionInfo => self.colored(message),
             _ => {}
         }
     }
@@ -1941,6 +1972,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     fn exported(&mut self, mut message: Message) {
         if let Some(shown) = self.windows.iter_mut().find(|shown| shown.exported == message.object) {
             shown.handle = format!("wayland:{}", message.text());
+            crate::print::set_parent(shown.handle.clone());
         }
     }
 
@@ -2237,6 +2269,8 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         }
         self.keep_up();
         (0..self.windows.len()).for_each(|at| self.follow(at));
+        #[cfg(feature = "hdr")]
+        (0..self.windows.len()).for_each(|at| self.light(at));
         if self.ui.listening {
             self.tell_readers();
         }
@@ -3240,13 +3274,13 @@ mod tests {
     // desktop: so only when asked, as the tests on an X display.
 
     /// A test app's windows; with the guard keeping a test alone, first so it drops last.
-    type Windows = Host<Box<dyn FnMut(&mut Ui)>>;
-    type Alone = (MutexGuard<'static, ()>, Windows);
+    pub(super) type Windows = Host<Box<dyn FnMut(&mut Ui)>>;
+    pub(super) type Alone = (MutexGuard<'static, ()>, Windows);
 
     /// Opens a window for an app on the named compositor, on no bus, and waits until it is
     /// drawn. Nothing where no compositor answers or there is no font. `own_frame`: the window
     /// draws its own decorations, as on a compositor that will not.
-    fn shown(window: Window, own_frame: bool, app: impl FnMut(&mut Ui) + 'static) -> Option<Alone> {
+    pub(super) fn shown(window: Window, own_frame: bool, app: impl FnMut(&mut Ui) + 'static) -> Option<Alone> {
         let alone = crate::x11::tests::alone();
         let (mut link, outputs) = Link::new()?;
         if own_frame {
@@ -3275,7 +3309,7 @@ mod tests {
     }
 
     /// Takes turns until something holds, up to five seconds. Says whether it came to hold.
-    fn waits(host: &mut Windows, so: impl Fn(&Windows) -> bool) -> bool {
+    pub(super) fn waits(host: &mut Windows, so: impl Fn(&Windows) -> bool) -> bool {
         let until = Instant::now() + Duration::from_secs(5);
         while !so(host) && Instant::now() < until {
             readable(host.link.wire.fd(), 10);
@@ -4100,3 +4134,8 @@ mod gallery;
 #[cfg(feature = "gpu")]
 #[path = "gpu_wayland.rs"]
 mod gpu_wayland;
+
+// Windows lit on an HDR screen handed over in PQ (feature `hdr`).
+#[cfg(feature = "hdr")]
+#[path = "hdr_wayland.rs"]
+mod hdr_wayland;

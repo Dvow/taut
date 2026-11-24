@@ -276,7 +276,7 @@ impl CalendarWords {
     }
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code, reason = "macOS reads no names yet"))]
+#[cfg_attr(target_vendor = "apple", allow(dead_code, reason = "macOS reads no names yet"))]
 /// Names the system said, made to last the program's life (each read leaks them once: once per
 /// program, and once per change of settings). English where the system said nothing.
 fn names(said: impl Iterator<Item = String>, into: &mut [&'static str]) {
@@ -602,7 +602,7 @@ fn names_from_glibc(name: &std::ffi::CStr) -> CalendarWords {
 /// Foundation's formats for the user's locale: the short date and the hour as the locale
 /// writes them, hours and minutes (patterns in the letters Windows uses), the week's first day (1 Sunday), and the
 /// number separators.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn read() -> System {
     use crate::macos_sys::{class, ns_string, rust_string, send};
     let _pool = crate::macos_sys::Pool::new();
@@ -632,19 +632,19 @@ fn read() -> System {
 }
 
 /// macOS: English names until read from Foundation.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn read_names() -> CalendarWords {
     CalendarWords::default()
 }
 
 /// Without Windows, Foundation or glibc to ask: the library's formats.
-#[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+#[cfg(not(any(windows, target_vendor = "apple", all(target_os = "linux", target_env = "gnu"))))]
 fn read() -> System {
     System { locale: Locale::PLAIN, fine: Fine::PLAIN }
 }
 
 /// Without Windows, Foundation or glibc to ask: English.
-#[cfg(not(any(windows, target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+#[cfg(not(any(windows, target_vendor = "apple", all(target_os = "linux", target_env = "gnu"))))]
 fn read_names() -> CalendarWords {
     CalendarWords::default()
 }

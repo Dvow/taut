@@ -14,25 +14,31 @@
 //!
 //! A table is a table node: column headers, then rows of cells, so a screen reader can say a
 //! cell's row, column and header, and move by cell, row and column. It reports its total row
-//! count; only visible rows have nodes. A visible row has all its cells, and the headers all
-//! theirs, however far the table is scrolled sideways.
+//! count and its selected rows; only visible rows have nodes, and a reader asking for another
+//! scrolls it into view. A visible row has all its cells, and the headers all theirs, however
+//! far the table is scrolled sideways.
 //!
 //! A tree is a tree node: its items in display order, each with its level, its position among
-//! its siblings, and whether it is expanded and selected.
+//! its siblings, and whether it is expanded and selected. Tree items the app put in no tree
+//! are told in one.
+//!
+//! Text that shows is read by line as wrapped, and each letter's place is known, where the
+//! text is one box's.
 //!
 //! While no screen reader listens, nothing is built. While one does, a run that changes no
 //! input keeps the nodes, and one that only moves boxes (scrolling) moves them.
 use crate::event::{Key, Mods};
-use crate::geom::{Rect, rect};
+use crate::geom::{Point, Rect, rect};
 use crate::id::{Id, fold, hash};
-use crate::layout::{Content, NONE, Tree};
+use crate::layout::{Align, Content, NONE, Tree};
 use crate::spell::Spelling;
 use crate::table::Track;
+use crate::text::{Line, TextSystem};
 use crate::ui::{Response, Rover, Stroke, Ui};
 use crate::visible_boxes::{Lying, VisibleBoxes};
 use std::cell::OnceCell;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 /// A box's role, for a screen reader to announce and to know what can be done with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,15 +199,58 @@ pub struct AccessNode {
     /// ([`Ui::visible_access_nodes`]). (In a table, every heading and everything in a visible
     /// row count as visible, however far it is scrolled sideways.)
     pub visible: bool,
-    /// For a spell-checked text box ([`Ui::check_spelling`]): its visible misspellings, each
-    /// from its first character to one past its last, from the start of its text.
+    /// For a spell-checked text box ([`Ui::check_spelling`]): its misspellings, each from its
+    /// first character to one past its last, from the start of its text. All of them in up to
+    /// 64 KB of text; past that, those visible.
     pub misspelled: Vec<[u32; 2]>,
     /// Its visible part: of `rect`, what its containers and the window leave in view. (Empty
     /// for what does not show.)
     pub(crate) seen: Rect,
     /// Its box, by index among the run's boxes.
     pub(crate) at: u32,
+    /// For text read by line and letter ([`AccessNode::reads_text`]) that shows: its lines and
+    /// letters, where its text is one box's; the box, and where it lies.
+    pub(crate) letters: Option<Arc<Letters>>,
+    pub(crate) text_box: u32,
+    pub(crate) text_rect: Rect,
+    /// For a table: its selected rows, seen or not, each range from its first to one past its
+    /// last. (As the app told them, else those of the rows told.)
+    pub(crate) selected_rows: Vec<[u32; 2]>,
 }
+
+/// What screen readers ask of tables, and what apps tell of them.
+#[derive(Default)]
+pub(crate) struct TableReading {
+    /// A row a screen reader asked for, until its table shows it: the table's id, the row
+    /// from 0, and whether it is then selected alone (`Some(true)`) or toggled.
+    pub(crate) asked: Option<(Id, u32, Option<bool>)>,
+    /// The selections told this run (`Ui::tell_selection`): each table's box, and its selected
+    /// rows, each range from its first to one past its last.
+    pub(crate) told: Vec<(u32, Vec<[u32; 2]>)>,
+}
+
+/// Where a text's lines start and its letters lie, as drawn: lines as wrapped.
+#[derive(Clone, Debug)]
+pub(crate) struct Letters {
+    /// A hash of how they were laid out: the text, its font and box, and its lines.
+    pub(crate) key: u64,
+    /// Each line's first character; the first is 0.
+    pub(crate) lines: Vec<u32>,
+    /// Each character's place, from its box's corner. (A line break, or a space a wrap left
+    /// out, is empty at its line's end.)
+    pub(crate) places: Vec<Rect>,
+}
+
+/// Letters are the same where they lie the same, however their key was made.
+impl PartialEq for Letters {
+    fn eq(&self, other: &Letters) -> bool {
+        (&self.lines, &self.places) == (&other.lines, &other.places)
+    }
+}
+
+// (Measured letters are never NaN. Being `Eq`, those shared between node lists compare by
+// pointer first.)
+impl Eq for Letters {}
 
 /// What a widget or app told of a box this run. Its name, value and shortcut are ranges of the
 /// note text (`Ui::noted`).
@@ -286,19 +335,109 @@ impl AccessNode {
             misspelled: Vec::new(),
             seen: rect,
             at: 0,
+            letters: None,
+            text_box: 0,
+            text_rect: Rect::default(),
+            selected_rows: Vec::new(),
         }
+    }
+
+    /// Whether a reader reads its text by line and letter: a text box, plain text, a heading,
+    /// a paragraph, code.
+    pub(crate) fn reads_text(&self) -> bool {
+        matches!(self.role, Role::TextBox | Role::PasswordBox | Role::Text | Role::Heading | Role::Paragraph | Role::Code)
+    }
+    /// The text it is read by: a text box's own (`value`), else its name.
+    pub(crate) fn text(&self) -> &str {
+        if matches!(self.role, Role::TextBox | Role::PasswordBox) { &self.value } else { &self.name }
+    }
+    /// Each line's first character: as wrapped where its text is laid out, else after each
+    /// line break.
+    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
+    pub(crate) fn line_starts(&self) -> Vec<u32> {
+        if let Some(letters) = &self.letters {
+            return letters.lines.clone();
+        }
+        let breaks = self.text().chars().enumerate().filter(|(_, letter)| *letter == '\n').map(|(at, _)| at as u32 + 1);
+        std::iter::once(0).chain(breaks).collect()
+    }
+    /// The line (from 0) character `letter` is on. (The text's end is on the last.)
+    #[cfg(target_os = "macos")]
+    pub(crate) fn line_of(&self, letter: u32) -> usize {
+        self.line_starts().partition_point(|start| *start <= letter).saturating_sub(1)
+    }
+    /// Line `line`'s characters: from its first up to the next line's (its break included).
+    /// None past the last.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn line_range(&self, line: usize) -> Option<[u32; 2]> {
+        let (starts, count) = (self.line_starts(), self.text().chars().count() as u32);
+        Some([*starts.get(line)?, starts.get(line + 1).copied().unwrap_or(count)])
+    }
+    /// Where character `letter` lies in the window: as drawn, else its whole box. Past the end,
+    /// an empty place after the last.
+    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
+    pub(crate) fn letter_rect(&self, letter: u32) -> Rect {
+        let Some(letters) = &self.letters else { return self.rect };
+        let corner = |place: Rect| place.moved(self.text_rect.x, self.text_rect.y);
+        match letters.places.get(letter as usize) {
+            Some(place) => corner(*place),
+            None => letters.places.last().map_or(self.rect, |last| corner(rect(last.right(), last.y, 0.0, last.h))),
+        }
+    }
+    /// Where characters `from` to `to` show: a rectangle per line, cut to what shows. (An empty
+    /// range: the cursor's place there, one unit wide.)
+    #[cfg(windows)]
+    pub(crate) fn range_rects(&self, [from, to]: [u32; 2]) -> Vec<Rect> {
+        if from >= to {
+            let at = self.letter_rect(from);
+            let caret = rect(at.x, at.y, 1.0, at.h).intersect(self.seen);
+            return if caret.is_empty() { Vec::new() } else { vec![caret] };
+        }
+        let starts = self.line_starts();
+        let mut lines = Vec::new();
+        for (line, start) in starts.iter().enumerate() {
+            let end = starts.get(line + 1).copied().unwrap_or(u32::MAX);
+            let (first, last) = ((*start).max(from), end.min(to));
+            let spans = (first..last).map(|letter| self.letter_rect(letter)).reduce(|one, other| one.union(other));
+            lines.extend(spans.map(|span| span.intersect(self.seen)).filter(|span| !span.is_empty()));
+        }
+        lines
+    }
+    /// The characters that show: from the first to one past the last. (All, where its letters
+    /// are not known.)
+    #[cfg(any(windows, target_os = "macos"))]
+    pub(crate) fn shown_letters(&self) -> [u32; 2] {
+        let count = self.text().chars().count() as u32;
+        let Some(letters) = &self.letters else { return [0, count] };
+        let shows = |place: &Rect| !place.moved(self.text_rect.x, self.text_rect.y).grow(0.5).intersect(self.seen).is_empty();
+        let first = letters.places.iter().position(shows).unwrap_or(0);
+        let last = letters.places.iter().rposition(shows).map_or(first, |last| last + 1);
+        [first as u32, last as u32]
+    }
+    /// The character at a point in the window, or nearest it on the line there. None where
+    /// its letters are not known, or for a point outside it.
+    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
+    pub(crate) fn letter_at(&self, point: Point) -> Option<u32> {
+        let letters = self.letters.as_ref().filter(|_| self.rect.contains(point))?;
+        let near = |place: &Rect| {
+            let place = place.moved(self.text_rect.x, self.text_rect.y);
+            let (dx, dy) = ((place.x - point.x).max(point.x - place.right()).max(0.0), (place.y - point.y).max(point.y - place.bottom()).max(0.0));
+            (dy, dx)
+        };
+        let nearest = letters.places.iter().enumerate().min_by(|(_, one), (_, other)| near(one).partial_cmp(&near(other)).unwrap_or(std::cmp::Ordering::Equal));
+        nearest.map(|(at, _)| at as u32)
     }
 
     /// For the column heading the rows are sorted by: the direction, in the word both Windows
     /// and Linux use.
-    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+    #[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
     pub(crate) fn sort_word(&self) -> Option<&'static str> {
         self.sorted.map(|down| if down { "descending" } else { "ascending" })
     }
     /// Whether it can take focus: anything operable, a selectable table row, a document (for
     /// selecting in it), and a table cell (focus there being the table's cell); not text,
     /// progress bars, or containers.
-    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+    #[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))), test, target_family = "wasm"))]
     pub(crate) fn takes_keyboard(&self) -> bool {
         match self.role {
             Role::TableRow => self.on.is_some(),
@@ -328,6 +467,7 @@ pub(crate) fn tree_of(nodes: &[AccessNode], item: usize) -> Option<usize> {
 
 /// The visible part of a node, by its index: all of it, but in a table only what lies within
 /// the table. (A row has all its cells, however far the table is scrolled sideways.)
+#[cfg(not(target_os = "android"))]
 pub(crate) fn view(nodes: &[AccessNode], at: usize) -> Rect {
     let (mut seen, mut up) = (nodes[at].rect, nodes[at].parent);
     while let Some(group) = up.and_then(|group| nodes.get(group)) {
@@ -338,7 +478,7 @@ pub(crate) fn view(nodes: &[AccessNode], at: usize) -> Rect {
 }
 
 /// A cell's table, by node index.
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(any(target_os = "ios", target_os = "android")))))]
 pub(crate) fn table_of(nodes: &[AccessNode], cell: usize) -> Option<usize> {
     let row = nodes.get(cell).filter(|cell| cell.role == Role::Cell)?.parent?;
     nodes.get(row)?.parent.filter(|table| nodes.get(*table).is_some_and(|table| table.role == Role::Table))
@@ -346,23 +486,16 @@ pub(crate) fn table_of(nodes: &[AccessNode], cell: usize) -> Option<usize> {
 
 /// A table's cell at a row and column from 0: its node index. None for a row out of view,
 /// whose cells have no nodes.
-#[cfg(any(windows, unix))]
+#[cfg(any(windows, all(unix, not(any(target_os = "ios", target_os = "android")))))]
 pub(crate) fn cell_at(nodes: &[AccessNode], table: usize, place: [u32; 2]) -> Option<usize> {
     (table + 1..nodes.len()).find(|at| nodes[*at].grid == Some(place) && table_of(nodes, *at) == Some(table))
 }
 
 /// The heading over a table column, from 0.
-#[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+#[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 pub(crate) fn heading_at(nodes: &[AccessNode], table: usize, column: u32) -> Option<usize> {
     let heads = |at: &usize| nodes[*at].role == Role::ColumnHeader && nodes[*at].parent == Some(table);
     (table + 1..nodes.len()).find(|at| heads(at) && nodes[*at].position.is_some_and(|of| of[0] == column + 1))
-}
-
-/// A table's row nodes, by index: each with its row index from 0.
-#[cfg(all(unix, not(target_os = "macos")))]
-pub(crate) fn rows_of(nodes: &[AccessNode], table: usize) -> impl Iterator<Item = (usize, u32)> {
-    let row = move |at: usize| (nodes[at].role == Role::TableRow && nodes[at].parent == Some(table)).then_some(at);
-    (table + 1..nodes.len()).filter_map(row).map(|at| (at, nodes[at].position.map_or(0, |of| of[0].saturating_sub(1))))
 }
 
 /// The text in a box and its descendants, piece after piece, up to `most` pieces.
@@ -472,6 +605,8 @@ pub(crate) struct AccessCache {
     key: u64,
     /// Which nodes these are: new with every change, unique among windows. 0 for none yet.
     version: u64,
+    /// Which nodes these were moved from, where only their places changed since. 0 for none.
+    moved_from: u64,
     /// Times the nodes were built, and moved.
     built: u32,
     moved: u32,
@@ -496,6 +631,9 @@ struct AccessWalk<'a> {
     shown_whole: [u32; 2],
     /// Where the headings of the last table walked would be.
     headings: u32,
+    /// The first note on a box after the last one walked: boxes come in order, but for each
+    /// layer starting again.
+    next_note: usize,
 }
 
 impl AccessWalk<'_> {
@@ -509,13 +647,24 @@ impl AccessWalk<'_> {
         let (seen, whole) = (r.intersect(clip).intersect(self.window), at > self.shown_whole[0] && at < self.shown_whole[1]);
         let shown = whole || !self.tree.drawn(at).moved(r.x, r.y).intersect(clip).intersect(self.window).is_empty();
         self.boxes.push((at, r, seen, shown));
-        let role = last_note(self.notes, at).map(|note| note.role);
+        let role = self.role_of(at);
         if shown && !whole && (role == Some(Role::TableRow) || at == self.headings) {
             self.shown_whole = [at, self.tree.specs[at as usize].end];
         }
         self.headings = if role == Some(Role::Table) { at + 1 } else { self.headings };
         self.lying.go_in(self.tree, at, r, clip);
         true
+    }
+    /// The role last told of box `at`, if any.
+    fn role_of(&mut self, at: u32) -> Option<Role> {
+        let notes = self.notes;
+        if self.next_note > 0 && notes.get(self.next_note - 1).is_some_and(|note| note.at > at) {
+            self.next_note = notes.partition_point(|note| note.at < at);
+        }
+        while notes.get(self.next_note).is_some_and(|note| note.at <= at) {
+            self.next_note += 1;
+        }
+        notes.get(self.next_note.wrapping_sub(1)).filter(|note| note.at == at).map(|note| note.role)
     }
     /// Leaves box `at`. (A sticky heading at the top of a scroll box hides what is under it, as
     /// `VisibleBoxes` has it.)
@@ -530,13 +679,25 @@ impl AccessWalk<'_> {
 fn walk_access_boxes(visible: &mut VisibleBoxes, boxes: &mut Vec<AccessBox>, tree: &Tree, notes: &[Note], window: Rect) {
     let VisibleBoxes { roots, reader_root: told_from, reader_lying: told, .. } = visible;
     boxes.clear();
-    let mut walk = AccessWalk { tree, notes, lying: told, window, boxes: std::mem::take(boxes), shown_whole: [0; 2], headings: NONE };
+    let mut walk = AccessWalk { tree, notes, lying: told, window, boxes: std::mem::take(boxes), shown_whole: [0; 2], headings: NONE, next_note: 0 };
     let mut open = Vec::new();
     for root in roots.get(*told_from..).unwrap_or_default() {
         walk.lying.start();
         tree.walk(*root, &mut open, &mut |at, entering| if entering { walk.enter(at) } else { walk.leave(at) });
     }
     *boxes = walk.boxes;
+}
+
+/// Brings a copy of the nodes the current ones were moved from (`Ui::access_moved_from`) up
+/// to date: where each lies, what of it shows, and the letters of what shows.
+#[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
+pub(crate) fn follow_move(kept: &mut [AccessNode], now: &[AccessNode]) {
+    for (kept, now) in kept.iter_mut().zip(now) {
+        (kept.rect, kept.seen, kept.visible, kept.text_box, kept.text_rect) = (now.rect, now.seen, now.visible, now.text_box, now.text_rect);
+        kept.letters.clone_from(&now.letters);
+    }
+    #[cfg(debug_assertions)]
+    assert!(same_nodes(kept, now), "only places changed");
 }
 
 /// Whether two node lists are the same: equal, or equal but for NaN in what an app gave.
@@ -632,6 +793,10 @@ impl NodeBuilder<'_> {
             return self.merged = [at, end];
         }
         let Some(role) = self.role_of(note, at) else { return };
+        // (Tree items the app put in no tree are told in one: so readers give their levels.)
+        if role == Role::TreeItem && !self.groups.iter().any(|group| self.nodes[group.node as usize].role == Role::Tree) {
+            self.add_tree(at, rect, seen, visible);
+        }
         let (name, position) = (self.name_of(note, role, at), self.position_of(note, at));
         let note_text = self.note_text;
         let text = |range: [u32; 2]| &note_text[range[0] as usize..range[1] as usize];
@@ -699,6 +864,22 @@ impl NodeBuilder<'_> {
         Some(true)
     }
 
+    /// Adds a tree around tree item `at` and its siblings after it that hold tree items (the
+    /// boxes their children are in): a hand-written tree. It lies where its first item does.
+    fn add_tree(&mut self, at: u32, rect: Rect, seen: Rect, visible: bool) {
+        let (specs, notes) = (&self.tree.specs, self.notes);
+        let parent = specs[at as usize].frame.parent;
+        let last = specs.get(parent as usize).map_or(specs.len() as u32, |parent| parent.end);
+        let items = |from: u32| notes[notes.partition_point(|note| note.at < from)..].iter().take_while(|note| note.at < specs[from as usize].end).any(|note| note.role == Role::TreeItem);
+        let mut end = specs[at as usize].end;
+        while end < last && items(end) {
+            end = specs[end as usize].end;
+        }
+        let (id, within) = (hash((specs[at as usize].id, "tree")), self.groups.last().map(|group| group.node as usize));
+        self.nodes.push(AccessNode { visible, seen, at, ..AccessNode::plain(id, Role::Tree, String::new(), rect, within) });
+        self.groups.push(Group { node: self.nodes.len() as u32 - 1, start: at, end, next_column: 0, columns_end: 0 });
+    }
+
     /// Whether box `at` (up to `end`) holds anything with a node of its own: a note, or a
     /// focusable box.
     fn holds_parts(&self, at: u32, end: u32) -> bool {
@@ -746,6 +927,106 @@ impl NodeBuilder<'_> {
         let in_list = self.list_rows.get(self.rows_placed).filter(|(row, _)| *row <= at).map(|(_, of)| *of);
         self.rows_placed += in_list.is_some() as usize;
         told.or(in_list)
+    }
+}
+
+/// The letters of text box `at`, lying at `r`, as `Painter::words` draws them: those it had
+/// (`was`) where laid out alike.
+fn lay_letters(tree: &Tree, text: &mut dyn TextSystem, scale: f32, (at, r): (u32, Rect), was: Option<&Arc<Letters>>) -> Option<Arc<Letters>> {
+    let (spec, place) = (&tree.specs[at as usize], &tree.places[at as usize]);
+    let Content::Text { start, end, font, wrap, side, .. } = spec.content else { return None };
+    let (start, end) = (start as usize, end as usize);
+    let inside = rect(0.0, 0.0, r.w, r.h).inset(spec.frame.pad);
+    let asked = place.fit[0] - spec.frame.pad.horizontal();
+    let wide = if side == Align::Start { asked } else { tree.text_width(at, scale).unwrap_or(asked) };
+    let whole = [Line { start, end, width: wide }];
+    let lines = if wrap { &tree.lines[place.lines.0 as usize..place.lines.1 as usize] } else { &whole[..] };
+    let sizes = [font.size, scale, inside.x, inside.y, inside.w, inside.h, place.line_height].map(f32::to_bits);
+    let key = hash((&tree.strings[start..end], font.face, sizes, side as u8, wrap));
+    let key = lines.iter().fold(key, |key, line| fold(fold(key, (line.start - start) as u64 | ((line.end - start) as u64) << 32), line.width.to_bits() as u64));
+    if let Some(was) = was.filter(|was| was.key == key) {
+        return Some(was.clone());
+    }
+    let (high, before) = (place.line_height.max(1.0), [0.0, 0.5, 1.0, 0.0][side as usize]);
+    let top = inside.y + if wrap { 0.0 } else { ((inside.h - place.line_height) / 2.0).max(0.0) };
+    let (mut letters, mut edges) = (Letters { key, lines: Vec::new(), places: Vec::new() }, Vec::new());
+    // (What a wrap leaves out, a line break or a space, lies at the end of the line before.)
+    let (mut done, mut after) = (start, rect(inside.x, top, 0.0, high));
+    for (row, line) in lines.iter().enumerate() {
+        let y = top + row as f32 * high;
+        letters.places.extend(std::iter::repeat_n(after, tree.strings[done..line.start.max(done)].chars().count()));
+        letters.lines.push(letters.places.len() as u32);
+        let paragraph = tree.strings[start..line.start].rfind('\n').map_or(start, |at| start + at + 1);
+        let leftward = crate::bidi::leftward(&tree.strings[paragraph..end]);
+        let x = inside.x + ((inside.w - line.width).max(0.0) * if leftward { 1.0 - before } else { before }).round();
+        text.places(&tree.strings[line.start..line.end], font, scale, leftward, &mut edges);
+        letters.places.extend(edges.iter().map(|[left, right]| rect(x + left, y, right - left, high)));
+        (after, done) = (rect(if leftward { x } else { x + line.width }, y, 0.0, high), line.end.max(done));
+    }
+    letters.places.extend(std::iter::repeat_n(after, tree.strings[done..end].chars().count()));
+    if letters.lines.first() != Some(&0) {
+        letters.lines.insert(0, 0);
+    }
+    Some(Arc::new(letters))
+}
+
+/// Gives a node read by line and letter its letters, where it shows and its text is one box's:
+/// that box, the first in it holding all of its text (`boxes` start at the node's own). Those
+/// it had (`was`) where laid out alike. (Letters are of use only where they show.)
+fn lay_node_letters(node: &mut AccessNode, boxes: &[AccessBox], tree: &Tree, text: &mut dyn TextSystem, scale: f32, was: Option<&Arc<Letters>>) {
+    (node.letters, node.text_box, node.text_rect) = (None, 0, Rect::default());
+    let (end, wanted) = (tree.specs[node.at as usize].end, node.text());
+    if !node.visible || !node.reads_text() || wanted.is_empty() {
+        return;
+    }
+    let holds = |at: u32| matches!(tree.specs[at as usize].content, Content::Text { start, end, .. } if &tree.strings[start as usize..end as usize] == wanted);
+    let Some(&(text_box, r, ..)) = boxes.iter().take_while(|(at, ..)| *at < end).find(|(at, ..)| holds(*at)) else { return };
+    (node.letters, node.text_box, node.text_rect) = (lay_letters(tree, text, scale, (text_box, r), was), text_box, r);
+}
+
+/// Gives the nodes that show and are read by line and letter their letters (see
+/// `lay_node_letters`), taking those laid out alike from the node of the same id in the last
+/// list (`old`: its nodes with letters), found near where the last was.
+fn lay_all_letters(nodes: &mut [AccessNode], old: &[(Id, Arc<Letters>)], boxes: &[AccessBox], tree: &Tree, text: &mut dyn TextSystem, scale: f32) {
+    let (mut next, mut near) = (0, 0);
+    for node in nodes.iter_mut() {
+        let Some(found) = boxes[next..].iter().position(|(at, ..)| *at == node.at) else { continue };
+        next += found;
+        if !node.visible || !node.reads_text() {
+            continue;
+        }
+        let was = old.get(near..).unwrap_or_default().iter().take(64).position(|(id, _)| *id == node.id).map(|found| near + found);
+        near = was.map_or(near, |was| was + 1);
+        lay_node_letters(node, &boxes[next..], tree, text, scale, was.map(|was| &old[was].1));
+    }
+}
+
+/// Brings a node's letters along as it moves (`boxes` start at its own): where it still shows,
+/// they lie where its text's box now does; come into view, they are laid out; gone out of it,
+/// it has none.
+fn follow_letters(node: &mut AccessNode, boxes: &[AccessBox], tree: &Tree, text: &mut dyn TextSystem, scale: f32) {
+    let shown = node.letters.take().filter(|_| node.visible);
+    let text_box = shown.as_ref().and_then(|_| boxes.iter().find(|(at, ..)| *at == node.text_box));
+    match (shown, text_box) {
+        (Some(letters), Some(found)) => (node.letters, node.text_rect) = (Some(letters), found.1),
+        (was, _) => lay_node_letters(node, boxes, tree, text, scale, was.as_ref()),
+    }
+}
+
+/// Gives each table its selected rows: as told (`told`, by box), else those of its rows told.
+#[inline(always)]
+fn select_rows(nodes: &mut [AccessNode], told: &[(u32, Vec<[u32; 2]>)]) {
+    for table in 0..nodes.len() {
+        if nodes[table].role != Role::Table {
+            continue;
+        }
+        if let Some((_, rows)) = told.iter().rfind(|(at, _)| *at == nodes[table].at) {
+            nodes[table].selected_rows.clone_from(rows);
+            continue;
+        }
+        let picked = nodes[table + 1..].iter().filter(|row| row.parent == Some(table) && row.role == Role::TableRow && row.on == Some(true));
+        let rows: Vec<[u32; 2]> = picked.filter_map(|row| row.position).map(|[nth, _]| [nth - 1, nth]).collect();
+        nodes[table].selected_rows = rows;
     }
 }
 
@@ -808,6 +1089,12 @@ impl Ui {
     /// Which nodes these are: it changes whenever they may have. (0 while nobody listens.)
     pub(crate) fn access_version(&self) -> u64 {
         self.visible_boxes.access_cache.first().map_or(0, |cache| cache.version)
+    }
+    /// Which nodes these were moved from, where only where they lie and what of them shows (and
+    /// so which have letters) changed since: their version. A copy of those follows with `follow_move`.
+    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
+    pub(crate) fn access_moved_from(&self) -> Option<u64> {
+        self.visible_boxes.access_cache.first().map(|cache| cache.moved_from).filter(|from| *from != 0)
     }
     /// What a screen reader is told of this window that is visible, as of the last run:
     /// elements in order, each group before its content. (`access_nodes` has all of it, visible
@@ -1068,6 +1355,7 @@ impl Ui {
             self.build_nodes(&mut cache.boxes);
         }
         if !same || moved {
+            cache.moved_from = if moved && kept { cache.version } else { 0 };
             cache.version = NEXT_VERSION.fetch_add(1, Ordering::Relaxed);
         }
         // (A debug build checks nodes kept or moved against nodes built afresh.)
@@ -1084,13 +1372,16 @@ impl Ui {
     /// (their layout and ids), focus, the cell keyed, columns, radio groups, long-list rows,
     /// the layers walked, and misspellings.
     fn inputs_hash(&self) -> u64 {
-        let Ui { tree, visible_boxes: survey, focus, grids, tracks, rovers, access_rows: rows_told, notes, asks, layout_key, .. } = self;
+        let Ui { tree, visible_boxes: survey, focus, grids, tracks, rovers, access_rows: rows_told, notes, asks, layout_key, table_reading, .. } = self;
         let mut key = fold(fold(*layout_key, *focus), grids.keyed_box().map_or(u64::MAX, u64::from));
         key = tree.specs.iter().fold(key, |key, spec| fold(key, spec.id));
         key = survey.roots.get(survey.reader_root..).unwrap_or_default().iter().fold(key, |key, root| fold(key, *root as u64));
         key = tracks.iter().fold(key, |key, track| fold(key, track.place as u64 | (track.shows as u64) << 32));
         key = rovers.iter().fold(key, |key, rover| fold(fold(fold(key, rover.id), rover.group), rover.selects as u64));
         key = rows_told.iter().fold(key, |key, (row, [nth, count])| fold(fold(key, *row as u64), (*nth as u64) << 32 | *count as u64));
+        for (table, rows) in &table_reading.told {
+            key = rows.iter().fold(fold(key, *table as u64), |key, [from, to]| fold(key, (*from as u64) << 32 | *to as u64));
+        }
         // (Misspellings are found apart from the run: in every text box.)
         let Some(hooks) = asks.spelling.hooks() else { return key };
         for note in notes.iter().filter(|note| note.role == Role::TextBox) {
@@ -1104,7 +1395,7 @@ impl Ui {
     /// node's box was found, in order. (Notes sorted.)
     fn move_nodes(&mut self, boxes: &mut Vec<AccessBox>) -> bool {
         let window = rect(0.0, 0.0, self.size().w, self.size().h);
-        let Ui { visible_boxes: survey, tree, notes, access_nodes: nodes, visible_access_nodes: visible, .. } = self;
+        let Ui { visible_boxes: survey, tree, notes, access_nodes: nodes, visible_access_nodes: visible, text, scale, .. } = self;
         walk_access_boxes(survey, boxes, tree, notes, window);
         *visible = OnceCell::new();
         // (A cell and what is in it are one box: the next node may be of the same box.)
@@ -1113,15 +1404,35 @@ impl Ui {
             let Some(found) = boxes[next..].iter().position(|(at, ..)| *at == one.at) else { return false };
             next += found;
             (_, one.rect, one.seen, one.visible) = boxes[next];
+            follow_letters(one, &boxes[next..], tree, text.as_mut(), *scale);
         }
         true
     }
 
-    /// Builds the nodes afresh, from the boxes (walked into `boxes`) and the notes.
+    /// Builds the nodes afresh, from the boxes (walked into `boxes`) and the notes; their
+    /// letters from the last ones', where laid out alike.
     fn build_nodes(&mut self, boxes: &mut Vec<AccessBox>) {
         let window = rect(0.0, 0.0, self.size().w, self.size().h);
-        let Ui { visible_boxes: survey, tree, notes, noted, access_nodes: nodes, visible_access_nodes: visible, access_rows: rows_told, focus, tracks, grids, rovers, asks, .. } = self;
+        let Ui {
+            visible_boxes: survey,
+            tree,
+            notes,
+            noted,
+            access_nodes: nodes,
+            visible_access_nodes: visible,
+            access_rows: rows_told,
+            focus,
+            tracks,
+            grids,
+            rovers,
+            asks,
+            text,
+            scale,
+            table_reading,
+            ..
+        } = self;
         notes.sort_by_key(|note| note.at);
+        let old: Vec<(Id, Arc<Letters>)> = nodes.iter().filter_map(|node| Some((node.id, node.letters.clone()?))).collect();
         nodes.clear();
         *visible = OnceCell::new();
         walk_access_boxes(survey, boxes, tree, notes, window);
@@ -1145,6 +1456,8 @@ impl Ui {
         name_cells_by_content(nodes);
         place_tree_items(nodes);
         place_radio_buttons(nodes, rovers);
+        lay_all_letters(nodes, &old, boxes, tree, text.as_mut(), *scale);
+        select_rows(nodes, &table_reading.told);
     }
 
     /// Presses element `id` for a screen reader that asked: focus goes to it, and it is pressed
@@ -1179,6 +1492,47 @@ impl Ui {
         self.set_focus(id);
         self.input.strokes.push(Stroke::Key(Key::Space, Mods::CTRL));
     }
+    /// Adds to the table being described: which of all its rows are selected, shown or not. So
+    /// a screen reader is told every selected row of a long table, not only of those described.
+    /// Called anywhere inside the table.
+    pub fn tell_selection(&mut self, selection: &crate::Selection) {
+        let Some(table) = self.open_table_note() else { return };
+        let rows = selection.spans().iter().map(|rows| [rows.start as u32, rows.end as u32]).collect();
+        self.table_reading.told.push((self.notes[table].at, rows));
+    }
+    /// Has a table's row (from 0) show for a screen reader that asked: scrolled into view where
+    /// it is a long list's. With `pick`, it is then selected alone (`Some(true)`), as a click
+    /// does, or added to the selection or taken out of it, as a Control+click does.
+    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
+    pub(crate) fn row_for_reader(&mut self, table: Id, row: u32, pick: Option<bool>) {
+        let at = self.access_nodes.iter().position(|node| node.id == table && node.role == Role::Table);
+        let told = at.and_then(|at| self.access_nodes[at + 1..].iter().find(|node| node.parent == Some(at) && node.role == Role::TableRow && node.position.is_some_and(|of| of[0] == row + 1)));
+        match told.map(|node| node.id).filter(|_| pick.is_none()) {
+            Some(id) => self.show_for_reader(id),
+            None => (self.table_reading.asked, self.again) = (Some((table, row, pick)), true),
+        }
+    }
+    /// The row of a long list a screen reader asked for (`row_for_reader`), if in this one: its
+    /// index among the list's `count`. The list is in the table told by note `table`, after
+    /// `before` of its rows. (A row to select is still asked for until described.)
+    pub(crate) fn reader_row(&mut self, table: Option<usize>, before: Option<u32>, count: usize) -> Option<usize> {
+        let ((id, row, pick), table, before) = (self.table_reading.asked?, table?, before?);
+        let index = row.checked_sub(before).filter(|index| (*index as usize) < count && self.tree.specs[self.notes[table].at as usize].id == id)?;
+        if pick.is_none() {
+            self.table_reading.asked = None;
+        }
+        Some(index as usize)
+    }
+    /// Whether the table row told by note `note` is the one a screen reader asked to select,
+    /// and how: alone (true) or toggled. Asked once.
+    pub(crate) fn reader_picks(&mut self, note: usize) -> Option<bool> {
+        let [row, _, _, table] = self.notes.get(note)?.row?;
+        let (id, asked, pick) = self.table_reading.asked?;
+        let pick = pick.filter(|_| self.tree.specs[self.notes[table as usize].at as usize].id == id && asked == row)?;
+        self.table_reading.asked = None;
+        Some(pick)
+    }
+
     /// Has a screen reader announce something the user should hear without looking, or that
     /// shows nowhere: "Saved", "3 files copied". Said once, after this run. (To nobody, and
     /// kept nowhere, while no screen reader listens.)
@@ -1303,5 +1657,196 @@ mod tests {
         trial.run();
         assert_eq!(counts(&trial).0, 1);
         assert_eq!(trial.access_nodes().len(), nodes.len());
+    }
+
+    const LONG: &str = "one two three four five six seven eight nine ten eleven twelve";
+
+    /// A wrapping paragraph and a text area in a narrow box that scrolls.
+    fn letters_page(notes: &mut String, ui: &mut Ui) {
+        ui.column().w(crate::Length::Px(200.0)).h(crate::Length::Px(200.0)).scroll().open();
+        ui.paragraph(LONG);
+        ui.text_area(notes, "Notes", (3, 6));
+        ui.el().h(crate::Length::Px(600.0)).show();
+        ui.close();
+    }
+
+    #[test]
+    fn text_is_read_by_its_lines_as_wrapped_and_its_letters_where_drawn() {
+        let mut trial = Trial::new(String::from("first\nsecond"), letters_page);
+        let check = |trial: &Trial<String>| {
+            let text = trial.find(Role::Text, LONG);
+            let lines = text.line_starts();
+            assert!(lines.len() > 2 && lines[0] == 0, "{lines:?}");
+            // Each line starts after a space, at the left; its letters go right, a line down.
+            for (row, start) in lines.iter().enumerate() {
+                let first = text.letter_rect(*start);
+                assert_eq!(LONG.as_bytes()[*start as usize - (row > 0) as usize], if row > 0 { b' ' } else { b'o' });
+                assert_eq!((first.x, first.y), (text.letter_rect(0).x, text.letter_rect(0).y + row as f32 * first.h));
+                assert!(text.letter_rect(start + 1).x > first.x);
+            }
+            // Every letter is found where it is drawn.
+            for letter in 0..LONG.len() as u32 {
+                let place = text.letter_rect(letter);
+                assert!(place.w == 0.0 || text.letter_at(pt(place.x + place.w / 2.0, place.y + place.h / 2.0)) == Some(letter), "{letter}");
+            }
+            // A text area by its typed lines, its text where the box draws it.
+            let area = trial.find(Role::TextBox, "Notes");
+            assert_eq!(area.line_starts(), [0, 6]);
+            assert!(area.letter_rect(6).y > area.letter_rect(0).y && area.rect.contains(pt(area.letter_rect(0).x, area.letter_rect(0).y)));
+            (text.letter_rect(0), text.letters.clone())
+        };
+        let (first, letters) = check(&trial);
+        // Scrolled, the letters move with their text and are laid out no further. (A debug
+        // build checks moved nodes against nodes built afresh.)
+        let built = counts_of(&trial).0;
+        trial.wheel(pt(100.0, 100.0), 0.0, 30.0);
+        let (now, kept) = check(&trial);
+        assert!(now.y < first.y && now.x == first.x, "{first:?} {now:?}");
+        assert!(counts_of(&trial).0 == built && Arc::ptr_eq(kept.as_ref().unwrap(), letters.as_ref().unwrap()));
+        // Scrolled out of view, it has none; back, it has them again. (A provider's copy follows
+        // the move: `follow_move` checks it in a debug build.)
+        let (mut copy, was) = (trial.access_nodes().to_vec(), trial.ui.access_version());
+        trial.wheel(pt(100.0, 100.0), 0.0, 600.0);
+        assert_eq!(trial.ui.access_moved_from(), Some(was));
+        follow_move(&mut copy, trial.access_nodes());
+        let gone = trial.access_nodes().iter().find(|node| node.name == LONG).unwrap();
+        assert!(!gone.visible && gone.letters.is_none());
+        trial.wheel(pt(100.0, 100.0), 0.0, -570.0);
+        assert_eq!(trial.find(Role::Text, LONG).letters, letters);
+        let letters = trial.find(Role::Text, LONG).letters.clone();
+        // Built afresh for another change, they are not laid out again.
+        trial.app.push_str(" more");
+        trial.run();
+        assert!(counts_of(&trial).0 > built && Arc::ptr_eq(trial.find(Role::Text, LONG).letters.as_ref().unwrap(), letters.as_ref().unwrap()));
+    }
+
+    /// A hand-written tree between two labels: Music (open, holding Rock, open, holding a
+    /// song), then Video.
+    fn grove(open: &mut [bool; 3], ui: &mut Ui) {
+        ui.label("Files");
+        ui.tree(&mut open[0], "Music");
+        if open[0] {
+            ui.tree(&mut open[1], "Rock");
+            if open[1] {
+                ui.label("song.ogg");
+                ui.close();
+            }
+            ui.close();
+        }
+        ui.tree(&mut open[2], "Video");
+        ui.label("After");
+    }
+
+    #[test]
+    fn tree_items_the_app_put_in_no_tree_are_told_in_one() {
+        let trial = Trial::new([true, true, false], grove);
+        let nodes = trial.access_nodes();
+        let trees: Vec<usize> = (0..nodes.len()).filter(|at| nodes[*at].role == Role::Tree).collect();
+        assert_eq!(trees.len(), 1, "{}", trial.dump());
+        let of = |name: &str| nodes.iter().find(|node| node.name == name).unwrap();
+        for (name, level, place) in [("Music", 1, [1, 2]), ("Rock", 2, [1, 1]), ("Video", 1, [2, 2])] {
+            assert_eq!((of(name).role, of(name).parent, of(name).level, of(name).position), (Role::TreeItem, Some(trees[0]), level, Some(place)), "{name}");
+        }
+        assert!(of("song.ogg").parent == Some(trees[0]) && of("Files").parent.is_none() && of("After").parent.is_none());
+    }
+
+    /// A table of a thousand rows, its selection told.
+    #[derive(Default)]
+    struct Ledger {
+        table: crate::Table,
+        selection: crate::Selection,
+    }
+
+    fn ledger(app: &mut Ledger, ui: &mut Ui) {
+        const COLUMNS: [crate::Column; 2] = [crate::Column::new("Name"), crate::Column::new("Size")];
+        ui.table(&mut app.table, &COLUMNS);
+        ui.tell_selection(&app.selection);
+        for row in ui.rows(1000, 24.0) {
+            if ui.selectable_row(row, app.selection.contains(row)).clicked {
+                app.selection.click(row, ui.mods());
+            }
+            ui.label(&format!("Row {row}"));
+            ui.label("1 KB");
+            ui.close();
+        }
+        ui.close();
+        ui.close();
+    }
+
+    #[test]
+    fn every_row_of_a_long_table_is_reached_and_selected_through_it() {
+        let mut trial = Trial::new(Ledger::default(), ledger);
+        trial.app.selection.add(700..703);
+        trial.run();
+        let table = |trial: &Trial<Ledger>| trial.access_nodes().iter().find(|node| node.role == Role::Table).unwrap().clone();
+        // Its selection is all of it, told or not; its rows told are those in view.
+        assert_eq!((table(&trial).grid, &table(&trial).selected_rows[..]), (Some([1000, 2]), &[[700, 703]][..]));
+        assert!(!trial.has(Role::Cell, "Row 500"));
+        // A row asked for is scrolled into view.
+        let id = table(&trial).id;
+        trial.ui.row_for_reader(id, 500, None);
+        trial.run();
+        assert!(trial.find(Role::Cell, "Row 500").visible);
+        // Asked to select one, it is selected alone; asked to toggle one, it joins.
+        trial.ui.row_for_reader(id, 900, Some(true));
+        trial.run();
+        assert_eq!(trial.app.selection.iter().collect::<Vec<_>>(), [900]);
+        trial.ui.row_for_reader(id, 902, Some(false));
+        trial.run();
+        assert_eq!((trial.app.selection.iter().collect::<Vec<_>>(), &table(&trial).selected_rows[..]), (vec![900, 902], &[[900, 901], [902, 903]][..]));
+        assert!(trial.find(Role::Cell, "Row 902").visible && trial.ui.table_reading.asked.is_none());
+    }
+
+    /// What a scroll costs a page of 10,000 rows (40,000 boxes): without a screen reader; with
+    /// one; with one and a provider copying what changed; with one and a provider following a
+    /// move. The quickest of many, in µs, each way in turn. (Run in release: `cargo test
+    /// --release --lib -- --ignored --nocapture how_long_a_scroll`.)
+    #[test]
+    #[ignore]
+    fn how_long_a_scroll_takes_while_a_reader_listens() {
+        let describe = |ui: &mut Ui| {
+            ui.column().grow().scroll().pad(10.0).gap(6.0).open();
+            for i in 0..10_000 {
+                ui.row().gap(8.0).pad((10.0, 5.0)).open();
+                ui.label("a row with a name");
+                ui.note(if i % 2 == 0 { "even" } else { "odd" });
+                ui.button("Open");
+                ui.close();
+            }
+            ui.close();
+        };
+        let mut line = String::new();
+        for way in ["no reader", "reader", "copying", "following"].repeat(3) {
+            let mut ui = Ui::new(Box::new(crate::text::BuiltInFont), Box::new(crate::LocalClipboard::default()));
+            ui.resize(crate::Size { w: 800.0, h: 600.0 }, 1.0);
+            ui.set_screen_reader(way != "no reader");
+            let mut build = describe;
+            (0..2).for_each(|_| _ = ui.run(&mut build));
+            let (mut kept, mut seen, mut down) = (ui.access_nodes().to_vec(), ui.access_version(), 40.0);
+            ui.event(crate::Event::Move(pt(300.0, 300.0)));
+            ui.run(&mut build);
+            let mut scroll = || {
+                let start = std::time::Instant::now();
+                ui.event(crate::Event::Wheel(0.0, down));
+                down = -down;
+                ui.run(&mut build);
+                match (way, ui.access_moved_from() == Some(seen)) {
+                    ("following", true) => follow_move(&mut kept, ui.access_nodes()),
+                    ("copying" | "following", _) if kept != ui.access_nodes() => kept = ui.access_nodes().to_vec(),
+                    _ => {}
+                }
+                seen = ui.access_version();
+                start.elapsed()
+            };
+            let quickest = (0..40).map(|_| scroll()).min().unwrap();
+            line += &format!("{way} {:.0}  ", quickest.as_secs_f64() * 1e6);
+        }
+        println!("{line}");
+    }
+
+    /// Times the nodes were built and moved.
+    fn counts_of<A>(trial: &Trial<A>) -> (u32, u32) {
+        let cache = trial.ui.visible_boxes.access_cache.first().expect("a cache kept while a screen reader listens");
+        (cache.built, cache.moved)
     }
 }

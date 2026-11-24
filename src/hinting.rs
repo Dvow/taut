@@ -18,9 +18,9 @@
 //!
 //! Nothing moves horizontally: advances, kerning and line breaks are as without it. Glyphs of
 //! `LARGE` pixels per em or more are left alone: there it no longer sharpens, it only distorts.
-//! It ignores a font's own hinting instructions (fonts need not have them, and most new ones
-//! don't): it is what FreeType's autohinter does with any font, matched glyph by glyph (see the
-//! tests).
+//! It is what FreeType's autohinter does with any font, matched glyph by glyph (see the tests).
+//! With the feature `hinting`, a TrueType font's own instructions hint it instead where it has
+//! them (`truetype_hinting.rs`); fonts without them, most new ones, still come here.
 use crate::font_file::{FontFile, Placing};
 use crate::geom::{Point, pt};
 use crate::path::{Path, Step};
