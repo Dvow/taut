@@ -1024,7 +1024,7 @@ fn rows_tree_and_chart(app: &mut App, ui: &mut Ui, wave: &[f32]) {
     // The wave in a chart, and half of it, both drawn as smooth curves.
     let half: Vec<f32> = wave.iter().map(|value| value / 2.0).collect();
     ui.el().h(Length::Px(10.0)).show();
-    ui.chart(&Chart::of(&[Series::area("Wave", wave).smooth(),Series::line("Half", &half).smooth()]), 240.0, 150.0);
+    ui.chart(&Chart::of(&[Series::area("Wave", wave).smooth(), Series::line("Half", &half).smooth()]), 240.0, 150.0);
     ui.close();
 }
 
