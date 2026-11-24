@@ -14,7 +14,7 @@ only what changed, and nothing while nothing happens.
 
 ```toml
 [dependencies]
-taut = "0.2"
+taut = "0.3"
 ```
 
 ```rust,no_run

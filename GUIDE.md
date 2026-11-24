@@ -77,7 +77,7 @@ loader beside the program and serves them. What differs there: [`taut::web`](htt
 
 Features (off by default) cover what the calls can't reveal: `right-to-left`, `brahmic`,
 `shaping`, `touch`, `emoji`, `fallback-fonts`, `cff`, `woff2`, `hinting`, `color-profiles`
-(`taut = { version = "0.2", features = ["emoji"] }`). Costs: `docs/costs-and-speed.md`.
+(`taut = { version = "0.3", features = ["emoji"] }`). Costs: `docs/costs-and-speed.md`.
 
 ## Three rules
 

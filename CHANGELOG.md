@@ -3,7 +3,9 @@
 Changes an app can notice, newest first. Before 1.0, a new minor version (0.1 → 0.2) may need
 code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
-## Unreleased
+## 0.3.0 (2026-11-24)
+
+Code written for 0.2 builds unchanged; to move up, change `taut = "0.2"` to `taut = "0.3"`.
 
 - **The web:** taut builds for `wasm32-unknown-unknown` and runs in a page's `<canvas>`, with
   no crates (no wasm-bindgen, no web-sys). `taut::web::LOADER` is the loader, a JavaScript

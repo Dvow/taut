@@ -8,7 +8,7 @@ Rust 1.88 or newer:
 
 ```toml
 [dependencies]
-taut = "0.2"
+taut = "0.3"
 ```
 
 No other crates. On Linux, FreeType, Fontconfig, and libX11 or libxkbcommon are loaded at run

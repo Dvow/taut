@@ -1,6 +1,6 @@
 [package]
 name = "taut"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A Rust GUI library for Windows, Linux, macOS, iOS and the web that aims to be small, fast and accessible, with zero dependencies and nothing compiled in that your program doesn't use."
