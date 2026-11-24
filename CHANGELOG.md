@@ -3,7 +3,7 @@
 Changes an app can notice, newest first. Before 1.0, a new minor version (0.1 → 0.2) may need
 code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
-## 0.2.2 (unreleased)
+## 0.2.2 (2026-11-24)
 
 - **`ui.plot_lines`** draws a smooth curve through the values (`Path::smooth_through`), not
   straight lines from one to the next. Between two values it may bend a little past them, as a
