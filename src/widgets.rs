@@ -775,8 +775,8 @@ impl Ui {
         state
     }
 
-    /// A line through `values`, left to right, in a box of this size: the lowest at the bottom,
-    /// the highest at the top.
+    /// A smooth curve through `values`, left to right, in a box of this size: the lowest at the
+    /// bottom, the highest at the top.
     pub fn plot_lines(&mut self, values: &[f32], width: f32, height: f32) -> Response {
         self.plot(values, width, height, false)
     }
@@ -791,13 +791,15 @@ impl Ui {
         let step = width / values.len().max(1) as f32;
         let y = |v: f32| 3.0 + (height - 6.0) * (1.0 - (v - low) / span);
         let mut shape = Path::new();
-        for (i, v) in values.iter().enumerate() {
-            let (left, right) = (i as f32 * step + 1.0, (i + 1) as f32 * step - 1.0);
-            match (bars, i) {
-                (true, _) => shape.move_to(left, height).line_to(left, y(*v)).line_to(right, y(*v)).line_to(right, height).close(),
-                (false, 0) => shape.move_to(0.0, y(*v)),
-                (false, _) => shape.line_to(i as f32 * width / last, y(*v)),
-            };
+        if bars {
+            for (i, v) in values.iter().enumerate() {
+                let (left, right) = (i as f32 * step + 1.0, (i + 1) as f32 * step - 1.0);
+                shape.move_to(left, height).line_to(left, y(*v)).line_to(right, y(*v)).line_to(right, height).close();
+            }
+        } else {
+            // (A curve through the values, not straight lines from one to the next.)
+            let points: Vec<(f32, f32)> = values.iter().enumerate().map(|(i, v)| (i as f32 * width / last, y(*v))).collect();
+            shape.smooth_through(&points);
         }
         // (Its own key, to be told: by its values, as text.)
         let seat = self.next_id();

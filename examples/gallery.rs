@@ -674,19 +674,16 @@ fn drawing(app: &mut App, ui: &mut Ui) {
 fn wave_chart(app: &App, ui: &mut Ui) {
     let t = ui.theme;
     let (wide, high, waves) = (600.0, 150.0, (app.level - 40.0) / 10.0);
+    let points: Vec<(f32, f32)> = (0..=120)
+        .map(|step| {
+            let x = step as f32 * wide / 120.0;
+            (x, high / 2.0 - (x / wide * waves * std::f32::consts::TAU).sin() * (high / 2.0 - 12.0) * (1.0 - x / wide * 0.6))
+        })
+        .collect();
+    // A smooth curve through the points, not straight lines from one to the next.
     let (mut line, mut area) = (Path::new(), Path::new());
-    area.move_to(0.0, high);
-    for step in 0..=120 {
-        let x = step as f32 * wide / 120.0;
-        let y = high / 2.0 - (x / wide * waves * std::f32::consts::TAU).sin() * (high / 2.0 - 12.0) * (1.0 - x / wide * 0.6);
-        area.line_to(x, y);
-        if step == 0 {
-            line.move_to(x, y)
-        } else {
-            line.line_to(x, y)
-        };
-    }
-    area.line_to(wide, high).close();
+    line.smooth_through(&points);
+    area.move_to(0.0, high).smooth_through(&points).line_to(wide, high).close();
     ui.el().flow(Flow::Stack).size(wide, high).fill(t.panel).radius(6.0).clip().open();
     ui.el().size(wide, high).shape(&area, t.accent.with_alpha(0.2)).show();
     ui.el().size(wide, high).outline(&line, 2.0, t.accent).show();
@@ -1022,10 +1019,10 @@ fn rows_tree_and_chart(app: &mut App, ui: &mut Ui, wave: &[f32]) {
         }
         ui.close();
     }
-    // The wave in a chart, and half of it as a smooth line.
+    // The wave in a chart, and half of it, both drawn as smooth curves.
     let half: Vec<f32> = wave.iter().map(|value| value / 2.0).collect();
     ui.el().h(Length::Px(10.0)).show();
-    ui.chart(&Chart::of(&[Series::area("Wave", wave), Series::line("Half", &half).smooth()]), 240.0, 150.0);
+    ui.chart(&Chart::of(&[Series::area("Wave", wave).smooth(),Series::line("Half", &half).smooth()]), 240.0, 150.0);
     ui.close();
 }
 
