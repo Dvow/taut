@@ -240,6 +240,35 @@ impl Link {
         None
     }
 
+    /// The last round trip, as the program hangs up: a `sync`, and whatever the compositor says
+    /// until it answers, taken in and let be (the windows are gone), for no longer than `most`.
+    /// A compositor that finds a client's socket closed with words of its own still unread sees
+    /// the connection reset, and logs that as an error; one that finds them read sees the
+    /// program hang up. (The callback's `delete_id` comes in the same write as its answer, and
+    /// is read with it.)
+    fn part(&self, most: Duration) {
+        let wire = &self.wire;
+        if wire.broken.get() {
+            return;
+        }
+        let (synced, until) = (wire.make(Interface::Callback), Instant::now() + most);
+        wire.send(1, 0, &[Arg::Uint(synced)]);
+        wire.flush();
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            if !readable(wire.fd(), left.as_millis().clamp(1, 1000) as c_int) {
+                continue;
+            }
+            if !wire.read() {
+                return;
+            }
+            // (All that came is off the socket now, which is what the compositor sees; the
+            // answer may be among it.)
+            if std::iter::from_fn(|| wire.next()).any(|message| message.object == synced && message.opcode == 0) {
+                return;
+            }
+        }
+    }
+
     /// The clipboard content in the first of `kinds` it offers; nothing if none. What was
     /// copied here is at hand, and nobody is asked.
     fn get(&self, kinds: &[&str]) -> Option<Vec<u8>> {
@@ -2652,11 +2681,15 @@ impl Taking<'_> {
     }
 }
 
+/// How long a program that ends waits for the compositor's last answer (see `Link::part`): a
+/// compositor answers in a few ms; one that hangs holds the program up no longer than this.
+const PARTING: Duration = Duration::from_millis(250);
+
 impl<App> Drop for Host<App> {
     fn drop(&mut self) {
         let link = self.link.clone();
         self.windows.drain(..).for_each(|shown| shown.close(&link));
-        link.wire.flush();
+        link.part(PARTING);
     }
 }
 
@@ -3132,6 +3165,71 @@ mod tests {
         plays(&compositor, &mut host, &[(played.pinch, 1, &spread(3.0))]);
         plays(&compositor, &mut host, &[(played.pinch, 2, &[Arg::Uint(3), Arg::Uint(2), Arg::Int(0)])]);
         assert_eq!(kept.borrow().zooms, [1.5, 2.0], "a half larger, then twice as large again");
+    }
+
+    /// Hands the played compositor's end of the socket to a thread that answers the program's
+    /// `sync` requests as a compositor does (the callback's `done` and its `delete_id`, in one
+    /// write) until the program hangs up. Gives how the socket ended: closed, or an error (a
+    /// reset, where the program left words of the compositor's unread).
+    fn answering(compositor: Wire) -> std::thread::JoinHandle<std::io::Result<()>> {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            use std::os::fd::FromRawFd;
+            // SAFETY: the compositor's end, open while `compositor` (kept here) lives; it is
+            // read here, and closed only by `compositor`.
+            let mut socket = std::mem::ManuallyDrop::new(unsafe { UnixStream::from_raw_fd(compositor.fd()) });
+            socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let (mut heard, mut room) = (Vec::new(), [0u8; 4096]);
+            loop {
+                let got = socket.read(&mut room)?;
+                if got == 0 {
+                    return Ok(());
+                }
+                heard.extend_from_slice(&room[..got]);
+                while heard.len() >= 8 {
+                    let word = |at: usize| u32::from_ne_bytes([heard[at], heard[at + 1], heard[at + 2], heard[at + 3]]);
+                    let (object, size) = (word(0), word(4));
+                    let len = (size >> 16) as usize;
+                    if len < 8 || heard.len() < len {
+                        break;
+                    }
+                    if object == 1 && size & 0xffff == 0 {
+                        let callback = word(8);
+                        compositor.send(callback, 0, &[Arg::Uint(0)]);
+                        compositor.send(1, 1, &[Arg::Uint(callback)]);
+                        compositor.flush();
+                    }
+                    heard.drain(..len);
+                }
+            }
+        })
+    }
+
+    /// A program that ends hears the compositor out before it hangs up: what the compositor said
+    /// last is read, so the compositor finds the socket closed, not reset with its words unread
+    /// (which compositors log as an error).
+    #[test]
+    fn a_program_that_ends_hears_the_compositor_out_before_it_hangs_up() {
+        let _alone = crate::x11::tests::alone();
+        let Some((compositor, played, host)) = played(1, |ui| _ = ui.label("Ending")) else { return eprintln!("no font: not tested") };
+        assert!(played.pointer != 0, "the pointer was asked for: {played:?}");
+        // The pointer moves as the program ends: words it has not read when it hangs up.
+        compositor.send(played.pointer, 2, &[Arg::Uint(1), Arg::Fixed(10.0), Arg::Fixed(10.0)]);
+        compositor.flush();
+        let ended = answering(compositor);
+        drop(host);
+        assert_eq!(ended.join().unwrap().map_err(|error| error.kind()), Ok(()), "the compositor finds the program hung up");
+    }
+
+    /// A compositor that does not answer holds a program that ends up for a moment only.
+    #[test]
+    fn a_compositor_that_does_not_answer_holds_an_ending_program_up_a_moment_only() {
+        let _alone = crate::x11::tests::alone();
+        let Some((_compositor, _played, host)) = played(1, |ui| _ = ui.label("Ending")) else { return eprintln!("no font: not tested") };
+        let started = Instant::now();
+        drop(host);
+        let took = started.elapsed();
+        assert!(took >= PARTING && took < PARTING + Duration::from_secs(2), "waited {took:?} for an answer that never came");
     }
 
     // ---- on a compositor ----
