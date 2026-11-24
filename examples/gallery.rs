@@ -980,7 +980,9 @@ fn dim_text(ui: &mut Ui, text: &str) {
 
 /// The page of more parts: three columns, the parts other libraries name, and a code editor.
 fn more_parts(app: &mut App, ui: &mut Ui) {
-    let wave: Vec<f32> = (0..48).map(|i| (i as f32 * 0.35).sin() * app.amount).collect();
+    // Sixteen values to a wave, so one falls on each peak and trough and a smooth line
+    // through them is round there, not flattened between two values either side.
+    let wave: Vec<f32> = (0..48).map(|i| (i as f32 * std::f32::consts::PI / 8.0).sin() * app.amount).collect();
     ui.column().grow().scroll().open();
     ui.row().pad(14.0).gap(28.0).align(Align::Start, Align::Start).open();
     rows_tree_and_chart(app, ui, &wave);
