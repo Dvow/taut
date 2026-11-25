@@ -31,11 +31,13 @@ fn main() {
     }
 }
 
-/// What a request asks: its method, path and body.
+/// What a request asks: its method, path, body, and the bytes it wants (`Range: bytes=`, as
+/// a browser asks for a video's), from and up to.
 pub struct Asked {
     pub method: String,
     pub path: String,
     pub body: Vec<u8>,
+    pub range: Option<(usize, Option<usize>)>,
 }
 
 /// Reads one request.
@@ -45,7 +47,7 @@ pub fn asked(stream: &mut TcpStream) -> Option<Asked> {
     reader.read_line(&mut first).ok()?;
     let mut words = first.split_whitespace();
     let (method, path) = (words.next()?.to_string(), words.next()?.to_string());
-    let mut length = 0;
+    let (mut length, mut range) = (0, None);
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).ok()? == 0 || line.trim().is_empty() {
@@ -55,10 +57,13 @@ pub fn asked(stream: &mut TcpStream) -> Option<Asked> {
         if name.eq_ignore_ascii_case("content-length") {
             length = value.trim().parse().unwrap_or(0);
         }
+        if name.eq_ignore_ascii_case("range") {
+            range = value.trim().strip_prefix("bytes=").and_then(|range| range.split_once('-')).and_then(|(from, to)| Some((from.parse().ok()?, to.parse().ok())));
+        }
     }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body).ok()?;
-    Some(Asked { method, path, body })
+    Some(Asked { method, path, body, range })
 }
 
 /// Answers one request: a file of `folder` (the page for `/`), or for a POST, `posted` hears
@@ -84,8 +89,17 @@ pub fn answer(mut stream: TcpStream, folder: &Path, posted: &mut dyn FnMut(&str,
         "wasm" => "application/wasm",
         "ttf" | "otf" => "font/ttf",
         "png" => "image/png",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
         _ => "application/octet-stream",
     };
-    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", bytes.len());
-    let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(&bytes));
+    let last = bytes.len().saturating_sub(1);
+    let (first, last) = asked.range.map_or((0, last), |(from, to)| (from, to.map_or(last, |to| to.min(last))));
+    let part = bytes.get(first..=last).unwrap_or_default();
+    let status = match asked.range {
+        Some(_) => format!("206 Partial Content\r\nContent-Range: bytes {first}-{last}/{}", bytes.len()),
+        None => "200 OK".to_string(),
+    };
+    let head = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", part.len());
+    let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(part));
 }

@@ -174,7 +174,6 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Video
 
-- No player on iOS, Android or the web yet: `Video::open` gives `VideoError::NoPlayer`.
 - No captions, no choice of sound or caption track, no playback speed.
 - Frames are copied through the CPU into a picture, also with `gpu`.
 - Windows: decoded in software (no Direct3D device given to Media Foundation), so only what
@@ -182,8 +181,18 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   the Media Feature Pack. `open_silent` plays muted.
 - Linux: needs GStreamer's `playbin` and `appsink` and the plugins of the file's codecs; a
   missing one is `VideoError::NoPlayer` or `video.error()`.
-- macOS: `open_silent` plays muted; bytes are played from a temporary file. Checked only on
-  GitHub's runner.
+- macOS and iOS: `open_silent` plays muted; bytes are played from a temporary file. iOS: a
+  video with sound sets the audio session's category to `Playback` unless the app set one.
+  Checked only on GitHub's runner and in the iOS simulator.
+- Android: what the system's decoders read, through the NDK (no `MediaPlayer`); frames come
+  through an image reader in YUV and are made RGB on the CPU. Volume scales the samples (AAudio
+  has none). Addresses play only in an app's process. No sound device: it plays silent.
+  Checked only on an emulator (software decoders); there, a command-line program that ended
+  the moment it dropped its last video once aborted in Android's own decoder thread.
+- Web: the browser's formats (H.264 in MP4 in most; VP8, VP9, AV1 in WebM). Sound plays only
+  after a press on the page: before, `play` gives `error()`, cleared at the next `play`;
+  muted, it plays. Another site's address needs CORS headers, or its frames can't
+  be read. A path is an address relative to the page. Under Node there is no player.
 - Tested with small made files (lossless H.264, MJPEG, Theora); playback of large files not
   measured.
 

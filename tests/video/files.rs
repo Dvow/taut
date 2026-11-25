@@ -1,6 +1,6 @@
 // Test videos made here, with no tool: frames that show their number, as lossless H.264 in
 // MP4 and as MJPEG in AVI, with or without a silent sound track. Included by the unit tests of
-// `src/video.rs` and by `tests/video_macos.rs`.
+// `src/video.rs` and by `tests/video_apple.rs`.
 #[allow(unused_imports)]
 use std::path::PathBuf;
 

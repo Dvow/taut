@@ -1,5 +1,6 @@
 //! Video and sound files played by the system's own player: Media Foundation on Windows,
-//! GStreamer on Linux, AVFoundation on macOS, each loaded at run time. Feature `video`.
+//! GStreamer on Linux, AVFoundation on macOS and iOS, the NDK's media codecs on Android, a
+//! `<video>` element on the web; each loaded at run time. Feature `video`.
 //!
 //! A [`Video`] is the app's: it opens paused. Each run, [`Ui::video`] takes the newest frame and
 //! shows it in a box; only that box is redrawn per frame. [`Ui::video_controls`] adds play,
@@ -28,17 +29,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[cfg(target_os = "android")]
+use crate::video_android::Player;
+#[cfg(target_vendor = "apple")]
+use crate::video_apple::Player;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 use crate::video_gstreamer::Player;
-#[cfg(target_os = "macos")]
-use crate::video_macos::Player;
-#[cfg(any(target_os = "ios", target_os = "android", target_family = "wasm"))]
-use crate::video_none::Player;
+#[cfg(target_family = "wasm")]
+use crate::video_web::Player;
 #[cfg(windows)]
 use crate::video_windows::Player;
 
 /// Where a video comes from: a file, an address (`https://`, `file://`), or the file's bytes.
-/// Text with `://` in it is an address, any other a path.
+/// Text with `://` in it is an address, any other a path. On the web a path is an address
+/// relative to the page, or a picked file's (`/picked/<name>`, see [`web::picked`](crate::web)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VideoSource {
     /// A file on disk.
@@ -78,7 +82,7 @@ impl From<Vec<u8>> for VideoSource {
 #[non_exhaustive]
 pub enum VideoError {
     /// The system has no player taut can use: GStreamer missing on Linux, Media Foundation on
-    /// Windows N editions. Its words.
+    /// Windows N editions, no page under Node. Its words.
     NoPlayer(String),
     /// The player refused the source: no such file, bytes it can't read. Its words.
     Refused(String),
@@ -102,6 +106,8 @@ pub(crate) struct News {
     pub ended: bool,
     /// It stopped with this error.
     pub error: Option<String>,
+    /// The error clears at the next play: a browser waiting for a press.
+    pub clears_on_play: bool,
 }
 
 /// Numbers each video, for its box's key.
@@ -120,6 +126,8 @@ pub struct Video {
     fill: bool,
     ended: bool,
     error: Option<String>,
+    /// The error clears at the next play.
+    clears_on_play: bool,
     position: Duration,
     length: Option<Duration>,
     size: Option<(usize, usize)>,
@@ -161,6 +169,7 @@ impl Video {
         Video::opened(source.into(), false)
     }
     fn opened(source: VideoSource, sound: bool) -> Result<Video, VideoError> {
+        #[cfg(not(target_family = "wasm"))]
         if let VideoSource::File(path) = &source {
             std::fs::metadata(path).map_err(|why| VideoError::Refused(format!("{}: {why}", path.display())))?;
         }
@@ -177,6 +186,7 @@ impl Video {
             fill: false,
             ended: false,
             error: None,
+            clears_on_play: false,
             position: Duration::ZERO,
             length: None,
             size: None,
@@ -189,8 +199,13 @@ impl Video {
         })
     }
 
-    /// Plays from where it is; from the start after the end.
+    /// Plays from where it is; from the start after the end. (A browser plays sound only after
+    /// a press on the page: before, this gives [`error`](Self::error); played again from a
+    /// press, it plays.)
     pub fn play(&mut self) {
+        if std::mem::take(&mut self.clears_on_play) {
+            self.error = None;
+        }
         if self.ended || self.length.is_some_and(|length| self.position >= length) {
             self.player.seek(Duration::ZERO);
         }
@@ -283,7 +298,7 @@ impl Video {
         self.asked = Some(ui.now);
         let news = self.player.news();
         if let Some(error) = news.error {
-            (self.error, self.playing) = (Some(error), false);
+            (self.error, self.playing, self.clears_on_play) = (Some(error), false, news.clears_on_play);
         }
         if news.ended {
             self.restart_or_stop();
@@ -339,7 +354,7 @@ fn cut_to(width: usize, pixels: Vec<u32>, (wide, high): (f32, f32)) -> (usize, V
 }
 
 /// A file kind's usual ending, told by its first bytes: for players that pick a reader by name.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_vendor = "apple", target_family = "wasm"))]
 pub(crate) fn kind_of(bytes: &[u8]) -> &'static str {
     match bytes {
         [_, _, _, _, b'f', b't', b'y', b'p', b'q', b't', ..] => "mov",
@@ -636,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "macos", ignore = "AVFoundation plays only on the main thread: tests/video_macos.rs")]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
     fn frames_show_at_their_times_and_only_their_box_is_redrawn() {
         let _alone = alone();
         let Some(video) = opened(true) else { return };
@@ -663,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "macos", ignore = "AVFoundation plays only on the main thread: tests/video_macos.rs")]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
     fn a_paused_video_stays_on_its_frame_and_a_seek_shows_the_frame_there() {
         let _alone = alone();
         let Some(video) = opened(false) else { return };
@@ -686,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "macos", ignore = "AVFoundation plays only on the main thread: tests/video_macos.rs")]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
     fn the_end_is_told_once_and_a_loop_starts_again() {
         let _alone = alone();
         let Some(video) = opened(true) else { return };
@@ -705,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "macos", ignore = "AVFoundation plays only on the main thread: tests/video_macos.rs")]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
     fn the_controls_are_told_to_readers_and_work_by_keyboard() {
         let _alone = alone();
         let Some(video) = opened(false) else { return };
@@ -736,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "macos", ignore = "AVFoundation plays only on the main thread: tests/video_macos.rs")]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
     fn bytes_play_as_the_file_does() {
         let _alone = alone();
         let Some(bytes) = test_file(false).map(|file| std::fs::read(file).unwrap()) else { return };
@@ -750,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "macos", ignore = "AVFoundation plays only on the main thread: tests/video_macos.rs")]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
     fn filling_cuts_the_frame_to_its_box() {
         let _alone = alone();
         let Some(mut video) = opened(false) else { return };
@@ -766,7 +781,7 @@ mod tests {
     }
 
     /// Opens, plays a moment and drops a video, `times` over.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_vendor = "apple"))]
     fn open_and_close(times: usize) {
         for _ in 0..times {
             let Some(video) = opened(true) else { return };
@@ -780,7 +795,7 @@ mod tests {
     }
 
     /// The memory this process holds, in bytes.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_vendor = "apple"))]
     fn memory_held() -> usize {
         #[cfg(windows)]
         {
@@ -803,7 +818,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(target_vendor = "apple"))]
     fn many_opens_leave_nothing_behind() {
         // (In a process of its own, so no other test's memory is counted.)
         if std::env::var_os("TAUT_VIDEO_LEAK").is_none() {
@@ -816,10 +831,36 @@ mod tests {
             return;
         }
         open_and_close(5);
-        let before = memory_held();
+        let (before, threads) = (memory_held(), threads_held());
         open_and_close(40);
         let after = memory_held();
         eprintln!("held {before} bytes, after 40 more {after}");
         assert!(after < before + (6 << 20), "held {before} bytes, after 40 more {after}");
+        no_more_threads(threads);
+    }
+
+    /// The names of the threads this process runs.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn threads_held() -> Vec<String> {
+        let tasks = std::fs::read_dir("/proc/self/task").into_iter().flatten().flatten();
+        tasks.filter_map(|task| std::fs::read_to_string(task.path().join("comm")).ok()).map(|name| name.trim().to_owned()).collect()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    fn threads_held() -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Waits up to 2 s for the threads to be no more than `before` (the system's own wind
+    /// down after a player is dropped), else fails naming them. A few more may stay: a player's
+    /// pool may keep idle threads a while (GStreamer's, under load); one per open would be 40.
+    #[cfg(not(target_vendor = "apple"))]
+    fn no_more_threads(before: Vec<String>) {
+        let start = std::time::Instant::now();
+        while threads_held().len() > before.len() && start.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let now = threads_held();
+        eprintln!("held {} threads, after 40 more opens {}", before.len(), now.len());
+        assert!(now.len() <= before.len() + 4, "threads before: {before:?}\nafter: {now:?}");
     }
 }

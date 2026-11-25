@@ -135,9 +135,10 @@ Popovers anchored to their button.
 - Write PNG, JPEG (byte-identical to `cjpeg -baseline`) and multi-size ICO.
 - Animated GIF, PNG and WebP; only the animation's box redraws.
 - Video and sound (`video`): files, addresses and bytes, played by the system's player
-  (Media Foundation, GStreamer, AVFoundation), loaded at run time. Only the video's box
-  redraws per frame. Play, pause, seek, volume, mute, loop, end; controls for keyboard and
-  screen readers.
+  (Media Foundation, GStreamer, AVFoundation on macOS and iOS, the NDK's media codecs and AAudio
+  on Android, a `<video>` element on the web), loaded at run time. Only the video's box
+  redraws per frame. Play, pause, seek to the exact frame, volume, mute, loop, end; controls for
+  keyboard and screen readers.
 - SVG: clip paths, masks, patterns, markers, symbols; on request, text, filters (about 73 KB)
   and embedded pictures. Drawing cost is bounded by file length.
 - 3D meshes: filled, lit, coloured or outlined, with depth; all CPU cores, only on change; a

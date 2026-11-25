@@ -78,6 +78,8 @@ export class Page {
         this.sized = false;
         this.pixels = null;
         this.measure = textCanvas();
+        this.videos = new Map();
+        this.videoCount = 0;
         if (options.element !== null && typeof document !== "undefined") {
             this.build(options.element || document.body);
         }
@@ -223,6 +225,14 @@ export class Page {
             text_metrics: (at, length, out) => floats(out, page.metrics(page.text(at, length))),
             text_measure: (at, length, text, textLength, stops, count) => page.measureText(page.text(at, length), page.text(text, textLength), stops, count),
             text_draw: (at, length, text, textLength, place) => page.drawText(page.text(at, length), page.text(text, textLength), place),
+            video_open: (at, length, kind, kindLength, bytes, sound) => page.videoOpen(bytes ? page.bytes(at, length).slice() : page.text(at, length), page.text(kind, kindLength), sound),
+            video_close: (id) => page.videoClose(id),
+            video_play: (id) => page.videoPlay(id),
+            video_pause: (id) => page.videoPause(id),
+            video_seek: (id, seconds) => page.videoSeek(id, seconds),
+            video_sound: (id, volume, muted) => page.videoSound(id, volume, muted),
+            video_state: (id, out) => page.videoState(id, out),
+            video_frame: (id, out) => page.videoFrame(id, out),
         };
     }
 
@@ -539,7 +549,7 @@ export class Page {
     }
 
     // The nodes in order, each after its parent: elements put in their parents, those gone
-    // taken away.
+    // taken away. Only elements out of place move (a focused element moved loses focus).
     reorder(order) {
         const kept = new Set(order.map(([key]) => key));
         for (const [key, made] of this.nodes) {
@@ -548,10 +558,17 @@ export class Page {
                 this.nodes.delete(key);
             }
         }
+        const last = new Map();
         for (const [key, parent] of order) {
             const made = this.element(key);
             made.parentKey = parent;
-            (parent ? this.element(parent) : this.readers).appendChild(made);
+            const into = parent ? this.element(parent) : this.readers;
+            // (After an element's own text, or after the child put there last.)
+            const next = last.has(into) ? last.get(into).nextSibling : parent ? into.firstChild.nextSibling : into.firstChild;
+            if (made !== next) {
+                into.insertBefore(made, next);
+            }
+            last.set(into, made);
         }
         for (const [key] of order) {
             this.place(this.nodes.get(key));
@@ -730,6 +747,153 @@ export class Page {
         link.download = name;
         link.click();
         setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    }
+
+    // ---- videos (feature `video`) ----
+
+    // A video element for an address, or for bytes (a Blob of type `kind`): its number; 0 with
+    // no page (under Node). Muted unless `sound`. Each frame the browser shows is noted
+    // (`requestVideoFrameCallback`, where it has it) to be read once.
+    videoOpen(source, kind, sound) {
+        if (typeof document === "undefined") {
+            return 0;
+        }
+        const element = document.createElement("video");
+        const blob = typeof source === "string" ? null : URL.createObjectURL(new Blob([source], { type: kind }));
+        const id = ++this.videoCount;
+        const made = { element, blob, canvas: null, context: null, fresh: false, given: -1, shown: -1, wanted: false, ended: false, error: "", clearsOnPlay: false };
+        Object.assign(element, { muted: !sound, defaultMuted: !sound, playsInline: true, preload: "auto", crossOrigin: "anonymous" });
+        element.addEventListener("loadeddata", () => (made.fresh = true));
+        element.addEventListener("seeked", () => (made.fresh = true));
+        element.addEventListener("ended", () => Object.assign(made, { ended: true, wanted: false }));
+        element.addEventListener("error", () => this.videoFailed(made, `the player stopped: ${element.error?.message || `error ${element.error?.code}`}`));
+        if (element.requestVideoFrameCallback) {
+            const shown = (_, frame) => {
+                made.shown = frame.mediaTime;
+                this.videos.has(id) && element.requestVideoFrameCallback(shown);
+            };
+            element.requestVideoFrameCallback(shown);
+        }
+        element.src = blob || source;
+        this.videos.set(id, made);
+        return id;
+    }
+
+    videoFailed(made, why, clearsOnPlay = false) {
+        made.wanted = false;
+        made.error = why;
+        made.clearsOnPlay = clearsOnPlay;
+    }
+
+    videoClose(id) {
+        const made = this.videos.get(id);
+        if (!made) {
+            return;
+        }
+        this.videos.delete(id);
+        made.element.pause();
+        made.element.removeAttribute("src");
+        made.element.load();
+        if (made.blob) {
+            URL.revokeObjectURL(made.blob);
+        }
+    }
+
+    // Plays; a browser that wants a press first refuses, told as an error that clears on the
+    // next play.
+    videoPlay(id) {
+        const made = this.videos.get(id);
+        if (!made) {
+            return;
+        }
+        made.wanted = true;
+        made.ended = false;
+        made.element.play()?.catch((error) => {
+            if (error.name === "NotAllowedError") {
+                this.videoFailed(made, "the browser plays sound only after a press on the page", true);
+            } else if (error.name !== "AbortError") {
+                this.videoFailed(made, `the player stopped: ${error.message}`);
+            }
+        });
+    }
+
+    videoPause(id) {
+        const made = this.videos.get(id);
+        if (made) {
+            made.wanted = false;
+            made.element.pause();
+        }
+    }
+
+    // Goes to a time; its frame is read once the browser has it (`seeked`).
+    videoSeek(id, seconds) {
+        const made = this.videos.get(id);
+        if (made) {
+            made.fresh = false;
+            made.element.currentTime = seconds;
+        }
+    }
+
+    videoSound(id, volume, muted) {
+        const made = this.videos.get(id);
+        if (made) {
+            Object.assign(made.element, { volume: Math.min(Math.max(volume, 0), 1), muted: muted !== 0 });
+        }
+    }
+
+    // Writes the time, the length (NaN unknown), the end (once) and an error's kind (1, or 2 for
+    // one that clears on the next play); answers the error's length, its words kept for `take`.
+    // (A browser that paused a video it was unmuting before any press says nothing: that is
+    // told as a refused play.)
+    videoState(id, out) {
+        const made = this.videos.get(id);
+        if (!made) {
+            return 0;
+        }
+        const element = made.element;
+        if (made.wanted && element.paused && !element.ended && !made.error) {
+            this.videoFailed(made, "the browser plays sound only after a press on the page", true);
+        }
+        const length = Number.isFinite(element.duration) ? element.duration : NaN;
+        const error = made.error ? (made.clearsOnPlay ? 2 : 1) : 0;
+        new Float64Array(this.exports.memory.buffer, out, 4).set([element.currentTime, length, made.ended ? 1 : 0, error]);
+        made.ended = false;
+        if (!error) {
+            return 0;
+        }
+        this.made = encoder.encode(made.error);
+        made.error = "";
+        return this.made.length;
+    }
+
+    // The frame on show, where it was not read yet: drawn into a canvas of its size, its
+    // pixels kept for `take`; writes its width, height and time. 0 where there is none.
+    videoFrame(id, out) {
+        const made = this.videos.get(id);
+        const element = made?.element;
+        if (!element || element.seeking || element.readyState < 2 || !element.videoWidth) {
+            return 0;
+        }
+        const time = made.shown >= 0 && !element.paused ? made.shown : element.currentTime;
+        if (!made.fresh && time === made.given) {
+            return 0;
+        }
+        const [width, height] = [element.videoWidth, element.videoHeight];
+        if (made.canvas?.width !== width || made.canvas?.height !== height) {
+            made.canvas = Object.assign(document.createElement("canvas"), { width, height });
+            made.context = made.canvas.getContext("2d", { willReadFrequently: true });
+        }
+        made.context.drawImage(element, 0, 0, width, height);
+        try {
+            this.made = made.context.getImageData(0, 0, width, height).data;
+        } catch {
+            this.videoFailed(made, "the page may not read this video's frames: its server allows no other pages (CORS)");
+            return 0;
+        }
+        made.fresh = false;
+        made.given = time;
+        new Float64Array(this.exports.memory.buffer, out, 3).set([width, height, time]);
+        return this.made.length;
     }
 }
 

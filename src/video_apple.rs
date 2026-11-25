@@ -1,6 +1,7 @@
-//! Videos on macOS: AVFoundation's `AVPlayer`, its frames read through an
+//! Videos on macOS and iOS: AVFoundation's `AVPlayer`, its frames read through an
 //! `AVPlayerItemVideoOutput` as 32-bit BGRA. The frameworks are opened at run time; their
-//! classes are reached by name. Bytes are played from a file of their own, removed after.
+//! classes are reached by name. Bytes are played from a file of their own, removed after. It
+//! plays while the main thread's run loop turns (AppKit's or UIKit's).
 
 use crate::macos_sys::{Args, Bool, Obj, Pool, class, ns_string, rust_string, sel, send};
 use crate::video::{News, VideoError, VideoSource};
@@ -198,6 +199,10 @@ impl Player {
             let player: Obj = send(send::<Obj>(class(c"AVPlayer"), c"alloc", ()), c"initWithPlayerItem:", (item,));
             send::<Obj>(item, c"retain", ());
             send::<()>(player, c"setMuted:", (!sound as Bool,));
+            #[cfg(target_os = "ios")]
+            if sound {
+                plays_sound();
+            }
             Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written, seeks: 0, seeked: Seeked::new() })
         }
     }
@@ -216,6 +221,7 @@ impl Player {
         (self.last, self.seeks) = (None, self.seeks.wrapping_add(1));
         let exact = CMTime { value: 0, timescale: 1, flags: 1, epoch: 0 };
         let over: *const Seeked = self.seeked;
+        let _pool = Pool::new();
         // SAFETY: a live player; the times are passed as the method takes them, and the block
         // lives for good.
         unsafe { send::<()>(self.player, c"seekToTime:toleranceBefore:toleranceAfter:completionHandler:", (CMTime::of(to), exact, exact, over)) };
@@ -256,13 +262,13 @@ impl Player {
         let at_end = self.length().is_some_and(|length| self.position() + Duration::from_millis(1) >= length);
         let ended = self.playing && rate == 0.0 && at_end;
         self.playing &= !ended;
-        News { ended, error }
+        News { ended, error, clears_on_play: false }
     }
 
     /// The newest frame where there is one not given yet: its width and time, its pixels in
-    /// `into`.
+    /// `into`. None before the item is ready (its length known) and its first seek is over.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
-        if self.seeked.done.load(Ordering::Acquire) != self.seeks {
+        if !self.ready || self.seeked.done.load(Ordering::Acquire) != self.seeks {
             return None;
         }
         let _pool = Pool::new();
@@ -308,6 +314,20 @@ impl Player {
     }
 }
 
+/// iOS: a video with sound plays as video apps do (the audio session's category `Playback`:
+/// heard with the ring switch on silent), unless the app chose a category of its own.
+#[cfg(target_os = "ios")]
+fn plays_sound() {
+    // SAFETY: the shared audio session answers these; the strings are constants.
+    unsafe {
+        let session: Obj = send(class(c"AVAudioSession"), c"sharedInstance", ());
+        let category = rust_string(send(session, c"category", ()));
+        if category.as_deref() == Some("AVAudioSessionCategorySoloAmbient") {
+            send::<Bool>(session, c"setCategory:error:", (ns_string("AVAudioSessionCategoryPlayback"), std::ptr::null_mut::<Obj>()));
+        }
+    }
+}
+
 /// A source as an `NSURL` (autoreleased): bytes are first written to a file of their own.
 fn url_of(source: VideoSource) -> Result<(Obj, Option<PathBuf>), VideoError> {
     let (text, file, written) = match source {
@@ -330,6 +350,8 @@ fn url_of(source: VideoSource) -> Result<(Obj, Option<PathBuf>), VideoError> {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        // (What AVFoundation autoreleases here goes at once, not when the run loop next turns.)
+        let _pool = Pool::new();
         // SAFETY: the player stops and lets its item go; all three are released once.
         unsafe {
             send::<()>(self.player, c"pause", ());

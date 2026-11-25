@@ -89,7 +89,7 @@ fn asked(args: Vec<String>) -> Asked {
 /// Builds the example as a shared library for the target: its path.
 fn build(asked: &Asked, root: &Path, work: &Path, ndk: &Path) -> PathBuf {
     std::fs::create_dir_all(work).unwrap_or_else(|_| fail("cannot make target/apk"));
-    let features: String = ["right-to-left", "brahmic", "touch", "emoji", "fallback-fonts", "cff", "color-profiles", "woff2", "translations", "gpu", "gpu-draw"]
+    let features: String = ["right-to-left", "brahmic", "touch", "emoji", "fallback-fonts", "cff", "color-profiles", "woff2", "translations", "gpu", "gpu-draw", "video"]
         .iter()
         .map(|name| format!("{name} = [\"taut/{name}\"]\n"))
         .collect();

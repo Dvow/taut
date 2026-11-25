@@ -393,6 +393,9 @@ jobs:
       - name: Screen readers on the emulator
         if: ${{ !cancelled() }}
         run: TAUT_ANDROID_APK=$PWD/target/apk/android.apk TAUT_PICTURES=$PWD/android/readers cargo test --test android -- --nocapture
+      - name: Video on the emulator (the library's video tests, run there)
+        if: ${{ !cancelled() }}
+        run: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME TAUT_VIDEO=required cargo test --features video --test video_android -- --nocapture
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
@@ -443,7 +446,9 @@ jobs:
 
   # Video through each system's own player (feature `video`), a missing player failing
   # (TAUT_VIDEO=required): GStreamer's base and good plugins on Ubuntu; on the Mac also the checks
-  # on the main thread, where AVFoundation's run loop turns (tests/video_macos.rs).
+  # on the main thread, where AVFoundation's run loop turns, and the same in the iOS simulator
+  # (tests/video_apple.rs); on Ubuntu the web's player in headless Chrome and under Node
+  # (tests/video_web.rs). Android's run on the emulator of the `android` job.
   video:
     strategy:
       fail-fast: false
@@ -456,12 +461,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V
+        run: rustup toolchain install stable --profile minimal -t wasm32-unknown-unknown -t aarch64-apple-ios-sim && rustup default stable && rustc -V
       - name: GStreamer
         if: runner.os == 'Linux'
         run: bash .github/apt.sh gstreamer1.0-plugins-base gstreamer1.0-plugins-good
       - name: Video tests
         run: cargo test --features video --lib video::tests
-      - name: Video on the main thread
+      - name: Video on the main thread, and in the iOS simulator
         if: ${{ runner.os == 'macOS' && !cancelled() }}
-        run: cargo test --features video --test video_macos
+        run: TAUT_IOS_SIMULATOR=1 cargo test --features video --test video_apple
+      - name: Video in a browser and under Node
+        if: ${{ runner.os == 'Linux' && !cancelled() }}
+        run: cargo test --features video --test video_web

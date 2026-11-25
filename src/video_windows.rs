@@ -299,7 +299,7 @@ impl Player {
         // SAFETY: ours is one of its references.
         let (said, code) = unsafe { ((*self.notify).said.swap(0, Ordering::AcqRel), (*self.notify).code.load(Ordering::Acquire)) };
         let error = (said & FAILED != 0).then(|| format!("the player stopped: {} ({:#010x})", self.error_words(), code as u32));
-        News { ended: said & ENDED != 0, error }
+        News { ended: said & ENDED != 0, error, clears_on_play: false }
     }
     /// The engine's error as words (3: GetError; of the error, 3: GetErrorCode).
     fn error_words(&self) -> &'static str {

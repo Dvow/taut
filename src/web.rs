@@ -29,6 +29,7 @@
 //! | Clipboard | Text: copied through the browser's copy event, pasted from its paste event (Ctrl+V). A menu's Paste has what was last copied or pasted in the page. |
 //! | Saving | [`storage`](crate::storage) keeps files in the page's `localStorage`. |
 //! | Files | The system file dialog is the browser's file picker (`picked` has the bytes, on the web); saving downloads (`download`). |
+//! | Video | With the feature `video`, `Video` plays through a `<video>` element: the browser's formats; a path is an address relative to the page; sound only after a press on the page. |
 //! | Not on the web | Second windows, tray, hotkeys, system notices, drag and drop with other programs, printing, one running copy: there is no browser equivalent, and the calls do nothing. Threads: none (`wasm32-unknown-unknown`). |
 
 /// The loader: a JavaScript module that makes the page's canvas, starts a program built for

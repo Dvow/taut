@@ -64,7 +64,8 @@ gpu = []
 # 255 of the CPU at edges. Without it, the CPU draws every pixel.
 gpu-draw = ["gpu"]
 # Video and sound files played by the system's player (Media Foundation, GStreamer,
-# AVFoundation), loaded at run time: `Video`, `ui.video`. Without it, none of that code.
+# AVFoundation, the NDK's media codecs, a browser's `<video>`), loaded at run time: `Video`,
+# `ui.video`. Without it, none of that code.
 video = []
 # Colours and pictures brighter than SDR white (`El::brightness`, `Ui::add_hdr_picture`, PQ and
 # HLG PNGs), shown so on HDR screens: Direct3D 11 and 12 present them in scRGB. Without it, they
@@ -90,10 +91,22 @@ harness = false
 name = "android"
 harness = false
 
-# Videos on a Mac: AVFoundation plays only while the main thread's run loop turns.
+# Videos on a Mac and in the iOS simulator: AVFoundation plays only while the main thread's run
+# loop turns.
 [[test]]
-name = "video_macos"
+name = "video_apple"
 harness = false
+required-features = ["video"]
+
+# Videos on the web: this file is also the page's program, built for wasm32-unknown-unknown.
+[[test]]
+name = "video_web"
+harness = false
+required-features = ["video"]
+
+# Videos on an Android emulator: the library's video tests, run there through adb.
+[[test]]
+name = "video_android"
 required-features = ["video"]
 
 # A video player.

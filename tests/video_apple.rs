@@ -1,22 +1,47 @@
-//! Videos on a Mac, on the main thread: AVFoundation plays only while that thread's run loop
-//! turns, and libtest runs no test there. (Elsewhere the unit tests of `src/video.rs` do this.)
+//! Videos on a Mac and on iOS, on the main thread: AVFoundation plays only while that thread's
+//! run loop turns, and libtest runs no test there. (Elsewhere the unit tests of `src/video.rs`
+//! do this.) One file, two programs:
+//!
+//! - On a Mac it runs the checks; with `TAUT_IOS_SIMULATOR=1` it also builds itself for the
+//!   iOS simulator as an app (`examples/ios_bundle.rs`), boots the newest iPhone simulator and
+//!   runs it there.
+//! - On iOS it is that app: the checks run inside UIKit's run loop (from the first frame of
+//!   `taut::run`), then it says how they went and quits.
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(target_vendor = "apple"))]
 fn main() {}
 
 #[cfg(target_os = "macos")]
 fn main() {
     checks::all();
     println!("video on macOS: every check passed");
+    simulator::run();
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "ios")]
+fn main() {
+    let mut checked = false;
+    taut::run(taut::Window::default(), move |_| {
+        if !std::mem::replace(&mut checked, true) {
+            checks::all();
+            println!("video on iOS: every check passed");
+            std::process::exit(0);
+        }
+    });
+}
+
+#[cfg(target_vendor = "apple")]
 #[allow(dead_code)]
 mod files {
     include!("video/files.rs");
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
+#[path = "../examples/ios_bundle.rs"]
+mod ios_bundle;
+
+#[cfg(target_vendor = "apple")]
 mod checks {
     use super::files::*;
     use std::ffi::c_void;
@@ -154,12 +179,30 @@ mod checks {
         assert_eq!(shown(&trial), 29);
     }
 
+    /// The memory the process holds (Mach's resident size).
+    fn held() -> usize {
+        /// `mach_task_basic_info`: sizes, then times and the rest.
+        #[repr(C)]
+        #[derive(Default)]
+        struct BasicInfo {
+            virtual_size: u64,
+            resident_size: u64,
+            resident_most: u64,
+            rest: [i32; 6],
+        }
+        unsafe extern "C" {
+            static mach_task_self_: u32;
+            fn task_info(task: u32, flavor: i32, info: *mut BasicInfo, count: *mut u32) -> i32;
+        }
+        let (mut info, mut count) = (BasicInfo::default(), (size_of::<BasicInfo>() / 4) as u32);
+        // SAFETY: this task's own port; the info is as large as `count` says. 20 is
+        // `MACH_TASK_BASIC_INFO`.
+        unsafe { task_info(mach_task_self_, 20, &mut info, &mut count) };
+        info.resident_size as usize
+    }
+
     /// Opens, plays and drops videos: what the process holds stays put.
     fn many_opens(file: &std::path::Path) {
-        let held = || {
-            let said = std::process::Command::new("ps").args(["-o", "rss=", "-p", &std::process::id().to_string()]).output().unwrap();
-            String::from_utf8_lossy(&said.stdout).trim().parse::<usize>().unwrap_or(0) * 1024
-        };
         let open_and_close = |times: usize| {
             for _ in 0..times {
                 let mut trial = trial(Video::open_silent(file).unwrap(), false);
@@ -176,5 +219,67 @@ mod checks {
         let after = held();
         println!("many opens: held {before} bytes, after 30 more {after}");
         assert!(after < before + (10 << 20), "held {before} bytes, after 30 more {after}");
+    }
+}
+
+/// The checks as an app in the newest iPhone simulator, with `TAUT_IOS_SIMULATOR=1`.
+#[cfg(target_os = "macos")]
+mod simulator {
+    use super::ios_bundle;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    const ID: &str = "dev.taut.video-check";
+
+    pub fn run() {
+        if std::env::var_os("TAUT_IOS_SIMULATOR").is_none() {
+            return println!("video on iOS runs with TAUT_IOS_SIMULATOR=1 (it boots a simulator)");
+        }
+        match checked() {
+            Ok(said) => println!("{said}"),
+            Err(why) => panic!("video on iOS:\n{why}"),
+        }
+    }
+
+    /// Where the app is built: a folder of its own, so this test's own build is not waited for.
+    fn built() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("video-ios")
+    }
+
+    /// This file built for the simulator, as a signed app.
+    fn app() -> Result<PathBuf, String> {
+        let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        cargo.args(["build", "--test", "video_apple", "--features", "video", "--target", "aarch64-apple-ios-sim", "--message-format=json"]).env("CARGO_TARGET_DIR", built());
+        let said = ios_bundle::ran(&mut cargo)?;
+        let line = said.lines().find(|line| line.contains("\"executable\":\"") && line.contains("\"name\":\"video_apple\""));
+        let program = line.and_then(|line| line.split("\"executable\":\"").nth(1)?.split('"').next()).ok_or("no test program built")?;
+        let app = ios_bundle::bundle(Path::new(program), "video_check", ID, false, &built().join("ios")).map_err(|error| error.to_string())?;
+        ios_bundle::sign_for_simulator(&app)?;
+        Ok(app)
+    }
+
+    /// Runs the app and waits for its verdict: what it said, or why it failed.
+    fn checked() -> Result<String, String> {
+        let app = app()?;
+        let device = ios_bundle::newest_iphone()?;
+        ios_bundle::boot(&device)?;
+        ios_bundle::ran(Command::new("xcrun").args(["simctl", "install", &device]).arg(&app))?;
+        let (out, err) = (built().join("video_check.out"), built().join("video_check.err"));
+        let _ = (std::fs::remove_file(&out), std::fs::remove_file(&err));
+        let logs = [format!("--stdout={}", out.display()), format!("--stderr={}", err.display())];
+        ios_bundle::ran(Command::new("xcrun").args(["simctl", "launch", "--terminate-running-process"]).args(&logs).args([&device, ID]))?;
+        let since = Instant::now();
+        loop {
+            let said = std::fs::read_to_string(&out).unwrap_or_default();
+            if said.contains("every check passed") {
+                return Ok(said);
+            }
+            let failed = std::fs::read_to_string(&err).unwrap_or_default();
+            if failed.contains("panicked") || since.elapsed() > Duration::from_secs(300) {
+                return Err(format!("{said}\n{failed}"));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 }

@@ -284,12 +284,14 @@ mod variable_fonts;
 mod vertical_text;
 #[cfg(feature = "video")]
 mod video;
+#[cfg(all(feature = "video", target_os = "android"))]
+mod video_android;
+#[cfg(all(feature = "video", target_vendor = "apple"))]
+mod video_apple;
 #[cfg(all(feature = "video", unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod video_gstreamer;
-#[cfg(all(feature = "video", target_os = "macos"))]
-mod video_macos;
-#[cfg(all(feature = "video", any(target_os = "ios", target_os = "android", target_family = "wasm")))]
-mod video_none;
+#[cfg(all(feature = "video", target_family = "wasm"))]
+mod video_web;
 #[cfg(all(feature = "video", windows))]
 mod video_windows;
 mod visible_boxes;

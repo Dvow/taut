@@ -21,6 +21,17 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   shows where Tab reaches it.
 - **`examples/apk.rs`** packs any file, not only an example: `apk -- tests/android.rs`.
 
+- **Video on iOS, Android and the web** (feature `video`), with the same API as elsewhere:
+  iOS through AVFoundation, as macOS; Android through the NDK's media C API (extractor,
+  system decoders into an image reader, AAudio for sound), loaded at run time, with no Java;
+  the web through a `<video>` element the loader makes, frames read through a canvas, bytes
+  through a Blob address. A browser that wants a press before sound makes `play` give
+  `error()`, cleared at the next `play`. `video_none.rs` is gone.
+- **Fixed:** on the web, the readers' element with the keyboard lost it (to the page) when the
+  parts told to readers changed order; the loader now moves only elements out of place.
+- `examples/web_page.rs` answers range requests (a browser seeks a video by them), and
+  `examples/apk.rs` packs examples with the feature `video`.
+
 ## 0.3.0 (2026-11-24)
 
 Code written for 0.2 builds unchanged; to move up, change `taut = "0.2"` to `taut = "0.3"`.
