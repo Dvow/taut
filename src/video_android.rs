@@ -373,14 +373,13 @@ fn bytes_source(media: &'static Media, extractor: Object, bytes: &Arc<Vec<u8>>) 
     }
 }
 
-/// A data source's read: up to `size` bytes from `offset`; -1 past the end (`NdkMediaDataSource.h`).
+/// A data source's read: up to `size` bytes from `offset`; 0 at the end, -1 past it. (The
+/// header says -1 at the end, but Android 15's extractor takes that as a failed read and plays
+/// nothing: 0 is what it reads to the end by.)
 unsafe extern "C" fn read_at(bytes: *mut c_void, offset: i64, into: *mut c_void, size: usize) -> isize {
     // SAFETY: the user data is the bytes, alive while the source is.
     let bytes: &Vec<u8> = unsafe { &*bytes.cast() };
     let Some(part) = usize::try_from(offset).ok().and_then(|from| bytes.get(from..)) else { return -1 };
-    if part.is_empty() && size > 0 {
-        return -1;
-    }
     let count = part.len().min(size);
     // SAFETY: the extractor's buffer has room for `size` bytes.
     unsafe { std::ptr::copy_nonoverlapping(part.as_ptr(), into.cast(), count) };
