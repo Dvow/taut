@@ -9,7 +9,8 @@
 //!   (`wp_image_description_creator_params_v1`) and handed over in buffers of 16 bits a channel
 //!   (`wl_shm` ABGR16161616). The CPU still draws its pixels, into memory of the window's; what
 //!   changed is put into a free buffer in PQ: SDR white at the protocol's reference, 203 nits,
-//!   times the gain, at most the screen's headroom. The compositor maps it to the screen.
+//!   times each colour's gain (`hdr`), at most the screen's headroom. The compositor maps it
+//!   to the screen.
 //! - Without the protocol, its parametric descriptions, PQ, sRGB primaries or that buffer
 //!   format, windows stay SDR, as with an SDR screen.
 use super::{Host, Link, Sheet, on_pixels};
@@ -140,6 +141,9 @@ fn pq_code(light: f32) -> u16 {
     (((c1 + c2 * raised) / (1.0 + c3 * raised)).powf(m2) * 65_535.0 + 0.5) as u16
 }
 
+/// Gains and offset of a pixel nothing lights.
+const UNLIT: [f32; 4] = [1.0, 1.0, 1.0, 0.0];
+
 /// sRGB's curve undone: a byte's linear value.
 fn linear(byte: u32) -> f32 {
     let part = byte as f32 / 255.0;
@@ -148,7 +152,7 @@ fn linear(byte: u32) -> f32 {
 
 impl Lit {
     /// Puts `place` (left, top, right, bottom) of the window's pixels into `deep` in PQ, each
-    /// times its gain, at most the headroom.
+    /// lit by its gains, at most the headroom.
     fn put(&self, deep: &mut Deep, [left, top, right, bottom]: [i32; 4]) {
         // (Gains of another size are of the window before a resize: none until they are taken.)
         let (wide, fits) = (deep.size[0] as usize, self.gains.size == deep.size && !self.gains.plane.is_empty());
@@ -157,17 +161,20 @@ impl Lit {
             let row = &self.frame[y * wide..][..wide];
             let gains = fits.then(|| &self.gains.plane[y * wide..][..wide]);
             let out = &mut samples[y * wide * 4..][..wide * 4];
-            (left as usize..right as usize).for_each(|x| self.put_one(row[x], gains.map_or(1.0, |gains| crate::hdr::from_half(gains[x])), &mut out[x * 4..x * 4 + 4]));
+            (left as usize..right as usize).for_each(|x| self.put_one(row[x], gains.map_or(UNLIT, |gains| gains[x].map(crate::hdr::from_half)), &mut out[x * 4..x * 4 + 4]));
         }
     }
 
-    /// One pixel (`0xAARRGGBB`, premultiplied) in PQ, times `gain`.
+    /// One pixel (`0xAARRGGBB`, premultiplied) in PQ, lit by `gains` (red, green, blue, and
+    /// a gain map's offset; `hdr`).
     #[inline]
-    fn put_one(&self, pixel: u32, gain: f32, out: &mut [u16]) {
+    fn put_one(&self, pixel: u32, [red_gain, green_gain, blue_gain, offset]: [f32; 4], out: &mut [u16]) {
         let [alpha, red, green, blue] = pixel.to_be_bytes();
-        let gain = gain.min(self.headroom);
-        let code = |byte: u8| if gain == 1.0 { self.table[byte as usize] } else { pq_code(linear(byte as u32) * gain) };
-        out.copy_from_slice(&[code(red), code(green), code(blue), alpha as u16 * 257]);
+        let code = |byte: u8, gain: f32| {
+            let gain = gain.min(self.headroom);
+            if gain == 1.0 && offset == 0.0 { self.table[byte as usize] } else { pq_code(((linear(byte as u32) + offset) * gain - offset).max(0.0)) }
+        };
+        out.copy_from_slice(&[code(red, red_gain), code(green, green_gain), code(blue, blue_gain), alpha as u16 * 257]);
     }
 
     /// The compositor released buffer `id`. Says whether it was one of these: one of another
@@ -333,8 +340,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let screen = self.colors.screen_of(&shown.on);
         let (lit, scale, size) = (&mut shown.sheet.lit, shown.scale, shown.sheet.pixels);
         let taken = super::within(&mut self.ui, shown.known, |ui| {
+            let news = ui.set_screen(screen);
             let glows = if screen.hdr && !shown.sheet.clear { ui.glows() } else { Vec::new() };
-            (ui.set_screen(screen), lit.gains.take(glows, size, &ui.light.maps))
+            (news, lit.gains.take(glows, size, &ui.light.maps))
         });
         let Some((news, part)) = taken else { return };
         lit.gains.changed = None;
@@ -383,13 +391,18 @@ pub(super) mod tests {
         assert!(pq_code(2.0) > pq_code(1.0) && pq_code(1.0) > pq_code(linear(0x80)));
         let lit = Lit { table: (0..256).map(|byte| pq_code(linear(byte))).collect(), headroom: 5.0, ..Lit::default() };
         let mut out = [0u16; 4];
-        lit.put_one(0xffff_ffff, 1.0, &mut out);
+        lit.put_one(0xffff_ffff, UNLIT, &mut out);
         assert_eq!(out, [pq_code(1.0), pq_code(1.0), pq_code(1.0), 65_535]);
-        lit.put_one(0xff80_ff00, 2.0, &mut out);
+        lit.put_one(0xff80_ff00, [2.0, 2.0, 2.0, 0.0], &mut out);
         assert_eq!(out, [pq_code(linear(0x80) * 2.0), pq_code(2.0), 0, 65_535]);
         // Past the headroom, capped.
-        lit.put_one(0xffff_ffff, 8.0, &mut out);
+        lit.put_one(0xffff_ffff, [8.0, 8.0, 8.0, 0.0], &mut out);
         assert_eq!(out[0], pq_code(5.0));
+        // Each colour its own gain; a gain map's offset before and after.
+        lit.put_one(0xffff_ffff, [2.0, 3.0, 0.5, 0.0], &mut out);
+        assert_eq!(out[..3], [pq_code(2.0), pq_code(3.0), pq_code(0.5)]);
+        lit.put_one(0xff80_8080, [2.0, 2.0, 2.0, 0.25], &mut out);
+        assert_eq!(out[0], pq_code((linear(0x80) + 0.25) * 2.0 - 0.25));
     }
 
     /// Whether a lit window is handed over as it is now: in PQ, a deep buffer holding all of

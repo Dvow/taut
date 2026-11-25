@@ -38,7 +38,12 @@ fn describe(ui: &mut Ui) {
 - `ui.paragraph` wraps, as does `.wrap()` on a box; `.text_align(Align::Center)` centres lines;
   `.clip()` ends overflow in "…".
 - Mixed styles: a `ui.wrapping_row()` of `ui.words(..)` and `ui.link(..)`, wrapping together.
-- `ui.text_width(text, font)`; `ui.vertical_label(text)` for vertical CJK text.
+- `ui.text_width(text, font)`.
+- Vertical CJK text: `ui.vertical_label(text)`; `ui.vertical_paragraph(text)` and
+  `ui.vertical_rich(&pieces)` break into columns at their height; `ui.vertical_text_box` and
+  `ui.vertical_text_area` take typing. `ui.upright_digits(2)` sets short runs of digits across
+  one em. With the feature `ruby`: `Span::upright` any piece, and `Span::ruby("かんじ")` a reading
+  beside it (over it in `ui.rich`).
 
 **System text:** GDI on Windows (Segoe UI; monospace: Cascadia Mono, Consolas or Courier New),
 FreeType and Fontconfig on Linux, with the user's smoothing settings.
@@ -157,6 +162,11 @@ fn photo(ui: &mut Ui) -> Option<Picture> {
 
 - Decoders are the library's own. With `include_bytes!`, only the needed decoder is compiled in.
   `png::decode`, `png::encode`, `jpeg::decode`, `gif::decode`… work on plain pixels.
+- An icon keeps every image: shown smaller than its largest, it shows the one made for that
+  size, or the nearest larger. `bmp::decode_icon_images` gives them all.
+- `jpeg::Encoder` writes progressive JPEGs, and an EXIF orientation, ICC profile and XMP.
+- Hierarchical and arithmetic-coded lossless JPEGs, which only the ISO reference codec writes,
+  need the feature `rare-jpeg`.
 - **SVG:** `ui.add_drawing(svg_text)` returns a `Drawing`; `.drawing(drawing, color)` shows it,
   sharp at any size; `color` fills `currentColor`. Text, filters and embedded pictures after
   `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()`; pictures in other

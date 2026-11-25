@@ -50,16 +50,19 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | `touch` | touch, pen and pinch gestures | a finger is the system's mouse (Wayland: the first finger) | 30 KB; 12 KB | 40 KB; 19 KB |
 | `cff` | CFF and CFF2 fonts (most `.otf`) | not read | nothing; 17 KB | nothing; 17 KB |
 | `color-profiles` | colour profiles in picture files | colours as stored | nothing; 7 KB | nothing; 7 KB |
+| `rare-jpeg` | hierarchical and lossless arithmetic-coded JPEGs | not read | 2 KB; 25 KB | 4 KB; 41 KB |
 | `woff2` | WOFF2 fonts (with a Brotli decoder) | not read | nothing; 95 KB | nothing; 99 KB |
 | `hinting` | TrueType fonts' own hinting instructions run | every font autohinted | nothing; 93 KB | nothing; 96 KB |
 | `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | 63 KB; 60 KB |
 | `gpu-draw` | the GPU draws them too ([below](#drawn-by-the-gpu)) | the CPU draws them | 124 KB; 143 KB more than `gpu` | 82 KB; 104 KB more than `gpu` |
-| `hdr` | boxes and pictures brighter than SDR white on HDR screens | shown at SDR white | 21 KB; 21 KB more than `gpu` | 20 KB; 21 KB more than `gpu` |
+| `hdr` | boxes and pictures brighter than SDR white on HDR screens; Ultra HDR JPEGs | shown at SDR white | 48 KB; 65 KB more than `gpu` | 23 KB; 39 KB more than `gpu` |
 | `translations` | built-in words in German, Spanish, French, Japanese, Portuguese, Chinese | English until set | 24 KB; 22 KB | 37 KB; 36 KB |
 | `video` | video and sound by the system's player (`Video`) | none | nothing; nothing | nothing; nothing |
 
 - `video` costs only where a video is opened: the `player` example is 88 KB more than `hello`
   on Windows, 52 KB on Linux (2026-11-24).
+- On phones (arm64, 2026-11-25): `gpu` adds 17 KB to `hello` and the gallery on iOS, 34 KB on
+  Android; `gpu-draw` 33 KB and 49 KB more on iOS, 76 KB and 85 KB more on Android.
 - Each cost is the feature alone, in `hello` and in the gallery (which reads fonts and
   pictures). `brahmic` adds 77 KB (Linux 86 KB) to `hello` with `right-to-left` already on.
 - `hinting`: a fresh page of text at 9–13 px takes Segoe UI 5.7 ms (3.6 autohinted), Arial

@@ -146,6 +146,14 @@ pub(crate) fn memory_type(properties: &VkPhysicalDeviceMemoryProperties, type_bi
     (0..properties.type_count.min(32)).find(|at| type_bits >> at & 1 == 1 && properties.types[*at as usize].flags & wanted == wanted)
 }
 
+/// The kinds of `memory` that have all of `wanted`, one bit each.
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(target_os = "android", feature = "gpu-draw")))]
+#[inline]
+pub(crate) fn kinds(memory: &VkPhysicalDeviceMemoryProperties, wanted: u32) -> u32 {
+    let types = memory.types.iter().take(memory.type_count as usize).enumerate();
+    types.filter(|(_, kind)| kind.flags & wanted == wanted).fold(0, |all, (at, _)| all | 1 << at)
+}
+
 /// An image's layout changing, all of its colour, with what was done to it before made
 /// visible to what is done after.
 #[inline]
@@ -179,9 +187,9 @@ pub(crate) fn named(result: i32) -> &'static str {
     }
 }
 
-// Windows shown through Vulkan (feature `gpu`: `gpu_vulkan_windows`, `gpu_vulkan_x11`): the
-// instance, devices, surfaces and swap chains.
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
+// Windows shown through Vulkan (feature `gpu`: `gpu_vulkan_windows`, `gpu_vulkan_x11`,
+// `gpu_vulkan_android`): the instance, devices, surfaces and swap chains.
+#[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 structures! {
     VkApplicationInfo { kind: u32, next: *const c_void, name: *const c_char, version: u32, engine: *const c_char, engine_version: u32, api_version: u32, }
     VkInstanceCreateInfo { kind: u32, next: *const c_void, flags: u32, application: *const VkApplicationInfo, layer_count: u32, layers: *const *const c_char, extension_count: u32, extensions: *const *const c_char, }
@@ -200,25 +208,25 @@ structures! {
     VkPresentInfoKHR { kind: u32, next: *const c_void, wait_count: u32, waits: *const Handle, count: u32, swapchains: *const Handle, indices: *const u32, results: *mut i32, }
 }
 
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android")), any(windows, feature = "gpu-draw")))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(windows, target_os = "android", feature = "gpu-draw")))]
 pub(crate) const LAYOUT_TRANSFER_SOURCE: u32 = 6;
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 pub(crate) const LAYOUT_PRESENT: u32 = 1_000_001_002;
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android")), any(windows, feature = "gpu-draw")))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(windows, target_os = "android", feature = "gpu-draw")))]
 pub(crate) const ACCESS_TRANSFER_READ: u32 = 0x800;
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 pub(crate) const STAGE_BOTTOM: u32 = 0x2000;
 // Kinds of use of an image or buffer.
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 pub(crate) const USAGE_TRANSFER_SOURCE: u32 = 0x1;
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 pub(crate) const USAGE_TRANSFER_DESTINATION: u32 = 0x2;
 // Results.
 #[cfg(all(windows, feature = "gpu"))]
 pub(crate) const DEVICE_LOST: i32 = -4;
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 pub(crate) const OUT_OF_DATE: i32 = -1_000_001_004;
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 /// One layer of an image's colour: aspect, level, first layer, layers.
 pub(crate) const LAYER: [u32; 4] = [0x1, 0, 0, 1];
 
@@ -231,7 +239,36 @@ pub(crate) fn name(of: &[c_char; 256]) -> &[u8] {
     bytes.split(|byte| *byte == 0).next().unwrap_or_default()
 }
 
-#[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android")), any(windows, feature = "gpu-draw")))]
+// What draws into a window's images: Vulkan drawing (`gpu_draw_vulkan`) and the pass to HDR
+// (`hdr_vulkan`).
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(feature = "gpu-draw", all(windows, feature = "hdr"))))]
+structures! {
+    VkAttachmentDescription { flags: u32, format: u32, samples: u32, load: u32, store: u32, stencil_load: u32, stencil_store: u32, initial_layout: u32, final_layout: u32, }
+    VkAttachmentReference { attachment: u32, layout: u32, }
+    VkSubpassDescription { flags: u32, bind_point: u32, input_count: u32, inputs: *const VkAttachmentReference, colour_count: u32, colours: *const VkAttachmentReference, resolves: *const VkAttachmentReference, depth: *const VkAttachmentReference, preserve_count: u32, preserves: *const u32, }
+    VkRenderPassCreateInfo { kind: u32, next: *const c_void, flags: u32, attachment_count: u32, attachments: *const VkAttachmentDescription, subpass_count: u32, subpasses: *const VkSubpassDescription, dependency_count: u32, dependencies: *const c_void, }
+    VkFramebufferCreateInfo { kind: u32, next: *const c_void, flags: u32, render_pass: Handle, attachment_count: u32, attachments: *const Handle, width: u32, height: u32, layers: u32, }
+    VkRenderPassBeginInfo { kind: u32, next: *const c_void, render_pass: Handle, framebuffer: Handle, area: VkRect2D, clear_count: u32, clears: *const c_void, }
+    VkSamplerCreateInfo { kind: u32, next: *const c_void, flags: u32, magnify: u32, minify: u32, mipmaps: u32, address: [u32; 3], bias: f32, anisotropy: u32, most_anisotropy: f32, compare: u32, compare_op: u32, least_level: f32, most_level: f32, border: u32, unnormalized: u32, }
+}
+
+/// An image's layout for drawing into, and that use's access and stage.
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(feature = "gpu-draw", all(windows, feature = "hdr"))))]
+pub(crate) const LAYOUT_COLOUR: u32 = 2;
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(feature = "gpu-draw", all(windows, feature = "hdr"))))]
+pub(crate) const ACCESS_COLOUR: u32 = 0x80 | 0x100;
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(windows, feature = "gpu-draw")))]
+pub(crate) const STAGE_COLOUR: u32 = 0x400;
+/// An image drawn into (`VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT`); one shaders read.
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(feature = "gpu-draw", all(windows, feature = "hdr"))))]
+pub(crate) const USAGE_DRAWN_INTO: u32 = 0x10;
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(feature = "gpu-draw", all(windows, feature = "hdr"))))]
+pub(crate) const USAGE_SAMPLED: u32 = 0x4;
+/// A combined image and sampler, in a descriptor set.
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(feature = "gpu-draw", all(windows, feature = "hdr"))))]
+pub(crate) const SAMPLED: u32 = 1;
+
+#[cfg(all(feature = "gpu", any(windows, all(feature = "gpu-draw", unix, not(any(target_vendor = "apple", target_os = "android"))))))]
 structures! {
     VkImageCopy { source_layers: [u32; 4], source_offset: [i32; 3], destination_layers: [u32; 4], destination_offset: [i32; 3], extent: [u32; 3], }
 }
@@ -250,11 +287,20 @@ structures! {
     VkPhysicalDeviceDriverProperties { kind: u32, next: *mut c_void, id: u32, name: [c_char; 256], info: [c_char; 256], conformance: [u8; 4], }
 }
 
-#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
+// Android windows shown through Vulkan (`gpu_vulkan_android`): their surfaces, the formats a
+// blit takes, and the blit that copies a window's image into its swap chain's.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+structures! {
+    VkAndroidSurfaceCreateInfoKHR { kind: u32, next: *const c_void, flags: u32, window: *mut c_void, }
+    VkFormatProperties { linear: u32, optimal: u32, buffer: u32, }
+    VkImageBlit { source_layers: [u32; 4], source_offsets: [[i32; 3]; 2], destination_layers: [u32; 4], destination_offsets: [[i32; 3]; 2], }
+}
+
+#[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
 pub(crate) const SUBOPTIMAL: i32 = 1_000_001_003;
 
 /// Whether `name` is among the extensions `list` fills in.
-#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
+#[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
 #[inline]
 pub(crate) fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32, name: &CStr) -> bool {
     let all = listed(VkExtensionProperties::default(), list);
@@ -263,7 +309,7 @@ pub(crate) fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32
 }
 
 /// What one of Vulkan's enumerations fills in: its count first, then that many.
-#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
+#[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
 #[inline]
 pub(crate) fn listed<T: Copy>(zero: T, mut fill: impl FnMut(*mut u32, *mut T) -> i32) -> Vec<T> {
     let mut count = 0;
@@ -278,7 +324,7 @@ pub(crate) fn listed<T: Copy>(zero: T, mut fill: impl FnMut(*mut u32, *mut T) ->
 
 /// The copy of `place` (left, top, right, bottom) from pixels `width` a row into the same place
 /// of an image.
-#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
+#[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
 #[inline]
 pub(crate) fn region([left, top, right, bottom]: [i32; 4], width: i32) -> VkBufferImageCopy {
     let at = (top as u64 * width as u64 + left as u64) * 4;
@@ -337,7 +383,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_os = "android"))))]
+    #[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
     #[test]
     fn what_showing_a_window_takes_is_laid_out_as_vulkan_lays_it_out() {
         let sizes = [
@@ -366,6 +412,15 @@ mod tests {
     #[test]
     fn a_windows_surface_is_laid_out_as_vulkan_lays_it_out() {
         let sizes = [(size_of::<VkImageCopy>(), 68), (size_of::<VkWin32SurfaceCreateInfoKHR>(), 40)];
+        for (at, (size, wanted)) in sizes.into_iter().enumerate() {
+            assert_eq!(size, wanted, "structure {at}");
+        }
+    }
+
+    #[cfg(all(target_os = "android", feature = "gpu"))]
+    #[test]
+    fn an_android_surface_and_a_blit_are_laid_out_as_vulkan_lays_them_out() {
+        let sizes = [(size_of::<VkAndroidSurfaceCreateInfoKHR>(), 32), (size_of::<VkFormatProperties>(), 12), (size_of::<VkImageBlit>(), 80)];
         for (at, (size, wanted)) in sizes.into_iter().enumerate() {
             assert_eq!(size, wanted, "structure {at}");
         }

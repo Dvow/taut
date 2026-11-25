@@ -62,6 +62,56 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   `<animateTransform>`): `svg::encode_animation` makes an APNG for `Ui::add_animation` (a
   minute at most), `svg::decode_at` draws one moment. A program calling none of these carries
   none of them.
+- **HDR on every GPU path** (`hdr`): Vulkan on Windows presents lit windows in scRGB, or HDR10
+  where the GPU has no scRGB, its HDR metadata set; OpenGL on Windows in scRGB through a float
+  pixel format, where a screen is HDR as its device is made; Metal on macOS in EDR, following
+  the screen's headroom. X11 stays SDR.
+- **Ultra HDR JPEGs:** `ui.add_picture_file` reads a JPEG's gain map (ISO 21496-1, Adobe's
+  XMP, Android's Ultra HDR, Apple's) as libultrahdr does: SDR screens get the same picture as
+  before.
+- **Gain maps** keep a gain per colour and are sampled bilinearly, as a GPU samples a texture,
+  not nearest; an Ultra HDR map's metadata says how much shows on a screen of less headroom.
+- **The GPU on iOS and Android** (features `gpu`, `gpu-draw`), with the same API as elsewhere:
+  iOS shows through Metal (a `CAMetalLayer` over the safe area), sending nothing to the GPU in
+  the background; Android through Vulkan (`VK_KHR_android_surface`), else OpenGL ES 3 through
+  EGL, the device outliving the activity's window. `Renderer::Auto` takes a GPU, not the CPU at
+  work (SwiftShader). Only what changed goes up; with `gpu-draw` the GPU draws it. On Android,
+  where apps get no environment, `debug.taut.renderer` and `debug.taut.draw` (`adb shell
+  setprop`) stand for `TAUT_RENDERER` and `TAUT_DRAW`.
+- **Layers on phones:** `layer_metal` on iOS; `layer_vulkan` on Android (`examples/vulkan.rs`
+  finds Android's `libvulkan.so`); `layer_opengl` takes OpenGL ES 3.0 too.
+- **JPEG:** with the new feature `rare-jpeg`, reads hierarchical JPEGs (`SOF5`–`SOF7`,
+  `SOF13`–`SOF15`) and arithmetic-coded lossless ones (`SOF11`). Each plane's quantization
+  table is the one at its first scan, as libjpeg takes it.
+- **JPEG writing:** `jpeg::Encoder` writes progressive JPEGs, byte for byte as
+  `cjpeg -progressive`, and an EXIF orientation, an ICC profile and XMP. `jpeg::encode` is
+  unchanged.
+- **Icons:** `ui.add_picture_file` keeps every image of an ICO; a box shows the one made for its
+  size in pixels, or the nearest larger. `bmp::decode_icon_images` returns them all.
+  `bmp::encode_icon` stores each image as PNG or BMP, whichever is smaller, and takes images
+  past 256 pixels.
+- **Lossy WebP** decodes about 30% faster (a 1920×1080 photo: 86 ms to 60 ms).
+- **The system's parts on the web**, through the same calls as on the desktops, each carried
+  only by a program that calls it: files and text dropped on the page; text, links, files and
+  pictures dragged out; pictures on the clipboard both ways and files pasted in; the browser's
+  pickers for several files (`pick_many`) and folders (`pick_folder`, read with
+  `web::files_in`); saving through the save picker where the browser has one (`/saved/<name>`,
+  `web::save`); notifications, clicks heard; printing through the browser's dialog; one running
+  copy across tabs (`single_instance`: a later tab hands its address to the first); the
+  person's fonts (`system_fonts::families`, Chrome and Edge); and with `gpu` WebGL2, with
+  `gpu-draw` the GPU drawing large parts, the loader's `renderer` and `draw` options standing
+  for `TAUT_RENDERER` and `TAUT_DRAW`. In Chrome and Edge a file dialog's `save` now answers
+  with the file the person chose, not a download.
+- **Vertical text that wraps and edits:** `ui.vertical_paragraph` and `ui.vertical_rich` break
+  into columns where their height ends, as CJK line breaking allows; `ui.vertical_text_box` and
+  `ui.vertical_text_area` take typing: Up and Down move along a column, Left and Right across
+  columns, an input method composes at the cursor, and screen readers read by column with each
+  character's place. Fullwidth punctuation beside punctuation is set half width, as Chrome does.
+- **Tate-chu-yoko:** `ui.upright_digits(n)` sets runs of up to `n` digits across one em in
+  vertical text; `Span::upright` (feature `ruby`) any piece.
+- **Ruby** (feature `ruby`): `Span::ruby(reading)` sets a reading over rich text (`ui.rich`) and
+  beside vertical text, as CSS Ruby Layout and Chrome set it. Readers hear it after its base, in
+  brackets.
 
 ## 0.3.0 (2026-11-24)
 

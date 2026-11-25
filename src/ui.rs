@@ -101,27 +101,47 @@ pub(crate) struct Stored {
     /// Smaller copies, each half as wide and high as the one before, with their widths: made
     /// when the picture is first shown that small (mipmaps).
     smaller: Vec<(usize, Vec<u32>)>,
+    /// An icon's other images, each made for a smaller size, smallest last.
+    made: Vec<MadeForSize>,
+}
+
+/// An icon's image made for a size, and its smaller copies (as `Stored` has).
+struct MadeForSize {
+    width: usize,
+    pixels: Vec<u32>,
+    smaller: Vec<(usize, Vec<u32>)>,
 }
 
 impl Stored {
     /// The pixels to draw the picture from where it shows `wide` by `high` pixels, and their
-    /// row length: its own, or the smallest copy no smaller than shown. (So a large photo shown
-    /// small is drawn from about as many pixels as show, each averaging all of the photo under
-    /// it.)
+    /// row length. An icon's image is the smallest made for at least that size, as the systems
+    /// pick (else its own, the largest); then of it, the smallest copy no smaller than shown.
+    /// (So a large photo shown small is drawn from about as many pixels as show, each averaging
+    /// all of the photo under it.)
     pub fn shown(&mut self, wide: f32, high: f32) -> (&[u32], usize) {
-        let (mut across, mut down, mut halved) = (self.width, self.pixels.len() / self.width.max(1), 0);
-        while across as f32 >= 2.0 * wide && down as f32 >= 2.0 * high && across > 1 && down > 1 {
-            if halved == self.smaller.len() {
-                let (from, from_width) = self.smaller.last().map_or((&self.pixels[..], self.width), |(width, pixels)| (&pixels[..], *width));
-                let half = halve(from, from_width);
-                self.smaller.push(half);
-            }
-            (across, down, halved) = (across.div_ceil(2), down.div_ceil(2), halved + 1);
+        let fits = |made: &&mut MadeForSize| made.width as f32 >= wide && (made.pixels.len() / made.width) as f32 >= high;
+        match self.made.iter_mut().rev().find(fits) {
+            Some(made) => mip_level(&made.pixels, made.width, &mut made.smaller, wide, high),
+            None => mip_level(&self.pixels, self.width, &mut self.smaller, wide, high),
         }
-        match self.smaller.get(halved.wrapping_sub(1)) {
-            Some((width, pixels)) => (pixels, *width),
-            None => (&self.pixels, self.width),
+    }
+}
+
+/// The smallest of `pixels` (rows of `width`) and their `smaller` copies no smaller than `wide`
+/// by `high`, and its row length. Copies are made as first needed.
+fn mip_level<'a>(pixels: &'a [u32], width: usize, smaller: &'a mut Vec<(usize, Vec<u32>)>, wide: f32, high: f32) -> (&'a [u32], usize) {
+    let (mut across, mut down, mut halved) = (width, pixels.len() / width.max(1), 0);
+    while across as f32 >= 2.0 * wide && down as f32 >= 2.0 * high && across > 1 && down > 1 {
+        if halved == smaller.len() {
+            let (from, from_width) = smaller.last().map_or((pixels, width), |(width, pixels)| (&pixels[..], *width));
+            let half = halve(from, from_width);
+            smaller.push(half);
         }
+        (across, down, halved) = (across.div_ceil(2), down.div_ceil(2), halved + 1);
+    }
+    match smaller.get(halved.wrapping_sub(1)) {
+        Some((width, pixels)) => (pixels, *width),
+        None => (pixels, width),
     }
 }
 
@@ -652,7 +672,7 @@ pub struct Ui {
     /// What else crosses the window's edge: drags out to other programs, and text dragged in.
     pub(crate) crossing: crate::drag_drop::Crossing,
     /// The text cursor's place in the window, while editing.
-    ime_area: Option<Rect>,
+    pub(crate) ime_area: Option<Rect>,
     /// The open colour picker.
     pub(crate) picking: Picking,
     /// For a dock: each tab place's rectangle and the splitters between places (kept between
@@ -1196,7 +1216,7 @@ impl Ui {
         self.measures.clear();
         self.touch.dragged.clear();
         self.touch.zooms.clear();
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", target_family = "wasm"))]
         self.crossing.offers.clear();
         self.bar.clear();
         self.asks.begin();
@@ -2157,7 +2177,7 @@ impl Ui {
     /// each `0xAARRGGBB`. Kept until [`drop_picture`](Self::drop_picture) or the window closes.
     #[doc(alias("image", "texture", "bitmap"))]
     pub fn add_picture(&mut self, width: usize, pixels: Vec<u32>) -> Picture {
-        Picture(self.pictures.put(Stored { width, pixels, version: 0, smaller: Vec::new() }))
+        Picture(self.pictures.put(Stored { width, pixels, version: 0, smaller: Vec::new(), made: Vec::new() }))
     }
     /// Drops a picture: its pixels are freed, and where it still shows, nothing does. For apps
     /// whose pictures come and go (icons loaded as needed, a scrolled gallery): what is never
@@ -2168,17 +2188,25 @@ impl Ui {
         self.light.maps.remove(&picture.0);
     }
     /// Takes a picture in from a file's bytes (`include_bytes!`, or read from disk): PNG, JPEG,
-    /// GIF, WebP, BMP or ICO, told apart by their first bytes. (An animation's first frame; an
-    /// icon's largest picture.) A photo is turned upright per its EXIF orientation, and with
-    /// the feature `color-profiles` converted from its embedded colour profile; with the feature
-    /// `hdr`, a PNG brighter than SDR white (PQ or HLG, by its `cICP` chunk) is shown so on HDR
-    /// screens. Nothing if none of these, or damaged.
+    /// GIF, WebP, BMP or ICO, told apart by their first bytes. (An animation's first frame.) An
+    /// icon keeps all its images: its size is its largest's, and where shown smaller, the image
+    /// made for that size shows, or the nearest larger. A photo is turned upright per its EXIF
+    /// orientation, and with the feature `color-profiles` converted from its embedded colour
+    /// profile; with the feature `hdr`, a PNG brighter than SDR white (PQ or HLG, by its `cICP`
+    /// chunk) or an Ultra HDR JPEG (its gain map) is shown so on HDR screens. Nothing if none of
+    /// these, or damaged.
     pub fn add_picture_file(&mut self, file: &[u8]) -> Option<Picture> {
         #[cfg(feature = "hdr")]
-        if let Some((width, pixels, gains)) = crate::hdr::read_png(file) {
+        if let Some((width, pixels, map)) = crate::hdr::read_picture(file) {
             let picture = self.add_picture(width, pixels);
-            self.light.keep_map(picture, width, gains);
+            self.light.keep_map(picture, map);
             return Some(picture);
+        }
+        if let [0, 0, 1 | 2, 0, ..] = file {
+            let mut images = crate::bmp::decode_icon_images(file)?;
+            let (width, pixels) = images.remove(0);
+            let made = images.into_iter().map(|(width, pixels)| MadeForSize { width, pixels, smaller: Vec::new() }).collect();
+            return Some(Picture(self.pictures.put(Stored { width, pixels, version: 0, smaller: Vec::new(), made })));
         }
         read_picture(file).map(|(width, pixels)| self.add_picture(width, pixels))
     }
@@ -2252,6 +2280,7 @@ impl Ui {
         self.again |= (width, pixels.len()) != (stored.width, stored.pixels.len());
         (stored.width, stored.pixels, stored.version) = (width, pixels, stored.version + 1);
         stored.smaller.clear();
+        stored.made.clear();
         #[cfg(feature = "hdr")]
         self.light.maps.remove(&picture.0);
     }

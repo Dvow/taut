@@ -115,8 +115,17 @@ Popovers anchored to their button.
   fractions, random alternates, Syriac stretching, variable-font feature variations: matches
   HarfBuzz 12.3.2 and 14.5 on 13,066 words in 77 fonts. Mark composition and decomposition:
   matches HarfBuzz 14.5 on 428,444 word-font pairs.
-- **Vertical text** (`ui.vertical_label`): UAX #50 orientation, `vert` forms, `vmtx`/`VORG`;
-  matches HarfBuzz in seven CJK fonts.
+- **Vertical text**: labels, paragraphs and rich text in columns right to left
+  (`ui.vertical_label`, `ui.vertical_paragraph`, `ui.vertical_rich`), breaking as CJK line breaking
+  (UAX #14, kinsoku) allows; text boxes (`ui.vertical_text_box`, `ui.vertical_text_area`) with
+  cursor, selection, keys along and across columns, pointer, input methods at the cursor, clipboard
+  and undo, read by column with each character's place. UAX #50 orientation, `vert` forms,
+  `vmtx`/`VORG` (matches HarfBuzz in seven CJK fonts); tate-chu-yoko (`ui.upright_digits`;
+  `Span::upright` with `ruby`); fullwidth punctuation trimmed beside punctuation, as Chrome does.
+  Matches Chrome within a pixel on 108 clusters in Yu Gothic.
+- **Ruby** (`Span::ruby`, feature `ruby`): readings over rich text and beside vertical text, spread and reaching
+  over neighbours as CSS Ruby and JLREQ have it; within a pixel of Chrome. Readers hear each reading
+  after its base, in brackets.
 - **Dates, times, numbers** in the user's system format (order, separators, digit counts, group
   sizes such as 12,34,567); month and day names and AM/PM in the system's language; Windows
   region changes followed while running; overridable.
@@ -131,8 +140,11 @@ Popovers anchored to their button.
   mixing, OKLCH, contrast ratios, colour-blind-safe chart colours.
 - Curves within 1/64 px with exact edge coverage: circles of 2–1,500 px, filled and stroked, are
   never more than 9/255 off per pixel, under 1/255 on average.
-- Read PNG, JPEG, GIF, WebP, BMP, ICO; EXIF orientation; colour profiles (`color-profiles`).
-- Write PNG, JPEG (byte-identical to `cjpeg -baseline`) and multi-size ICO.
+- Read PNG, JPEG (with `rare-jpeg`, every process of the standard: hierarchical and arithmetic
+  lossless too), GIF, WebP, BMP, ICO (each image, shown at the size it was made for); EXIF
+  orientation; colour profiles (`color-profiles`).
+- Write PNG, JPEG (baseline or progressive, byte-identical to `cjpeg`; EXIF orientation, ICC
+  profile, XMP) and multi-size ICO (PNG or BMP inside, past 256 px).
 - Animated GIF, PNG and WebP; only the animation's box redraws.
 - Video and sound (`video`): files, addresses and bytes, played by the system's player
   (Media Foundation, GStreamer, AVFoundation on macOS and iOS, the NDK's media codecs and AAudio
@@ -154,7 +166,7 @@ Popovers anchored to their button.
   Poppler, Ghostscript and xpdf.
 - Printing through the system dialog, laid out for the paper picked where asked. Windows: shapes
   and text, blending what GDI can't draw; oversized pages on several sheets. Linux: the portal's
-  dialog over the window.
+  dialog over the window. The web: the browser's dialog, each page a picture at 288 dpi.
 - About 200 KB (PDF), 150 KB (Markdown layout), 45 KB (printing), only when used.
 
 ## Windows and the desktop
@@ -174,11 +186,14 @@ Popovers anchored to their button.
   `taut::storage` writes atomically to the settings folder.
 - Drag and drop between boxes, from other programs (files, text) and out to them (files, text,
   pictures, links).
-- Clipboard (Windows, X11, Wayland, macOS, iOS, Android): text, pictures, files. The web: text.
+- Clipboard (Windows, X11, Wayland, macOS, iOS, Android): text, pictures, files. The web: text,
+  pictures, files pasted in.
 - **The web** (`wasm32-unknown-unknown`, no crates): a page's canvas, sharp at its pixel
   ratio; mouse, wheel, pinch, fingers, pens, keys, input methods; the browser's text or the
-  page's fonts; ARIA elements for screen readers; `localStorage`, file picker, downloads. A
-  frame only when something changed.
+  page's fonts, and the person's fonts listed (Chrome, Edge); ARIA elements for screen readers;
+  `localStorage`; the browser's pickers (a file, several, a folder; saving where the browser
+  has a save picker, else a download); drops in and drags out; notifications; printing; one
+  running copy across tabs; WebGL2 (`gpu`, `gpu-draw`). A frame only when something changed.
 - Open files and links with the default program.
 - **iOS and iPadOS** (UIKit): one window filling its scene, the safe area and keyboard kept
   clear; rotation, Split View and Stage Manager sizes; dark mode, Dynamic Type, more contrast,
@@ -191,17 +206,24 @@ Popovers anchored to their button.
 - Tray icon with native menu, system notifications (on macOS and iOS for app bundles), global
   hotkeys, single instance. Unused, none of it is compiled in.
 - **GPU or CPU** (`gpu`): Direct3D 11 or 12, Vulkan or OpenGL (Windows), OpenGL ES 3 (EGL) and
-  Vulkan (Linux, X11), or Metal (macOS) show the pixels the CPU drew, byte for byte the same; whole frames in step with
-  the screen; only changed rectangles uploaded (and presented, where the path can); a missing
-  path falls back to the next; a lost device made again, else the CPU. `Window::renderer`,
-  `ui.renderer()`, `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl|metal`.
+  Vulkan (Linux, X11), Metal (macOS, iOS), Vulkan and OpenGL ES 3 (Android), or WebGL2 (the
+  web) show the pixels the CPU drew, byte for byte the same; whole frames in step with the
+  screen; only changed rectangles uploaded (and presented, where the path can); a missing path
+  falls back to the next; a lost device made again, else the CPU. On iOS no GPU work in the
+  background; on Android the device outlives the activity's window. `Window::renderer`,
+  `ui.renderer()`, `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl|metal` (Android:
+  `debug.taut.renderer`; the web: the loader's `renderer` option).
 - **Drawn by the GPU** (`gpu-draw`): every GPU path draws boxes, borders, shadows, text,
   pictures, gradients, filled shapes and strokes itself, within a few levels of the CPU; scenes,
   SVG drawings and colour emoji go up as CPU-drawn patches. Only changed parts drawn; `Auto` only large ones. `TAUT_DRAW=cpu|gpu|auto`.
 - **HDR** (`hdr`): boxes and pictures brighter than SDR white on HDR screens: `El::brightness`,
-  `ui.add_hdr_picture`, PQ and HLG PNGs (`cICP`), `ui.headroom()`. Direct3D 11 and 12 present
-  in scRGB, Wayland in PQ (`wp_color_manager_v1`); the screen's SDR white and peak followed.
-  The rest stays at SDR white; SDR screens get the same pixels.
+  `ui.add_hdr_picture`, PQ and HLG PNGs (`cICP`), Ultra HDR JPEGs (ISO 21496-1, Adobe's and
+  Apple's gain maps, as libultrahdr reads them), `ui.headroom()`. Gain maps per colour, sampled
+  bilinearly, shown by the screen's headroom as their metadata says. Direct3D 11 and 12,
+  Vulkan and OpenGL (a float pixel format) present in scRGB (Vulkan in HDR10 where the GPU has
+  no scRGB); Wayland hands over PQ (`wp_color_manager_v1`); macOS shows EDR through Metal.
+  The screen's SDR white and peak (macOS: EDR headroom) followed. The rest stays at SDR white;
+  SDR screens get the same pixels.
 
 ## Input and accessibility
 
@@ -221,8 +243,8 @@ Popovers anchored to their button.
 
 - `Surface`: draw into memory for any renderer, as a transparent overlay, or in tests;
   `ui.wants_pointer()` and `ui.wants_keyboard()` split input with the host.
-- Layers for Direct3D 9, 11 and 12, OpenGL and Vulkan; `Surface::upload` for any other
-  renderer's texture upload; a DLL with a C interface.
+- Layers for Direct3D 9, 11 and 12, OpenGL, OpenGL ES, Vulkan and Metal; `Surface::upload` for
+  any other renderer's texture upload; a DLL with a C interface.
 - A whole desktop on a pixel buffer, pointer drawn by the library: a mouse move at 1280×720
   redraws about 0.1% of the screen in about 50 µs.
 - `testing::Trial`: a window with no screen, driven as a user would; parts found as a screen

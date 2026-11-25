@@ -1263,7 +1263,13 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// How long the loop may wait for events: until the interface's next timer, or not at all
     /// when a run is due.
     fn patience(&self) -> Option<Duration> {
-        if self.rerun || !HEARD.with_borrow(Vec::is_empty) { Some(Duration::ZERO) } else { self.ui.wake_in() }
+        let wait = if self.rerun || !HEARD.with_borrow(Vec::is_empty) { Some(Duration::ZERO) } else { self.ui.wake_in() };
+        // (A screen's EDR headroom changes unsaid: a lit window's is read again soon.)
+        #[cfg(feature = "hdr")]
+        if self.windows.iter().any(|shown| matches!(&shown.way, crate::gpu_metal::Way::Gpu(shows) if shows.in_edr())) {
+            return Some(wait.map_or(crate::hdr_metal::WATCHED, |wait| wait.min(crate::hdr_metal::WATCHED)));
+        }
+        wait
     }
 }
 
@@ -1343,9 +1349,18 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// by the CPU into the window's pixels, then put up; or with `gpu-draw` drawn by the GPU.
     /// All of it at a new size. Says whether the GPU showed it; if not, the CPU is to.
     fn through_gpu(&mut self, at: usize) -> bool {
-        let Host { ui, windows, metal, .. } = self;
+        let Host {
+            ui,
+            windows,
+            metal,
+            #[cfg(feature = "hdr")]
+            rerun,
+            ..
+        } = self;
         let (Some(gpu), shown) = (metal.gpu.as_mut(), &mut windows[at]) else { return false };
         let (size, scale, bounds, live, units) = (shown.pixels(), shown.scale, shown.bounds(), shown.live(), shown.size);
+        #[cfg(feature = "hdr")]
+        let screen = crate::hdr_metal::screen_of(shown.window);
         let Shown { way, surface, known, .. } = shown;
         let crate::gpu_metal::Way::Gpu(shows) = way else { return false };
         if shows.size() != (size, scale) && !gpu.fit(shows, bounds, size, scale) {
@@ -1359,48 +1374,23 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let changed = within(ui, *known, |ui| {
             let places: Vec<Rect> = ui.changes().collect();
             let places = if whole { vec![everything] } else { places };
-            places.iter().for_each(|place| draw_place(gpu, shows, surface, ui, *place, (size, scale)));
+            places.iter().for_each(|place| gpu.draw_place(shows, surface, ui, *place, (size, scale)));
             ui.changed();
             !places.is_empty()
         });
-        if changed == Some(true) {
+        // (With `hdr`, what lights it, on its screen: shown again where that changed.)
+        #[cfg(feature = "hdr")]
+        let lit = within(ui, *known, |ui| gpu.light(shows, screen, ui)).is_some_and(|(news, shown_again)| {
+            *rerun |= news;
+            shown_again
+        });
+        #[cfg(not(feature = "hdr"))]
+        let lit = false;
+        if changed == Some(true) || lit {
             gpu.show(shows, live);
         }
         true
     }
-}
-
-/// Draws one place a run changed (`place`, in units) into a window Metal shows, `size` pixels
-/// at `scale`: by the GPU where it draws a part that big (`gpu-draw`), else by the CPU into the
-/// window's pixels, which then go up.
-#[cfg(feature = "gpu")]
-fn draw_place(gpu: &mut crate::gpu_metal::Gpu, shows: &mut crate::gpu_metal::Shows, surface: &mut Surface, ui: &mut Ui, place: Rect, (size, scale): ([usize; 2], f32)) {
-    let snapped = place.snap_to_pixels(scale);
-    let edge = |at: f32, most: usize| ((at * scale).round().max(0.0) as usize).min(most);
-    let pixels = [edge(snapped.x, size[0]), edge(snapped.y, size[1]), edge(snapped.right(), size[0]), edge(snapped.bottom(), size[1])];
-    if pixels[0] >= pixels[2] || pixels[1] >= pixels[3] {
-        return;
-    }
-    #[cfg(feature = "gpu-draw")]
-    if drawn_by_gpu(gpu, shows, ui, snapped, pixels.map(|side| side as i32), (size, scale)) {
-        return;
-    }
-    surface.redraw(ui, place);
-    gpu.put(shows, surface, pixels);
-}
-
-/// Draws `area` of a window (`place` in pixels: left, top, right, bottom) on the GPU, where it
-/// draws a part that big itself (see `gpu_draw`). Says whether it did; if not, the CPU is to.
-#[cfg(feature = "gpu-draw")]
-fn drawn_by_gpu(gpu: &mut crate::gpu_metal::Gpu, shows: &mut crate::gpu_metal::Shows, ui: &mut Ui, area: Rect, place: [i32; 4], (size, scale): ([usize; 2], f32)) -> bool {
-    let Some(list) = gpu.drawing(place) else { return false };
-    let mut list = std::mem::take(list);
-    list.begin(size.map(|side| side as i32));
-    let mut canvas = crate::canvas::Canvas::recording(&mut list, size[0], size[1], (0, 0), scale);
-    canvas.clip(area);
-    ui.paint(&mut canvas);
-    drop(canvas);
-    gpu.draw(shows, list, place)
 }
 
 impl<App: FnMut(&mut Ui)> Turns for Host<App> {

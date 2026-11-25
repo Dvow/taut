@@ -221,8 +221,8 @@ pub struct FileDialogRequest {
     pub endings: Vec<String>,
     /// The title.
     pub title: &'static str,
-    /// Several files may be chosen ([`FileDialog::pick_many`]): asked of the system on iOS and
-    /// Android; elsewhere the library's dialog picks several.
+    /// Several files may be chosen ([`FileDialog::pick_many`]): asked of the system on iOS,
+    /// Android and the web; elsewhere the library's dialog picks several.
     pub many: bool,
 }
 
@@ -234,7 +234,7 @@ pub(crate) type Own = fn(&mut Ui, &mut FileDialog) -> Option<PathBuf>;
 pub struct FileDialog {
     /// Show the system's dialog instead of the library's where the window can: the one users
     /// know from every other program. Where it cannot (another renderer, a DLL, a Linux desktop
-    /// without a portal; several files, but on iOS and Android; a folder, on Android), the
+    /// without a portal; several files, but on iOS, Android and the web; a folder, on Android), the
     /// library's is shown, if this dialog has it (see `native`). Answers come back the same way
     /// either way.
     pub native: bool,
@@ -475,14 +475,19 @@ impl FileDialog {
     /// Shows the dialog to pick one or more files (with Ctrl and Shift), starting in `folder`:
     /// all selected are in `chosen` when it answers.
     pub fn pick_many(&mut self, folder: impl Into<PathBuf>) {
-        // The library's dialog picks several where the system's may not (Android's does).
-        #[cfg(not(target_os = "android"))]
+        // The library's dialog picks several where the system's may not (Android's and the
+        // browser's do).
+        #[cfg(not(any(target_os = "android", target_family = "wasm")))]
         self.own.get_or_insert(Ui::own_file_dialog);
+        #[cfg(target_family = "wasm")]
+        crate::web_files::hand_pickers();
         self.show(folder.into(), String::new(), [false, false, true]);
     }
     /// Shows the dialog to choose where to save and under what name. The name starts selected
     /// without its extension, to type over.
     pub fn save(&mut self, folder: impl Into<PathBuf>, name: &str) {
+        #[cfg(target_family = "wasm")]
+        crate::web_files::hand_pickers();
         self.show(folder.into(), name.into(), [true, false, false]);
     }
     /// Shows the dialog to pick a folder, starting in `folder`: the answer is the folder
@@ -491,6 +496,8 @@ impl FileDialog {
         // Android's dialog picks no folders: they have no path there.
         #[cfg(target_os = "android")]
         self.own.get_or_insert(Ui::own_file_dialog);
+        #[cfg(target_family = "wasm")]
+        crate::web_files::hand_pickers();
         self.show(folder.into(), String::new(), [false, true, false]);
     }
     fn show(&mut self, folder: PathBuf, name: String, [saving, folders, many]: [bool; 3]) {
@@ -642,17 +649,19 @@ impl FileDialog {
         self.shown = false;
         let went = answer.as_deref().and_then(|file| if self.folders { Some(file) } else { file.parent() }).map(PathBuf::from);
         self.folder = went.unwrap_or(std::mem::take(&mut self.folder));
-        // (Android's dialog may answer with several.)
+        // (Android's dialog and the browser's picker may answer with several.)
         #[cfg(target_os = "android")]
         let chosen = crate::android_file_dialog::chosen;
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_family = "wasm")]
+        let chosen = crate::web_files::chosen;
+        #[cfg(not(any(target_os = "android", target_family = "wasm")))]
         let chosen = |file| vec![file];
         answer.and_then(|file| self.answer(chosen(file)))
     }
-    /// Whether the system's dialog does what is asked: several files only on Android and iOS,
-    /// and on Android no folder.
+    /// Whether the system's dialog does what is asked: several files only on Android, iOS and
+    /// the web, and on Android no folder.
     fn system_does(&self) -> bool {
-        if cfg!(target_os = "android") { !self.folders } else { !self.many || cfg!(target_os = "ios") }
+        if cfg!(target_os = "android") { !self.folders } else { !self.many || cfg!(any(target_os = "ios", target_family = "wasm")) }
     }
     /// Takes a folder, when one is asked for: the one named in the box, or with none, the one
     /// shown. (Above the drives there is none.)

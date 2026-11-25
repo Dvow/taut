@@ -417,13 +417,21 @@ async function notes(page) {
     results.stored = localStorage.getItem("/storage/taut-notes/note.txt");
     await pause(120);
     results.announced = page.live.textContent;
-    page.askFile = (accept) => {
+    // The picker to open a file answers as the person would; saving goes the page's way.
+    const ask = page.askFile.bind(page);
+    page.askFile = (accept, name, kind) => {
+        if (kind & 1) {
+            return ask(accept, name, kind);
+        }
         results.accept = accept;
         page.call("taut_file", "picked.txt", new TextEncoder().encode("picked text"));
+        return 0;
     };
     await press(page, named(page, "button", "Open a file\u2026"));
     await settle(page);
     results.opened = box().textContent;
+    // (Where the browser has a save picker, saving goes through it: see tests/web_system.rs.)
+    Object.defineProperty(window, "showSaveFilePicker", { value: undefined, configurable: true });
     page.download = (name, bytes) => (results.downloaded = [name, new TextDecoder().decode(bytes)]);
     await press(page, named(page, "button", "Save as\u2026"));
     await settle(page);
@@ -441,7 +449,8 @@ try {
     // The gallery with the page's font; the notes in the browser's own.
     const font = program === "gallery" ? { regular: "font.ttf", mono: "font.ttf" } : {};
     const begun = performance.now();
-    const page = await start(`${program}.wasm`, { element: document.getElementById("app"), fonts: font });
+    // (The CPU's pixels, read off the 2D canvas: with the feature `gpu`, WebGL2 would show them.)
+    const page = await start(`${program}.wasm`, { element: document.getElementById("app"), fonts: font, renderer: "cpu" });
     await settle(page);
     results.started_ms = Math.round(performance.now() - begun);
     results.loaded_ms = Math.round(performance.now());

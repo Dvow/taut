@@ -117,7 +117,7 @@ pub(crate) struct Edit {
     /// (which would reveal where they end).
     pub secret: bool,
     /// Enter without Shift goes to the app ([`Ui::enter_submits`]).
-    enter_left: bool,
+    pub enter_left: bool,
     /// Cursor and anchor, in bytes: the text between is selected.
     pub cursor: usize,
     pub anchor: usize,
@@ -125,7 +125,7 @@ pub(crate) struct Edit {
     /// previous one (two places where directions meet).
     pub after: bool,
     /// The press moving the cursor has already set the anchor.
-    anchor_set: bool,
+    pub anchor_set: bool,
     /// The word at the cursor is being written: the last change was to the text, and the cursor
     /// has not moved by itself since. (A misspelled word is marked only once ended: see
     /// `spell`.)
@@ -133,7 +133,7 @@ pub(crate) struct Edit {
     /// The x the cursor keeps while moving up and down lines.
     column: Option<f32>,
     /// When the cursor last moved: it blinks from then.
-    moved: Duration,
+    pub moved: Duration,
     /// The cursor moved and is not yet scrolled into view.
     pub reveal: bool,
     changes: Vec<Change>,
@@ -167,7 +167,7 @@ pub(crate) struct Replace {
 }
 
 impl Edit {
-    fn new(id: Id, cursor: usize) -> Self {
+    pub(crate) fn new(id: Id, cursor: usize) -> Self {
         Edit { id, cursor, anchor: cursor, ..Default::default() }
     }
 
@@ -176,7 +176,7 @@ impl Edit {
     }
 
     /// Clamps the cursor to the text, which the app may have changed.
-    fn fit(&mut self, text: &str) {
+    pub(crate) fn fit(&mut self, text: &str) {
         (self.cursor, self.anchor) = (snap(text, self.cursor), snap(text, self.anchor));
     }
 
@@ -214,7 +214,7 @@ impl Edit {
 
     /// Inserts text at the cursor, replacing the selection. A one-line box turns newlines into
     /// spaces.
-    fn insert(&mut self, text: &mut String, new: &str, many: bool, typed: bool) {
+    pub(crate) fn insert(&mut self, text: &mut String, new: &str, many: bool, typed: bool) {
         let new: String = new.chars().filter(|c| *c != '\r').map(|c| if c == '\n' && !many { ' ' } else { c }).collect();
         self.replace(text, self.selection(), &new, typed);
     }
@@ -222,7 +222,7 @@ impl Edit {
     /// Does what the system's keyboard did (iOS): a one-line box turns newlines into spaces;
     /// ends inside a character snap to its start.
     #[cfg(target_os = "ios")]
-    fn keyboard(&mut self, text: &mut String, Replace { range, with, selection }: &Replace, many: bool) {
+    pub(crate) fn keyboard(&mut self, text: &mut String, Replace { range, with, selection }: &Replace, many: bool) {
         let with: String = with.chars().filter(|c| *c != '\r').map(|c| if c == '\n' && !many { ' ' } else { c }).collect();
         let from = snap(text, range.start);
         self.replace(text, from..snap(text, range.end).max(from), &with, true);
@@ -376,7 +376,7 @@ impl Edit {
     }
 
     /// A key that changes the text or the selection; returns whether it was one.
-    fn change(&mut self, text: &mut String, key: Key, mods: Mods, many: bool, clipboard: &mut dyn Clipboard) -> bool {
+    pub(crate) fn change(&mut self, text: &mut String, key: Key, mods: Mods, many: bool, clipboard: &mut dyn Clipboard) -> bool {
         let (at, selected) = (self.cursor, self.selection());
         // What Backspace and Delete remove with no selection: a character, or with Ctrl a word,
         // before or after the cursor.

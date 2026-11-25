@@ -208,6 +208,15 @@ impl DrawList {
         self.staging.clear();
     }
 
+    /// Records the part `area` (in units) of `ui`'s window, `size` pixels big.
+    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    pub(crate) fn record(&mut self, ui: &mut crate::ui::Ui, area: Rect, size: [i32; 2]) {
+        self.begin(size);
+        let mut canvas = Canvas::recording(self, size[0] as usize, size[1] as usize, (0, 0), ui.scale());
+        canvas.clip(area);
+        ui.paint(&mut canvas);
+    }
+
     /// Ends a part: `drawn` by the GPU, or not, when what it put in the cache never went up and
     /// the cache is emptied.
     #[inline]

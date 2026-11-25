@@ -10,7 +10,9 @@
 //! its own; OpenGL through the example's own WGL on a never-shown window, on Linux through
 //! EGL with no display (Mesa's llvmpipe), on macOS through CGL with no window; Vulkan on the
 //! system's first device (lavapipe in the tests on Linux; none on macOS without a Vulkan
-//! loader); Metal on the system's device. A test needing an X display says so, and runs on its own:
+//! loader); Metal on the system's device. On Android (built for an emulator and run there by
+//! `tests/android_gpu.rs`), Vulkan and OpenGL ES through EGL on a pbuffer. A test needing an X
+//! display says so, and runs on its own:
 //! `xvfb-run cargo test --test renderers -- --ignored`. With `TAUT_PICTURES` naming a folder,
 //! each renderer's gallery frame is saved there.
 use std::ffi::c_void;
@@ -107,7 +109,7 @@ fn off(got: &[u32], surface: &Surface, under: &[u32]) -> (u32, usize) {
 const TOLERANCE: u32 = 1;
 
 /// The rows of a picture `width` wide, the last first: OpenGL counts rows from the bottom.
-#[cfg_attr(any(target_vendor = "apple", target_os = "android", target_family = "wasm"), allow(dead_code))]
+#[cfg_attr(any(target_vendor = "apple", target_family = "wasm"), allow(dead_code))]
 fn upside_down(pixels: &[u32], width: usize) -> Vec<u32> {
     pixels.rchunks(width).flatten().copied().collect()
 }
@@ -2025,6 +2027,191 @@ mod direct3d_9 {
         drop((layer, device));
         super::direct3d_11::close(window);
         passed();
+    }
+}
+
+/// OpenGL ES 3 on Android: an EGL context of the system's, on a small pbuffer, nothing on screen.
+/// The program's picture holds true colours (red first); the layer's texture the pixels' bytes
+/// as they are.
+#[cfg(target_os = "android")]
+mod on_opengl_es {
+    use super::*;
+    use std::ffi::c_int;
+    use taut::layer_opengl::Layer;
+
+    type Handle = *mut c_void;
+
+    #[link(name = "EGL")]
+    unsafe extern "C" {
+        fn eglGetDisplay(native: Handle) -> Handle;
+        fn eglInitialize(display: Handle, major: *mut c_int, minor: *mut c_int) -> u32;
+        fn eglChooseConfig(display: Handle, wanted: *const c_int, configs: *mut Handle, room: c_int, found: *mut c_int) -> u32;
+        fn eglBindAPI(api: u32) -> u32;
+        fn eglCreateContext(display: Handle, config: Handle, shared: Handle, asked: *const c_int) -> Handle;
+        fn eglCreatePbufferSurface(display: Handle, config: Handle, asked: *const c_int) -> Handle;
+        fn eglMakeCurrent(display: Handle, draw: Handle, read: Handle, context: Handle) -> u32;
+        fn eglDestroySurface(display: Handle, surface: Handle) -> u32;
+        fn eglDestroyContext(display: Handle, context: Handle) -> u32;
+        fn eglGetProcAddress(name: *const std::ffi::c_char) -> *const c_void;
+    }
+
+    #[link(name = "GLESv3")]
+    unsafe extern "C" {
+        fn glGenTextures(count: c_int, textures: *mut u32);
+        fn glDeleteTextures(count: c_int, textures: *const u32);
+        fn glBindTexture(target: u32, texture: u32);
+        fn glTexImage2D(target: u32, level: c_int, inner: c_int, width: c_int, height: c_int, border: c_int, format: u32, kind: u32, pixels: *const c_void);
+        fn glTexSubImage2D(target: u32, level: c_int, x: c_int, y: c_int, width: c_int, height: c_int, format: u32, kind: u32, pixels: *const c_void);
+        fn glGenFramebuffers(count: c_int, framebuffers: *mut u32);
+        fn glDeleteFramebuffers(count: c_int, framebuffers: *const u32);
+        fn glBindFramebuffer(target: u32, framebuffer: u32);
+        fn glFramebufferTexture2D(target: u32, attachment: u32, kind: u32, texture: u32, level: c_int);
+        fn glCheckFramebufferStatus(target: u32) -> u32;
+        fn glViewport(x: c_int, y: c_int, width: c_int, height: c_int);
+        fn glReadPixels(x: c_int, y: c_int, width: c_int, height: c_int, format: u32, kind: u32, pixels: *mut c_void);
+    }
+
+    const TEXTURE_2D: u32 = 0x0DE1;
+    const RGBA: u32 = 0x1908;
+    const UNSIGNED_BYTE: u32 = 0x1401;
+    const FRAMEBUFFER: u32 = 0x8D40;
+
+    /// A pixel's red and blue traded: `0xAARRGGBB` as the bytes red, green, blue, alpha.
+    fn red_first(pixel: u32) -> u32 {
+        pixel & 0xff00_ff00 | (pixel >> 16 & 0xff) | (pixel & 0xff) << 16
+    }
+
+    /// An OpenGL ES 3 context current on this thread, on a pbuffer.
+    struct Context {
+        display: Handle,
+        surface: Handle,
+        context: Handle,
+    }
+
+    impl Context {
+        fn new() -> Context {
+            unsafe {
+                let display = eglGetDisplay(std::ptr::null_mut());
+                assert_ne!(eglInitialize(display, std::ptr::null_mut(), std::ptr::null_mut()), 0, "EGL starts");
+                // A pbuffer (0x0001) for OpenGL ES 3 (0x0040), 8 bits a channel.
+                let wanted = [0x3033, 0x0001, 0x3040, 0x0040, 0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3021, 8, 0x3038];
+                let (mut config, mut found) = (std::ptr::null_mut(), 0);
+                eglChooseConfig(display, wanted.as_ptr(), &mut config, 1, &mut found);
+                assert_eq!(found, 1, "a config of OpenGL ES 3");
+                eglBindAPI(0x30A0);
+                let context = eglCreateContext(display, config, std::ptr::null_mut(), [0x3098, 3, 0x3038].as_ptr());
+                let surface = eglCreatePbufferSurface(display, config, [0x3057, 16, 0x3056, 16, 0x3038].as_ptr());
+                assert_ne!(eglMakeCurrent(display, surface, surface, context), 0, "the context is current");
+                Context { display, surface, context }
+            }
+        }
+    }
+
+    impl Drop for Context {
+        fn drop(&mut self) {
+            unsafe {
+                eglMakeCurrent(self.display, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+                eglDestroySurface(self.display, self.surface);
+                eglDestroyContext(self.display, self.context);
+            }
+        }
+    }
+
+    /// The layer, in a context of this thread's.
+    struct OpenGlEs {
+        layer: Layer,
+        _context: Context,
+    }
+
+    impl OpenGlEs {
+        fn new() -> OpenGlEs {
+            let context = Context::new();
+            let layer = unsafe { Layer::new(&mut |name| eglGetProcAddress(name.as_ptr())) }.unwrap_or_else(|failed| panic!("{failed}"));
+            OpenGlEs { layer, _context: context }
+        }
+
+        /// A framebuffer whose colour is `texture`, bound.
+        fn framebuffer(texture: u32) -> u32 {
+            let mut framebuffer = 0;
+            unsafe {
+                glGenFramebuffers(1, &mut framebuffer);
+                glBindFramebuffer(FRAMEBUFFER, framebuffer);
+                glFramebufferTexture2D(FRAMEBUFFER, 0x8CE0, TEXTURE_2D, texture, 0);
+                assert_eq!(glCheckFramebufferStatus(FRAMEBUFFER), 0x8CD5, "the framebuffer is complete");
+            }
+            framebuffer
+        }
+
+        /// The bound framebuffer's bytes, `width` by `height`, as words, rows as read.
+        fn read(width: usize, height: usize) -> Vec<u32> {
+            let mut pixels = vec![0u32; width * height];
+            unsafe { glReadPixels(0, 0, width as i32, height as i32, RGBA, UNSIGNED_BYTE, pixels.as_mut_ptr().cast()) };
+            pixels
+        }
+    }
+
+    impl Renderer for OpenGlEs {
+        fn update(&mut self, ui: &mut Ui) {
+            unsafe { self.layer.update(ui) }.unwrap_or_else(|failed| panic!("{failed}"));
+        }
+        fn drawn(&mut self, ui: &mut Ui, under: &[u32], [width, height]: [usize; 2], [x, y, wide, high]: [i32; 4]) -> Vec<u32> {
+            // The picture underneath in true colours, its rows turned over; drawn into through a
+            // framebuffer, and read back. The viewport is said from the bottom, as OpenGL counts.
+            let picture: Vec<u32> = upside_down(under, width).into_iter().map(red_first).collect();
+            let mut target = 0;
+            unsafe {
+                glGenTextures(1, &mut target);
+                glBindTexture(TEXTURE_2D, target);
+                glTexImage2D(TEXTURE_2D, 0, 0x8058, width as i32, height as i32, 0, RGBA, UNSIGNED_BYTE, picture.as_ptr().cast());
+            }
+            let framebuffer = OpenGlEs::framebuffer(target);
+            unsafe {
+                glViewport(x, height as i32 - y - high, wide, high);
+                self.layer.draw(ui).unwrap_or_else(|failed| panic!("{failed}"));
+            }
+            let pixels = OpenGlEs::read(width, height);
+            unsafe {
+                glBindFramebuffer(FRAMEBUFFER, 0);
+                glDeleteFramebuffers(1, &framebuffer);
+                glDeleteTextures(1, &target);
+            }
+            upside_down(&pixels, width).into_iter().map(red_first).collect()
+        }
+        fn fill(&mut self, pixels: &[u32]) {
+            let surface = self.layer.surface();
+            unsafe {
+                glBindTexture(TEXTURE_2D, self.layer.texture());
+                glTexSubImage2D(TEXTURE_2D, 0, 0, 0, surface.width as i32, surface.height as i32, RGBA, UNSIGNED_BYTE, pixels.as_ptr().cast());
+            }
+        }
+        fn texture(&mut self) -> Vec<u32> {
+            let surface = self.layer.surface();
+            let framebuffer = OpenGlEs::framebuffer(self.layer.texture());
+            let pixels = OpenGlEs::read(surface.width, surface.height);
+            unsafe {
+                glBindFramebuffer(FRAMEBUFFER, 0);
+                glDeleteFramebuffers(1, &framebuffer);
+            }
+            pixels
+        }
+        fn surface(&self) -> &Surface {
+            self.layer.surface()
+        }
+    }
+
+    #[test]
+    fn opengl_es_shows_the_surface_over_what_was_drawn() {
+        shows_the_surface_over_what_was_drawn(&mut OpenGlEs::new(), "OpenGL ES");
+    }
+
+    #[test]
+    fn opengl_es_is_given_only_the_places_that_changed() {
+        is_given_only_the_places_that_changed(&mut OpenGlEs::new(), "OpenGL ES");
+    }
+
+    #[test]
+    fn opengl_es_lies_at_the_programs_viewport() {
+        lies_at_the_programs_viewport(&mut OpenGlEs::new(), "OpenGL ES");
     }
 }
 

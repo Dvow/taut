@@ -53,8 +53,9 @@ fn folder_with(app: &str, var: impl Fn(&str) -> Option<OsString>) -> Option<Path
 /// it. If the program stops or the disk is full, `file` is as it was (a stopped program may
 /// leave `file` + its process id + `.new` beside it). Creates the folder if missing.
 ///
-/// On the web, `file` is a key of the page's `localStorage`, written whole; a file under
-/// `/downloads` (where a file dialog saves on the web) is a download instead.
+/// On the web, `file` is a key of the page's `localStorage`, written whole; a file where a
+/// file dialog saved (`/saved/<name>`, `/downloads/<name>`) is written as
+/// [`web::save`](crate::web) writes it.
 pub fn write(file: &Path, text: &str) -> io::Result<()> {
     #[cfg(target_family = "wasm")]
     return on_the_web::write(file, text);
@@ -81,7 +82,8 @@ pub fn write(file: &Path, text: &str) -> io::Result<()> {
 }
 
 /// What was written into `file`; `None` if it is missing or not text. (On the web, from the
-/// page's `localStorage`, or a file the person picked: `/picked/<name>`.)
+/// page's `localStorage`, or a file the person handed the page: `/picked/<name>`,
+/// `/dropped/<name>`, `/pasted/<name>`.)
 pub fn read(file: &Path) -> Option<String> {
     #[cfg(target_family = "wasm")]
     return on_the_web::read(file);
@@ -89,23 +91,23 @@ pub fn read(file: &Path) -> Option<String> {
     std::fs::read_to_string(file).ok()
 }
 
-/// Files in a page: `localStorage`, picked files, downloads.
+/// Files in a page: `localStorage`, files handed to the page, files saved.
 #[cfg(target_family = "wasm")]
 mod on_the_web {
     use std::io;
     use std::path::Path;
 
     pub fn write(file: &Path, text: &str) -> io::Result<()> {
-        if let Ok(name) = file.strip_prefix("/downloads") {
-            crate::web_host::save_as(&name.to_string_lossy(), text.as_bytes());
-            return Ok(());
+        if file.starts_with("/saved") || file.starts_with("/downloads") {
+            return crate::web::save(file, text.as_bytes());
         }
         let kept = file.file_name().is_some() && crate::web_host::store(&file.to_string_lossy(), text);
         if kept { Ok(()) } else { Err(io::Error::other("the page's storage refused it")) }
     }
 
     pub fn read(file: &Path) -> Option<String> {
-        match file.starts_with("/picked") {
+        let handed = ["/picked", "/dropped", "/pasted"].iter().any(|folder| file.starts_with(folder));
+        match handed {
             true => crate::web_host::picked(file).and_then(|bytes| String::from_utf8(bytes).ok()),
             false => crate::web_host::stored(&file.to_string_lossy()),
         }

@@ -22,13 +22,6 @@ use std::ffi::{CStr, c_void};
 use std::ptr::{null, null_mut};
 
 structures! {
-    VkAttachmentDescription { flags: u32, format: u32, samples: u32, load: u32, store: u32, stencil_load: u32, stencil_store: u32, initial_layout: u32, final_layout: u32, }
-    VkAttachmentReference { attachment: u32, layout: u32, }
-    VkSubpassDescription { flags: u32, bind_point: u32, input_count: u32, inputs: *const VkAttachmentReference, colour_count: u32, colours: *const VkAttachmentReference, resolves: *const VkAttachmentReference, depth: *const VkAttachmentReference, preserve_count: u32, preserves: *const u32, }
-    VkRenderPassCreateInfo { kind: u32, next: *const c_void, flags: u32, attachment_count: u32, attachments: *const VkAttachmentDescription, subpass_count: u32, subpasses: *const VkSubpassDescription, dependency_count: u32, dependencies: *const c_void, }
-    VkFramebufferCreateInfo { kind: u32, next: *const c_void, flags: u32, render_pass: Handle, attachment_count: u32, attachments: *const Handle, width: u32, height: u32, layers: u32, }
-    VkRenderPassBeginInfo { kind: u32, next: *const c_void, render_pass: Handle, framebuffer: Handle, area: VkRect2D, clear_count: u32, clears: *const c_void, }
-    VkSamplerCreateInfo { kind: u32, next: *const c_void, flags: u32, magnify: u32, minify: u32, mipmaps: u32, address: [u32; 3], bias: f32, anisotropy: u32, most_anisotropy: f32, compare: u32, compare_op: u32, least_level: f32, most_level: f32, border: u32, unnormalized: u32, }
     VkVertexInputBindingDescription { binding: u32, stride: u32, rate: u32, }
     VkVertexInputAttributeDescription { location: u32, binding: u32, format: u32, offset: u32, }
 }
@@ -78,23 +71,14 @@ functions!(Calls {
 });
 
 // Copies between images: X11's and Wayland's windows are drawn in an image of their own.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 functions!(Copying {
     vkCmdCopyImage: fn(Object, Handle, u32, Handle, u32, u32, *const VkImageCopy);
 });
 
-/// An image's layout for drawing into, and that use's access and stage.
-pub(crate) const LAYOUT_COLOUR: u32 = 2;
-const ACCESS_COLOUR: u32 = 0x80 | 0x100;
-const STAGE_COLOUR: u32 = 0x400;
-/// An image drawn into (`VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT`); one shaders read.
-pub(crate) const USAGE_DRAWN_INTO: u32 = 0x10;
-const USAGE_SAMPLED: u32 = 0x4;
 /// A buffer of vertices; one copied from.
 const USAGE_VERTICES: u32 = 0x80;
 const USAGE_COPIED_FROM: u32 = 0x1;
-/// A combined image and sampler, in a descriptor set.
-const SAMPLED: u32 = 1;
 /// Four 32-bit floats (`VK_FORMAT_R32G32B32A32_SFLOAT`).
 const FOUR_FLOATS: u32 = 109;
 /// Stages reading the textures and the quads.
@@ -137,7 +121,7 @@ impl Default for Written {
 /// up through, and the framebuffer of the image drawn into last.
 pub(crate) struct Pipeline {
     calls: Calls,
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     copying: Copying,
     device: Object,
     /// The kinds of memory in the device's own memory, and those the CPU writes: one bit each.
@@ -173,13 +157,6 @@ impl std::fmt::Debug for Pipeline {
     }
 }
 
-/// The kinds of `memory` that have all of `wanted`, one bit each.
-#[inline]
-pub(crate) fn kinds(memory: &VkPhysicalDeviceMemoryProperties, wanted: u32) -> u32 {
-    let types = memory.types.iter().take(memory.type_count as usize).enumerate();
-    types.filter(|(_, kind)| kind.flags & wanted == wanted).fold(0, |all, (at, _)| all | 1 << at)
-}
-
 impl Pipeline {
     /// What `device` draws with, its functions found by `find`, its memory as `memory` says;
     /// with `dual` (the device made with `dualSrcBlend`), GDI's runs blended per channel.
@@ -188,12 +165,12 @@ impl Pipeline {
         let calls = Calls::load(find).ok()?;
         // Only GDI's runs (Windows) blend per channel.
         let dual = dual && cfg!(windows);
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "android")))]
         let copying = Copying::load(find).ok()?;
         let (local, writable) = (kinds(memory, DEVICE_LOCAL), kinds(memory, HOST_VISIBLE_AND_COHERENT));
         let mut made = Box::new(Pipeline {
             calls,
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "android")))]
             copying,
             device,
             local,
@@ -456,7 +433,7 @@ impl Pipeline {
         Some(frame)
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     /// An image `size` pixels a window's pixels are kept and drawn in, in the device's own memory:
     /// copied into, drawn into and copied from. It and its memory; nothing where none is made.
     pub(crate) fn picture(&self, size: [i32; 2]) -> Option<(Handle, Handle)> {
@@ -481,7 +458,7 @@ impl Pipeline {
         Some((image, memory))
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     /// Lets go of an image `picture` made, and its memory. (The device is done with it.)
     pub(crate) fn unpicture(&self, (image, memory): (Handle, Handle)) {
         // SAFETY: as said; null handles are let be.
@@ -491,7 +468,7 @@ impl Pipeline {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "android")))]
     /// Records `places` (left, top, right, bottom) copied from image `from` (laid out to be
     /// copied from) into the same places of `to` (to be copied into).
     pub(crate) fn copy_places(&self, commands: Object, from: Handle, to: Handle, places: &[[i32; 4]]) {
@@ -1847,7 +1824,9 @@ pub(crate) mod tests {
             wanted[7] = dual as u32;
             let priority = 1.0f32;
             let queue = VkDeviceQueueCreateInfo { kind: 2, family: 0, count: 1, priorities: &priority, ..Default::default() };
-            let asked = VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, features: wanted.as_ptr().cast(), ..Default::default() };
+            // (Swap chains too: the HDR pass leaves an image ready to present.)
+            let swap_chains = c"VK_KHR_swapchain".as_ptr();
+            let asked = VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: 1, extensions: &swap_chains, features: wanted.as_ptr().cast(), ..Default::default() };
             let mut device = null_mut();
             assert_eq!(unsafe { (made.vkCreateDevice)(cpu, &asked, null(), &mut device) }, 0);
             let mut bench = Bench { instance, device, queue: null_mut(), pool: 0, commands: null_mut(), fence: 0, memory, dual, find };

@@ -14,7 +14,8 @@
 //! returns at once, and the interface runs when input, a timer or a [`Waker`] says. Frames are
 //! drawn by the CPU into the window's buffer (`ANativeWindow_lock`), inside the system bars,
 //! the display cutout and the soft keyboard (window insets), with the theme's background
-//! under them. The interface outlives its activity: rotated, or recreated by the system, the
+//! under them; with the feature `gpu`, shown through Vulkan or OpenGL ES instead
+//! (`gpu_android`). The interface outlives its activity: rotated, or recreated by the system, the
 //! new activity shows the same interface. Java is reached through JNI (`android_jni`), and the
 //! few classes the system's Java interfaces need are written at run time (`android_dex`): a
 //! view that takes the soft keyboard's text and window insets, and the node provider screen
@@ -335,6 +336,19 @@ unsafe extern "C" {
     fn dladdr(address: *const c_void, info: *mut DlInfo) -> c_int;
     fn dlopen(name: *const c_char, flags: c_int) -> *mut c_void;
     fn dlsym(library: *mut c_void, name: *const c_char) -> *mut c_void;
+    #[cfg(feature = "gpu")]
+    fn __system_property_get(name: *const c_char, value: *mut c_char) -> c_int;
+}
+
+/// A system property (as `getprop` gives it), where it is set.
+#[cfg(feature = "gpu")]
+pub(crate) fn property(name: &str) -> Option<String> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // (`PROP_VALUE_MAX`: the longest value, its zero included.)
+    let mut value = [0u8; 92];
+    // SAFETY: the name is a C string; the value has room for the longest one.
+    let length = unsafe { __system_property_get(name.as_ptr(), value.as_mut_ptr().cast()) };
+    (length > 0).then(|| String::from_utf8_lossy(&value[..length.min(91) as usize]).into_owned())
 }
 
 /// The library's view, made and put over the activity's own (which shows nothing: the window's
@@ -438,6 +452,9 @@ extern "C" fn on_redraw_needed(_: *mut Activity, _: *mut c_void) {
 
 extern "C" fn on_window_destroyed(_: *mut Activity, window: *mut c_void) {
     SHELL.with_borrow_mut(|shell| shell.window = std::ptr::null_mut());
+    // What the GPU made on the window goes before it.
+    #[cfg(feature = "gpu")]
+    HOST.with(|host| host.try_borrow_mut().ok()?.as_mut().map(|host| host.window_gone()));
     // SAFETY: held since `on_window_created`.
     unsafe { ANativeWindow_release(window) };
 }
@@ -720,6 +737,9 @@ trait Turns {
     fn turn(&mut self) -> Option<Duration>;
     /// Whether the app closed.
     fn done(&self) -> bool;
+    /// The window goes: what the GPU made on it goes first.
+    #[cfg(feature = "gpu")]
+    fn window_gone(&mut self);
 }
 
 /// The interface and what shows it.
@@ -740,6 +760,9 @@ struct Host<App> {
     pressed: bool,
     /// What the input method composes, as last drawn.
     composed: Option<crate::android_input_method::Panel>,
+    /// What the GPU keeps of the window (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    screen: crate::gpu_android::Screen,
 }
 
 impl<App: FnMut(&mut Ui)> Turns for Host<App> {
@@ -762,6 +785,10 @@ impl<App: FnMut(&mut Ui)> Turns for Host<App> {
     }
     fn done(&self) -> bool {
         self.done
+    }
+    #[cfg(feature = "gpu")]
+    fn window_gone(&mut self) {
+        self.screen.window_gone();
     }
 }
 
@@ -877,6 +904,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         if self.ui.size().w <= 0.0 {
             return;
         }
+        #[cfg(feature = "gpu")]
+        if self.through_gpu(if resumed { window } else { std::ptr::null_mut() }, insets) {
+            return;
+        }
         let changed = self.surface.update(&mut self.ui);
         self.ui.changed();
         let typing = INPUT_METHOD.get();
@@ -901,6 +932,33 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             }
             ANativeWindow_unlockAndPost(window);
         }
+    }
+}
+
+/// The window shown through the GPU (feature `gpu`).
+#[cfg(feature = "gpu")]
+impl<App: FnMut(&mut Ui)> Host<App> {
+    /// Draws what changed through the GPU, where it shows the window (`window`, null while there
+    /// is none to show), with what the input method composes over it. Says whether it did; if
+    /// not, the CPU is to.
+    fn through_gpu(&mut self, window: *mut c_void, insets: [i32; 4]) -> bool {
+        let panel = INPUT_METHOD.get().and_then(|typing| (typing.panel)(&mut self.ui, [insets[0], insets[1]]));
+        let shown = {
+            let panels = [self.composed.as_ref(), panel.as_ref()];
+            let window = crate::gpu_android::Window { native: window, size: self.pixels, insets, again: self.whole, panels };
+            self.screen.draw(&mut self.ui, &mut self.surface, &window)
+        };
+        let renderer = self.screen.renderer();
+        if std::mem::replace(&mut self.ui.renderer, renderer) != renderer {
+            // What a test checks the window is shown by (see `tests/android_gpu.rs`).
+            log(&format!("shown by {renderer:?}"));
+        }
+        match shown {
+            crate::platform::ShownBy::Gpu => (self.composed, self.whole) = (panel, false),
+            crate::platform::ShownBy::Cpu => {}
+            crate::platform::ShownBy::CpuAfresh => (self.surface, self.whole) = (Surface::default(), true),
+        }
+        shown == crate::platform::ShownBy::Gpu
     }
 }
 
@@ -948,9 +1006,9 @@ fn copy_out(surface: &Surface, rows: &mut [u32], buffer: &WindowBuffer, dirty: [
 
 /// Opens the interface in the activity's window and returns: it runs on the main looper from
 /// then on, while the activity and its successors live (see the module). Called from the app's
-/// `android_main`; the window's size and place are the activity's, so `window` is not used.
+/// `android_main`; the window's size and place are the activity's: of `window`, only the
+/// renderer is used.
 pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
-    let _ = window;
     if activity().is_null() {
         return log("taut: on Android, `run` is called from `android_main`, on the main thread.");
     }
@@ -959,7 +1017,14 @@ pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
         None => Box::new(crate::text::BuiltInFont),
     };
     let ui = Ui::new(text, Box::new(SystemClipboard));
-    let host = Host { app, ui, surface: Surface::default(), rerun: true, done: false, whole: true, start: Instant::now(), pixels: [0, 0], typed_in: None, pressed: false, composed: None };
+    #[rustfmt::skip]
+    let host = Host {
+        app, ui, surface: Surface::default(), rerun: true, done: false, whole: true, start: Instant::now(), pixels: [0, 0], typed_in: None, pressed: false, composed: None,
+        #[cfg(feature = "gpu")]
+        screen: crate::gpu_android::Screen::new(window.renderer),
+    };
+    #[cfg(not(feature = "gpu"))]
+    let _ = window;
     HOST.set(Some(Box::new(host)));
     heard(Heard::Looks);
     kick();

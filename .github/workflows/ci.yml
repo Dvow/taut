@@ -42,6 +42,9 @@ jobs:
       - name: Clippy, gpu without gpu-draw
         if: ${{ !cancelled() }}
         run: cargo clippy --all-targets --features gpu -- -D warnings
+      - name: Clippy, hdr without gpu-draw
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --features hdr -- -D warnings
       - name: The DLL tests/dll.rs loads
         if: ${{ !cancelled() }}
         run: cargo build --example overlay
@@ -66,15 +69,16 @@ jobs:
       - name: The runner's image
         id: image
         run: echo "name=${ImageOS:-ubuntu}-${ImageVersion:-0}" >> "$GITHUB_OUTPUT"
-      # The packages downloaded by earlier runs (see .github/apt.sh).
+      # The packages downloaded by earlier runs (see `ci apt` in .github/ci.rs).
       - uses: actions/cache@v6
         with:
           path: ~/debs
-          key: debs-ubuntu-${{ steps.image.outputs.name }}-${{ hashFiles('.github/workflows/ci.yml', '.github/apt.sh') }}
+          key: debs-ubuntu-${{ steps.image.outputs.name }}-${{ hashFiles('.github/workflows/ci.yml', '.github/ci.rs') }}
           restore-keys: debs-ubuntu-
       - name: What the tests and walks load
         run: |
-          bash .github/apt.sh xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
+          rustc -O --edition 2024 .github/ci.rs -o ~/ci
+          ~/ci apt xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
             libx11-6 libxtst6 libxi6 libxrandr2 libxkbcommon0 libfontconfig1 libfreetype6 libharfbuzz0b fonts-dejavu-core \
             libegl1 libgles2 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 xclip
       - name: Rust
@@ -91,6 +95,9 @@ jobs:
       - name: Clippy, gpu without gpu-draw
         if: ${{ !cancelled() }}
         run: cargo clippy --all-targets --features gpu -- -D warnings
+      - name: Clippy, hdr without gpu-draw
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --features hdr -- -D warnings
       - name: Tests, all features
         if: ${{ !cancelled() }}
         run: cargo test --all-features --no-fail-fast -- --test-threads=4
@@ -135,15 +142,16 @@ jobs:
       - name: The runner's image
         id: image
         run: echo "name=${ImageOS:-ubuntu}-${ImageVersion:-0}" >> "$GITHUB_OUTPUT"
-      # The packages downloaded by earlier runs (see .github/apt.sh).
+      # The packages downloaded by earlier runs (see `ci apt` in .github/ci.rs).
       - uses: actions/cache@v6
         with:
           path: ~/debs
-          key: debs-wayland-${{ steps.image.outputs.name }}-${{ hashFiles('.github/workflows/ci.yml', '.github/apt.sh') }}
+          key: debs-wayland-${{ steps.image.outputs.name }}-${{ hashFiles('.github/workflows/ci.yml', '.github/ci.rs') }}
           restore-keys: debs-wayland-
       - name: Weston, lavapipe, Xvfb; and /dev/udmabuf
         run: |
-          bash .github/apt.sh weston xvfb xauth dbus \
+          rustc -O --edition 2024 .github/ci.rs -o ~/ci
+          ~/ci apt weston xvfb xauth dbus \
             mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 \
             libx11-6 libx11-dev libxtst6 libxi6 libxkbcommon0 libfontconfig1 libfreetype6 fonts-dejavu-core
           uname -r
@@ -155,22 +163,20 @@ jobs:
         run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
       - name: Build the tests
         run: cargo test --lib --all-features --no-run
-      - name: Probe (step 1)
-        run: bash .github/waylandgpu/probe.sh
       - name: Tests with a played compositor
         run: cargo test --lib --all-features gpu_wayland -- --nocapture
       - name: GL Weston on Xvfb (dmabufs, the screen read)
         if: ${{ !cancelled() }}
-        run: bash .github/waylandgpu/desk.sh weston-x11-gl 31 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+        run: ~/ci desk weston-x11-gl 31 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
       - name: GL Weston headless (dmabufs)
         if: ${{ !cancelled() }}
-        run: bash .github/waylandgpu/desk.sh weston-gl 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+        run: ~/ci desk weston-gl 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
       - name: Pixman Weston (no dmabufs; shared memory)
         if: ${{ !cancelled() }}
-        run: bash .github/waylandgpu/desk.sh weston 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+        run: ~/ci desk weston 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
       - name: Pixman Weston on Xvfb (shared memory, the screen read)
         if: ${{ !cancelled() }}
-        run: bash .github/waylandgpu/desk.sh weston-x11 32 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+        run: ~/ci desk weston-x11 32 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
 
   macos:
     runs-on: macos-latest
@@ -191,6 +197,9 @@ jobs:
       - name: Clippy, gpu without gpu-draw
         if: ${{ !cancelled() }}
         run: cargo clippy --all-targets --features gpu -- -D warnings
+      - name: Clippy, hdr without gpu-draw
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --features hdr -- -D warnings
       - name: Window checks (real windows on the runner's screen, which is nobody's)
         if: ${{ !cancelled() }}
         run: TAUT_SHOTS="$RUNNER_TEMP/shots" cargo test --test macos
@@ -212,7 +221,8 @@ jobs:
           if-no-files-found: warn
 
   # taut in a browser: clippy for wasm32-unknown-unknown, Rust 1.88 for it, the pages under Node
-  # and headless Chrome (tests/web.rs), and the programs' sizes.
+  # and headless Chrome (tests/web.rs), the system's parts driven through the DevTools protocol
+  # (tests/web_system.rs), and the programs' sizes.
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -234,10 +244,15 @@ jobs:
         run: rustup toolchain install 1.88.0 --profile minimal -t wasm32-unknown-unknown && cargo +1.88.0 check --lib --all-features --target wasm32-unknown-unknown
       - name: The font both sides of the pixel checks draw with, and colour emoji for the browser
         if: ${{ !cancelled() }}
-        run: bash .github/apt.sh fonts-dejavu-core fonts-noto-color-emoji
+        run: rustc -O --edition 2024 .github/ci.rs -o ~/ci && ~/ci apt fonts-dejavu-core fonts-noto-color-emoji
       - name: Pages under Node and headless Chrome
         if: ${{ !cancelled() }}
         run: node --version && google-chrome --version && cargo test --test web -- --nocapture
+      - name: The system's parts in headless Chrome
+        if: ${{ !cancelled() }}
+        env:
+          TAUT_WEB: required
+        run: cargo test --test web_system
       - name: Sizes (the release profile of docs/costs-and-speed.md)
         if: ${{ !cancelled() }}
         env:
@@ -336,7 +351,8 @@ jobs:
   # Linux frame, taps, keys, typing, rotation, home and back, and what uiautomator reads; what
   # screen readers read, through the provider and uiautomator (tests/android.rs); and the system
   # parts (src/android_emulator.rs): file dialog, clipboard, notifications, spelling, composing,
-  # named fonts, printing, opening files, drags between two apps.
+  # named fonts, printing, opening files, drags between two apps; and the GPU
+  # (tests/android_gpu.rs): Vulkan and OpenGL ES against the CPU's pixels.
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -368,6 +384,7 @@ jobs:
           cargo run --example apk -- tests/android.rs --target x86_64-linux-android
           cargo run --example apk -- system_parts --target x86_64-linux-android
           cargo run --example apk -- system_parts --target x86_64-linux-android --package taut.example.parts2 --out target/apk/parts2.apk
+          cargo run --example apk -- gallery --target x86_64-linux-android --features gpu-draw,touch --out target/apk/gallery-gpu.apk
           ls -l target/*-linux-android/release/lib*.so target/apk/*.apk
       - name: KVM for the emulator
         run: |
@@ -403,12 +420,16 @@ jobs:
       - name: The system parts on the emulator
         if: ${{ !cancelled() }}
         run: TAUT_ANDROID_PARTS_APK=$PWD/target/apk/system_parts.apk TAUT_ANDROID_OTHER_APK=$PWD/target/apk/parts2.apk TAUT_PICTURES=$PWD/android-parts cargo test --lib the_system_parts_on_an_android_emulator -- --nocapture
+      - name: The GPU on the emulator (Vulkan and OpenGL ES; the library's checks there, the gallery shown each way)
+        if: ${{ !cancelled() }}
+        run: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME TAUT_ANDROID_GPU=required TAUT_ANDROID_GPU_APK=$PWD/target/apk/gallery-gpu.apk TAUT_PICTURES=$PWD/android/gpu cargo test --test android_gpu
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
           name: android
           path: |
             android/*.png
+            android/gpu/*.png
             android/*.xml
             android/logcat.txt
             android/readers
@@ -474,7 +495,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal -t wasm32-unknown-unknown -t aarch64-apple-ios-sim && rustup default stable && rustc -V
       - name: GStreamer
         if: runner.os == 'Linux'
-        run: bash .github/apt.sh gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        run: rustc -O --edition 2024 .github/ci.rs -o ~/ci && ~/ci apt gstreamer1.0-plugins-base gstreamer1.0-plugins-good
       - name: Video tests
         run: cargo test --features video --lib video::tests
       - name: Video on the main thread, and in the iOS simulator

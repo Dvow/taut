@@ -2,18 +2,22 @@
 //! (the feature `hdr`).
 //!
 //! - The CPU draws every window as ever: SDR, the same pixels on every screen.
-//! - What is brighter is a gain, per pixel: how many times brighter than its SDR colour. A
-//!   box's [`El::brightness`](crate::El::brightness) gives one; an HDR picture a gain map (its
-//!   SDR picture, and per pixel how much brighter, as Ultra HDR photos keep it).
-//! - A window with gains on an HDR screen is presented in scRGB (linear, 1.0 is 80 nits): each
-//!   pixel is its SDR colour made linear, times the screen's SDR white, times its gain, at most
-//!   the screen's peak. The rest stays at SDR white, as in other programs' windows.
-//! - A window's gains are a plane of 16-bit floats (`Gains`), redrawn where what is lit moved.
+//! - What is brighter is a gain, per pixel and colour: how many times brighter than its SDR
+//!   colour. A box's [`El::brightness`](crate::El::brightness) gives one; an HDR picture a gain
+//!   map (its SDR picture, and how much brighter, as Ultra HDR photos keep it), sampled
+//!   bilinearly where the picture is shown.
+//! - A window with gains on an HDR screen is presented in linear light: each pixel is its SDR
+//!   colour made linear, times the screen's SDR white, times its gain, at most the screen's
+//!   peak. The rest stays at SDR white, as in other programs' windows.
+//! - A window's gains are a plane of 16-bit floats (`Gains`): red, green and blue gains and a
+//!   gain map's offset, redrawn where what is lit moved.
 //!
 //! | Path | HDR |
 //! | --- | --- |
-//! | Direct3D 11 and 12 | scRGB, `R16G16B16A16_FLOAT` (`hdr_windows`) |
-//! | Vulkan, OpenGL, the CPU, X11, Wayland, macOS | SDR |
+//! | Direct3D 11 and 12, Vulkan and OpenGL on Windows | scRGB, 16-bit floats (`hdr_windows`, `hdr_vulkan`, `hdr_opengl`) |
+//! | Wayland: the CPU, Vulkan | PQ, 16 bits (`hdr_wayland`) |
+//! | macOS: Metal | EDR, 16-bit floats (`hdr_metal`) |
+//! | X11, the CPU elsewhere | SDR: X has no HDR |
 use crate::ui::{Picture, Ui};
 
 #[cfg(feature = "hdr")]
@@ -47,14 +51,90 @@ impl Default for Screen {
     }
 }
 
-/// A picture's gain map: per pixel, how many times brighter than its SDR picture, in rows of
-/// `width`; and a number told apart from every other map's.
+/// A picture's gain map, lying over the whole picture: `width` values a row (16-bit floats),
+/// each one value for all colours or one per colour (`colours`, 1 or 3); how they become gains;
+/// and a number told apart from every other map's.
 #[cfg(feature = "hdr")]
 #[derive(Debug)]
 pub(crate) struct GainMap {
     pub width: usize,
-    pub gains: Vec<f32>,
+    pub colours: usize,
+    pub values: Vec<u16>,
+    pub curve: Curve,
     pub serial: u32,
+}
+
+/// How a gain map's values become gains, per colour (ISO 21496-1, Adobe's gain maps): value
+/// `v` gives `2^(low + (high - low) * v^(1 / gamma))` times brighter, shown in full from
+/// `full` stops of headroom and not below `none` (`weight`); the colour is offset by `offset`
+/// before and after (SDR and HDR offsets, taken as one).
+#[cfg(feature = "hdr")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Curve {
+    pub gamma: [f32; 3],
+    pub low: [f32; 3],
+    pub high: [f32; 3],
+    pub offset: f32,
+    pub none: f32,
+    pub full: f32,
+}
+
+#[cfg(feature = "hdr")]
+impl Curve {
+    /// Gains kept as stops (log2): `v` is `2^v` times brighter, at every headroom.
+    pub const STOPS: Curve = Curve { gamma: [1.0; 3], low: [0.0; 3], high: [1.0; 3], offset: 0.0, none: 0.0, full: 0.0 };
+
+    /// How much of the map shows on a screen of `headroom`: 0 to 1, by where its stops lie
+    /// between `none` and `full`.
+    pub fn weight(&self, headroom: f32) -> f32 {
+        let stops = headroom.max(1.0).log2();
+        if self.full <= self.none || stops >= self.full {
+            return 1.0;
+        }
+        ((stops - self.none) / (self.full - self.none)).clamp(0.0, 1.0)
+    }
+
+    /// The gain of value `value` of colour `colour`, `weight` of it shown.
+    #[inline]
+    pub fn gain(&self, colour: usize, value: f32, weight: f32) -> f32 {
+        let value = if self.gamma[colour] == 1.0 { value } else { value.max(0.0).powf(1.0 / self.gamma[colour]) };
+        ((self.low[colour] + (self.high[colour] - self.low[colour]) * value) * weight).exp2()
+    }
+}
+
+#[cfg(feature = "hdr")]
+impl GainMap {
+    /// A map of plain gains (each how many times brighter, the same for every colour), `width`
+    /// a row.
+    pub fn of_gains(width: usize, gains: &[f32]) -> GainMap {
+        GainMap { width, colours: 1, values: gains.iter().map(|gain| half(gain.log2())).collect(), curve: Curve::STOPS, serial: 0 }
+    }
+
+    /// Its rows.
+    fn rows(&self) -> usize {
+        self.values.len() / (self.width * self.colours).max(1)
+    }
+
+    /// Its gains, per colour, at window pixel `x`, `y`, the map lying over `shape` (left, top,
+    /// width, height), `weight` of it shown: its values sampled bilinearly, pixel centre on
+    /// pixel centre, the edges held (as a GPU samples a texture).
+    pub fn sampled(&self, [left, top, wide, high]: [f32; 4], x: i32, y: i32, weight: f32) -> [f32; 3] {
+        let (across, down) = (self.width, self.rows());
+        let at_x = ((x as f32 + 0.5 - left) / wide * across as f32 - 0.5).clamp(0.0, (across - 1) as f32);
+        let at_y = ((y as f32 + 0.5 - top) / high * down as f32 - 0.5).clamp(0.0, (down - 1) as f32);
+        let ([x0, y0], [fx, fy]) = ([at_x as usize, at_y as usize], [at_x.fract(), at_y.fract()]);
+        let [x1, y1] = [(x0 + 1).min(across - 1), (y0 + 1).min(down - 1)];
+        let value = |x: usize, y: usize, colour: usize| from_half(self.values[(y * across + x) * self.colours + colour]);
+        let gain = |colour: usize| {
+            let upper = value(x0, y0, colour) + (value(x1, y0, colour) - value(x0, y0, colour)) * fx;
+            let lower = value(x0, y1, colour) + (value(x1, y1, colour) - value(x0, y1, colour)) * fx;
+            self.curve.gain(colour, upper + (lower - upper) * fy, weight)
+        };
+        match self.colours {
+            1 => [gain(0); 3],
+            _ => [gain(0), gain(1), gain(2)],
+        }
+    }
 }
 
 /// What a window keeps of HDR: this run's bright boxes (each box's index and brightness), the
@@ -71,8 +151,8 @@ pub(crate) struct Light {
 #[cfg(feature = "hdr")]
 /// Something lighting part of a window, in pixels: where it may change the gains (left, top,
 /// right, bottom), its shape (left, top, width, height) and corner radius; how much brighter;
-/// a picture's gain map lying in the shape (its picture number and serial); or a box lying
-/// over lit ones, which puts them out (`covers`).
+/// a picture's gain map lying in the shape (its picture number and serial) and how much of it
+/// shows (`Curve::weight`); or a box lying over lit ones, which puts them out (`covers`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Glow {
     pub area: [i32; 4],
@@ -80,23 +160,25 @@ pub(crate) struct Glow {
     pub radius: f32,
     pub gain: f32,
     pub map: Option<(u32, u32)>,
+    pub weight: f32,
     pub covers: bool,
 }
 
 #[cfg(feature = "hdr")]
-/// A window's gains: per pixel, as 16-bit floats in rows of its width; what lit them; and the
-/// part that changed since the GPU last took them (left, top, right, bottom).
+/// A window's gains: per pixel, red, green and blue gains and a gain map's offset, as 16-bit
+/// floats in rows of its width; what lit them; and the part that changed since the GPU last
+/// took them (left, top, right, bottom).
 #[derive(Debug, Default)]
 pub(crate) struct Gains {
     pub size: [i32; 2],
-    pub plane: Vec<u16>,
+    pub plane: Vec<[u16; 4]>,
     lit: Vec<Glow>,
     pub changed: Option<[i32; 4]>,
 }
 
 #[cfg(feature = "hdr")]
-/// 1.0 as a 16-bit float.
-const ONE: u16 = 0x3C00;
+/// A pixel nothing lights: gains of 1, no offset (as 16-bit floats).
+const UNLIT: [u16; 4] = [0x3C00, 0x3C00, 0x3C00, 0];
 
 #[cfg(feature = "hdr")]
 impl Gains {
@@ -108,7 +190,6 @@ impl Gains {
     /// Takes in what lights a window `size` pixels now: the plane is drawn again where that
     /// differs (all of it after a resize), and freed once nothing is lit. Gives the part that
     /// changed (left, top, right, bottom), if any.
-    #[cfg(feature = "hdr")]
     pub fn take(&mut self, glows: Vec<Glow>, size: [i32; 2], maps: &std::collections::HashMap<u32, GainMap>) -> Option<[i32; 4]> {
         if glows == self.lit && (size == self.size || glows.is_empty()) {
             return None;
@@ -123,7 +204,7 @@ impl Gains {
             false => whole,
         };
         if size != self.size || self.plane.is_empty() {
-            (self.size, self.plane) = (size, vec![ONE; size[0].max(0) as usize * size[1].max(0) as usize]);
+            (self.size, self.plane) = (size, vec![UNLIT; size[0].max(0) as usize * size[1].max(0) as usize]);
         }
         let part = cut(part, whole);
         self.reset(part);
@@ -135,46 +216,46 @@ impl Gains {
         Some(part)
     }
 
-    /// Sets `part` (left, top, right, bottom, inside the plane) to 1.
+    /// Sets `part` (left, top, right, bottom, inside the plane) unlit.
     fn reset(&mut self, [left, top, right, bottom]: [i32; 4]) {
         let wide = self.size[0] as usize;
         for y in top.max(0)..bottom {
-            self.plane[y as usize * wide + left as usize..y as usize * wide + right as usize].fill(ONE);
+            self.plane[y as usize * wide + left as usize..y as usize * wide + right as usize].fill(UNLIT);
         }
     }
 
     /// Draws one glow into `part` of the plane: brightening what it covers, or putting it out.
-    #[cfg(feature = "hdr")]
     fn draw(&mut self, glow: &Glow, [left, top, right, bottom]: [i32; 4], maps: &std::collections::HashMap<u32, GainMap>) {
         let wide = self.size[0] as usize;
-        let map = glow.map.and_then(|(picture, serial)| maps.get(&picture).filter(|map| map.serial == serial && map.width > 0));
+        let map = glow.map.and_then(|(picture, serial)| maps.get(&picture).filter(|map| map.serial == serial && map.width > 0 && map.rows() > 0));
+        let offset = map.map_or(0.0, |map| map.curve.offset);
         for y in top..bottom {
             let row = &mut self.plane[y as usize * wide..][..wide];
             for x in left..right {
                 let cover = covered(glow.shape, glow.radius, [x as f32 + 0.5, y as f32 + 0.5]);
-                row[x as usize] = half(lit(from_half(row[x as usize]), glow, map.map_or(1.0, |map| sampled(map, glow.shape, x, y)), cover));
+                let gains = map.map_or([1.0; 3], |map| map.sampled(glow.shape, x, y, glow.weight));
+                row[x as usize] = lit(row[x as usize], glow, gains, offset, cover);
             }
         }
     }
 }
 
 #[cfg(feature = "hdr")]
-/// A gain once a glow covering so much of the pixel lit it, `map` being its gain map's there.
+/// A pixel's gains and offset once a glow covering so much of it lit it, `gains` and `offset`
+/// being its gain map's there.
 #[inline]
-fn lit(gain: f32, glow: &Glow, map: f32, cover: f32) -> f32 {
-    match glow.covers {
-        true => gain + (1.0 - gain) * cover,
-        false => gain * (1.0 + (glow.gain * map - 1.0) * cover),
-    }
-}
-
-/// A gain map's gain at window pixel `x`, `y`, the map lying over `shape`: the nearest.
-#[cfg(feature = "hdr")]
-fn sampled(map: &GainMap, [left, top, wide, high]: [f32; 4], x: i32, y: i32) -> f32 {
-    let rows = map.gains.len() / map.width;
-    let across = (((x as f32 + 0.5 - left) / wide * map.width as f32) as usize).min(map.width - 1);
-    let down = (((y as f32 + 0.5 - top) / high * rows as f32) as usize).min(rows.saturating_sub(1));
-    map.gains.get(down * map.width + across).copied().unwrap_or(1.0)
+fn lit(pixel: [u16; 4], glow: &Glow, gains: [f32; 3], offset: f32, cover: f32) -> [u16; 4] {
+    let [red, green, blue, was] = pixel.map(from_half);
+    let [red, green, blue] = [(red, gains[0]), (green, gains[1]), (blue, gains[2])].map(|(gain, map)| match glow.covers {
+        true => half(gain + (1.0 - gain) * cover),
+        false => half(gain * (1.0 + (glow.gain * map - 1.0) * cover)),
+    });
+    let offset = match (glow.covers, glow.map.is_some()) {
+        (true, _) => was * (1.0 - cover),
+        (false, true) => was + (offset - was) * cover,
+        (false, false) => was,
+    };
+    [red, green, blue, half(offset)]
 }
 
 #[cfg(feature = "hdr")]
@@ -269,7 +350,7 @@ fn hlg(signal: f32) -> f32 {
 /// Linear BT.709 (sRGB) light from linear light in a picture's primaries (`cICP`): BT.709 (1),
 /// BT.2020 (9) or Display P3 (12). Nothing for others.
 #[cfg(feature = "hdr")]
-fn to_709(primaries: u8) -> Option<[[f32; 3]; 3]> {
+pub(crate) fn to_709(primaries: u8) -> Option<[[f32; 3]; 3]> {
     match primaries {
         1 => Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
         9 => Some([[1.660_491, -0.587_641_1, -0.072_849_86], [-0.124_550_47, 1.132_899_9, -0.008_349_42], [-0.018_150_76, -0.100_578_9, 1.118_729_7]]),
@@ -283,7 +364,7 @@ fn to_709(primaries: u8) -> Option<[[f32; 3]; 3]> {
 /// its pixels as `Ui::add_picture` takes them, and its gains. Nothing for any other picture.
 /// (HLG is shown as on a 1,000-nit screen; SDR white is 203 nits, as BT.2408 has it.)
 #[cfg(feature = "hdr")]
-pub(crate) fn read_png(file: &[u8]) -> Option<(usize, Vec<u32>, Vec<f32>)> {
+fn read_png(file: &[u8]) -> Option<(usize, Vec<u32>, GainMap)> {
     let samples = crate::png::samples(file)?;
     let said = samples.chunk(b"cICP");
     let (&[primaries, transfer, 0, _], [width, height]) = (said.first_chunk::<4>()?, samples.size) else { return None };
@@ -301,7 +382,19 @@ pub(crate) fn read_png(file: &[u8]) -> Option<(usize, Vec<u32>, Vec<f32>)> {
     let turn = crate::exif_orientation::turn(samples.chunk(b"eXIf"));
     let (_, gains) = crate::exif_orientation::turned(turn, width, gains.into_iter().map(f32::to_bits).collect());
     let (width, sdr) = crate::exif_orientation::turned(turn, width, sdr);
-    Some((width, sdr, gains.into_iter().map(f32::from_bits).collect()))
+    let gains: Vec<f32> = gains.into_iter().map(f32::from_bits).collect();
+    Some((width, sdr, GainMap::of_gains(width, &gains)))
+}
+
+/// Reads a picture brighter than SDR white: a PNG marked HDR (`read_png`) or an Ultra HDR JPEG
+/// (`ultra_hdr`). Its width, its SDR pixels as `Ui::add_picture` takes them, and its gain
+/// map; nothing for any other picture.
+#[cfg(feature = "hdr")]
+pub(crate) fn read_picture(file: &[u8]) -> Option<(usize, Vec<u32>, GainMap)> {
+    match file {
+        [0xFF, 0xD8, ..] => crate::ultra_hdr::read(file),
+        _ => read_png(file),
+    }
 }
 
 /// Pixel `x` of a row of samples, `values` to a pixel (grey, grey and alpha, RGB, RGBA), each
@@ -359,7 +452,7 @@ impl Ui {
         let (sdr, gains) = split(pixels);
         let picture = self.add_picture(width, sdr);
         #[cfg(feature = "hdr")]
-        self.light.keep_map(picture, width, gains);
+        self.light.keep_map(picture, GainMap::of_gains(width, &gains));
         #[cfg(not(feature = "hdr"))]
         drop(gains);
         picture
@@ -384,7 +477,7 @@ impl Ui {
             let spec = &self.tree.specs[seen.at as usize];
             let area = pixels(seen.area, self.scale);
             if ends.is_empty() && spec.fill.a() == 255 && glows.iter().any(|glow: &Glow| !glow.covers && cut(glow.area, area)[..2] != cut(glow.area, area)[2..]) {
-                glows.push(Glow { area, shape: shape(seen.rect, self.scale), radius: spec.radius * self.scale, gain: 1.0, map: None, covers: true });
+                glows.push(Glow { area, shape: shape(seen.rect, self.scale), radius: spec.radius * self.scale, gain: 1.0, map: None, weight: 1.0, covers: true });
             }
         }
         glows
@@ -397,17 +490,18 @@ impl Ui {
         let (spec, light) = (&self.tree.specs[at as usize], &self.light);
         let gain = light.bright.binary_search_by_key(&at, |(box_at, _)| *box_at).map_or(1.0, |found| light.bright[found].1);
         let picture = match spec.content {
-            crate::layout::Content::Picture { picture, keep } => light.maps.get(&picture).map(|map| (picture, map.serial, keep)),
+            crate::layout::Content::Picture { picture, keep } => light.maps.get(&picture).map(|map| (picture, map, keep)),
             _ => None,
         };
-        let Some((picture, serial, keep)) = picture else {
-            let lit = Glow { area: pixels(area, self.scale), shape: shape(place, self.scale), radius: spec.radius * self.scale, gain, map: None, covers: false };
+        let Some((picture, map, keep)) = picture else {
+            let lit = Glow { area: pixels(area, self.scale), shape: shape(place, self.scale), radius: spec.radius * self.scale, gain, map: None, weight: 1.0, covers: false };
             return (gain != 1.0).then_some(lit);
         };
         let size = self.pictures.get(picture).map_or([0.0; 2], |stored| [stored.width as f32, (stored.pixels.len() / stored.width.max(1)) as f32]);
         let to = crate::paint::fit_aspect(place.inset(spec.frame.pad), size, keep);
         let area = pixels(area.intersect(to), self.scale);
-        Some(Glow { area, shape: shape(to, self.scale), radius: spec.radius * self.scale, gain, map: Some((picture, serial)), covers: false })
+        let (map, weight) = (Some((picture, map.serial)), map.curve.weight(light.screen.headroom()));
+        Some(Glow { area, shape: shape(to, self.scale), radius: spec.radius * self.scale, gain, map, weight, covers: false })
     }
 
     /// Takes in the screen the window is on. Says whether its headroom changed: the app is to
@@ -422,9 +516,10 @@ impl Ui {
 #[cfg(feature = "hdr")]
 impl Light {
     /// Keeps a picture's gain map, in place of any it had.
-    pub fn keep_map(&mut self, picture: Picture, width: usize, gains: Vec<f32>) {
+    pub fn keep_map(&mut self, picture: Picture, mut map: GainMap) {
         self.serial = self.serial.wrapping_add(1);
-        self.maps.insert(picture.0, GainMap { width, gains, serial: self.serial });
+        map.serial = self.serial;
+        self.maps.insert(picture.0, map);
     }
 }
 
@@ -535,7 +630,8 @@ mod lit {
         };
         let [white, four, red] = [code(203.0), code(812.0), code(203.0)];
         let file = png(2, &[[white; 3], [four; 3], [0; 3], [red, 0, 0]], [9, 16, 0, 1]);
-        let (width, sdr, gains) = read_png(&file).expect("an HDR PNG");
+        let (width, sdr, map) = read_png(&file).expect("an HDR PNG");
+        let gains: Vec<f32> = map.values.iter().map(|stops| from_half(*stops).exp2()).collect();
         assert_eq!(width, 2);
         assert_eq!(sdr[..3], [0xffff_ffff, 0xffff_ffff, 0xff00_0000]);
         assert!((gains[0] - 1.0).abs() < 0.01 && (gains[1] - 4.0).abs() < 0.02 && gains[2] == 1.0, "{gains:?}");
@@ -561,7 +657,7 @@ mod lit {
     fn bright_boxes_and_pictures_light_the_gains_and_boxes_over_them_put_them_out() {
         let mut trial = Trial::new(false, bright);
         let mut gains = Gains::default();
-        let gain = |gains: &Gains, x: usize, y: usize| from_half(gains.plane[y * gains.size[0] as usize + x]);
+        let gain = |gains: &Gains, x: usize, y: usize| from_half(gains.plane[y * gains.size[0] as usize + x][0]);
         gains.take(trial.ui.glows(), [640, 480], &trial.ui.light.maps);
         assert!(gains.any());
         assert_eq!([gain(&gains, 10, 10), gain(&gains, 60, 10), gain(&gains, 95, 10)], [1.0, 2.0, 1.0]);
@@ -581,18 +677,44 @@ mod lit {
     #[test]
     fn an_hdr_picture_lights_where_it_shows_by_its_gain_map() {
         let ramp: Vec<[f32; 4]> = (0..8).map(|x| [x as f32, x as f32, x as f32, 1.0]).collect();
-        let mut trial = Trial::new(None, move |picture: &mut Option<Picture>, ui: &mut Ui| {
+        let trial = Trial::new(None, move |picture: &mut Option<Picture>, ui: &mut Ui| {
             let shown = *picture.get_or_insert_with(|| ui.add_hdr_picture(8, &ramp));
             ui.el().flow(Flow::Stack).size(200.0, 100.0).open();
-            ui.el().offset(16.0, 8.0).picture(shown).size(16.0, 2.0).show();
+            ui.el().offset(16.0, 8.0).picture(shown).size(8.0, 1.0).show();
             ui.close();
         });
-        trial.resize(200.0, 100.0, 2.0);
         let mut gains = Gains::default();
-        gains.take(trial.ui.glows(), [400, 200], &trial.ui.light.maps);
-        // Each picture pixel is four window pixels across at scale 2.
-        let row: Vec<f32> = (32..64).step_by(4).map(|x| from_half(gains.plane[17 * 400 + x])).collect();
-        assert_eq!(row, [1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
-        assert_eq!(from_half(gains.plane[17 * 400 + 64]), 1.0);
+        gains.take(trial.ui.glows(), [200, 100], &trial.ui.light.maps);
+        // Pixel for pixel, each its own gain in every colour.
+        let row: Vec<[f32; 4]> = (16..25).map(|x| gains.plane[8 * 200 + x].map(from_half)).collect();
+        let wanted = [1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        assert!(row[..8].iter().zip(wanted).all(|(got, wanted)| got[..3].iter().all(|gain| (gain - wanted).abs() <= wanted / 500.0) && got[3] == 0.0), "{row:?}");
+        assert_eq!(row[8], [1.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_gain_map_is_sampled_bilinearly_between_its_pixels_centres() {
+        // Two values (0 and 2 stops) over 8 pixels: as a GPU's linear filter samples them, the
+        // edges held; the gain is 2 to the stops there.
+        let map = GainMap { width: 2, colours: 1, values: vec![half(0.0), half(2.0)], curve: Curve::STOPS, serial: 0 };
+        let stops: Vec<f32> = (0..8).map(|x| map.sampled([0.0, 0.0, 8.0, 1.0], x, 0, 1.0)[0].log2()).collect();
+        let wanted = [0.0, 0.0, 0.25, 0.75, 1.25, 1.75, 2.0, 2.0];
+        assert!(stops.iter().zip(wanted).all(|(got, wanted)| (got - wanted).abs() < 1e-5), "{stops:?}");
+        // Three colours, each its own; half the weight, half the stops.
+        let map = GainMap { width: 1, colours: 3, values: vec![half(1.0), half(2.0), half(-1.0)], curve: Curve::STOPS, serial: 0 };
+        assert_eq!(map.sampled([0.0, 0.0, 4.0, 4.0], 1, 1, 1.0), [2.0, 4.0, 0.5]);
+        assert_eq!(map.sampled([0.0, 0.0, 4.0, 4.0], 1, 1, 0.5)[1], 2.0);
+    }
+
+    #[test]
+    fn a_curve_turns_values_into_gains_and_weighs_them_by_the_headroom() {
+        // ISO 21496-1: from 2^-1 to 2^3, gamma 2; shown in full from 3 stops of headroom, not
+        // at all below 1.
+        let curve = Curve { gamma: [2.0; 3], low: [-1.0; 3], high: [3.0; 3], offset: 0.0, none: 1.0, full: 3.0 };
+        assert_eq!(curve.gain(0, 0.0, 1.0), 0.5);
+        assert_eq!(curve.gain(0, 1.0, 1.0), 8.0);
+        assert!((curve.gain(0, 0.25, 1.0) - 2.0f32.powf(-1.0 + 4.0 * 0.5)).abs() < 1e-6);
+        assert_eq!([1.0, 2.0, 4.0, 8.0, 16.0].map(|headroom| curve.weight(headroom)), [0.0, 0.0, 0.5, 1.0, 1.0]);
+        assert_eq!(Curve::STOPS.weight(1.0), 1.0, "plain gains show in full, capped by the headroom");
     }
 }

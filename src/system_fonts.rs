@@ -189,7 +189,9 @@ fn plain(letter: char) -> bool {
 }
 
 /// The system's font families, sorted by name: for a font picker. (On Windows those its own
-/// font dialog lists; on Linux those Fontconfig knows, by their first name.)
+/// font dialog lists; on Linux those Fontconfig knows, by their first name. On the web those
+/// the browser lists, once it has answered the first call: Chrome and Edge do, after asking the
+/// person; others list none.)
 pub fn families() -> Vec<String> {
     let mut families: Vec<String> = listed(None).into_iter().map(|(family, _)| family).collect();
     families.sort_by_key(|family| family.to_lowercase());
@@ -224,10 +226,36 @@ fn listed(family: Option<&str>) -> Vec<(String, Style)> {
     crate::core_text::listed(family)
 }
 
-/// The system's fonts: none known here.
-#[cfg(not(any(windows, unix)))]
-fn listed(_family: Option<&str>) -> Vec<(String, Style)> {
-    Vec::new()
+/// The person's fonts, as the browser lists them: none until it answers, none where it lists
+/// none.
+#[cfg(target_family = "wasm")]
+fn listed(family: Option<&str>) -> Vec<(String, Style)> {
+    crate::web_fonts::listed(family)
+}
+
+/// A style by its name ("Bold Italic", "SemiBold", "Light Oblique"): the weight its words name,
+/// and whether it slants.
+#[cfg(any(test, target_family = "wasm"))]
+pub(crate) fn style_named(name: &str) -> Style {
+    const WEIGHTS: [(&str, u16); 14] = [
+        ("hairline", 100),
+        ("thin", 100),
+        ("extralight", 200),
+        ("ultralight", 200),
+        ("semilight", 350),
+        ("light", 300),
+        ("medium", 500),
+        ("semibold", 600),
+        ("demibold", 600),
+        ("extrabold", 800),
+        ("ultrabold", 800),
+        ("bold", 700),
+        ("black", 900),
+        ("heavy", 900),
+    ];
+    let name = name.to_ascii_lowercase().replace([' ', '-'], "");
+    let weight = WEIGHTS.iter().find(|(word, _)| name.contains(word)).map_or(400, |(_, weight)| *weight);
+    Style { weight, italic: name.contains("italic") || name.contains("oblique") }
 }
 
 /// The font a face draws a character with, read from the system's file: the face's own, or its
@@ -1037,6 +1065,19 @@ impl Learned {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_style_is_read_from_its_name() {
+        let read = |name: &str| (style_named(name).weight, style_named(name).italic);
+        assert_eq!(read("Regular"), (400, false));
+        assert_eq!(read("Bold Italic"), (700, true));
+        assert_eq!(read("SemiBold"), (600, false));
+        assert_eq!(read("Extra Bold"), (800, false));
+        assert_eq!(read("Light Oblique"), (300, true));
+        assert_eq!(read("Semilight"), (350, false));
+        assert_eq!(read("Heavy"), (900, false));
+        assert_eq!(read("Thin"), (100, false));
+    }
 
     #[test]
     fn a_face_by_name_is_one_small_number() {

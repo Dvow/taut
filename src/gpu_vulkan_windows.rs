@@ -9,6 +9,8 @@
 //! - Each frame is waited for (a fence), so the buffer is free again for the next.
 //! - vulkan-1.dll is loaded when a window first asks for Vulkan (`vk`). Only the surface is
 //!   Windows' own.
+//! - With the feature `hdr`, a window lit on an HDR screen is presented in scRGB or HDR10
+//!   (`hdr_vulkan`).
 use crate::gpu_windows::inside;
 use crate::vk::*;
 use crate::windows::sys::{GetModuleHandleW, HANDLE, RECT};
@@ -77,7 +79,7 @@ functions!(Calls {
 #[derive(Clone)]
 struct Owner {
     calls: Arc<Calls>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "hdr"))]
     find: Find,
     instance: Object,
     device: Object,
@@ -101,6 +103,9 @@ pub(crate) struct Device {
     regions: bool,
     /// Vulkan said the device was lost.
     lost: Cell<bool>,
+    /// How a swap chain's HDR metadata is set, where the device has `VK_EXT_hdr_metadata`.
+    #[cfg(feature = "hdr")]
+    metadata: Option<crate::hdr_vulkan::Metadata>,
     /// What it draws windows with, where it does (see `gpu_draw`), and whether it blends GDI's
     /// runs per channel (`dualSrcBlend`).
     #[cfg(feature = "gpu-draw")]
@@ -117,14 +122,16 @@ impl Device {
         let find = if crate::gpu_windows::tests::faked().software { tests::swiftshader()? } else { loader()? };
         #[cfg(not(test))]
         let find = loader()?;
-        let extensions = [c"VK_KHR_surface".as_ptr(), c"VK_KHR_win32_surface".as_ptr()];
+        // (With `hdr`, HDR colour spaces too, where the loader has them.)
+        let extensions = [c"VK_KHR_surface".as_ptr(), c"VK_KHR_win32_surface".as_ptr(), c"VK_EXT_swapchain_colorspace".as_ptr()];
         let application = VkApplicationInfo { name: c"taut".as_ptr(), api_version: 1 << 22, ..Default::default() };
-        let asked = VkInstanceCreateInfo { kind: 1, application: &application, extension_count: 2, extensions: extensions.as_ptr(), ..Default::default() };
+        let asked = |count| VkInstanceCreateInfo { kind: 1, application: &application, extension_count: count, extensions: extensions.as_ptr(), ..Default::default() };
         let mut instance = null_mut();
-        // SAFETY: the description and what it points to live through the call.
         // SAFETY: with no instance, the loader gives the functions that make one.
         let global = Global::load(&mut |name| unsafe { find(null_mut(), name.as_ptr()) }).ok()?;
-        if unsafe { (global.vkCreateInstance)(&asked, null(), &mut instance) } < 0 {
+        // SAFETY: the description and what it points to live through the call.
+        let mut made = |count| unsafe { (global.vkCreateInstance)(&asked(count), null(), &mut instance) } >= 0;
+        if !(cfg!(feature = "hdr") && made(3)) && !made(2) {
             return None;
         }
         // SAFETY: the instance is alive.
@@ -137,9 +144,9 @@ impl Device {
             }
             return None;
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "hdr"))]
         let owner = Owner { calls: Arc::new(calls), find, instance, device: null_mut() };
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "hdr")))]
         let owner = Owner { calls: Arc::new(calls), instance, device: null_mut() };
         #[cfg_attr(not(feature = "gpu-draw"), allow(unused_mut))]
         let mut device = Device::on_a_gpu(owner)?;
@@ -159,18 +166,20 @@ impl Device {
         let (calls, mut count, mut physical) = (owner.calls.clone(), 8, [null_mut(); 8]);
         // SAFETY: the instance is alive; the list has room for as many as is said.
         unsafe { (calls.vkEnumeratePhysicalDevices)(owner.instance, &mut count, physical.as_mut_ptr()) };
-        let found = physical[..count.min(8) as usize].iter().find_map(|physical| Device::queue_on(&calls, *physical).map(|(family, regions)| (*physical, family, regions)));
-        let Some((physical, family, regions)) = found else {
+        let found = physical[..count.min(8) as usize].iter().find_map(|physical| Device::queue_on(&calls, *physical).map(|(family, offered)| (*physical, family, offered)));
+        let Some((physical, family, [regions, metadata])) = found else {
             // SAFETY: nothing else holds the instance.
             unsafe { (calls.vkDestroyInstance)(owner.instance, null()) };
             return None;
         };
-        let names = [c"VK_KHR_swapchain".as_ptr(), c"VK_KHR_incremental_present".as_ptr()];
+        // Swap chains; changed rectangles named, and HDR metadata, where the device has them.
+        let metadata = metadata && cfg!(feature = "hdr");
+        let second = if regions { c"VK_KHR_incremental_present" } else { c"VK_EXT_hdr_metadata" };
+        let (names, count) = ([c"VK_KHR_swapchain".as_ptr(), second.as_ptr(), c"VK_EXT_hdr_metadata".as_ptr()], 1 + regions as u32 + metadata as u32);
         let priority = 1.0f32;
         let queue = VkDeviceQueueCreateInfo { kind: 2, family, count: 1, priorities: &priority, ..Default::default() };
         let features = Device::features(&calls, physical);
-        let asked =
-            VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: 1 + regions as u32, extensions: names.as_ptr(), features: features.as_ptr().cast(), ..Default::default() };
+        let asked = VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: count, extensions: names.as_ptr(), features: features.as_ptr().cast(), ..Default::default() };
         // SAFETY: the physical device is the instance's; the description lives through the call.
         if unsafe { (calls.vkCreateDevice)(physical, &asked, null(), &mut owner.device) } < 0 {
             // SAFETY: nothing else holds the instance.
@@ -191,11 +200,19 @@ impl Device {
             memory: Default::default(),
             regions,
             lost,
+            #[cfg(feature = "hdr")]
+            metadata: None,
             #[cfg(feature = "gpu-draw")]
             drawing: None,
             #[cfg(feature = "gpu-draw")]
             dual: features[7] != 0,
         };
+        #[cfg(feature = "hdr")]
+        if metadata {
+            let (find, made) = (device.owner.find, device.owner.instance);
+            // SAFETY: the instance is alive.
+            device.metadata = crate::hdr_vulkan::Metadata::load(&mut |name| unsafe { find(made, name.as_ptr()) }).ok();
+        }
         device.with_commands().then_some(device)
     }
 
@@ -213,9 +230,9 @@ impl Device {
     }
 
     /// The first queue family of `physical`'s that draws and presents to windows, and whether it
-    /// names changed rectangles on present: if it is a GPU (not a CPU device, unless a test
-    /// asks for one) with swap chains.
-    fn queue_on(calls: &Calls, physical: Object) -> Option<(u32, bool)> {
+    /// names changed rectangles on present and sets HDR metadata: if it is a GPU (not a CPU
+    /// device, unless a test asks for one) with swap chains.
+    fn queue_on(calls: &Calls, physical: Object) -> Option<(u32, [bool; 2])> {
         let (mut properties, mut families, mut count) = (VkPhysicalDeviceProperties::default(), [VkQueueFamilyProperties::default(); 16], 16);
         let (mut extensions, mut known) = (vec![VkExtensionProperties::default(); 512], 512);
         // SAFETY: the physical device is the instance's; each list has room for as many as is
@@ -238,7 +255,7 @@ impl Device {
         let family = (0..count.min(16)).find(presents)?;
         #[cfg(test)]
         println!("Vulkan on {}", String::from_utf8_lossy(name(&properties.name)));
-        Some((family, has(b"VK_KHR_incremental_present")))
+        Some((family, [has(b"VK_KHR_incremental_present"), has(b"VK_EXT_hdr_metadata")]))
     }
 
     /// Makes the queue's command pool, its command buffer, the fence and the semaphores. Says
@@ -310,7 +327,11 @@ impl Device {
     fn image(&self, size: [i32; 2]) -> Option<(Handle, Handle)> {
         let (calls, device) = (&self.owner.calls, self.owner.device);
         let extent = [size[0] as u32, size[1] as u32, 1];
-        let usage = USAGE_TRANSFER_SOURCE | USAGE_TRANSFER_DESTINATION | self.drawn();
+        #[cfg(feature = "hdr")]
+        let read = USAGE_SAMPLED;
+        #[cfg(not(feature = "hdr"))]
+        let read = 0;
+        let usage = USAGE_TRANSFER_SOURCE | USAGE_TRANSFER_DESTINATION | read | self.drawn();
         let made = VkImageCreateInfo { kind: 14, image_type: 1, format: B8G8R8A8_UNORM, extent, mip_levels: 1, array_layers: 1, samples: 1, usage, ..Default::default() };
         let (mut image, mut needs) = (0, VkMemoryRequirements::default());
         // SAFETY: the device is alive; the image is made and given memory.
@@ -334,7 +355,7 @@ impl Device {
     fn drawn(&self) -> u32 {
         #[cfg(feature = "gpu-draw")]
         if self.drawing.is_some() {
-            return crate::gpu_draw_vulkan::USAGE_DRAWN_INTO;
+            return USAGE_DRAWN_INTO;
         }
         0
     }
@@ -342,7 +363,7 @@ impl Device {
     /// Hands the recorded command buffer to the queue, waiting on `wait` (a semaphore, or 0) and
     /// signalling `signal`, and says whether it was taken.
     fn submit(&self, wait: Handle, signal: Handle) -> bool {
-        let stage = STAGE_TRANSFER;
+        let stage = STAGE_TRANSFER | STAGE_COLOUR;
         let submit = VkSubmitInfo {
             kind: 4,
             wait_count: (wait != 0) as u32,
@@ -419,6 +440,14 @@ pub(crate) struct Shown {
     /// The picture holds nothing yet.
     fresh: bool,
     size: [i32; 2],
+    /// Its HDR, the HDR kind its surface takes, and the pass to it once tried (see
+    /// `hdr_vulkan`).
+    #[cfg(feature = "hdr")]
+    pub(crate) hdr: crate::hdr_windows::Hdr,
+    #[cfg(feature = "hdr")]
+    kind: Option<crate::hdr_vulkan::Kind>,
+    #[cfg(feature = "hdr")]
+    pass: Option<Option<Box<crate::hdr_vulkan::Pass>>>,
     #[cfg(test)]
     hwnd: HANDLE,
 }
@@ -446,6 +475,12 @@ impl Shown {
             waiting: Vec::new(),
             fresh: true,
             size: [0; 2],
+            #[cfg(feature = "hdr")]
+            hdr: Default::default(),
+            #[cfg(feature = "hdr")]
+            kind: None,
+            #[cfg(feature = "hdr")]
+            pass: None,
             #[cfg(test)]
             hwnd,
         };
@@ -458,7 +493,12 @@ impl Shown {
             (calls.vkGetPhysicalDeviceSurfaceSupportKHR)(device.physical, device.family, shown.surface, &mut presents);
             (calls.vkGetPhysicalDeviceSurfaceFormatsKHR)(device.physical, shown.surface, &mut count, formats.as_mut_ptr());
         }
-        let bgra = formats[..count.min(64) as usize].iter().any(|format| format.format == B8G8R8A8_UNORM && format.colour_space == 0);
+        let formats = &formats[..count.min(64) as usize];
+        let bgra = formats.iter().any(|format| format.format == B8G8R8A8_UNORM && format.colour_space == 0);
+        #[cfg(feature = "hdr")]
+        {
+            shown.kind = crate::hdr_vulkan::kind_of(formats);
+        }
         (presents != 0 && bgra).then_some(shown)
     }
 
@@ -479,8 +519,8 @@ impl Shown {
         Some(true)
     }
 
-    /// A new swap chain, `size` pixels unless the surface says its own, in place of the old one.
-    /// Says whether it was made.
+    /// A new swap chain, `size` pixels unless the surface says its own, in place of the old one
+    /// (with `hdr`, of the HDR kind while lit). Says whether it was made.
     fn chained(&mut self, device: &Device, size: [i32; 2]) -> bool {
         let calls = &self.owner.calls;
         let mut can = VkSurfaceCapabilitiesKHR::default();
@@ -488,17 +528,19 @@ impl Shown {
         if !device.succeeded(unsafe { (calls.vkGetPhysicalDeviceSurfaceCapabilitiesKHR)(device.physical, self.surface, &mut can) }) || can.usage & USAGE_TRANSFER_DESTINATION == 0 {
             return false;
         }
+        let (format, colour_space, drawn) = self.format();
         let extent = if can.current[0] == u32::MAX { size.map(|side| side as u32) } else { can.current };
         let images = if can.max_images == 0 { can.min_images.max(2) } else { can.min_images.max(2).min(can.max_images) };
         // Opaque if it may be (1), else whatever the surface has.
         let alpha = if can.alphas & 1 != 0 { 1 } else { can.alphas & can.alphas.wrapping_neg() };
-        let usage = USAGE_TRANSFER_DESTINATION | (can.usage & USAGE_TRANSFER_SOURCE);
+        let usage = USAGE_TRANSFER_DESTINATION | (can.usage & USAGE_TRANSFER_SOURCE) | drawn;
         let (old, mut chain) = (self.chain, 0);
         let asked = VkSwapchainCreateInfoKHR {
             kind: 1_000_001_000,
             surface: self.surface,
             min_images: images,
-            format: B8G8R8A8_UNORM,
+            format,
+            colour_space,
             extent,
             layers: 1,
             usage,
@@ -521,7 +563,75 @@ impl Shown {
             (calls.vkGetSwapchainImagesKHR)(self.owner.device, chain, &mut count, made.as_mut_ptr());
         }
         (self.chain, self.images, self.extent, self.usage) = (chain, made[..count.min(16) as usize].to_vec(), extent, usage);
+        self.lit_targets(device)
+    }
+
+    /// The swap chain's format, colour space and further use: B8G8R8A8 in sRGB, copied into.
+    #[cfg(not(feature = "hdr"))]
+    fn format(&self) -> (u32, u32, u32) {
+        (B8G8R8A8_UNORM, 0, 0)
+    }
+
+    /// The swap chain's format, colour space and further use: the HDR kind's, drawn into, while
+    /// presented in HDR; else B8G8R8A8 in sRGB, copied into.
+    #[cfg(feature = "hdr")]
+    fn format(&self) -> (u32, u32, u32) {
+        match self.kind.filter(|_| self.hdr.on) {
+            Some(kind) => (kind.format, kind.space, USAGE_DRAWN_INTO),
+            None => (B8G8R8A8_UNORM, 0, 0),
+        }
+    }
+
+    /// Readies the HDR pass for the swap chain just made, while presented in HDR, and sets its
+    /// HDR metadata. Says whether that worked (it does where there is nothing to do).
+    #[cfg(feature = "hdr")]
+    fn lit_targets(&mut self, device: &Device) -> bool {
+        let (Some(Some(pass)), Some(kind)) = (self.pass.as_mut(), self.kind.filter(|_| self.hdr.on)) else { return true };
+        if let Some(metadata) = &device.metadata {
+            crate::hdr_vulkan::describe(metadata, self.owner.device, self.chain, self.hdr.screen);
+        }
+        pass.target(&self.images, kind.format, self.extent)
+    }
+
+    #[cfg(not(feature = "hdr"))]
+    #[inline]
+    fn lit_targets(&mut self, _: &Device) -> bool {
         true
+    }
+
+    /// How many bytes a pixel of the swap chain's images takes.
+    #[cfg(all(test, not(feature = "hdr")))]
+    fn pixel_bytes(&self) -> usize {
+        4
+    }
+
+    /// Puts the swap chain in the HDR kind where the window is wanted in HDR and the pass can be
+    /// made, and back where not. Says whether that worked.
+    #[cfg(feature = "hdr")]
+    fn go_hdr(&mut self, device: &Device) -> bool {
+        if self.hdr.wanted() && self.pass.is_none() {
+            let (find, instance) = (self.owner.find, self.owner.instance);
+            // SAFETY: the instance is alive.
+            self.pass = Some(self.kind.and_then(|kind| crate::hdr_vulkan::Pass::new(&mut |name| unsafe { find(instance, name.as_ptr()) }, self.owner.device, &device.memory, kind)));
+        }
+        let want = self.hdr.wanted() && matches!(self.pass, Some(Some(_)));
+        if want == self.hdr.on {
+            return true;
+        }
+        self.hdr.on = want;
+        self.chained(device, self.size)
+    }
+
+    /// How many bytes a pixel of the swap chain's images takes: 8 in scRGB, else 4.
+    #[cfg(all(test, feature = "hdr"))]
+    fn pixel_bytes(&self) -> usize {
+        if self.kind.filter(|_| self.hdr.on) == Some(crate::hdr_vulkan::SCRGB) { 8 } else { 4 }
+    }
+
+    /// What the window keeps of HDR, where its surface takes an HDR kind.
+    #[cfg(feature = "hdr")]
+    pub(crate) fn hdr(&mut self) -> Option<&mut crate::hdr_windows::Hdr> {
+        self.kind.is_some().then_some(&mut self.hdr)
     }
 
     /// Writes `size` pixels at `at` (cut to the picture), read from `first`, rows `pitch` pixels
@@ -583,6 +693,10 @@ impl Shown {
         if self.chain == 0 {
             return true;
         }
+        #[cfg(feature = "hdr")]
+        if !self.go_hdr(device) {
+            return false;
+        }
         match self.present_once(device, inside(dirty, self.size)) {
             Some(true) => true,
             Some(false) => self.chained(device, self.size) && self.present_once(device, &[]) == Some(true),
@@ -604,7 +718,7 @@ impl Shown {
         let image = *self.images.get(at as usize)?;
         #[cfg(test)]
         tests::ready(device, self);
-        self.record(device, image);
+        self.record(device, image, at as usize);
         if !device.submit(device.taken, device.copied) {
             return None;
         }
@@ -626,9 +740,10 @@ impl Shown {
     }
 
     /// Records the frame: the waiting places copied from the buffer into the picture, and the
-    /// picture into the swap chain image `image`, made ready to present.
-    fn record(&mut self, device: &Device, image: Handle) {
-        let (calls, commands) = (&self.owner.calls, device.commands);
+    /// picture into the swap chain image `image` (number `at`), made ready to present: copied,
+    /// or drawn lit while presented in HDR.
+    fn record(&mut self, device: &Device, image: Handle, at: usize) {
+        let (calls, commands) = (self.owner.calls.clone(), device.commands);
         let [width, height] = [self.extent[0].min(self.size[0] as u32), self.extent[1].min(self.size[1] as u32)];
         let whole = VkImageCopy { source_layers: LAYER, destination_layers: LAYER, extent: [width, height, 1], ..Default::default() };
         let before = if self.fresh { (LAYOUT_UNDEFINED, 0) } else { (LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_READ) };
@@ -644,12 +759,34 @@ impl Shown {
                 (calls.vkCmdCopyBufferToImage)(commands, self.buffer, self.picture, LAYOUT_TRANSFER_DESTINATION, self.waiting.len() as u32, self.waiting.as_ptr());
             }
             (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_read);
-            (calls.vkCmdCopyImage)(commands, self.picture, LAYOUT_TRANSFER_SOURCE, image, LAYOUT_TRANSFER_DESTINATION, 1, &whole);
-            #[cfg(test)]
-            tests::record(self, commands, image);
-            (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &to_present);
         }
         (self.fresh, self.waiting) = (false, Vec::new());
+        if self.drawn_lit(commands, at) {
+            #[cfg(test)]
+            tests::record(self, commands, image, LAYOUT_PRESENT);
+            return;
+        }
+        // SAFETY: as above.
+        unsafe {
+            (calls.vkCmdCopyImage)(commands, self.picture, LAYOUT_TRANSFER_SOURCE, image, LAYOUT_TRANSFER_DESTINATION, 1, &whole);
+            #[cfg(test)]
+            tests::record(self, commands, image, LAYOUT_TRANSFER_DESTINATION);
+            (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &to_present);
+        }
+    }
+
+    /// Records the picture drawn lit into swap chain image `at`, made ready to present, while
+    /// presented in HDR. Says whether it was.
+    #[cfg(feature = "hdr")]
+    fn drawn_lit(&mut self, commands: Object, at: usize) -> bool {
+        let (Some(Some(pass)), Some(kind)) = (self.pass.as_mut(), self.kind.filter(|_| self.hdr.on)) else { return false };
+        pass.prepare(&mut self.hdr.gains) && pass.record(commands, self.picture, at, self.extent, crate::hdr_vulkan::constants(kind, self.hdr.screen))
+    }
+
+    #[cfg(not(feature = "hdr"))]
+    #[inline]
+    fn drawn_lit(&mut self, _: Object, _: usize) -> bool {
+        false
     }
 
     /// Lets go of the picture and the buffer, and their memory. (The device is idle first.)
@@ -670,6 +807,8 @@ impl Shown {
 impl Drop for Shown {
     fn drop(&mut self) {
         self.let_go_of_picture();
+        #[cfg(feature = "hdr")]
+        drop(self.pass.take());
         let calls = &self.owner.calls;
         // SAFETY: the device is idle; both are this window's.
         unsafe {
@@ -720,35 +859,40 @@ pub(crate) mod tests {
     /// the swap chain's images can be copied from.
     pub(crate) fn ready(device: &Device, shown: &Shown) {
         if crate::gpu_windows::tests::faked().keep && shown.usage & USAGE_TRANSFER_SOURCE != 0 {
-            let made = device.buffer(shown.extent[0] as usize * shown.extent[1] as usize * 4, USAGE_TRANSFER_DESTINATION).expect("no buffer to read back");
+            let made = device.buffer(shown.extent[0] as usize * shown.extent[1] as usize * shown.pixel_bytes(), USAGE_TRANSFER_DESTINATION).expect("no buffer to read back");
             KEEP.set(Some(made));
         }
     }
 
-    /// Records a copy of the swap chain image into the buffer read back, if there is one: between
-    /// its copy from the picture and its present.
-    pub(crate) fn record(shown: &Shown, commands: Object, image: Handle) {
+    /// Records a copy of the swap chain image (in `layout`) into the buffer read back, if there
+    /// is one: between its copy from the picture, or its drawing, and its present.
+    pub(crate) fn record(shown: &Shown, commands: Object, image: Handle, layout: u32) {
         let Some((buffer, ..)) = KEEP.get() else { return };
         let (calls, owner) = (&shown.owner.calls, &shown.owner);
         let readback = Readback::load(&mut |name| unsafe { (owner.find)(owner.instance, name.as_ptr()) }).expect("no vkCmdCopyImageToBuffer");
         let whole = VkBufferImageCopy { row_length: shown.extent[0], layers: LAYER, extent: [shown.extent[0], shown.extent[1], 1], ..Default::default() };
-        let to_read = barrier(image, LAYOUT_TRANSFER_DESTINATION, LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_WRITE, ACCESS_TRANSFER_READ);
-        let back = barrier(image, LAYOUT_TRANSFER_SOURCE, LAYOUT_TRANSFER_DESTINATION, ACCESS_TRANSFER_READ, ACCESS_TRANSFER_WRITE);
+        let to_read = barrier(image, layout, LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_WRITE | 0x100, ACCESS_TRANSFER_READ);
+        let back = barrier(image, LAYOUT_TRANSFER_SOURCE, layout, ACCESS_TRANSFER_READ, ACCESS_TRANSFER_WRITE);
         unsafe {
-            (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_read);
+            (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER | 0x400, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_read);
             (readback.vkCmdCopyImageToBuffer)(commands, image, LAYOUT_TRANSFER_SOURCE, buffer, 1, &whole);
             (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER | 0x4000, 0, 0, null(), 0, null(), 1, &back);
         }
     }
 
-    /// Reads the copy, once the GPU is done, keeps it, and lets go of the buffer.
+    /// Reads the copy, once the GPU is done, keeps it (an HDR frame where the HDR tests keep
+    /// those), and lets go of the buffer.
     pub(crate) fn read(shown: &Shown, dirty: &[RECT]) {
         let Some((buffer, memory, there)) = KEEP.take() else { return };
         let [width, height] = shown.extent.map(|side| side as usize);
-        let pixels = unsafe { std::slice::from_raw_parts(there.cast::<u32>(), width * height) }.to_vec();
+        let pixels = unsafe { std::slice::from_raw_parts(there.cast::<u32>(), width * height * shown.pixel_bytes() / 4) }.to_vec();
         unsafe {
             (shown.owner.calls.vkDestroyBuffer)(shown.owner.device, buffer, null());
             (shown.owner.calls.vkFreeMemory)(shown.owner.device, memory, null());
+        }
+        #[cfg(feature = "hdr")]
+        if let Some(kind) = shown.kind.filter(|_| shown.hdr.on) {
+            return crate::hdr_windows::tests::keep_frame(width, crate::hdr_vulkan::tests::light_of(kind, &pixels));
         }
         crate::gpu_windows::tests::kept(shown.hwnd, width, pixels, dirty);
     }

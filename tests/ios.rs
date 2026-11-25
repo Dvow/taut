@@ -463,14 +463,17 @@ mod phone {
         });
     }
 
-    /// The gallery: once settled, its size for the Mac to draw it at; once the Mac has the
-    /// screen, what it tells readers.
+    /// The gallery: once settled, its size for the Mac to draw it at, and what shows it; once
+    /// the Mac has the screen, what it tells readers; asked, the window turned sideways and drawn
+    /// again.
     #[derive(Default)]
     struct Shown {
         start: Option<Instant>,
         stage: u32,
         dark: Option<bool>,
         away: Option<bool>,
+        /// Since when the window turns, and its size before.
+        turning: Option<(Instant, taut::geom::Size)>,
     }
 
     impl Shown {
@@ -478,10 +481,11 @@ mod phone {
             let since = self.start.get_or_insert_with(Instant::now).elapsed();
             let at = origin();
             match self.stage {
-                0 if since > Duration::from_secs(3) => {
-                    let size = ui.size();
+                // (Asked for the GPU, once it shows the window: with `gpu-draw` its shaders
+                // compile as it opens.)
+                0 if since > Duration::from_secs(3) && (std::env::var_os("TAUT_RENDERER").is_none() || ui.renderer() != taut::Renderer::Cpu || since > Duration::from_secs(60)) => {
                     drawn_here(ui);
-                    note("ready.txt", &format!("{} {} {} {} {} {} {}", size.w, size.h, ui.scale(), at.x, at.y, ui.system_dark() as u8, ui.text_scale()));
+                    note("ready.txt", &page_said(ui, at));
                     self.stage = 1;
                 }
                 1 if folder().join("shot").exists() => {
@@ -499,6 +503,21 @@ mod phone {
                 _ => {}
             }
             self.looks(ui);
+            self.turn(ui, at);
+        }
+
+        /// Once the Mac asks (the file `turn`), the window turns sideways; once it has, and has
+        /// settled, it is drawn here again and its page said (`turned.txt`).
+        fn turn(&mut self, ui: &mut Ui, at: Point) {
+            if self.stage >= 1 && self.turning.is_none() && folder().join("turn").exists() {
+                turn(true);
+                self.turning = Some((Instant::now(), ui.size()));
+            }
+            let Some((since, before)) = self.turning else { return };
+            if ui.size() != before && since.elapsed() > Duration::from_secs(3) && !folder().join("turned.txt").exists() {
+                drawn_here(ui);
+                note("turned.txt", &page_said(ui, at));
+            }
         }
 
         /// The system's dark mode, and going to the background and back, noted as heard.
@@ -513,6 +532,13 @@ mod phone {
                 note("looks.txt", &format!("away {}", ui.window_minimized()));
             }
         }
+    }
+
+    /// The window's page as the Mac reads it: size, scale, where it lies, dark or light, the text
+    /// scale; and what shows it.
+    fn page_said(ui: &Ui, at: Point) -> String {
+        let size = ui.size();
+        format!("{} {} {} {} {} {} {} {:?}", size.w, size.h, ui.scale(), at.x, at.y, ui.system_dark() as u8, ui.text_scale(), ui.renderer())
     }
 
     /// The gallery drawn afresh here, at the window's size, scale and looks, as the Mac draws it:
@@ -1309,6 +1335,8 @@ mod mac {
     use taut::{LocalClipboard, Preferences, Surface, Ui};
 
     const CHECK_ID: &str = "dev.taut.check";
+    /// The check app built with `gpu-draw`.
+    const GPU_ID: &str = "dev.taut.check.gpu";
 
     pub fn main() {
         if std::env::var_os("TAUT_IOS_SIMULATOR").is_none() {
@@ -1337,14 +1365,14 @@ mod mac {
         Some(folder)
     }
 
-    /// This file built for the simulator, as an app.
-    fn check_app() -> Result<PathBuf, String> {
+    /// This file built for the simulator with `features`, as the app `id` (in `folder`).
+    fn check_app(features: &str, id: &str, folder: &str) -> Result<PathBuf, String> {
         let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-        cargo.args(["build", "--test", "ios", "--features", "touch", "--target", "aarch64-apple-ios-sim", "--message-format=json"]).env("CARGO_TARGET_DIR", built());
+        cargo.args(["build", "--test", "ios", "--features", features, "--target", "aarch64-apple-ios-sim", "--message-format=json"]).env("CARGO_TARGET_DIR", built());
         let said = ios_bundle::ran(&mut cargo)?;
         let program = said.lines().filter(|line| line.contains("\"executable\":\"") && line.contains("\"name\":\"ios\"")).find_map(|line| line.split("\"executable\":\"").nth(1)?.split('"').next());
         let program = PathBuf::from(program.ok_or("no test program built")?);
-        let app = ios_bundle::bundle(&program, "check", CHECK_ID, false, &built().join("ios")).map_err(|error| error.to_string())?;
+        let app = ios_bundle::bundle(&program, "check", id, false, &built().join(folder)).map_err(|error| error.to_string())?;
         ios_bundle::sign_for_simulator(&app)?;
         Ok(app)
     }
@@ -1355,10 +1383,16 @@ mod mac {
 
     /// Starts an app on the device in a mode, its output in files.
     fn launch(device: &str, id: &str, mode: &str) -> Result<(), String> {
+        launch_with(device, id, mode, &[])
+    }
+
+    /// Starts an app on the device in a mode, with variables (`TAUT_RENDERER`, …).
+    fn launch_with(device: &str, id: &str, mode: &str, variables: &[(&str, &str)]) -> Result<(), String> {
         let logs = built().join(format!("{id}-{mode}"));
         let (out, err) = (format!("--stdout={}.out", logs.display()), format!("--stderr={}.err", logs.display()));
         let mut command = Command::new("xcrun");
         command.args(["simctl", "launch", "--terminate-running-process", &out, &err, device, id]).env("SIMCTL_CHILD_TAUT_IOS_CHECK", mode);
+        command.envs(variables.iter().map(|(name, value)| (format!("SIMCTL_CHILD_{name}"), *value)));
         ios_bundle::ran(&mut command).map(drop)
     }
 
@@ -1435,20 +1469,20 @@ mod mac {
         surface
     }
 
-    /// How much of the screen's page differs from the Mac's drawing: the share of pixels more
-    /// than 32 levels apart in some channel, and the largest difference.
-    fn compared(screen: &(usize, Vec<u32>), page: &Page, here: &Surface, name: &str) -> (f64, u32) {
+    /// How much of the screen's page differs from a drawing: the share of pixels more than
+    /// `apart` levels apart in some channel, and the largest difference.
+    fn compared(screen: &(usize, Vec<u32>), page: &Page, here: &Surface, name: &str, apart: u32) -> (f64, u32) {
         let (width, pixels) = screen;
         let (left, top) = ((page.at[0] * page.scale).round() as usize, (page.at[1] * page.scale).round() as usize);
-        let (mut apart, mut most, mut diff) = (0usize, 0u32, vec![0u32; here.width * here.height]);
+        let (mut differ, mut most, mut diff) = (0usize, 0u32, vec![0u32; here.width * here.height]);
         for y in 0..here.height {
             for x in 0..here.width {
                 let theirs = pixels.get((top + y) * width + left + x).copied().unwrap_or(0);
                 let ours = here.pixels[y * here.width + x];
                 let worst = (0..3).map(|channel| ((theirs >> (channel * 8)) & 0xff).abs_diff((ours >> (channel * 8)) & 0xff)).max().unwrap_or(0);
                 most = most.max(worst);
-                apart += usize::from(worst > 32);
-                diff[y * here.width + x] = if worst > 32 { 0xffff_0000 } else { 0xff00_0000 | (((ours & 0x00ff_ffff) / 2) & 0x007f_7f7f) };
+                differ += usize::from(worst > apart);
+                diff[y * here.width + x] = if worst > apart { 0xffff_0000 } else { 0xff00_0000 | (((ours & 0x00ff_ffff) / 2) & 0x007f_7f7f) };
             }
         }
         if let Some(folder) = shots() {
@@ -1456,13 +1490,94 @@ mod mac {
             _ = std::fs::write(folder.join(format!("{name}-mac.png")), taut::png::encode_rgba(here.width, &solid).unwrap_or_default());
             _ = std::fs::write(folder.join(format!("{name}-diff.png")), taut::png::encode_rgba(here.width, &diff).unwrap_or_default());
         }
-        (apart as f64 / (here.width * here.height).max(1) as f64, most)
+        (differ as f64 / (here.width * here.height).max(1) as f64, most)
+    }
+
+    /// The library's GPU checks built for the simulator with `features` and run there
+    /// (`gpu_ios`, `gpu_metal`, `gpu_draw_metal`, `layer_metal`); whether they passed.
+    fn gpu_library(device: &str, features: &str) -> Result<bool, String> {
+        let mut cargo = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        cargo.args(["test", "--lib", "--no-run", "--features", features, "--target", "aarch64-apple-ios-sim", "--message-format=json"]).env("CARGO_TARGET_DIR", built().join("lib"));
+        let said = ios_bundle::ran(&mut cargo)?;
+        let program = said.lines().filter(|line| line.contains("\"test\":true") && line.contains("\"executable\":\"")).find_map(|line| line.split("\"executable\":\"").nth(1)?.split('"').next());
+        let program = program.ok_or("no library tests built")?;
+        let mut spawn = Command::new("xcrun");
+        spawn.args(["simctl", "spawn", device, program, "gpu_ios", "gpu_metal", "gpu_draw_metal", "layer_metal", "--test-threads=1", "--nocapture"]);
+        let done = spawn.output().map_err(|error| error.to_string())?;
+        let ran = format!("{}{}", String::from_utf8_lossy(&done.stdout), String::from_utf8_lossy(&done.stderr));
+        println!("the library's GPU checks with {features}, in the simulator:\n{ran}");
+        Ok(done.status.success() && ran.contains("test result: ok.") && !ran.contains(" 0 passed"))
+    }
+
+    /// The screen turned upright for a page lying sideways (the simulator's pictures keep the
+    /// device's way up): which of the two quarter turns matches `here` best.
+    fn upright(shot: (usize, Vec<u32>), page: &Page, here: &Surface) -> (usize, Vec<u32>) {
+        let (width, pixels) = shot;
+        let height = pixels.len() / width.max(1);
+        if (page.size.w > page.size.h) == (width > height) {
+            return (width, pixels);
+        }
+        let turned = |clockwise: bool| -> (usize, Vec<u32>) {
+            let at = |x: usize, y: usize| if clockwise { pixels[(height - 1 - x) * width + y] } else { pixels[x * width + width - 1 - y] };
+            (height, (0..width * height).map(|i| at(i % height, i / height)).collect())
+        };
+        let [one, other] = [turned(true), turned(false)];
+        if compared(&one, page, here, "turned-a", 32).0 <= compared(&other, page, here, "turned-b", 32).0 { one } else { other }
+    }
+
+    /// The gallery shown by Metal in the check app built with `gpu-draw`: only shown (`TAUT_DRAW
+    /// cpu`), then drawn too (`gpu`); its screen held against the app's own drawing by the CPU
+    /// (the same pixels, or within a few levels where the GPU draws), first, after the
+    /// background and back, and turned sideways. And the library's GPU checks in the simulator.
+    fn gpu_checks(device: &str) -> Result<Vec<String>, String> {
+        let mut failed = Vec::new();
+        for features in ["gpu", "gpu-draw"] {
+            failed.extend((!gpu_library(device, features)?).then(|| format!("the library's GPU checks with {features} failed in the simulator")));
+        }
+        let app = check_app("touch,gpu-draw", GPU_ID, "ios-gpu")?;
+        simctl(&["install", device, &app.to_string_lossy()])?;
+        let container = simctl(&["get_app_container", device, GPU_ID, "data"])?;
+        let drawn = || -> Result<Surface, String> {
+            let png = std::fs::read(Path::new(container.trim()).join("tmp/taut-check/drawn.png")).map_err(|error| error.to_string())?;
+            let (width, pixels) = taut::png::decode(&png).ok_or("the app drew nothing")?;
+            Ok(Surface { width, height: pixels.len() / width.max(1), pixels })
+        };
+        for (draw, tolerance) in [("cpu", 0), ("gpu", 4)] {
+            launch_with(device, GPU_ID, "gallery", &[("TAUT_RENDERER", "metal"), ("TAUT_DRAW", draw)])?;
+            let ready = note(device, GPU_ID, "ready.txt", |text| text.ends_with('\n'), Duration::from_secs(120))?;
+            if !ready.contains("Metal") {
+                failed.push(format!("drawing on the {draw}: Metal does not show the gallery: {ready:?}"));
+                continue;
+            }
+            let page = page_of(&ready)?;
+            let mut check = |shot: (usize, Vec<u32>), page: &Page, here: &Surface, name: &str| {
+                let (share, most) = compared(&shot, page, here, name, tolerance);
+                println!("{name}: {:.3}% of pixels more than {tolerance} apart from the CPU's, at most {most}", share * 100.0);
+                if share > 0.001 {
+                    failed.push(format!("{name}: {:.3}% of pixels differ from the CPU's", share * 100.0));
+                }
+            };
+            let phone = drawn()?;
+            check(screen(device, &format!("metal-{draw}"))?, &page, &phone, &format!("metal-{draw}"));
+            simctl(&["launch", device, "com.apple.Preferences"])?;
+            std::thread::sleep(Duration::from_secs(4));
+            simctl(&["launch", device, GPU_ID])?;
+            std::thread::sleep(Duration::from_secs(4));
+            check(screen(device, &format!("metal-{draw}-back"))?, &page, &phone, &format!("metal-{draw}, back from the background"));
+            signal(device, GPU_ID, "turn")?;
+            let turned = note(device, GPU_ID, "turned.txt", |text| text.ends_with('\n'), Duration::from_secs(60))?;
+            let (page, phone) = (page_of(&turned)?, drawn()?);
+            let shot = upright(screen(device, &format!("metal-{draw}-turned"))?, &page, &phone);
+            check(shot, &page, &phone, &format!("metal-{draw}, turned"));
+            _ = simctl(&["terminate", device, GPU_ID]);
+        }
+        Ok(failed)
     }
 
     /// Everything, in order; the failures.
     fn checks() -> Result<Vec<String>, String> {
         let mut failed = Vec::new();
-        let check = check_app()?;
+        let check = check_app("touch", CHECK_ID, "ios")?;
         let asked = ios_bundle::Asked { example: "gallery".into(), id: "dev.taut.gallery".into(), ..Default::default() };
         let gallery = ios_bundle::build(&asked, &built())?;
         let device = ios_bundle::newest_iphone()?;
@@ -1479,7 +1594,7 @@ mod mac {
         println!("page {}x{} at {:?}, scale {}", page.size.w, page.size.h, page.at, page.scale);
         let here = drawn_here(&page);
         let shown = screen(&device, "check-gallery")?;
-        let (share, most) = compared(&shown, &page, &here, "check-gallery");
+        let (share, most) = compared(&shown, &page, &here, "check-gallery", 32);
         println!("the screen against the Mac's drawing: {:.2}% of pixels apart, at most {most}", share * 100.0);
         if share > 0.03 {
             failed.push(format!("the screen differs from the Mac's drawing in {:.2}% of its pixels", share * 100.0));
@@ -1490,7 +1605,7 @@ mod mac {
         let drawn = std::fs::read(Path::new(container.trim()).join("tmp/taut-check/drawn.png")).unwrap_or_default();
         let (width, pixels) = taut::png::decode(&drawn).ok_or("the app drew nothing")?;
         let phone = Surface { width, height: pixels.len() / width.max(1), pixels };
-        let (share, most) = compared(&shown, &page, &phone, "check-gallery-phone");
+        let (share, most) = compared(&shown, &page, &phone, "check-gallery-phone", 32);
         println!("the screen against the phone's own drawing: {:.3}% of pixels apart, at most {most}", share * 100.0);
         if share > 0.001 {
             failed.push(format!("the screen differs from the phone's own drawing in {:.3}% of its pixels", share * 100.0));
@@ -1528,12 +1643,14 @@ mod mac {
         launch(&device, "dev.taut.gallery", "")?;
         std::thread::sleep(Duration::from_secs(6));
         let shown = screen(&device, "gallery")?;
-        let (share, most) = compared(&shown, &page, &here, "gallery");
+        let (share, most) = compared(&shown, &page, &here, "gallery", 32);
         println!("the gallery example against the Mac's drawing: {:.2}% of pixels apart, at most {most}", share * 100.0);
         if share > 0.03 {
             failed.push(format!("the gallery example differs from the Mac's drawing in {:.2}% of its pixels", share * 100.0));
         }
-        // Notifications last: the system asks the person's leave over the app.
+        // The GPU; then notifications last: the system asks the person's leave over the app (and
+        // dims the screen while it asks).
+        failed.extend(gpu_checks(&device)?);
         failed.extend(driven(&device, "notices")?);
         for log in std::fs::read_dir(built()).map_err(|error| error.to_string())?.flatten() {
             let path = log.path();

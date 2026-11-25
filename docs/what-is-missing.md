@@ -7,25 +7,31 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Windows, X11, Wayland, macOS, iOS, Android and the web (tested on Windows 11, Ubuntu 26.04,
   Arch Linux; on GitHub runners macOS 26 on arm64, iOS 26 in its simulator and Android 15 on an
   x86-64 emulator; Edge and Chrome, headless).
-- Android: one window, the activity's; second windows are not shown. The CPU draws and shows:
-  `Renderer` and `gpu` change nothing. No tray or hotkeys (Android has none); `hide_window`
-  does nothing. The system's file dialog picks files, not folders (a folder of documents has no
-  path): `pick_folder` shows the library's dialog. Picked documents are copies, written back
-  after the run that changed them. What an input method composes shows in a small panel at the
-  text cursor, over the box. The system parts need the package's classes (`examples/apk.rs`);
-  an app packed otherwise has none of them. Untried: TalkBack itself (nodes read with
-  `uiautomator`, and in the app through its provider), a real phone, arm64 beyond building; the
-  emulator's own keyboard composes nothing (a test keyboard did).
-- Web: one window, the page's; no second windows, tray, hotkeys, system notifications, drag and
-  drop with other programs, printing, one running copy, GPU paths or threads. Clipboard: text
-  only; a menu's Paste has the page's last copy or paste unless the person let the page read the
-  clipboard. Files: the browser's picker opens one file, read whole into memory; saving is a
-  download. The person's fonts aren't listed (`system_fonts::families` is empty). Code after
-  `taut::run` runs at once. Readers: tested against the DOM, not with a screen reader itself.
+- Android: one window, the activity's; second windows are not shown. No tray or hotkeys
+  (Android has none); `hide_window` does nothing. The system's file dialog picks files, not
+  folders (a folder of documents has no path): `pick_folder` shows the library's dialog. Picked
+  documents are copies, written back after the run that changed them. What an input method
+  composes shows in a small panel at the text cursor, over the box. The system parts need the
+  package's classes (`examples/apk.rs`); an app packed otherwise has none of them. Untried:
+  TalkBack itself (nodes read with `uiautomator`, and in the app through its provider), a real
+  phone, arm64 beyond building; the emulator's own keyboard composes nothing (a test keyboard
+  did).
+- Web: one window, the page's: no second windows, tray or global hotkeys (a page has none), no
+  threads (`wasm32-unknown-unknown`). Code after `taut::run` runs at once. Clipboard: a menu's
+  Paste has the page's last copy or paste unless the person let the page read the clipboard;
+  files can't be put on it (`copy_files` does nothing). Files are read whole into memory; the
+  save picker only in Chrome and Edge (elsewhere a download), written after `save` returns. A
+  file dragged out goes as one the page made (Chrome: and a download where it is let go): the
+  DevTools protocol carries no such file, so its drop elsewhere is untested. Notifications: none
+  in phone browsers (they need a service worker). One copy: two tabs opened at the same moment
+  may both start as first; a tab can't come forward. Printing: pages as pictures (288 dpi), not
+  text; the browser doesn't say whether the person printed (`Sent` once its dialog closes).
+  Fonts: listed in Chrome and Edge only, once the person allows it. Readers: tested against the
+  DOM, not with a screen reader itself.
 - macOS: `layer_vulkan` untested (no Vulkan loader or MoltenVK on the runner).
-- iOS: the CPU draws and Core Animation shows; `Renderer` and `gpu` change nothing. No tray or
-  global hotkeys (iOS has neither). No second windows: an iPhone app has one; on iPad they are
-  not opened as scenes yet. Without `touch`, only the first finger works, as the mouse.
+- iOS: no tray or global hotkeys (iOS has neither). No second windows: an iPhone app has one; on
+  iPad they are not opened as scenes yet. Without `touch`, only the first finger works, as the
+  mouse.
 - iOS: in a password box and the code box the keyboard sees only what an input method composes
   (no corrections). The system's loupe and selection handles don't show: taut draws its own
   selection. Reading what another app put on the clipboard asks the person, except through the
@@ -85,16 +91,25 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Renderers
 
-- Layers for Direct3D 9, 11 and 12, OpenGL 3.3, Vulkan and Metal; others through
-  `Surface::upload` (chapter 9).
+- Layers for Direct3D 9, 11 and 12, OpenGL 3.3, OpenGL ES 3.0, Vulkan and Metal; others through
+  `Surface::upload` (chapter 9). On OpenGL ES the layer's texture holds the pixels' bytes as
+  they are (blue where red is read).
 - Layers draw into single-sample targets; Vulkan only in a render pass (not dynamic rendering).
   Direct3D 12 and Vulkan leave their state set after `draw`.
 - Lost devices: plain Direct3D 9's `Reset` is untested (it makes no device on a desktop of its
   own; 9Ex was tested); Vulkan's loss can't be simulated.
 - `gpu`: see-through windows stay on the CPU.
-- `hdr`: Vulkan, OpenGL, X11 and macOS show SDR. HDR pictures only from PNG (`cICP`): not
-  AVIF, JPEG XL or Ultra HDR JPEGs. Gain maps are sampled nearest, not smoothed. Tested on
-  HDR screens faked: this PC's are SDR, and no compositor on the test bed has an HDR output.
+- `hdr`: X has no HDR: X11 windows show SDR, whatever path. iOS and Android show SDR. HDR
+  pictures from PNG (`cICP`) and Ultra HDR JPEGs: not AVIF or JPEG XL.
+- `hdr` on Windows' OpenGL: a window keeps its pixel format for life, so a device made while
+  no screen is HDR shows SDR until it is made again (a lost device, a new program).
+- `hdr` under Wayland: a lit window is handed over in PQ through shared memory, Vulkan's too.
+- Ultra HDR: a gain map's SDR and HDR offsets are taken as one (their mean); applied in the
+  picture's own colours; with `color-profiles`, colours a Display P3 picture has outside sRGB
+  are cut before they are brightened.
+- `hdr` tested on HDR screens faked: this PC's are SDR, no compositor on the test bed has an
+  HDR output, and the macOS runner's screen has no EDR headroom. What reaches the swap chain,
+  layer or buffer is checked by number.
 - `gpu-draw`: scenes, SVG drawings (their blur too: drawn once, then kept), colour emoji, fills
   of other inks and shapes of over 256 edges in 16 rows are drawn by the CPU (into patches). A
   see-through box (`El::opacity`) has the CPU draw its part: the GPU has no layers yet. GDI's
@@ -116,6 +131,18 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - `gpu` on macOS: tested only on GitHub's runner (a VM's paravirtual Apple GPU, one screen at
   scale 1): a window moving to a screen of another GPU, a removed GPU (loss simulated) and Retina
   scales in a window untried; x86-64 Macs untried. Frames wait for the screen (60 Hz there).
+- `gpu` on iOS: tested only in the simulator (its Metal is the Mac's). The app switcher's
+  picture taken in the background shows the last frame: nothing is drawn there. A device lost
+  for real untried (simulated).
+- `gpu` on Android: tested only on the emulator (SwiftShader's Vulkan and OpenGL ES: `Auto`
+  takes neither, so the CPU shows there), not on a phone's GPU. The device is opened on the
+  main thread as the window first shows. Swap chains have no transform of their own: on a
+  turned screen the compositor turns each frame. OpenGL ES draws the whole window each frame
+  (naming only what changed). Device loss simulated.
+- `gpu` on the web: WebGL2 only (no WebGPU); each frame draws the whole canvas (WebGL has no
+  partial present). A lost context leaves the page to the CPU for good (loss simulated with
+  `WEBGL_lose_context`). Tested in headless Edge on ANGLE over Direct3D 11 and headless Chrome
+  on SwiftShader (GitHub's Ubuntu runner).
 - `gpu` under Wayland: Vulkan dmabufs only when asked; `Auto` keeps shared memory (cheaper on
   the one device measured). Tested only with lavapipe exporting through `/dev/udmabuf` (GitHub's
   Ubuntu runner) to Weston's GL renderer: no hardware GPU, Mutter, KWin or Sway, no tiled or
@@ -139,7 +166,13 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Text and fonts
 
-- Vertical text: labels only, no editing, breaks only at line ends, no tate-chu-yoko or ruby.
+- Vertical text: no icons or pictures among it, no underlines in it (links get one while hovered),
+  no colour emoji; its text boxes are not spell checked and set no digits across. A run set across
+  one em is centred, as CSS has it; Chrome sets it off centre by up to 0.1 em. A word longer than a
+  column breaks where it must (CSS lets it overflow).
+- Ruby in rich text with the system's text places the reading by the font's ascent and descent, not
+  its typographic em box (app fonts use that). Readings in one line are each placed against their own
+  base, not on one line. Horizontal text does not trim fullwidth punctuation.
 - Without `shaping`, app fonts draw glyph by glyph, kerned by pairs (pages shape fully); system
   text keeps its default forms. With it, language forms in system text skip lines with marks,
   letters from fallback fonts, or scripts shaped by syllable; not on macOS.
@@ -164,10 +197,12 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Pictures
 
-- JPEG: no hierarchical or arithmetic lossless. Icons: the largest image only.
 - Refused as implausible: single-colour arithmetic JPEGs with more blocks than file bits;
   single-colour lossless WebPs over 2,048 pixels per file byte.
-- Lossy WebP decodes about 3× slower than an equivalent JPEG.
+- Icons pick their image by size, then depth; Windows prefers a deeper image of another size.
+- Lossy WebP decodes about 4× slower than an equivalent JPEG (a 1920×1080 photo: 60 ms against
+  14 ms), most of it the loop filter and the boolean decoder, done one pixel and one bit at a
+  time.
 - SVG not read: `animateMotion`, animations begun by events or other animations,
   `FillPaint`/`StrokePaint` inputs, `kernelUnitLength`. Images in other files only through the
   app's loader; drawings an image brings, four deep at most. SMIL animation plays as encoded
@@ -179,7 +214,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - SVG cost beyond the file's budget is skipped; a small file can still take seconds at
   4096×4096.
 - Highly compressible PNGs (30:1+) decode up to 1/7 slower than with an exact buffer.
-- JPEG writing: baseline only, no metadata. ICO writing: 32-bit, up to 256 px.
+- JPEG writing: YCbCr only, no restart markers, no arithmetic coding; XMP up to 64 KB (no
+  extended XMP). ICO images past 256 px: Windows reads them as 256 and scales.
 - `add_picture_file` includes every decoder; call one decoder (`jpeg::decode`) and
   `add_picture` to include only that one.
 
@@ -213,7 +249,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   outlines. Forms: no signatures, scripts or radio groups. PDF/UA not claimed in a reader's sense
   beyond what veraPDF checks.
 - Pages from `print` (not `print_laid`) aren't laid out again for the paper picked.
-- Printing tested only against stand-ins (a metafile on Windows, a private bus on Linux).
+- Printing tested only against stand-ins (a metafile on Windows, a private bus on Linux, a PDF
+  of the print style in a headless browser).
 
 ## Windows
 

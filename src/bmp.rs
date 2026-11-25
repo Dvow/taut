@@ -9,8 +9,9 @@
 //!
 //! An ICO holds one icon at several sizes. Each is a BMP without its 14-byte file header, whose
 //! height is doubled because a 1-bit transparency mask row follows each pixel row; or a whole
-//! PNG. The largest is read. Written, each size is stored as Windows stores its own: PNG from
-//! 256 pixels, smaller as 32-bit BMP. A program that writes no icon carries none of this.
+//! PNG. The largest is read, or every one. Written, each size is stored as PNG or 32-bit BMP,
+//! whichever is smaller (PNG past 256 pixels, which a BMP in an icon can't be). A program that
+//! writes no icon carries none of this.
 //!
 //! Not read: BMPs holding JPEG or PNG (only for printers), the two OS/2-only compressions, and
 //! colour profiles (ignored: colours are taken as stored).
@@ -31,6 +32,25 @@ pub fn decode(bmp: &[u8]) -> Option<(usize, Vec<u32>)> {
 /// Decodes an ICO (or CUR, a cursor): the image with the most pixels, and of several that size,
 /// the deepest. Returns what [`decode`] does.
 pub fn decode_icon(ico: &[u8]) -> Option<(usize, Vec<u32>)> {
+    let (_, best) = images(ico)?.into_iter().max_by_key(|(weight, _)| *weight)?;
+    image(best)
+}
+
+/// Decodes every image of an ICO (or CUR): one per size, the deepest of each, largest first,
+/// each as [`decode`] returns one. For a program to pick the image made for the size it
+/// shows; [`Ui::add_picture_file`](crate::Ui::add_picture_file) keeps them all and does so
+/// itself. `None` if none can be read.
+pub fn decode_icon_images(ico: &[u8]) -> Option<Vec<(usize, Vec<u32>)>> {
+    // (Sorted by a heap: a sort's own code would be several times larger.)
+    let mut images = std::collections::BinaryHeap::from(images(ico)?).into_sorted_vec();
+    images.reverse();
+    images.dedup_by_key(|(weight, _)| (weight.0, weight.1));
+    let read: Vec<(usize, Vec<u32>)> = images.into_iter().filter_map(|(_, picture)| image(picture)).collect();
+    (!read.is_empty()).then_some(read)
+}
+
+/// An ICO's images: each one's pixel count, width and bits per pixel, and its bytes.
+fn images(ico: &[u8]) -> Option<Vec<(Weight, &[u8])>> {
     let count = number(ico, 4, 2).filter(|_| matches!(ico, [0, 0, 1 | 2, 0, ..]))? as usize;
     // Each 16-byte directory entry gives an image's offset and length. (And its size: but in a
     // byte each way, which the image itself gives better.)
@@ -39,25 +59,30 @@ pub fn decode_icon(ico: &[u8]) -> Option<(usize, Vec<u32>)> {
         let picture = rest.get(..number(entry, 8, 4)? as usize).unwrap_or(rest);
         Some((weight(picture)?, picture))
     };
-    let (_, best) = ico[6..].as_chunks::<16>().0.iter().take(count).filter_map(held).max_by_key(|(weight, _)| *weight)?;
-    if best.starts_with(b"\x89PNG") {
-        return png::decode(best);
+    Some(ico.get(6..)?.as_chunks::<16>().0.iter().take(count).filter_map(held).collect())
+}
+
+/// One ICO image from its bytes: a PNG, or a BMP without its file header.
+fn image(bytes: &[u8]) -> Option<(usize, Vec<u32>)> {
+    if bytes.starts_with(b"\x89PNG") {
+        return png::decode(bytes);
     }
-    picture(best, None, true)
+    picture(bytes, None, true)
 }
 
 /// Encodes an ICO: one icon at several sizes, each as [`decode_icon`] returns one (width, and
-/// `0xAARRGGBB` pixels in rows from the top, not premultiplied). Images 256 pixels wide or high
-/// are stored as PNG, as Windows stores its large icons; smaller ones as 32-bit BMP, with the
-/// 1-bit transparency mask after them (for readers that need it). `None` for no images, or one
-/// empty or over 256 pixels either way (ICO stores a byte each, 0 meaning 256).
+/// `0xAARRGGBB` pixels in rows from the top, not premultiplied). Each is stored as PNG or as
+/// 32-bit BMP (with the 1-bit transparency mask after it, for readers that need it), whichever
+/// is smaller; past 256 pixels either way, as PNG. (The directory gives a size in a byte each
+/// way, 0 for 256 or more: readers take the true size from the image.) `None` for no images,
+/// or an empty one.
 pub fn encode_icon(sizes: &[(usize, &[u32])]) -> Option<Vec<u8>> {
     let held: Vec<Vec<u8>> = sizes.iter().map(|(width, pixels)| held(*width, pixels)).collect::<Option<_>>()?;
     let mut out = [&[0, 0, 1, 0][..], &(u16::try_from(sizes.len()).ok().filter(|count| *count > 0)?).to_le_bytes()].concat();
     // Each 16-byte directory entry: size (a byte each way), bits per pixel, length, and offset.
     let mut at = 6 + 16 * sizes.len();
     for ((width, pixels), picture) in sizes.iter().zip(&held) {
-        let [wide, high] = [*width, pixels.len() / width].map(|side| side as u8);
+        let [wide, high] = [*width, pixels.len() / width].map(|side| if side < 256 { side as u8 } else { 0 });
         out.extend([&[wide, high, 0, 0, 1, 0, 32, 0][..], &(picture.len() as u32).to_le_bytes(), &(at as u32).to_le_bytes()].concat());
         at += picture.len();
     }
@@ -65,20 +90,28 @@ pub fn encode_icon(sizes: &[(usize, &[u32])]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// One ICO image (see `encode_icon`): a PNG, or a BMP header (with doubled height), rows
-/// bottom-up at 4 bytes per pixel (blue, green, red, alpha), and a 1-bit mask set where a pixel
-/// is fully transparent, each row padded to 4 bytes.
+/// One ICO image (see `encode_icon`): a PNG, or a BMP, whichever is smaller.
 fn held(width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
     let height = pixels.len() / width.max(1);
-    if !(1..=256).contains(&width) || !(1..=256).contains(&height) {
+    if width == 0 || height == 0 {
         return None;
     }
-    if width == 256 || height == 256 {
-        return png::encode_rgba(width, &pixels[..width * height]);
+    let png = png::encode_rgba(width, &pixels[..width * height])?;
+    if width > 256 || height > 256 {
+        return Some(png);
     }
+    let bmp = bitmap(width, &pixels[..width * height]);
+    Some(if png.len() < bmp.len() { png } else { bmp })
+}
+
+/// An ICO image as a BMP: its header (with doubled height), rows bottom-up at 4 bytes per pixel
+/// (blue, green, red, alpha), and a 1-bit mask set where a pixel is fully transparent, each row
+/// padded to 4 bytes.
+fn bitmap(width: usize, pixels: &[u32]) -> Vec<u8> {
+    let height = pixels.len() / width;
     let header = [&40u32.to_le_bytes()[..], &(width as u32).to_le_bytes(), &(2 * height as u32).to_le_bytes(), &[1, 0, 32, 0], &[0; 24]].concat();
     let rows = pixels.chunks_exact(width).rev().flatten().flat_map(|pixel| pixel.to_le_bytes());
-    Some(header.into_iter().chain(rows).chain(pixels.chunks_exact(width).rev().flat_map(clear_bits)).collect())
+    header.into_iter().chain(rows).chain(pixels.chunks_exact(width).rev().flat_map(clear_bits)).collect()
 }
 
 /// A row's transparency mask bits, first pixel in the highest bit, padded to 4 bytes.
@@ -86,13 +119,16 @@ fn clear_bits(row: &[u32]) -> impl Iterator<Item = u8> + '_ {
     (0..row.len().div_ceil(32) * 4).map(move |byte| (0..8).fold(0, |bits, bit| bits << 1 | row.get(byte * 8 + bit).is_some_and(|pixel| pixel >> 24 == 0) as u8))
 }
 
-/// An ICO image's pixel count and bits per pixel.
-fn weight(picture: &[u8]) -> Option<(usize, usize)> {
+/// How an ICO image ranks against the others: pixel count, width, and bits per pixel.
+type Weight = (usize, usize, usize);
+
+/// An ICO image's pixel count, width and bits per pixel.
+fn weight(picture: &[u8]) -> Option<Weight> {
     if picture.starts_with(b"\x89PNG") {
         let size = [16, 20].map(|at| picture.get(at..at + 4).map_or(0, |n| u32::from_be_bytes([n[0], n[1], n[2], n[3]]) as usize));
-        return Some((size[0].saturating_mul(size[1]), 32));
+        return Some((size[0].saturating_mul(size[1]), size[0], 32));
     }
-    read_header(picture, true).map(|header| (header.size[0].saturating_mul(header.size[1]), header.bits))
+    read_header(picture, true).map(|header| (header.size[0].saturating_mul(header.size[1]), header.size[0], header.bits))
 }
 
 /// A little-endian number of `long` bytes at `at` in `bytes`.
@@ -609,32 +645,86 @@ mod tests {
         (0..width * height).map(|at| solid(at % width, at / width) | ((at % width * 255 / width) as u32) << 16 | ((at / width * 255 / height) as u32) << 8 | 0x40).collect()
     }
 
-    /// The sizes the tests encode: those Windows asks for, and two non-square ones.
-    const ICON_SIZES: [[usize; 2]; 8] = [[16, 16], [24, 24], [32, 32], [48, 48], [64, 64], [256, 256], [5, 3], [7, 256]];
+    /// The sizes the tests encode: those Windows asks for, two non-square ones, and two past
+    /// 256.
+    const ICON_SIZES: [[usize; 2]; 10] = [[16, 16], [24, 24], [32, 32], [48, 48], [64, 64], [256, 256], [5, 3], [7, 256], [512, 512], [300, 9]];
+
+    /// The size and bits per pixel an ICO's directory gives each image: (width, height,
+    /// bits).
+    fn directory(ico: &[u8]) -> Vec<(u8, u8, u32)> {
+        let entry = |entry: &[u8; 16]| (entry[0], entry[1], number(entry, 6, 2).unwrap());
+        ico[6..].as_chunks::<16>().0.iter().take(number(ico, 4, 2).unwrap() as usize).map(entry).collect()
+    }
 
     #[test]
     fn an_icon_written_is_read_back_at_every_size() {
-        // Each size alone in a file round-trips: smaller ones as BMP, those 256 wide or high as
-        // PNG.
+        // Each size alone in a file round-trips, as PNG or BMP, whichever is smaller: PNG past
+        // 256 pixels either way.
         for [width, height] in ICON_SIZES {
             let pixels = icon_picture(width, height);
             let ico = encode_icon(&[(width, &pixels)]).expect("is written");
-            assert_eq!(decode_icon(&ico), Some((width, pixels)), "{width} by {height}");
-            assert_eq!(ico[22..26] == *b"\x89PNG", width == 256 || height == 256, "{width} by {height}: kept as a PNG");
+            assert_eq!(decode_icon(&ico), Some((width, pixels.clone())), "{width} by {height}");
+            let (png, bmp) = (png::encode_rgba(width, &pixels).unwrap(), bitmap(width, &pixels));
+            assert_eq!(&ico[22..], if png.len() < bmp.len() || width.max(height) > 256 { &png } else { &bmp }, "{width} by {height}: kept as the smaller");
         }
-        // All of them in one file, whose directory gives each one's size (256 as 0) and offset:
-        // the largest is read.
+        // All of them in one file, whose directory gives each one's size (256 or more as 0):
+        // the largest is read, or all, largest first.
         let pictures: Vec<(usize, Vec<u32>)> = ICON_SIZES.iter().map(|[width, height]| (*width, icon_picture(*width, *height))).collect();
         let lent: Vec<(usize, &[u32])> = pictures.iter().map(|(width, pixels)| (*width, &pixels[..])).collect();
         let ico = encode_icon(&lent).unwrap();
-        assert_eq!(decode_icon(&ico), Some((256, icon_picture(256, 256))));
-        let said: Vec<[u8; 2]> = ico[6..].as_chunks::<16>().0.iter().take(8).map(|entry| [entry[0], entry[1]]).collect();
-        assert_eq!(said, [[16, 16], [24, 24], [32, 32], [48, 48], [64, 64], [0, 0], [5, 3], [7, 0]]);
-        // The mask after a small image marks its fully transparent pixels, row by row
+        assert_eq!(decode_icon(&ico), Some((512, icon_picture(512, 512))));
+        let said: Vec<[u8; 2]> = directory(&ico).iter().map(|(wide, high, ..)| [*wide, *high]).collect();
+        assert_eq!(said, [[16, 16], [24, 24], [32, 32], [48, 48], [64, 64], [0, 0], [5, 3], [7, 0], [0, 0], [0, 9]]);
+        let mut largest_first = pictures.clone();
+        largest_first.sort_by_key(|(width, pixels)| std::cmp::Reverse((pixels.len(), *width)));
+        assert_eq!(decode_icon_images(&ico), Some(largest_first));
+        // The mask after a small BMP image marks its fully transparent pixels, row by row
         // bottom-up, each row in 4 bytes.
-        let small = encode_icon(&[(5, &icon_picture(5, 3))]).unwrap();
+        let small = bitmap(5, &icon_picture(5, 3));
         let clear: Vec<u8> = (0..3).rev().map(|y| (0..5).fold(0, |bits, x| bits | ((icon_picture(5, 3)[y * 5 + x] >> 24 == 0) as u8) << (7 - x))).collect();
         assert_eq!(small[small.len() - 12..], [clear[0], 0, 0, 0, clear[1], 0, 0, 0, clear[2], 0, 0, 0]);
+    }
+
+    #[test]
+    fn every_image_of_an_icon_is_read_once_per_size_the_deepest() {
+        // Two of one size, 4 and 24 bits, and a larger: the larger, then the 24-bit one.
+        let colour = |x: usize, y: usize| 0x0010_2030 + (x * 5 + y * 0x300) as u32;
+        let (shallow, deep, large) = (held(4, [5, 3], |x, y| numbered(x, y) as u32, |_, _| false), held(24, [5, 3], colour, |_, _| false), held(24, [6, 4], colour, |_, _| false));
+        let images = decode_icon_images(&icon(&[shallow.clone(), large.clone(), deep.clone()])).unwrap();
+        assert_eq!(images, [decode_icon(&icon(&[large])).unwrap(), decode_icon(&icon(&[deep])).unwrap()]);
+        // An image that can't be read is left out; none readable is nothing.
+        let mut broken = shallow;
+        broken[14] = 3;
+        assert_eq!(decode_icon_images(&icon(&[broken.clone(), held(24, [2, 2], colour, |_, _| false)])).map(|images| images.len()), Some(1));
+        assert_eq!([decode_icon_images(&icon(&[broken])), decode_icon_images(&icon(&[])), decode_icon_images(b"not an icon")], [None, None, None]);
+    }
+
+    #[test]
+    fn an_icon_shows_the_image_made_for_its_size_or_the_nearest_larger() {
+        use crate::{LocalClipboard, Surface, Ui, geom::Size, text::BuiltInFont};
+        // Three images, each of one colour: red 16, green 32, blue 64 pixels square.
+        let [red, green, blue] = [0xffff_0000u32, 0xff00_ff00, 0xff00_00ff];
+        let images = [(16, vec![red; 256]), (32, vec![green; 1024]), (64, vec![blue; 4096])];
+        let lent: Vec<(usize, &[u32])> = images.iter().map(|(width, pixels)| (*width, &pixels[..])).collect();
+        for scale in [1.0, 2.0] {
+            let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
+            ui.resize(Size { w: 120.0, h: 300.0 }, scale);
+            let icon = ui.add_picture_file(&encode_icon(&lent).unwrap()).unwrap();
+            // Its size is its largest image's.
+            assert_eq!(ui.picture_size(icon), Some((64, 64)));
+            let sides = [12.0, 16.0, 20.0, 32.0, 48.0, 64.0, 100.0];
+            ui.run(&mut |ui| sides.iter().for_each(|side| _ = ui.el().picture(icon).size(*side, *side).show()));
+            let screen = Surface::draw(&mut ui, 64);
+            // Each box's top left corner, in pixels: the boxes lie in a column.
+            let corners = sides.iter().scan(0.0, |top, side| Some((std::mem::replace(top, *top + side), side)));
+            let shown: Vec<u32> = corners.map(|(top, _)| screen.pixels[(top * scale) as usize * screen.width + 1] | 0xff00_0000).collect();
+            let wanted = |side: f32| match side * scale {
+                pixels if pixels <= 16.0 => red,
+                pixels if pixels <= 32.0 => green,
+                _ => blue,
+            };
+            assert_eq!(shown, sides.map(wanted), "at {scale}×");
+        }
     }
 
     #[test]
@@ -642,11 +732,10 @@ mod tests {
         let pixels = icon_picture(16, 16);
         assert!(encode_icon(&[(16, &pixels)]).is_some());
         assert_eq!([encode_icon(&[]), encode_icon(&[(0, &pixels)]), encode_icon(&[(16, &pixels[..8])]), encode_icon(&[(16, &pixels), (3, &[])])], [None, None, None, None]);
-        assert_eq!([encode_icon(&[(257, &vec![0; 257])]), encode_icon(&[(1, &vec![0; 257])])], [None, None]);
     }
 
-    /// What Windows makes of an icon file: the image it loads for a size, read back as the
-    /// icon's colour bitmap (blue, green, red, alpha).
+    /// What Windows makes of an icon file: the image it loads for a size, its colours and
+    /// alpha (from the mask where the colours have none).
     #[cfg(windows)]
     fn loaded_by_windows(file: &std::path::Path, [width, height]: [usize; 2]) -> Option<Vec<u32>> {
         #[repr(C)]
@@ -674,39 +763,75 @@ mod tests {
         use crate::windows::sys::ICONINFO;
         use std::os::windows::ffi::OsStrExt;
         let name: Vec<u16> = file.as_os_str().encode_wide().chain([0]).collect();
-        let mut pixels = vec![0u32; width * height];
+        let (mut pixels, mut mask) = (vec![0u32; width * height], vec![0u32; width * height]);
         // SAFETY: the name is NUL-terminated; the icon, its bitmaps and the DC are released
         // before returning; GetDIBits writes `height` rows of `width` 32-bit pixels, top-down
-        // (negative height), which `pixels` has room for.
-        unsafe {
+        // (negative height), which `pixels` and `mask` have room for.
+        let read = unsafe {
             // IMAGE_ICON, LR_LOADFROMFILE.
             let icon = LoadImageW(0, name.as_ptr(), 1, width as i32, height as i32, 0x10);
             let mut info = ICONINFO::default();
             if icon == 0 || GetIconInfo(icon, &mut info) == 0 {
                 return None;
             }
-            let (dc, mut header) = (CreateCompatibleDC(0), Header { size: 40, width: width as i32, height: -(height as i32), planes: 1, bits: 32, rest: [0; 6] });
-            let read = GetDIBits(dc, info.color, 0, height as u32, pixels.as_mut_ptr(), &mut header, 0);
+            let (dc, header) = (CreateCompatibleDC(0), || Header { size: 40, width: width as i32, height: -(height as i32), planes: 1, bits: 32, rest: [0; 6] });
+            let read = [GetDIBits(dc, info.color, 0, height as u32, pixels.as_mut_ptr(), &mut header(), 0), GetDIBits(dc, info.mask, 0, height as u32, mask.as_mut_ptr(), &mut header(), 0)];
             DeleteDC(dc);
             DeleteObject(info.color);
             DeleteObject(info.mask);
             DestroyIcon(icon);
-            (read == height as i32).then_some(pixels)
-        }
+            read
+        };
+        // Without alpha of its own, a pixel is clear where the mask is white.
+        let says = pixels.iter().any(|pixel| pixel >> 24 != 0);
+        let shown = |(pixel, mask): (&u32, &u32)| {
+            if says {
+                *pixel
+            } else if *mask & 0xff_ffff != 0 {
+                0
+            } else {
+                0xff00_0000 | *pixel
+            }
+        };
+        (read == [height as i32; 2]).then(|| pixels.iter().zip(&mask).map(shown).collect())
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_loads_a_written_icon_at_every_size() {
         // One file of every size: Windows' icon loading takes the image of each requested size
-        // from it as written, PNG ones too.
+        // from it as written, PNG ones too. (Past 256, it goes by the directory, which says 256:
+        // it takes the first such and stretches it.)
         let pictures: Vec<(usize, Vec<u32>)> = ICON_SIZES.iter().map(|[width, height]| (*width, icon_picture(*width, *height))).collect();
         let lent: Vec<(usize, &[u32])> = pictures.iter().map(|(width, pixels)| (*width, &pixels[..])).collect();
         let file = std::env::temp_dir().join(format!("taut-icon-{}.ico", std::process::id()));
         std::fs::write(&file, encode_icon(&lent).unwrap()).unwrap();
-        for [width, height] in ICON_SIZES.into_iter().filter(|[width, height]| width == height) {
+        for [width, height] in ICON_SIZES.into_iter().filter(|[width, height]| width == height && *width <= 256) {
             assert_eq!(loaded_by_windows(&file, [width, height]), Some(icon_picture(width, height)), "{width} by {height}");
         }
         std::fs::remove_file(file).unwrap();
+    }
+
+    /// Icons of the system and of programs on it, read where they lie: one image per size, each
+    /// of the file's deepest as Windows loads it at its size (where transparent, only that).
+    /// (Windows takes the deepest at another size, scaled, over a shallower one made for the
+    /// size.) (`cargo test --lib bmp -- --ignored` on Windows.)
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "reads the system's own icons, which another system lacks"]
+    fn every_image_of_the_systems_icons_is_read_as_windows_loads_it() {
+        let files = [r"C:\Windows\System32\OneDrive.ico", r"C:\Program Files\Git\mingw64\share\git\git-for-windows.ico", r"C:\Program Files\Git\usr\share\git\msys2-32.ico"];
+        for file in files.map(std::path::Path::new).into_iter().filter(|file| file.exists()) {
+            let (images, said) = (decode_icon_images(&std::fs::read(file).unwrap()).unwrap(), directory(&std::fs::read(file).unwrap()));
+            let size = |wide: u8| if wide == 0 { 256 } else { wide as usize };
+            let sizes: std::collections::BTreeSet<usize> = said.iter().map(|(wide, ..)| size(*wide)).collect();
+            assert_eq!(images.len(), sizes.len(), "{file:?}: one image per size");
+            let (deepest, deepest_at) = (said.iter().map(|(.., bits)| *bits).max(), |width: usize| said.iter().filter(|(wide, ..)| size(*wide) == width).map(|(.., bits)| *bits).max());
+            for (width, pixels) in images.into_iter().filter(|(width, _)| deepest_at(*width) == deepest) {
+                let loaded = loaded_by_windows(file, [width, pixels.len() / width]).unwrap();
+                let same = |(ours, theirs): (&u32, &u32)| if ours >> 24 == 0 { theirs >> 24 == 0 } else { ours == theirs };
+                assert!(pixels.iter().zip(&loaded).all(same), "{file:?}, {width} wide");
+            }
+        }
     }
 }

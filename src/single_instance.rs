@@ -20,6 +20,9 @@
 //!   crash leaves nothing to clean up. A second start passes on its activation token
 //!   (`XDG_ACTIVATION_TOKEN` on Wayland, `DESKTOP_STARTUP_ID` on X), which the first copy uses
 //!   to come forward.
+//! - **Web:** the first tab holds a lock named for the program (Web Locks); a later tab of the
+//!   same site hands its address to it over a `BroadcastChannel` (`web_desktop`). A tab can't
+//!   bring itself forward.
 //!
 //! The arguments are passed as given, with the working folder, so relative paths resolve.
 use crate::ui::Ui;
@@ -72,11 +75,11 @@ pub fn single_instance(name: &str) -> bool {
     return crate::windows_shell::first_copy(name, &packed);
     #[cfg(unix)]
     return linux::first_copy(name, &packed);
-    // A page is always the first: there is no other copy to hand a start to.
+    // A page hands over its address instead (see `web_desktop`).
     #[cfg(target_family = "wasm")]
-    let _ = (name, packed);
-    #[allow(unreachable_code)]
-    true
+    let _ = packed;
+    #[cfg(target_family = "wasm")]
+    return crate::web_desktop::first(name);
 }
 
 /// An environment variable as text (empty if unset).

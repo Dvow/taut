@@ -9,6 +9,8 @@
 //! - A robust context (`WGL_ARB_create_context_robustness`) tells a GPU reset.
 //! - opengl32.dll is loaded from the system folder when a window first asks for OpenGL; the
 //!   context is made on a hidden window of the device's own thread.
+//! - With the feature `hdr`, the windows of a device made while a screen is HDR are given a
+//!   float pixel format and presented in scRGB (`hdr_opengl`).
 use crate::gpu_windows::{function_in, system_library};
 use crate::windows::sys::{CreateWindowExW, DestroyWindow, GetModuleHandleW, HANDLE};
 use std::cell::Cell;
@@ -156,6 +158,16 @@ struct Owner {
 }
 
 impl Owner {
+    /// An OpenGL function of the current context by name: WGL's, or for those of OpenGL 1.1
+    /// opengl32.dll's own; null where neither has it.
+    #[cfg(feature = "hdr")]
+    fn function(&self, name: &CStr) -> *const c_void {
+        // SAFETY: a context is current; the name ends in a zero. Drivers give nothing (or 1, 2,
+        // 3 or -1) for OpenGL 1.1's own functions.
+        let found = unsafe { (self.wgl.find)(name.as_ptr()) };
+        if matches!(found as isize, -1..=3) { function_in(system_library("opengl32.dll"), name) as *const c_void } else { found }
+    }
+
     /// Makes the context current with `dc`, if it is not. Says whether it is.
     fn with(&self, dc: HANDLE) -> bool {
         if self.current.load(Relaxed) == dc {
@@ -171,8 +183,13 @@ impl Owner {
 /// The OpenGL context a program's windows are shown with.
 pub(crate) struct Device {
     owner: Owner,
-    /// The pixel format every window is given.
+    /// The pixel format every window is given, and whether it is of floats (see `hdr_opengl`).
     format: i32,
+    #[cfg(feature = "hdr")]
+    float: bool,
+    /// A float pixel format the driver offers, where it does.
+    #[cfg(feature = "hdr")]
+    offered_float: Option<i32>,
     /// `wglSwapIntervalEXT`, and `glGetGraphicsResetStatusARB` of a robust context.
     interval: Option<unsafe extern "system" fn(i32) -> i32>,
     reset: Option<unsafe extern "system" fn() -> u32>,
@@ -182,16 +199,28 @@ pub(crate) struct Device {
 
 impl Device {
     /// An OpenGL 3.3 core context on a GPU (not GDI's software OpenGL, not a software
-    /// rasterizer); nothing where there is none. Made current on no thread.
+    /// rasterizer); nothing where there is none. Made current on no thread. (With `hdr`, of a
+    /// float pixel format where a screen is HDR and the driver has one.)
     pub(crate) fn gpu() -> Option<Device> {
         let library = system_library("opengl32.dll");
+        let made = Device::on_hidden(library, None)?;
+        #[cfg(feature = "hdr")]
+        if let Some(float) = made.offered_float.filter(|_| crate::hdr_windows::an_hdr_screen()).and_then(|format| Device::on_hidden(library, Some(format))) {
+            return Some(float);
+        }
+        Some(made)
+    }
+
+    /// The context, made on a hidden window given pixel format `format` (or one chosen for
+    /// 8-bit colour).
+    fn on_hidden(library: isize, format: Option<i32>) -> Option<Device> {
         let wgl = Some(library).filter(|library| *library != 0).and_then(Wgl::load)?;
         let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
         // SAFETY: a popup window of the system's static class, never shown; let go of below.
         let hidden = unsafe { CreateWindowExW(0, class.as_ptr(), class.as_ptr(), 0x8000_0000, 0, 0, 1, 1, 0, 0, GetModuleHandleW(null()), null_mut()) };
         // SAFETY: the window is alive.
         let dc = unsafe { GetDC(hidden) };
-        let made = Device::on(dc, library, wgl);
+        let made = format.or_else(|| eight_bit(dc)).and_then(|format| Device::on(dc, library, wgl, format));
         // SAFETY: as made above, on this thread.
         unsafe {
             ReleaseDC(hidden, dc);
@@ -200,19 +229,13 @@ impl Device {
         made
     }
 
-    /// The context, made on device context `dc` of a hidden window.
-    fn on(dc: HANDLE, library: isize, wgl: Wgl) -> Option<Device> {
-        // SAFETY: the device context is alive; the format is described into room for it.
-        let format = unsafe {
-            let format = ChoosePixelFormat(dc, &WANTED);
-            let mut described = WANTED;
-            DescribePixelFormat(dc, format, 40, &mut described);
-            // GDI's own (`PFD_GENERIC_FORMAT`, not `PFD_GENERIC_ACCELERATED`) draws on the CPU.
-            if format == 0 || described.flags & 0x1040 == 0x40 || SetPixelFormat(dc, format, &WANTED) == 0 {
-                return None;
-            }
-            format
-        };
+    /// The context, made on device context `dc` of a hidden window, given pixel format
+    /// `format`.
+    fn on(dc: HANDLE, library: isize, wgl: Wgl, format: i32) -> Option<Device> {
+        // SAFETY: the device context is alive.
+        if unsafe { SetPixelFormat(dc, format, &WANTED) } == 0 {
+            return None;
+        }
         // SAFETY: a first, plain context, current to find the extensions' functions; let go of
         // once the real one is made.
         let context = unsafe {
@@ -229,7 +252,7 @@ impl Device {
         if context == 0 {
             return None;
         }
-        Device::loaded(library, wgl, context, format)
+        Device::loaded(library, wgl, context, format, dc)
     }
 
     /// An OpenGL 3.3 core context, robust where the driver offers it, made with the current
@@ -252,9 +275,9 @@ impl Device {
         }
     }
 
-    /// The device, with its functions found while the context is current; current on no thread
-    /// after. Nothing where a function is missing or it draws on the CPU.
-    fn loaded(library: isize, wgl: Wgl, context: HANDLE, format: i32) -> Option<Device> {
+    /// The device, with its functions found while the context is current on `dc`; current on
+    /// no thread after. Nothing where a function is missing or it draws on the CPU.
+    fn loaded(library: isize, wgl: Wgl, context: HANDLE, format: i32, dc: HANDLE) -> Option<Device> {
         let find = |name: &str| {
             // SAFETY: the context is current; the names end in a zero. Drivers give nothing (or
             // 1, 2, 3 or -1) for OpenGL 1.1's own functions, which opengl32.dll has.
@@ -265,6 +288,10 @@ impl Device {
         // SAFETY: as declared in wglext.h and glcorearb.h.
         let interval = Some(find("wglSwapIntervalEXT\0")).filter(|found| !found.is_null()).map(|found| unsafe { std::mem::transmute(found) });
         let reset = Some(find("glGetGraphicsResetStatusARB\0")).filter(|found| !found.is_null()).map(|found| unsafe { std::mem::transmute(found) });
+        #[cfg(feature = "hdr")]
+        let offered_float = float_format(&find, dc);
+        #[cfg(not(feature = "hdr"))]
+        let _ = dc;
         let wgl = Arc::new(wgl);
         // SAFETY: let go of on this thread, to be made current on the windows' thread.
         unsafe { (wgl.current)(0, 0) };
@@ -274,6 +301,9 @@ impl Device {
             return None;
         };
         let owner = Owner { gl: Arc::new(gl), wgl, context, current: Arc::new(AtomicIsize::new(0)) };
+        #[cfg(feature = "hdr")]
+        return Some(Device { owner, format, float: offered_float == Some(format), offered_float, interval, reset, lost: Cell::new(false) });
+        #[cfg(not(feature = "hdr"))]
         Some(Device { owner, format, interval, reset, lost: Cell::new(false) })
     }
 
@@ -283,6 +313,29 @@ impl Device {
         let reset = self.reset.is_some_and(|reset| self.owner.current.load(Relaxed) != 0 && unsafe { reset() } != 0);
         self.lost.get() || reset
     }
+}
+
+/// The pixel format for 8-bit colour on `dc`, as GDI chooses it; nothing where it draws on the
+/// CPU (GDI's own: `PFD_GENERIC_FORMAT`, not `PFD_GENERIC_ACCELERATED`).
+fn eight_bit(dc: HANDLE) -> Option<i32> {
+    let mut described = WANTED;
+    // SAFETY: the device context is alive; the format is described into room for it.
+    let format = unsafe { ChoosePixelFormat(dc, &WANTED) };
+    // SAFETY: as above.
+    unsafe { DescribePixelFormat(dc, format, 40, &mut described) };
+    (format != 0 && described.flags & 0x1040 != 0x40).then_some(format)
+}
+
+/// The first float pixel format of four 16-bit channels on `dc` (`wglChoosePixelFormatARB`,
+/// found by `find` while a context is current on it); nothing where the driver has none.
+#[cfg(feature = "hdr")]
+fn float_format(find: &dyn Fn(&str) -> *const c_void, dc: HANDLE) -> Option<i32> {
+    type Choose = unsafe extern "system" fn(HANDLE, *const i32, *const f32, u32, *mut i32, *mut u32) -> i32;
+    let choose = Some(find("wglChoosePixelFormatARB\0")).filter(|found| !found.is_null())?;
+    let (mut format, mut count) = (0, 0);
+    // SAFETY: as wglext.h declares it; the attributes end in a zero, the answer has room for one.
+    let chosen = unsafe { std::mem::transmute::<*const c_void, Choose>(choose)(dc, crate::hdr_opengl::FLOAT_FORMAT.as_ptr(), null(), 1, &mut format, &mut count) };
+    (chosen != 0 && count > 0).then_some(format)
 }
 
 /// Whether the current context draws on the CPU (`GL_RENDERER`): Mesa's llvmpipe or softpipe,
@@ -326,6 +379,14 @@ pub(crate) struct Shown {
     framebuffer: u32,
     buffer: u32,
     size: [i32; 2],
+    /// With a float pixel format: its HDR, and the pass into its back buffer once tried (see
+    /// `hdr_opengl`).
+    #[cfg(feature = "hdr")]
+    float: bool,
+    #[cfg(feature = "hdr")]
+    pub(crate) hdr: crate::hdr_windows::Hdr,
+    #[cfg(feature = "hdr")]
+    pass: Option<Option<crate::hdr_opengl::Pass>>,
 }
 
 impl Shown {
@@ -334,7 +395,21 @@ impl Shown {
     pub(crate) fn new(device: &Device, hwnd: HANDLE) -> Option<Shown> {
         // SAFETY: the window is alive; its device context is kept until the window is let go of.
         let dc = unsafe { GetDC(hwnd) };
-        let mut shown = Shown { owner: device.owner.clone(), hwnd, dc, texture: 0, framebuffer: 0, buffer: 0, size: [0; 2] };
+        let mut shown = Shown {
+            owner: device.owner.clone(),
+            hwnd,
+            dc,
+            texture: 0,
+            framebuffer: 0,
+            buffer: 0,
+            size: [0; 2],
+            #[cfg(feature = "hdr")]
+            float: device.float,
+            #[cfg(feature = "hdr")]
+            hdr: Default::default(),
+            #[cfg(feature = "hdr")]
+            pass: None,
+        };
         // SAFETY: as above: a window has one pixel format for its life.
         let formatted = dc != 0 && unsafe { GetPixelFormat(dc) == device.format || SetPixelFormat(dc, device.format, &WANTED) != 0 };
         if !formatted || !shown.owner.with(dc) {
@@ -434,18 +509,15 @@ impl Shown {
         made.as_mut().is_some_and(|pipeline| pipeline.draw(self.texture, self.size, list, area))
     }
 
-    /// Copies the texture to the back buffer, its rows from the top, and swaps it, at the
-    /// screen's next refresh. Says whether that worked.
+    /// Puts the texture in the back buffer and swaps it, at the screen's next refresh. Says
+    /// whether that worked.
     pub(crate) fn present(&mut self, device: &Device) -> bool {
         if self.size[0] <= 0 || !self.owner.with(self.dc) {
             return false;
         }
-        let ([width, height], gl) = (self.size, &self.owner.gl);
-        // SAFETY: the context is current; the framebuffers are the texture's and the window's.
-        unsafe {
-            (gl.glBindFramebuffer)(READ_FRAMEBUFFER, self.framebuffer);
-            (gl.glBindFramebuffer)(DRAW_FRAMEBUFFER, 0);
-            (gl.glBlitFramebuffer)(0, 0, width, height, 0, height, width, 0, COLOR_BUFFER_BIT, NEAREST);
+        if !self.fill_back_buffer() {
+            device.lost.set(true);
+            return false;
         }
         #[cfg(test)]
         tests::keep(self);
@@ -456,6 +528,49 @@ impl Shown {
         }
         swapped && !device.removed()
     }
+
+    /// Copies the texture to the back buffer, its rows from the top.
+    fn copy_to_back_buffer(&self) {
+        let ([width, height], gl) = (self.size, &self.owner.gl);
+        // SAFETY: the context is current; the framebuffers are the texture's and the window's.
+        unsafe {
+            (gl.glBindFramebuffer)(READ_FRAMEBUFFER, self.framebuffer);
+            (gl.glBindFramebuffer)(DRAW_FRAMEBUFFER, 0);
+            (gl.glBlitFramebuffer)(0, 0, width, height, 0, height, width, 0, COLOR_BUFFER_BIT, NEAREST);
+        }
+    }
+
+    /// Puts the texture in the back buffer: copied. Says whether it did.
+    #[cfg(not(feature = "hdr"))]
+    #[inline]
+    fn fill_back_buffer(&mut self) -> bool {
+        self.copy_to_back_buffer();
+        true
+    }
+
+    /// Puts the texture in the back buffer: copied where it is 8-bit; where it is of floats,
+    /// drawn through the HDR pass (made here the first time), lit by the gains while the window
+    /// is wanted in HDR. Says whether it did: not where the pass can't be made.
+    #[cfg(feature = "hdr")]
+    fn fill_back_buffer(&mut self) -> bool {
+        if !self.float {
+            self.copy_to_back_buffer();
+            return true;
+        }
+        let made = self.pass.get_or_insert_with(|| crate::hdr_opengl::Pass::new(&mut |name| self.owner.function(name)));
+        let Some(pass) = made.as_mut() else { return false };
+        self.hdr.on = self.hdr.wanted();
+        let constants = self.hdr.constants();
+        let gains = self.hdr.on.then_some(&mut self.hdr.gains);
+        pass.draw(self.texture, self.size, gains, constants);
+        true
+    }
+
+    /// What the window keeps of HDR, where its pixel format is of floats.
+    #[cfg(feature = "hdr")]
+    pub(crate) fn hdr(&mut self) -> Option<&mut crate::hdr_windows::Hdr> {
+        self.float.then_some(&mut self.hdr)
+    }
 }
 
 impl Drop for Shown {
@@ -465,6 +580,8 @@ impl Drop for Shown {
         // current with its device context, which is then given back.
         unsafe {
             if self.owner.with(self.dc) {
+                #[cfg(feature = "hdr")]
+                drop(self.pass.take());
                 (gl.glDeleteFramebuffers)(1, &self.framebuffer);
                 (gl.glDeleteBuffers)(1, &self.buffer);
                 (gl.glDeleteTextures)(1, &self.texture);
@@ -487,6 +604,15 @@ pub(crate) mod tests {
             return;
         }
         let ([width, height], gl) = (shown.size.map(|side| side as usize), &shown.owner.gl);
+        #[cfg(feature = "hdr")]
+        if shown.float {
+            let mut read = vec![[0f32; 4]; width * height];
+            unsafe {
+                (gl.glBindFramebuffer)(READ_FRAMEBUFFER, 0);
+                (gl.glReadPixels)(0, 0, width as i32, height as i32, 0x1908, 0x1406, read.as_mut_ptr().cast());
+            }
+            return crate::hdr_windows::tests::keep_frame(width, read.chunks(width).rev().flatten().copied().collect());
+        }
         let mut read = vec![0u32; width * height];
         unsafe {
             (gl.glBindFramebuffer)(READ_FRAMEBUFFER, 0);

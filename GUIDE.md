@@ -78,11 +78,14 @@ printing). An app packed another way has the rest.
 
 On the web, the same program built for `wasm32-unknown-unknown` draws in a page's `<canvas>`;
 `run` returns at once. `cargo run --example web_page -- <program>.wasm` writes the page and its
-loader beside the program and serves them. What differs there: [`taut::web`](https://docs.rs/taut/latest/taut/web/).
+loader beside the program and serves them. The system's parts go through the browser (pickers,
+drops and drags, clipboard pictures, notifications, printing, one copy across tabs, WebGL2);
+files handed to the page are read with `taut::web::picked`. What differs there:
+[`taut::web`](https://docs.rs/taut/latest/taut/web/).
 
 Features (off by default) cover what the calls can't reveal: `right-to-left`, `brahmic`,
-`shaping`, `touch`, `emoji`, `fallback-fonts`, `cff`, `woff2`, `hinting`, `color-profiles`
-(`taut = { version = "0.3", features = ["emoji"] }`). Costs: `docs/costs-and-speed.md`.
+`shaping`, `touch`, `emoji`, `fallback-fonts`, `cff`, `woff2`, `hinting`, `color-profiles`,
+`rare-jpeg` (`taut = { version = "0.3", features = ["emoji"] }`). Costs: `docs/costs-and-speed.md`.
 
 ## Three rules
 
@@ -124,7 +127,7 @@ and `rect` from the last layout (a run late after a size change; `ui.available_s
 ## Every ready-made part
 
 ```rust,no_run
-use taut::{Chart, ChartView, Icon, Key, Mods, Path, Picture, Series, Severity, Ui};
+use taut::{Chart, ChartView, Icon, Key, Mods, Path, Picture, Series, Severity, Span, Ui};
 
 const STAR: Icon = Icon::line("M8 1.8 9.4 6.6 14.2 8 9.4 9.4 8 14.2 6.6 9.4 1.8 8 6.6 6.6z");
 
@@ -171,6 +174,9 @@ fn every_part(state: &mut State, picture: Picture, ui: &mut Ui) {
     ui.note("A quieter, smaller line");
     ui.paragraph("Text that breaks into as many lines as it needs.");
     ui.vertical_label("縦に書く"); // vertical, for Chinese, Japanese, Korean
+    ui.vertical_paragraph("列は高さで折り返す。"); // breaks into columns where its height ends
+    ui.vertical_rich(&[Span::text("縦"), Span::text("書き").bold()]); // with feature ruby: Span::ruby, Span::upright
+    ui.upright_digits(2); // from now on, runs of up to 2 digits in vertical text stand across one em
     ui.text("In any font and colour", t.font.bold(), t.accent);
     ui.text("Gone", t.font.strikethrough(), t.text_dim); // or .underlined()
     ui.icon(STAR);
@@ -219,6 +225,8 @@ fn every_part(state: &mut State, picture: Picture, ui: &mut Ui) {
     ui.autocomplete(&mut state.name, "With what it might become listed under it", &["Ada", "Alan"]);
     ui.text_area(&mut state.notes, "Several lines", (2, 6));
     ui.text_page(&mut state.notes, "Lines that fill the room it is given");
+    ui.vertical_text_box(&mut state.name, "縦"); // one column, top to bottom; Up and Down follow it
+    ui.vertical_text_area(&mut state.notes, "縦書き", (2, 6)); // columns right to left
     ui.enter_submits(); // Enter in the next multi-line box is the app's (send); Shift+Enter: new line
     let message = ui.text_area(&mut state.name, "A message", (1, 4));
     if message.focused && ui.key(Key::Enter, Mods::NONE) {
@@ -719,6 +727,7 @@ fn page(text: &str, logo: Picture) -> Markdown {
 fn help(ui: &mut Ui, page: &Markdown) {
     let t = ui.theme;
     let pieces = [Span::text("Read the "), Span::text("guide").link(), Span::text(" first: it is "), Span::text("short").bold().color(t.green), Span::text(".")];
+    // With the feature `ruby`, a reading over a piece: Span::text("漢字").ruby("かんじ").
     if ui.rich(&pieces) == Some(1) {
         // The second piece, the link, was pressed.
     }
@@ -898,7 +907,7 @@ Reopen the window there with `Window { .. }.with_placement(saved.window)` ("Wher
 | Clipboard | `ui.copy(text)` · `ui.clipboard()` · `ui.copy_picture(width, &pixels)` · `ui.clipboard_picture()` · `ui.copy_files(&paths)` · `ui.clipboard_files()` |
 | Files and links | `taut::open_with_system(path_or_link)`: default program, on its own thread |
 | Video (feature `video`) | `Video::open(path)` (or an address, or bytes) · `Video::open_silent(…)` opens no sound device · `video.play()`, `pause()`, `seek(time)`, `position()`, `length()`, `size()`, `set_volume(0.0..=1.0)`, `set_muted(on)`, `set_looping(on)`, `set_fill(on)`, `ended()` (true once per end), `error()` · `ui.video(&mut video)` → a box: `.grow().show()`; only it redraws per frame · `ui.video_controls(&mut video)`: play, position, time, mute, volume · `ui.drop_video(video)` · on the web a path is an address relative to the page, and sound plays only after a press (else `error()`, cleared at the next `play`) |
-| Pictures | `ui.add_picture_file(bytes)` (PNG, JPEG, GIF, WebP, BMP, ICO) · `ui.add_picture(width, pixels)` · `ui.set_picture(picture, width, pixels)` · `ui.drop_picture(picture)` · `ui.picture_size`, `ui.animation_size`, `ui.drawing_size` · SVG: `ui.add_drawing(svg_text)`, `.drawing(drawing, color)`, `ui.drop_drawing` · animations: `ui.add_animation(bytes)`, `.animation(animation)`, `ui.drop_animation` · decode: `png::decode`, `svg::decode(text, width, height)`, `gif::decode`, `webp::decode`, `bmp::decode`, `bmp::decode_icon` · encode: `png::encode(width, pixels)` (`None` unless whole rows), `png::encode_rgba`, `jpeg::encode(width, &pixels, quality)`, `bmp::encode_icon(&[(width, &pixels), …])` · SVG extras, once: `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()`, `svg::enable_images_from(loader)`, `svg::enable_shape_rendering()`, `svg::enable_seamless_clips()` · SVG animation: `svg::encode_animation(text, width, height)` (APNG for `ui.add_animation`), `svg::decode_at(text, width, height, seconds)` |
+| Pictures | `ui.add_picture_file(bytes)` (PNG, JPEG, GIF, WebP, BMP, ICO) · `ui.add_picture(width, pixels)` · `ui.set_picture(picture, width, pixels)` · `ui.drop_picture(picture)` · `ui.picture_size`, `ui.animation_size`, `ui.drawing_size` · SVG: `ui.add_drawing(svg_text)`, `.drawing(drawing, color)`, `ui.drop_drawing` · animations: `ui.add_animation(bytes)`, `.animation(animation)`, `ui.drop_animation` · decode: `png::decode`, `svg::decode(text, width, height)`, `gif::decode`, `webp::decode`, `bmp::decode`, `bmp::decode_icon`, `bmp::decode_icon_images` (every size) · encode: `png::encode(width, pixels)` (`None` unless whole rows), `png::encode_rgba`, `jpeg::encode(width, &pixels, quality)`, `jpeg::Encoder::new(quality).progressive().orientation(6).icc_profile(&icc).xmp(xml).encode(width, &pixels)`, `bmp::encode_icon(&[(width, &pixels), …])` · SVG extras, once: `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()`, `svg::enable_images_from(loader)`, `svg::enable_shape_rendering()`, `svg::enable_seamless_clips()` · SVG animation: `svg::encode_animation(text, width, height)` (APNG for `ui.add_animation`), `svg::decode_at(text, width, height, seconds)` |
 | 3D scenes | `ui.add_mesh(points, triangles)` once (`ui.set_mesh`, `ui.color_mesh(mesh, colors)`), then `.scene(&camera, &[mesh.filled(color), other.outlined(color).centered_at([x, y, z])])` · `Camera::look_at(from, at)` `.up(..)` `.fov(degrees)` `.orthographic(units_high)` `.depth_range(near, far)` `.light_from(direction)`; `Camera::from_matrix(rows)` · mesh: `.filled` `.outlined` `.centered_at` `.transform(rows)` `.unlit()` `.one_sided()` · `camera.project(point, rect)` · `ui.drop_mesh(mesh)` · "Scenes" |
 | App fonts | `ui.set_fonts(AppFonts::new(FontFile::read(bytes)?))` once, `.bold(..)`, `.mono(..)`; missing letters fall back to system text · `ui.set_text_system(..)`: files only · icon fonts: `.shape(&font.outline('\u{e88a}', 16.0), color)` · emoji: `ui.emoji_in_full()`; `ui.set_emoji(FontFile::read(bytes)?)` or `FontFile::open(path)`; after `ui.set_text_system(Box::new(own))`, `Box::new(Emoji::around(Box::new(own)))` · variable: `.with_variation(b"wght", 700.0)`, `.named("SemiBold Condensed")`; collections: `.nth(1)`, `.named("Cambria Math")`; `.axes()`, `.faces()` · custom `TextSystem`s are ordered and shaped too (`BidiText`) · `AppFonts::new(file).unhinted()`: no hinting · `.autohinted()`: the autohinter even where a font has its own instructions (feature `hinting`) · language forms: `ui.set_language(Language::named("sr"))` (default `Language::of_the_system()`), `AppFonts::new(file).language(..)` |
 | The window | `ui.set_title(text)` · `ui.quit()` · `ui.set_on_top(true)` · `ui.bring_to_front()` · `ui.window_focused()`, `ui.window_minimized()`, `ui.system_dark()` · `Window { minimized: true, .. }` · `Window { icons: &[(32, &pixels)], .. }` (Windows default: the exe's icon 1) · `ui.minimize()` · `ui.set_maximized(true)`, `ui.maximized()` · `ui.set_full_screen(true)`, `ui.full_screen()` · "Kinds of window" |
@@ -1039,11 +1048,12 @@ fn main() {
 - `Renderer::Auto` (the default): the best GPU path when the feature is on and the computer has
   a GPU of its own, not over a remote desktop. `Gpu`: over a remote desktop too. `Cpu`: never.
 - `Direct3D11`, `Direct3D12`, `Vulkan`, `OpenGL`, `Metal`: that path first, then the others,
-  best first (Windows: Direct3D 11, 12, Vulkan, OpenGL; X11: OpenGL, then Vulkan), then the CPU.
-  macOS has one: Metal.
+  best first (Windows: Direct3D 11, 12, Vulkan, OpenGL; X11: OpenGL, then Vulkan; Android:
+  Vulkan, then OpenGL ES), then the CPU. macOS and iOS have one: Metal.
 - Wayland: any GPU path asked for is Vulkan, handing the compositor dmabufs; `Auto` keeps
   shared memory.
-- `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl|metal` overrides the app.
+- `TAUT_RENDERER=cpu|gpu|d3d11|d3d12|vulkan|opengl|metal` overrides the app; on Android, the
+  system property `debug.taut.renderer` (`adb shell setprop debug.taut.renderer vulkan`).
 - `ui.renderer()` says which path shows the window (`Direct3D11`, …): `Cpu` until the device
   is made, and after a lost device that can't be made again.
 - Whole frames, in step with the screen; only changed rectangles are uploaded and presented.
@@ -1055,9 +1065,10 @@ colour emoji into patches it lays in.
 
 - Pixels within a few levels of 255 of the CPU's, at edges; GDI's text on a solid colour is
   GDI's own.
-- Every GPU path draws: Direct3D 11 and 12, Vulkan (Windows, X11, Wayland), OpenGL and Metal.
+- Every GPU path draws: Direct3D 11 and 12, Vulkan (Windows, X11, Wayland, Android), OpenGL,
+  OpenGL ES (Android) and Metal (macOS, iOS).
 - `Renderer::Auto` draws large parts on the GPU and small ones on the CPU; a path named draws
-  all. `TAUT_DRAW=cpu|gpu|auto` overrides.
+  all. `TAUT_DRAW=cpu|gpu|auto` overrides (on Android, `debug.taut.draw`).
 - Costs: [drawn by the GPU](docs/costs-and-speed.md#drawn-by-the-gpu).
 
 With the feature `hdr`, boxes and pictures can be brighter than SDR white where the screen is
@@ -1081,13 +1092,15 @@ fn main() {
 
 - `El::brightness(times)`: the box and what it holds, so many times SDR white.
 - `ui.add_hdr_picture`: linear red, green, blue and alpha. `ui.add_picture_file` reads PQ and
-  HLG PNGs (`cICP`).
+  HLG PNGs (`cICP`) and Ultra HDR JPEGs (their gain map per colour, bilinearly sampled).
 - `ui.headroom()`: how many times SDR white the window's screen shows; 1.0 on an SDR screen.
   Brighter is capped there.
 - The rest stays at the system's SDR white. SDR screens, the CPU and builds without the feature
   show what is brighter at white, the same pixels as before.
-- Direct3D 11 and 12 present in scRGB; Wayland hands over PQ through its colour management.
-  Vulkan, OpenGL, X11 and macOS show SDR.
+- Windows: Direct3D 11 and 12, Vulkan and OpenGL present in scRGB (Vulkan in HDR10 where the
+  GPU has no scRGB; OpenGL where a screen was HDR as its device was made). Wayland hands over
+  PQ through its colour management. macOS shows EDR through Metal. X11 shows SDR: X has no
+  HDR.
 
 ## Screens, kinds of second window, and closing
 
@@ -1197,7 +1210,7 @@ Described in runs like everything else:
 - **Single instance:** `taut::single_instance(name)` in `main` before `taut::run`. Later launches
   pass their arguments to the first, which comes forward and reads them from
   `ui.relaunches()`. (Only programs calling `single_instance` accept these; on Windows, not from a
-  less privileged process.)
+  less privileged process. On the web a later tab hands over its address.)
 
 ```rust,no_run
 use taut::{Ui, Window};
@@ -1327,7 +1340,7 @@ if rerun {
 
 - `surface.upload(place)` gives a changed place as texture uploads take it (`x`, `y`, `width`,
   `height`, `bytes`, `bytes_per_row`). Layers do it all for Direct3D 9, 11 and 12, OpenGL,
-  Vulkan and Metal (`layer_d3d9` .. `layer_metal`, chapter 9).
+  OpenGL ES, Vulkan and Metal (`layer_d3d9` .. `layer_metal`, chapter 9).
 - Set the time before each run (`ui.set_time(clock)`, any monotonic clock) and run again when
   `ui.wake_in()` is due: double clicks, tooltips, blinking, notices and glides need it.
 - `Ui::new(platform::system_text(), ..)` uses system fonts on any surface. On Windows

@@ -2,8 +2,8 @@
 //! kinds scanners and medical systems keep: baseline or progressive, 8 or 12 bits, Huffman or
 //! arithmetic coded, or lossless at up to 16 bits; greyscale, colour or CMYK, rotated upright
 //! per a camera's EXIF orientation, and converted to screen colours per an embedded ICC
-//! profile. Shows a photo with no other library. Not hierarchical JPEG, nor lossless with
-//! arithmetic coding: nothing writes them.
+//! profile. With the feature `rare-jpeg`, every process of the standard: hierarchical too, and
+//! lossless arithmetic coded. Shows a photo with no other library.
 //!
 //! A JPEG stores each colour component in its own plane, usually luma at full size and two
 //! chroma planes at half. A plane is cut into 8 by 8 blocks, each stored as 64 DCT
@@ -12,13 +12,17 @@
 //!
 //! Each rare kind changes one step. Arithmetic coding spells the coefficients out as binary
 //! decisions, each costing as little as it was probable. Lossless has no blocks or DCT: each
-//! sample is stored as its difference from a prediction from its neighbours. And deeper than 8
+//! sample is stored as its difference from a prediction from its neighbours. Deeper than 8
 //! bits, everything is computed at its own depth; only finished pixels are reduced to 8 bits.
+//! Hierarchical is a series of frames: a small first image, then each later frame the
+//! difference from the image so far, doubled in size where the file says.
 //!
-//! Encoding does the baseline steps in reverse, each in integer arithmetic exactly as libjpeg
-//! does, so the output is byte for byte what libjpeg writes: RGB to YCbCr; chroma halved each
-//! way, or not; forward DCT, quantized and rounded; Huffman-coded with the standard tables, in
-//! one scan. A program that writes no JPEG carries none of this.
+//! Encoding does the baseline or progressive steps in reverse, each in integer arithmetic
+//! exactly as libjpeg does, so the output is byte for byte what libjpeg writes: RGB to YCbCr;
+//! chroma halved each way, or not; forward DCT, quantized and rounded; Huffman-coded, with the
+//! standard tables in one scan, or progressive in libjpeg's ten scans with tables made for each.
+//! EXIF orientation, an ICC profile and XMP go in front. A program that writes no JPEG carries
+//! none of this.
 
 use std::num::Wrapping;
 
@@ -33,17 +37,21 @@ const ZIGZAG: [u8; 64] = [
 /// `0xAARRGGBB` (always opaque): what [`Ui::add_picture`](crate::Ui::add_picture) takes. `None`
 /// for a damaged file, not a JPEG, or an unsupported kind.
 pub fn decode(jpeg: &[u8]) -> Option<(usize, Vec<u32>)> {
-    let (mut read, mut profile) = (Jpeg::new(), Vec::new());
+    let (mut read, mut profile) = (Jpeg::new(jpeg.len()), Vec::new());
     // The file is a sequence of segments: 0xFF, a marker byte, a length, and the payload.
     let mut rest = jpeg.strip_prefix(&[0xFF, 0xD8])?;
     while let Some((kind, body, after)) = part(rest) {
         rest = after;
         match kind {
-            0xC0..=0xC3 | 0xC9..=0xCA => read.frame(body, kind, jpeg.len())?,
+            0xC0..=0xC3 | 0xC9 | 0xCA => read.frame(body, kind)?,
+            // Hierarchical (differential frames, and the DHP and EXP segments), and lossless
+            // arithmetic coded: with the feature `rare-jpeg`.
+            0xC5..=0xC7 | 0xCB | 0xCD..=0xCF if RARE => read.frame(body, kind)?,
+            0xDE if RARE => read.hierarchy(body)?,
+            0xDF if RARE => read.expand(body)?,
+            0xC5..=0xC8 | 0xCB | 0xCD..=0xCF | 0xDE | 0xDF => return None,
             0xC4 => read.codes(body)?,
             0xCC => read.sorting(body)?,
-            // Hierarchical, or lossless with arithmetic coding.
-            0xC5..=0xC8 | 0xCB | 0xCD..=0xCF => return None,
             0xD9 => break,
             0xDA => rest = read.scan(body, after)?,
             0xDB => read.dividers(body)?,
@@ -66,6 +74,10 @@ pub fn decode(jpeg: &[u8]) -> Option<(usize, Vec<u32>)> {
     Some((width, pixels))
 }
 
+/// Whether the rarest processes are read (the feature `rare-jpeg`): only where they are is their
+/// code compiled in.
+const RARE: bool = cfg!(feature = "rare-jpeg");
+
 /// The next segment: its marker, payload, and the rest of the file.
 fn part(rest: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     // Fill bytes of 0xFF may precede a marker.
@@ -77,6 +89,17 @@ fn part(rest: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     }
     let long = u16::from_be_bytes([*rest.first()?, *rest.get(1)?]) as usize;
     Some((kind, rest.get(2..long)?, &rest[long..]))
+}
+
+/// A frame header's fields (or the DHP segment's, which has the same): bits per sample, width,
+/// height, and three bytes per plane: its id, sampling factors across and down (4 bits each,
+/// 1 to 4), and quantization table (up to 3). One to four planes.
+fn header(body: &[u8]) -> Option<(u32, usize, usize, &[u8])> {
+    let [depth, high, low, wide, narrow, count, listed @ ..] = body else { return None };
+    let (width, height) = (u16::from_be_bytes([*wide, *narrow]) as usize, u16::from_be_bytes([*high, *low]) as usize);
+    let listed = listed.get(..3 * *count as usize).filter(|_| (1..=4).contains(count) && width * height != 0)?;
+    let factor = |factor: u8| (1..=4).contains(&factor);
+    listed.chunks(3).all(|plane| factor(plane[1] >> 4) && factor(plane[1] & 15) && plane[2] <= 3).then_some((*depth as u32, width, height, listed))
 }
 
 /// What the planes hold.
@@ -124,53 +147,104 @@ struct Jpeg {
     arithmetic: bool,
     /// Lossless: sample by sample, no DCT blocks.
     exact: bool,
+    /// A differential frame of a hierarchical image: what it brings is added to the image so far.
+    differential: bool,
+    /// What the frame's blocks hold.
+    blocks: BlockKind,
     /// The largest sampling factors of any plane, across and down.
     most: (usize, usize),
     planes: Vec<Plane>,
+    /// The bytes of the file not yet claimed by a frame's blocks (see `frame`).
+    room: usize,
+    /// A hierarchical image's finished planes, as far as its frames have built them.
+    hierarchy: Option<Hierarchy>,
 }
 
 impl Jpeg {
-    /// A file with nothing decoded yet. (The arithmetic conditioning is the default for files
-    /// that don't set it.)
-    fn new() -> Self {
+    /// A file of `room` bytes with nothing decoded yet. (The arithmetic conditioning is the
+    /// default for files that don't set it.)
+    fn new(room: usize) -> Self {
         let (dividers, averages, details, bounds, edges) = ([[0; 64]; 4], [Codes::NONE; 4], [Codes::NONE; 4], [[0, 1]; 4], [5; 4]);
-        let (depth, steps, arithmetic, exact, most, planes) = (8, false, false, false, (1, 1), Vec::new());
-        Jpeg { dividers, averages, details, bounds, edges, stretch: 0, turn: 1, adobe: None, bright: false, width: 0, height: 0, depth, steps, arithmetic, exact, most, planes }
+        let (depth, steps, arithmetic, exact, differential, most, planes) = (8, false, false, false, false, (1, 1), Vec::new());
+        let (stretch, turn, adobe, bright, width, height, hierarchy) = (0, 1, None, false, 0, 0, None);
+        let blocks = BlockKind::Bytes;
+        Jpeg { dividers, averages, details, bounds, edges, stretch, turn, adobe, bright, width, height, depth, steps, arithmetic, exact, differential, blocks, most, planes, room, hierarchy }
     }
 
     /// The SOF segment: size, and per plane its sampling factors and quantization table. `kind`
-    /// is the marker, which says how the image is coded. `room` is the file's length.
-    fn frame(&mut self, body: &[u8], kind: u8, room: usize) -> Option<()> {
-        let [depth, high, low, wide, narrow, count, listed @ ..] = body else { return None };
-        let (width, height) = (u16::from_be_bytes([*wide, *narrow]) as usize, u16::from_be_bytes([*high, *low]) as usize);
-        let (steps, exact, arithmetic) = (kind & 3 == 2, kind & 3 == 3, kind & 8 != 0);
+    /// is the marker, which says how the image is coded.
+    fn frame(&mut self, body: &[u8], kind: u8) -> Option<()> {
+        let (depth, width, height, listed) = header(body)?;
+        let (steps, exact, arithmetic, differential) = (kind & 3 == 2, kind & 3 == 3, kind & 8 != 0, kind & 4 != 0);
         // DCT gives 8 or 12 bits; lossless, anything from 2 to 16.
-        let deep_enough = if exact { (2..=16).contains(depth) } else { matches!(depth, 8 | 12) };
-        if !deep_enough || !self.planes.is_empty() || !matches!(count, 1 | 3 | 4) || width * height == 0 {
+        let deep_enough = if exact { (2..=16).contains(&depth) } else { matches!(depth, 8 | 12) };
+        if !deep_enough {
             return None;
         }
-        let listed = listed.get(..3 * *count as usize)?;
+        // Only a hierarchical image has more than one frame, or frames of two planes.
+        match RARE && self.hierarchy.is_some() {
+            true => self.fits(depth, (width, height), listed, differential)?,
+            false if differential || !self.planes.is_empty() || listed.len() / 3 == 2 => return None,
+            false => {}
+        }
         let (across, down) = (|plane: &[u8]| (plane[1] >> 4) as usize, |plane: &[u8]| (plane[1] & 15) as usize);
-        if listed.chunks(3).any(|plane| !(1..=4).contains(&across(plane)) || !(1..=4).contains(&down(plane)) || plane[2] > 3) {
-            return None;
-        }
         let most = (listed.chunks(3).map(across).max()?, listed.chunks(3).map(down).max()?);
         // A block is 8 samples a side; lossless, one sample. Every block of every plane takes
-        // at least a bit of the file. (Arithmetic coding can pack a near-empty image tighter:
-        // such a one can't be told from a lie.) A file claiming more blocks than it has bits
-        // lies about its size, and nothing is allocated for it.
+        // at least a bit of the file, each frame's of its own part. (Arithmetic coding can pack
+        // a near-empty image tighter: such a one can't be told from a lie.) A file claiming more
+        // blocks than it has bits lies about its size, and nothing is allocated for it.
         let side = if exact { 1 } else { 8 };
         let blocks = |plane: &[u8]| (width * across(plane)).div_ceil(most.0).div_ceil(side) * (height * down(plane)).div_ceil(most.1).div_ceil(side);
-        if listed.chunks(3).map(blocks).sum::<usize>() / 8 > room {
-            return None;
-        }
-        // An MCU is the smallest area holding whole blocks of every plane.
-        let units = (width.div_ceil(side * most.0), height.div_ceil(side * most.1));
-        let plane = |plane: &[u8]| Plane::new(plane[0], (across(plane), down(plane)), plane[2] as usize, units, side, steps, exact || *depth != 8);
-        (self.width, self.height, self.depth, self.most) = (width, height, *depth as u32, most);
-        (self.steps, self.arithmetic, self.exact) = (steps, arithmetic, exact);
+        self.room = self.room.checked_sub(listed.chunks(3).map(blocks).sum::<usize>() / 8)?;
+        // An MCU is the smallest area holding whole blocks of every plane. Samples wider than a
+        // byte, and differences, get planes of 16 bits.
+        let (units, deep) = ((width.div_ceil(side * most.0), height.div_ceil(side * most.1)), exact || depth != 8 || differential);
+        let plane = |plane: &[u8]| Plane::new(plane[0], (across(plane), down(plane)), plane[2] as usize, units, side, steps, deep);
+        (self.width, self.height, self.depth, self.most) = (width, height, depth, most);
+        (self.steps, self.arithmetic, self.exact, self.differential) = (steps, arithmetic, exact, differential);
+        self.blocks = match (differential, depth) {
+            (false, 8) => BlockKind::Bytes,
+            (false, _) => BlockKind::Twelve,
+            (true, 8) => BlockKind::EightBitDifferences,
+            (true, _) => BlockKind::TwelveBitDifferences,
+        };
         self.planes = listed.chunks(3).map(plane).collect();
         Some(())
+    }
+
+    /// Ends the frame before, if any, and whether the next fits the hierarchical image: as
+    /// deep, no larger, of its planes, and differential only where it has something to add to.
+    fn fits(&mut self, depth: u32, (width, height): (usize, usize), listed: &[u8], differential: bool) -> Option<()> {
+        if !self.planes.is_empty() {
+            self.fold()?;
+        }
+        let hierarchy = self.hierarchy.as_ref()?;
+        let built = |name: u8| hierarchy.planes.iter().find(|built| built.name == name).map(|built| !built.samples.is_empty());
+        let known = listed.chunks(3).all(|plane| built(plane[0]).is_some_and(|built| built || !differential));
+        (depth == hierarchy.depth && width <= hierarchy.size.0 && height <= hierarchy.size.1 && known).then_some(())
+    }
+
+    /// The DHP segment, before the first frame of a hierarchical image: its finished size and
+    /// planes, as a frame header gives them.
+    fn hierarchy(&mut self, body: &[u8]) -> Option<()> {
+        let (depth, width, height, listed) = header(body)?;
+        if self.hierarchy.is_some() || !self.planes.is_empty() || listed.len() / 3 == 2 {
+            return None;
+        }
+        let planes = listed.chunks(3).map(|plane| Built { name: plane[0], across: (plane[1] >> 4) as usize, down: (plane[1] & 15) as usize, width: 0, height: 0, samples: Vec::new() });
+        self.hierarchy = Some(Hierarchy { size: (width, height), depth, planes: planes.collect(), lossless: false, expand: (false, false) });
+        Some(())
+    }
+
+    /// The EXP segment: the next frame adds to the image so far doubled across, down, or both.
+    /// Ends the frame before.
+    fn expand(&mut self, body: &[u8]) -> Option<()> {
+        if !self.planes.is_empty() {
+            self.fold()?;
+        }
+        let ([both], Some(hierarchy)) = (body, self.hierarchy.as_mut()) else { return None };
+        hierarchy.expand = (both >> 4 == 1, both & 15 == 1);
+        (both & 0xEE == 0).then_some(())
     }
 
     /// DQT: tables, each with its index and 8- or 16-bit precision, then its entries.
@@ -227,9 +301,10 @@ impl Jpeg {
         let (count, rest) = head.split_first()?;
         let (listed, band) = rest.split_at_checked(2 * *count as usize)?;
         let [first, last, bits] = *band else { return None };
-        // Lossless, the three values mean other things: the predictor, nothing, and the point
-        // transform (low bits dropped).
-        if self.exact && (!(1..=7).contains(&first) || last != 0 || bits as u32 >= self.depth) {
+        // Lossless, the three values mean other things: the predictor (none in a differential
+        // frame), nothing, and the point transform (low bits dropped).
+        let rule = if self.differential { first == 0 } else { (1..=7).contains(&first) };
+        if self.exact && (!rule || last != 0 || bits as u32 >= self.depth) {
             return None;
         }
         let (from, to, more, shift) = match (self.steps, self.exact) {
@@ -248,6 +323,11 @@ impl Jpeg {
             let plane = self.planes.iter().position(|plane| plane.name == chosen[0])?;
             let step = if *count == 1 { (1, 1) } else { (self.planes[plane].across, self.planes[plane].down) };
             let codes = ((chosen[1] >> 4) as usize & 3, (chosen[1] & 3) as usize);
+            // A plane's quantization table is the one at its first scan, as libjpeg takes it: a
+            // later frame may define another.
+            if self.planes[plane].brought.iter().all(Option::is_none) {
+                self.planes[plane].dividers = self.dividers[self.planes[plane].divider];
+            }
             // A first scan of coefficients starts them; a refinement brings the next lower bit.
             let brought = &mut self.planes[plane].brought[from..=to];
             if brought.iter().any(|low| *low != more.then_some(shift + 1)) {
@@ -268,9 +348,14 @@ impl Jpeg {
         let (bits, mut answers) = (Bits { data, at: 0, held: 0, count: 0 }, Answers { data, at: 0, above: 0, span: 0, ahead: 0 });
         answers.begin();
         let (guesses, leaning) = (vec![[0; 256]; if self.arithmetic { 8 } else { 0 }], [0; 4]);
-        let mut pass = Pass { bits, answers, guesses, leaning, from, to, step: 1 << shift.min(13), more, before: [0; 4], empty: 0, rule: first, shift: shift as u32, top: 0 };
+        // Lossless and arithmetic coded, each sample's difference conditions its neighbours'.
+        let conditions = self.planes.iter().map(|plane| vec![0; if self.exact && self.arithmetic { plane.wide * plane.high } else { 0 }]).collect();
+        let (step, carried, shift) = (1 << shift.min(13), if self.differential { 0 } else { -1 }, shift as u32);
+        let mut pass = Pass { bits, answers, guesses, leaning, from, to, step, more, before: [0; 4], carried, empty: 0, rule: first, shift, top: 0, conditions };
         match (self.exact, self.arithmetic) {
-            (true, _) => self.units(&mut pass, &slots, (wide, high), Pass::exact_unit)?,
+            (true, true) if RARE => self.units(&mut pass, &slots, (wide, high), Pass::arithmetic_exact_unit)?,
+            (true, true) => return None,
+            (true, false) => self.units(&mut pass, &slots, (wide, high), Pass::exact_unit)?,
             (false, true) => self.units(&mut pass, &slots, (wide, high), Pass::arithmetic_unit)?,
             (false, false) => self.units(&mut pass, &slots, (wide, high), Pass::unit)?,
         }
@@ -317,21 +402,15 @@ impl Jpeg {
     /// The finished image: each plane upsampled, converted to RGB row by row, each row placed
     /// where it goes once rotated upright.
     fn picture(mut self) -> Option<(usize, Vec<u32>)> {
-        if self.planes.is_empty() || self.planes.iter().any(|plane| plane.brought[0].is_none()) {
-            return None;
-        }
-        // In a progressive image, blocks are still coefficients.
-        for plane in &mut self.planes {
-            let stored = std::mem::take(&mut plane.waves);
-            for (block, waves) in stored.as_chunks::<64>().0.iter().enumerate() {
-                plane.draw(block, waves, &self.dividers[plane.divider]);
-            }
+        match RARE && self.hierarchy.is_some() {
+            true => self.compose()?,
+            false => self.finish_frame()?,
         }
         let (width, height, kind) = (self.width, self.height, self.kind());
         let spreads: Vec<Vec<Spot>> = self.planes.iter().map(|plane| plane.spread(width, self.most)).collect();
         let (mut lines, mut sums) = ([(); 4].map(|_| vec![0u8; width + 2]), vec![0u16; width + 1]);
         // Samples wider than a byte have their own rows, and are reduced to bytes only as RGB.
-        let deep = self.exact || self.depth != 8;
+        let deep = self.planes.iter().any(|plane| plane.samples.is_empty());
         let (mut wide_lines, shown) = ([(); 4].map(|_| vec![0u16; if deep { width } else { 0 }]), if deep { shown(self.depth) } else { Vec::new() });
         let (mut row, mut pixels) = (vec![0u32; width], vec![0u32; width * height]);
         for y in 0..height {
@@ -346,6 +425,54 @@ impl Jpeg {
             }
         }
         Some((crate::exif_orientation::width(self.turn, [width, height]), pixels))
+    }
+
+    /// Ends a frame: every plane must have had a scan. In a progressive image, blocks are still
+    /// coefficients: they become samples.
+    fn finish_frame(&mut self) -> Option<()> {
+        if self.planes.is_empty() || self.planes.iter().any(|plane| plane.brought[0].is_none()) {
+            return None;
+        }
+        for plane in &mut self.planes {
+            let stored = std::mem::take(&mut plane.waves);
+            for (block, waves) in stored.as_chunks::<64>().0.iter().enumerate() {
+                plane.draw(block, waves, self.blocks);
+            }
+        }
+        Some(())
+    }
+
+    /// Ends a frame of a hierarchical image: each plane it brought becomes that plane of the
+    /// image so far, or, from a differential frame, is added to it, doubled first where the EXP
+    /// segment said.
+    fn fold(&mut self) -> Option<()> {
+        self.finish_frame()?;
+        let (planes, most, (width, height)) = (std::mem::take(&mut self.planes), self.most, (self.width, self.height));
+        let hierarchy = self.hierarchy.as_mut()?;
+        let expand = std::mem::take(&mut hierarchy.expand);
+        if !self.differential {
+            hierarchy.lossless = self.exact;
+        }
+        for plane in planes {
+            let size = ((width * plane.across).div_ceil(most.0), (height * plane.down).div_ceil(most.1));
+            let built = hierarchy.planes.iter_mut().find(|built| built.name == plane.name)?;
+            built.add(&plane, size, self.differential.then_some(expand))?;
+        }
+        Some(())
+    }
+
+    /// The finished hierarchical image: the last frame folded in, and each plane as built, at
+    /// the size and sampling the DHP segment gave.
+    fn compose(&mut self) -> Option<()> {
+        self.fold()?;
+        let hierarchy = self.hierarchy.take()?;
+        let (width, height) = hierarchy.size;
+        let most = (hierarchy.planes.iter().map(|built| built.across).max()?, hierarchy.planes.iter().map(|built| built.down).max()?);
+        let side = if hierarchy.lossless { 1 } else { 8 };
+        let finished = |built: &Built| built.finished(((width * built.across).div_ceil(most.0), (height * built.down).div_ceil(most.1)), side, self.depth);
+        self.planes = hierarchy.planes.iter().map(finished).collect::<Option<_>>()?;
+        (self.width, self.height, self.most, self.exact) = (width, height, most, hierarchy.lossless);
+        Some(())
     }
 
     /// Row `y` of the image from every plane, each at full width.
@@ -390,30 +517,39 @@ struct Plane {
     /// For each coefficient: the lowest bit scans have brought, if any. Each bit comes once,
     /// which also stops a file from requesting the same work over and over.
     brought: [Option<u8>; 64],
+    /// Its quantization table's entries, as they were at its first scan.
+    dividers: [u16; 64],
 }
 
 impl Plane {
     fn new(name: u8, (across, down): (usize, usize), divider: usize, units: (usize, usize), side: usize, steps: bool, deep: bool) -> Self {
         let (wide, high) = (units.0 * across, units.1 * down);
         let room = |wanted: bool| if wanted { wide * high * side * side } else { 0 };
-        Plane { name, across, down, divider, wide, high, side, samples: vec![0; room(!deep)], deep: vec![0; room(deep)], waves: vec![0; room(steps)], brought: [None; 64] }
+        let (samples, deep, waves) = (vec![0; room(!deep)], vec![0; room(deep)], vec![0; room(steps)]);
+        Plane { name, across, down, divider, wide, high, side, samples, deep, waves, brought: [None; 64], dividers: [0; 64] }
     }
 
-    /// Writes a block's samples from its coefficients.
-    fn draw(&mut self, block: usize, waves: &[i16; 64], dividers: &[u16; 64]) {
+    /// Writes a block's samples from its coefficients, as `blocks` says they are kept.
+    fn draw(&mut self, block: usize, waves: &[i16; 64], blocks: BlockKind) {
         let stride = self.wide * 8;
         let corner = block / self.wide * 8 * stride + block % self.wide * 8;
-        if self.samples.is_empty() {
-            return self.draw_deep(corner, stride, waves, dividers);
+        if blocks != BlockKind::Bytes {
+            return self.draw_deep(corner, stride, waves, blocks);
         }
-        put(&mut self.samples, corner, stride, &samples::<8, u8>(waves, dividers, |level| level as u8));
+        put(&mut self.samples, corner, stride, &samples::<8, u8>(waves, &self.dividers, |level| (level + 128).clamp(0, 255) as u8));
     }
 
-    /// The same for 12-bit samples. (Out of `draw`, so common images don't carry it in their
-    /// inner loop.)
+    /// The same for 12-bit samples, and differences. (Out of `draw`, so common images don't
+    /// carry it in their inner loop.) Differences have no level shift, and wrap as the image
+    /// they are added to does.
     #[inline(never)]
-    fn draw_deep(&mut self, corner: usize, stride: usize, waves: &[i16; 64], dividers: &[u16; 64]) {
-        put(&mut self.deep, corner, stride, &samples::<12, u16>(waves, dividers, |level| level as u16));
+    fn draw_deep(&mut self, corner: usize, stride: usize, waves: &[i16; 64], blocks: BlockKind) {
+        let block = match blocks {
+            BlockKind::EightBitDifferences if RARE => samples::<8, u16>(waves, &self.dividers, |level| level as u16),
+            BlockKind::TwelveBitDifferences if RARE => samples::<12, u16>(waves, &self.dividers, |level| level as u16),
+            _ => samples::<12, u16>(waves, &self.dividers, |level| (level + 2048).clamp(0, 4095) as u16),
+        };
+        put(&mut self.deep, corner, stride, &block);
     }
 
     /// How each sample of an image row is interpolated from a row of this plane. Empty for a
@@ -480,6 +616,94 @@ impl Plane {
             let (before, far) = (spot.before as usize, spot.far as u32);
             *sample = ((sum(before) * (64 - far) + sum(before + 1) * far + spot.round as u32 - turn) >> 12) as u16;
         }
+    }
+}
+
+/// What a frame's blocks hold, and how its planes keep them.
+#[derive(Clone, Copy, PartialEq)]
+enum BlockKind {
+    /// 8-bit samples, a byte each.
+    Bytes,
+    /// 12-bit samples.
+    Twelve,
+    /// In a differential frame: differences to add to the image so far, of 8- or 12-bit
+    /// samples.
+    EightBitDifferences,
+    TwelveBitDifferences,
+}
+
+/// A hierarchical image: its finished size, depth and planes (the DHP segment), and each plane
+/// as far as its frames have built it.
+struct Hierarchy {
+    size: (usize, usize),
+    depth: u32,
+    planes: Vec<Built>,
+    /// Whether its first frames were lossless (else DCT).
+    lossless: bool,
+    /// Whether the next frame's planes are added to these doubled across, and down (the EXP
+    /// segment).
+    expand: (bool, bool),
+}
+
+/// One plane of a hierarchical image: its id and sampling factors, and its samples so far
+/// (none before its first frame), `width` by `height`.
+struct Built {
+    name: u8,
+    across: usize,
+    down: usize,
+    width: usize,
+    height: usize,
+    samples: Vec<u16>,
+}
+
+impl Built {
+    /// Takes in a frame's plane of `width` by `height` samples: as is, or added to what was
+    /// built (modulo 2^16, as the standard has it), doubled first as `expand` says.
+    fn add(&mut self, plane: &Plane, (width, height): (usize, usize), expand: Option<(bool, bool)>) -> Option<()> {
+        let (stride, bytes) = (plane.wide * plane.side, !plane.samples.is_empty());
+        let sample = |x: usize, y: usize| if bytes { plane.samples[y * stride + x] as u16 } else { plane.deep[y * stride + x] };
+        let (base_width, base) = match expand {
+            Some(expand) => self.doubled(expand),
+            None => (width, vec![0; width * height]),
+        };
+        if base.len() / base_width.max(1) < height || base_width < width {
+            return None;
+        }
+        self.samples = (0..width * height).map(|at| base[at / width * base_width + at % width].wrapping_add(sample(at % width, at / width))).collect();
+        (self.width, self.height) = (width, height);
+        Some(())
+    }
+
+    /// The samples so far and their width, doubled across, down, or both, in that order: each
+    /// new sample the mean of those either side, rounded down, the last repeated past the edge.
+    fn doubled(&self, (across, down): (bool, bool)) -> (usize, Vec<u16>) {
+        let mean = |one: u16, other: u16| ((one as u32 + other as u32) / 2) as u16;
+        let (mut width, mut samples) = (self.width, self.samples.clone());
+        if across {
+            let row = |row: &[u16]| (0..2 * width).map(|x| mean(row[x / 2], row[(x / 2 + x % 2).min(width - 1)])).collect::<Vec<u16>>();
+            (samples, width) = (samples.chunks_exact(width).flat_map(row).collect(), 2 * width);
+        }
+        if down {
+            let rows: Vec<&[u16]> = samples.chunks_exact(width).collect();
+            let row = |y: usize| (0..width).map(|x| mean(rows[y / 2][x], rows[(y / 2 + y % 2).min(rows.len() - 1)][x])).collect::<Vec<u16>>();
+            samples = (0..2 * rows.len()).flat_map(row).collect();
+        }
+        (width, samples)
+    }
+
+    /// The finished plane, `width` by `height` samples of `depth` bits, in blocks of `side`.
+    /// `None` if the frames built less. (Levels outside the depth, which only a damaged file
+    /// gives, are clamped, taken as two's complement.)
+    fn finished(&self, (width, height): (usize, usize), side: usize, depth: u32) -> Option<Plane> {
+        if self.width < width || self.height < height {
+            return None;
+        }
+        let (wide, most) = (width.div_ceil(side), (1i32 << depth) - 1);
+        let level = |at: usize| if depth == 16 { self.samples[at] } else { (self.samples[at] as i16 as i32).clamp(0, most) as u16 };
+        let sample = |at: usize| level((at / (wide * side)) * self.width + (at % (wide * side)).min(width - 1));
+        let (deep, high) = ((0..wide * side * height).map(sample).collect(), height.div_ceil(side));
+        let (across, down, samples, waves) = (self.across, self.down, Vec::new(), Vec::new());
+        Some(Plane { name: self.name, across, down, divider: 0, wide, high, side, samples, deep, waves, brought: [Some(0); 64], dividers: [0; 64] })
     }
 }
 
@@ -595,12 +819,13 @@ fn printed(ink: u8, black: u8) -> u8 {
 /// pattern's strength, and the samples are the sum of the patterns (an inverse DCT), first down
 /// columns, then along rows. Integer arithmetic in libjpeg's steps, so images match most other
 /// programs to the bit. (Sums wrap where a damaged file overflows 32 bits; a sound one never
-/// does.) Samples have `DEPTH` bits, 8 or 12; `sample` maps each level to the plane's storage.
+/// does.) Samples have `DEPTH` bits, 8 or 12; `sample` maps each value, centred on zero (before
+/// the level shift), to the plane's storage.
 fn samples<const DEPTH: usize, T: Copy + Default>(waves: &[i16; 64], dividers: &[u16; 64], sample: impl Fn(i32) -> T) -> [T; 64] {
     // Between the two passes, deeper samples keep sums at half precision: they need the room.
     // The final rounding makes up for it.
     let (coarse, fine) = if DEPTH == 8 { (11, 18) } else { (12, 17) };
-    let sample = |sum: Wrapping<i32>| sample((((sum + Wrapping(1 << (fine - 1))) >> fine).0 + (128 << (DEPTH - 8))).clamp(0, (1 << DEPTH) - 1));
+    let sample = |sum: Wrapping<i32>| sample(((sum + Wrapping(1 << (fine - 1))) >> fine).0);
     let whole = |at: usize| Wrapping(waves[at] as i32 * dividers[at] as i32);
     // Much of a smooth image is DC-only blocks.
     if waves[1..].iter().all(|wave| *wave == 0) {
@@ -663,12 +888,14 @@ struct Pass<'a> {
     /// A refinement scan: an earlier one started these coefficients, and this brings a bit
     /// more.
     more: bool,
-    /// The previous block's DC per plane: the next is stored as a difference.
+    /// The previous block's DC per plane: the next is stored as a difference…
     before: [i32; 4],
+    /// …unless this is zero (in a differential frame), not all ones: then each is stored as is.
+    carried: i32,
     /// The count of following blocks with nothing new (end-of-band run).
     empty: u32,
-    /// For lossless: the predictor (one of seven), the point transform, and the MCU row of the
-    /// last restart.
+    /// For lossless: the predictor (one of seven, or none in a differential frame), the point
+    /// transform, and the MCU row of the last restart.
     rule: u8,
     shift: u32,
     top: usize,
@@ -680,6 +907,9 @@ struct Pass<'a> {
     guesses: Vec<[u8; 256]>,
     /// The context each plane's next DC starts with.
     leaning: [usize; 4],
+    /// Lossless and arithmetic coded: per plane, how each sample's coded difference conditions
+    /// the decisions of those right of and below it (see `condition`).
+    conditions: Vec<Vec<u8>>,
 }
 
 impl Pass<'_> {
@@ -691,7 +921,7 @@ impl Pass<'_> {
             if !jpeg.steps {
                 let mut waves = [0; 64];
                 self.whole(averages, details, slot.plane, &mut waves)?;
-                plane.draw(block, &waves, &jpeg.dividers[plane.divider]);
+                plane.draw(block, &waves, jpeg.blocks);
                 continue;
             }
             let waves = plane.waves.as_chunks_mut::<64>().0.get_mut(block)?;
@@ -731,7 +961,7 @@ impl Pass<'_> {
     /// A block's DC: its difference from the previous block's, as a bit count then the bits.
     fn average(&mut self, codes: &Codes, plane: usize) -> Option<i32> {
         let size = self.bits.symbol(codes)? as u32;
-        self.before[plane] = self.before[plane].wrapping_add(self.bits.number(size));
+        self.before[plane] = (self.before[plane] & self.carried).wrapping_add(self.bits.number(size));
         Some(self.before[plane])
     }
 
@@ -828,24 +1058,51 @@ impl Pass<'_> {
             let size = self.bits.symbol(codes)? as u32;
             // The one 16-bit difference has no bits after its size.
             let change = if size == 16 { 32768 } else { self.bits.number(size) };
-            let at = y * plane.wide + x;
-            let near = |back: usize| at.checked_sub(back).map_or(0, |at| (plane.deep[at] >> self.shift) as i32);
-            let (before, above, slant) = (near(1), near(plane.wide), near(plane.wide + 1));
-            // The first row after a restart has nothing above, and predicts from the left; its
-            // first sample from the middle of the range. Any other row's first sample predicts
-            // from above. The rest use the scan's predictor.
-            let guess = match (y == self.top * slot.step.1, x == 0, self.rule) {
-                (true, true, _) => 1 << (jpeg.depth - self.shift - 1),
-                (true, false, _) | (false, false, 1) => before,
-                (false, true, _) | (_, _, 2) => above,
-                (_, _, 3) => slant,
-                (_, _, 4) => before + above - slant,
-                (_, _, 5) => before + ((above - slant) >> 1),
-                (_, _, 6) => above + ((before - slant) >> 1),
-                _ => (before + above) >> 1,
-            };
-            *plane.deep.get_mut(at)? = ((guess + change) << self.shift) as u16;
+            self.place(plane, (x, y), y == self.top * slot.step.1, change, jpeg.depth)?;
         }
+        Some(())
+    }
+
+    /// Reads an arithmetic-coded lossless MCU: as `exact_unit`, but each difference decided as
+    /// an arithmetic-coded DC is, the decisions conditioned on the differences left of and
+    /// above it (none at a row's start, nor in the first row after a restart).
+    fn arithmetic_exact_unit(&mut self, column: usize, row: usize, slots: &[Slot], jpeg: &mut Jpeg) -> Option<()> {
+        for slot in slots {
+            let plane = &mut jpeg.planes[slot.plane];
+            let (x, y) = (column * slot.step.0 + slot.across, row * slot.step.1 + slot.down);
+            let (at, first_row, conditions) = (y * plane.wide + x, y == self.top * slot.step.1, &mut self.conditions[slot.plane]);
+            let left = if x == 0 { 0 } else { conditions[at - 1] as usize };
+            let above = if first_row { 0 } else { conditions[at - plane.wide] as usize };
+            // Magnitudes have contexts of their own after a large difference above.
+            let (guesses, sizes) = (&mut self.guesses[slot.codes.0], if above >= 3 { 129 } else { 100 });
+            let change = self.answers.difference(guesses, 20 * left + 4 * above, sizes)?;
+            *conditions.get_mut(at)? = condition(change, jpeg.bounds[slot.codes.0]) as u8;
+            self.place(plane, (x, y), first_row, change, jpeg.depth)?;
+        }
+        Some(())
+    }
+
+    /// Stores a lossless sample at `x`, `y` of `plane`: its prediction from the samples left,
+    /// above and above-left, plus `change`, the point transform's bits put back. The first row
+    /// after a restart has nothing above, and predicts from the left; its first sample from the
+    /// middle of the range. Any other row's first sample predicts from above. The rest use the
+    /// scan's predictor. A differential frame predicts nothing.
+    fn place(&self, plane: &mut Plane, (x, y): (usize, usize), first_row: bool, change: i32, depth: u32) -> Option<()> {
+        let at = y * plane.wide + x;
+        let near = |back: usize| at.checked_sub(back).map_or(0, |at| (plane.deep[at] >> self.shift) as i32);
+        let (before, above, slant) = (near(1), near(plane.wide), near(plane.wide + 1));
+        let guess = match (self.rule, first_row, x == 0) {
+            (0, ..) => 0,
+            (_, true, true) => 1 << (depth - self.shift - 1),
+            (_, true, false) | (1, false, false) => before,
+            (_, false, true) | (2, ..) => above,
+            (3, ..) => slant,
+            (4, ..) => before + above - slant,
+            (5, ..) => before + ((above - slant) >> 1),
+            (6, ..) => above + ((before - slant) >> 1),
+            _ => (before + above) >> 1,
+        };
+        *plane.deep.get_mut(at)? = ((guess + change) << self.shift) as u16;
         Some(())
     }
 
@@ -868,26 +1125,19 @@ impl Pass<'_> {
                 _ => {}
             }
             if !jpeg.steps {
-                plane.draw(block, &whole, &jpeg.dividers[plane.divider]);
+                plane.draw(block, &whole, jpeg.blocks);
             }
         }
         Some(())
     }
 
-    /// An arithmetic-coded DC: whether it differs from the previous block's, whether lower, and
-    /// by how much. The contexts depend on how the previous block differed: zero, small or
-    /// large, positive or negative. `low` and `high` bound "small", as powers of two.
-    fn arithmetic_average(&mut self, slot: &Slot, [low, high]: [u8; 2]) -> Option<i32> {
-        let (answers, guesses, leaning) = (&mut self.answers, &mut self.guesses[slot.codes.0], &mut self.leaning[slot.plane]);
-        let first = std::mem::take(leaning);
-        if !answers.answer(&mut guesses[first]) {
-            return Some(self.before[slot.plane]);
-        }
-        let lower = answers.answer(&mut guesses[first + 1]);
-        let by = if answers.answer(&mut guesses[first + 2 + lower as usize]) { answers.size(guesses, 20, 1)? } else { 1 };
-        let little = if by - 1 < (1 << low) >> 1 { 0 } else { 4 + 4 * lower as usize };
-        *leaning = if by > 1 << high { little + 8 } else { little };
-        self.before[slot.plane] = self.before[slot.plane].wrapping_add(if lower { -by } else { by });
+    /// An arithmetic-coded DC: its difference from the previous block's. The contexts depend on
+    /// how the previous block differed (see `condition`, which `bounds` set).
+    fn arithmetic_average(&mut self, slot: &Slot, bounds: [u8; 2]) -> Option<i32> {
+        let (guesses, leaning) = (&mut self.guesses[slot.codes.0], &mut self.leaning[slot.plane]);
+        let change = self.answers.difference(guesses, std::mem::take(leaning), 20)?;
+        *leaning = 4 * condition(change, bounds);
+        self.before[slot.plane] = (self.before[slot.plane] & self.carried).wrapping_add(change);
         Some(self.before[slot.plane])
     }
 
@@ -941,6 +1191,18 @@ impl Pass<'_> {
         }
         // A block that doesn't end has a coefficient to come.
         (!run).then_some(())
+    }
+}
+
+/// How a coded difference conditions the decisions after it: 0 about zero, 1 and 2 small
+/// (positive, negative), 3 and 4 large. Small is above `2^(low - 1)` (above zero where `low` is
+/// 0), and up to `2^high`.
+fn condition(change: i32, [low, high]: [u8; 2]) -> usize {
+    let (size, below) = (change.unsigned_abs(), (change < 0) as usize);
+    match () {
+        _ if size <= (1 << low) >> 1 => 0,
+        _ if size <= 1 << high => 1 + below,
+        _ => 3 + below,
     }
 }
 
@@ -1016,6 +1278,18 @@ impl Answers<'_> {
             *guess = likely ^ if unlikely { (step >> 8) as u8 } else { step as u8 };
         }
         (likely != 0) != unlikely
+    }
+
+    /// A difference coded as DC differences are: whether it is zero (with the context at
+    /// `first`), whether negative (`first + 1`), whether beyond one (`first + 2`, or `+ 3` when
+    /// negative), and its magnitude (contexts from `sizes`).
+    fn difference(&mut self, guesses: &mut [u8], first: usize, sizes: usize) -> Option<i32> {
+        if !self.answer(&mut guesses[first]) {
+            return Some(0);
+        }
+        let lower = self.answer(&mut guesses[first + 1]);
+        let by = if self.answer(&mut guesses[first + 2 + lower as usize]) { self.size(guesses, sizes, 1)? } else { 1 };
+        Some(if lower { -by } else { by })
     }
 
     /// A decision equally likely either way, such as a sign: with the fixed state.
@@ -1145,24 +1419,131 @@ impl Codes {
 /// scaled as libjpeg scales them, and the output is byte for byte what libjpeg's
 /// `cjpeg -baseline -quality` writes. Below 90, chroma is halved each way, as cameras and the
 /// web do; from 90, full. `None` for an empty image, or one over 65,535 pixels either way (JPEG
-/// stores two bytes each).
+/// stores two bytes each). [`Encoder`] writes progressive JPEGs and metadata too.
 pub fn encode(width: usize, pixels: &[u32], quality: u8) -> Option<Vec<u8>> {
-    let height = pixels.len() / width.max(1);
-    if width == 0 || height == 0 || width > 0xFFFF || height > 0xFFFF {
-        return None;
+    Encoder::new(quality).encode(width, pixels)
+}
+
+/// How a JPEG is written: [`encode`]'s quality, and optionally progressive, with an EXIF
+/// orientation, an ICC profile and XMP.
+///
+/// ```
+/// let pixels = vec![0xff20_8040; 64 * 48];
+/// // An ICC profile's bytes, where the pixels are in another space than sRGB.
+/// let profile = [0u8; 0];
+/// let jpeg = taut::jpeg::Encoder::new(85).progressive().orientation(6).icc_profile(&profile);
+/// assert!(jpeg.encode(64, &pixels).is_some());
+/// ```
+#[derive(Clone, Copy, Debug)]
+#[must_use]
+pub struct Encoder<'a> {
+    quality: u8,
+    progressive: bool,
+    orientation: Option<u8>,
+    icc_profile: &'a [u8],
+    xmp: &'a str,
+}
+
+impl<'a> Encoder<'a> {
+    /// Writes at `quality`, 1 to 100 (see [`encode`]): baseline, with no metadata.
+    pub fn new(quality: u8) -> Self {
+        Encoder { quality, progressive: false, orientation: None, icc_profile: &[], xmp: "" }
     }
-    // The standard's tables get coarser below quality 50 and finer above; none exceeds 255, the
-    // most a baseline file holds.
-    let quality = quality.clamp(1, 100) as u32;
-    let scale = if quality < 50 { 5000 / quality } else { 200 - 2 * quality };
-    let dividers = DIVIDERS.map(|table| table.map(|divider| (divider as u32 * scale + 50) / 100).map(|divider| divider.clamp(1, 255) as u8));
-    let mut writing = Writing::new(pixels, [width, height], quality < 90, &dividers);
-    let units = writing.units;
-    for row in 0..units[1] {
-        writing.band(row);
-        (0..units[0]).for_each(|column| writing.unit(row, column));
+
+    /// Progressive: the image comes in ten scans, coarse to fine, each with Huffman tables made
+    /// for it, byte for byte as libjpeg's `cjpeg -progressive` writes it. Usually a few percent
+    /// smaller than baseline, and shown blurred before it has all come.
+    pub fn progressive(self) -> Self {
+        Encoder { progressive: true, ..self }
     }
-    Some(writing.packed.end())
+
+    /// An EXIF orientation, 1 to 8 (1 is as stored): how a viewer turns the image upright, as a
+    /// camera says it was held. [`decode`] turns it so.
+    pub fn orientation(self, orientation: u8) -> Self {
+        Encoder { orientation: Some(orientation), ..self }
+    }
+
+    /// The ICC profile of the pixels' colours, split over as many APP2 segments as it needs, as
+    /// libjpeg splits it. Empty for none (sRGB).
+    pub fn icc_profile(self, profile: &'a [u8]) -> Self {
+        Encoder { icc_profile: profile, ..self }
+    }
+
+    /// An XMP packet (XML metadata), up to 65,504 bytes. Empty for none.
+    pub fn xmp(self, packet: &'a str) -> Self {
+        Encoder { xmp: packet, ..self }
+    }
+
+    /// Encodes an image, as [`encode`] does. Also `None` for an orientation outside 1 to 8, an
+    /// ICC profile over 16 MB (255 segments), or XMP over 65,504 bytes.
+    pub fn encode(&self, width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
+        let height = pixels.len() / width.max(1);
+        if width == 0 || height == 0 || width > 0xFFFF || height > 0xFFFF {
+            return None;
+        }
+        // The standard's tables get coarser below quality 50 and finer above. Baseline, none
+        // exceeds 255, the most it holds; progressive, as libjpeg has it, none 32767.
+        let quality = self.quality.clamp(1, 100) as u32;
+        let (scale, most) = (if quality < 50 { 5000 / quality } else { 200 - 2 * quality }, if self.progressive { 32767 } else { 255 });
+        let dividers = DIVIDERS.map(|table| table.map(|divider| (divider as u32 * scale + 50) / 100).map(|divider| divider.clamp(1, most) as u16));
+        let mut out = Vec::with_capacity(width * height / 4 + 1024 + self.icc_profile.len() + self.xmp.len());
+        // SOI, and JFIF 1.01 (square pixels).
+        out.extend([0xFF, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+        self.metadata(&mut out)?;
+        frame_header(&mut out, &dividers, [width, height], quality < 90, self.progressive);
+        let mut writing = Writing::new(pixels, [width, height], quality < 90, &dividers);
+        if self.progressive {
+            let mut kept = Kept::default();
+            writing.each_unit(&mut kept);
+            return Some(kept.scans(out, [width, height], writing.units, quality < 90));
+        }
+        let mut coded = Sequential::new(out);
+        writing.each_unit(&mut coded);
+        Some(coded.packed.end())
+    }
+
+    /// Writes the metadata segments: EXIF (APP1, with only the orientation), XMP (APP1), and
+    /// the ICC profile (APP2, in chunks). `None` where one is out of range.
+    fn metadata(&self, out: &mut Vec<u8>) -> Option<()> {
+        let segment = |out: &mut Vec<u8>, kind: u8, parts: &[&[u8]]| {
+            let long = 2 + parts.iter().map(|part| part.len()).sum::<usize>();
+            out.extend([&[0xFF, kind][..], &(long as u16).to_be_bytes()].concat());
+            parts.iter().for_each(|part| out.extend_from_slice(part));
+        };
+        if let Some(turn) = self.orientation {
+            // A big-endian TIFF header, then one IFD of one entry: tag 0x112, a SHORT, one of it.
+            let tiff = [b'M', b'M', 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, turn, 0, 0, 0, 0, 0, 0];
+            (1..=8).contains(&turn).then_some(())?;
+            segment(out, 0xE1, &[b"Exif\0\0", &tiff]);
+        }
+        if !self.xmp.is_empty() {
+            (self.xmp.len() <= 65504).then_some(())?;
+            segment(out, 0xE1, &[b"http://ns.adobe.com/xap/1.0/\0", self.xmp.as_bytes()]);
+        }
+        let chunks = self.icc_profile.chunks(65519);
+        let count = u8::try_from(chunks.len()).ok()?;
+        for (at, chunk) in chunks.enumerate() {
+            segment(out, 0xE2, &[b"ICC_PROFILE\0", &[at as u8 + 1, count], chunk]);
+        }
+        Some(())
+    }
+}
+
+/// Writes both quantization tables, each in zigzag order (an entry in two bytes where one
+/// needs them), and the frame header: SOF0 or SOF2, 8 bits, the size, and three components,
+/// the first sampled twice the others' each way or the same, each with its table.
+fn frame_header(out: &mut Vec<u8>, dividers: &[[u16; 64]; 2], size: [usize; 2], half: bool, progressive: bool) {
+    for (which, table) in dividers.iter().enumerate() {
+        let (wide, entries) = (table.iter().any(|divider| *divider > 255), ZIGZAG.map(|at| table[at as usize]));
+        out.extend([&[0xFF, 0xDB][..], &(67 + 64 * wide as u16).to_be_bytes(), &[(wide as u8) << 4 | which as u8]].concat());
+        match wide {
+            true => out.extend(entries.iter().flat_map(|entry| entry.to_be_bytes())),
+            false => out.extend(entries.map(|entry| entry as u8)),
+        }
+    }
+    let [high, wide] = [size[1] as u16, size[0] as u16].map(u16::to_be_bytes);
+    let kind = if progressive { 0xC2 } else { 0xC0 };
+    out.extend([0xFF, kind, 0, 17, 8, high[0], high[1], wide[0], wide[1], 3, 1, [0x11, 0x22][half as usize], 0, 2, 0x11, 1, 3, 0x11, 1]);
 }
 
 /// The standard's quantization tables (Annex K), row-major: luma and chroma, at quality 50.
@@ -1224,44 +1605,27 @@ struct Writing<'a> {
     halves: [Vec<u8>; 2],
     /// Per quantization table, how each coefficient is divided (see `divide`).
     dividers: [[[u32; 3]; 64]; 2],
-    /// Per Huffman table, each symbol's code, above its length.
-    codes: [[u32; 256]; 4],
-    /// Each plane's last DC, which the next one is coded against.
-    last: [i32; 3],
-    packed: Packed,
 }
 
 impl<'a> Writing<'a> {
     /// Starts encoding an image of `size` pixels, chroma halved or full, quantized by
-    /// `dividers`: writes the headers before the entropy-coded data.
-    fn new(pixels: &'a [u32], size: [usize; 2], half: bool, dividers: &[[u8; 64]; 2]) -> Self {
+    /// `dividers`.
+    fn new(pixels: &'a [u32], size: [usize; 2], half: bool, dividers: &[[u16; 64]; 2]) -> Self {
         let side = if half { 16 } else { 8 };
         let units = size.map(|length| length.div_ceil(side));
         let (stride, rows) = (units[0] * side, side);
         let planes = [vec![0; stride * rows], vec![0; stride * rows], vec![0; stride * rows]];
         let halves = [vec![0; stride / 2 * 8], vec![0; stride / 2 * 8]];
-        let codes = PACKINGS.map(|packing| codes(&packing));
-        let mut out = Vec::with_capacity(size[0] * size[1] / 4 + 1024);
-        // SOI, JFIF 1.01 (square pixels), and both quantization tables, each in zigzag order.
-        out.extend([0xFF, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
-        for (which, table) in dividers.iter().enumerate() {
-            out.extend([0xFF, 0xDB, 0, 67, which as u8]);
-            out.extend(ZIGZAG.map(|at| table[at as usize]));
-        }
-        // SOF0: 8 bits, the size, and three components, the first sampled twice the others'
-        // each way or the same, each with its table.
-        let [high, wide] = [size[1] as u16, size[0] as u16].map(u16::to_be_bytes);
-        out.extend([0xFF, 0xC0, 0, 17, 8, high[0], high[1], wide[0], wide[1], 3, 1, [0x11, 0x22][half as usize], 0, 2, 0x11, 1, 3, 0x11, 1]);
-        for (which, packing) in PACKINGS.iter().enumerate() {
-            let symbols = symbols(packing);
-            out.extend([0xFF, 0xC4, 0, 19 + symbols.len() as u8, (((which % 2) << 4) | (which / 2)) as u8]);
-            out.extend(packing.0.iter().chain(&symbols));
-        }
-        // The one scan: all three planes, the first with its tables and the others with theirs.
-        out.extend([0xFF, 0xDA, 0, 12, 3, 1, 0x00, 2, 0x11, 3, 0x11, 0, 63, 0]);
         let dividers = dividers.map(|table| table.map(|divider| divide(divider as u32 * 8)));
-        let packed = Packed { out, bits: 0, count: 0 };
-        Writing { pixels, size, half, units, stride, planes, halves, dividers, codes, last: [0; 3], packed }
+        Writing { pixels, size, half, units, stride, planes, halves, dividers }
+    }
+
+    /// Gives every MCU's blocks to `out`, row by row.
+    fn each_unit(&mut self, out: &mut impl Blocks) {
+        for row in 0..self.units[1] {
+            self.band(row);
+            (0..self.units[0]).for_each(|column| self.unit(row, column, out));
+        }
     }
 
     /// Fills the planes with MCU row `row`. Past the image's right and bottom, its last pixels
@@ -1296,10 +1660,10 @@ impl<'a> Writing<'a> {
         }
     }
 
-    /// Encodes the MCU at `column` of row `row`: its luma blocks (four, with chroma halved),
-    /// then one per chroma plane. A luma block wholly outside the image repeats the previous
-    /// block, DC only.
-    fn unit(&mut self, row: usize, column: usize) {
+    /// Gives `out` the MCU at `column` of row `row`: its luma blocks (four, with chroma
+    /// halved), then one per chroma plane. A luma block wholly outside the image repeats the
+    /// previous block, DC only.
+    fn unit(&self, row: usize, column: usize, out: &mut impl Blocks) {
         let (stride, blocks) = (self.stride, self.size.map(|length| length.div_ceil(8)));
         let side = 1 + self.half as usize;
         let mut average = 0;
@@ -1310,12 +1674,12 @@ impl<'a> Writing<'a> {
                 false => (std::array::from_fn(|at| [0, average][(at == 0) as usize]), 1),
             };
             average = waves.0[0];
-            self.pack(&waves, 0);
+            out.block(&waves, 0);
         }
         let colours = [0, 1].map(|plane| if self.half { &self.halves[plane] } else { &self.planes[plane + 1] });
         let waves = colours.map(|samples| self.waves(samples, stride / side, [8 * column, 0], 1));
-        self.pack(&waves[0], 1);
-        self.pack(&waves[1], 2);
+        out.block(&waves[0], 1);
+        out.block(&waves[1], 2);
     }
 
     /// The 64 coefficients of the block at `corner` of `samples` (`stride` per row), quantized
@@ -1338,10 +1702,43 @@ impl<'a> Writing<'a> {
         }
         (zigzag, set)
     }
+}
 
+/// Where an encoder's blocks go, in MCU order, each as its quantized coefficients in zigzag
+/// order and a bit per nonzero one: coded at once, or kept for the scans of a progressive
+/// image.
+trait Blocks {
+    fn block(&mut self, waves: &([i32; 64], u64), plane: usize);
+}
+
+/// A baseline image's one scan: its blocks Huffman-coded as they come, with the standard
+/// tables.
+struct Sequential {
+    /// Per Huffman table, each symbol's code, above its length.
+    codes: [[u32; 256]; 4],
+    /// Each plane's last DC, which the next one is coded against.
+    last: [i32; 3],
+    packed: Packed,
+}
+
+impl Sequential {
+    /// Writes the tables (DC then AC, luma then chroma) and the scan's header after `out`.
+    fn new(mut out: Vec<u8>) -> Self {
+        for (which, packing) in PACKINGS.iter().enumerate() {
+            let symbols = symbols(packing);
+            out.extend([0xFF, 0xC4, 0, 19 + symbols.len() as u8, (((which % 2) << 4) | (which / 2)) as u8]);
+            out.extend(packing.0.iter().chain(&symbols));
+        }
+        // All three planes, the first with its tables and the others with theirs.
+        out.extend([0xFF, 0xDA, 0, 12, 3, 1, 0x00, 2, 0x11, 3, 0x11, 0, 63, 0]);
+        Sequential { codes: PACKINGS.map(|packing| codes(&packing)), last: [0; 3], packed: Packed { out, bits: 0, count: 0 } }
+    }
+}
+
+impl Blocks for Sequential {
     /// Huffman-codes a block (and its nonzero bits) for `plane`: its DC as the difference from
     /// the plane's last, then each nonzero AC after its zero run.
-    fn pack(&mut self, (waves, set): &([i32; 64], u64), plane: usize) {
+    fn block(&mut self, (waves, set): &([i32; 64], u64), plane: usize) {
         let (average, rest) = (&self.codes[2 * plane.min(1)], &self.codes[2 * plane.min(1) + 1]);
         self.packed.number(average, 0, waves[0] - self.last[plane]);
         self.last[plane] = waves[0];
@@ -1480,15 +1877,365 @@ impl Packed {
         self.put((code >> 8) << size | bits, (code & 255) + size);
     }
 
-    /// Pads the last byte with ones, flushes, and appends EOI.
-    fn end(mut self) -> Vec<u8> {
+    /// Pads the last byte with ones and writes all that is held: the end of a scan.
+    fn flush(&mut self) {
         self.put(0x7F, 7);
         let whole = self.count / 8;
         let left = (self.bits >> (self.count % 8)) as u32;
         self.bytes(&left.to_be_bytes()[4 - whole as usize..]);
+        (self.bits, self.count) = (0, 0);
+    }
+
+    /// Flushes, and appends EOI.
+    fn end(mut self) -> Vec<u8> {
+        self.flush();
         self.out.extend([0xFF, 0xD9]);
         self.out
     }
+}
+
+/// The blocks of a progressive image, kept as they come for its scans: in MCU order, four luma
+/// blocks to an MCU with chroma halved (else one), and one of each chroma plane.
+#[derive(Default)]
+struct Kept {
+    planes: [Vec<[i16; 64]>; 3],
+}
+
+impl Blocks for Kept {
+    fn block(&mut self, (waves, _): &([i32; 64], u64), plane: usize) {
+        self.planes[plane].push(waves.map(|wave| wave as i16));
+    }
+}
+
+/// One scan of a progressive image: its planes, its band of coefficients (zigzag positions
+/// `from` to `to`), and its bits: from bit `low` up, or (where `high` isn't 0) bit `low` alone,
+/// below those an earlier scan brought.
+struct Scan {
+    planes: &'static [usize],
+    from: usize,
+    to: usize,
+    high: u32,
+    low: u32,
+}
+
+/// libjpeg's progression for YCbCr (`jpeg_simple_progression`): DC but its last bit; luma's
+/// lowest AC, chroma's AC and the rest of luma's, each but its last bits; luma's next bit; then
+/// the last bit of each.
+const SCANS: [Scan; 10] = [
+    Scan { planes: &[0, 1, 2], from: 0, to: 0, high: 0, low: 1 },
+    Scan { planes: &[0], from: 1, to: 5, high: 0, low: 2 },
+    Scan { planes: &[2], from: 1, to: 63, high: 0, low: 1 },
+    Scan { planes: &[1], from: 1, to: 63, high: 0, low: 1 },
+    Scan { planes: &[0], from: 6, to: 63, high: 0, low: 2 },
+    Scan { planes: &[0], from: 1, to: 63, high: 2, low: 1 },
+    Scan { planes: &[0, 1, 2], from: 0, to: 0, high: 1, low: 0 },
+    Scan { planes: &[2], from: 1, to: 63, high: 1, low: 0 },
+    Scan { planes: &[1], from: 1, to: 63, high: 1, low: 0 },
+    Scan { planes: &[0], from: 1, to: 63, high: 1, low: 0 },
+];
+
+impl Kept {
+    /// Writes the scans after `out` (the headers), and EOI. Each scan is read twice: once to
+    /// count its symbols, which makes its Huffman tables (written before it), then to code it.
+    /// An image of `size` pixels, `units` MCUs, chroma halved or not.
+    fn scans(&self, out: Vec<u8>, size: [usize; 2], units: [usize; 2], half: bool) -> Vec<u8> {
+        let (mut packed, layout) = (Packed { out, bits: 0, count: 0 }, Layout { size, units, side: 1 + half as usize });
+        for scan in &SCANS {
+            let codes = self.tables(scan, &layout, &mut packed.out);
+            scan_header(scan, &mut packed.out);
+            let mut coded = Coded { codes, packed };
+            self.scan(scan, &layout, &mut coded);
+            packed = coded.packed;
+            packed.flush();
+        }
+        packed.out.extend([0xFF, 0xD9]);
+        packed.out
+    }
+
+    /// Makes the Huffman tables a scan uses, from its symbols' counts, and writes them after
+    /// `out`: luma's, then chroma's (a DC refinement's bits need none). Returns their codes.
+    fn tables(&self, scan: &Scan, layout: &Layout, out: &mut Vec<u8>) -> [[u32; 256]; 2] {
+        let mut counts = Counting([[0; 257]; 2]);
+        self.scan(scan, layout, &mut counts);
+        let mut tables: Vec<usize> = scan.planes.iter().map(|plane| *plane.min(&1)).filter(|_| scan.from != 0 || scan.high == 0).collect();
+        tables.dedup();
+        let mut made = [[0; 256]; 2];
+        for table in tables {
+            let (lengths, symbols) = made_codes(&counts.0[table]);
+            let class = (scan.from != 0) as u8;
+            out.extend([&[0xFF, 0xC4][..], &(19 + symbols.len() as u16).to_be_bytes(), &[class << 4 | table as u8], &lengths, &symbols].concat());
+            made[table] = codes(&(lengths, &symbols));
+        }
+        made
+    }
+
+    /// Codes one scan with `coding`: its DC in MCUs, or one plane's AC block by block across
+    /// and down the plane.
+    fn scan(&self, scan: &Scan, layout: &Layout, coding: &mut impl Coding) {
+        if scan.from == 0 {
+            let mut last = [0; 3];
+            for unit in 0..layout.units[0] * layout.units[1] {
+                self.averages(scan, layout, unit, &mut last, coding);
+            }
+            return;
+        }
+        let mut band = Band { coding, table: scan.planes[0].min(1), run: 0, corrections: Vec::new() };
+        for block in layout.blocks(scan.planes[0]).map(|at| &self.planes[scan.planes[0]][at]) {
+            match scan.high {
+                0 => band.first(block, scan),
+                _ => band.refine(block, scan),
+            }
+        }
+        band.end_run();
+    }
+
+    /// An MCU's DC: for a first scan, each block's as a difference from the plane's last; for
+    /// a refinement, the next bit of each.
+    fn averages(&self, scan: &Scan, layout: &Layout, unit: usize, last: &mut [i32; 3], coding: &mut impl Coding) {
+        let squares = layout.side * layout.side;
+        let blocks = self.planes[0][unit * squares..][..squares].iter().map(|block| (0, block)).chain([1, 2].map(|plane| (plane, &self.planes[plane][unit])));
+        for (plane, block) in blocks {
+            let average = block[0] as i32 >> scan.low;
+            match scan.high {
+                0 => coding.number(plane.min(1), 0, average - std::mem::replace(&mut last[plane], average)),
+                _ => coding.bits(average as u32 & 1, 1),
+            }
+        }
+    }
+}
+
+/// Writes a progressive scan's header: its planes, each with its table, DC or AC (none where
+/// unused), its band, and its bits.
+fn scan_header(scan: &Scan, out: &mut Vec<u8>) {
+    let table = |plane: usize| match (scan.from, scan.high) {
+        (0, 0) => (plane.min(1) as u8) << 4,
+        (0, _) => 0,
+        _ => plane.min(1) as u8,
+    };
+    let chosen = scan.planes.iter().flat_map(|plane| [*plane as u8 + 1, table(*plane)]);
+    let head: Vec<u8> = [scan.planes.len() as u8].into_iter().chain(chosen).chain([scan.from as u8, scan.to as u8, (scan.high << 4 | scan.low) as u8]).collect();
+    out.extend([&[0xFF, 0xDA][..], &(2 + head.len() as u16).to_be_bytes(), &head].concat());
+}
+
+/// Where a progressive image's blocks lie in `Kept`: its size, MCU count, and luma blocks to
+/// an MCU across and down.
+struct Layout {
+    size: [usize; 2],
+    units: [usize; 2],
+    side: usize,
+}
+
+impl Layout {
+    /// Where each of a plane's blocks lies, across then down the plane: luma's are kept in
+    /// MCUs, and those past its last pixels (which only make MCUs whole) are left out.
+    fn blocks(&self, plane: usize) -> impl Iterator<Item = usize> + '_ {
+        let side = if plane == 0 { self.side } else { 1 };
+        let [wide, high] = if plane == 0 { self.size.map(|length| length.div_ceil(8)) } else { self.units };
+        let at = move |x: usize, y: usize| (y / side * self.units[0] + x / side) * side * side + y % side * side + x % side;
+        (0..wide * high).map(move |block| at(block % wide, block / wide))
+    }
+}
+
+/// What coding a progressive scan does with each symbol and run of bits: counts the symbols,
+/// to make the scan's Huffman tables; or codes them with those tables.
+trait Coding {
+    fn symbol(&mut self, table: usize, symbol: u8);
+    fn bits(&mut self, bits: u32, count: u32);
+
+    /// A value as its bit count's symbol (with `before` above it), then its bits: for a
+    /// negative value, those of one less.
+    fn number(&mut self, table: usize, before: u8, number: i32) {
+        let size = 32 - number.unsigned_abs().leading_zeros();
+        self.symbol(table, before | size as u8);
+        self.bits((number - (number < 0) as i32) as u32 & ((1 << size) - 1), size);
+    }
+}
+
+/// Each symbol's count, per table (and one more, for the code no symbol may have).
+struct Counting([[u64; 257]; 2]);
+
+impl Coding for Counting {
+    fn symbol(&mut self, table: usize, symbol: u8) {
+        self.0[table][symbol as usize] += 1;
+    }
+
+    fn bits(&mut self, _: u32, _: u32) {}
+}
+
+/// A scan's codes, per table (see `codes`), and the output.
+struct Coded {
+    codes: [[u32; 256]; 2],
+    packed: Packed,
+}
+
+impl Coding for Coded {
+    fn symbol(&mut self, table: usize, symbol: u8) {
+        let code = self.codes[table][symbol as usize];
+        self.packed.put(code >> 8, code & 255);
+    }
+
+    fn bits(&mut self, bits: u32, count: u32) {
+        self.packed.put(bits, count);
+    }
+}
+
+/// An AC scan of one plane being coded: its table, the count of blocks since the last with
+/// anything new (an end-of-band run, coded as one symbol), and the refinement bits of those
+/// blocks, which follow that symbol.
+struct Band<'a, C: Coding> {
+    coding: &'a mut C,
+    table: usize,
+    run: u32,
+    corrections: Vec<u8>,
+}
+
+impl<C: Coding> Band<'_, C> {
+    /// A first scan of a block's band: each coefficient's top bits, as baseline codes them,
+    /// after its zero run (sixteen at a time where longer); a block with nothing more joins the
+    /// run.
+    fn first(&mut self, block: &[i16; 64], scan: &Scan) {
+        let mut noughts = 0;
+        for wave in &block[scan.from..=scan.to] {
+            let size = (wave.unsigned_abs() >> scan.low) as i32;
+            if size == 0 {
+                noughts += 1;
+                continue;
+            }
+            self.end_run();
+            (0..noughts / 16).for_each(|_| self.coding.symbol(self.table, 0xF0));
+            self.coding.number(self.table, (noughts % 16) << 4, if *wave < 0 { -size } else { size });
+            noughts = 0;
+        }
+        if noughts > 0 {
+            self.run += 1;
+            if self.run == 0x7FFF {
+                self.end_run();
+            }
+        }
+    }
+
+    /// A refinement of a block's band, by one bit: coefficients that start at it, each after
+    /// its zero run with its sign; the bit of those already started follows the next such (or
+    /// sixteen zeros, or the end of the run).
+    fn refine(&mut self, block: &[i16; 64], scan: &Scan) {
+        let size = |wave: &i16| wave.unsigned_abs() >> scan.low;
+        let last = (scan.from..=scan.to).rev().find(|at| size(&block[*at]) == 1).unwrap_or(0);
+        let (mut noughts, mut pending) = (0, Vec::new());
+        for (at, wave) in block.iter().enumerate().take(scan.to + 1).skip(scan.from) {
+            let started = size(wave);
+            if started == 0 {
+                noughts += 1;
+                continue;
+            }
+            // Sixteen zeros are coded as such only before the last coefficient that starts.
+            while noughts > 15 && at <= last {
+                self.end_run();
+                self.coding.symbol(self.table, 0xF0);
+                (noughts, pending) = (noughts - 16, self.send(pending));
+            }
+            if started > 1 {
+                pending.push(started as u8 & 1);
+                continue;
+            }
+            self.end_run();
+            self.coding.symbol(self.table, (noughts << 4 | 1) as u8);
+            self.coding.bits((*wave >= 0) as u32, 1);
+            (noughts, pending) = (0, self.send(pending));
+        }
+        if noughts > 0 || !pending.is_empty() {
+            self.run += 1;
+            self.corrections.extend(pending);
+            // libjpeg keeps at most 1000 refinement bits waiting, less a block's worth.
+            if self.run == 0x7FFF || self.corrections.len() > 937 {
+                self.end_run();
+            }
+        }
+    }
+
+    /// Ends the run of blocks with nothing new, if any: its symbol, the length's low bits,
+    /// then the refinement bits of its blocks.
+    fn end_run(&mut self) {
+        if self.run == 0 {
+            return;
+        }
+        let size = 31 - self.run.leading_zeros();
+        self.coding.symbol(self.table, (size << 4) as u8);
+        self.coding.bits(self.run & ((1 << size) - 1), size);
+        self.run = 0;
+        let corrections = std::mem::take(&mut self.corrections);
+        self.send(corrections);
+    }
+
+    /// Codes refinement bits, and returns the emptied list.
+    fn send(&mut self, mut bits: Vec<u8>) -> Vec<u8> {
+        bits.drain(..).for_each(|bit| self.coding.bits(bit as u32, 1));
+        bits
+    }
+}
+
+/// A Huffman table made for a scan's symbol counts, as libjpeg makes it
+/// (`jpeg_gen_optimal_table`): code lengths from joining the two rarest, again and again; none
+/// longer than 16 bits; and no code all ones (a 257th symbol takes it). Returns the code count
+/// per length and the symbols in code order.
+fn made_codes(counts: &[u64; 257]) -> ([u8; 16], Vec<u8>) {
+    let mut counts = *counts;
+    counts[256] = 1;
+    // Past 32 bits, where libjpeg gives up, counts are halved.
+    let lengths = loop {
+        if let Some(lengths) = code_lengths(counts) {
+            break lengths;
+        }
+        counts = counts.map(|count| count.div_ceil(2));
+    };
+    let mut bits = [0u16; 33];
+    lengths.iter().filter(|long| **long > 0).for_each(|long| bits[*long] += 1);
+    // Two codes longer than 16 bits become one a bit shorter and, with a shorter code, two a
+    // bit longer than that (Annex K.3).
+    for long in (17..=32).rev() {
+        while bits[long] > 0 {
+            let mut shorter = long - 2;
+            while bits[shorter] == 0 {
+                shorter -= 1;
+            }
+            (bits[long], bits[long - 1], bits[shorter + 1], bits[shorter]) = (bits[long] - 2, bits[long - 1] + 1, bits[shorter + 1] + 2, bits[shorter] - 1);
+        }
+    }
+    let longest = (1..=16).rev().find(|long| bits[*long] > 0).unwrap_or(16);
+    bits[longest] -= 1;
+    let symbols = (1..=32).flat_map(|long| (0..256).filter(move |symbol| lengths[*symbol] == long)).map(|symbol| symbol as u8);
+    (std::array::from_fn(|at| bits[at + 1] as u8), symbols.collect())
+}
+
+/// Each symbol's code length: the two rarest are joined, again and again, and every symbol of
+/// each becomes a bit longer. `None` past 32 bits.
+fn code_lengths(mut counts: [u64; 257]) -> Option<[usize; 257]> {
+    let (mut lengths, mut next) = ([0; 257], [None; 257]);
+    while let Some((one, other)) = rarest_two(&counts) {
+        (counts[one], counts[other]) = (counts[one] + counts[other], 0);
+        let end = deepen(&mut lengths, &next, one);
+        next[end] = Some(other);
+        deepen(&mut lengths, &next, other);
+    }
+    lengths.iter().all(|long| *long <= 32).then_some(lengths)
+}
+
+/// Makes every symbol joined from `first` on a bit longer; returns the last of them.
+fn deepen(lengths: &mut [usize; 257], next: &[Option<usize>; 257], first: usize) -> usize {
+    let mut at = first;
+    lengths[at] += 1;
+    while let Some(then) = next[at] {
+        at = then;
+        lengths[at] += 1;
+    }
+    at
+}
+
+/// The rarest two symbols that occur, each of equal counts the highest-numbered (as libjpeg
+/// picks them). `None` if fewer than two are left.
+fn rarest_two(counts: &[u64; 257]) -> Option<(usize, usize)> {
+    let rarest = |skip: usize| (0..257).filter(|at| counts[*at] != 0 && *at != skip).min_by_key(|at| (counts[*at], std::cmp::Reverse(*at)));
+    let one = rarest(257)?;
+    Some((one, rarest(one)?))
 }
 
 #[cfg(test)]
@@ -1570,6 +2317,117 @@ mod tests {
         }
     }
 
+    /// What only the ISO reference codec writes (Thomas Richter's libjpeg,
+    /// github.com/thorfdbg/libjpeg), 45 by 29, each beside its own decoding, and how far this
+    /// decoder may be from that. Lossless, not at all. Hierarchical, by a few levels: the
+    /// reference keeps fractions of a level from frame to frame (of its inverse DCTs, and of
+    /// doubling across before down), where the standard rounds each step to whole levels, as
+    /// this does (and `hierarchical_pictures_without_loss_come_back_sample_for_sample` proves);
+    /// colour more, as YCbCr to RGB spreads chroma's.
+    const BY_THE_REFERENCE: [(&str, &[u8], &[u8], u32); 11] = [
+        // Grey, a first frame of half the size each way, then one doubling it: Huffman or
+        // arithmetic coded, sequential or progressive; 12 bits, Huffman.
+        ("hierarchical", include_bytes!("../tests/pictures/hierarchical.jpg"), include_bytes!("../tests/pictures/hierarchical.png"), 3),
+        ("hierarchical-arithmetic", include_bytes!("../tests/pictures/hierarchical-arithmetic.jpg"), include_bytes!("../tests/pictures/hierarchical-arithmetic.png"), 3),
+        ("hierarchical-steps", include_bytes!("../tests/pictures/hierarchical-steps.jpg"), include_bytes!("../tests/pictures/hierarchical-steps.png"), 3),
+        ("hierarchical-arithmetic-steps", include_bytes!("../tests/pictures/hierarchical-arithmetic-steps.jpg"), include_bytes!("../tests/pictures/hierarchical-arithmetic-steps.png"), 3),
+        ("hierarchical-deep", include_bytes!("../tests/pictures/hierarchical-deep.jpg"), include_bytes!("../tests/pictures/hierarchical-deep.png"), 1),
+        // YCbCr, three frames.
+        ("hierarchical-colour", include_bytes!("../tests/pictures/hierarchical-colour.jpg"), include_bytes!("../tests/pictures/hierarchical-colour.png"), 6),
+        // RGB lossless, two frames, Huffman or arithmetic coded.
+        ("hierarchical-exact", include_bytes!("../tests/pictures/hierarchical-exact.jpg"), include_bytes!("../tests/pictures/hierarchical-exact.png"), 1),
+        ("hierarchical-exact-arithmetic", include_bytes!("../tests/pictures/hierarchical-exact-arithmetic.jpg"), include_bytes!("../tests/pictures/hierarchical-exact-arithmetic.png"), 1),
+        // Lossless arithmetic coded: RGB; grey restarting every two rows; 16-bit grey.
+        ("exact-arithmetic", include_bytes!("../tests/pictures/exact-arithmetic.jpg"), include_bytes!("../tests/pictures/exact-arithmetic.png"), 0),
+        ("exact-arithmetic-restarts", include_bytes!("../tests/pictures/exact-arithmetic-restarts.jpg"), include_bytes!("../tests/pictures/exact-arithmetic-restarts.png"), 0),
+        ("exact-arithmetic-deep", include_bytes!("../tests/pictures/exact-arithmetic-deep.jpg"), include_bytes!("../tests/pictures/exact-arithmetic-deep.png"), 0),
+    ];
+
+    #[test]
+    #[cfg(feature = "rare-jpeg")]
+    fn pictures_only_the_reference_writes_come_out_as_it_reads_them() {
+        for (name, jpeg, png, most) in BY_THE_REFERENCE {
+            let (width, pixels) = decode(jpeg).unwrap_or_else(|| panic!("{name}.jpg is read"));
+            let (wanted_width, wanted) = crate::png::decode(png).unwrap_or_else(|| panic!("{name}.png is read"));
+            assert_eq!((width, pixels.len()), (wanted_width, wanted.len()), "{name}: its size");
+            assert!(furthest(&pixels, &wanted) <= most, "{name}: its colours, {} apart", furthest(&pixels, &wanted));
+        }
+    }
+
+    /// A picture as a PPM (or PGM, `grey`) file: its samples, `most` the top level.
+    fn netpbm(width: usize, samples: &[u16], grey: bool, most: u16) -> Vec<u8> {
+        let head = format!("P{} {width} {} {most}\n", if grey { 5 } else { 6 }, samples.len() / width / if grey { 1 } else { 3 });
+        let bytes = samples.iter().flat_map(|sample| if most > 255 { sample.to_be_bytes().to_vec() } else { vec![*sample as u8] });
+        head.into_bytes().into_iter().chain(bytes).collect()
+    }
+
+    /// The samples of a PPM or PGM file, and its top level.
+    fn from_netpbm(file: &[u8]) -> (Vec<u16>, u16) {
+        // After "P5" or "P6": width, height and the top level, each followed by whitespace.
+        let fields: Vec<usize> = file.split(u8::is_ascii_whitespace).filter(|field| !field.is_empty()).skip(1).take(3).map(|field| std::str::from_utf8(field).unwrap().parse().unwrap()).collect();
+        let start = file.iter().enumerate().filter(|(_, byte)| byte.is_ascii_whitespace()).nth(3).unwrap().0 + 1;
+        let samples = match fields[2] > 255 {
+            true => file[start..].as_chunks::<2>().0.iter().map(|pair| u16::from_be_bytes(*pair)).collect(),
+            false => file[start..].iter().map(|byte| *byte as u16).collect(),
+        };
+        (samples, fields[2] as u16)
+    }
+
+    /// Regenerates `BY_THE_REFERENCE` with the ISO reference codec's `jpeg` (built from
+    /// github.com/thorfdbg/libjpeg; its lossless mode also needs `Tables::QuantizationTableIndexOf`
+    /// to return 0 where no DQT is defined). Each beside its decoding, brought to 8 bits as
+    /// `decode` brings it; YCbCr from the planes as the reference keeps them, made RGB as
+    /// libjpeg makes it. (`cargo test --lib jpeg -- --ignored`.)
+    #[test]
+    #[ignore = "needs the ISO reference codec, and writes the files the other tests read"]
+    fn the_pictures_only_the_reference_writes_are_made_afresh() {
+        use std::process::Command;
+        let (pictures, work) = (std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("pictures"), std::env::temp_dir().join(format!("taut-reference-{}", std::process::id())));
+        std::fs::create_dir_all(&work).unwrap();
+        let [width, height] = WRITTEN;
+        let colours: Vec<u16> = photo(width, height).iter().flat_map(|pixel| [16, 8, 0].map(|shift| (pixel >> shift & 255) as u16)).collect();
+        let deep = |depth: u32| (0..width * height).map(|at| ((at % width * 65535 / width) as u32 ^ ((at * 977) as u32 % 4099)) as u16 >> (16 - depth)).collect::<Vec<u16>>();
+        std::fs::write(work.join("colour.ppm"), netpbm(width, &colours, false, 255)).unwrap();
+        std::fs::write(work.join("grey.pgm"), netpbm(width, &colours.iter().skip(1).step_by(3).copied().collect::<Vec<u16>>(), true, 255)).unwrap();
+        std::fs::write(work.join("deep.pgm"), netpbm(width, &deep(12), true, 4095)).unwrap();
+        std::fs::write(work.join("deeper.pgm"), netpbm(width, &deep(16), true, 65535)).unwrap();
+        let made: [(&str, &str, &[&str]); 11] = [
+            ("hierarchical", "grey.pgm", &["-q", "85", "-y", "2", "-h"]),
+            ("hierarchical-arithmetic", "grey.pgm", &["-q", "85", "-y", "2", "-a"]),
+            ("hierarchical-steps", "grey.pgm", &["-q", "85", "-y", "2", "-v", "-h"]),
+            ("hierarchical-arithmetic-steps", "grey.pgm", &["-q", "85", "-y", "2", "-v", "-a"]),
+            ("hierarchical-deep", "deep.pgm", &["-q", "85", "-y", "2", "-h"]),
+            ("hierarchical-colour", "colour.ppm", &["-q", "85", "-y", "3", "-h"]),
+            ("hierarchical-exact", "colour.ppm", &["-p", "-y", "2", "-c", "-h"]),
+            ("hierarchical-exact-arithmetic", "colour.ppm", &["-p", "-y", "2", "-c", "-a"]),
+            ("exact-arithmetic", "colour.ppm", &["-p", "-a", "-c"]),
+            ("exact-arithmetic-restarts", "grey.pgm", &["-p", "-a", "-z", &(2 * WRITTEN[0]).to_string()]),
+            ("exact-arithmetic-deep", "deeper.pgm", &["-p", "-a"]),
+        ];
+        let run = |arguments: &[&str]| assert!(Command::new("jpeg").args(arguments).current_dir(&work).output().is_ok_and(|done| done.status.success()), "jpeg {arguments:?}");
+        for (name, source, how) in made {
+            let jpeg = pictures.join(format!("{name}.jpg"));
+            run(&[how, &[source, jpeg.to_str().unwrap()]].concat());
+            // The colour file's planes as they are (`-c`), to be made RGB here.
+            let planes = name == "hierarchical-colour";
+            run(&[&["-c"][..planes as usize], &[jpeg.to_str().unwrap(), "read.pnm"]].concat());
+            let (samples, most) = from_netpbm(&std::fs::read(work.join("read.pnm")).unwrap());
+            let byte = |sample: u16| shown(16 - most.leading_zeros())[sample as usize] as u32;
+            let pixels: Vec<u32> = match (source.ends_with(".pgm"), planes) {
+                (true, _) => samples.iter().map(|sample| 0xff00_0000 | (byte(*sample) * 0x01_0101)).collect(),
+                (false, false) => samples.as_chunks::<3>().0.iter().map(|[red, green, blue]| 0xff00_0000 | byte(*red) << 16 | byte(*green) << 8 | byte(*blue)).collect(),
+                (false, true) => samples
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|planes| 0xff00_0000 | lit(planes[0] as u8, planes[1] as u8, planes[2] as u8).iter().fold(0, |pixel, part| pixel << 8 | *part as u32))
+                    .collect(),
+            };
+            std::fs::write(pictures.join(format!("{name}.png")), crate::png::encode(width, &pixels).unwrap()).unwrap();
+        }
+        std::fs::remove_dir_all(work).unwrap();
+    }
+
     /// A JPEG with an EXIF orientation inserted after SOI, little- or big-endian.
     fn noted(jpeg: &[u8], turn: u16, low_first: bool) -> Vec<u8> {
         let notes = crate::exif_orientation::tests::notes(turn, low_first);
@@ -1648,11 +2506,16 @@ mod tests {
         assert!(shown(16).iter().enumerate().all(|(level, byte)| *byte as usize == level >> 8));
     }
 
-    /// A lossless JPEG written per the standard. All planes in one scan; each given its
-    /// sampling factors, and `sample` gives a plane's sample at a position. Every sample uses
-    /// predictor `rule` with point transform `shift`, restarting every `rows` MCU rows (0:
-    /// never). `notes` go first.
-    fn without_loss(size: (usize, usize), depth: u32, planes: &[(usize, usize)], sample: impl Fn(usize, usize, usize) -> u16, (rule, shift, rows): (u8, u32, usize), notes: &[u8]) -> Vec<u8> {
+    /// A lossless JPEG written per the standard: `notes`, then one frame (see `lossless_frame`).
+    fn without_loss(size: (usize, usize), depth: u32, planes: &[(usize, usize)], sample: impl Fn(usize, usize, usize) -> u16, coding: (u8, u32, usize), notes: &[u8]) -> Vec<u8> {
+        [&[0xFF, 0xD8][..], notes, &lossless_frame(0xC3, size, depth, planes, sample, coding), &[0xFF, 0xD9]].concat()
+    }
+
+    /// A lossless frame of kind `kind` (0xC3, or 0xC7 differential) written per the standard. All
+    /// planes in one scan; each given its sampling factors, and `sample` gives a plane's sample
+    /// at a position. Every sample uses predictor `rule` (0: none, in a differential frame) with
+    /// point transform `shift`, restarting every `rows` MCU rows (0: never).
+    fn lossless_frame(kind: u8, size: (usize, usize), depth: u32, planes: &[(usize, usize)], sample: impl Fn(usize, usize, usize) -> u16, (rule, shift, rows): (u8, u32, usize)) -> Vec<u8> {
         let most = (planes.iter().map(|plane| plane.0).max().unwrap(), planes.iter().map(|plane| plane.1).max().unwrap());
         let (wide, high) = (size.0.div_ceil(most.0), size.1.div_ceil(most.1));
         // Code length per difference bit count, 0 to 16; the codes count up through them.
@@ -1667,8 +2530,8 @@ mod tests {
         let listed: Vec<u8> = planes.iter().enumerate().flat_map(|(n, plane)| [n as u8 + 1, (plane.0 << 4 | plane.1) as u8, 0]).collect();
         let counts: Vec<u8> = (1..=16).map(|long| LONG.iter().filter(|code| **code == long).count() as u8).collect();
         let chosen: Vec<u8> = (1..=planes.len() as u8).flat_map(|name| [name, 0]).collect();
-        let mut file = [&[0xFF, 0xD8][..], notes].concat();
-        file.extend(part(0xC3, &[&[depth as u8, (size.1 >> 8) as u8, size.1 as u8, (size.0 >> 8) as u8, size.0 as u8, planes.len() as u8][..], &listed].concat()));
+        let mut file = Vec::new();
+        file.extend(part(kind, &[&[depth as u8, (size.1 >> 8) as u8, size.1 as u8, (size.0 >> 8) as u8, size.0 as u8, planes.len() as u8][..], &listed].concat()));
         file.extend(part(0xC4, &[&[0][..], &counts, &(0..17).collect::<Vec<u8>>()].concat()));
         file.extend(part(0xDD, &((rows * wide) as u16).to_be_bytes()));
         file.extend(part(0xDA, &[&[planes.len() as u8][..], &chosen, &[rule, 0, shift as u8]].concat()));
@@ -1695,6 +2558,7 @@ mod tests {
             for (n, (x, y)) in planes.iter().enumerate().flat_map(|(n, plane)| (0..plane.0 * plane.1).map(move |at| (n, (column * plane.0 + at % plane.0, row * plane.1 + at / plane.0)))) {
                 let (before, above, slant) = (stored(n, x.saturating_sub(1), y), stored(n, x, y.saturating_sub(1)), stored(n, x.saturating_sub(1), y.saturating_sub(1)));
                 let guess = match (y == top * planes[n].1, x == 0, rule) {
+                    (_, _, 0) => 0,
                     (true, true, _) => 1 << (depth - shift - 1),
                     (true, false, _) | (false, false, 1) => before,
                     (false, true, _) | (_, _, 2) => above,
@@ -1713,7 +2577,6 @@ mod tests {
             }
         }
         file.extend(written(&mut bits));
-        file.extend([0xFF, 0xD9]);
         file
     }
 
@@ -1755,6 +2618,79 @@ mod tests {
         assert_eq!([stored(&[(2, 2), (1, 1), (1, 1)], &[]), stored(&[(2, 2), (1, 1), (1, 1)], &adobe(0))], [bright, colours]);
     }
 
+    /// A hierarchical lossless JPEG per the standard, `size` pixels in `planes` (sampling
+    /// factors) of `depth` bits: a first frame of `sample`'s planes, half as wide or high where
+    /// `expand` says, with predictor `rule`; then a differential frame of what turns those, doubled
+    /// as the standard doubles them, into `sample`'s, with point transform `shift`, restarting
+    /// every `rows` MCU rows. Returns the file, and what it decodes to: each plane's samples in
+    /// rows.
+    #[cfg(feature = "rare-jpeg")]
+    fn hierarchical(
+        size: (usize, usize),
+        depth: u32,
+        planes: &[(usize, usize)],
+        sample: &dyn Fn(usize, usize, usize) -> u16,
+        expand: (bool, bool),
+        (rule, shift, rows): (u8, u32, usize),
+    ) -> (Vec<u8>, Vec<Vec<u16>>) {
+        let most = (planes.iter().map(|plane| plane.0).max().unwrap(), planes.iter().map(|plane| plane.1).max().unwrap());
+        let small = (if expand.0 { size.0.div_ceil(2) } else { size.0 }, if expand.1 { size.1.div_ceil(2) } else { size.1 });
+        let sides = |n: usize, (width, height): (usize, usize)| ((width * planes[n].0).div_ceil(most.0), (height * planes[n].1).div_ceil(most.1));
+        // The first frame takes every other sample where halved.
+        let low = |n: usize, x: usize, y: usize| sample(n, (x << expand.0 as usize).min(sides(n, size).0 - 1), (y << expand.1 as usize).min(sides(n, size).1 - 1));
+        // Doubled, each new sample is the mean of those either side, rounded down: across, then
+        // down. Past the edge, the last sample repeats.
+        let across = |n: usize, x: usize, y: usize| match expand.0 {
+            false => low(n, x, y) as u32,
+            true => (low(n, x / 2, y) as u32 + low(n, (x / 2 + x % 2).min(sides(n, small).0 - 1), y) as u32) / 2,
+        };
+        let doubled = move |n: usize, x: usize, y: usize| match expand.1 {
+            false => across(n, x, y) as u16,
+            true => ((across(n, x, y / 2) + across(n, x, (y / 2 + y % 2).min(sides(n, small).1 - 1))) / 2) as u16,
+        };
+        let difference = |n: usize, x: usize, y: usize| sample(n, x, y).wrapping_sub(doubled(n, x, y));
+        let part = |kind: u8, body: &[u8]| [&[0xFF, kind][..], &(body.len() as u16 + 2).to_be_bytes(), body].concat();
+        let listed: Vec<u8> = planes.iter().enumerate().flat_map(|(n, plane)| [n as u8 + 1, (plane.0 << 4 | plane.1) as u8, 0]).collect();
+        let whole = [&[depth as u8, (size.1 >> 8) as u8, size.1 as u8, (size.0 >> 8) as u8, size.0 as u8, planes.len() as u8][..], &listed].concat();
+        let adobe = [&[0xFF, 0xEE, 0, 14][..], b"Adobe\0d\0\0\0\0\0"].concat();
+        let first = lossless_frame(0xC3, small, depth, planes, low, (rule, 0, 0));
+        let then = lossless_frame(0xC7, size, depth, planes, difference, (0, shift, rows));
+        let file = [&[0xFF, 0xD8][..], &adobe, &part(0xDE, &whole), &first, &part(0xDF, &[(expand.0 as u8) << 4 | expand.1 as u8]), &then, &[0xFF, 0xD9]].concat();
+        // What is dropped of each difference is missing from the image.
+        let made = |n: usize| {
+            let width = sides(n, size).0;
+            (0..width * sides(n, size).1).map(|at| doubled(n, at % width, at / width).wrapping_add(difference(n, at % width, at / width) >> shift << shift)).collect()
+        };
+        (file, (0..planes.len()).map(made).collect())
+    }
+
+    #[test]
+    #[cfg(feature = "rare-jpeg")]
+    fn hierarchical_pictures_without_loss_come_back_sample_for_sample() {
+        // Random samples at four depths: a first frame halved across, down, both or neither,
+        // then what doubles it to the image; grey, three planes of one size, and three of
+        // different sizes; with and without point transform and restarts.
+        let noise = |n: usize, x: usize, y: usize| ((n * 7919 + x * 31 + y * 17 + x * y) as u32).wrapping_mul(2_654_435_761) >> 12;
+        let layouts: [&[(usize, usize)]; 4] = [&[(1, 1)], &[(1, 1); 3], &[(2, 2), (1, 1), (1, 1)], &[(1, 2), (2, 1), (1, 1)]];
+        let expands = [(true, true), (true, false), (false, true), (false, false)];
+        for (depth, (turn, expand)) in [2, 8, 12, 16].into_iter().flat_map(|depth| expands.into_iter().enumerate().map(move |each| (depth, each))) {
+            let (planes, size, rule) = (layouts[(depth as usize + turn) % 4], (5 + turn * 3 + depth as usize % 5, 11 - turn), (turn + depth as usize) as u8 % 7 + 1);
+            let (shift, rows) = ((turn as u32 * depth / 4).min(depth - 1), (depth as usize + turn) % 3);
+            let sample = |n: usize, x: usize, y: usize| (noise(n, x, y) & ((1 << depth) - 1)) as u16;
+            let (file, made) = hierarchical(size, depth, planes, &sample, expand, (rule, shift, rows));
+            let most = (planes.iter().map(|plane| plane.0).max().unwrap(), planes.iter().map(|plane| plane.1).max().unwrap());
+            // Each pixel has the sample of every plane covering it; a level beyond the depth
+            // (where dropped bits pushed it past an end) is clamped.
+            let level = |n: usize, x: usize, y: usize| {
+                let n = n.min(planes.len() - 1);
+                let made = made[n][y * planes[n].1 / most.1 * (size.0 * planes[n].0).div_ceil(most.0) + x * planes[n].0 / most.0];
+                shown(depth)[if depth == 16 { made as usize } else { (made as i16).clamp(0, (1 << depth) - 1) as usize }] as u32
+            };
+            let wanted: Vec<u32> = (0..size.0 * size.1).map(|at| (at % size.0, at / size.0)).map(|(x, y)| 0xff00_0000 | level(0, x, y) << 16 | level(1, x, y) << 8 | level(2, x, y)).collect();
+            assert_eq!(decode(&file), Some((size.0, wanted)), "{depth} bits, doubled {expand:?}, {shift} bits left out, afresh every {rows} rows, {} planes", planes.len());
+        }
+    }
+
     #[test]
     fn guesses_are_sorted_as_the_file_says() {
         // The image sets its conditioning. Decoded as if it hadn't, it is another image, or
@@ -1763,14 +2699,15 @@ mod tests {
         let silent = [&ARITHMETIC[..said], &ARITHMETIC[said + 2 + ARITHMETIC[said + 3] as usize..]].concat();
         assert!(decode(ARITHMETIC).is_some() && decode(&silent) != decode(ARITHMETIC));
         // Bounds in order with an edge; bounds out of order; a nonexistent table; half a pair.
-        let sorting = |body: &[u8]| Jpeg::new().sorting(body);
+        let sorting = |body: &[u8]| Jpeg::new(0).sorting(body);
         assert_eq!([sorting(&[0x00, 0x31, 0x13, 9]), sorting(&[0x00, 0x13]), sorting(&[0x24, 5]), sorting(&[0x00])], [Some(()), None, None, None]);
     }
 
     #[test]
     fn a_damaged_file_gives_nothing_or_some_picture() {
         let sound = |read: Option<(usize, Vec<u32>)>| read.is_none_or(|(width, pixels)| width > 0 && !pixels.is_empty() && pixels.len() % width == 0);
-        for (jpeg, at) in PICTURES.into_iter().flat_map(|(_, jpeg, _)| (0..jpeg.len()).step_by(17).map(move |at| (jpeg, at))) {
+        let every = PICTURES.into_iter().map(|(_, jpeg, _)| jpeg).chain(BY_THE_REFERENCE.into_iter().map(|(_, jpeg, ..)| jpeg));
+        for (jpeg, at) in every.flat_map(|jpeg| (0..jpeg.len()).step_by(17).map(move |at| (jpeg, at))) {
             // Truncated there; then whole, with a bit flipped there; then with a marker byte
             // there.
             assert!(sound(decode(&jpeg[..at])));
@@ -1792,10 +2729,10 @@ mod tests {
         assert_eq!(decode(include_bytes!("../tests/pictures/plain.png")), None);
         let part = |jpeg: &[u8], kind: u8| jpeg.windows(2).position(|pair| pair == [0xFF, kind]).expect("has such a part");
         let changed = |jpeg: &[u8], at: usize, to: u8| decode(&[&jpeg[..at], &[to], &jpeg[at + 1..]].concat());
-        // Hierarchical (0xC5 to 0xC7, and 0xCD to 0xCF arithmetic coded), or lossless
-        // arithmetic coded (0xCB).
+        // Differential frames (0xC5 to 0xC7, and 0xCD to 0xCF arithmetic coded) outside a
+        // hierarchical image, and the reserved kind.
         let frame = part(PLAIN, 0xC0);
-        for kind in [0xC5, 0xC6, 0xC7, 0xCB, 0xCD, 0xCE, 0xCF] {
+        for kind in [0xC5, 0xC6, 0xC7, 0xC8, 0xCD, 0xCE, 0xCF] {
             assert_eq!(changed(PLAIN, frame + 1, kind), None, "kind {kind:#x}");
         }
         // A depth DCT doesn't come in, and depths no sample has.
@@ -1807,9 +2744,41 @@ mod tests {
         assert_eq!([changed(EXACT, pass + 11, 0), changed(EXACT, pass + 11, 8), changed(EXACT, pass + 13, 8), changed(EXACT, afresh + 5, 119)], [None, None, None, None]);
         // A 65535 by 65535 size, which a file this small could never hold: refused when read,
         // before anything is allocated.
-        let told = |size: [u8; 4]| Jpeg::new().frame(&[&[8], &size[..], &PLAIN[frame + 9..frame + 19]].concat(), 0xC0, PLAIN.len());
+        let told = |size: [u8; 4]| Jpeg::new(PLAIN.len()).frame(&[&[8], &size[..], &PLAIN[frame + 9..frame + 19]].concat(), 0xC0);
         assert_eq!((told([0, 45, 0, 67]), told([0xFF; 4])), (Some(()), None));
         assert_eq!(decode(&[&PLAIN[..frame + 5], &[0xFF; 4], &PLAIN[frame + 9..]].concat()), None);
+    }
+
+    #[test]
+    #[cfg(not(feature = "rare-jpeg"))]
+    fn the_rarest_kinds_are_read_only_with_their_feature() {
+        assert!(BY_THE_REFERENCE.iter().all(|(_, jpeg, ..)| decode(jpeg).is_none()));
+    }
+
+    #[test]
+    #[cfg(feature = "rare-jpeg")]
+    fn a_hierarchical_picture_that_contradicts_itself_gives_nothing() {
+        let (file, _) = hierarchical((9, 5), 8, &[(1, 1)], &|_, x, y| (x * y) as u16, (true, true), (1, 0, 0));
+        assert!(decode(&file).is_some());
+        let part = |kind: u8| file.windows(2).position(|pair| pair == [0xFF, kind]).expect("has such a part");
+        let changed = |at: usize, to: u8| decode(&[&file[..at], &[to], &file[at + 1..]].concat());
+        let (whole, first, then, expand) = (part(0xDE), part(0xC3), part(0xC7), part(0xDF));
+        // A frame wider than the image; the differential frame first; a plane the image lacks;
+        // the second frame not differential; a frame at another depth; doubling by more than
+        // two.
+        let wrongs = [changed(first + 8, 10), changed(first + 1, 0xC7), changed(first + 10, 9), changed(then + 1, 0xC3), changed(then + 4, 12), changed(expand + 4, 0x21)];
+        assert_eq!(wrongs, [None, None, None, None, None, None]);
+        // A second DHP segment; and one after the first frame.
+        let dhp = &file[whole..whole + 13];
+        assert_eq!(decode(&[&file[..first], dhp, &file[first..]].concat()), None);
+        assert_eq!(decode(&[&file[..whole], &file[whole + 13..expand], dhp, &file[expand..]].concat()), None);
+        // Each frame takes its blocks' bits from the room the file has: two frames of 64 by 64
+        // samples need at least 1024 bytes, though each alone fits in 600. The second is refused
+        // before anything is allocated for it.
+        let (grey, mut read) = ([8, 0, 64, 0, 64, 1, 1, 0x11, 0], Jpeg::new(600));
+        assert_eq!([read.hierarchy(&grey), read.frame(&grey, 0xCB)], [Some(()), Some(())]);
+        read.planes[0].brought[0] = Some(0);
+        assert_eq!(read.frame(&grey, 0xCF), None);
     }
 
     /// A `width` by `height` test image: gradients across and down, rings, sharp edges and a
@@ -1841,17 +2810,43 @@ mod tests {
         (100, include_bytes!("../tests/pictures/written-100.jpg")),
     ];
 
+    /// The same image written progressive by libjpeg (`cjpeg -progressive`), at three
+    /// qualities.
+    const PROGRESSIVE_BY_LIBJPEG: [(u8, &[u8]); 3] = [
+        (20, include_bytes!("../tests/pictures/written-progressive-20.jpg")),
+        (75, include_bytes!("../tests/pictures/written-progressive-75.jpg")),
+        (95, include_bytes!("../tests/pictures/written-progressive-95.jpg")),
+    ];
+
+    /// The same at quality 75 with `P3`'s ICC profile (`cjpeg -progressive -icc`).
+    const WITH_PROFILE_BY_LIBJPEG: &[u8] = include_bytes!("../tests/pictures/written-profile.jpg");
+
+    /// A Display P3 photo: its ICC profile is `profile`'s.
+    const P3: &[u8] = include_bytes!("../tests/pictures/p3.jpg");
+
+    /// The ICC profile in a JPEG, from its APP2 segments (in order, as these tests' files have
+    /// them).
+    fn profile(jpeg: &[u8]) -> Vec<u8> {
+        let mut rest = &jpeg[2..];
+        let mut profile = Vec::new();
+        while let Some((kind, body, after)) = part(rest).filter(|(kind, ..)| *kind != 0xDA) {
+            profile.extend(body.strip_prefix(b"ICC_PROFILE\0").map_or(&[][..], |piece| &piece[2..]).iter().filter(|_| kind == 0xE2));
+            rest = after;
+        }
+        profile
+    }
+
     /// The system's libjpeg-turbo tools: `cjpeg` encodes an image (as PPM) as `encode` would,
-    /// chroma halved below quality 90; `djpeg` decodes. Each returns its output, or `None` if
-    /// it refused.
-    fn by_libjpeg(width: usize, pixels: &[u32], quality: u8) -> Option<Vec<u8>> {
+    /// chroma halved below quality 90, as `how` says (`-baseline`, `-progressive`, `-icc`);
+    /// `djpeg` decodes. Each returns its output, or `None` if it refused.
+    fn by_libjpeg(width: usize, pixels: &[u32], quality: u8, how: &[&str]) -> Option<Vec<u8>> {
         use std::process::{Command, Stdio};
         let work = std::env::temp_dir().join(format!("taut-written-{}-{width}-{quality}", std::process::id()));
         let picture = [format!("P6 {width} {} 255\n", pixels.len() / width).as_bytes(), &pixels.iter().flat_map(|pixel| [16, 8, 0].map(|shift| (pixel >> shift) as u8)).collect::<Vec<u8>>()].concat();
         std::fs::write(work.with_extension("ppm"), picture).ok()?;
         let sampled = if quality < 90 { "2x2" } else { "1x1" };
         let quality = quality.to_string();
-        let mut written = Command::new("cjpeg").args(["-baseline", "-quality", &quality, "-sample", sampled]).arg(work.with_extension("ppm")).stderr(Stdio::null()).output().ok()?;
+        let mut written = Command::new("cjpeg").args(how).args(["-quality", &quality, "-sample", sampled]).arg(work.with_extension("ppm")).stderr(Stdio::null()).output().ok()?;
         let _ = std::fs::remove_file(work.with_extension("ppm"));
         written.status.success().then(|| std::mem::take(&mut written.stdout))
     }
@@ -1868,25 +2863,35 @@ mod tests {
         Some(read[start..].as_chunks::<3>().0.iter().map(|rgb| 0xff00_0000 | (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32).collect())
     }
 
-    /// Regenerates `BY_LIBJPEG`, then compares `encode` with libjpeg-turbo for images of many
-    /// sizes at many qualities: its files must be libjpeg's byte for byte, and `djpeg`'s
-    /// decoding of them must equal `decode`'s. (`cargo test --lib jpeg -- --ignored`, with
-    /// libjpeg-turbo's `cjpeg` and `djpeg` installed.)
+    /// Regenerates `BY_LIBJPEG`, `PROGRESSIVE_BY_LIBJPEG` and `WITH_PROFILE_BY_LIBJPEG`, then
+    /// compares `Encoder` with libjpeg-turbo for images of many sizes at many qualities,
+    /// baseline and progressive: its files must be libjpeg's byte for byte, and `djpeg`'s
+    /// decoding of them must equal `decode`'s. Then asks exiv2 and vips for a file's metadata.
+    /// (`cargo test --lib jpeg -- --ignored`, with libjpeg-turbo's `cjpeg` and `djpeg`, exiv2
+    /// and vips installed.)
     #[test]
-    #[ignore = "needs libjpeg-turbo's tools, and writes the files the other tests read"]
+    #[ignore = "needs libjpeg-turbo's tools, exiv2 and vips, and writes the files the other tests read"]
     fn the_written_pictures_are_made_afresh() {
-        let pictures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("pictures");
+        let (pictures, written) = (std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("pictures"), photo(WRITTEN[0], WRITTEN[1]));
         for (quality, _) in BY_LIBJPEG {
-            let written = by_libjpeg(WRITTEN[0], &photo(WRITTEN[0], WRITTEN[1]), quality).expect("cjpeg writes the picture");
-            std::fs::write(pictures.join(format!("written-{quality}.jpg")), written).unwrap();
+            std::fs::write(pictures.join(format!("written-{quality}.jpg")), by_libjpeg(WRITTEN[0], &written, quality, &["-baseline"]).unwrap()).unwrap();
         }
-        let sizes = [[1, 1], [1, 17], [23, 1], [8, 8], [16, 16], [17, 15], [31, 33], [64, 48], [100, 7], [7, 100]];
-        for ([width, height], quality) in sizes.into_iter().flat_map(|size| [1, 5, 25, 40, 60, 85, 89, 90, 95, 99, 100].map(|quality| (size, quality))) {
-            let pixels = photo(width, height);
-            let ours = encode(width, &pixels, quality).unwrap();
-            assert!(by_libjpeg(width, &pixels, quality).is_some_and(|theirs| theirs == ours), "{width} by {height} at {quality}: not libjpeg's file");
-            assert_eq!(read_by_libjpeg(&ours), decode(&ours).map(|(_, read)| read), "{width} by {height} at {quality}: read otherwise");
+        for (quality, _) in PROGRESSIVE_BY_LIBJPEG {
+            std::fs::write(pictures.join(format!("written-progressive-{quality}.jpg")), by_libjpeg(WRITTEN[0], &written, quality, &["-progressive"]).unwrap()).unwrap();
         }
+        let icc = std::env::temp_dir().join(format!("taut-written-{}.icc", std::process::id()));
+        std::fs::write(&icc, profile(P3)).unwrap();
+        std::fs::write(pictures.join("written-profile.jpg"), by_libjpeg(WRITTEN[0], &written, 75, &["-progressive", "-icc", icc.to_str().unwrap()]).unwrap()).unwrap();
+        std::fs::remove_file(icc).unwrap();
+        let sizes = [[1, 1], [1, 17], [23, 1], [8, 8], [16, 16], [17, 15], [31, 33], [64, 48], [100, 7], [7, 100], [203, 151]];
+        let every = sizes.into_iter().flat_map(|size| [1, 5, 25, 40, 60, 85, 89, 90, 95, 99, 100].map(|quality| (size, quality)));
+        for (([width, height], quality), progressive) in every.flat_map(|each| [(each, false), (each, true)]) {
+            let (pixels, how) = (photo(width, height), if progressive { "-progressive" } else { "-baseline" });
+            let ours = if progressive { Encoder::new(quality).progressive().encode(width, &pixels) } else { encode(width, &pixels, quality) }.unwrap();
+            assert!(by_libjpeg(width, &pixels, quality, &[how]).is_some_and(|theirs| theirs == ours), "{width} by {height} at {quality}, {how}: not libjpeg's file");
+            assert_eq!(read_by_libjpeg(&ours), decode(&ours).map(|(_, read)| read), "{width} by {height} at {quality}, {how}: read otherwise");
+        }
+        metadata_is_found_by_exiv2_and_vips();
     }
 
     #[test]
@@ -1895,6 +2900,12 @@ mod tests {
         for (quality, file) in BY_LIBJPEG {
             assert!(encode(WRITTEN[0], &pixels, quality).is_some_and(|written| written == file), "quality {quality}");
         }
+        for (quality, file) in PROGRESSIVE_BY_LIBJPEG {
+            assert!(Encoder::new(quality).progressive().encode(WRITTEN[0], &pixels).is_some_and(|written| written == file), "progressive, quality {quality}");
+        }
+        // An ICC profile goes after JFIF, in APP2 segments.
+        let profile = profile(P3);
+        assert!(Encoder::new(75).progressive().icc_profile(&profile).encode(WRITTEN[0], &pixels).is_some_and(|written| written == WITH_PROFILE_BY_LIBJPEG));
         // Alpha is ignored; a quality past either end is clamped.
         let clear: Vec<u32> = pixels.iter().map(|pixel| pixel & 0xff_ffff).collect();
         assert!(encode(WRITTEN[0], &clear, 75).is_some_and(|written| written == BY_LIBJPEG[3].1));
@@ -1928,5 +2939,79 @@ mod tests {
         assert_eq!([encode(0, &[1, 2], 75), encode(3, &[], 75), encode(3, &[1, 2], 75)], [None, None, None]);
         assert!(encode(0xFFFF, &vec![0; 0xFFFF], 75).is_some() && encode(1, &vec![0; 0xFFFF], 75).is_some());
         assert_eq!([encode(0x1_0000, &vec![0; 0x1_0000], 75), encode(1, &vec![0; 0x1_0000], 75)], [None, None]);
+        // Progressive too.
+        let progressive = |width: usize, height: usize| Encoder::new(75).progressive().encode(width, &vec![0; width * height]);
+        assert!(progressive(0xFFFF, 1).is_some() && progressive(1, 0xFFFF).is_some() && progressive(0x1_0000, 1).is_none());
+    }
+
+    #[test]
+    fn a_progressive_picture_is_read_back_as_its_baseline_twin() {
+        // The same coefficients, sent in other scans: decoded alike, pixel for pixel. A few
+        // percent smaller. (From quality 25: below, progressive keeps quantizers past 255, as
+        // libjpeg does, where baseline stops at 255.)
+        for ([width, height], quality) in [[1, 1], [9, 1], [1, 9], [17, 17], [40, 23], [203, 151]].into_iter().flat_map(|size| [25, 50, 89, 90, 100].map(|quality| (size, quality))) {
+            let pixels = photo(width, height);
+            let (baseline, progressive) = (encode(width, &pixels, quality).unwrap(), Encoder::new(quality).progressive().encode(width, &pixels).unwrap());
+            assert_eq!(decode(&progressive), decode(&baseline), "{width} by {height} at {quality}");
+            assert!(width < 100 || progressive.len() < baseline.len(), "{width} by {height} at {quality}: {} bytes progressive, {} baseline", progressive.len(), baseline.len());
+        }
+    }
+
+    /// The APP segments of a JPEG up to its first frame: each marker and payload.
+    fn notes(jpeg: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        let mut rest = &jpeg[2..];
+        let mut notes = Vec::new();
+        while let Some((kind, body, after)) = part(rest).filter(|(kind, ..)| (0xE0..=0xEF).contains(kind)) {
+            (notes, rest) = ([notes, vec![(kind, body.to_vec())]].concat(), after);
+        }
+        notes
+    }
+
+    #[test]
+    fn metadata_is_written_where_readers_look_for_it() {
+        let (pixels, width) = (photo(WRITTEN[0], WRITTEN[1]), WRITTEN[0]);
+        let plain = encode(width, &pixels, 75).unwrap();
+        // EXIF orientation: `decode` turns the picture as a note put in by hand turns it, each
+        // of eight ways.
+        for turn in 1..=8 {
+            let written = Encoder::new(75).orientation(turn).encode(width, &pixels).unwrap();
+            assert_eq!(decode(&written), decode(&noted(&plain, turn as u16, false)), "turned {turn}");
+        }
+        // JFIF first, then EXIF, XMP and the profile, each as given.
+        let (packet, profile) = ("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>", profile(P3));
+        let written = Encoder::new(75).orientation(6).xmp(packet).icc_profile(&profile).encode(width, &pixels).unwrap();
+        let kinds: Vec<u8> = notes(&written).iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(kinds, [0xE0, 0xE1, 0xE1, 0xE2]);
+        assert_eq!(notes(&written)[2].1, [&b"http://ns.adobe.com/xap/1.0/\0"[..], packet.as_bytes()].concat());
+        assert_eq!(crate::exif_orientation::turn(&notes(&written)[1].1), Some(6));
+        assert_eq!(self::profile(&written), profile);
+        // The image itself is the same as without them.
+        assert_eq!(written[written.len() - plain.len() + 20..], plain[20..]);
+        // A profile too long for 255 segments is split no further: `None`. As is an orientation
+        // that isn't one, and XMP longer than a segment holds.
+        let (long, longer) = (vec![0; 255 * 65519], vec![0; 255 * 65519 + 1]);
+        assert!(Encoder::new(75).icc_profile(&long).encode(1, &[0]).is_some_and(|written| notes(&written).len() == 256));
+        assert_eq!(Encoder::new(75).icc_profile(&longer).encode(1, &[0]), None);
+        assert_eq!([Encoder::new(75).orientation(0).encode(1, &[0]), Encoder::new(75).orientation(9).encode(1, &[0])], [None, None]);
+        let (most, more) = ("x".repeat(65504), "x".repeat(65505));
+        assert_eq!([Encoder::new(75).xmp(&most).encode(1, &[0]).is_some(), Encoder::new(75).xmp(&more).encode(1, &[0]).is_some()], [true, false]);
+    }
+
+    /// Writes a JPEG with all of its metadata, and asks exiv2 and vips what they find in it.
+    fn metadata_is_found_by_exiv2_and_vips() {
+        use std::process::Command;
+        let (packet, profile) = (
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:dc=\"http://purl.org/dc/elements/1.1/\" dc:format=\"image/jpeg\"/></rdf:RDF></x:xmpmeta>",
+            profile(P3),
+        );
+        let pixels = photo(WRITTEN[0], WRITTEN[1]);
+        let file = std::env::temp_dir().join(format!("taut-noted-{}.jpg", std::process::id()));
+        std::fs::write(&file, Encoder::new(75).progressive().orientation(6).xmp(packet).icc_profile(&profile).encode(WRITTEN[0], &pixels).unwrap()).unwrap();
+        let said = |program: &str, arguments: &[&str]| String::from_utf8(Command::new(program).args(arguments).arg(&file).output().unwrap().stdout).unwrap();
+        assert_eq!(said("exiv2", &["-Pv", "-K", "Exif.Image.Orientation"]).trim(), "6");
+        assert_eq!(said("exiv2", &["-Pv", "-K", "Xmp.dc.format"]).trim(), "image/jpeg");
+        assert_eq!(said("vipsheader", &["-f", "orientation"]).trim(), "6");
+        assert!(said("vipsheader", &["-a"]).contains(&format!("icc-profile-data: {} bytes", profile.len())));
+        std::fs::remove_file(file).unwrap();
     }
 }

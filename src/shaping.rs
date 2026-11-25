@@ -216,6 +216,12 @@ fn anywhere(table: Bytes, name: &[u8; 4]) -> Option<Vec<u16>> {
     Some(found)
 }
 
+/// Whether a font's `GPOS` has a feature, under any script: `vhal` (fullwidth punctuation set
+/// half width in vertical text) for trimming the space between such punctuation.
+pub(crate) fn positions_with(font: &FontFile, name: &[u8; 4]) -> bool {
+    anywhere(font.table(b"GPOS"), name).is_some_and(|found| !found.is_empty())
+}
+
 /// The `GPOS` features, all in one stage: as HarfBuzz looks every feature it applies up in
 /// both tables, a font's contextual positioning under `calt` (a hyphen raised between capitals)
 /// counts too.
@@ -359,6 +365,15 @@ impl Plan {
         swaps[1] = merged(swaps[1].iter().copied().chain(found).collect());
         let moves = steps(moving, asked, &DOWNWARD_MOVES);
         Plan { swaps, moves, kerned: true, leftward: false, joins: false, downward: true, upright_forms: forms.is_none(), stretch: false, ..plan }.digested(font)
+    }
+
+    /// The plan with one more feature's lookups applied after the rest, under whichever script
+    /// the font lists it: a width form (`hwid`, `twid`, `qwid`) for text set across a vertical
+    /// column.
+    pub fn with_feature(mut self, font: &FontFile, name: &[u8; 4]) -> Plan {
+        let found = anywhere(font.table(b"GSUB"), name).unwrap_or_default();
+        self.swaps.push(found.into_iter().map(|lookup| Step { lookup, mask: ALL, joiners: true, non_joiners: true, syllable: false }).collect());
+        self.digested(font)
     }
 
     /// The lookups alone, without composition: for emoji, which need none.

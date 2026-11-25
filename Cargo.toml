@@ -29,6 +29,9 @@ brahmic = []
 # beyond pairs; and the system's text in the language's forms. Without it, app fonts draw glyph
 # by glyph, kerned by pairs, and the system's text in its default forms.
 shaping = []
+# Readings (ruby) over rich text and beside vertical text (`Span::ruby`), and pieces set across
+# one em in vertical text (`Span::upright`). Without them, rich text carries no code for them.
+ruby = []
 # Touch, pen and touchpad-pinch gestures (Windows, X11 via XInput 2, Wayland). Without it, a
 # finger is the system's mouse.
 touch = []
@@ -48,6 +51,10 @@ hinting = []
 # Colour profiles and PNG gamma/chromaticities converted to the screen's colours. Without it,
 # pictures are shown as if sRGB.
 color-profiles = []
+# JPEG's rarest processes, which only the ISO reference codec writes: hierarchical (a small
+# image, then frames that add to it) and lossless arithmetic coded. Without them,
+# `jpeg::decode` gives `None` for such files.
+rare-jpeg = []
 # WOFF2 fonts, with a Brotli decoder. Without it, `FontFile::read` rejects them.
 woff2 = []
 # The built-in words (menus, file dialog, calendar, bars) in German, Spanish, French, Japanese,
@@ -55,21 +62,20 @@ woff2 = []
 # the app sets its own.
 translations = []
 # Windows shown by the GPU (Direct3D, Vulkan or OpenGL on Windows; OpenGL or Vulkan under X11;
-# Vulkan dmabufs under Wayland; Metal on macOS), loaded at run time; the CPU still draws every
-# pixel. Without it,
-# the CPU shows them too (`Renderer`).
+# Vulkan dmabufs under Wayland; Metal on macOS and iOS; Vulkan or OpenGL ES on Android), loaded
+# at run time; the CPU still draws every pixel. Without it, the CPU shows them too (`Renderer`).
 gpu = []
 # Windows drawn by the GPU too, where it is faster: boxes, borders, shadows, text, pictures,
-# gradients, shapes and strokes (Direct3D 11 and 12, Vulkan, OpenGL and Metal). Within a few levels of
-# 255 of the CPU at edges. Without it, the CPU draws every pixel.
+# gradients, shapes and strokes (Direct3D 11 and 12, Vulkan, OpenGL, OpenGL ES and Metal). Within
+# a few levels of 255 of the CPU at edges. Without it, the CPU draws every pixel.
 gpu-draw = ["gpu"]
 # Video and sound files played by the system's player (Media Foundation, GStreamer,
 # AVFoundation, the NDK's media codecs, a browser's `<video>`), loaded at run time: `Video`,
 # `ui.video`. Without it, none of that code.
 video = []
 # Colours and pictures brighter than SDR white (`El::brightness`, `Ui::add_hdr_picture`, PQ and
-# HLG PNGs), shown so on HDR screens: Direct3D 11 and 12 present them in scRGB. Without it, they
-# show at SDR white.
+# HLG PNGs, Ultra HDR JPEGs), shown so on HDR screens: scRGB on Windows (Direct3D, Vulkan,
+# OpenGL), PQ under Wayland, EDR on macOS. Without it, they show at SDR white.
 hdr = ["gpu"]
 
 # None.
@@ -91,6 +97,11 @@ harness = false
 name = "android"
 harness = false
 
+# The GPU on an Android emulator, driven from here: the library's checks there, the gallery.
+[[test]]
+name = "android_gpu"
+harness = false
+
 # Videos on a Mac and in the iOS simulator: AVFoundation plays only while the main thread's run
 # loop turns.
 [[test]]
@@ -103,6 +114,12 @@ required-features = ["video"]
 name = "video_web"
 harness = false
 required-features = ["video"]
+
+# The system's parts on the web: this file is also the page's program, built for
+# wasm32-unknown-unknown.
+[[test]]
+name = "web_system"
+harness = false
 
 # Videos on an Android emulator: the library's video tests, run there through adb.
 [[test]]

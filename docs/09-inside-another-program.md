@@ -111,9 +111,9 @@ objects, then draw it over each frame with one call:
 | Direct3D 9, 9Ex | `layer_d3d9::Layer::new(device)` | `layer.draw(&mut ui)`, in the scene |
 | Direct3D 11 | `layer_d3d11::Layer::new(device, context)` | `layer.draw(&mut ui)` |
 | Direct3D 12 | `layer_d3d12::Layer::new(device, queue, format)` | `layer.draw(&mut ui, list, area)` |
-| OpenGL 3.3+ | `layer_opengl::Layer::new(&mut find)` | `layer.draw(&mut ui)` |
+| OpenGL 3.3+, OpenGL ES 3.0+ | `layer_opengl::Layer::new(&mut find)` | `layer.draw(&mut ui)` |
 | Vulkan 1.0+ | `layer_vulkan::Layer::new(&handles)` | `layer.draw(&mut ui, commands, area)`, in the render pass |
-| Metal (macOS) | `layer_metal::Layer::new(device, queue, format)` | `layer.draw(&mut ui, encoder, area)`, in the render pass |
+| Metal (macOS, iOS) | `layer_metal::Layer::new(device, queue, format)` | `layer.draw(&mut ui, encoder, area)`, in the render pass |
 
 ```rust,ignore
 // Direct3D 11: the program's ID3D11Device and ID3D11DeviceContext, as raw pointers.

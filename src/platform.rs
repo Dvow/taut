@@ -90,12 +90,15 @@ impl Default for Window<'_> {
 /// | Linux (X11) | OpenGL (EGL), Vulkan | X11 images |
 /// | Linux (Wayland) | Vulkan (dmabufs), never for `Auto` | shared memory |
 /// | macOS | Metal | Core Animation |
+/// | iOS | Metal | Core Animation |
+/// | Android | Vulkan, OpenGL ES (EGL) | the window's buffer |
 ///
 /// A path that is missing falls back along that order, then to the CPU. The GPU paths need the
 /// feature `gpu`; without it the CPU shows every window, and none of their code is compiled in.
 /// They present whole frames in step with the screen, and upload only what changed. The device
-/// is made on a thread of its own: the CPU shows the first frames. A window opens cloaked until
-/// its first frame. See-through windows ([`Window::transparent`]) stay on the CPU.
+/// is made on a thread of its own: the CPU shows the first frames (on Android it is made as the
+/// window first shows). A window opens cloaked until its first frame. See-through windows
+/// ([`Window::transparent`]) stay on the CPU.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Renderer {
@@ -114,9 +117,9 @@ pub enum Renderer {
     Direct3D12,
     /// Vulkan, through the system's loader.
     Vulkan,
-    /// OpenGL: WGL on Windows, EGL on Linux.
+    /// OpenGL: WGL on Windows, EGL on Linux, OpenGL ES through EGL on Android, WebGL2 on the web.
     OpenGL,
-    /// Metal and a `CAMetalLayer` (macOS).
+    /// Metal and a `CAMetalLayer` (macOS, iOS).
     Metal,
 }
 
@@ -126,18 +129,18 @@ const BEST: [Renderer; 4] = [Renderer::Direct3D11, Renderer::Direct3D12, Rendere
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 #[allow(dead_code)] // (X11 has one path so far.)
 const BEST: [Renderer; 2] = [Renderer::OpenGL, Renderer::Vulkan];
-/// A page has none: the canvas shows the CPU's pixels.
+/// A page has WebGL2.
 #[cfg(all(target_family = "wasm", feature = "gpu"))]
-const BEST: [Renderer; 0] = [];
-#[cfg(all(target_os = "macos", feature = "gpu"))]
+const BEST: [Renderer; 1] = [Renderer::OpenGL];
+#[cfg(all(target_vendor = "apple", feature = "gpu"))]
 const BEST: [Renderer; 1] = [Renderer::Metal];
-#[cfg(all(target_os = "ios", feature = "gpu"))]
-const BEST: [Renderer; 0] = [];
+#[cfg(all(target_os = "android", feature = "gpu"))]
+const BEST: [Renderer; 2] = [Renderer::Vulkan, Renderer::OpenGL];
 
 impl Renderer {
     /// The renderer the user names in `TAUT_RENDERER` (`asked`, any case), over the app's
     /// choice.
-    #[cfg(all(feature = "gpu", not(any(target_os = "ios", target_os = "android"))))]
+    #[cfg(feature = "gpu")]
     pub(crate) fn chosen(self, asked: Option<&str>) -> Renderer {
         match asked.map(str::to_ascii_lowercase).as_deref() {
             Some("cpu") => Renderer::Cpu,
@@ -153,7 +156,7 @@ impl Renderer {
 
     /// The GPU paths a window asking for this tries, in turn: the one named, then the system's,
     /// best first. None for the CPU.
-    #[cfg(all(feature = "gpu", not(target_os = "android")))]
+    #[cfg(feature = "gpu")]
     #[cfg_attr(unix, allow(dead_code))] // (X11 has one path so far; macOS one.)
     pub(crate) fn tried(self) -> impl Iterator<Item = Renderer> {
         let named = BEST.into_iter().filter(move |path| *path == self);
@@ -161,16 +164,39 @@ impl Renderer {
     }
 }
 
+/// What the user set a setting to: its environment variable `name` (as `TAUT_RENDERER`); on
+/// Android, where an app is given none, the system property of that name in lower case, `TAUT_`
+/// made `debug.taut.` (`debug.taut.renderer`, set with `adb shell setprop`).
+#[cfg(all(unix, feature = "gpu"))]
+pub(crate) fn setting(name: &str) -> Option<String> {
+    let set = std::env::var(name).ok();
+    #[cfg(target_os = "android")]
+    let set = set.or_else(|| crate::android::property(&format!("debug.taut.{}", name.trim_start_matches("TAUT_").to_ascii_lowercase())));
+    set
+}
+
 /// Whether windows asking for `asked` ask the GPU, as `TAUT_RENDERER` says if set: nothing
 /// for the CPU, else whether any device will do (`Gpu`, or a path named) or only one that shows
 /// frames directly (`Auto`).
-#[cfg(all(unix, not(any(target_os = "ios", target_os = "android")), feature = "gpu"))]
+#[cfg(all(unix, feature = "gpu"))]
 pub(crate) fn wants_gpu(asked: Renderer) -> Option<bool> {
-    match asked.chosen(std::env::var("TAUT_RENDERER").ok().as_deref()) {
+    match asked.chosen(setting("TAUT_RENDERER").as_deref()) {
         Renderer::Cpu => None,
         Renderer::Auto => Some(false),
         _ => Some(true),
     }
+}
+
+/// How a frame of a phone's window was shown (feature `gpu`).
+#[cfg(all(feature = "gpu", any(target_os = "ios", target_os = "android")))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShownBy {
+    /// By the GPU (or nothing to show, while the GPU shows the window).
+    Gpu,
+    /// By the CPU, as before.
+    Cpu,
+    /// By the CPU from now on: all of the window is to be drawn by it again.
+    CpuAfresh,
 }
 
 impl Window<'_> {
@@ -261,6 +287,8 @@ pub(crate) fn hand_pictures_and_files() {
     crate::ios::hand_pictures_and_files();
     #[cfg(target_os = "android")]
     crate::android::hand_pictures_and_files();
+    #[cfg(target_family = "wasm")]
+    crate::web_host::hand_pictures_and_files();
 }
 
 /// Hands the windows their drop handling (files and text dragged in from other programs), on
@@ -283,13 +311,15 @@ pub(crate) fn hand_drops() {
     crate::ios_files::hand_drops();
     #[cfg(target_os = "android")]
     crate::android_drag_drop::hand_drops();
+    #[cfg(target_family = "wasm")]
+    crate::web_drag_drop::hand_drops();
 }
 
 /// Hands the windows their drag-out code, on this thread: the first time an app hands something
 /// out ([`Ui::drag_out`](crate::Ui::drag_out)). Reached no other way, so a program that never
 /// does is built without it. (On Windows OLE hands it to the system, see `ole_drag::Outward`;
 /// on X11 the windows speak XDND themselves; on macOS see `macos_drag_out`, on iOS
-/// `ios_drag_out`, on Android `android_drag_drop`.)
+/// `ios_drag_out`, on Android `android_drag_drop`, on the web `web_drag_drop`.)
 pub(crate) fn enable_drag_out() {
     #[cfg(windows)]
     crate::windows::enable_drag_out();
@@ -301,6 +331,8 @@ pub(crate) fn enable_drag_out() {
     crate::ios_drag_out::enable();
     #[cfg(target_os = "android")]
     crate::android_drag_drop::hand_drops();
+    #[cfg(target_family = "wasm")]
+    crate::web_drag_drop::enable_drag_out();
 }
 
 /// Hands the windows their way to ask for the system's file dialog, on this thread: the first
@@ -327,7 +359,8 @@ pub(crate) fn hand_file_dialog() {
 /// ([`Ui::hide_window`](crate::Ui::hide_window)), or to be the single running instance
 /// (`single_instance`). Reached no other way, so a program that never asks is built without it.
 /// (On Windows through the shell, in `shell`; on Linux through D-Bus, in `freedesktop`, and X
-/// for hotkeys; on Android notifications alone, in `android_notifications`.)
+/// for hotkeys; on Android notifications alone, in `android_notifications`; on the web
+/// notifications and one copy, in `web_desktop`.)
 pub(crate) fn hand_desktop() {
     #[cfg(windows)]
     crate::windows::hand_desktop();
@@ -341,6 +374,8 @@ pub(crate) fn hand_desktop() {
     crate::ios::hand_desktop();
     #[cfg(target_os = "android")]
     crate::android_notifications::hand_desktop();
+    #[cfg(target_family = "wasm")]
+    crate::web_desktop::hand_desktop();
 }
 
 /// Seconds since 1970, UTC, by the system's clock: what `SystemTime::now()` gives, and in a

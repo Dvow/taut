@@ -18,7 +18,8 @@ for place in surface.update(&mut ui) {
 - `ui.theme.bg = Color::NONE` makes the background transparent, for overlays.
 - `platform::system_text()` uses system fonts on any surface; on Windows, `platform::Messages`
   turns another window's messages into events.
-- Layers for Direct3D 9, 11 and 12, OpenGL 3.3+, Vulkan and Metal: made once from the program's
+- Layers for Direct3D 9, 11 and 12, OpenGL 3.3+ and OpenGL ES 3.0+, Vulkan and Metal (macOS,
+  iOS): made once from the program's
   device (`layer_d3d9`, `layer_d3d11`, `layer_d3d12`, `layer_opengl`, `layer_vulkan`,
   `layer_metal`), then
   `layer.draw(..)` each frame after the program's drawing. Each uploads only changed regions,

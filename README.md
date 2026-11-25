@@ -55,15 +55,16 @@ takes `&mut` to what it changes and returns what the user did.
   [`taut::web`](https://docs.rs/taut/latest/taut/web/)).
 - **Rust:** 1.88+. **Licence:** MIT or Apache-2.0.
 - **Features** (all off by default): `right-to-left`, `brahmic`, `shaping`, `emoji`,
-  `fallback-fonts`, `touch`, `cff`, `woff2`, `hinting`, `color-profiles`, `gpu`, `gpu-draw`,
-  `hdr`, `translations`, `video`
+  `fallback-fonts`, `touch`, `cff`, `woff2`, `hinting`, `color-profiles`, `rare-jpeg`, `gpu`,
+  `gpu-draw`, `hdr`, `ruby`, `translations`, `video`
   ([costs](docs/costs-and-speed.md#what-it-costs)).
 - **GPU or CPU:** the CPU draws every pixel; with `gpu`, the GPU shows them, byte for byte the
   same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11;
-  Vulkan (dmabufs) under Wayland, when asked; Metal on macOS
-  ([costs](docs/costs-and-speed.md#gpu-or-cpu)). With `gpu-draw`, every GPU path draws them
-  too, within a few levels. With `hdr`, colours and pictures brighter than SDR white on HDR
-  screens (Direct3D 11 and 12, Wayland).
+  Vulkan (dmabufs) under Wayland, when asked; Metal on macOS and iOS; Vulkan or OpenGL ES on
+  Android; WebGL2 on the web ([costs](docs/costs-and-speed.md#gpu-or-cpu)). With `gpu-draw`,
+  every GPU path draws them too, within a few levels. With `hdr`, colours and pictures brighter
+  than SDR white on HDR screens (every GPU path on Windows, Wayland, Metal's EDR), Ultra HDR
+  JPEGs among them.
 - **State:** 0.2. Names may change before 1.0 ([changes](CHANGELOG.md),
   [what is missing](docs/what-is-missing.md)).
 
@@ -104,9 +105,9 @@ changed ([chapter 9](docs/09-inside-another-program.md)):
 | Direct3D 9, 9Ex | `layer_d3d9` | `layer.draw(&mut ui)` |
 | Direct3D 11 | `layer_d3d11` | `layer.draw(&mut ui)` |
 | Direct3D 12 | `layer_d3d12` | `layer.draw(&mut ui, list, area)` |
-| OpenGL 3.3+ | `layer_opengl` | `layer.draw(&mut ui)` |
+| OpenGL 3.3+, OpenGL ES 3.0+ | `layer_opengl` | `layer.draw(&mut ui)` |
 | Vulkan 1.0+ | `layer_vulkan` | `layer.draw(&mut ui, commands, area)` |
-| Metal (macOS) | `layer_metal` | `layer.draw(&mut ui, encoder, area)` |
+| Metal (macOS, iOS) | `layer_metal` | `layer.draw(&mut ui, encoder, area)` |
 | wgpu, bgfx, Skia, any other | `Surface::upload` | your `write_texture` of each changed place |
 
 ## Beside other Rust libraries

@@ -111,11 +111,12 @@ pub(crate) struct Crossing {
     /// Files or text dropped on the window were taken by a box in the next run: for their
     /// source program to hear.
     took: bool,
-    /// On iOS: the boxes handing something out this run, and where; and the one the system
-    /// lifts a drag from, until the host has what it hands out (see `ios_drag_out`).
-    #[cfg(target_os = "ios")]
+    /// On iOS and the web: the boxes handing something out this run, and where; and the one the
+    /// system lifts a drag from, until the host has what it hands out (see `ios_drag_out`,
+    /// `web_drag_drop`).
+    #[cfg(any(target_os = "ios", target_family = "wasm"))]
     pub(crate) offers: Vec<(Id, crate::geom::Rect)>,
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_family = "wasm"))]
     pub(crate) lift: Id,
 }
 
@@ -125,8 +126,8 @@ impl Crossing {
     /// never taken by a host never will be (a UI whose host passes nothing on).
     pub(crate) fn settle(&mut self, down: bool) {
         (self.text, self.taken) = (None, None);
-        // (What the system lifts on iOS goes out with no button down.)
-        #[cfg(target_os = "ios")]
+        // (What the system lifts on iOS and the web goes out with no button down.)
+        #[cfg(any(target_os = "ios", target_family = "wasm"))]
         let down = down || self.lift != 0;
         if !down {
             self.held = 0;
@@ -136,9 +137,9 @@ impl Crossing {
         }
     }
 
-    /// Notes a box handing something out (iOS); if the system lifts a drag from it, its thing
-    /// goes out.
-    #[cfg(target_os = "ios")]
+    /// Notes a box handing something out (iOS, the web); if the system lifts a drag from it,
+    /// its thing goes out.
+    #[cfg(any(target_os = "ios", target_family = "wasm"))]
     fn lift_out(&mut self, from: &Response, what: DragData) {
         self.offers.push((from.id, from.rect));
         if self.lift == from.id && self.out.is_none() {
@@ -183,11 +184,11 @@ impl Ui {
             self.again = true;
             return Some(taken);
         }
-        // On iOS the system lifts a drag with a long press, not a move past the edge: the box it
-        // lifts from hands its thing out then.
-        #[cfg(target_os = "ios")]
+        // On iOS (with a long press) and the web (as the browser starts a drag) the system lifts
+        // a drag, not a move past the edge: the box it lifts from hands its thing out then.
+        #[cfg(any(target_os = "ios", target_family = "wasm"))]
         self.crossing.lift_out(from, what);
-        if cfg!(target_os = "ios") || !from.pressed {
+        if cfg!(any(target_os = "ios", target_family = "wasm")) || !from.pressed {
             return None;
         }
         let gone = self.drag_delta(from, [0.0; 4]).is_some_and(|(gone, _)| gone.x.abs().max(gone.y.abs()) > SLACK);

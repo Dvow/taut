@@ -1,6 +1,6 @@
-//! The UI over a program's own OpenGL rendering (3.3 or newer, core or compatibility profile):
-//! created once in its context, then drawn each frame with one call, after the program's own
-//! drawing.
+//! The UI over a program's own OpenGL rendering (3.3 or newer, core or compatibility profile; or
+//! OpenGL ES 3.0 or newer): created once in its context, then drawn each frame with one call,
+//! after the program's own drawing.
 //!
 //! ```ignore
 //! // SAFETY: the program's context is current, and `find` gives its functions by name.
@@ -28,7 +28,6 @@
 use crate::surface::Surface;
 use crate::ui::Ui;
 use std::ffi::{CStr, c_char, c_void};
-use std::ptr::null;
 
 /// An OpenGL error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,11 +97,13 @@ functions! {
     glDeleteVertexArrays: fn(i32, *const u32);
     glBlendFuncSeparate: fn(u32, u32, u32, u32);
     glBlendEquationSeparate: fn(u32, u32);
-    glPolygonMode: fn(u32, u32);
     glViewport: fn(i32, i32, i32, i32);
     glScissor: fn(i32, i32, i32, i32);
     glDrawArrays: fn(u32, i32, i32);
 }
+
+/// `glPolygonMode`, which OpenGL ES lacks.
+type PolygonMode = unsafe extern "system" fn(u32, u32);
 
 /// The function `name` (NUL-terminated) as `find` returns it; on Windows the OpenGL 1.1 ones
 /// from opengl32.dll, for which the driver returns nothing (or 1, 2, 3 or -1).
@@ -134,6 +135,8 @@ const TEXTURE_2D: u32 = 0x0DE1;
 const TEXTURE0: u32 = 0x84C0;
 const RGBA8: i32 = 0x8058;
 const BGRA: u32 = 0x80E1;
+const RGBA: u32 = 0x1908;
+const UNSIGNED_BYTE: u32 = 0x1401;
 const UNSIGNED_INT_8_8_8_8_REV: u32 = 0x8367;
 const PIXEL_UNPACK_BUFFER: u32 = 0x88EC;
 const UNPACK_ROW_LENGTH: u32 = 0x0CF2;
@@ -160,9 +163,18 @@ const FRAGMENT_SHADER: u32 = 0x8B30;
 /// colours).
 const SWITCHES: [(u32, bool); 6] = [(BLEND, true), (DEPTH_TEST, false), (STENCIL_TEST, false), (CULL_FACE, false), (SCISSOR_TEST, true), (FRAMEBUFFER_SRGB, false)];
 
+/// The switches `draw` sets: OpenGL ES has no sRGB framebuffer conversion to turn off.
+fn switches(embedded: bool) -> &'static [(u32, bool)] {
+    &SWITCHES[..SWITCHES.len() - usize::from(embedded)]
+}
+
+/// The shaders' first lines: OpenGL's version, or OpenGL ES's and its precision.
+const DESKTOP: &str = "#version 330 core\n";
+const EMBEDDED: &str = "#version 300 es\nprecision highp float;\n";
+
 /// The quad over the viewport, built from vertex ids (no vertex buffer), with each pixel's
 /// texture position from the top left.
-const CORNERS: &CStr = c"#version 330 core
+const CORNERS: &str = "
 uniform sampler2D picture;
 out vec2 place;
 void main() {
@@ -172,13 +184,17 @@ void main() {
 }
 ";
 
-/// Each pixel loads the texel at the same place, unfiltered: no sampler matters.
-const PIXELS: &CStr = c"#version 330 core
+/// Each pixel loads the texel at the same place, unfiltered: no sampler matters. (OpenGL ES's
+/// texture holds the pixels' bytes as they are: blue first, where red is read.)
+const PIXELS: &str = "
 uniform sampler2D picture;
 in vec2 place;
 out vec4 colour;
 void main() {
     colour = texelFetch(picture, ivec2(place), 0);
+#ifdef GL_ES
+    colour = colour.bgra;
+#endif
 }
 ";
 
@@ -186,6 +202,9 @@ void main() {
 /// the program's picture.
 pub struct Layer {
     gl: Gl,
+    /// OpenGL ES, and its `glPolygonMode` (none on OpenGL ES).
+    embedded: bool,
+    polygon_mode: Option<PolygonMode>,
     program: u32,
     /// The vertex array bound while drawing the quad: empty, but the core profile draws nothing
     /// without one.
@@ -210,19 +229,25 @@ impl Layer {
     /// A context is current on this thread, and `find` returns its functions.
     pub unsafe fn new(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Result<Layer, Error> {
         let gl = Gl::load(find)?;
+        // SAFETY: OpenGL returns its version as NUL-terminated text, or null.
+        let version = unsafe { (gl.glGetString)(0x1F02) };
+        let version = if version.is_null() { String::new() } else { unsafe { CStr::from_ptr(version) }.to_string_lossy().into_owned() };
+        let embedded = version.starts_with("OpenGL ES");
         // 0x821B, 0x821C: GL_MAJOR_VERSION, GL_MINOR_VERSION; 0x0D33: GL_MAX_TEXTURE_SIZE.
         let [major, minor, most] = read(&gl, [0x821B, 0x821C, 0x0D33]);
-        if (major, minor) < (3, 3) {
-            // SAFETY: OpenGL returns its version as NUL-terminated text, or null.
-            let version = unsafe { (gl.glGetString)(0x1F02) };
-            let said = match version.is_null() {
+        let least = if embedded { (3, 0) } else { (3, 3) };
+        if (major, minor) < least {
+            let said = match version.is_empty() {
                 true => "this OpenGL does not say its version".to_string(),
-                false => format!("version 3.3 or newer is needed, and this is {}", unsafe { CStr::from_ptr(version) }.to_string_lossy()),
+                false => format!("version 3.3 (OpenGL ES 3.0) or newer is needed, and this is {version}"),
             };
             return Err(Error { operation: "making the layer", message: said });
         }
-        let program = linked(&gl)?;
-        let mut layer = Layer { gl, program, corners: 0, texture: 0, most: most.max(0) as usize, surface: Surface::default() };
+        let program = linked(&gl, if embedded { EMBEDDED } else { DESKTOP })?;
+        let polygon_mode = found(find, "glPolygonMode\0").ok().filter(|_| !embedded);
+        // SAFETY: the function is declared as glcorearb.h declares it.
+        let polygon_mode = polygon_mode.map(|function| unsafe { std::mem::transmute::<*const c_void, PolygonMode>(function) });
+        let mut layer = Layer { gl, embedded, polygon_mode, program, corners: 0, texture: 0, most: most.max(0) as usize, surface: Surface::default() };
         let gl = &layer.gl;
         // SAFETY: the names are created here and kept. The texture has one level, complete with
         // any sampler a program binds (0x813D: GL_TEXTURE_MAX_LEVEL); unfiltered (0x2801,
@@ -255,20 +280,21 @@ impl Layer {
         // The pixel unpack state that is changed, saved to restore.
         let kept = read(gl, [0x8069, 0x88EF, UNPACK_ROW_LENGTH, UNPACK_SKIP_PIXELS, UNPACK_SKIP_ROWS, UNPACK_ALIGNMENT]);
         let unpacking = [(UNPACK_ROW_LENGTH, width as i32), (UNPACK_SKIP_PIXELS, 0), (UNPACK_SKIP_ROWS, 0), (UNPACK_ALIGNMENT, 4)];
+        // Each pixel is one `0xAARRGGBB` word, which is GL_BGRA with GL_UNSIGNED_INT_8_8_8_8_REV:
+        // the same on either byte order. OpenGL ES takes its bytes as RGBA (see `PIXELS`).
+        let (format, kind) = if self.embedded { (RGBA, UNSIGNED_BYTE) } else { (BGRA, UNSIGNED_INT_8_8_8_8_REV) };
         // SAFETY: the context is current; each box lies in the texture, which is the surface's
-        // size, so every row read lies in the surface's pixels, one surface row apart. Each
-        // pixel is one `0xAARRGGBB` word, which is GL_BGRA with GL_UNSIGNED_INT_8_8_8_8_REV:
-        // the same on either byte order.
+        // size, so every row read lies in the surface's pixels, one surface row apart.
         unsafe {
             (gl.glBindTexture)(TEXTURE_2D, self.texture);
             (gl.glBindBuffer)(PIXEL_UNPACK_BUFFER, 0);
             unpacking.into_iter().for_each(|(what, to)| (gl.glPixelStorei)(what, to));
             if (width, height) != size && width * height > 0 {
-                (gl.glTexImage2D)(TEXTURE_2D, 0, RGBA8, width as i32, height as i32, 0, BGRA, UNSIGNED_INT_8_8_8_8_REV, self.surface.pixels.as_ptr().cast());
+                (gl.glTexImage2D)(TEXTURE_2D, 0, RGBA8, width as i32, height as i32, 0, format, kind, self.surface.pixels.as_ptr().cast());
             }
             for [left, top, right, bottom] in changed.into_iter().filter(|_| (width, height) == size) {
                 let first: *const u32 = &self.surface.pixels[top * width + left];
-                (gl.glTexSubImage2D)(TEXTURE_2D, 0, left as i32, top as i32, (right - left) as i32, (bottom - top) as i32, BGRA, UNSIGNED_INT_8_8_8_8_REV, first.cast());
+                (gl.glTexSubImage2D)(TEXTURE_2D, 0, left as i32, top as i32, (right - left) as i32, (bottom - top) as i32, format, kind, first.cast());
             }
             (gl.glBindTexture)(TEXTURE_2D, kept[0] as u32);
             (gl.glBindBuffer)(PIXEL_UNPACK_BUFFER, kept[1] as u32);
@@ -290,29 +316,30 @@ impl Layer {
             return Ok(());
         }
         let (gl, width, height) = (&self.gl, self.surface.width as i32, self.surface.height as i32);
-        let kept = Kept::take(gl);
+        let kept = Kept::take(gl, self.embedded, self.polygon_mode);
         let [x, y, wide, high] = kept.viewport;
         // SAFETY: the context is current, and the names are this layer's. (OpenGL counts rows
         // from the bottom: the viewport's top is its y plus its height.)
         unsafe {
             (gl.glViewport)(x, y + high - height, width, height);
             (gl.glScissor)(x, y, wide, high);
-            SWITCHES.into_iter().for_each(|(what, on)| [gl.glDisable, gl.glEnable][on as usize](what));
+            switches(self.embedded).iter().for_each(|(what, on)| [gl.glDisable, gl.glEnable][*on as usize](*what));
             (gl.glBlendFuncSeparate)(ONE, ONE_MINUS_SRC_ALPHA, ONE, ONE_MINUS_SRC_ALPHA);
             (gl.glBlendEquationSeparate)(FUNC_ADD, FUNC_ADD);
-            (gl.glPolygonMode)(FRONT_AND_BACK, FILL);
+            self.polygon_mode.inspect(|set| set(FRONT_AND_BACK, FILL));
             (gl.glUseProgram)(self.program);
             (gl.glBindVertexArray)(self.corners);
             (gl.glActiveTexture)(TEXTURE0);
             (gl.glBindTexture)(TEXTURE_2D, self.texture);
             (gl.glDrawArrays)(TRIANGLE_STRIP, 0, 4);
         }
-        kept.put_back(gl);
+        kept.put_back(gl, self.embedded, self.polygon_mode);
         Ok(())
     }
 
     /// The texture name (`GL_TEXTURE_2D`, `GL_RGBA8`, premultiplied alpha, rows from the top),
-    /// as `update` left it.
+    /// as `update` left it. On OpenGL ES it holds the pixels' bytes as they are: blue, green,
+    /// red, alpha (read as red, green, blue, alpha).
     pub fn texture(&self) -> u32 {
         self.texture
     }
@@ -347,10 +374,10 @@ fn read<const N: usize>(gl: &Gl, names: [u32; N]) -> [i32; N] {
     values
 }
 
-/// The shaders, compiled and linked; or the compiler's log.
-fn linked(gl: &Gl) -> Result<u32, Error> {
-    let corners = compiled(gl, VERTEX_SHADER, CORNERS, "compiling the vertex shader")?;
-    let pixels = compiled(gl, FRAGMENT_SHADER, PIXELS, "compiling the fragment shader");
+/// The shaders after their first lines `head`, compiled and linked; or the compiler's log.
+fn linked(gl: &Gl, head: &str) -> Result<u32, Error> {
+    let corners = compiled(gl, VERTEX_SHADER, &format!("{head}{CORNERS}"), "compiling the vertex shader")?;
+    let pixels = compiled(gl, FRAGMENT_SHADER, &format!("{head}{PIXELS}"), "compiling the fragment shader");
     let mut done = 0;
     // SAFETY: the shaders were just created; the program is created here, and its log read into
     // a buffer of the stated length.
@@ -371,12 +398,12 @@ fn linked(gl: &Gl) -> Result<u32, Error> {
 }
 
 /// One shader, compiled; or the compiler's log.
-fn compiled(gl: &Gl, kind: u32, source: &CStr, doing: &'static str) -> Result<u32, Error> {
-    let mut done = 0;
-    // SAFETY: the source is NUL-terminated; the shader is created here.
+fn compiled(gl: &Gl, kind: u32, source: &str, doing: &'static str) -> Result<u32, Error> {
+    let (mut done, length) = (0, source.len() as i32);
+    // SAFETY: the source is `length` bytes long; the shader is created here.
     unsafe {
         let shader = (gl.glCreateShader)(kind);
-        (gl.glShaderSource)(shader, 1, &source.as_ptr(), null());
+        (gl.glShaderSource)(shader, 1, &source.as_ptr().cast(), &length);
         (gl.glCompileShader)(shader);
         (gl.glGetShaderiv)(shader, 0x8B81, &mut done);
         if done != 0 {
@@ -418,15 +445,17 @@ struct Kept {
     bound: [i32; 3],
     /// The texture of unit 0.
     texture: i32,
-    /// Polygon mode: front, and back.
+    /// Polygon mode: front, and back (none on OpenGL ES).
     polygons: [i32; 2],
 }
 
 impl Kept {
-    /// The context's current state. (Leaves texture unit 0 active.)
-    fn take(gl: &Gl) -> Kept {
+    /// The context's current state (of OpenGL ES where `embedded`; its polygon mode where it
+    /// has one). Leaves texture unit 0 active.
+    fn take(gl: &Gl, embedded: bool, polygon_mode: Option<PolygonMode>) -> Kept {
+        let mut enabled = [false; 6];
         // SAFETY: the context is current (as every caller promises).
-        let switches = SWITCHES.map(|(what, _)| unsafe { (gl.glIsEnabled)(what) } != 0);
+        enabled.iter_mut().zip(switches(embedded)).for_each(|(on, (what, _))| *on = unsafe { (gl.glIsEnabled)(*what) } != 0);
         let (mut viewport, mut scissor, mut polygons) = ([0; 4], [0; 4], [FILL as i32; 2]);
         let blending = read(gl, [0x80C9, 0x80C8, 0x80CB, 0x80CA, 0x8009, 0x883D]);
         let bound = read(gl, [0x8B8D, 0x85B5, 0x84E0]);
@@ -435,27 +464,29 @@ impl Kept {
         unsafe {
             (gl.glGetIntegerv)(0x0BA2, viewport.as_mut_ptr());
             (gl.glGetIntegerv)(0x0C10, scissor.as_mut_ptr());
-            (gl.glGetIntegerv)(0x0B40, polygons.as_mut_ptr());
+            if polygon_mode.is_some() {
+                (gl.glGetIntegerv)(0x0B40, polygons.as_mut_ptr());
+            }
             (gl.glActiveTexture)(TEXTURE0);
         }
         let [texture] = read(gl, [0x8069]);
-        Kept { switches, viewport, scissor, blending, bound, texture, polygons }
+        Kept { switches: enabled, viewport, scissor, blending, bound, texture, polygons }
     }
 
-    /// Restores the context's state.
-    fn put_back(self, gl: &Gl) {
+    /// Restores the context's state, as `take` took it.
+    fn put_back(self, gl: &Gl, embedded: bool, polygon_mode: Option<PolygonMode>) {
         let [source, destination, source_alpha, destination_alpha, colour, alpha] = self.blending.map(|number| number as u32);
         let ([x, y, wide, high], [left, bottom, width, height]) = (self.viewport, self.scissor);
         let [program, corners, unit] = self.bound.map(|number| number as u32);
         // SAFETY: the context is current; each value is one OpenGL returned. (Texture unit 0 is
         // active until the last line.)
         unsafe {
-            SWITCHES.iter().zip(self.switches).for_each(|((what, _), on)| [gl.glDisable, gl.glEnable][on as usize](*what));
+            switches(embedded).iter().zip(self.switches).for_each(|((what, _), on)| [gl.glDisable, gl.glEnable][on as usize](*what));
             (gl.glViewport)(x, y, wide, high);
             (gl.glScissor)(left, bottom, width, height);
             (gl.glBlendFuncSeparate)(source, destination, source_alpha, destination_alpha);
             (gl.glBlendEquationSeparate)(colour, alpha);
-            (gl.glPolygonMode)(FRONT_AND_BACK, self.polygons[0] as u32);
+            polygon_mode.inspect(|set| set(FRONT_AND_BACK, self.polygons[0] as u32));
             (gl.glUseProgram)(program);
             (gl.glBindVertexArray)(corners);
             (gl.glBindTexture)(TEXTURE_2D, self.texture as u32);

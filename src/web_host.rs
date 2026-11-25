@@ -11,15 +11,15 @@
 //! inside the DOM event; the rest waits for the next frame.
 use crate::color::Color;
 use crate::event::{Cursor, Event, Key};
-use crate::geom::{Rect, Size, pt};
-use crate::platform::{Clipboard, Window};
+use crate::geom::{Point, Rect, Size, pt};
+use crate::platform::{Clipboard, PicturesAndFiles, Window};
 use crate::preferences::Preferences;
 use crate::surface::Surface;
 use crate::theme::ContrastColors;
 use crate::ui::Ui;
 use crate::web_input::{Did, Pointer};
 use crate::web_mirror::Mirror;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -39,8 +39,9 @@ unsafe extern "C" {
     fn storage_get(key: *const u8, length: usize) -> i32;
     fn storage_set(key: *const u8, key_length: usize, value: *const u8, value_length: usize) -> u32;
     fn open_link(link: *const u8, length: usize);
-    fn ask_file(accept: *const u8, length: usize, saving: u32);
+    fn ask_file(accept: *const u8, length: usize, name: *const u8, name_length: usize, kind: u32) -> u32;
     fn download(name: *const u8, name_length: usize, bytes: *const u8, length: usize);
+    fn save_file(path: *const u8, path_length: usize, bytes: *const u8, length: usize) -> u32;
     fn font_file(nth: u32, face: *mut u32) -> usize;
     fn take(into: *mut u8);
     pub(crate) fn text_metrics(font: *const u8, length: usize, sizes: *mut f32);
@@ -106,6 +107,14 @@ pub(crate) fn save_as(name: &str, bytes: &[u8]) {
     unsafe { download(name.as_ptr(), name.len(), bytes.as_ptr(), bytes.len()) };
 }
 
+/// Writes `bytes` into the file the browser's save picker chose for `path` (`/saved/<name>`):
+/// whether it chose one.
+pub(crate) fn save_to(path: &std::path::Path, bytes: &[u8]) -> bool {
+    let path = path.to_string_lossy();
+    // SAFETY: the loader reads both at once.
+    unsafe { save_file(path.as_ptr(), path.len(), bytes.as_ptr(), bytes.len()) != 0 }
+}
+
 /// The font files the page gave the loader (`fonts`), each with the face it is for: 0
 /// regular, 1 bold, 2 mono, 3 italic.
 fn page_fonts() -> Vec<(u32, Vec<u8>)> {
@@ -138,12 +147,74 @@ pub(crate) fn system_text() -> Box<dyn crate::text::TextSystem> {
     Box::new(fonts.fallback(browser))
 }
 
+// ---- parts a program uses only when it asks ----
+
+/// The parts of a page a program carries only once it calls for them: each is handed over by
+/// that call (`add_part`), and the loader reaches it through `taut_heard` by its number.
+pub(crate) mod parts {
+    /// Files and text dropped on the page (`web_drag_drop`).
+    pub const DROPS: u32 = 0;
+    /// What is dragged out of the page (`web_drag_drop`).
+    pub const DRAG_OUT: u32 = 1;
+    /// The clipboard's pictures and files (`web_clipboard`).
+    pub const CLIPBOARD: u32 = 2;
+    /// Notifications and one running copy (`web_desktop`).
+    pub const DESKTOP: u32 = 3;
+    /// Printing (`web_print`).
+    pub const PRINT: u32 = 4;
+    /// The person's fonts (`web_fonts`).
+    pub const FONTS: u32 = 5;
+    /// WebGL2 (`web_gpu`).
+    pub const GPU: u32 = 6;
+    /// The file pickers' answers beyond one file (`web_files`).
+    pub const FILES: u32 = 7;
+    /// How many there are.
+    pub const COUNT: usize = 8;
+}
+
+/// What the loader heard for a part: which kind of thing, where (CSS pixels), a number, and
+/// bytes (text, or a file).
+pub(crate) struct Heard {
+    pub what: u32,
+    pub at: Point,
+    pub number: f64,
+    pub bytes: Vec<u8>,
+}
+
+/// What the interface does once a part heard something.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Then {
+    /// Nothing.
+    Wait,
+    /// It runs at the next frame.
+    Run,
+    /// It runs at once, inside the DOM event (which may need to be the person's gesture, or
+    /// need the run's answer).
+    RunNow,
+}
+
+/// A part's work: after each run, and when the loader heard something for it (answering it
+/// with a number).
+#[derive(Clone, Copy)]
+pub(crate) struct Part {
+    pub after: fn(&mut Ui),
+    pub heard: fn(&mut Ui, Heard) -> (Then, u32),
+}
+
+/// Has a part join the interface's runs, from the next on.
+pub(crate) fn add_part(number: u32, part: Part) {
+    let mut all = PARTS.get();
+    all[number as usize] = Some(part);
+    PARTS.set(all);
+}
+
 // ---- the clipboard ----
 
 /// The clipboard as a page has it: what was copied or pasted last (`CLIPBOARD`). A copy goes to
 /// the system clipboard too (the loader hands it on in the browser's copy event, or through
 /// `navigator.clipboard`); a paste with Control+V brings the system's text first (`taut_paste`).
-struct PageClipboard;
+/// Pictures and files, once a program asks for one (see `web_clipboard`).
+pub(crate) struct PageClipboard;
 
 impl Clipboard for PageClipboard {
     fn get(&mut self) -> Option<String> {
@@ -154,20 +225,52 @@ impl Clipboard for PageClipboard {
         // SAFETY: the loader reads `length` bytes.
         unsafe { clipboard_set(text.as_ptr(), text.len()) };
     }
+    fn picture(&mut self) -> Option<(usize, Vec<u32>)> {
+        (PICTURES_AND_FILES.get()?.picture)(self)
+    }
+    fn set_picture(&mut self, width: usize, pixels: &[u32]) {
+        PICTURES_AND_FILES.get().map_or((), |its| (its.set_picture)(self, width, pixels))
+    }
+    fn files(&mut self) -> Vec<PathBuf> {
+        PICTURES_AND_FILES.get().map_or(Vec::new(), |its| (its.files)(self))
+    }
+    fn set_files(&mut self, files: &[PathBuf]) {
+        PICTURES_AND_FILES.get().map_or((), |its| (its.set_files)(self, files))
+    }
+}
+
+/// Hands the clipboard its picture and file code (see `PicturesAndFiles`).
+pub(crate) fn hand_pictures_and_files() {
+    if PICTURES_AND_FILES.get().is_none() {
+        PICTURES_AND_FILES.set(Some(crate::web_clipboard::pictures_and_files()));
+    }
 }
 
 thread_local! {
     /// The page's interface, once `run` made it.
     static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };
     /// The clipboard's text: what was copied or pasted last.
-    static CLIPBOARD: RefCell<String> = const { RefCell::new(String::new()) };
-    /// Files picked, by the name they are given (`/picked/<name>`), and their bytes.
-    static PICKED: RefCell<Vec<(PathBuf, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
+    pub(crate) static CLIPBOARD: RefCell<String> = const { RefCell::new(String::new()) };
+    /// The clipboard's pictures and files, once an interface asked for one.
+    static PICTURES_AND_FILES: Cell<Option<PicturesAndFiles<PageClipboard>>> = const { Cell::new(None) };
+    /// The parts in use, by number.
+    static PARTS: Cell<[Option<Part>; parts::COUNT]> = const { Cell::new([None; parts::COUNT]) };
+    /// Files the person handed the page (picked, dropped, pasted), by the path they are given
+    /// (`/picked/<name>`, ...), and their bytes.
+    pub(crate) static FILES: RefCell<Vec<(PathBuf, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The bytes of a file the person picked (see [`crate::web::picked`]).
+/// The bytes of a file the person handed the page (see [`crate::web::picked`]).
 pub(crate) fn picked(path: &std::path::Path) -> Option<Vec<u8>> {
-    PICKED.with_borrow(|picked| picked.iter().find(|(name, _)| name == path).map(|(_, bytes)| bytes.clone()))
+    FILES.with_borrow(|files| files.iter().find(|(name, _)| name == path).map(|(_, bytes)| bytes.clone()))
+}
+
+/// Keeps a file handed to the page, in place of one of the same path.
+pub(crate) fn keep_file(path: PathBuf, bytes: Vec<u8>) {
+    FILES.with_borrow_mut(|files| {
+        files.retain(|(kept, _)| *kept != path);
+        files.push((path, bytes));
+    });
 }
 
 /// The page and what keeps the interface shown in it.
@@ -191,6 +294,9 @@ struct Host {
     title: String,
     /// The console was told that second windows don't show.
     told_windows: bool,
+    /// WebGL2, where the page is shown through it (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    gpu: Option<crate::web_gpu::Gpu>,
 }
 
 impl Host {
@@ -217,6 +323,7 @@ impl Host {
             self.told_windows = true;
         }
         self.follow();
+        PARTS.get().iter().flatten().for_each(|part| (part.after)(&mut self.ui));
         let (version, announced) = (self.ui.access_version(), self.ui.announced());
         if version == self.told && announced.is_empty() {
             return;
@@ -248,9 +355,11 @@ impl Host {
         self.ime = ime;
         if let Some(asked) = self.ui.take_file_dialog_request() {
             let accept = asked.endings.join(",");
-            // SAFETY: the loader reads `length` bytes.
-            unsafe { ask_file(accept.as_ptr(), accept.len(), asked.saving as u32) };
-            if asked.saving {
+            let kind = asked.saving as u32 | (asked.many as u32) << 1 | (asked.folders as u32) << 2;
+            // SAFETY: the loader reads both, and says whether it answers a save itself (with the
+            // browser's save picker).
+            let answers = unsafe { ask_file(accept.as_ptr(), accept.len(), asked.name.as_ptr(), asked.name.len(), kind) } != 0;
+            if asked.saving && !answers {
                 self.ui.file_dialog_answered(Some(PathBuf::from("/downloads").join(asked.name)));
                 self.rerun = true;
             }
@@ -263,6 +372,15 @@ impl Host {
             return;
         }
         self.drawn = true;
+        #[cfg(feature = "gpu")]
+        if let Some(gpu) = &mut self.gpu {
+            if gpu.draw(&mut self.ui, &mut self.surface) {
+                let _ = self.ui.changed();
+                return;
+            }
+            // Lost, or failed: the CPU shows the page from now on, all of it drawn afresh.
+            (self.gpu, self.surface) = (None, Surface::default());
+        }
         for [left, top, right, bottom] in self.surface.update(&mut self.ui) {
             let (width, height) = (right - left, bottom - top);
             self.rgba.clear();
@@ -356,6 +474,8 @@ pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
         ime: None,
         title: window.title.into(),
         told_windows: false,
+        #[cfg(feature = "gpu")]
+        gpu: crate::web_gpu::Gpu::open(window.renderer),
     };
     HOST.set(Some(host));
     // SAFETY: a plain request.
@@ -543,23 +663,38 @@ pub extern "C" fn taut_reader(key: *mut u8, length: usize, action: u32) {
 }
 
 /// A file the person picked (its name and bytes), or none (`length` of the name 0: the picker
-/// was closed).
+/// was closed). (Several files, a folder or where to save come through `web_files`.)
 #[unsafe(no_mangle)]
 pub extern "C" fn taut_file(name: *mut u8, name_length: usize, bytes: *mut u8, length: usize) {
     let name = given_text(name, name_length);
     let bytes = given(bytes, length);
     let file = (!name.is_empty()).then(|| PathBuf::from("/picked").join(name));
     if let Some(file) = &file {
-        PICKED.with_borrow_mut(|picked| {
-            picked.retain(|(kept, _)| kept != file);
-            picked.push((file.clone(), bytes));
-        });
+        keep_file(file.clone(), bytes);
     }
     with_host(|host| {
         host.ui.file_dialog_answered(file);
         host.rerun = true;
         host.schedule();
     });
+}
+
+/// The loader heard something for a part (see `parts`): what kind of thing, where, a number and
+/// bytes. Answers the part's number (0 for a part not in use).
+#[unsafe(no_mangle)]
+pub extern "C" fn taut_heard(part: u32, what: u32, x: f32, y: f32, number: f64, bytes: *mut u8, length: usize) -> u32 {
+    let bytes = given(bytes, length);
+    let Some(part) = PARTS.get().get(part as usize).copied().flatten() else { return 0 };
+    let mut answer = 0;
+    with_host(|host| {
+        let (then, said) = (part.heard)(&mut host.ui, Heard { what, at: pt(x, y), number, bytes });
+        (answer, host.rerun) = (said, host.rerun || then != Then::Wait);
+        match then {
+            Then::RunNow => now_and_later(host),
+            _ => host.schedule(),
+        }
+    });
+    answer
 }
 
 /// The page closes: the app hears it as its window's close (and may keep what it must).

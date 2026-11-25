@@ -39,9 +39,10 @@
 //! `cff` (`.otf` fonts with PostScript outlines), `woff2` (WOFF2 web fonts),
 //! `color-profiles` (image colour profiles), `gpu` (windows shown by the GPU, see
 //! [`Renderer`]), `gpu-draw` (windows drawn by the GPU too, see [`Renderer`]), `hdr`
-//! (brightness past SDR white on HDR screens, see [`El::brightness`]), `translations`
-//! (built-in words in six more languages) and `video` (video and sound by the system's
-//! player, see `Video`).
+//! (brightness past SDR white on HDR screens, see [`El::brightness`]), `ruby` (readings over rich
+//! text, and runs set across one em in vertical text: `Span::ruby`, `Span::upright`),
+//! `translations` (built-in words in six more languages) and `video` (video and sound by the
+//! system's player, see `Video`).
 //!
 //! # Systems
 //!
@@ -136,28 +137,36 @@ mod frameless;
 mod freedesktop;
 pub mod geom;
 pub mod gif;
+#[cfg(all(target_os = "android", feature = "gpu"))]
+mod gpu_android;
 #[cfg(all(windows, feature = "gpu"))]
 mod gpu_d3d11;
 #[cfg(all(windows, feature = "gpu"))]
 mod gpu_d3d12;
-#[cfg(all(feature = "gpu-draw", not(any(target_os = "ios", target_os = "android"))))]
+#[cfg(feature = "gpu-draw")]
 mod gpu_draw;
 #[cfg(all(windows, feature = "gpu-draw"))]
 mod gpu_draw_d3d12;
-#[cfg(all(target_os = "macos", feature = "gpu-draw"))]
+#[cfg(all(target_vendor = "apple", feature = "gpu-draw"))]
 mod gpu_draw_metal;
-#[cfg(all(feature = "gpu-draw", not(any(target_vendor = "apple", target_os = "android"))))]
+#[cfg(all(feature = "gpu-draw", not(target_vendor = "apple")))]
 mod gpu_draw_opengl;
-#[cfg(all(feature = "gpu-draw", not(any(target_vendor = "apple", target_os = "android"))))]
+#[cfg(all(feature = "gpu-draw", not(target_vendor = "apple")))]
 mod gpu_draw_vulkan;
 #[cfg(all(windows, feature = "gpu-draw"))]
 mod gpu_draw_windows;
-#[cfg(all(target_os = "macos", feature = "gpu"))]
+#[cfg(all(target_os = "ios", feature = "gpu"))]
+mod gpu_ios;
+#[cfg(all(target_vendor = "apple", feature = "gpu"))]
 mod gpu_metal;
+#[cfg(all(target_os = "android", feature = "gpu"))]
+mod gpu_opengl_android;
 #[cfg(all(windows, feature = "gpu"))]
 mod gpu_opengl_windows;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 mod gpu_opengl_x11;
+#[cfg(all(target_os = "android", feature = "gpu"))]
+mod gpu_vulkan_android;
 #[cfg(all(windows, feature = "gpu"))]
 mod gpu_vulkan_windows;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
@@ -168,8 +177,15 @@ mod gpu_windows;
 mod gpu_x11;
 #[cfg(test)]
 mod hardening;
-#[cfg_attr(all(feature = "hdr", any(target_vendor = "apple", target_os = "android")), allow(dead_code, reason = "Apple systems and Android show SDR so far"))]
+#[cfg_attr(all(feature = "hdr", any(target_os = "ios", target_os = "android")), allow(dead_code, reason = "iOS and Android show SDR so far"))]
 mod hdr;
+#[cfg(all(target_os = "macos", feature = "hdr"))]
+mod hdr_metal;
+#[cfg(all(windows, feature = "hdr"))]
+mod hdr_opengl;
+// (On Linux, its shaders are checked where glslc is, and run on lavapipe.)
+#[cfg(all(feature = "hdr", any(windows, all(test, feature = "gpu-draw", target_os = "linux"))))]
+mod hdr_vulkan;
 #[cfg(all(windows, feature = "hdr"))]
 mod hdr_windows;
 mod hinting;
@@ -255,7 +271,10 @@ mod print;
 mod print_linux;
 #[cfg(windows)]
 mod print_windows;
+#[cfg(feature = "ruby")]
+mod rich_ruby;
 mod rich_text;
+mod ruby;
 mod saved_layout;
 mod scene;
 mod scene_raster;
@@ -303,8 +322,13 @@ mod ui_accessibility;
 mod ui_accessibility_text;
 #[cfg(windows)]
 mod uia;
+#[cfg(feature = "hdr")]
+mod ultra_hdr;
 mod variable_fonts;
+mod vertical_layout;
+mod vertical_paragraph;
 mod vertical_text;
+mod vertical_text_box;
 #[cfg(feature = "video")]
 mod video;
 #[cfg(all(feature = "video", target_os = "android"))]
@@ -325,11 +349,25 @@ mod wayland;
 mod wayland_wire;
 pub mod web;
 #[cfg(target_family = "wasm")]
+mod web_clipboard;
+#[cfg(target_family = "wasm")]
+mod web_desktop;
+#[cfg(target_family = "wasm")]
+mod web_drag_drop;
+#[cfg(target_family = "wasm")]
+mod web_files;
+#[cfg(target_family = "wasm")]
+mod web_fonts;
+#[cfg(all(target_family = "wasm", feature = "gpu"))]
+mod web_gpu;
+#[cfg(target_family = "wasm")]
 mod web_host;
 #[cfg(any(test, target_family = "wasm"))]
 mod web_input;
 #[cfg(any(test, target_family = "wasm"))]
 mod web_mirror;
+#[cfg(target_family = "wasm")]
+mod web_print;
 #[cfg(target_family = "wasm")]
 mod web_text;
 mod web_widgets;

@@ -1,6 +1,6 @@
 //! A note kept between visits, opened from a file and saved as one: the same code on the
 //! desktop and in a browser, where it is kept in the page's storage, opened with the
-//! browser's file picker and saved as a download.
+//! browser's file picker and saved where the person picks (Chrome, Edge) or as a download.
 //!   cargo run --example web_notes
 //!   cargo build --release --target wasm32-unknown-unknown --example web_notes
 //!   cargo run --example web_page -- target/wasm32-unknown-unknown/release/examples/web_notes.wasm

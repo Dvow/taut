@@ -113,6 +113,8 @@ unsafe extern "C" {
     pub(crate) fn CGColorSpaceCreateDeviceGray() -> *const c_void;
     pub(crate) fn CGColorSpaceCreateWithName(name: *const c_void) -> *const c_void;
     pub(crate) static kCGColorSpaceSRGB: *const c_void;
+    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    pub(crate) static kCGColorSpaceExtendedLinearSRGB: *const c_void;
     pub(crate) fn CGColorSpaceRelease(space: *const c_void);
     pub(crate) fn CGDataProviderCreateWithCFData(data: *const c_void) -> *const c_void;
     pub(crate) fn CGDataProviderRelease(provider: *const c_void);

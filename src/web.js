@@ -1,14 +1,18 @@
 // taut's loader: runs a taut program built for wasm32-unknown-unknown in a page, with no
 // other script. It makes the page's elements (a canvas, a hidden text field, the elements
 // screen readers read), hands each DOM event to the program, and does what the program asks:
-// show pixels, measure and draw text, keep the clipboard and storage.
+// show pixels, measure and draw text, keep the clipboard and storage; and the parts a program
+// uses only when it asks (drops and drags, the clipboard's pictures, pickers, notifications, one
+// running copy, printing, the person's fonts, WebGL2).
 //
 //   import { start } from "./taut.js";
 //   start("app.wasm", { element: document.body, fonts: { regular: "Inter.ttf" } });
 //
 // Options: `element` (the page by default; `null` for no page at all, as in tests under Node),
 // `fonts` (files by face: regular, bold, mono, italic; the browser's own otherwise), `sans` and
-// `mono` (CSS families for the browser's text), `title` (false: leave the page's title alone).
+// `mono` (CSS families for the browser's text), `title` (false: leave the page's title alone),
+// `renderer` and `draw` (what `TAUT_RENDERER` and `TAUT_DRAW` say on the desktops: "cpu",
+// "gpu", "auto").
 
 const CURSORS = ["default", "pointer", "text", "ew-resize", "ns-resize", "nwse-resize", "nesw-resize", "move", "not-allowed"];
 const SANS = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
@@ -16,15 +20,47 @@ const MONO = 'ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, "DejaVu
 const FACES = ["regular", "bold", "mono", "italic"];
 const KINDS = { mouse: 0, touch: 1, pen: 2 };
 const POINTER = { pointermove: 0, pointerdown: 1, pointerup: 2, pointercancel: 3, pointerleave: 4 };
+// What the program's parts hear (`taut_heard`), each as the part's number (`web_host::parts`)
+// and the thing's number in that part's module.
+const HEARD = {
+    dropOver: [0, 0],
+    dropLeft: [0, 1],
+    droppedFile: [0, 2],
+    droppedFiles: [0, 3],
+    droppedText: [0, 4],
+    dragStart: [1, 0],
+    dragOver: [1, 1],
+    dragDrop: [1, 2],
+    dragEnd: [1, 3],
+    dragLeft: [1, 4],
+    clipboardPicture: [2, 0],
+    pastedFile: [2, 1],
+    pastedFiles: [2, 2],
+    notificationClicked: [3, 0],
+    laterTab: [3, 1],
+    printClosed: [4, 0],
+    printUnable: [4, 1],
+    fontsListed: [5, 0],
+    fontsRefused: [5, 1],
+    contextLost: [6, 0],
+    pickedMore: [7, 0],
+    pickedLast: [7, 1],
+    pickedFolder: [7, 2],
+    saveChosen: [7, 3],
+};
+// Countries whose paper is Letter (CLDR's paperSize).
+const LETTER = ["US", "CA", "MX", "PR", "PH", "CL", "CO", "VE", "GT", "PA", "SV", "NI", "HN", "CR", "DO", "BZ"];
+// What WebGL2 names a device that is the CPU at work.
+const SOFTWARE = /SwiftShader|llvmpipe|softpipe|Software|Basic Render|WARP/i;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 // Loads and starts `program` (an address, or its bytes). Resolves to the page.
 export async function start(program, options = {}) {
     const page = new Page(options);
-    const [module, fonts] = await Promise.all([compiled(program), fontFiles(options.fonts)]);
-    page.fonts = fonts;
-    const instance = await WebAssembly.instantiate(module, { taut: page.imports() });
+    const [module, fonts, locks] = await Promise.all([compiled(program), fontFiles(options.fonts), heldLocks()]);
+    Object.assign(page, { fonts, locks });
+    const instance = await WebAssembly.instantiate(module, { taut: page.imports(), taut_gl: page.glImports() });
     page.begin(instance.exports);
     return page;
 }
@@ -50,6 +86,16 @@ async function fontFiles(given) {
         }
     }
     return fonts;
+}
+
+// The names of the locks the site's pages hold now (Web Locks), where the browser has them: what
+// tells a program's first tab from a later one.
+async function heldLocks() {
+    try {
+        return (await navigator.locks.query()).held.map((lock) => lock.name);
+    } catch {
+        return [];
+    }
 }
 
 // The modifiers held, as the program counts them: Control or Command, Shift, Alt.
@@ -80,6 +126,18 @@ export class Page {
         this.measure = textCanvas();
         this.videos = new Map();
         this.videoCount = 0;
+        this.dropsTaken = [false, false];
+        this.offers = [];
+        this.pointedAt = [0, 0];
+        this.dragItems = [];
+        this.draggingOut = false;
+        this.droppedHere = false;
+        this.clipboardParts = false;
+        this.saved = null;
+        this.printing = [];
+        this.gl = null;
+        this.glCanvas = null;
+        this.glObjects = [null];
         if (options.element !== null && typeof document !== "undefined") {
             this.build(options.element || document.body);
         }
@@ -126,6 +184,12 @@ export class Page {
         box.addEventListener("copy", (event) => this.copy(event));
         box.addEventListener("cut", (event) => this.copy(event));
         box.addEventListener("paste", (event) => this.paste(event));
+        box.addEventListener("dragenter", (event) => this.dragOver(event));
+        box.addEventListener("dragover", (event) => this.dragOver(event));
+        box.addEventListener("dragleave", (event) => this.dragLeft(event));
+        box.addEventListener("drop", (event) => this.dropped(event));
+        this.canvas.addEventListener("dragstart", (event) => this.dragStart(event));
+        this.canvas.addEventListener("dragend", (event) => this.dragEnd(event));
         this.field.addEventListener("input", (event) => this.input(event));
         this.field.addEventListener("compositionstart", () => this.composed(""));
         this.field.addEventListener("compositionupdate", (event) => this.composed(event.data || ""));
@@ -218,8 +282,9 @@ export class Page {
             storage_get: (at, length) => page.storageGet(page.text(at, length)),
             storage_set: (at, length, value, valueLength) => page.storageSet(page.text(at, length), page.text(value, valueLength)),
             open_link: (at, length) => typeof open === "function" && open(page.text(at, length), "_blank", "noopener,noreferrer"),
-            ask_file: (at, length, saving) => saving || page.askFile(page.text(at, length)),
+            ask_file: (at, length, name, nameLength, kind) => page.askFile(page.text(at, length), page.text(name, nameLength), kind),
             download: (name, length, at, size) => page.download(page.text(name, length), page.bytes(at, size).slice()),
+            save_file: (at, length, bytes, size) => page.saveFile(page.text(at, length), page.bytes(bytes, size).slice()),
             font_file: (nth, face) => page.fontFile(nth, face),
             take: (into) => page.take(into),
             text_metrics: (at, length, out) => floats(out, page.metrics(page.text(at, length))),
@@ -233,7 +298,32 @@ export class Page {
             video_sound: (id, volume, muted) => page.videoSound(id, volume, muted),
             video_state: (id, out) => page.videoState(id, out),
             video_frame: (id, out) => page.videoFrame(id, out),
+            drops_taken: (files, text) => (page.dropsTaken = [files !== 0, text !== 0]),
+            drag_offers: (at, count) => (page.offers = Array.from(new Float32Array(page.exports.memory.buffer, at, count * 4))),
+            drag_item: (kind, name, nameLength, at, length) => page.dragItems.push([kind, page.text(name, nameLength), page.bytes(at, length).slice()]),
+            clipboard_watch: () => (page.clipboardParts = true),
+            clipboard_picture_set: (at, length) => page.copyPicture(page.bytes(at, length).slice()),
+            notify: (number, title, titleLength, text, textLength, png, pngLength) => page.notify(number, page.text(title, titleLength), page.text(text, textLength), page.bytes(png, pngLength).slice()),
+            first_copy: (at, length) => page.firstCopy(page.text(at, length)),
+            letter_paper: () => page.letterPaper(),
+            print_page: (at, length, width, height, pageWidth, pageHeight) => page.printing.push({ rgba: page.bytes(at, length).slice(), width, height, size: [pageWidth, pageHeight] }),
+            print_pages: (at, length, job) => page.printPages(page.text(at, length), job),
+            ask_fonts: () => page.askFonts(),
+            gpu_open: () => page.gpuOpen(),
+            gpu_close: () => page.gpuClose(),
+            setting: (at, length) => page.setting(page.text(at, length)),
         };
+    }
+
+    // Tells a part of the program what the page heard (`HEARD`): its answer.
+    heard([part, what], x = 0, y = 0, number = 0, bytes = new Uint8Array()) {
+        return this.call("taut_heard", part, what, x, y, number, bytes);
+    }
+
+    // A place of a DOM event, in CSS pixels from the canvas's corner.
+    placeOf(event) {
+        const place = this.canvas.getBoundingClientRect();
+        return [event.clientX - place.left, event.clientY - place.top];
     }
 
     // ---- pixels and frames ----
@@ -289,12 +379,14 @@ export class Page {
         if (same && this.sized) {
             return;
         }
-        if (!same) {
-            this.canvas.width = width;
-            this.canvas.height = height;
+        for (const canvas of [this.canvas, this.glCanvas].filter(Boolean)) {
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
+            canvas.style.width = `${width / scale}px`;
+            canvas.style.height = `${height / scale}px`;
         }
-        this.canvas.style.width = `${width / scale}px`;
-        this.canvas.style.height = `${height / scale}px`;
         this.resize(width / scale, height / scale, scale);
     }
 
@@ -328,8 +420,20 @@ export class Page {
 
     pointer(event) {
         const kind = KINDS[event.pointerType] ?? 0;
+        // (The browser drags what the program hands out: its own events come instead.)
+        if (this.draggingOut && event.type === "pointercancel") {
+            return;
+        }
+        // (What a press may drag is what it pressed, wherever it moves since.)
+        if (event.type === "pointerdown" || (event.type === "pointermove" && event.buttons === 0)) {
+            this.pointedAt = this.placeOf(event);
+            this.canvas.draggable = this.offered(...this.pointedAt);
+        }
         if (event.type === "pointerdown") {
-            event.preventDefault();
+            // (Over a box handing something out, the browser may start a drag.)
+            if (!this.canvas.draggable) {
+                event.preventDefault();
+            }
             // (A pointer the browser no longer has can't be held: a made-up one, say.)
             try {
                 this.canvas.setPointerCapture(event.pointerId);
@@ -377,7 +481,34 @@ export class Page {
         clearTimeout(this.pasting);
         this.pasting = 0;
         event.preventDefault();
-        this.call("taut_paste", event.clipboardData?.getData("text/plain") || "");
+        const text = event.clipboardData?.getData("text/plain") || "";
+        if (!this.clipboardParts) {
+            this.call("taut_paste", text);
+            return;
+        }
+        this.pastedFiles([...(event.clipboardData?.files || [])]).then(() => this.call("taut_paste", text));
+    }
+
+    // Files pasted (the picture among them, as the clipboard's), read whole before Control+V is
+    // pressed.
+    async pastedFiles(files) {
+        for (const file of files) {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            if (file.type === "image/png") {
+                this.heard(HEARD.clipboardPicture, 0, 0, 0, bytes);
+            }
+            this.heard(HEARD.pastedFile, 0, 0, ...named(file.name, bytes));
+        }
+        this.heard(HEARD.pastedFiles);
+    }
+
+    // A picture copied: on the system clipboard as PNG (after a press or a key, as the browser
+    // allows).
+    copyPicture(png) {
+        this.copied = null;
+        if (typeof ClipboardItem === "function") {
+            navigator.clipboard?.write([new ClipboardItem({ "image/png": new Blob([png], { type: "image/png" }) })]).catch(() => {});
+        }
     }
 
     // The program copied: the browser's copy event (which follows Ctrl+C) puts it on the
@@ -442,9 +573,16 @@ export class Page {
     async clipboardIn() {
         try {
             const allowed = await navigator.permissions.query({ name: "clipboard-read" });
-            if (allowed.state === "granted") {
-                this.call("taut_clipboard", await navigator.clipboard.readText());
+            if (allowed.state !== "granted") {
+                return;
             }
+            if (this.clipboardParts) {
+                const items = await navigator.clipboard.read();
+                const picture = items.find((item) => item.types.includes("image/png"));
+                const bytes = picture ? new Uint8Array(await (await picture.getType("image/png")).arrayBuffer()) : new Uint8Array();
+                this.heard(HEARD.clipboardPicture, 0, 0, 0, bytes);
+            }
+            this.call("taut_clipboard", await navigator.clipboard.readText());
         } catch {}
     }
 
@@ -727,18 +865,74 @@ export class Page {
         }
     }
 
-    // The browser's file picker; what is picked is read and handed over, or nothing.
-    askFile(accept) {
+    // The browser's file picker (`kind`: 1 saving, 2 several files, 4 a folder): what is picked
+    // is read and handed over, or nothing. Says whether it answers a save itself (with the save
+    // picker, where the browser has one); else the program saves as a download.
+    askFile(accept, name, kind) {
+        if (kind & 1) {
+            return this.askSave(accept, name);
+        }
         const picker = document.createElement("input");
-        picker.type = "file";
-        picker.accept = accept;
-        picker.addEventListener("change", async () => {
-            const file = picker.files[0];
-            const bytes = file ? new Uint8Array(await file.arrayBuffer()) : new Uint8Array();
-            this.call("taut_file", file ? file.name : "", bytes);
-        });
+        Object.assign(picker, { type: "file", accept, multiple: (kind & 2) !== 0, webkitdirectory: (kind & 4) !== 0 });
+        picker.addEventListener("change", () => this.picked([...picker.files], kind));
         picker.addEventListener("cancel", () => this.call("taut_file", "", new Uint8Array()));
         picker.click();
+        return 0;
+    }
+
+    // Hands over what was picked, each file read whole: one file alone; several one by one; a
+    // folder's files, then the folder.
+    async picked(files, kind) {
+        if (files.length === 0) {
+            this.call("taut_file", "", new Uint8Array());
+            return;
+        }
+        if (kind === 0) {
+            this.call("taut_file", files[0].name, new Uint8Array(await files[0].arrayBuffer()));
+            return;
+        }
+        const folder = (kind & 4) !== 0;
+        const names = files.map((file) => (folder && file.webkitRelativePath) || file.name);
+        for (const [at, file] of files.entries()) {
+            const last = !folder && at === files.length - 1;
+            this.heard(last ? HEARD.pickedLast : HEARD.pickedMore, 0, 0, ...named(names[at], new Uint8Array(await file.arrayBuffer())));
+        }
+        if (folder) {
+            this.heard(HEARD.pickedFolder, 0, 0, 0, names[0].split("/")[0]);
+        }
+    }
+
+    // The save picker, for a file named `name` ending in one of `accept`: the file chosen is
+    // kept to write (`saveFile`). Says whether the browser has one.
+    askSave(accept, name) {
+        if (typeof showSaveFilePicker !== "function") {
+            return 0;
+        }
+        const endings = accept ? accept.split(",") : [];
+        const types = endings.length > 0 ? [{ description: endings.join(", "), accept: { "application/octet-stream": endings } }] : undefined;
+        showSaveFilePicker({ suggestedName: name, types }).then(
+            (handle) => {
+                this.saved = { path: `/saved/${handle.name}`, handle };
+                this.heard(HEARD.saveChosen, 0, 0, 0, handle.name);
+            },
+            () => this.call("taut_file", "", new Uint8Array()),
+        );
+        return 1;
+    }
+
+    // Writes `bytes` into the file the save picker chose for `path` (the program may have added an
+    // ending): whether it chose one.
+    saveFile(path, bytes) {
+        const saved = this.saved;
+        if (!saved || (path !== saved.path && !path.startsWith(`${saved.path}.`))) {
+            return 0;
+        }
+        const written = saved.handle.createWritable().then(async (into) => {
+            await into.write(bytes);
+            await into.close();
+        });
+        written.catch((error) => console.error(`taut: ${path} was not saved: ${error.message}`));
+        return 1;
     }
 
     download(name, bytes) {
@@ -747,6 +941,375 @@ export class Page {
         link.download = name;
         link.click();
         setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    }
+
+    // ---- drag and drop with other programs ----
+
+    // What a drag from elsewhere brings that the program takes: 1 files, 2 text, 0 nothing.
+    // (Files and text are files to a program taking files.)
+    dropKind(data) {
+        const types = [...data.types];
+        if (types.includes("Files") && this.dropsTaken[0]) {
+            return 1;
+        }
+        return (types.includes("text/plain") || types.includes("text/uri-list")) && this.dropsTaken[1] ? 2 : 0;
+    }
+
+    dragOver(event) {
+        const [x, y] = this.placeOf(event);
+        if (this.draggingOut) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            this.heard(HEARD.dragOver, x, y);
+            return;
+        }
+        const kind = this.dropKind(event.dataTransfer);
+        if (kind && this.heard(HEARD.dropOver, x, y, kind)) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+        }
+    }
+
+    dragLeft(event) {
+        if (this.box.contains(event.relatedTarget)) {
+            return;
+        }
+        this.heard(this.draggingOut ? HEARD.dragLeft : HEARD.dropLeft);
+    }
+
+    // Dropped here: the program's own drag drops inside it; files are read whole, then handed
+    // over with where they were dropped; text is handed over as it is.
+    async dropped(event) {
+        event.preventDefault();
+        const [x, y] = this.placeOf(event);
+        if (this.draggingOut) {
+            this.droppedHere = true;
+            this.heard(HEARD.dragDrop, x, y);
+            return;
+        }
+        const data = event.dataTransfer;
+        const kind = this.dropKind(data);
+        if (kind === 2) {
+            this.heard(HEARD.droppedText, x, y, 0, data.getData("text/plain") || data.getData("text/uri-list"));
+            return;
+        }
+        const files = kind === 1 ? [...data.files] : [];
+        for (const file of files) {
+            this.heard(HEARD.droppedFile, 0, 0, ...named(file.name, new Uint8Array(await file.arrayBuffer())));
+        }
+        this.heard(HEARD.droppedFiles, x, y);
+    }
+
+    // The place (left, top, width, height in CSS pixels) of the box handing something out at
+    // this place, the last drawn; none where there is none.
+    offerAt(x, y) {
+        let found = null;
+        for (let at = 0; at < this.offers.length; at += 4) {
+            const [left, top, width, height] = this.offers.slice(at, at + 4);
+            found = x >= left && y >= top && x < left + width && y < top + height ? [left, top, width, height] : found;
+        }
+        return found;
+    }
+
+    offered(x, y) {
+        return this.offerAt(x, y) !== null;
+    }
+
+    // The browser starts dragging from the canvas: the box there hands out the drag's items, or
+    // there is no drag.
+    dragStart(event) {
+        const [x, y] = this.pointedAt;
+        this.dragItems = [];
+        if (!this.heard(HEARD.dragStart, x, y) || this.dragItems.length === 0) {
+            event.preventDefault();
+            return;
+        }
+        Object.assign(this, { draggingOut: true, droppedHere: false });
+        const data = event.dataTransfer;
+        for (const [kind, name, bytes] of this.dragItems) {
+            const text = decoder.decode(bytes);
+            if (kind === 0) {
+                data.setData("text/plain", text);
+            } else if (kind === 1) {
+                data.setData("text/uri-list", text);
+                data.setData("text/plain", text);
+            } else {
+                this.dragFile(data, name, bytes);
+            }
+        }
+        data.effectAllowed = "copyMove";
+        this.dragPicture(data, x, y);
+    }
+
+    // A file dragged out: as a file, and Chrome saves the first where it is dropped on the
+    // desktop.
+    dragFile(data, name, bytes) {
+        const file = new File([bytes], name, { type: name.endsWith(".png") ? "image/png" : "application/octet-stream" });
+        data.items.add(file);
+        if (!data.types.includes("downloadurl")) {
+            data.setData("DownloadURL", `${file.type}:${name}:${URL.createObjectURL(file)}`);
+        }
+    }
+
+    // What follows the pointer: the box dragged, as the canvas shows it.
+    dragPicture(data, x, y) {
+        const offer = this.offerAt(x, y);
+        if (!offer || this.glCanvas) {
+            return;
+        }
+        const [left, top, width, height] = offer;
+        const scale = this.size[2];
+        const picture = Object.assign(document.createElement("canvas"), { width: Math.ceil(width * scale), height: Math.ceil(height * scale) });
+        picture.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:${height}px;`;
+        picture.getContext("2d").drawImage(this.canvas, left * scale, top * scale, picture.width, picture.height, 0, 0, picture.width, picture.height);
+        document.body.appendChild(picture);
+        data.setDragImage(picture, x - left, y - top);
+        setTimeout(() => picture.remove());
+    }
+
+    // The drag out ended: what the other side did (nothing, where it was dropped back here).
+    dragEnd(event) {
+        const effect = this.droppedHere ? 0 : ({ copy: 1, move: 2 }[event.dataTransfer.dropEffect] ?? 0);
+        Object.assign(this, { draggingOut: false, droppedHere: false });
+        this.heard(HEARD.dragEnd, 0, 0, effect);
+    }
+
+    // ---- notifications and one running copy ----
+
+    // Shows a notification once the person allows them (the first asks); a click brings the
+    // page's tab forward and is heard.
+    notify(number, title, text, png) {
+        if (typeof Notification !== "function" || Notification.permission === "denied") {
+            return;
+        }
+        const show = () => this.showNotification(number, title, text, png);
+        if (Notification.permission === "granted") {
+            show();
+        } else {
+            Notification.requestPermission().then((said) => said === "granted" && show());
+        }
+    }
+
+    showNotification(number, title, text, png) {
+        const icon = png.length > 0 ? URL.createObjectURL(new Blob([png], { type: "image/png" })) : undefined;
+        let shown;
+        try {
+            shown = new Notification(title, { body: text, icon });
+        } catch (error) {
+            // (A phone's browser shows notifications only through a service worker.)
+            console.error(`taut: no notification: ${error.message}`);
+            return;
+        }
+        shown.addEventListener("click", () => {
+            focus();
+            shown.close();
+            this.heard(HEARD.notificationClicked, 0, 0, number);
+        });
+    }
+
+    // Whether this tab is the first of program `name`: a later one hands its address to the
+    // first, which holds the lock from now on and hears later tabs.
+    firstCopy(name) {
+        const lock = `taut:${name}`;
+        if (!navigator.locks || typeof BroadcastChannel !== "function") {
+            return 1;
+        }
+        const channel = new BroadcastChannel(lock);
+        if (this.locks.includes(lock)) {
+            channel.postMessage(location.href);
+            channel.close();
+            return 0;
+        }
+        let held = false;
+        navigator.locks.request(lock, () => {
+            held = true;
+            return new Promise(() => {});
+        });
+        channel.addEventListener("message", (event) => held && this.heard(HEARD.laterTab, 0, 0, 0, String(event.data)));
+        return 1;
+    }
+
+    // ---- printing ----
+
+    // Whether the browser's language names a country whose paper is Letter.
+    letterPaper() {
+        try {
+            return LETTER.includes(new Intl.Locale(navigator.language).maximize().region) ? 1 : 0;
+        } catch {
+            return 0;
+        }
+    }
+
+    // Prints the pages handed over (`print_page`), each alone on a sheet of its size, through the
+    // browser's dialog; job `job` is told when the dialog closes, or that it can't print.
+    printPages(title, job) {
+        const pages = this.printing;
+        this.printing = [];
+        if (typeof document === "undefined" || pages.length === 0) {
+            setTimeout(() => this.heard(HEARD.printUnable, 0, 0, job));
+            return;
+        }
+        const sheets = document.createElement("div");
+        sheets.className = "taut-print";
+        const rules = ["@media screen { .taut-print { display: none; } }", "@media print { body > :not(.taut-print) { display: none !important; } .taut-print canvas:not(:last-of-type) { break-after: page; } }"];
+        for (const [at, page] of pages.entries()) {
+            const [width, height] = page.size;
+            rules.push(`@page taut-${job}-${at} { size: ${width}px ${height}px; margin: 0; }`);
+            const sheet = Object.assign(document.createElement("canvas"), { width: page.width, height: page.height });
+            sheet.style.cssText = `display:block;width:${width}px;height:${height}px;page:taut-${job}-${at};`;
+            sheet.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(page.rgba.buffer), page.width, page.height), 0, 0);
+            sheets.appendChild(sheet);
+        }
+        sheets.appendChild(Object.assign(document.createElement("style"), { textContent: rules.join("\n") }));
+        document.body.appendChild(sheets);
+        const done = () => {
+            removeEventListener("afterprint", done);
+            sheets.remove();
+            this.heard(HEARD.printClosed, 0, 0, job);
+        };
+        addEventListener("afterprint", done);
+        setTimeout(() => {
+            const named = document.title;
+            document.title = title || named;
+            print();
+            document.title = named;
+        });
+    }
+
+    // ---- the person's fonts ----
+
+    // Lists the person's fonts, where the browser can (asking the person the first time): a line
+    // a font, its family and style. Refused, it is asked again at the next press.
+    askFonts() {
+        if (typeof queryLocalFonts !== "function" || (this.fontsRefused && !navigator.userActivation?.isActive)) {
+            return;
+        }
+        queryLocalFonts().then(
+            (fonts) => this.heard(HEARD.fontsListed, 0, 0, 0, fonts.map((font) => `${font.family}\t${font.style}`).join("\n")),
+            () => (this.fontsRefused = true) && this.heard(HEARD.fontsRefused),
+        );
+    }
+
+    // ---- WebGL2 (feature `gpu`) ----
+
+    // A WebGL2 canvas over the 2D one, the program drawing into it from now on: 1 on a GPU, 2 on
+    // a software device, 0 where there is none.
+    gpuOpen() {
+        if (!this.box) {
+            return 0;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.style.cssText = `${this.canvas.style.cssText}pointer-events:none;`;
+        canvas.setAttribute("aria-hidden", "true");
+        const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false });
+        if (!gl) {
+            return 0;
+        }
+        [canvas.width, canvas.height] = [this.canvas.width, this.canvas.height];
+        canvas.addEventListener("webglcontextlost", (event) => {
+            event.preventDefault();
+            this.heard(HEARD.contextLost);
+        });
+        this.canvas.after(canvas);
+        Object.assign(this, { gl, glCanvas: canvas, glObjects: [null] });
+        const named = gl.getExtension("WEBGL_debug_renderer_info");
+        this.glName = String(gl.getParameter(named ? named.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+        return SOFTWARE.test(this.glName) ? 2 : 1;
+    }
+
+    gpuClose() {
+        this.glCanvas?.remove();
+        Object.assign(this, { gl: null, glCanvas: null, glObjects: [null] });
+    }
+
+    // A setting the page gave (`renderer`, `draw`), kept for `take`: its length, or -1.
+    setting(name) {
+        const value = this.options[name];
+        if (typeof value !== "string") {
+            return -1;
+        }
+        this.made = encoder.encode(value);
+        return this.made.length;
+    }
+
+    // WebGL2's functions as OpenGL ES 3's, for the program: objects by number (0 none).
+    glImports() {
+        const page = this;
+        const gl = () => page.gl;
+        const memory = () => page.exports.memory.buffer;
+        const ints = (at, count) => new Int32Array(memory(), at, count);
+        const of = (number) => page.glObjects[number] || null;
+        const number = (made) => {
+            if (!made) {
+                return 0;
+            }
+            if (!made.tautNumber) {
+                made.tautNumber = page.glObjects.push(made) - 1;
+            }
+            return made.tautNumber;
+        };
+        const make = (count, at, made) => ints(at, count).set(Array.from({ length: count }, () => number(made())));
+        const text = (at) => {
+            const bytes = new Uint8Array(memory(), at);
+            return decoder.decode(bytes.subarray(0, bytes.indexOf(0)));
+        };
+        const answer = (value) => (typeof value === "object" && !(value instanceof Int32Array) ? number(value) : value);
+        return {
+            glGetError: () => gl().getError(),
+            glGetIntegerv: (name, at) => {
+                const value = answer(gl().getParameter(name));
+                value instanceof Int32Array ? ints(at, value.length).set(value) : (ints(at, 1)[0] = Number(value));
+            },
+            glEnable: (what) => gl().enable(what),
+            glDisable: (what) => gl().disable(what),
+            glBlendFuncSeparate: (a, b, c, d) => gl().blendFuncSeparate(a, b, c, d),
+            glViewport: (x, y, width, height) => gl().viewport(x, y, width, height),
+            glScissor: (x, y, width, height) => gl().scissor(x, y, width, height),
+            glActiveTexture: (unit) => gl().activeTexture(unit),
+            glGenTextures: (count, at) => make(count, at, () => gl().createTexture()),
+            glBindTexture: (target, texture) => gl().bindTexture(target, of(texture)),
+            glTexParameteri: (target, name, value) => gl().texParameteri(target, name, value),
+            glTexImage2D: (target, level, inner, width, height, border, format, kind, at) =>
+                gl().texImage2D(target, level, inner, width, height, border, format, kind, at ? new Uint8Array(memory(), at) : null),
+            glTexSubImage2D: (target, level, x, y, width, height, format, kind, at) => gl().texSubImage2D(target, level, x, y, width, height, format, kind, new Uint8Array(memory()), at),
+            glPixelStorei: (name, value) => gl().pixelStorei(name, value),
+            glGenFramebuffers: (count, at) => make(count, at, () => gl().createFramebuffer()),
+            glBindFramebuffer: (target, frame) => gl().bindFramebuffer(target, of(frame)),
+            glFramebufferTexture2D: (target, attachment, textureTarget, texture, level) => gl().framebufferTexture2D(target, attachment, textureTarget, of(texture), level),
+            glCheckFramebufferStatus: (target) => gl().checkFramebufferStatus(target),
+            glGenBuffers: (count, at) => make(count, at, () => gl().createBuffer()),
+            glBindBuffer: (target, buffer) => gl().bindBuffer(target, of(buffer)),
+            glBufferData: (target, size, at, usage) => (at ? gl().bufferData(target, new Uint8Array(memory(), at, size), usage) : gl().bufferData(target, size, usage)),
+            glBufferSubData: (target, offset, size, at) => gl().bufferSubData(target, offset, new Uint8Array(memory()), at, size),
+            glGenVertexArrays: (count, at) => make(count, at, () => gl().createVertexArray()),
+            glBindVertexArray: (array) => gl().bindVertexArray(of(array)),
+            glEnableVertexAttribArray: (index) => gl().enableVertexAttribArray(index),
+            glVertexAttribPointer: (index, size, kind, normalized, stride, offset) => gl().vertexAttribPointer(index, size, kind, normalized !== 0, stride, offset),
+            glVertexAttribDivisor: (index, divisor) => gl().vertexAttribDivisor(index, divisor),
+            glDrawArrays: (mode, first, count) => gl().drawArrays(mode, first, count),
+            glDrawArraysInstanced: (mode, first, count, instances) => gl().drawArraysInstanced(mode, first, count, instances),
+            glCreateShader: (kind) => number(gl().createShader(kind)),
+            glShaderSource: (shader, count, sources, lengths) => {
+                const starts = new Uint32Array(memory(), sources, count);
+                const sizes = lengths ? new Int32Array(memory(), lengths, count) : null;
+                const parts = Array.from(starts, (at, n) => (sizes ? decoder.decode(new Uint8Array(memory(), at, sizes[n])) : text(at)));
+                gl().shaderSource(of(shader), parts.join(""));
+            },
+            glCompileShader: (shader) => gl().compileShader(of(shader)),
+            glGetShaderiv: (shader, name, at) => (ints(at, 1)[0] = Number(gl().getShaderParameter(of(shader), name))),
+            glDeleteShader: (shader) => gl().deleteShader(of(shader)),
+            glCreateProgram: () => number(gl().createProgram()),
+            glAttachShader: (program, shader) => gl().attachShader(of(program), of(shader)),
+            glLinkProgram: (program) => gl().linkProgram(of(program)),
+            glGetProgramiv: (program, name, at) => (ints(at, 1)[0] = Number(gl().getProgramParameter(of(program), name))),
+            glDeleteProgram: (program) => gl().deleteProgram(of(program)),
+            glUseProgram: (program) => gl().useProgram(of(program)),
+            glGetUniformLocation: (program, at) => {
+                const place = gl().getUniformLocation(of(program), text(at));
+                return place ? number(place) : -1;
+            },
+            glUniform1i: (place, value) => place >= 0 && gl().uniform1i(of(place), value),
+        };
     }
 
     // ---- videos (feature `video`) ----
@@ -895,6 +1458,15 @@ export class Page {
         new Float64Array(this.exports.memory.buffer, out, 3).set([width, height, time]);
         return this.made.length;
     }
+}
+
+// A file as one part of the program hears it: its name's length, and its name then its bytes.
+function named(name, bytes) {
+    const encoded = encoder.encode(name);
+    const both = new Uint8Array(encoded.length + bytes.length);
+    both.set(encoded);
+    both.set(bytes, encoded.length);
+    return [encoded.length, both];
 }
 
 // The canvas text is measured and drawn on: one of its own, read back often.

@@ -1,4 +1,4 @@
-//! macOS windows shown through Metal, with the feature `gpu`. Each window's view gets a
+//! macOS and iOS windows shown through Metal, with the feature `gpu`. Each window's view gets a
 //! `CAMetalLayer` over its own layer, and a texture of the window's size, private to the GPU.
 //! The CPU draws as without the feature (the window's `Surface`); only the places a run changed
 //! go up, their rows into one buffer, then a blit each. A frame copies the texture into the
@@ -9,15 +9,18 @@
 //!   its shaders compile there too); the CPU shows the windows until then.
 //! - A frame the device failed (removed, reset) loses it: the windows are drawn whole through a
 //!   new one, or by the CPU where none comes.
-//! - A window on a screen another GPU drives (its layer's `preferredDevice`) moves every window
-//!   to that GPU, drawn whole.
+//! - macOS: a window on a screen another GPU drives (its layer's `preferredDevice`) moves every
+//!   window to that GPU, drawn whole.
+//! - iOS: nothing goes to the GPU while the app is in the background (`gpu_ios`).
 //! - While a window's edge is dragged, its frames go with Core Animation's transaction
 //!   (`presentsWithTransaction`), so the picture keeps up with the frame.
-//! - The layer holds 8-bit BGRA in sRGB, as the CPU's pictures do. (EDR would set a float
-//!   format and `wantsExtendedDynamicRangeContent` where the layer is made, in `window`.)
+//! - The layer holds 8-bit BGRA in sRGB, as the CPU's pictures do; with the feature `hdr`,
+//!   16-bit floats in EDR while the window is lit on a screen with headroom (`hdr_metal`).
+use crate::geom::Rect;
 use crate::macos_sys::{Bool, CGColorSpaceCreateWithName, CGColorSpaceRelease, NSRect, NSSize, Obj, Pool, class, kCAGravityTopLeft, kCGColorSpaceSRGB, made, rust_string, send};
 use crate::platform::Renderer;
 use crate::surface::Surface;
+use crate::ui::Ui;
 use std::ffi::{c_char, c_int, c_void};
 
 /// `MTLPixelFormatBGRA8Unorm`: `0xAARRGGBB` words in memory.
@@ -74,7 +77,7 @@ pub(crate) fn open(any: bool, prefer: Obj) -> Opening {
     let prefer = prefer as usize;
     std::thread::spawn(move || {
         let gpu = Gpu::open(any, prefer as Obj);
-        crate::macos::Waker.wake();
+        crate::Waker.wake();
         gpu
     })
 }
@@ -107,6 +110,14 @@ impl Metal {
         }
         if let (None, None, Some(any)) = (&self.gpu, &self.opening, self.asks) {
             self.opening = Some(open(any, std::mem::replace(&mut self.prefer, std::ptr::null_mut())));
+        }
+    }
+
+    /// Tests: waits until the device being opened, if any, is open, and takes it in.
+    #[cfg(all(test, target_os = "ios"))]
+    pub(crate) fn opened(&mut self) {
+        if let Some(opening) = self.opening.take() {
+            self.gpu = opening.join().ok().flatten();
         }
     }
 
@@ -155,6 +166,9 @@ pub(crate) struct Gpu {
     /// Something was drawn by the GPU (tests).
     #[cfg(feature = "gpu-draw")]
     drawn: bool,
+    /// The pass to EDR, once tried (see `hdr_metal`).
+    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    lit: Option<Option<crate::hdr_metal::Pass>>,
 }
 
 // SAFETY: Metal's devices, queues, textures and pipelines may be used from any thread. A `Gpu`
@@ -179,6 +193,9 @@ pub(crate) struct Shows {
     /// The places the last frame put up (tests).
     #[cfg(test)]
     named: Vec<[usize; 4]>,
+    /// Its HDR (see `hdr_metal`).
+    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    pub(crate) lit: Box<crate::hdr_metal::Lit>,
 }
 
 /// How a window is shown: not yet asked of the GPU, through it, or by the CPU.
@@ -200,9 +217,15 @@ impl Shows {
     }
 
     /// Its texture (tests).
-    #[cfg(all(test, feature = "gpu-draw"))]
+    #[cfg(all(test, any(target_os = "ios", feature = "gpu-draw")))]
     pub(crate) fn texture(&self) -> Obj {
         self.texture
+    }
+
+    /// Whether it is presented in EDR.
+    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    pub(crate) fn in_edr(&self) -> bool {
+        self.lit.on
     }
 }
 
@@ -241,6 +264,8 @@ impl Gpu {
             pipeline,
             #[cfg(feature = "gpu-draw")]
             drawn: false,
+            #[cfg(all(target_os = "macos", feature = "hdr"))]
+            lit: None,
         })
     }
 
@@ -288,6 +313,8 @@ impl Gpu {
             places: Vec::new(),
             #[cfg(test)]
             named: Vec::new(),
+            #[cfg(all(target_os = "macos", feature = "hdr"))]
+            lit: Default::default(),
         };
         if !self.fit(&mut shows, bounds, size, scale) {
             self.forget(shows);
@@ -405,7 +432,7 @@ impl Gpu {
             let drawable: Obj = send(shows.layer, c"nextDrawable", ());
             let by_commands = !drawable.is_null() && !live;
             if !drawable.is_null() {
-                self.copy_out(commands, shows.texture, send(drawable, c"texture", ()));
+                self.copy_or_light(commands, shows, send(drawable, c"texture", ()));
             }
             if by_commands {
                 send::<()>(commands, c"presentDrawable:", (drawable,));
@@ -418,6 +445,38 @@ impl Gpu {
             send::<()>(shows.last, c"release", ());
         }
         (shows.last, shows.frame) = (commands, std::ptr::null_mut());
+    }
+
+    /// Encodes the window's texture into `target` (its drawable's): drawn lit while in EDR, else
+    /// copied.
+    fn copy_or_light(&self, commands: Obj, shows: &mut Shows, target: Obj) {
+        #[cfg(all(target_os = "macos", feature = "hdr"))]
+        if let (true, Some(Some(pass))) = (shows.lit.on, &self.lit) {
+            let gains = shows.lit.put_up(self.device, commands);
+            return pass.draw(commands, shows.texture, gains, target, shows.lit.constants());
+        }
+        self.copy_out(commands, shows.texture, target);
+    }
+
+    /// Takes in what lights window `shows` on `screen` after a run of `ui`: its gains drawn
+    /// again where they changed; its layer put in EDR while lit on a screen with headroom, and
+    /// back. Says whether the headroom changed (the app is to run again) and whether the window
+    /// is to be shown again.
+    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    pub(crate) fn light(&mut self, shows: &mut Shows, screen: crate::hdr::Screen, ui: &mut crate::Ui) -> (bool, bool) {
+        let news = ui.set_screen(screen);
+        let glows = if screen.hdr { ui.glows() } else { Vec::new() };
+        let changed = shows.lit.gains.take(glows, shows.size.map(|side| side as i32), &ui.light.maps).is_some();
+        if screen.hdr && shows.lit.gains.any() && self.lit.is_none() {
+            self.lit = Some(crate::hdr_metal::Pass::new(self.device));
+        }
+        let on = screen.hdr && shows.lit.gains.any() && matches!(self.lit, Some(Some(_)));
+        let shown_again = changed || on != shows.lit.on || (on && screen != shows.lit.screen);
+        if on != shows.lit.on {
+            shows.lit.switch(shows.layer, on);
+        }
+        shows.lit.screen = screen;
+        (news, shown_again)
     }
 
     /// Encodes a copy of all of `from` into `to`, as far as both reach.
@@ -436,11 +495,48 @@ impl Gpu {
 
     /// The device that drives the window's screen, where that is another (+1): every window is
     /// to move there.
+    #[cfg(target_os = "macos")]
     pub(crate) fn moved(&self, shows: &Shows) -> Option<Obj> {
         // SAFETY: a layer answers the device it would have (+0).
         let preferred: Obj = unsafe { send(shows.layer, c"preferredDevice", ()) };
         // SAFETY: retained for whoever opens it.
         (!preferred.is_null() && preferred != self.device).then(|| unsafe { send(preferred, c"retain", ()) })
+    }
+
+    /// Waits until the window's last frame is on the GPU: nothing is left to send to it.
+    #[cfg(target_os = "ios")]
+    pub(crate) fn settle(&self, shows: &Shows) {
+        // SAFETY: the last frame (or nil, which answers nothing) was committed.
+        unsafe { send::<()>(shows.last, c"waitUntilScheduled", ()) };
+    }
+
+    /// Draws one place a run changed (`place`, in units) into a window shown `size` pixels at
+    /// `scale`: by the GPU where it draws a part that big (`gpu-draw`), else by the CPU into the
+    /// window's pixels, which then go up.
+    pub(crate) fn draw_place(&mut self, shows: &mut Shows, surface: &mut Surface, ui: &mut Ui, place: Rect, (size, scale): ([usize; 2], f32)) {
+        let snapped = place.snap_to_pixels(scale);
+        let edge = |at: f32, most: usize| ((at * scale).round().max(0.0) as usize).min(most);
+        let pixels = [edge(snapped.x, size[0]), edge(snapped.y, size[1]), edge(snapped.right(), size[0]), edge(snapped.bottom(), size[1])];
+        if pixels[0] >= pixels[2] || pixels[1] >= pixels[3] {
+            return;
+        }
+        #[cfg(feature = "gpu-draw")]
+        if self.drawn_by_gpu(shows, ui, snapped, pixels.map(|side| side as i32), size) {
+            return;
+        }
+        surface.redraw(ui, place);
+        self.put(shows, surface, pixels);
+    }
+
+    /// Draws `area` of a window `size` pixels big (`place` in pixels: left, top, right, bottom)
+    /// on the GPU, where it draws a part that big itself (see `gpu_draw`). Says whether it did;
+    /// if not, the CPU is to.
+    #[cfg(feature = "gpu-draw")]
+    fn drawn_by_gpu(&mut self, shows: &mut Shows, ui: &mut Ui, area: Rect, place: [i32; 4], size: [usize; 2]) -> bool {
+        let Some(list) = self.drawing(place) else { return false };
+        let mut list = std::mem::take(list);
+        list.record(ui, area, size.map(|side| side as i32));
+        self.draw(shows, list, place)
     }
 
     /// Lets go of a window: its layer leaves its view.
@@ -491,6 +587,8 @@ impl Drop for Gpu {
     fn drop(&mut self) {
         #[cfg(feature = "gpu-draw")]
         drop(self.pipeline.take());
+        #[cfg(all(target_os = "macos", feature = "hdr"))]
+        drop(self.lit.take());
         // SAFETY: what this made, released once.
         unsafe { [self.queue, self.device].into_iter().for_each(|held| send::<()>(held, c"release", ())) };
     }
@@ -499,7 +597,7 @@ impl Drop for Gpu {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::{LocalClipboard, Ui, geom::Size, text::BuiltInFont};
+    use crate::{LocalClipboard, geom::Size, text::BuiltInFont};
     use std::sync::atomic::AtomicBool;
 
     /// Tests: no device is to be had.
@@ -662,6 +760,108 @@ pub(crate) mod tests {
         let before = shows.texture;
         assert!(gpu.fit(&mut shows, NSRect::new(0.0, 0.0, 64.0, 48.0), [64, 48], 2.0) && shows.texture == before, "the same size keeps its texture");
         assert!(gpu.fit(&mut shows, NSRect::new(0.0, 0.0, 40.0, 30.0), [80, 60], 2.0) && shows.size == [80, 60]);
+        gpu.forget(shows);
+    }
+
+    /// Waits for the last frame, and reads `texture` back (RGBA16Float: an EDR drawable's) as
+    /// floats.
+    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    fn read_light(gpu: &Gpu, shows: &mut Shows, texture: Obj) -> Vec<[f32; 4]> {
+        let [width, height] = shows.size;
+        let mut halves = vec![[0u16; 4]; width * height];
+        unsafe {
+            send::<()>(shows.last, c"waitUntilCompleted", ());
+            let buffer: Obj = send(gpu.device, c"newBufferWithLength:options:", (width * height * 8, 0usize));
+            let commands: Obj = send(gpu.queue, c"commandBuffer", ());
+            let blit: Obj = send(commands, c"blitCommandEncoder", ());
+            let copy = c"copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:";
+            send::<()>(blit, copy, (texture, 0usize, 0usize, Three([0, 0, 0]), Three([width, height, 1]), buffer, 0usize, width * 8, width * height * 8));
+            send::<()>(blit, c"endEncoding", ());
+            send::<()>(commands, c"commit", ());
+            send::<()>(commands, c"waitUntilCompleted", ());
+            let there: *const [u16; 4] = send(buffer, c"contents", ());
+            std::ptr::copy_nonoverlapping(there, halves.as_mut_ptr(), halves.len());
+            send::<()>(buffer, c"release", ());
+        }
+        halves.into_iter().map(|pixel| pixel.map(crate::hdr::from_half)).collect()
+    }
+
+    /// The EDR test's window: a picture of white, grey, a red and black, with a gain map of a
+    /// gain per colour; and a white box eight times as bright.
+    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    fn lit_window(picture: &mut Option<crate::Picture>, ui: &mut Ui) {
+        use crate::hdr::{Curve, GainMap, half};
+        let shown = *picture.get_or_insert_with(|| {
+            let added = ui.add_picture(4, vec![0xffff_ffff, 0xff80_8080, 0xffc0_4020, 0xff00_0000]);
+            let stops = [[0.0f32, 0.0, 0.0], [1.0, 1.0, 1.0], [3.0, 1.0, -1.0], [2.0, 2.0, 2.0]];
+            let values = stops.iter().flatten().map(|stop| half(*stop)).collect();
+            ui.light.keep_map(added, GainMap { width: 4, colours: 3, values, curve: Curve::STOPS, serial: 0 });
+            added
+        });
+        ui.el().flow(crate::Flow::Stack).size(8.0, 1.0).open();
+        ui.el().picture(shown).size(4.0, 1.0).show();
+        ui.el().offset(4.0, 0.0).size(4.0, 1.0).fill(crate::Color::WHITE).brightness(8.0).show();
+        ui.close();
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    fn a_window_lit_on_a_screen_with_headroom_is_shown_in_edr_and_back() {
+        let _pool = Pool::new();
+        let _one = one();
+        let Some(mut gpu) = gpu() else { return eprintln!("no Metal device here: not tested") };
+        // This Mac's own screens, as they are (read only).
+        unsafe {
+            for screen in crate::macos_sys::array_items(send(class(c"NSScreen"), c"screens", ())) {
+                let [now, most]: [f64; 2] = [send(screen, c"maximumExtendedDynamicRangeColorComponentValue", ()), send(screen, c"maximumPotentialExtendedDynamicRangeColorComponentValue", ())];
+                eprintln!("a screen: EDR headroom {now} now, {most} at most");
+            }
+        }
+        let mut trial = crate::testing::Trial::new(None, lit_window);
+        trial.resize(8.0, 1.0, 1.0);
+        let surface = Surface::draw(&mut trial.ui, 64);
+        let (_under, mut shows) = shown(&mut gpu, [8, 1]);
+        gpu.put(&mut shows, &surface, [0, 0, 8, 1]);
+        // An EDR screen of 5 times SDR white: in EDR, each colour lit by its gain, at most 5.
+        let edr = crate::hdr::Screen { hdr: true, white: 80.0, peak: 400.0 };
+        assert_eq!(gpu.light(&mut shows, edr, &mut trial.ui), (true, true), "the app hears the headroom; the window is shown again");
+        assert_eq!(trial.ui.headroom(), 5.0);
+        unsafe {
+            assert_eq!(send::<usize>(shows.layer, c"pixelFormat", ()), crate::hdr_metal::HALVES, "the layer takes 16-bit floats");
+            assert_ne!(send::<Bool>(shows.layer, c"wantsExtendedDynamicRangeContent", ()), 0, "the layer wants EDR");
+            let drawable: Obj = send(shows.layer, c"nextDrawable", ());
+            assert!(!drawable.is_null(), "a layer of no window has drawables");
+            let target: Obj = send(drawable, c"texture", ());
+            assert_eq!(send::<usize>(target, c"pixelFormat", ()), crate::hdr_metal::HALVES, "the drawable is of 16-bit floats");
+            gpu.flush(&mut shows);
+            let commands = gpu.frame(&mut shows);
+            gpu.copy_or_light(commands, &mut shows, target);
+            send::<()>(commands, c"commit", ());
+            send::<()>(shows.last, c"release", ());
+            (shows.last, shows.frame) = (commands, std::ptr::null_mut());
+            let light = read_light(&gpu, &mut shows, target);
+            let linear = |byte: u32| {
+                let part = byte as f32 / 255.0;
+                if part <= 0.04045 { part / 12.92 } else { ((part + 0.055) / 1.055).powf(2.4) }
+            };
+            let picture = [[0xff; 3], [0x80; 3], [0xc0, 0x40, 0x20], [0; 3]].map(|pixel| pixel.map(linear));
+            let gains = [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [5.0, 2.0, 0.5], [4.0, 4.0, 4.0]];
+            let wanted: Vec<[f32; 3]> = (0..4).map(|at| std::array::from_fn(|part| picture[at][part] * gains[at][part])).chain([[5.0; 3]; 4]).collect();
+            eprintln!("EDR: {light:?}");
+            for (at, (got, wanted)) in light.iter().zip(&wanted).enumerate() {
+                assert!((0..3).all(|part| (got[part] - wanted[part]).abs() <= wanted[part] / 500.0 + 1e-3) && got[3] == 1.0, "at {at}: {got:?}, not {wanted:?}");
+            }
+        }
+        // Shown, and then the screen has no headroom: back to BGRA in sRGB, the CPU's pixels.
+        gpu.show(&mut shows, false);
+        assert!(!gpu.lost, "an EDR frame shows");
+        assert_eq!(gpu.light(&mut shows, crate::hdr::Screen::SDR, &mut trial.ui), (true, true));
+        unsafe {
+            assert_eq!(send::<usize>(shows.layer, c"pixelFormat", ()), BGRA8);
+            assert_eq!(send::<Bool>(shows.layer, c"wantsExtendedDynamicRangeContent", ()), 0);
+        }
+        gpu.show(&mut shows, false);
+        assert!(held(&mut gpu, &mut shows) == surface.pixels && !shows.in_edr(), "SDR: the CPU's pixels, as ever");
         gpu.forget(shows);
     }
 

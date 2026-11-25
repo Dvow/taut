@@ -394,6 +394,17 @@ impl FontFile {
         self.zones.get_or_init(|| crate::hinting::Zones::of(self))
     }
 
+    /// How much of the em lies above the baseline: the typographic ascent over the ascent and
+    /// descent (`OS/2`), else the line's. Ruby is set against the em box so (as Chrome does).
+    /// (A WOFF font's `OS/2` is not kept, without `hinting`.)
+    #[cfg(feature = "ruby")]
+    pub(crate) fn em_above(&self) -> f32 {
+        let all = Bytes(&self.file);
+        let typo = listed(all, self.start, b"OS/2").map_or(Bytes(&[]), |range| all.within(&range));
+        let ends = typo.i16(68).zip(typo.i16(70)).filter(|(up, down)| up > &0 && down <= &0);
+        ends.map_or(self.ascent / (self.ascent + self.descent), |(up, down)| up as f32 / (up as f32 - down as f32))
+    }
+
     /// Its line metrics at this size: ascent and descent.
     pub fn metrics(&self, size: f32) -> Metrics {
         let part = |of: f32| of * size / self.units;

@@ -23,9 +23,9 @@
 //! `ios_text_input`, which takes the keyboard while a text box has focus. Screen readers read
 //! `ui_accessibility`.
 //!
-//! The window fills its scene: of [`Window`], only the title is used (it names the scene in
-//! the iPad's app switcher). The CPU draws and Core Animation shows; `Renderer` and `gpu`
-//! change nothing yet.
+//! The window fills its scene: of [`Window`], only the title (it names the scene in the iPad's
+//! app switcher) and the renderer are used. The CPU draws and Core Animation shows; with the
+//! feature `gpu`, Metal shows (`gpu_ios`).
 //!
 //! The app hears the program go to the background as its window minimized
 //! ([`Event::Minimized`], [`Ui::window_minimized`]): the moment to save its state. The system's
@@ -133,8 +133,8 @@ pub(crate) enum Heard {
     Other(Box<dyn FnOnce(&mut Ui) -> bool>),
 }
 
-/// What `run` hands the window: the app's title, and the app.
-type Starting = (String, Box<dyn FnMut(&mut Ui)>);
+/// What `run` hands the window: the app's title, what is to show it, and the app.
+type Starting = (String, crate::platform::Renderer, Box<dyn FnMut(&mut Ui)>);
 
 /// What the view keeps between UIKit's calls: the fingers down (each touch and the id told the
 /// interface), the one that is the mouse, the keys held, and the key repeating.
@@ -959,12 +959,15 @@ struct Host {
     start: Instant,
     /// The app's title, as last asked (shown in the app switcher on iPad).
     title: String,
+    /// What Metal keeps of the window (feature `gpu`).
+    #[cfg(feature = "gpu")]
+    screen: crate::gpu_ios::Screen,
 }
 
 /// Opens the program's window: a view controller, the view and its page, the text input view,
 /// what hears the pointer; then the interface, run once.
 fn open(window: Obj) {
-    let Some((title, app)) = STARTING.with_borrow_mut(Option::take) else { return };
+    let Some((title, renderer, app)) = STARTING.with_borrow_mut(Option::take) else { return };
     let Some(text) = SystemText::new() else {
         return eprintln!("taut: CoreText has no system font.");
     };
@@ -997,7 +1000,11 @@ fn open(window: Obj) {
     let host = Host {
         app, ui, window, view, controller, page, area: NSRect::default(), keyboard: 0.0, scale: 1.0, surface: Surface::default(),
         background: Color::NONE, pointer, rerun: true, start: Instant::now(), title,
+        #[cfg(feature = "gpu")]
+        screen: crate::gpu_ios::Screen::new(renderer),
     };
+    #[cfg(not(feature = "gpu"))]
+    let _ = renderer;
     VIEW.set(view);
     CONTROLLER.set(controller);
     HOST.set(Some(host));
@@ -1065,7 +1072,11 @@ impl Host {
                 self.keyboard = covered;
                 self.rerun |= self.measure();
             }
-            Heard::Background(away) => self.rerun |= self.ui.event(Event::Minimized(away)),
+            Heard::Background(away) => {
+                #[cfg(feature = "gpu")]
+                self.screen.set_away(away);
+                self.rerun |= self.ui.event(Event::Minimized(away));
+            }
             Heard::Active(on) => self.rerun |= self.ui.event(Event::Focused(on)),
             Heard::Ending => {
                 self.ui.request_close();
@@ -1137,8 +1148,13 @@ impl Host {
         }
     }
 
-    /// Draws what changed and hands the pixels to the page.
+    /// Draws what changed and shows it: through Metal (feature `gpu`), else by handing the
+    /// pixels to the page.
     fn draw(&mut self) {
+        #[cfg(feature = "gpu")]
+        if self.through_gpu() {
+            return;
+        }
         let changed = self.surface.update(&mut self.ui);
         self.ui.changed();
         if !changed.is_empty() {
@@ -1191,6 +1207,23 @@ impl Host {
     }
 }
 
+/// The window shown through Metal (feature `gpu`).
+#[cfg(feature = "gpu")]
+impl Host {
+    /// Draws what changed through Metal, where it shows the window. Says whether it did; if
+    /// not, the CPU is to (all of the window, where Metal stopped showing it).
+    fn through_gpu(&mut self) -> bool {
+        // SAFETY: a view answers its layer.
+        let under: Obj = unsafe { send(self.view, c"layer", ()) };
+        let shown = self.screen.draw(&mut self.ui, &mut self.surface, under, self.area, self.scale);
+        self.ui.renderer = self.screen.renderer();
+        if shown == crate::platform::ShownBy::CpuAfresh {
+            self.surface = Surface::default();
+        }
+        shown == crate::platform::ShownBy::Gpu
+    }
+}
+
 /// One turn of the window, unless one is running (then the queued one comes after it).
 pub(crate) fn turn() {
     repeat_keys();
@@ -1211,7 +1244,7 @@ pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
     if unsafe { send::<Bool>(class(c"NSThread"), c"isMainThread", ()) } == 0 {
         return eprintln!("taut: iOS shows windows only from the program's main thread.");
     }
-    STARTING.set(Some((window.title.to_string(), Box::new(app))));
+    STARTING.set(Some((window.title.to_string(), window.renderer, Box::new(app))));
     let delegate = delegate_class();
     // The program's arguments, kept for its life as UIKit asks.
     let arguments: Vec<*mut c_char> = std::env::args().filter_map(|argument| std::ffi::CString::new(argument).ok()).map(std::ffi::CString::into_raw).collect();

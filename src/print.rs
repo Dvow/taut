@@ -4,7 +4,8 @@
 //! On Windows the pages go to the printer's spooler as shapes and text, or as pixels where the
 //! printer can't blend (`print_windows.rs`); on Linux the desktop portal shows its dialog and
 //! takes the pages as a PDF (`print_linux.rs`), as Android's print dialog does
-//! (`android_print.rs`). Elsewhere nothing is printed.
+//! (`android_print.rs`); a page prints its pages as pictures through the browser's dialog
+//! (`web_print.rs`). Elsewhere nothing is printed.
 //!
 //! Pages can be laid out for the paper the person picks ([`print_laid`]): the app's layout runs
 //! again for the sheet's size once it is known.
@@ -21,6 +22,8 @@ use crate::android_print::ask;
 use crate::print_linux::ask;
 #[cfg(windows)]
 use crate::print_windows::ask;
+#[cfg(target_family = "wasm")]
+use crate::web_print::ask;
 
 /// What came of printing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,7 +149,7 @@ pub(crate) fn tell(outcome: &Mutex<Option<PrintOutcome>>, printed: PrintOutcome)
 }
 
 /// No way of printing: nothing is printed.
-#[cfg(not(any(windows, all(unix, not(target_vendor = "apple")))))]
+#[cfg(not(any(windows, all(unix, not(target_vendor = "apple")), target_family = "wasm")))]
 fn ask(pages: Pages, title: &str, outcome: Arc<Mutex<Option<PrintOutcome>>>) {
     let _ = (pages, title);
     tell(&outcome, PrintOutcome::Unable);

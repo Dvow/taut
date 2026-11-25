@@ -76,6 +76,9 @@ pub(crate) enum Thing {
     Icon(Icon),
     /// A kept picture, and its displayed width and height.
     Picture(Picture, [f32; 2]),
+    /// Text with its reading (ruby) over it: the reading's bytes. (Its words are the base.)
+    #[cfg(feature = "ruby")]
+    Ruby([u32; 2]),
 }
 
 /// A run's style: anything unset follows the block.
@@ -137,21 +140,39 @@ pub(crate) fn finish(writing: &mut Writing) {
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Span<'a> {
-    words: &'a str,
-    look: TextStyle,
+    pub(crate) words: &'a str,
+    pub(crate) look: TextStyle,
     /// Its font size: 0 for the theme's.
-    size: f32,
-    face: Option<Face>,
-    color: Option<Color>,
-    back: Option<Color>,
-    thing: Thing,
+    pub(crate) size: f32,
+    pub(crate) face: Option<Face>,
+    pub(crate) color: Option<Color>,
+    pub(crate) back: Option<Color>,
+    pub(crate) thing: Thing,
+    /// Its reading (ruby): empty for none.
+    #[cfg(feature = "ruby")]
+    pub(crate) ruby: &'a str,
+    /// In vertical text, set upright across one em (tate-chu-yoko).
+    #[cfg(feature = "ruby")]
+    pub(crate) upright: bool,
 }
 
 impl<'a> Span<'a> {
     /// Text, in the theme's font and text colour.
     pub const fn text(words: &'a str) -> Self {
         let look = TextStyle { bold: false, italic: false, mono: false, rule: Decoration::None, link: 0 };
-        Span { words, look, size: 0.0, face: None, color: None, back: None, thing: Thing::Words }
+        Span {
+            words,
+            look,
+            size: 0.0,
+            face: None,
+            color: None,
+            back: None,
+            thing: Thing::Words,
+            #[cfg(feature = "ruby")]
+            ruby: "",
+            #[cfg(feature = "ruby")]
+            upright: false,
+        }
     }
     /// An icon, as tall as the surrounding text, in its colour.
     pub const fn icon(icon: Icon) -> Span<'static> {
@@ -206,6 +227,23 @@ impl<'a> Span<'a> {
     /// Struck through.
     pub const fn strikethrough(mut self) -> Self {
         self.look.rule = Decoration::Strikethrough;
+        self
+    }
+    /// Its reading (ruby, furigana): small text over it (at its right in vertical text), as
+    /// CSS `<ruby>` sets it. Screen readers hear it after the text, in brackets. (Feature
+    /// `ruby`.)
+    #[cfg(feature = "ruby")]
+    pub fn ruby(mut self, reading: &'a str) -> Self {
+        crate::rich_ruby::RUBY.get_or_init(|| &crate::rich_ruby::HOOKS);
+        self.ruby = reading;
+        self
+    }
+    /// In vertical text ([`Ui::vertical_rich`]), set upright across one em, squeezed to fit:
+    /// tate-chu-yoko, as CSS `text-combine-upright: all` sets a few digits or letters. (Feature
+    /// `ruby`; [`Ui::upright_digits`] needs none.)
+    #[cfg(feature = "ruby")]
+    pub const fn upright(mut self) -> Self {
+        self.upright = true;
         self
     }
     /// A link: in the accent colour, underlined while hovered or focused, activated by a click,
@@ -334,7 +372,7 @@ impl Laid {
                 && end < bits.end
                 && self.bits[end].font == first.font
                 && self.bits[end].back == Color::NONE
-                && self.bits[end].thing == Thing::Words
+                && matches!(self.bits[end].thing, Thing::Words)
                 && self.bits[end].words[0] == self.bits[end - 1].words[1]
             {
                 end += 1;
@@ -355,6 +393,8 @@ impl Laid {
             Thing::Words | Thing::Named(_) => system.measure(&text[first.words[0] as usize..last.words[1] as usize], first.font, scale, Some(&mut ends)),
             Thing::Icon(_) => first.font.size,
             Thing::Picture(_, [wide, _]) => wide,
+            #[cfg(feature = "ruby")]
+            Thing::Ruby(_) => return crate::rich_ruby::RUBY.get().map_or(x, |ruby| (ruby.measure)(self, run.start, text, system, scale, x)),
         };
         let (heights, mut count) = (heights(system, first.font, scale, fonts), 0);
         for at in run {
@@ -675,6 +715,8 @@ impl Ui {
             self.el().offset(x - before, y).size(frag.wide + before + after, bit.above + bit.below).fill(bit.back).radius(3.0).show();
         }
         match bit.thing {
+            #[cfg(feature = "ruby")]
+            Thing::Ruby(_) => crate::rich_ruby::RUBY.get().into_iter().for_each(|ruby| (ruby.write)(self, shape, frag, [x, y], lit)),
             Thing::Icon(icon) => _ = self.el().icon(icon, frag.high, bit.color).offset(x, y).show(),
             Thing::Picture(picture, _) => _ = self.el().picture(picture).size(frag.wide, frag.high).offset(x, y).show(),
             _ => {
@@ -701,6 +743,8 @@ pub(crate) struct Writings {
 pub(crate) struct Kept {
     pub paragraphs: ById<Paragraph>,
     pub documents: ById<crate::markdown_view::Shown>,
+    /// What vertical text keeps (see `vertical_paragraph`): none until it is described.
+    pub vertical: crate::vertical_paragraph::Held,
 }
 
 /// A rich text paragraph as last laid out: a hash of its input, its pieces' text in order, each
@@ -787,11 +831,15 @@ impl Ui {
                 let start = paragraph.text.len() as u32;
                 paragraph.text.push_str(piece.words);
                 let words = [start, paragraph.text.len() as u32];
+                #[cfg(feature = "ruby")]
+                let thing = crate::rich_ruby::RUBY.get().filter(|_| !piece.ruby.is_empty()).map_or(piece.thing, |ruby| (ruby.told)(&mut paragraph.text, piece.ruby));
+                #[cfg(not(feature = "ruby"))]
+                let thing = piece.thing;
                 let font = Font { face: face_of(piece.face.unwrap_or(t.font.face), piece.look), size: if piece.size > 0.0 { piece.size } else { t.font.size }, decoration: piece.look.rule };
                 let link = if piece.look.link != 0 { paragraph.links.len() as u32 + 1 } else { 0 };
                 let color = piece.color.unwrap_or(if link != 0 { t.accent } else { t.text });
                 let back = piece.back.unwrap_or(if piece.look.mono { t.hover } else { Color::NONE });
-                laid.bits.push(Bit::new(words, font, color, back, link, piece.thing));
+                laid.bits.push(Bit::new(words, font, color, back, link, thing));
                 paragraph.links.push(words);
             }
             paragraph.long = laid.measure(0..laid.bits.len(), &paragraph.text, self.text.as_mut(), scale, &mut Vec::new());
@@ -813,7 +861,7 @@ pub(crate) fn row_of(laid: &Laid, frag: u32) -> u32 {
 }
 
 /// A hash of everything a piece specifies.
-fn piece_key(piece: &Span) -> u64 {
+pub(crate) fn piece_key(piece: &Span) -> u64 {
     let look = piece.look;
     let flags = look.bold as u64 | (look.italic as u64) << 1 | (look.mono as u64) << 2 | (look.rule as u64) << 3 | (look.link as u64) << 5;
     let thing = match piece.thing {
@@ -821,6 +869,8 @@ fn piece_key(piece: &Span) -> u64 {
         Thing::Picture(picture, [wide, high]) => hash((picture.0, wide.to_bits(), high.to_bits())),
         _ => 0,
     };
+    #[cfg(feature = "ruby")]
+    let thing = thing ^ crate::rich_ruby::RUBY.get().map_or(0, |ruby| (ruby.key)(piece.ruby)) ^ piece.upright as u64;
     hash((piece.words, flags, piece.size.to_bits(), piece.face, piece.color, piece.back, thing))
 }
 

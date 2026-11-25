@@ -785,7 +785,13 @@ impl<'a> Lossy<'a> {
         };
         for at in 0..side * side {
             let (x, y) = (at % side, at / side);
-            pixels[(top + y) * wide + left + x] = [mean, above[x] + beside[y] - corner, above[x], beside[y]][way as usize].clamp(0, 255) as u8;
+            let guess = match way {
+                0 => mean,
+                1 => above[x] + beside[y] - corner,
+                2 => above[x],
+                _ => beside[y],
+            };
+            pixels[(top + y) * wide + left + x] = guess.clamp(0, 255) as u8;
         }
     }
 
@@ -817,10 +823,13 @@ impl<'a> Lossy<'a> {
             _ => after(place.min(13) - 10),
         });
         let mean = (edge[1..5].iter().sum::<i32>() + edge[6..10].iter().sum::<i32>() + 4) >> 3;
+        let slants = &SLANTS[way.clamp(2, 9) as usize - 2];
         for place in 0..16 {
-            let slant = SLANTS[way.clamp(2, 9) as usize - 2][place] as usize;
-            let (halfway, smoothed) = ((edge[slant & 15] + edge[(slant & 15) + 1] + 1) >> 1, (edge[(slant & 15).max(1) - 1] + 2 * edge[slant & 15] + edge[(slant & 15) + 1] + 2) >> 2);
-            let guess = [mean, edge[4 - place / 4] + edge[6 + place % 4] - edge[5], if slant >= 16 { halfway } else { smoothed }][way.min(2) as usize];
+            let guess = match way {
+                0 => mean,
+                1 => edge[4 - place / 4] + edge[6 + place % 4] - edge[5],
+                _ => slanted(&edge, slants[place] as usize),
+            };
             pixels[(top + place / 4) * wide + left + place % 4] = guess.clamp(0, 255) as u8;
         }
     }
@@ -875,31 +884,63 @@ impl<'a> Lossy<'a> {
         }
     }
 
-    /// The picture in colour, `size[0]` by `size[1]`: luma with both chroma planes upsampled,
-    /// each pixel three parts the nearest stored chroma and one the next, across and down.
+    /// The picture in colour, `size[0]` by `size[1]`: luma with both chroma planes upsampled
+    /// (see `upsample`), row by row.
     fn colours(&self, [wide, high]: [usize; 2]) -> Vec<u32> {
         let (full, half) = (self.across * 16, self.across * 8);
+        let (mut pixels, mut blue, mut red) = (vec![0; wide * high], vec![0; wide], vec![0; wide]);
+        for (y, row) in pixels.chunks_exact_mut(wide).enumerate() {
+            let [near, far] = nearest(y, high).map(|y| y * half);
+            upsample([&self.planes[1][near..][..half], &self.planes[1][far..][..half]], &mut blue);
+            upsample([&self.planes[2][near..][..half], &self.planes[2][far..][..half]], &mut red);
+            for (((pixel, bright), blue), red) in row.iter_mut().zip(&self.planes[0][y * full..][..wide]).zip(&blue).zip(&red) {
+                *pixel = rgb(*bright as i32, *blue, *red);
+            }
+        }
+        pixels
+    }
+}
 
-        // The stored chroma nearest a pixel along one axis, and the next nearest: at the edges,
-        // the nearest again.
-        let nearest = |at: usize, count: usize| (at / 2, if at % 2 == 1 { (at / 2 + 1).min(count.div_ceil(2) - 1) } else { (at / 2).saturating_sub(1) });
-        let pixel = |at: usize| {
-            let ((x, y), (near_x, far_x), (near_y, far_y)) = ((at % wide, at / wide), nearest(at % wide, wide), nearest(at / wide, high));
-            let bright = self.planes[0][y * full + x] as i32;
-            let colour = |plane: usize| {
-                let of = |x: usize, y: usize| self.planes[plane][y * half + x] as i32;
-                // The four stored chroma values around the pixel: nearest row first, nearest of
-                // each row first.
-                let [near, next, far, last] = [of(near_x, near_y), of(far_x, near_y), of(near_x, far_y), of(far_x, far_y)];
-                let (flat, sloped) = ((3 * near + far + 2) >> 2, (((near + next + far + last + 8 + 2 * (next + far)) >> 3) + near) >> 1);
-                [sloped, flat][(near_x == far_x) as usize]
-            };
-            let (blue_ward, red_ward, held) = (colour(1), colour(2), |value: i32| (value >> 6).clamp(0, 255) as u32);
-            let lit = (bright * 19077) >> 8;
-            let (red, green, blue) = (lit + ((red_ward * 26149) >> 8) - 14234, lit - ((blue_ward * 6419) >> 8) - ((red_ward * 13320) >> 8) + 8708, lit + ((blue_ward * 33050) >> 8) - 17685);
-            0xff00_0000 | held(red) << 16 | held(green) << 8 | held(blue)
-        };
-        (0..wide * high).map(pixel).collect()
+/// The stored chroma sample nearest pixel `at` of `count` along one axis, and the next nearest
+/// (at the edges, the nearest again).
+fn nearest(at: usize, count: usize) -> [usize; 2] {
+    [at / 2, if at % 2 == 1 { (at / 2 + 1).min(count.div_ceil(2) - 1) } else { (at / 2).saturating_sub(1) }]
+}
+
+/// One row of a chroma plane at full width, from its nearest stored row and the next nearest:
+/// each pixel three parts the nearest stored sample and one the next, across and down, as
+/// libwebp's "fancy" upsampling rounds it.
+fn upsample([near, far]: [&[u8]; 2], row: &mut [i32]) {
+    let last = row.len().div_ceil(2) - 1;
+    let mix = |at: usize, next: usize| {
+        let [own, beside, below, across] = [near[at], near[next], far[at], far[next]].map(i32::from);
+        (((own + beside + below + across + 8 + 2 * (beside + below)) >> 3) + own) >> 1
+    };
+    // The first pixel is the first sample's; then each pair lies between two samples.
+    row[0] = mix(0, 0);
+    for (at, pair) in row[1..].chunks_mut(2).enumerate() {
+        pair[0] = mix(at, (at + 1).min(last));
+        if let Some(second) = pair.get_mut(1) {
+            *second = mix(at + 1, at);
+        }
+    }
+}
+
+/// A pixel from luma and chroma, in BT.601's integer steps as libwebp takes them.
+#[inline(always)]
+fn rgb(bright: i32, blue: i32, red: i32) -> u32 {
+    let (held, lit) = (|value: i32| (value >> 6).clamp(0, 255) as u32, (bright * 19077) >> 8);
+    let (r, g, b) = (lit + ((red * 26149) >> 8) - 14234, lit - ((blue * 6419) >> 8) - ((red * 13320) >> 8) + 8708, lit + ((blue * 33050) >> 8) - 17685);
+    0xff00_0000 | held(r) << 16 | held(g) << 8 | held(b)
+}
+
+/// A pixel of a slanted 4×4 mode (see `SLANTS`): an edge pixel averaged with its two
+/// neighbours, or from 16 on, the mean of one and the next.
+fn slanted(edge: &[i32; 15], slant: usize) -> i32 {
+    let at = slant & 15;
+    match slant >= 16 {
+        true => (edge[at] + edge[at + 1] + 1) >> 1,
+        false => (edge[at.max(1) - 1] + 2 * edge[at] + edge[at + 1] + 2) >> 2,
     }
 }
 
@@ -931,7 +972,9 @@ fn way(decoder: &mut BoolDecoder, likely: &[u8]) -> u8 {
 /// coefficient (zero, one, more); for the first, by `around` (how many of the two neighbours
 /// were non-zero). Returns the position after the last non-zero coefficient.
 fn spelled(decoder: &mut BoolDecoder, spelling: &[u8; 1056], [tables, around, first]: [usize; 3], steps: [i32; 2], numbers: &mut [i32]) -> usize {
-    let likely = |place: usize, before: usize| &spelling[((tables * 8 + STRETCH[place]) * 3 + before) * 11..][..11];
+    // Eight bands of three contexts of eleven probabilities.
+    let bands = &spelling.as_chunks::<11>().0[tables * 24..][..24];
+    let likely = |place: usize, before: usize| &bands[STRETCH[place] * 3 + before];
     let (mut place, mut no) = (first, likely(first, around));
     while place < 16 {
         // Is there another non-zero coefficient? And how many zeros before it?

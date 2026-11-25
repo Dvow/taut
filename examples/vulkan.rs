@@ -7,9 +7,9 @@
 //! has a swap chain, whose images are drawn into the same way.)
 //!   cargo run --example vulkan [<file.png>]
 //!
-//! Only the system's Vulkan loader (vulkan-1.dll, libvulkan.so.1), opened by name; the API used
-//! is declared here as vulkan_core.h declares it. (A program using a Vulkan bindings crate hands
-//! the layer its handles' raw values.)
+//! Only the system's Vulkan loader (vulkan-1.dll, libvulkan.so.1, Android's libvulkan.so),
+//! opened by name; the API used is declared here as vulkan_core.h declares it. (A program using
+//! a Vulkan bindings crate hands the layer its handles' raw values.)
 // The handles handed to the functions here are the program's own Vulkan objects, trusted as
 // Vulkan trusts them.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -165,13 +165,19 @@ unsafe extern "C" {
     fn dlsym(library: *mut c_void, name: *const c_char) -> *mut c_void;
 }
 
+/// The system's Vulkan loader, by name.
+#[cfg(target_os = "android")]
+const LOADER: &std::ffi::CStr = c"libvulkan.so";
+#[cfg(all(unix, not(target_os = "android")))]
+const LOADER: &std::ffi::CStr = c"libvulkan.so.1";
+
 /// The loader's one function that finds all the others, if the system has a loader.
 fn loader() -> Option<unsafe extern "system" fn(Object, *const c_char) -> *const c_void> {
     // SAFETY: the names end in a zero; the library stays open while the program runs.
     #[cfg(windows)]
     let found = unsafe { Some(LoadLibraryA(c"vulkan-1.dll".as_ptr())).filter(|library| *library != 0).map(|library| GetProcAddress(library, c"vkGetInstanceProcAddr".as_ptr().cast())) };
     #[cfg(unix)]
-    let found = unsafe { Some(dlopen(c"libvulkan.so.1".as_ptr(), 2)).filter(|library| !library.is_null()).map(|library| dlsym(library, c"vkGetInstanceProcAddr".as_ptr()).cast_const()) };
+    let found = unsafe { Some(dlopen(LOADER.as_ptr(), 2)).filter(|library| !library.is_null()).map(|library| dlsym(library, c"vkGetInstanceProcAddr".as_ptr()).cast_const()) };
     // (A system with neither, as a browser page, has no loader.)
     #[cfg(not(any(windows, unix)))]
     let found: Option<*const c_void> = None;

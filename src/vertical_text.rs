@@ -1,5 +1,7 @@
 //! Vertical text, top to bottom with lines right to left, as Chinese, Japanese and Korean are
-//! written: a label ([`Ui::vertical_label`](crate::Ui::vertical_label)) and its column layout.
+//! written: how each character stands in a column, and the fonts it is written in. Columns are
+//! laid out in `vertical_layout.rs`; labels and paragraphs are `vertical_paragraph.rs`, text
+//! boxes `vertical_text_box.rs`.
 //!
 //! Each character stands as Unicode's `Vertical_Orientation` (UAX #50) says: upright
 //! (ideographs, kana, Hangul) or rotated a quarter turn clockwise (Latin and other horizontal
@@ -19,12 +21,10 @@
 //! Not done: the systems' own vertical engines (GDI's "@" fonts, FreeType's vertical layout); a
 //! font's `vrt2` (rotated glyphs for layouts that rotate nothing), as in HarfBuzz and browsers;
 //! `GPOS` for vertical text only (`vkrn`, `vpal`), which HarfBuzz does not apply by itself
-//! either. No vertical text input; a label breaks into columns only at its line ends; no
-//! tate-chu-yoko (digits set across) and no ruby.
-use crate::font_file::{FontFile, Placing};
-use crate::path::Path;
+//! either.
+use crate::font_file::FontFile;
 use crate::scripts::Language;
-use crate::shaping::{Laid, Plan, Script};
+use crate::shaping::{Plan, Script};
 
 /// How a character stands in a column (UAX #50).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,63 +70,17 @@ const FORMS: [(u16, u16); 34] = [
     (0xff3f, 0xfe33), (0xff5b, 0xfe37), (0xff5d, 0xfe38), (0, 0),
 ];
 
-/// A placed glyph of a column: its font index, the glyph, and where its points go (in units,
-/// from the column's top and middle).
-pub(crate) type Placed = (usize, u16, Placing);
-
-/// A line laid out top to bottom at a size in units: its glyphs, each placed across from the
-/// column's middle and down from its top, and its length. A piece uses the first of `fonts`
-/// that has its first letter (else the first font); `language` picks the fonts' forms for it.
-pub(crate) fn column(fonts: &[&FontFile], text: &str, size: f32, language: Language) -> (Vec<Placed>, f32) {
-    let mut placed: Vec<Placed> = Vec::new();
-    let (mut pen, mut at) = (0.0, 0);
-    let mut glyphs: Vec<Laid> = Vec::new();
-    while at < text.len() {
-        let (long, turned) = piece(fonts, &text[at..]);
-        let run = &text[at..at + long];
-        let first = run.chars().next().unwrap_or(' ');
-        let which = fonts.iter().position(|font| font.glyph(first) != 0).unwrap_or(0);
-        let font = fonts[which];
-        let script = run.chars().find_map(Script::of).unwrap_or(Script::None);
-        let unit = size / font.units();
-        let total = match turned {
-            false => font.shape(&Plan::downward(font, script, language), run, &mut glyphs),
-            true => font.shape(&Plan::of(font, script, false, language), run, &mut glyphs),
-        };
-        lay(&glyphs, which, turned, [pen, unit, middle(font, unit)], &mut placed);
-        pen += total as f32 * unit;
-        at += long;
-    }
-    (placed, pen)
-}
-
 /// Where a rotated run's baseline goes across the column: left of the middle by enough that its
 /// letters' middle (between ascent and descent) is on it.
-fn middle(font: &FontFile, unit: f32) -> f32 {
+pub(crate) fn middle(font: &FontFile, unit: f32) -> f32 {
     let metrics = font.metrics(unit * font.units());
     -(metrics.ascent - metrics.descent) / 2.0
 }
 
-/// A run's glyphs placed from `pen` down: upright ones as shaped vertically; rotated ones as
-/// shaped horizontally, turned a quarter clockwise, their baseline `line` from the column's
-/// middle.
-fn lay(glyphs: &[Laid], font: usize, turned: bool, [pen, unit, line]: [f32; 3], placed: &mut Vec<Placed>) {
-    let mut along = 0.0;
-    for laid in glyphs {
-        let [x, y] = [laid.offset[0] as f32 * unit, laid.offset[1] as f32 * unit];
-        let place = match turned {
-            false => Placing([unit, 0.0, 0.0, -unit, x, pen + along - y]),
-            true => Placing([0.0, unit, unit, 0.0, line + y, pen + along + x]),
-        };
-        placed.push((font, laid.glyph, place));
-        along += laid.advance as f32 * unit;
-    }
-}
-
-/// The length in bytes of a column's next piece, and whether it is rotated: as far as its
+/// The length in bytes of a column's next run, and whether it is rotated: as far as its
 /// characters stand alike, each with what belongs to it (combining marks, emoji sequences). A
 /// Tr character stands upright where the font's `vert` (or Unicode's forms) gives it a form.
-fn piece(fonts: &[&FontFile], text: &str) -> (usize, bool) {
+pub(crate) fn next_run(fonts: &[&FontFile], text: &str) -> (usize, bool) {
     let turned = |cluster: &str| {
         let first = cluster.chars().next().unwrap_or(' ');
         match stands(first) {
@@ -158,81 +112,20 @@ fn has_form(fonts: &[&FontFile], letter: char) -> bool {
     glyphs.first().is_some_and(|laid| laid.glyph != font.glyph(letter))
 }
 
-/// The outlines of a column's glyphs in place, `across` units right of the column's middle.
-pub(crate) fn outlines(fonts: &[&FontFile], placed: &[Placed], across: f32, path: &mut Path) {
-    for (font, glyph, place) in placed {
-        let moved = Placing([1.0, 0.0, 0.0, 1.0, across, 0.0]).after(*place);
-        path.add(&fonts[*font].sketch(*glyph, moved).path);
-    }
-}
-
-impl crate::ui::Ui {
-    /// Vertical text, top to bottom, in the normal font and colour, as CJK text is written; its
-    /// lines (at its line ends) go right to left. Letters of horizontal scripts are rotated a
-    /// quarter clockwise to read down the column. Written in the app's font where it has the
-    /// letters, else the system's CJK font, in the forms of the system language. Screen readers
-    /// get it as any text.
-    pub fn vertical_label(&mut self, text: &str) -> crate::ui::Response {
-        let (font, color) = (self.theme.font, self.theme.text);
-        let (path, [wide, long]) = self.downward_outlines(text, font);
-        let response = self.el().size(wide, long).shape(&path, color).show();
-        self.tell(&response, crate::accessibility::Role::Text, None, text);
-        response
-    }
-
-    /// The outlines of vertical text, in units from the top left of its room, and that room's
-    /// width and length. Kept for the next run (a few dozen latest at most), so the same text
-    /// is not shaped again.
-    fn downward_outlines(&mut self, text: &str, font: crate::text::Font) -> (Path, [f32; 2]) {
-        let key = (font.face, font.size.to_bits());
-        let known = LABELS.with_borrow(|labels| labels.iter().find(|(text_of, at, ..)| **text_of == *text && *at == key).map(|(.., path, size)| (path.clone(), *size)));
-        if let Some(known) = known {
-            return known;
-        }
-        let language = Language::of_the_system();
-        let system = SYSTEM.with(|system| system.get_or_init(|| system_font(language).map(std::rc::Rc::new)).clone());
-        let upright = text.chars().find(|letter| stands(*letter) != Stands::Turned).unwrap_or(' ');
-        let mut fonts: Vec<&FontFile> = self.text.file(font.face, upright).into_iter().collect();
-        fonts.extend(system.as_deref());
-        if fonts.is_empty() {
-            return (Path::new(), [0.0; 2]);
-        }
-        let metrics = fonts[0].metrics(font.size);
-        let (wide, lines) = ((metrics.ascent + metrics.descent).ceil(), text.split('\n').count());
-        let (mut path, mut longest) = (Path::new(), 0.0f32);
-        for (n, line) in text.split('\n').enumerate() {
-            let (placed, long) = column(&fonts, line, font.size, language);
-            outlines(&fonts, &placed, wide * (lines - n) as f32 - wide / 2.0, &mut path);
-            longest = longest.max(long.ceil());
-        }
-        let drawn = (path, [wide * lines as f32, longest]);
-        LABELS.with_borrow_mut(|labels| {
-            if labels.len() >= KEPT {
-                _ = labels.remove(0);
-            }
-            labels.push((text.into(), key, drawn.0.clone(), drawn.1));
-        });
-        drawn
-    }
-}
-
-/// How many labels' outlines are kept.
-const KEPT: usize = 64;
-
-/// A kept label: its text, face and size, outlines and room.
-type Label = (Box<str>, (crate::text::Face, u32), Path, [f32; 2]);
-
 thread_local! {
-    /// The labels' outlines so far (the latest `KEPT`).
-    static LABELS: std::cell::RefCell<Vec<Label>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The system's CJK font for vertical text, looked up once.
     static SYSTEM: std::cell::OnceCell<Option<std::rc::Rc<FontFile>>> = const { std::cell::OnceCell::new() };
+}
+
+/// The system's CJK font for the system's language (see `find_system_font`), looked up once.
+pub(crate) fn system_font() -> Option<std::rc::Rc<FontFile>> {
+    SYSTEM.with(|system| system.get_or_init(|| find_system_font(Language::of_the_system()).map(std::rc::Rc::new)).clone())
 }
 
 /// The system's CJK font for the language: on Windows Microsoft YaHei (Simplified Chinese),
 /// Microsoft JhengHei (Traditional), Malgun Gothic (Korean), else Yu Gothic.
 #[cfg(windows)]
-fn system_font(language: Language) -> Option<FontFile> {
+fn find_system_font(language: Language) -> Option<FontFile> {
     let folder = std::path::Path::new(&std::env::var_os("WINDIR")?).join("Fonts");
     let named = |tags: &[&[u8; 4]]| language.systems().any(|system| tags.contains(&system));
     let names: &[&str] = match () {
@@ -247,7 +140,7 @@ fn system_font(language: Language) -> Option<FontFile> {
 /// Elsewhere, the font Fontconfig names for a character of the language: kana for Japanese and
 /// others, Hangul for Korean, an ideograph for Chinese.
 #[cfg(not(windows))]
-fn system_font(language: Language) -> Option<FontFile> {
+fn find_system_font(language: Language) -> Option<FontFile> {
     let named = |tags: &[&[u8; 4]]| language.systems().any(|system| tags.contains(&system));
     let letter = match () {
         _ if named(&[b"KOR "]) => '가',
@@ -356,30 +249,6 @@ pub(crate) mod tests {
         // A glyph past those with their own `vmtx` height takes the last one's, and its top
         // bearing from the list after them.
         assert_eq!(down(&font, "A"), [(4, 1024, [-250, -(700 + 312)])]);
-    }
-
-    #[test]
-    fn a_column_stands_upright_what_is_upright_and_turns_the_rest() {
-        let font = writing_down(true, false);
-        // "あ" upright, "AA" rotated, "。" in its vertical form; a rotated run is as long as it
-        // is wide.
-        let (placed, long) = column(&[&font], "\u{3042}AA\u{3002}", 1024.0, Language::NONE);
-        assert_eq!(placed.iter().map(|(_, glyph, _)| *glyph).collect::<Vec<_>>(), [3, 4, 4, 2]);
-        assert_eq!(long, 1024.0 + 500.0 + 500.0 + 1024.0);
-        // Upright: the glyph's origin (0, 0) half its width left of the middle and its top
-        // below the pen; up in the glyph is up the page.
-        let ((_, _, upright), (_, _, turned)) = (placed[0], placed[1]);
-        assert_eq!((upright.of(crate::geom::pt(0.0, 0.0)), upright.of(crate::geom::pt(0.0, 100.0))), (crate::geom::pt(-500.0, 812.0), crate::geom::pt(-500.0, 712.0)));
-        // Rotated a quarter clockwise: along its baseline is down the column, up from it is
-        // right, and its letters' middle is on the column's middle.
-        let line = -(832.0 - 192.0) / 2.0;
-        assert_eq!(
-            (turned.of(crate::geom::pt(0.0, 0.0)), turned.of(crate::geom::pt(100.0, 0.0)), turned.of(crate::geom::pt(0.0, 100.0))),
-            (crate::geom::pt(line, 1024.0), crate::geom::pt(line, 1124.0), crate::geom::pt(line + 100.0, 1024.0))
-        );
-        // A Tr character with no vertical form in the font is rotated.
-        let (placed, _) = column(&[&writing_down(false, false)], "\u{30fc}\u{3002}", 1024.0, Language::NONE);
-        assert_eq!(placed.len(), 2);
     }
 
     #[test]

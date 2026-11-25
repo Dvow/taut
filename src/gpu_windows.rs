@@ -234,14 +234,16 @@ impl Shown {
         drawn
     }
 
-    /// What the window keeps of HDR, where its path presents in scRGB: Direct3D 11 and 12 (see
-    /// `hdr_windows`).
+    /// What the window keeps of HDR, where its path presents in HDR: Direct3D 11 and 12 (see
+    /// `hdr_windows`), Vulkan where the surface takes it (`hdr_vulkan`), OpenGL where its pixel
+    /// format is of floats (`hdr_opengl`).
     #[cfg(feature = "hdr")]
     pub(crate) fn hdr(&mut self) -> Option<&mut crate::hdr_windows::Hdr> {
         match self {
             Shown::D3d11(shown) => Some(&mut shown.hdr),
             Shown::D3d12(shown) => Some(&mut shown.hdr),
-            _ => None,
+            Shown::Vulkan(shown) => shown.hdr(),
+            Shown::Gl(shown) => shown.hdr(),
         }
     }
 

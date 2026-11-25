@@ -671,7 +671,7 @@ pub(crate) static UPDATE_ACCESS_NODES: OnceLock<fn(&mut Ui)> = OnceLock::new();
 
 /// A box walked for the accessibility tree: its index, its rectangle, its visible part, and
 /// whether it shows ([`AccessNode::visible`]).
-type AccessBox = (u32, Rect, Rect, bool);
+pub(crate) type AccessBox = (u32, Rect, Rect, bool);
 
 /// What the nodes were built from, kept while a screen reader listens. A run that changed none
 /// of it keeps the nodes; one that only moved boxes moves them.
@@ -1509,6 +1509,7 @@ impl Ui {
             text,
             scale,
             table_reading,
+            writings,
             ..
         } = self;
         notes.sort_by_key(|note| note.at);
@@ -1537,6 +1538,10 @@ impl Ui {
         place_tree_items(nodes);
         place_radio_buttons(nodes, rovers);
         lay_all_letters(nodes, &old, boxes, tree, text.as_mut(), *scale);
+        // (Vertical text is drawn as shapes: it tells where its letters are itself.)
+        if let Some(letters) = crate::vertical_paragraph::TELL_LETTERS.get() {
+            letters(writings, nodes, boxes);
+        }
         select_rows(nodes, &table_reading.told);
     }
 

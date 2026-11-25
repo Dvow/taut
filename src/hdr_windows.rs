@@ -1,5 +1,6 @@
-//! HDR on Windows (the feature `hdr`, see `hdr`): the screen a window is on, and windows lit on
-//! an HDR screen presented in scRGB by Direct3D 11 and 12.
+//! HDR on Windows (the feature `hdr`, see `hdr`): the screen a window is on, for every GPU
+//! path (`Hdr`), and windows lit on an HDR screen presented in scRGB by Direct3D 11 and 12
+//! (Vulkan's and OpenGL's passes are `hdr_vulkan`'s and `hdr_opengl`'s).
 //!
 //! - The screen: DXGI's output under the window (`IDXGIOutput6::GetDesc1`: whether HDR is on,
 //!   its peak), and its SDR white from Windows' display settings (`DisplayConfigGetDeviceInfo`).
@@ -9,8 +10,9 @@
 //!   `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709` (`ResizeBuffers`, `SetColorSpace1`); else as
 //!   ever, `B8G8R8A8_UNORM`, the same pixels.
 //! - In scRGB the window's texture reaches the back buffer through a pixel shader, not a copy:
-//!   the SDR colour made linear, times SDR white, times the gain, capped at the peak. The gains
-//!   are a texture (`R16_FLOAT`) the plane's changed part goes up to.
+//!   the SDR colour made linear, offset, times each colour's gain (capped at the peak), offset
+//!   back, times SDR white. The gains are a texture (`R16G16B16A16_FLOAT`) the plane's changed
+//!   part goes up to.
 //! - The shaders are compiled when first needed by `d3dcompiler_47.dll`: `vs_4_0` and `ps_4_0`
 //!   for Direct3D 11; `vs_5_1`, `ps_5_1` and a root signature for 12.
 use crate::gpu_windows::{Shown, function_in, system_library};
@@ -35,8 +37,7 @@ type Compile = unsafe extern "system" fn(*const c_void, usize, *const c_char, *c
 type Ask = unsafe extern "system" fn(Com, *const [u32; 4], *mut Com) -> i32;
 
 // Formats and colour spaces, as dxgiformat.h and dxgicommon.h have them.
-const FLOATS: u32 = 10;
-const HALF: u32 = 54;
+pub(crate) const FLOATS: u32 = 10;
 const LINEAR_709: u32 = 1;
 const SRGB_709: u32 = 0;
 const PQ_2020: u32 = 12;
@@ -46,10 +47,11 @@ const OUTPUT6: [u32; 4] = named(0x0683_46E8, 0xAAEC, 0x4B84, [0xAD, 0xD7, 0x13, 
 const CHAIN3: [u32; 4] = named(0x94D9_9BDB, 0xF1F8, 0x4AB0, [0xB2, 0x36, 0x7D, 0xA0, 0x17, 0x0E, 0xDA, 0xB1]);
 
 /// The pass from the window's texture to an scRGB back buffer. `white` is SDR white in scRGB
-/// (nits over 80), `most` the most a gain may be (peak over SDR white).
+/// (nits over 80), `most` the most a gain may be (peak over SDR white). A pixel's gains are
+/// red, green and blue, and its gain map's offset.
 const SHADERS: &str = r#"
 Texture2D<float4> picture : register(t0);
-Texture2D<float> gains : register(t1);
+Texture2D<float4> gains : register(t1);
 cbuffer Light : register(b0) { float white; float most; float2 unused; };
 float4 corner(uint at : SV_VertexID) : SV_Position {
     float2 p = float2((at << 1) & 2, at & 2);
@@ -60,9 +62,10 @@ float4 pixel(float4 at : SV_Position) : SV_Target {
     float3 c = picture.Load(place).rgb;
     float3 bent = pow((c + 0.055) / 1.055, 2.4);
     float3 shown = float3(c.r <= 0.04045 ? c.r / 12.92 : bent.r, c.g <= 0.04045 ? c.g / 12.92 : bent.g, c.b <= 0.04045 ? c.b / 12.92 : bent.b);
-    // (Gains are never under 1: 0 lies outside them, where none is.)
-    float gain = gains.Load(place);
-    return float4(shown * white * min(gain > 0 ? gain : 1, most), 1);
+    // (Gains are never 0: 0 lies outside them, where none is.)
+    float4 lit = gains.Load(place);
+    float3 gain = min(lit.rgb > 0 ? lit.rgb : 1, most);
+    return float4(max((shown + lit.a) * gain - lit.a, 0) * white, 1);
 }
 "#;
 /// Direct3D 12's root signature: the two textures (t0, t1) in a table, the light (b0) as four
@@ -151,6 +154,23 @@ unsafe fn described(output: Com) -> Option<OutputDescription> {
     unsafe { (function::<unsafe extern "system" fn(Com, *mut OutputDescription) -> i32>(output, 27)(output, said.as_mut_ptr()) >= 0).then(|| said.assume_init()) }
 }
 
+/// Whether any screen is HDR now.
+pub(crate) fn an_hdr_screen() -> bool {
+    unsafe extern "system" fn each(monitor: HANDLE, _: HANDLE, _: *mut RECT, found: isize) -> i32 {
+        // SAFETY: `found` is the caller's flag, alive through the enumeration.
+        unsafe { *(found as *mut bool) |= screen_of(monitor).hdr };
+        1
+    }
+    #[cfg(test)]
+    if tests::AN_HDR_SCREEN.load(Ordering::Relaxed) {
+        return true;
+    }
+    let mut found = false;
+    // SAFETY: the callback writes the flag, which outlives the call.
+    unsafe { crate::windows::sys::EnumDisplayMonitors(0, null(), each, (&raw mut found) as isize) };
+    found
+}
+
 /// The SDR white Windows' display settings give the screen of GDI name `name` (`\\.\DISPLAY1`),
 /// in nits.
 fn white_of(name: &[u16; 32]) -> Option<f32> {
@@ -181,7 +201,7 @@ fn white_of(name: &[u16; 32]) -> Option<f32> {
 }
 
 /// A window's HDR: its gains, its screen and which screen that was read for (with the count of
-/// screen changes then), and whether its swap chain is in scRGB.
+/// screen changes then), and whether it is presented in HDR.
 #[derive(Debug, Default)]
 pub(crate) struct Hdr {
     pub(crate) gains: Gains,
@@ -248,13 +268,14 @@ impl Hdr {
 pub(crate) fn light(hwnd: HANDLE, shown: Option<&mut Shown>, size: [i32; 2], ui: &mut Ui) -> bool {
     let Some(hdr) = shown.and_then(Shown::hdr) else { return ui.set_screen(Screen::SDR) };
     hdr.follow(hwnd);
+    let news = ui.set_screen(hdr.screen);
     let (glows, was) = (if hdr.screen.hdr { ui.glows() } else { Vec::new() }, hdr.wanted());
     if let Some([left, top, right, bottom]) = hdr.gains.take(glows, size, &ui.light.maps) {
         let part = RECT { left, top, right, bottom };
         // SAFETY: the window is alive; the rectangle outlives the call.
         unsafe { InvalidateRect(hwnd, if was != hdr.wanted() { null() } else { &part }, 0) };
     }
-    ui.set_screen(hdr.screen)
+    news
 }
 
 /// HLSL compiled for `target` (as `vs_4_0`), from function `entry`: its words; nothing where
@@ -324,7 +345,7 @@ impl Pass11 {
                 height: size[1] as u32,
                 mip_levels: 1,
                 array_size: 1,
-                format: HALF,
+                format: FLOATS,
                 sample_count: 1,
                 sample_quality: 0,
                 usage: 0,
@@ -345,7 +366,7 @@ impl Pass11 {
             let first = gains.plane[top as usize * size[0] as usize + left as usize..].as_ptr();
             // SAFETY: the box lies in the texture; the rows read lie in the plane, which is as
             // large. (The context's UpdateSubresource, 48.)
-            unsafe { function::<Put>(context, 48)(context, self.gains[0], 0, &place, first.cast(), size[0] as u32 * 2, 0) };
+            unsafe { function::<Put>(context, 48)(context, self.gains[0], 0, &place, first.cast(), size[0] as u32 * 8, 0) };
         }
         !self.gains[1].is_null()
     }
@@ -519,19 +540,19 @@ impl Pass12 {
         let size = gains.size;
         if size != self.size {
             self.release_gains();
-            let row = (size[0] as usize * 2).next_multiple_of(PITCH);
-            self.gains = crate::gpu_d3d12::texture_of(device, size, HALF).unwrap_or(null_mut());
+            let row = (size[0] as usize * 8).next_multiple_of(PITCH);
+            self.gains = crate::gpu_d3d12::texture_of(device, size, FLOATS).unwrap_or(null_mut());
             self.upload = crate::gpu_d3d12::buffer(device, 2, row * size[1] as usize, 0xAC3);
             (self.size, self.ready, gains.changed) = (size, false, Some([0, 0, size[0], size[1]]));
         }
         let Some((_, written)) = self.upload.filter(|_| !self.gains.is_null()) else { return false };
         self.waiting = gains.changed.take();
         let Some([left, top, right, bottom]) = self.waiting else { return true };
-        let row = ((right - left) as usize * 2).next_multiple_of(PITCH);
+        let row = ((right - left) as usize * 8).next_multiple_of(PITCH);
         for y in top..bottom {
             let from = &gains.plane[y as usize * size[0] as usize + left as usize..][..(right - left) as usize];
             // SAFETY: the buffer holds a row of the whole window for each of its rows.
-            unsafe { std::ptr::copy_nonoverlapping(from.as_ptr().cast::<u8>(), written.add((y - top) as usize * row), from.len() * 2) };
+            unsafe { std::ptr::copy_nonoverlapping(from.as_ptr().cast::<u8>(), written.add((y - top) as usize * row), from.len() * 8) };
         }
         true
     }
@@ -591,9 +612,9 @@ impl Pass12 {
     fn copy_waiting(&self, list: Com) {
         use crate::gpu_d3d12::{Barrier, Place, barrier};
         let (Some([left, top, right, bottom]), Some((upload, _))) = (self.waiting, self.upload) else { return };
-        let row = ((right - left) as usize * 2).next_multiple_of(PITCH) as u32;
+        let row = ((right - left) as usize * 8).next_multiple_of(PITCH) as u32;
         let to = Place { resource: self.gains, kind: 0, offset: 0, footprint: [0; 5] };
-        let from = Place { resource: upload, kind: 1, offset: 0, footprint: [HALF, (right - left) as u32, (bottom - top) as u32, 1, row] };
+        let from = Place { resource: upload, kind: 1, offset: 0, footprint: [FLOATS, (right - left) as u32, (bottom - top) as u32, 1, row] };
         // SAFETY: the list's ResourceBarrier (26) and CopyTextureRegion (16): the footprint lies
         // in the buffer as `prepare` wrote it, the place in the texture.
         unsafe {
@@ -665,6 +686,10 @@ pub(crate) mod tests {
     use crate::windows::tests::{ALONE, is_on_its_own_desktop, on_a_desktop_of_its_own, pump};
     use crate::{Color, Flow, Picture, Window};
     use std::cell::{Cell, RefCell};
+
+    /// A test's process has an HDR screen, as every thread sees it (a GPU device is made on a
+    /// thread of its own).
+    pub(crate) static AN_HDR_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     thread_local! {
         /// The screens as a test has them: the first (holding the desktop's top left corner),
@@ -801,14 +826,20 @@ pub(crate) mod tests {
         app.headroom = ui.headroom();
     }
 
+    /// Keeps an HDR frame a path presented: its row length and pixels in scRGB.
+    pub(crate) fn keep_frame(width: usize, pixels: Vec<[f32; 4]>) {
+        KEPT.with_borrow_mut(|kept| kept.push((width, pixels)));
+    }
+
     /// The last scRGB frame presented: its row length and pixels.
     fn last() -> (usize, Vec<[f32; 4]>) {
         KEPT.with_borrow(|kept| kept.last().cloned()).expect("no scRGB frame presented")
     }
 
-    /// Whether `value` is within a part in 500 of `wanted` (16-bit floats keep three digits).
-    fn near(value: f32, wanted: f32) -> bool {
-        (value - wanted).abs() <= wanted.abs() / 500.0 + 1e-4
+    /// Whether `value` is within `part` of `wanted` (16-bit floats keep three digits: a part in
+    /// 500; HDR10's 10 bits of PQ, a part in 50).
+    fn near(value: f32, wanted: f32, part: f32) -> bool {
+        (value - wanted).abs() <= wanted.abs() * part + part / 5.0
     }
 
     /// sRGB's curve undone: the linear value of a byte.
@@ -818,13 +849,14 @@ pub(crate) mod tests {
     }
 
     /// Opens the app on `path`, its screen HDR with SDR white at 200 nits and a 1,000-nit peak,
-    /// and checks the scRGB frame: SDR white at 2.5, twice it at 5, eight times capped at the
-    /// peak (12.5), the gradient and the picture linear. Then the screen turns SDR: the frame
-    /// goes back to what the CPU draws, byte for byte.
-    fn lit_by(path: Renderer, software: bool) {
+    /// and checks the HDR frame as scRGB (each value within `part`): SDR white at 2.5, twice it
+    /// at 5, eight times capped at the peak (12.5), the gradient and the picture linear. Then
+    /// the screen turns SDR: the frame goes back to what the CPU draws, byte for byte.
+    fn lit_by(path: Renderer, software: bool, part: f32) {
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no window is shown on it");
         let hdr = Screen { hdr: true, white: 200.0, peak: 1000.0 };
         FAKED.set(Some((hdr, Screen::SDR)));
+        AN_HDR_SCREEN.store(true, Ordering::Relaxed);
         fake(Faked { software, keep: true, ..Faked::default() });
         let app = std::rc::Rc::new(RefCell::new(Lit { picture: None, headroom: 0.0 }));
         let shared = app.clone();
@@ -859,19 +891,19 @@ pub(crate) mod tests {
         );
         for (place, wanted) in [((5.0, 5.0), grey), ((30.0, 20.0), white), ((80.0, 20.0), 2.0 * white), ((130.0, 20.0), 1000.0 / 80.0)] {
             let got = at(place.0, place.1);
-            assert!(got[..3].iter().all(|part| near(*part, wanted)) && got[3] == 1.0, "{path:?} at {place:?}: {got:?}, not {wanted}");
+            assert!(got[..3].iter().all(|value| near(*value, wanted, part)) && got[3] == 1.0, "{path:?} at {place:?}: {got:?}, not {wanted}");
         }
         // The gradient: every pixel the linear value of its byte, times white.
         assert_eq!((surface.width, surface.pixels.len() / surface.width), (wide, pixels.len() / wide), "{path:?}: the same size");
         for x in (10.0 * scale) as usize..(266.0 * scale) as usize {
             let (byte, got) = (surface.pixels[(45.0 * scale) as usize * surface.width + x] & 0xff, pixels[(45.0 * scale) as usize * wide + x]);
-            assert!(near(got[2], linear(byte) * white), "{path:?}: the gradient at {x}: {got:?} for {byte}");
+            assert!(near(got[2], linear(byte) * white, part), "{path:?}: the gradient at {x}: {got:?} for {byte}");
         }
         // The picture: a quarter of white more every pixel (within 1%: the CPU draws its SDR
         // picture smoothed at other scales).
         for step in 0..=16 {
             let got = at(10.5 + step as f32, 62.0);
-            assert!((got[0] - step as f32 / 4.0 * white).abs() <= white / 100.0, "{path:?}: the picture at {step}: {got:?}");
+            assert!((got[0] - step as f32 / 4.0 * white).abs() <= white * part.max(0.01), "{path:?}: the picture at {step}: {got:?}");
         }
         // The screen goes SDR: the frame is the CPU's again.
         FAKED.set(Some((Screen::SDR, Screen::SDR)));
@@ -882,10 +914,19 @@ pub(crate) mod tests {
             pump();
         }
         assert_eq!(app.borrow().headroom, 1.0);
-        assert_eq!(KEPT.with_borrow(|kept| kept.len()), before, "{path:?}: no scRGB frame on an SDR screen");
-        let (shown, _) = crate::windows::tests::picture(hwnd);
-        let differ = shown.iter().zip(&surface.pixels).filter(|(a, b)| *a & 0xff_ffff != *b & 0xff_ffff).count();
-        assert!(shown.len() == surface.pixels.len() && differ == 0, "{path:?}: an SDR screen shows the CPU's pixels ({differ} differ)");
+        if path == Renderer::OpenGL {
+            // A window's float pixel format is its own for life: on an SDR screen its frame is
+            // the CPU's pixels made linear, white at 1.0, as Windows shows SDR.
+            let (_, frame) = last();
+            let apart = frame.iter().zip(&surface.pixels).flat_map(|(got, cpu)| [16, 8, 0].into_iter().zip(got).map(move |(shift, value)| (value - linear(cpu >> shift & 0xff)).abs()));
+            let worst = apart.fold(0.0, f32::max);
+            assert!(worst <= 1.0 / 1024.0, "{path:?}: an SDR screen gets the CPU's pixels, linear (apart by {worst})");
+        } else {
+            assert_eq!(KEPT.with_borrow(|kept| kept.len()), before, "{path:?}: no scRGB frame on an SDR screen");
+            let (shown, _) = crate::windows::tests::picture(hwnd);
+            let differ = shown.iter().zip(&surface.pixels).filter(|(a, b)| *a & 0xff_ffff != *b & 0xff_ffff).count();
+            assert!(shown.len() == surface.pixels.len() && differ == 0, "{path:?}: an SDR screen shows the CPU's pixels ({differ} differ)");
+        }
         // HDR again; moved to the screen beside it, SDR; and back.
         let wake = || {
             for _ in 0..2 {
@@ -914,6 +955,7 @@ pub(crate) mod tests {
         pump();
         fake(Faked::default());
         FAKED.set(None);
+        AN_HDR_SCREEN.store(false, Ordering::Relaxed);
     }
 
     #[test]
@@ -924,7 +966,7 @@ pub(crate) mod tests {
     #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
     fn on_a_desktop_nobody_sees_direct3d_11_presents_in_scrgb() {
         if std::env::var_os(ALONE).is_some() {
-            lit_by(Renderer::Direct3D11, true);
+            lit_by(Renderer::Direct3D11, true, 1.0 / 500.0);
         }
     }
 
@@ -936,26 +978,29 @@ pub(crate) mod tests {
     #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
     fn on_a_desktop_nobody_sees_direct3d_12_presents_in_scrgb() {
         if std::env::var_os(ALONE).is_some() {
-            lit_by(Renderer::Direct3D12, true);
+            lit_by(Renderer::Direct3D12, true, 1.0 / 500.0);
         }
     }
 
     #[test]
-    fn on_this_computers_own_gpu_both_present_in_scrgb() {
-        on_a_desktop_of_its_own("hdr_windows::tests::on_a_desktop_nobody_sees_the_own_gpu_presents_in_scrgb");
+    fn on_this_computers_own_gpu_every_path_presents_in_hdr() {
+        on_a_desktop_of_its_own("hdr_windows::tests::on_a_desktop_nobody_sees_the_own_gpu_presents_in_hdr");
     }
     #[test]
     #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
-    fn on_a_desktop_nobody_sees_the_own_gpu_presents_in_scrgb() {
+    fn on_a_desktop_nobody_sees_the_own_gpu_presents_in_hdr() {
         if std::env::var_os(ALONE).is_none() {
             return;
         }
-        for path in [Renderer::Direct3D11, Renderer::Direct3D12] {
+        // (Vulkan in scRGB, and in HDR10 as where a GPU offers no scRGB.)
+        let paths = [(Renderer::Direct3D11, false), (Renderer::Direct3D12, false), (Renderer::Vulkan, false), (Renderer::Vulkan, true), (Renderer::OpenGL, false)];
+        for (path, hdr10) in paths {
             if crate::gpu_windows::Device::gpu(path, false).is_none_or(|device| device.renderer() != path) {
                 println!("no {path:?} on a GPU of its own: nothing to check");
                 continue;
             }
-            lit_by(path, false);
+            crate::hdr_vulkan::tests::HDR10_FIRST.set(hdr10);
+            lit_by(path, false, if hdr10 { 1.0 / 50.0 } else { 1.0 / 500.0 });
         }
     }
 }
