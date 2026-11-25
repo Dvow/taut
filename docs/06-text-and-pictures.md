@@ -159,7 +159,12 @@ fn photo(ui: &mut Ui) -> Option<Picture> {
   `png::decode`, `png::encode`, `jpeg::decode`, `gif::decode`… work on plain pixels.
 - **SVG:** `ui.add_drawing(svg_text)` returns a `Drawing`; `.drawing(drawing, color)` shows it,
   sharp at any size; `color` fills `currentColor`. Text, filters and embedded pictures after
-  `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()`. No animation.
+  `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()`; pictures in other
+  files through `svg::enable_images_from(loader)`; `shape-rendering` after
+  `svg::enable_shape_rendering()`; seamless clip paths and masks after
+  `svg::enable_seamless_clips()`. SMIL animation:
+  `ui.add_animation(&svg::encode_animation(svg_text, width, height)?)`, or one moment with
+  `svg::decode_at`.
 - **Animations:** `ui.add_animation(bytes)` (GIF, PNG, WebP), `.animation(animation)`; only its box redraws.
 
 ## Shapes

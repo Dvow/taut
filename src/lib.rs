@@ -274,6 +274,7 @@ mod spell;
 pub mod storage;
 pub mod surface;
 pub mod svg;
+mod svg_animation;
 mod svg_filters;
 pub mod system_fonts;
 #[cfg(all(feature = "shaping", any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]

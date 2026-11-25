@@ -168,11 +168,14 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Refused as implausible: single-colour arithmetic JPEGs with more blocks than file bits;
   single-colour lossless WebPs over 2,048 pixels per file byte.
 - Lossy WebP decodes about 3× slower than an equivalent JPEG.
-- SVG not read: external or nested SVG images; `feImage`, lighting, `feConvolveMatrix`,
-  `feDisplacementMap`; background inputs; `shape-rendering`; text on a path; animation.
-  Small blurs use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped. Masks and
-  non-box clips multiply edge coverages; abutting subpaths can show a hairline. Of 2,986 Linux
-  desktop icons, 386 differ visibly from librsvg at 1×, 199 at 3×.
+- SVG not read: `animateMotion`, animations begun by events or other animations,
+  `FillPaint`/`StrokePaint` inputs, `kernelUnitLength`. Images in other files only through the
+  app's loader; drawings an image brings, four deep at most. SMIL animation plays as encoded
+  frames (`svg::encode_animation`), not in a `Drawing`. Small blurs use a true Gaussian (as
+  browsers; librsvg differs). SVG text is unshaped without `shaping`. Masks and non-box clips
+  multiply edge coverages; two opposite subpaths of one shape can show a hairline. Crisp edges
+  paint pixels more than half covered (librsvg: pixels whose sample point is). Of 2,986 Linux
+  desktop icons, 392 differ visibly from librsvg at 1×, 185 at 3×.
 - SVG cost beyond the file's budget is skipped; a small file can still take seconds at
   4096×4096.
 - Highly compressible PNGs (30:1+) decode up to 1/7 slower than with an exact buffer.

@@ -139,8 +139,11 @@ Popovers anchored to their button.
   on Android, a `<video>` element on the web), loaded at run time. Only the video's box
   redraws per frame. Play, pause, seek to the exact frame, volume, mute, loop, end; controls for
   keyboard and screen readers.
-- SVG: clip paths, masks, patterns, markers, symbols; on request, text, filters (about 73 KB)
-  and embedded pictures. Drawing cost is bounded by file length.
+- SVG: clip paths, masks, patterns, markers, symbols; on request, `shape-rendering`, seamless
+  clip paths and masks, text (on paths too; shaped with `shaping`), filters (all of them,
+  lighting and `BackgroundImage` included; about 90 KB), pictures and nested SVG (in the file,
+  or through the app's loader), and SMIL animation as frames. Drawing cost is bounded by file
+  length.
 - 3D meshes: filled, lit, coloured or outlined, with depth; all CPU cores, only on change; a
   million triangles in about 14 ms at 1920×1080.
 - PDF: pages up to 200 inches, shapes, searchable shaped text with subset fonts (as their

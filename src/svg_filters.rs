@@ -1,7 +1,8 @@
 //! SVG filters: primitives an element's rendering passes through before it is composited. Each
-//! makes an image from its inputs (the element, its alpha only, or earlier results): blur,
-//! offset, flood, composite, blend, colour matrix and component transfer, morphology, tile, or
-//! turbulence. The last result is what is drawn of the element.
+//! makes an image from its inputs (the element, its alpha only, what lies under it, or earlier
+//! results): blur, offset, flood, composite, blend, colour matrix and component transfer,
+//! morphology, tile, turbulence, image, lighting, convolution, or displacement. The last result
+//! is what is drawn of the element.
 //!
 //! All in pixels. The element is first drawn on its own layer (see `svg.rs`); the filter region
 //! (rounded out to whole pixels) is taken from it, each primitive makes an image of that size,
@@ -19,8 +20,14 @@
 //! area over them, out to three deviations. (librsvg takes for each neighbour the curve's area
 //! one pixel further out, which makes its small blurs narrower than stated.) Morphology uses
 //! van Herk / Gil-Werman, also constant cost per pixel at any radius.
+//!
+//! `feImage` draws its element or picture on a block of its own just before the filter runs
+//! (see `svg.rs`); the filter takes those blocks off the top. `BackgroundImage` is everything
+//! drawn under the element so far on blocks of its size, composited, as `enable-background:
+//! new` on the root would make it. Lighting follows the spec's normals and light vectors per
+//! pixel (`kernelUnitLength` is one pixel); convolution and displacement follow it too.
 use crate::color::Color;
-use crate::svg::Table;
+use crate::svg::{Block, Table};
 
 /// A filter as applied to one element.
 pub(crate) struct Filter {
@@ -32,6 +39,8 @@ pub(crate) struct Filter {
     /// which is then inside.)
     pub(crate) region: [f64; 4],
     pub(crate) steps: Vec<Step>,
+    /// How many blocks on top of the element's hold its `feImage` images, the first lowest.
+    pub(crate) images: usize,
 }
 
 impl Filter {
@@ -60,7 +69,11 @@ pub(crate) enum Input {
     Alpha,
     /// an earlier result (which);
     Made(usize),
-    /// or nothing (`BackgroundImage` and the paint inputs, not read).
+    /// `BackgroundImage`: what was drawn under the element;
+    Background,
+    /// `BackgroundAlpha`: its alpha, in black;
+    BackgroundAlpha,
+    /// or nothing (the paint inputs, not read).
     Clear,
 }
 
@@ -102,6 +115,61 @@ pub(crate) enum Kind {
     Tile,
     /// `feTurbulence` (see `Noise`).
     Noise(Noise),
+    /// `feImage`: which of the filter's images.
+    Image(usize),
+    /// `feDiffuseLighting` and `feSpecularLighting` (see `Lighting`).
+    Light(Box<Lighting>),
+    /// `feConvolveMatrix` (see `Convolution`).
+    Convolve(Box<Convolution>),
+    /// `feDisplacementMap`: the scale in units (across and down), and which channels of the
+    /// second input move pixels across and down (0 red, 1 green, 2 blue, 3 alpha).
+    Displace([f32; 2], [usize; 2]),
+}
+
+/// A lighting step: specular (else diffuse), surface scale, its constant (`diffuseConstant` or
+/// `specularConstant`), specular exponent, light colour, and the light.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Lighting {
+    pub(crate) specular: bool,
+    pub(crate) surface: f32,
+    pub(crate) constant: f32,
+    pub(crate) exponent: f32,
+    pub(crate) color: Color,
+    pub(crate) source: Source,
+}
+
+/// A light, its positions in units (depth as the filter units say it).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Source {
+    /// `feDistantLight`: azimuth and elevation, in degrees.
+    Distant([f32; 2]),
+    /// `fePointLight`: where it is.
+    Point([f32; 3]),
+    /// `feSpotLight`: where it is, where it points, its specular exponent, and its limiting
+    /// cone's half angle in degrees, if any.
+    Spot([f32; 3], [f32; 3], f32, Option<f32>),
+}
+
+/// A convolution step: kernel columns and rows, the kernel (row by row), divisor, bias, the
+/// target pixel (column, row), how pixels past the edges are taken, and whether alpha is kept.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Convolution {
+    pub(crate) order: [usize; 2],
+    pub(crate) kernel: Vec<f32>,
+    pub(crate) divisor: f32,
+    pub(crate) bias: f32,
+    pub(crate) target: [usize; 2],
+    pub(crate) edge: Edge,
+    pub(crate) keep_alpha: bool,
+}
+
+/// What a convolution takes for a pixel past the edge of its input: the nearest edge pixel,
+/// the pixel from the other side, or nothing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Edge {
+    Duplicate,
+    Wrap,
+    None,
 }
 
 /// How `feComposite` puts the first input onto the second.
@@ -233,8 +301,23 @@ pub(crate) fn weight(kind: &Kind) -> f32 {
         Kind::Shadow(..) => 20.0,
         Kind::Merge(inputs) => 1.0 + 5.0 * inputs.len() as f32,
         Kind::Noise(noise) => 7.0 + 11.0 * noise.octaves as f32,
+        Kind::Image(_) => 4.0,
+        Kind::Displace(..) => 14.0,
+        Kind::Light(_) => 40.0,
+        Kind::Convolve(convolution) => 6.0 + 2.0 * convolution.kernel.len() as f32,
     }
 }
+
+/// What a step costs beyond its operation (as `weight` counts) for taking in what lies under
+/// the element: compositing up to `BEHIND` blocks.
+pub(crate) fn background_weight(step: &Step) -> f32 {
+    let behind = step.inputs.iter().any(|input| matches!(input, Input::Background | Input::BackgroundAlpha));
+    if behind { 3.0 * BEHIND as f32 } else { 0.0 }
+}
+
+/// How many blocks under an element its background is composited from, nearest first: the
+/// blocks of groups, clips and masks it lies in.
+const BEHIND: usize = 8;
 
 /// A filter's cost besides its primitives, as `weight` counts: taking its region from the layer
 /// and back, and converting to linear light and back.
@@ -328,22 +411,42 @@ struct Room {
     back: Exact,
 }
 
-/// Filters a layer's pixels (`wide` per row, its first row being row `top` of the image, which
-/// `fit` maps drawing units onto). Outside the region, or with no primitives, nothing is left.
-pub(crate) fn apply(filter: &Filter, pixels: &mut [u32], wide: usize, top: i32, fit: &Table) {
-    let Some(room) = Room::of(filter, wide, pixels.len() / wide.max(1), top, fit) else {
-        return pixels.fill(0);
+/// What a filter takes in besides the element: its `feImage` images and what lies under it,
+/// each as large as its room.
+struct Taken {
+    images: Vec<Picture>,
+    background: Option<Picture>,
+}
+
+/// Filters the top block of a drawing being drawn: its pixels (`wide` per row, its first row
+/// being row `top` of the image, which its `fit` maps drawing units onto). The filter's images
+/// lie on top of it, and are dropped. Outside the region, or with no primitives, nothing is
+/// left.
+pub(crate) fn apply(filter: &Filter, blocks: &mut Vec<Block>) {
+    // (The images are blocks like the element's. One the reader left short, never.)
+    let mut images = Vec::with_capacity(filter.images);
+    while images.len() < filter.images && blocks.len() > 1 {
+        images.extend(blocks.pop());
+    }
+    images.reverse();
+    let Some((block, under)) = blocks.split_last_mut() else { return };
+    let (wide, high) = (block.wide, block.pixels.len() / block.wide.max(1));
+    let Some(room) = Room::of(filter, wide, high, block.top, &block.fit) else {
+        return block.pixels.fill(0);
     };
     let light = Light::new();
-    let source = room.taken(pixels, wide);
+    let source = room.taken(&block.pixels, wide);
+    let sized = |image: &Block| if image.pixels.len() == block.pixels.len() { room.taken(&image.pixels, wide) } else { room.clear() };
+    let behind = filter.steps.iter().any(|step| background_weight(step) > 0.0);
+    let taken = Taken { images: images.iter().map(sized).collect(), background: behind.then(|| room.behind(under, block.pixels.len(), wide)) };
     let mut made: Vec<Picture> = Vec::with_capacity(filter.steps.len());
     for step in &filter.steps {
-        let picture = room.step(step, &source, &made, &light);
+        let picture = room.step(step, &source, (&made, &taken), &light);
         made.push(picture);
     }
-    pixels.fill(0);
+    block.pixels.fill(0);
     if let Some(last) = made.pop() {
-        room.put(&light.taken(last, false), pixels, wide);
+        room.put(&light.taken(last, false), &mut block.pixels, wide);
     }
 }
 
@@ -386,22 +489,36 @@ impl Room {
         Picture { pixels: vec![0; self.wide * self.high], linear: false, part: [0, 0, self.wide, self.high] }
     }
 
-    /// Runs one primitive on the element's rendering (`source`) and earlier results.
-    fn step(&self, step: &Step, source: &Picture, made: &[Picture], light: &Light) -> Picture {
+    /// What lies under the filtered block within the room: the blocks under it of its size
+    /// (`long` pixels, `wide` per row; up to `BEHIND`, nearest first), composited from the
+    /// lowest, in sRGB.
+    fn behind(&self, under: &[Block], long: usize, wide: usize) -> Picture {
+        let same = under.iter().rev().take_while(|block| block.pixels.len() == long).take(BEHIND).count();
+        let mut picture = self.clear();
+        for block in &under[under.len() - same..] {
+            let part = self.taken(&block.pixels, wide);
+            picture.pixels.iter_mut().zip(&part.pixels).for_each(|(under, top)| *under = over(*top, *under));
+        }
+        picture
+    }
+
+    /// Runs one primitive on the element's rendering (`source`), earlier results, and what the
+    /// filter takes in besides.
+    fn step(&self, step: &Step, source: &Picture, (made, taken): (&[Picture], &Taken), light: &Light) -> Picture {
         let (part, exact) = self.part(step, made);
         let wanted = match step.space {
             Space::Linear => Some(true),
             Space::Screen => Some(false),
             Space::Taken => None,
         };
-        let take = |n: usize| self.input(step.inputs[n], source, made, wanted, light);
+        let take = |n: usize| self.input(step.inputs[n], source, (made, taken), wanted, light);
         let (wide, t) = (self.wide, self.table.map(|n| n as f32));
         let scale = [t[0].hypot(t[2]), t[1].hypot(t[3])];
         let picture = match &step.kind {
             Kind::Blur(deviation) => blurred(take(0), part, wide, [deviation[0] * scale[0], deviation[1] * scale[1]]),
             Kind::Offset([dx, dy]) => moved(take(0), (part, exact), wide, [t[0] * dx + t[2] * dy, t[1] * dx + t[3] * dy]),
             Kind::Flood(color) => flooded(*color, part, wide, self.high),
-            Kind::Merge(inputs) => merged(inputs.iter().map(|input| self.input(*input, source, made, wanted, light)), part, wide, self.high, wanted),
+            Kind::Merge(inputs) => merged(inputs.iter().map(|input| self.input(*input, source, (made, taken), wanted, light)), part, wide, self.high, wanted),
             Kind::Composite(operator) => composited(take(0), &take(1), *operator, part, wide),
             Kind::Blend(mode) => blended(take(0), &take(1), *mode, part, wide),
             Kind::Matrix(matrix) => matrixed(take(0), matrix, part, wide),
@@ -413,6 +530,14 @@ impl Room {
             Kind::Morphology(thicker, radius) => thickened(take(0), part, wide, *thicker, [radius[0] * scale[0], radius[1] * scale[1]]),
             Kind::Tile => tiled(take(0), part, wide),
             Kind::Noise(noise) => self.noise(noise, part, wanted.unwrap_or(false)),
+            Kind::Image(image) => light.taken(taken.images.get(*image).cloned().unwrap_or_else(|| self.clear()), wanted.unwrap_or(false)),
+            Kind::Light(lighting) => self.lit(lighting, &take(0), part, wanted.unwrap_or(false), light),
+            Kind::Convolve(convolution) => convolved(take(0), convolution, part, wide),
+            // The image moved is taken as it is; the map in the step's colour space.
+            Kind::Displace(by, channels) => {
+                let moved = self.input(step.inputs[0], source, (made, taken), None, light);
+                displaced(moved, &take(1), part, wide, [by[0] * scale[0], by[1] * scale[1]], *channels)
+            }
         };
         // Nothing is made outside its subregion: a larger input is cut down.
         clear_outside(picture, part, wide)
@@ -428,8 +553,8 @@ impl Room {
             _ => &[],
         };
         let used = match step.kind {
-            Kind::Flood(_) | Kind::Noise(_) | Kind::Tile => &[][..],
-            Kind::Composite(_) | Kind::Blend(_) => &step.inputs[..],
+            Kind::Flood(_) | Kind::Noise(_) | Kind::Tile | Kind::Image(_) => &[][..],
+            Kind::Composite(_) | Kind::Blend(_) | Kind::Displace(..) => &step.inputs[..],
             Kind::Merge(_) => merged,
             _ => &step.inputs[..1],
         };
@@ -454,11 +579,15 @@ impl Room {
     }
 
     /// A primitive's input, in its colour space (`wanted`; `None`: any).
-    fn input(&self, input: Input, source: &Picture, made: &[Picture], wanted: Option<bool>, light: &Light) -> Picture {
+    fn input(&self, input: Input, source: &Picture, (made, taken): (&[Picture], &Taken), wanted: Option<bool>, light: &Light) -> Picture {
+        let alpha = |picture: &Picture| Picture { pixels: picture.pixels.iter().map(|pixel| pixel & 0xff00_0000).collect(), linear: wanted.unwrap_or(false), part: picture.part };
+        let behind = || taken.background.clone().unwrap_or_else(|| self.clear());
         let picture = match input {
             Input::Source => source.clone(),
-            Input::Alpha => Picture { pixels: source.pixels.iter().map(|pixel| pixel & 0xff00_0000).collect(), linear: wanted.unwrap_or(false), part: source.part },
+            Input::Alpha => alpha(source),
             Input::Made(n) => made.get(n).cloned().unwrap_or_else(|| self.clear()),
+            Input::Background => behind(),
+            Input::BackgroundAlpha => alpha(&behind()),
             Input::Clear => self.clear(),
         };
         match wanted {
@@ -481,6 +610,177 @@ impl Room {
         }
         Picture { pixels, linear, part }
     }
+
+    /// A lighting step over a subregion, the input's alpha as the surface's height: in linear
+    /// light or not. Diffuse light is opaque; specular light as solid as its brightest channel.
+    fn lit(&self, lighting: &Lighting, input: &Picture, part: [usize; 4], linear: bool, light: &Light) -> Picture {
+        let [_, red, green, blue] = four(lighting.color.0);
+        let color = [red, green, blue].map(|c| if linear { light.linear[c as usize] as f32 } else { c as f32 } / 255.0);
+        let source = self.placed(&lighting.source);
+        let mut pixels = vec![0; self.wide * self.high];
+        for y in part[1]..part[3] {
+            for x in part[0]..part[2] {
+                pixels[y * self.wide + x] = lit_pixel(lighting, &source, color, (&input.pixels, self.wide, part), [x, y]);
+            }
+        }
+        Picture { pixels, linear, part }
+    }
+
+    /// A light with its positions in the room's pixels. (Depths are scaled as lengths are, by
+    /// the transform's mean scale.)
+    fn placed(&self, source: &Source) -> Source {
+        let scale = (self.table[0] * self.table[3] - self.table[1] * self.table[2]).abs().sqrt() as f32;
+        let place = |[x, y, z]: [f32; 3]| {
+            let [x, y] = through(&self.table, [x.into(), y.into()]);
+            [x as f32, y as f32, z * scale]
+        };
+        match *source {
+            Source::Distant(angles) => Source::Distant(angles),
+            Source::Point(at) => Source::Point(place(at)),
+            Source::Spot(at, to, exponent, cone) => Source::Spot(place(at), place(to), exponent, cone),
+        }
+    }
+}
+
+/// One pixel of a lighting step (see `Room::lit`): the light from `source` (in pixels), of
+/// `color`, on the surface the input's alpha makes (`wide` per row, the subregion `part`).
+fn lit_pixel(lighting: &Lighting, source: &Source, color: [f32; 3], (pixels, wide, part): (&[u32], usize, [usize; 4]), [x, y]: [usize; 2]) -> u32 {
+    let height = |x: usize, y: usize| (pixels[y * wide + x] >> 24) as f32 / 255.0;
+    let [nx, ny] = [true, false].map(|across| -lighting.surface * slope(&height, [x, y], part, across));
+    let normal = unit([nx, ny, 1.0]);
+    let surface = [x as f32, y as f32, lighting.surface * height(x, y)];
+    // The direction to the light, and how much of its colour reaches here.
+    let (to_light, share) = match *source {
+        Source::Distant([azimuth, elevation]) => {
+            let (a, e) = (azimuth.to_radians(), elevation.to_radians());
+            ([a.cos() * e.cos(), a.sin() * e.cos(), e.sin()], 1.0)
+        }
+        Source::Point(at) => (unit([at[0] - surface[0], at[1] - surface[1], at[2] - surface[2]]), 1.0),
+        Source::Spot(at, to, exponent, cone) => {
+            let to_light = unit([at[0] - surface[0], at[1] - surface[1], at[2] - surface[2]]);
+            let aim = unit([to[0] - at[0], to[1] - at[1], to[2] - at[2]]);
+            let facing = -(to_light[0] * aim[0] + to_light[1] * aim[1] + to_light[2] * aim[2]);
+            let inside = facing > 0.0 && cone.is_none_or(|cone| facing >= cone.to_radians().cos());
+            (to_light, if inside { facing.powf(exponent) } else { 0.0 })
+        }
+    };
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let level = |part: f32| (part.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
+    if !lighting.specular {
+        let lit = lighting.constant * dot(normal, to_light).max(0.0) * share;
+        let [r, g, b] = color.map(|c| level(lit * c));
+        return pixel([255, r, g, b]);
+    }
+    let halfway = unit([to_light[0], to_light[1], to_light[2] + 1.0]);
+    let lit = lighting.constant * dot(normal, halfway).max(0.0).powf(lighting.exponent) * share;
+    let [r, g, b] = color.map(|c| level(lit * c));
+    pixel([r.max(g).max(b), r, g, b])
+}
+
+/// A vector made one long (left as it is if of no length).
+fn unit([x, y, z]: [f32; 3]) -> [f32; 3] {
+    let long = (x * x + y * y + z * z).sqrt();
+    if long > 0.0 { [x / long, y / long, z / long] } else { [x, y, z] }
+}
+
+/// How a surface's height changes at a pixel, across or down, as the spec's Sobel kernels
+/// compute it: from the pixels on both sides where there are, else from the pixel itself and
+/// the one there is; the rows (or columns) beside weighted half the middle one's. (Nothing at
+/// all in a subregion one pixel across.)
+fn slope(height: &impl Fn(usize, usize) -> f32, [x, y]: [usize; 2], [l, t, r, b]: [usize; 4], across: bool) -> f32 {
+    // Along the slope, and beside it: the coordinate, and its subregion's start and end.
+    let ((along, start, end), (beside, first, last)) = if across { ((x, l, r), (y, t, b)) } else { ((y, t, b), (x, l, r)) };
+    let (before, after) = (along > start, along + 1 < end);
+    if !(before || after) {
+        return 0.0;
+    }
+    let [from, to] = [if before { along - 1 } else { along }, if after { along + 1 } else { along }];
+    let at = |along: usize, beside: usize| if across { height(along, beside) } else { height(beside, along) };
+    let (mut sum, mut weights) = (0.0, 0.0);
+    for (side, weight) in [(beside.wrapping_sub(1), 1.0), (beside, 2.0), (beside + 1, 1.0)] {
+        if (first..last).contains(&side) {
+            sum += weight * (at(to, side) - at(from, side));
+            weights += weight;
+        }
+    }
+    // A difference over one pixel, not two, counts twice.
+    sum * if before && after { 1.0 } else { 2.0 } / weights
+}
+
+/// An image convolved with a kernel within its subregion (see `Convolution`): on premultiplied
+/// colours, or on plain ones with alpha kept.
+fn convolved(picture: Picture, convolution: &Convolution, part: [usize; 4], wide: usize) -> Picture {
+    let source = clear_outside(picture, part, wide);
+    let mut pixels = vec![0; source.pixels.len()];
+    for y in part[1]..part[3] {
+        for x in part[0]..part[2] {
+            pixels[y * wide + x] = convolved_pixel(&source.pixels, (wide, part), [x, y], convolution);
+        }
+    }
+    Picture { pixels, ..source }
+}
+
+/// One pixel of a convolution (see `convolved`).
+fn convolved_pixel(pixels: &[u32], (wide, [l, t, r, b]): (usize, [usize; 4]), [x, y]: [usize; 2], convolution: &Convolution) -> u32 {
+    let ([columns, rows], [tx, ty]) = (convolution.order, convolution.target);
+    // A pixel at a place that may lie past the subregion's edges, as the edge mode takes it.
+    let taken = |at: i64, low: usize, high: usize| match convolution.edge {
+        Edge::Duplicate => Some(at.clamp(low as i64, high as i64 - 1) as usize),
+        Edge::Wrap => Some(low + (at - low as i64).rem_euclid((high - low) as i64) as usize),
+        Edge::None => (low as i64..high as i64).contains(&at).then_some(at as usize),
+    };
+    let plain = |pixel: u32| {
+        let [a, r, g, b] = four(pixel).map(|part| part as f32 / 255.0);
+        match convolution.keep_alpha {
+            true if a > 0.0 => [a, r / a, g / a, b / a],
+            true => [a, 0.0, 0.0, 0.0],
+            false => [a, r, g, b],
+        }
+    };
+    let mut sum = [0.0f32; 4];
+    for i in 0..rows {
+        for j in 0..columns {
+            let (Some(sx), Some(sy)) = (taken(x as i64 - tx as i64 + j as i64, l, r), taken(y as i64 - ty as i64 + i as i64, t, b)) else { continue };
+            let weight = convolution.kernel[(rows - 1 - i) * columns + columns - 1 - j];
+            let parts = plain(pixels[sy * wide + sx]);
+            sum.iter_mut().zip(parts).for_each(|(sum, part)| *sum += part * weight);
+        }
+    }
+    let level = |part: f32| (part * 255.0 + 0.5) as u32;
+    let [a, r, g, b] = sum.map(|sum| sum / convolution.divisor);
+    if convolution.keep_alpha {
+        let [r, g, b] = [r, g, b].map(|c| (c + convolution.bias).clamp(0.0, 1.0));
+        let a = (pixels[y * wide + x] >> 24) as f32 / 255.0;
+        return pixel([a, r * a, g * a, b * a].map(level));
+    }
+    // The bias adds to colours as much as they are solid, keeping them premultiplied.
+    let a = (a + convolution.bias).clamp(0.0, 1.0);
+    pixel([a, (r + convolution.bias * a).clamp(0.0, a), (g + convolution.bias * a).clamp(0.0, a), (b + convolution.bias * a).clamp(0.0, a)].map(level))
+}
+
+/// An image whose pixels are taken from elsewhere, as a map's channels say: each from `scale`
+/// times its two channels (across, down; each less a half) away, between pixels blended from
+/// the four nearest; nothing from outside the subregion. The map's colours are taken plain, not
+/// premultiplied.
+fn displaced(moved: Picture, map: &Picture, part: [usize; 4], wide: usize, scale: [f32; 2], channels: [usize; 2]) -> Picture {
+    let mut pixels = vec![0; moved.pixels.len()];
+    let [l, t, r, b] = part;
+    let at = |x: f32, y: f32| match x >= l as f32 && x < r as f32 && y >= t as f32 && y < b as f32 {
+        true => moved.pixels[y as usize * wide + x as usize],
+        false => 0,
+    };
+    for y in t..b {
+        for x in l..r {
+            let [a, red, green, blue] = four(map.pixels[y * wide + x]);
+            let plain = |c: u32| if a == 0 { 0.0 } else { (c * 255 + a / 2) as f32 / a as f32 / 255.0 };
+            let values = [plain(red), plain(green), plain(blue), a as f32 / 255.0];
+            let [sx, sy] = [x as f32 + scale[0] * (values[channels[0]] - 0.5), y as f32 + scale[1] * (values[channels[1]] - 0.5)];
+            let ([x0, y0], [fx, fy]) = ([sx.floor(), sy.floor()], [sx - sx.floor(), sy - sy.floor()]);
+            let weights = [(1.0 - fx) * (1.0 - fy), fx * (1.0 - fy), (1.0 - fx) * fy, fx * fy];
+            pixels[y * wide + x] = mixed([at(x0, y0), at(x0 + 1.0, y0), at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0)], weights);
+        }
+    }
+    Picture { pixels, ..moved }
 }
 
 /// An affine transform (see `svg::Table`) in double precision.

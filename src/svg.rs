@@ -17,7 +17,9 @@
 //!   `transform`; `viewBox` with `preserveAspectRatio`
 //! - paint: named colours, `#rgb`, `#rrggbb`, `rgb()`, `currentColor` (the box's colour); fill,
 //!   stroke and group opacity; both fill rules
-//! - strokes: width, caps, joins, miter limit, dashes, `vector-effect`, `paint-order`
+//! - strokes: width, caps, joins, miter limit, dashes, `vector-effect`, `paint-order`;
+//!   with [`enable_shape_rendering`], `shape-rendering` (`crispEdges` and `optimizeSpeed` draw
+//!   whole pixels)
 //! - `style="…"` and presentation attributes; style sheet rules by element name, class and id
 //! - `<defs>`, `<symbol>`, `<use>`; nested `<symbol>` and `<svg>` viewports, clipped unless
 //!   `overflow` says otherwise
@@ -29,28 +31,40 @@
 //!   Filter Effects functions), with filter regions and `color-interpolation-filters`:
 //!   `feGaussianBlur`, `feOffset`, `feFlood`, `feMerge`, `feComposite` (all operators),
 //!   `feBlend` (all Compositing and Blending modes), `feColorMatrix`, `feComponentTransfer`,
-//!   `feDropShadow`, `feMorphology`, `feTile`, `feTurbulence`, with subregions and named inputs
-//!   (`SourceGraphic`, `SourceAlpha`, results)
-//! - with [`enable_text`]: `<text>` and `<tspan>` in the system font of the first installed
-//!   family named, with size, weight, style, per-letter positions, `text-anchor` and
-//!   `letter-spacing`
-//! - with [`enable_images`]: `<image>` with a `data:` URL of a PNG, JPEG, GIF, WebP, BMP or
-//!   ICO, fitted by `preserveAspectRatio`
+//!   `feDropShadow`, `feMorphology`, `feTile`, `feTurbulence`, `feImage`, `feDiffuseLighting`
+//!   and `feSpecularLighting` (distant, point and spot lights), `feConvolveMatrix`,
+//!   `feDisplacementMap`, with subregions and named inputs (`SourceGraphic`, `SourceAlpha`,
+//!   `BackgroundImage`, `BackgroundAlpha`, results)
+//! - with [`enable_text`]: `<text>`, `<tspan>` and `<textPath>` in the system font of the
+//!   first installed family named, with size, weight, style, per-letter positions,
+//!   `text-anchor` and `letter-spacing`; shaped as pages are with the feature `shaping`
+//! - with [`enable_images`]: `<image>` with a `data:` URL of a PNG, JPEG, GIF, WebP, BMP, ICO
+//!   or SVG, fitted by `preserveAspectRatio`; by path or URL through the app's loader
+//!   ([`enable_images_from`])
+//! - with [`decode_at`] and [`encode_animation`]: `<animate>`, `<set>`, `<animateTransform>`
+//!   (see `svg_animation.rs`)
 //!
-//! Not read: images by path or URL, SVG images, `feImage`, the lighting filters (give nothing),
-//! `feConvolveMatrix` and `feDisplacementMap` (pass their input through), `BackgroundImage` and
-//! `FillPaint` inputs (nothing), text on a path, animation; glyphs are drawn without filters.
-//! Style rules by position among siblings match nothing, and rules apply in source order. A
-//! clip path's own clip path, `mask-type`, and marker clipping are ignored. Text is not shaped
-//! (no joining or right-to-left) nor rotated per letter, and uses the family's font or the
-//! system's fallback. A gradient focus outside its circle is moved onto it; a subpath starting
-//! where the previous unclosed one ended continues it; `em` is 16 units; percentages refer to
+//! Images and `feImage` elements bring drawings of their own: each is read once the file's
+//! own walk is done, into the same lists, and its items put where it was met (so nothing
+//! reads recursively). Four deep at most, all within the outermost file's budget.
+//!
+//! Not read: `FillPaint` and `StrokePaint` inputs (nothing), `kernelUnitLength` (one pixel),
+//! `animateMotion`, animations begun by events; glyphs are drawn without filters. Style rules by
+//! position among siblings match nothing, and rules apply in source order. A clip path's own
+//! clip path, `mask-type`, and marker clipping are ignored. Text is not rotated per letter;
+//! unshaped (without `shaping`) it has no joining or right-to-left order; it uses the
+//! family's font or the system's fallback. A gradient focus outside its circle is moved onto
+//! it; a subpath starting where the previous unclosed one ended continues it; `em` is 16 units; percentages refer to
 //! the root viewport, also in nested ones.
 //!
 //! Deliberate differences from librsvg: a blur with deviation under two pixels integrates the
 //! Gaussian over each pixel (librsvg samples further out, so its small blurs come out
 //! narrower); stitched turbulence tiles meet at their edges (librsvg's do not); `lighter` adds
-//! (librsvg composites over).
+//! (librsvg composites over); `lighting-color` is taken into linear light where the filter
+//! works there, as browsers take it (librsvg takes its sRGB values as linear); a crisp shape
+//! paints a pixel more than half covered (librsvg one whose sampling point it covers: they
+//! differ on a few pixels of a curve); text paths are drawn (librsvg draws none); a picture's
+//! edges are cut sharp (librsvg fades them over one of its pixels).
 //!
 //! Cost is bounded by what a file of its length could cost written out, however often it reuses
 //! elements: shapes, outline segments and reading steps (elements, attributes, style rules
@@ -61,9 +75,13 @@
 //! filter over budget is skipped (its element drawn unfiltered); what lies past the budget is
 //! not drawn. (The costliest icon of a whole desktop icon theme uses a third of it.)
 //!
+//! With [`enable_seamless_clips`], clip paths and masks fill their abutting opaque shapes of one
+//! colour as one outline, each turned to go round positively first: no seam where they meet
+//! (as browsers draw them).
+//!
 //! Accuracy: a shape is filled by summing each edge's coverage per pixel (see
 //! [`Canvas::fill_with`]), exact where one edge crosses a pixel. Where two do, both count: two
-//! opposite subpaths touching leave a hairline seam, and a stroke overlapping itself (sharp
+//! opposite subpaths of one shape touching leave a hairline seam, and a stroke overlapping itself (sharp
 //! corners between segments shorter than its width, self-crossings, reversals, touching dash
 //! ends) darkens the edge pixels of the overlap by up to a quarter. Two subpaths' strokes are
 //! drawn separately and combined: exact where they cross, up to a quarter off where they run
@@ -76,7 +94,7 @@ use crate::font_file::FontFile;
 use crate::geom::{Point, Rect, Transform, pt};
 use crate::path::{Path, Step};
 use crate::pen::{self, Cap, FINER, Join, Work};
-use crate::svg_filters::{self, Filter, Function, Input, Kind, Mode, Noise, Operator, Space};
+use crate::svg_filters::{self, Convolution, Edge, Filter, Function, Input, Kind, Lighting, Mode, Noise, Operator, Source, Space};
 use crate::text::Face;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -152,20 +170,68 @@ pub fn enable_text() {
 }
 
 /// Draws the images in SVG files from now on, in every drawing of the program: each `<image>`
-/// holding its picture in a `data:` URL as PNG, JPEG, GIF, WebP, BMP or ICO, sized by its box
-/// and fitted by `preserveAspectRatio`. Without this they are left out and the rest drawn;
-/// reading them needs those decoders, which a program whose drawings hold no images need not
-/// carry. (An image in a separate file, by path or URL, is never read: a drawing shows only
-/// what it holds.)
+/// (and `feImage`) holding its picture in a `data:` URL as PNG, JPEG, GIF, WebP, BMP or ICO,
+/// or as SVG (drawn sharp at any size, clipped to its box), sized by its box and fitted by
+/// `preserveAspectRatio`. Without this they are left out and the rest drawn; reading them
+/// needs those decoders, which a program whose drawings hold no images need not carry. An image
+/// in a separate file, by path or URL, is read only through a loader the app gives (see
+/// [`enable_images_from`]). Drawings an SVG image holds are read four deep at most, all within
+/// the outermost file's cost budget.
 pub fn enable_images() {
-    _ = PICTURES.set(|reading, at, style| reading.picture(at, style));
+    _ = PICTURES.set(|reading, at, style, place| reading.picture(at, style, place));
 }
 
+/// Draws the images in SVG files from now on, as [`enable_images`] does, and those in separate
+/// files too: `load` is handed each `href` that is no `data:` URL, as written, and gives
+/// the file's bytes, or nothing to leave the image out. Each drawing read asks once per image
+/// element. (The first loader given stays for the program's life.)
+pub fn enable_images_from(load: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static) {
+    enable_images();
+    _ = LOADER.set(Box::new(load));
+}
+
+/// What reads images in separate files, once a program gave it (see `enable_images_from`).
+static LOADER: std::sync::OnceLock<Box<Loader>> = std::sync::OnceLock::new();
+
+/// Gives the bytes of an image file an `href` names.
+type Loader = dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync;
+
+/// Draws shapes as `shape-rendering` asks from now on, in every drawing of the program: those
+/// marked `crispEdges` or `optimizeSpeed` cover whole pixels, each pixel they cover more than
+/// half of (librsvg: each whose sample point they cover). Without this, every shape is drawn
+/// smooth, and a program need not carry the code (about 1 KB).
+pub fn enable_shape_rendering() {
+    _ = CRISP.set(crisp);
+}
+
+/// Fills the shapes of clip paths and masks as one from now on, in every drawing of the
+/// program: where two meet inside a pixel, no seam shows, as browsers draw them. (Each run of
+/// opaque fills of one colour becomes one outline, each turned to go round positively first:
+/// exact unless a shape goes round negatively where another overlaps it.) Without this, each is
+/// drawn on its own, as librsvg does, and a program need not carry the code (about 7 KB).
+pub fn enable_seamless_clips() {
+    _ = SEAMLESS.set(|reading, from| reading.merge_fills(from));
+}
+
+/// How crisp shapes are drawn (see `crisp`), once a program called `enable_shape_rendering`.
+static CRISP: std::sync::OnceLock<Crisp> = std::sync::OnceLock::new();
+
+/// Draws a fill or stroke where its outline may reach, crisp (see `crisp`).
+type Crisp = for<'a> fn(&mut Canvas, (&Path, &Table, f32, (usize, usize, i32)), &Ready<'a>, &mut dyn FnMut(&mut Canvas));
+
+/// How the shapes of a clip path or mask are merged (see `Reading::merge_fills`), once a
+/// program called `enable_seamless_clips`.
+static SEAMLESS: std::sync::OnceLock<Seamless> = std::sync::OnceLock::new();
+
+/// Merges the fills of a clip path or mask from an item on.
+type Seamless = for<'a, 'b> fn(&'b mut Reading<'a>, usize);
+
 /// Draws the filters in SVG files from now on, in every drawing of the program: blurs and
-/// shadows, colour mixing and transfer, morphology, tiles and noise, and the CSS `filter`
-/// functions (`blur()`, `drop-shadow()` and the rest). Without this, an element with a filter
-/// is drawn unfiltered; filters take some 73 KB of code, which a program whose drawings hold
-/// none need not carry. (Glyphs are always drawn without filters.)
+/// shadows, colour mixing and transfer, morphology, tiles and noise, images, lighting,
+/// convolution and displacement, and the CSS `filter` functions (`blur()`, `drop-shadow()`
+/// and the rest). Without this, an element with a filter is drawn unfiltered; filters take some
+/// 90 KB of code, which a program whose drawings hold none need not carry. (Glyphs are always
+/// drawn without filters.)
 pub fn enable_filters() {
     _ = FILTERS.set(Filters { read: |reading, value, walk| reading.filtered(value, walk), apply: svg_filters::apply });
 }
@@ -174,8 +240,8 @@ pub fn enable_filters() {
 /// `enable_images`.
 static PICTURES: std::sync::OnceLock<Pictures> = std::sync::OnceLock::new();
 
-/// Reads an `<image>`'s picture (see `Reading::picture`).
-type Pictures = for<'a, 'b> fn(&'b mut Reading<'a>, usize, &Style);
+/// Reads an image's picture, in a box where given (see `Reading::picture`).
+type Pictures = for<'a, 'b> fn(&'b mut Reading<'a>, usize, &Style, Option<[f32; 4]>);
 
 /// How a text element's letters are set (`Reading::text`), once a program called `enable_text`.
 static TEXT: std::sync::OnceLock<Texts> = std::sync::OnceLock::new();
@@ -190,7 +256,7 @@ static FILTERS: std::sync::OnceLock<Filters> = std::sync::OnceLock::new();
 /// (`svg_filters::apply`).
 struct Filters {
     read: for<'a, 'b> fn(&'b mut Reading<'a>, [u32; 2], &Walk),
-    apply: fn(&Filter, &mut [u32], usize, i32, &Table),
+    apply: fn(&Filter, &mut Vec<Block>),
 }
 
 /// Reads an SVG file and draws it as a `width` by `height` picture: its pixels, rows from the
@@ -204,6 +270,23 @@ pub fn decode(svg: &str, width: usize, height: usize) -> Option<(usize, Vec<u32>
     // A canvas keeps premultiplied colours; a picture does not.
     pixels.iter_mut().for_each(|pixel| *pixel = unmultiplied(*pixel));
     Some((width, pixels))
+}
+
+/// Draws an SVG file as its SMIL animation (`<animate>`, `<set>`, `<animateTransform>`) has it
+/// `seconds` after it begins, as [`decode`] draws it. A file with no animation is as `decode`
+/// draws it at any time.
+pub fn decode_at(svg: &str, width: usize, height: usize, seconds: f32) -> Option<(usize, Vec<u32>)> {
+    decode(&crate::svg_animation::Timeline::read(svg).frame(seconds), width, height)
+}
+
+/// Encodes an SVG file's SMIL animation as an animated PNG of `width` by `height` pixels, to
+/// play with [`Ui::add_animation`](crate::Ui::add_animation): 30 frames a second, fewer where all
+/// frames would pass 64 megapixels. An animation that ends plays once and stays at its end; one
+/// that runs for ever is one cycle of all that repeats (up to a minute), from when all of it
+/// has begun, on repeat. Each frame costs what drawing the file costs. Nothing for a file with
+/// no drawing or no animation.
+pub fn encode_animation(svg: &str, width: usize, height: usize) -> Option<Vec<u8>> {
+    crate::svg_animation::encode(svg, width, height)
 }
 
 /// Whether a number is positive (NaN is not).
@@ -238,7 +321,7 @@ pub(crate) fn undone(table: &Table) -> Option<Table> {
 
 /// The number a text starts with, and the rest: optional sign, digits with an optional point,
 /// optional exponent; it may run into the previous one ("1-2", ".5.5").
-fn number(text: &str) -> Option<(f32, &str)> {
+pub(crate) fn number(text: &str) -> Option<(f32, &str)> {
     let text = text.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
     let bytes = text.as_bytes();
     let digits = |from: usize| bytes[from..].iter().take_while(|byte| byte.is_ascii_digit()).count();
@@ -255,7 +338,7 @@ fn number(text: &str) -> Option<(f32, &str)> {
 }
 
 /// All numbers in a text, up to the first non-number.
-fn numbers(mut text: &str) -> impl Iterator<Item = f32> + '_ {
+pub(crate) fn numbers(mut text: &str) -> impl Iterator<Item = f32> + '_ {
     std::iter::from_fn(move || {
         let (number, rest) = number(text)?;
         text = rest;
@@ -300,7 +383,7 @@ fn share(text: &str) -> Option<f32> {
 
 /// A colour as written, lowercase: `#rgb` or `#rrggbb` (each with an optional alpha digit or
 /// two), `rgb(…)` of numbers up to 255 or percentages, or a name.
-fn color(text: &str) -> Option<Color> {
+pub(crate) fn color(text: &str) -> Option<Color> {
     if let Some(digits) = text.strip_prefix('#').filter(|digits| digits.bytes().all(|digit| digit.is_ascii_hexdigit())) {
         let value = u32::from_str_radix(digits, 16).ok()?;
         // Of three or four digits each is doubled.
@@ -348,21 +431,21 @@ fn turned(text: &str) -> Table {
 }
 
 /// One element of a file.
-struct Element<'a> {
-    name: &'a str,
+pub(crate) struct Element<'a> {
+    pub(crate) name: &'a str,
     /// Its attributes' range in the list of all attributes.
     attributes: [usize; 2],
     /// The first element after it that is not inside it.
-    end: usize,
+    pub(crate) end: usize,
 }
 
 /// A parsed file: its elements in source order, each knowing where its descendants end; all
 /// attributes (`name="value"`); ids to elements; and its style rules, each with its selector
 /// and declarations.
-struct File<'a> {
+pub(crate) struct File<'a> {
     /// The file's text.
-    text: &'a str,
-    elements: Vec<Element<'a>>,
+    pub(crate) text: &'a str,
+    pub(crate) elements: Vec<Element<'a>>,
     attributes: Vec<(&'a str, &'a str)>,
     named: HashMap<&'a str, usize>,
     rules: Vec<(&'a str, &'a str)>,
@@ -372,13 +455,13 @@ struct File<'a> {
 
 impl<'a> File<'a> {
     /// Parses a file. Malformed parts are skipped; elements never closed end at the file's end.
-    fn read(text: &'a str) -> File<'a> {
+    pub(crate) fn read(text: &'a str) -> File<'a> {
         let mut file = File { text, elements: Vec::new(), attributes: Vec::new(), named: HashMap::new(), rules: Vec::new(), words: Vec::new() };
         // The open elements, innermost last.
         let (mut open, mut rest) = (Vec::new(), text);
         while let Some(start) = rest.find('<') {
-            // Character data inside a text or tspan is its words.
-            if let Some(&inside) = open.last().filter(|inside: &&usize| start > 0 && matches!(file.elements[**inside].name, "text" | "tspan" | "a")) {
+            // Character data inside a text or its pieces is its words.
+            if let Some(&inside) = open.last().filter(|inside: &&usize| start > 0 && matches!(file.elements[**inside].name, "text" | "tspan" | "a" | "textPath")) {
                 file.words.push((inside, &rest[..start]));
             }
             let tag = &rest[start + 1..];
@@ -443,13 +526,13 @@ impl<'a> File<'a> {
     }
 
     /// An attribute of an element, if present.
-    fn attribute(&self, at: usize, name: &str) -> Option<&'a str> {
+    pub(crate) fn attribute(&self, at: usize, name: &str) -> Option<&'a str> {
         let [first, last] = self.elements[at].attributes;
         self.attributes[first..last].iter().find(|(attributes, _)| *attributes == name).map(|(_, value)| *value)
     }
 
     /// Where a slice of the file's text lies in it (nowhere, for text not from the file).
-    fn place_of(&self, piece: &str) -> [u32; 2] {
+    pub(crate) fn place_of(&self, piece: &str) -> [u32; 2] {
         let from = (piece.as_ptr() as usize).wrapping_sub(self.text.as_ptr() as usize);
         match from.checked_add(piece.len()).is_some_and(|end| end <= self.text.len()) {
             true => [from as u32, (from + piece.len()) as u32],
@@ -483,9 +566,16 @@ impl<'a> File<'a> {
     }
 
     /// The element another one references (`href="#id"`), if any.
-    fn linked(&self, at: usize) -> Option<usize> {
+    pub(crate) fn linked(&self, at: usize) -> Option<usize> {
         let link = self.attribute(at, "href").or_else(|| self.attribute(at, "xlink:href"))?;
         self.named.get(link.trim().strip_prefix('#')?).copied()
+    }
+
+    /// A property an element sets itself, in its `style` attribute or as an attribute (style
+    /// rules aside): for those read only where used.
+    pub(crate) fn own_property(&self, at: usize, name: &str) -> Option<&'a str> {
+        let declared = self.attribute(at, "style").and_then(|declarations| declarations.split(';').filter_map(|one| one.split_once(':')).rfind(|(said, _)| said.trim() == name));
+        declared.map(|(_, value)| value.trim()).or_else(|| self.attribute(at, name).map(str::trim))
     }
 }
 
@@ -590,6 +680,9 @@ struct Style {
     clip_even_odd: bool,
     /// Whether it is part of a clip path: then only its outline counts, filled opaque.
     clipping: bool,
+    /// Whether its shapes are drawn without anti-aliasing (`shape-rendering` `crispEdges` or
+    /// `optimizeSpeed`).
+    crisp: bool,
     /// The kept viewport box aligned with the picture it is clipped to, if any.
     boxed: Option<u32>,
     /// The markers at its outline's start, corners and end.
@@ -643,6 +736,7 @@ impl Default for Style {
             table: SAME,
             clip_even_odd: false,
             clipping: false,
+            crisp: false,
             boxed: None,
             markers: [None; 3],
             family: [0; 2],
@@ -693,6 +787,8 @@ struct Shape {
     pen: u32,
     /// The viewport box aligned with the picture it is clipped to: which kept box.
     boxed: Option<u32>,
+    /// Whether it is drawn without anti-aliasing (`shape-rendering`).
+    crisp: bool,
 }
 
 /// One drawing instruction, in order.
@@ -754,11 +850,11 @@ impl Tile {
 /// A block of pixels a drawing or part of it is drawn on: `wide` per row, its first row being
 /// picture row `top`; the transform from drawing units to its pixels; and its pixels per
 /// drawing pixel at the drawing's stated size.
-struct Block {
-    pixels: Vec<u32>,
-    wide: usize,
-    top: i32,
-    fit: Table,
+pub(crate) struct Block {
+    pub(crate) pixels: Vec<u32>,
+    pub(crate) wide: usize,
+    pub(crate) top: i32,
+    pub(crate) fit: Table,
     zoom: f32,
 }
 
@@ -859,20 +955,54 @@ struct Drawn {
     pixels: Vec<u32>,
 }
 
-/// An image in a drawing, premultiplied as a canvas keeps it, `wide` per row; and the transform
-/// from its pixels to the units of the shape it fills.
+/// An image in a drawing, premultiplied as a canvas keeps it, `wide` per row. (The shape it
+/// fills is in its pixels.)
 struct Picture {
     pixels: Vec<u32>,
     wide: usize,
-    place: Table,
 }
 
-/// What a drawing holds besides shapes, if any: its filters and images.
+/// What a drawing holds besides shapes, if any: its filters and images; the SVG files image
+/// elements hold, by element; and the drawings waiting to be read once the file's own is (see
+/// `Reading::read_later`).
 #[derive(Default)]
 struct More {
     filters: Vec<Filter>,
     pictures: Vec<Picture>,
+    files: HashMap<usize, String>,
+    later: Vec<Later>,
 }
+
+/// A drawing read once the file's own is (see `Reading::read_later`): an element a `feImage`
+/// draws, or an SVG file an image holds. Its items go in at `at` among the items of the drawing
+/// it was met in.
+struct Later {
+    at: usize,
+    brought: Brought,
+    /// From its box's units to the drawing's, and the share of the picture a square unit of the
+    /// drawing and its block are (see `Style::share`).
+    table: Table,
+    share: [f32; 2],
+    /// A file's box: left, top, width and height, each where given (else its own size), and
+    /// how its view fits in it; the opacity it is composited at; and the viewport box clipping
+    /// it (which kept one).
+    place: [Option<f32>; 4],
+    aspect: Aspect,
+    solid: f32,
+    boxed: Option<u32>,
+    /// How many drawings deep it is brought: one for those the file brings itself.
+    depth: u8,
+}
+
+/// What a waiting drawing is: an element of the file, or another file's text.
+enum Brought {
+    Element(usize),
+    File(String),
+}
+
+/// How many drawings deep images and `feImage` may bring drawings: a file holding itself goes no
+/// further.
+const BROUGHT: u8 = 4;
 
 /// A drawing as kept: everything it is drawn from, and cached pictures at the sizes last shown.
 pub(crate) struct ParsedDrawing {
@@ -937,43 +1067,70 @@ struct Reading<'a> {
     /// The filter reader, where filters are read: in a file once a program asked (see
     /// `enable_filters`), not in glyphs.
     filtering: Option<&'static Filters>,
+    /// The file length its budget is reckoned from (see `spent`): the outermost file's, for a
+    /// drawing it brings.
+    budget: usize,
+    /// How many drawings deep this one is brought (see `Later::depth`), and what reads those
+    /// waiting once the walk is done, where any wait.
+    depth: u8,
+    later: Option<fn(&mut Reading<'a>)>,
 }
 
-/// A text piece (the text element itself or a `<tspan>`) while its letters are set: its
-/// element, style, parent piece, its letters' given positions (x, y, dx, dy) by letter index,
-/// how many letters are set, and its outline so far.
+/// A text piece (the text element itself, a `<tspan>` or a `<textPath>`) while its letters are
+/// set: its element, style, parent piece, its letters' given positions (x, y, dx, dy) by letter
+/// index, how many letters are given, a `<textPath>`'s path (in the text's units) with where
+/// along it the text starts, and its outline so far.
 struct Piece {
     at: usize,
     style: Style,
     around: usize,
     places: [Vec<f32>; 4],
     letters: usize,
+    path: Option<(Path, f32)>,
     outline: Path,
 }
 
-/// Letters of a text being set: the pen and where the current chunk began; the last letter's
-/// letter spacing (no part of the chunk once nothing follows); the chunk's letters so far (each
-/// with its piece, outline, and anchor); a pending space (and its piece); and the previous
-/// letter (font, letter, size).
-struct Setting {
-    pen: Point,
-    start: f32,
-    apart: f32,
-    set: Vec<(usize, Path, f32)>,
-    space: Option<usize>,
-    before: Option<(usize, char, f32)>,
+/// A letter of a text as given: its piece, and its position as the pieces give it (x, y, dx,
+/// dy, each where given).
+struct Given {
+    letter: char,
+    piece: usize,
+    at: [Option<f32>; 4],
 }
 
-impl Setting {
-    /// Ends the current chunk: places it by its first letter's anchor (start, middle, end), and
-    /// moves each letter's outline into its piece's.
-    fn end(&mut self, pieces: &mut [Piece]) {
-        let back = (self.pen.x - self.apart - self.start) * self.set.first().map_or(0.0, |(_, _, anchor)| *anchor);
-        for (piece, mut outline, _) in self.set.drain(..) {
-            outline.transform(Transform([1.0, 0.0, 0.0, 1.0, -back, 0.0]));
-            pieces[piece].outline.add(&outline);
-        }
-    }
+/// A glyph as set in a chunk: its piece, its outline (the baseline at the pen's height), and
+/// where the middle of its advance lies along the line.
+struct Set {
+    piece: usize,
+    outline: Path,
+    middle: f32,
+}
+
+/// A chunk's glyphs as set from where it starts: the glyphs, the pen once all are set, and the
+/// last letter's spacing (no part of the chunk, as nothing follows it).
+struct Line {
+    set: Vec<Set>,
+    pen: Point,
+    apart: f32,
+}
+
+/// How a filter's steps are read (see `Reading::step`): lengths in bounding-box fractions
+/// (`in_box`) of the box (left, top, width, height), else in units; the filter region; the
+/// results made so far, by name; and what its `feImage` steps draw.
+struct Primitives<'a> {
+    in_box: bool,
+    square: [f32; 4],
+    region: [f64; 4],
+    results: Vec<(&'a str, usize)>,
+    images: Vec<Imaged>,
+}
+
+/// What a `feImage` step draws: an element of the file, with the transform from its units to
+/// the filter's; or what its own `href` names (by its element), in its box (left, top, width,
+/// height in the filter's units).
+enum Imaged {
+    Element(usize, Table),
+    Href(usize, [f32; 4]),
 }
 
 /// A range of elements being walked.
@@ -1148,7 +1305,7 @@ impl ParsedDrawing {
                 Item::End(solid) => merge(&mut blocks, *solid),
                 Item::Cut(keep) => cut(&mut blocks, *keep),
                 Item::Tile(tile) => blocks.push(self.tiles[*tile as usize].block(&blocks[top])),
-                Item::Filter(filter) => self.filter(*filter, &mut blocks[top]),
+                Item::Filter(filter) => self.filter(*filter, &mut blocks),
             }
         }
         blocks.swap_remove(0).pixels
@@ -1156,10 +1313,10 @@ impl ParsedDrawing {
 
     /// Filters the top block's content through a kept filter. (Only a program that asked for
     /// filters keeps any: see `enable_filters`.)
-    fn filter(&self, filter: u32, block: &mut Block) {
+    fn filter(&self, filter: u32, blocks: &mut Vec<Block>) {
         if let Some(filters) = FILTERS.get() {
             let Some(filter) = self.held().and_then(|more| more.filters.get(filter as usize)) else { return };
-            (filters.apply)(filter, &mut block.pixels, block.wide, block.top, &block.fit);
+            (filters.apply)(filter, blocks);
         }
     }
 
@@ -1192,7 +1349,11 @@ impl ParsedDrawing {
                 Some(cut) => (cut, FINER, [1.0 / FINER, 0.0, 0.0, 1.0 / FINER, 0.0, 0.0]),
                 None => (path, fine, to_pixels),
             };
-            work.fill(&mut canvas, outline, fine, Transform(to_pixels), shape.even_odd, |x, y| ink.at(x, y));
+            let mut fill = |onto: &mut Canvas, ink: &Ready| work.fill(onto, outline, fine, Transform(to_pixels), shape.even_odd, ink.painter());
+            match CRISP.get().filter(|_| shape.crisp) {
+                Some(crisp) => crisp(&mut canvas, (path, &table, 0.0, (wide, high, top)), &ink, &mut |onto| fill(onto, &Ready::Flat(Color::WHITE))),
+                None => fill(&mut canvas, &ink),
+            }
         }
         let Some(ink) = self.ready(shape.line, current_color, (&table, &fit), line_tile.as_ref()) else { return };
         // A non-scaling stroke is computed in fractions of a picture pixel, not of a shape
@@ -1203,7 +1364,13 @@ impl ParsedDrawing {
             false => (fine, SAME, to_pixels),
         };
         let dashes = &self.dashes[pen.dashes[0] as usize..pen.dashes[1] as usize];
-        let mut line = |onto: &mut Canvas| work.line(onto, path, &pen.drawn(dashes), [fine, grain, 0.0], [Transform(there), Transform(back)], |x, y| ink.at(x, y));
+        let mut stroke = |onto: &mut Canvas, ink: &Ready| work.line(onto, path, &pen.drawn(dashes), [fine, grain, 0.0], [Transform(there), Transform(back)], ink.painter());
+        // A crisp stroke reaches as far as a miter may, in pixels.
+        let out = pen.width * pen.miter.max(2.0) / 2.0 * if pen.fixed { zoom } else { fine / FINER };
+        let mut line = |onto: &mut Canvas| match CRISP.get().filter(|_| shape.crisp) {
+            Some(crisp) => crisp(onto, (path, &table, out, (wide, high, top)), &ink, &mut |onto| stroke(onto, &Ready::Flat(Color::WHITE))),
+            None => stroke(onto, &ink),
+        };
         let Some(place) = place else { return line(&mut canvas) };
         let mut over = vec![0; wide * high];
         line(&mut Canvas::new(&mut over, wide, high, (0, top), 1.0));
@@ -1233,7 +1400,7 @@ impl ParsedDrawing {
             // under it, not the nearest four.
             Ink::Picture(kept, solid) => {
                 let picture = self.held()?.pictures.get(kept as usize)?;
-                let back = undone(&both(table, &picture.place))?;
+                let back = undone(table)?;
                 let by = [back[0].hypot(back[1]), back[2].hypot(back[3])].map(|by| by.floor().clamp(1.0, 64.0) as usize);
                 let (wide, pixels) = shrunk(&picture.pixels, picture.wide, by);
                 let back = both(&[1.0 / by[0] as f32, 0.0, 0.0, 1.0 / by[1] as f32, 0.0, 0.0], &back);
@@ -1254,6 +1421,11 @@ enum Ready<'a> {
 }
 
 impl Ready<'_> {
+    /// What gives the colour at each pixel (see `at`).
+    fn painter(&self) -> impl Fn(i32, i32) -> Color + '_ {
+        move |x, y| self.at(x, y)
+    }
+
     /// The colour at pixel `x`, `y`: for a gradient, by the pixel's centre; for tiles, the tile
     /// pixel it lies on.
     #[inline(always)]
@@ -1341,6 +1513,14 @@ fn data(address: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// The text of an SVG file in bytes: UTF-8 (a byte order mark aside) whose first tag opens
+/// after nothing but whitespace. Nothing for other bytes.
+fn svg_text(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    text.trim_start().starts_with('<').then(|| text.to_string())
+}
+
 /// A canvas pixel unpremultiplied, as a picture keeps it.
 fn unmultiplied(pixel: u32) -> u32 {
     let solid = pixel >> 24;
@@ -1408,6 +1588,56 @@ fn cut_ring(ring: &[Point], axis: usize, edge: f32, low: bool) -> Vec<Point> {
     cut
 }
 
+/// Draws a fill or stroke without anti-aliasing (`shape-rendering: crispEdges`) where its
+/// outline, through `table` and grown by `out` pixels, may reach on a block (`wide` by
+/// `high`, its first row `top`): what `draw` covers there, each pixel more than half covered
+/// then painted wholly with `ink`, the rest not at all.
+fn crisp(canvas: &mut Canvas, (path, table, out, block): (&Path, &Table, f32, (usize, usize, i32)), ink: &Ready, draw: &mut dyn FnMut(&mut Canvas)) {
+    let [left, top, right, bottom] = reached(path, table, out, block);
+    let [wide, high] = [(right - left).max(0) as usize, (bottom - top).max(0) as usize];
+    if wide * high == 0 {
+        return;
+    }
+    let mut cover = vec![0; wide * high];
+    draw(&mut Canvas::new(&mut cover, wide, high, (left, top), 1.0));
+    for (at, pixel) in cover.iter_mut().enumerate() {
+        let [x, y] = [left + (at % wide) as i32, top + (at / wide) as i32];
+        *pixel = if *pixel >> 24 > 127 { premultiplied(ink.at(x, y).0) } else { 0 };
+    }
+    canvas.pixels(&cover, wide, [left, top], false);
+}
+
+/// The pixels of a block (`wide` by `high`, its first row picture row `top`) a shape may
+/// cover: the reach of its outline through `table`, grown by `out` pixels each way, rounded out
+/// and kept within the block. Left, top, right, bottom.
+fn reached(path: &Path, table: &Table, out: f32, (wide, high, top): (usize, usize, i32)) -> [i32; 4] {
+    let Some([left, upper, right, lower]) = reach(path) else { return [0; 4] };
+    let corners = [pt(left, upper), pt(right, upper), pt(left, lower), pt(right, lower)].map(|corner| through(table, corner));
+    let side = |pick: fn(f32, f32) -> f32, axis: fn(Point) -> f32| corners.iter().map(|p| axis(*p)).fold(axis(corners[0]), pick);
+    let [x0, y0] = [side(f32::min, |p| p.x) - out, side(f32::min, |p| p.y) - out].map(|low| low.floor());
+    let [x1, y1] = [side(f32::max, |p| p.x) + out, side(f32::max, |p| p.y) + out].map(|high| high.ceil());
+    let (bottom, right) = (top as f32 + high as f32, wide as f32);
+    [x0.clamp(0.0, right) as i32, y0.clamp(top as f32, bottom) as i32, x1.clamp(0.0, right) as i32, y1.clamp(top as f32, bottom) as i32]
+}
+
+/// What makes an item one of a run of fills to merge (see `Reading::merge_fills`): its colour
+/// and box, where it is an opaque fill of one colour by the nonzero rule, drawn smooth and with
+/// no stroke. Nothing for any other.
+fn plain_fill(item: &Item) -> Option<(u32, Option<u32>)> {
+    let Item::Shape(shape) = item else { return None };
+    let Ink::Own(color) = shape.fill else { return None };
+    (color.0 >> 24 == 255 && shape.line == Ink::None && !shape.even_odd && !shape.crisp).then_some((color.0, shape.boxed))
+}
+
+/// Which way an outline goes round, by its area: positive where clockwise on screen (y down),
+/// negative where the other way. (Curves are flattened to a 256th of its size.)
+fn turning(path: &Path) -> f32 {
+    let Rect { w, h, .. } = path.bounds();
+    let mut area = 0.0;
+    path.flatten_closed(1.0, pt(0.0, 0.0), (w.max(h) / 256.0).max(1e-6), |a, b| area += a.x * b.y - b.x * a.y);
+    area
+}
+
 /// Multiplies each pixel of a block by a box's coverage (left, top, right, bottom in pixels):
 /// all inside, part on its edges, none outside. (The block is `wide` pixels wide, its first row
 /// picture row `top`.)
@@ -1460,6 +1690,19 @@ impl<'a> Reading<'a> {
     /// Reads a file, or with `glyph` its glyph part (see `ParsedDrawing::glyph`): what is kept
     /// and its drawing cost. Nothing if it holds no drawing.
     fn of(text: &'a str, glyph: Option<(&str, f32)>) -> Option<Reading<'a>> {
+        let (mut reading, start) = Reading::prepared(text, glyph)?;
+        // (A drawing unit is this share of the picture: its view is all of it.)
+        let [.., wide, high] = reading.parsed.view;
+        reading.walk(start, Style { share: [1.0 / (wide * high), 1.0], ..Style::default() });
+        if let Some(read_later) = reading.later {
+            read_later(&mut reading);
+        }
+        Some(reading)
+    }
+
+    /// A file parsed, with its size, view and fit, ready to walk; and where the walk starts.
+    /// Nothing if it holds no drawing.
+    fn prepared(text: &'a str, glyph: Option<(&str, f32)>) -> Option<(Reading<'a>, usize)> {
         let file = File::read(text);
         let root = file.elements.iter().position(|element| element.name == "svg")?;
         let start = match glyph {
@@ -1486,7 +1729,13 @@ impl<'a> Reading<'a> {
             None => [wide.or(high.map(|high| high * across / down)).unwrap_or(across), high.or(wide.map(|wide| wide * down / across)).unwrap_or(down)],
         };
         let aspect = Aspect::read(file.attribute(root, "preserveAspectRatio").unwrap_or(""));
-        let kept = ParsedDrawing {
+        let filtering = FILTERS.get().filter(|_| glyph.is_none());
+        Some((Reading::with(file, (size, view, aspect), filtering), start))
+    }
+
+    /// A reading of a parsed file into a drawing of this size, view and fit, nothing read yet.
+    fn with(file: File<'a>, (size, view, aspect): ([f32; 2], [f32; 4], Aspect), filtering: Option<&'static Filters>) -> Reading<'a> {
+        let parsed = ParsedDrawing {
             size,
             view,
             aspect,
@@ -1502,9 +1751,10 @@ impl<'a> Reading<'a> {
             uses_current_color: false,
             drawn: Vec::new(),
         };
-        let mut reading = Reading {
+        Reading {
+            budget: file.text.len(),
             file,
-            parsed: kept,
+            parsed,
             outlined: HashMap::new(),
             gradients_read: HashMap::new(),
             pictured: HashMap::new(),
@@ -1516,19 +1766,17 @@ impl<'a> Reading<'a> {
             lookups: 0,
             passes: 0.0,
             corners: Vec::new(),
-            filtering: FILTERS.get().filter(|_| glyph.is_none()),
-        };
-        reading.walk(start);
-        Some(reading)
+            filtering,
+            depth: 0,
+            later: None,
+        }
     }
 
-    /// Walks the elements from `root` on, keeping every shape to draw, as far as `spent`
-    /// allows.
-    fn walk(&mut self, root: usize) {
-        // The walks in progress, innermost last. (A drawing unit is this share of the picture:
-        // its view is all of it.)
-        let [.., wide, high] = self.parsed.view;
-        let mut walks = vec![Walk::through(root, root + 1, Style { share: [1.0 / (wide * high), 1.0], ..Style::default() })];
+    /// Walks the elements from `root` on, styled `style` around it, keeping every shape to
+    /// draw, as far as `spent` allows.
+    fn walk(&mut self, root: usize, style: Style) {
+        // The walks in progress, innermost last.
+        let mut walks = vec![Walk::through(root, root + 1, style)];
         while let Some(deep) = walks.len().checked_sub(1) {
             // Each step looks through the walks it is in.
             self.steps += deep + 1;
@@ -1627,8 +1875,48 @@ impl<'a> Reading<'a> {
             let cutting = self.cutting(cut, &done);
             return walks.push(cutting);
         }
+        if let (Some(_), Some(merge)) = (done.keep, SEAMLESS.get()) {
+            merge(self, done.first);
+        }
         self.parsed.items.extend(done.keep.map(Item::Cut).into_iter().chain(done.layer.map(Item::End)).chain(done.then.map(Item::Tile)));
         walks.pop();
+    }
+
+    /// Makes each run of opaque fills of one colour on the block of a clip path or mask (its
+    /// items from `from` on) one shape: drawn apart, two that abut leave a seam where each
+    /// covers part of a pixel. Each is first turned to go round positively, so that where two
+    /// overlap they add up. (Exact unless a shape goes round negatively somewhere another
+    /// overlaps it.)
+    fn merge_fills(&mut self, from: usize) {
+        let mut at = from;
+        while at < self.parsed.items.len() {
+            let first = plain_fill(&self.parsed.items[at]);
+            let run = self.parsed.items[at..].iter().take_while(|item| first.is_some() && plain_fill(item) == first).count().max(1);
+            if run > 1 {
+                self.merge_run(at, run);
+            }
+            at += 1;
+        }
+    }
+
+    /// Makes `run` fills from item `at` on one shape (see `merge_fills`).
+    fn merge_run(&mut self, at: usize, run: usize) {
+        let mut merged = Path::new();
+        let Item::Shape(first) = &self.parsed.items[at] else { return };
+        let (fill, pen, boxed) = (first.fill, first.pen, first.boxed);
+        for item in &self.parsed.items[at..at + run] {
+            let Item::Shape(shape) = item else { continue };
+            let mut outline = self.parsed.paths[shape.path as usize].clone();
+            outline.transform(Transform(shape.table));
+            if turning(&outline) < 0.0 {
+                outline.reverse();
+            }
+            merged.add(&outline);
+        }
+        self.pieces += merged.steps().len();
+        let path = self.kept_path(merged);
+        let shape = Shape { path, table: SAME, fill, even_odd: false, line: Ink::None, pen, boxed, crisp: false };
+        self.parsed.items.splice(at..at + run, [Item::Shape(shape)]);
     }
 
     /// Keeps a shape the walk reached, styled by `style`, or begins what it needs first: a
@@ -1674,8 +1962,8 @@ impl<'a> Reading<'a> {
                 let (place, table) = self.box_cut(cut, table);
                 self.parsed.paths.push(rect(place, [None; 2]));
                 let (path, pen) = (self.parsed.paths.len() as u32 - 1, self.pen(&walk.style));
-                self.parsed.items.push(Item::Shape(Shape { path, table, fill: Ink::Own(Color::WHITE), even_odd: false, line: Ink::None, pen, boxed: None }));
-                Walk { keep: Some(Keep::Solid), ..Walk::through(0, 0, walk.style) }
+                self.parsed.items.push(Item::Shape(Shape { path, table, fill: Ink::Own(Color::WHITE), even_odd: false, line: Ink::None, pen, boxed: None, crisp: false }));
+                Walk { keep: Some(Keep::Solid), first, ..Walk::through(0, 0, walk.style) }
             }
             // A clip path is in the units of what it clips, or its bounding box.
             Cut::Clip(at) => {
@@ -1708,8 +1996,9 @@ impl<'a> Reading<'a> {
 
     /// Reads the filters a list names (`filter`: `url(#…)` references and functions such as
     /// `blur()` and `drop-shadow()`), applied to what `walk` drew on its block: each kept and
-    /// run by an item in turn, its cost counted. If any is no filter, none is read, and the
-    /// element drawn unfiltered (as browsers and librsvg do).
+    /// run by an item in turn, after the blocks its images are drawn on, its cost counted. If
+    /// any is no filter, none is read, and the element drawn unfiltered (as browsers and
+    /// librsvg do).
     fn filtered(&mut self, [from, to]: [u32; 2], walk: &Walk) {
         let list = self.file.text.get(from as usize..to as usize).unwrap_or("");
         let square = self.box_of(walk);
@@ -1721,22 +2010,27 @@ impl<'a> Reading<'a> {
             };
             let filter = match filter {
                 Some(at) => Some(self.filter_of(at, walk, &square)),
-                None => function(name, inside, walk),
+                None => function(name, inside, walk).map(|filter| (filter, Vec::new())),
             };
             let Some(filter) = filter else { return };
             filters.push(filter);
         }
-        for filter in filters {
-            // Each step covers its whole region and more. A filter costing more than the budget
-            // left is skipped with those after it: the element is drawn unfiltered. Else a few
-            // elements could stand for any number of full-picture blurs.
+        for (filter, images) in filters {
+            // Each step covers its whole region and more; each image its block. A filter
+            // costing more than the budget left is skipped with those after it: the element is
+            // drawn unfiltered. Else a few elements could stand for any number of full-picture
+            // blurs.
             let [l, t, r, b] = filter.bounds();
             let share = ((r - l) * (b - t) * walk.style.share[0]).min(walk.style.share[1]);
-            let cost = share * (svg_filters::FIXED + filter.steps.iter().map(|step| svg_filters::weight(&step.kind)).sum::<f32>());
-            if self.passes + cost > passes(self.file.text.len()) {
+            let weights: f32 = filter.steps.iter().map(|step| svg_filters::weight(&step.kind) + svg_filters::background_weight(step)).sum();
+            let cost = share * (svg_filters::FIXED + weights) + images.len() as f32 * walk.style.share[1];
+            if self.passes + cost > passes(self.budget) {
                 return;
             }
-            self.spend(cost);
+            self.spend(cost - images.len() as f32 * walk.style.share[1]);
+            for image in images {
+                self.image_block(image, &filter, walk);
+            }
             let filters = &mut self.parsed.more().filters;
             filters.push(filter);
             let filter = Item::Filter(filters.len() as u32 - 1);
@@ -1744,10 +2038,26 @@ impl<'a> Reading<'a> {
         }
     }
 
+    /// Begins the block a `feImage` step's image is drawn on for a filter applied to what `walk`
+    /// drew: an element of the file, read once the file's own is; or a picture in its box.
+    fn image_block(&mut self, image: Imaged, filter: &Filter, walk: &Walk) {
+        self.begin(&walk.style);
+        let style = Style { table: filter.table, share: walk.style.share, ..Style::default() };
+        let Imaged::Element(element, units) = image else {
+            if let (Imaged::Href(at, place), Some(picture)) = (image, PICTURES.get()) {
+                picture(self, at, &style, Some(place));
+            }
+            return;
+        };
+        let (at, depth, table) = (self.parsed.items.len(), self.depth + 1, both(&filter.table, &units));
+        self.wait(Later { at, brought: Brought::Element(element), table, share: style.share, place: [None; 4], aspect: Aspect::read(""), solid: 1.0, boxed: None, depth });
+    }
+
     /// A filter element applied to what a walk drew, whose bounding box is `square` (the
-    /// transform taking a unit square onto it): its region and steps. Each child it knows is a
-    /// step, in order; steps after the reading budget is spent are not read.
-    fn filter_of(&mut self, at: usize, walk: &Walk, square: &Table) -> Filter {
+    /// transform taking a unit square onto it): its region and steps, and what its `feImage`
+    /// steps draw. Each child it knows is a step, in order; steps after the reading budget is
+    /// spent are not read.
+    fn filter_of(&mut self, at: usize, walk: &Walk, square: &Table) -> (Filter, Vec<Imaged>) {
         let ([.., wide, high], end) = (self.parsed.view, self.file.elements[at].end);
         let [bw, bh, bx, by] = [square[0], square[3], square[4], square[5]];
         let attr = |name: &str| self.file.attribute(at, name);
@@ -1765,25 +2075,26 @@ impl<'a> Reading<'a> {
         };
         let in_box = attr("primitiveUnits") == Some("objectBoundingBox");
         let style = self.styled(at, &Style::default());
-        let (mut steps, mut results, mut child) = (Vec::new(), Vec::new(), at + 1);
+        let mut read = Primitives { in_box, square: [bx, by, bw, bh], region, results: Vec::new(), images: Vec::new() };
+        let (mut steps, mut child) = (Vec::new(), at + 1);
         while child < end && !self.spent() {
             self.steps += self.file.elements[child].end - child;
-            if let Some(step) = self.step(child, &style, (in_box, [bx, by, bw, bh]), (&results, steps.len())) {
-                results.extend(self.file.attribute(child, "result").map(|result| (result.trim(), steps.len())));
+            if let Some(step) = self.step(child, &style, steps.len(), &mut read) {
+                read.results.extend(self.file.attribute(child, "result").map(|result| (result.trim(), steps.len())));
                 steps.push(step);
             }
             child = self.file.elements[child].end;
         }
-        Filter { table: walk.units, region, steps }
+        (Filter { table: walk.units, region, steps, images: read.images.len() }, read.images)
     }
 
-    /// One filter step as its element says, in a filter styled `around`: lengths in
-    /// bounding-box fractions (`in_box`; the box's left, top, width, height), else units, after
-    /// the steps already made (`made`, with their result names). Nothing for a non-step, or a
-    /// malformed step (librsvg skips those too).
-    fn step(&mut self, at: usize, around: &Style, (in_box, [bx, by, bw, bh]): (bool, [f32; 4]), (results, made): (&[(&'a str, usize)], usize)) -> Option<svg_filters::Step> {
+    /// One filter step as its element says, in a filter styled `around`, after `made` steps
+    /// (see `Primitives`). Nothing for a non-step, or a malformed step (librsvg skips those
+    /// too).
+    fn step(&mut self, at: usize, around: &Style, made: usize, read: &mut Primitives<'a>) -> Option<svg_filters::Step> {
         let style = self.styled(at, around);
         let (file, [.., wide, high]) = (&self.file, self.parsed.view);
+        let ([bx, by, bw, bh], in_box, results) = (read.square, read.in_box, &read.results);
         let attr = |name: &str| file.attribute(at, name);
         let input = |name: &str| input_of(attr(name).map(str::trim), results, made);
         // Lengths and subregion: in bounding-box fractions, or units.
@@ -1797,6 +2108,7 @@ impl<'a> Reading<'a> {
             true => attr(name).and_then(share).map(|part| f64::from([bx, by][axis]) * start as u8 as f64 + f64::from(part) * f64::from([bw, bh][axis])),
             false => attr(name).and_then(|text| exact_length(text, [wide, high][axis].into())),
         };
+        let place = [place("x", 0, true), place("y", 1, true), place("width", 0, false), place("height", 1, false)];
         let flood = match style.flood.0 {
             Paint::Own(color) => color,
             _ => style.ink.unwrap_or(Color::BLACK),
@@ -1822,14 +2134,89 @@ impl<'a> Reading<'a> {
                 (base[0] >= 0.0 && base[1] >= 0.0).then_some(())?;
                 Kind::Noise(Noise { base, octaves: one("numOctaves", 1.0).clamp(0.0, svg_filters::OCTAVES as f32) as u32, seed: one("seed", 0.0), stitch, fractal })
             }
-            // What is not read gives nothing, or passes its input through where it only moves
-            // it.
-            "feImage" | "feDiffuseLighting" | "feSpecularLighting" => Kind::Flood(Color::NONE),
-            "feConvolveMatrix" | "feDisplacementMap" => Kind::Offset([0.0; 2]),
+            "feImage" => {
+                read.images.push(self.imaged(at, read, place)?);
+                Kind::Image(read.images.len() - 1)
+            }
+            "feDiffuseLighting" | "feSpecularLighting" => Kind::Light(Box::new(self.lighting(at, &style, read)?)),
+            "feConvolveMatrix" => Kind::Convolve(Box::new(self.convolution(at)?)),
+            "feDisplacementMap" => {
+                let channel = |name: &str| ["R", "G", "B", "A"].iter().position(|channel| Some(*channel) == attr(name).map(str::trim));
+                Kind::Displace(scaled([one("scale", 0.0); 2]), [channel("xChannelSelector").unwrap_or(3), channel("yChannelSelector").unwrap_or(3)])
+            }
             _ => return None,
         };
-        let place = [place("x", 0, true), place("y", 1, true), place("width", 0, false), place("height", 1, false)];
         Some(svg_filters::Step { kind, inputs: [input("in"), input("in2")], place, space: style.space })
+    }
+
+    /// What a `feImage` step draws (see `Imaged`): its subregion is `place` where given, else
+    /// the filter region's. Nothing where it names nothing.
+    fn imaged(&self, at: usize, read: &Primitives<'a>, place: [Option<f64>; 4]) -> Option<Imaged> {
+        let href = self.file.attribute(at, "href").or_else(|| self.file.attribute(at, "xlink:href"))?.trim();
+        if let Some(id) = href.strip_prefix('#') {
+            let [bx, by, bw, bh] = read.square;
+            let units = if read.in_box { [bw, 0.0, 0.0, bh, bx, by] } else { SAME };
+            return Some(Imaged::Element(*self.file.named.get(id)?, units));
+        }
+        let place: [f64; 4] = std::array::from_fn(|n| place[n].unwrap_or(read.region[n]));
+        Some(Imaged::Href(at, place.map(|side| side as f32)))
+    }
+
+    /// A lighting step's light as its element and its first light child say (lengths and
+    /// positions as `read` takes them). Nothing without a light, or with a specular exponent
+    /// outside 1 to 128.
+    fn lighting(&self, at: usize, style: &Style, read: &Primitives<'a>) -> Option<Lighting> {
+        let one = |at: usize, name: &str, fallback: f32| self.file.attribute(at, name).and_then(number).map_or(fallback, |(number, _)| number);
+        let lights = ["feDistantLight", "fePointLight", "feSpotLight"];
+        let light = self.file.inside(at).find(|child| lights.contains(&self.file.elements[*child].name))?;
+        // Positions in bounding-box fractions or units; depths as a fraction of the box's
+        // diagonal over the square root of two.
+        let [bx, by, bw, bh] = read.square;
+        let point = |[x, y, z]: [&str; 3]| match read.in_box {
+            true => [bx + one(light, x, 0.0) * bw, by + one(light, y, 0.0) * bh, one(light, z, 0.0) * ((bw * bw + bh * bh) / 2.0).sqrt()],
+            false => [one(light, x, 0.0), one(light, y, 0.0), one(light, z, 0.0)],
+        };
+        let source = match self.file.elements[light].name {
+            "feDistantLight" => Source::Distant([one(light, "azimuth", 0.0), one(light, "elevation", 0.0)]),
+            "fePointLight" => Source::Point(point(["x", "y", "z"])),
+            _ => {
+                let cone = self.file.attribute(light, "limitingConeAngle").and_then(number).map(|(degrees, _)| degrees.abs());
+                Source::Spot(point(["x", "y", "z"]), point(["pointsAtX", "pointsAtY", "pointsAtZ"]), one(light, "specularExponent", 1.0), cone)
+            }
+        };
+        let specular = self.file.elements[at].name == "feSpecularLighting";
+        let exponent = one(at, "specularExponent", 1.0);
+        (!specular || (1.0..=128.0).contains(&exponent)).then_some(())?;
+        let constant = one(at, if specular { "specularConstant" } else { "diffuseConstant" }, 1.0);
+        let color = match self.file.own_property(at, "lighting-color").and_then(plain) {
+            Some(Paint::Own(color)) => color,
+            Some(Paint::CurrentColor) => style.ink.unwrap_or(Color::BLACK),
+            _ => Color::WHITE,
+        };
+        Some(Lighting { specular, surface: one(at, "surfaceScale", 1.0), constant, exponent, color, source })
+    }
+
+    /// A convolution step as its element says. Nothing where the kernel's order is no positive
+    /// whole number, its values are not as many as it has places, or the target lies outside.
+    fn convolution(&self, at: usize) -> Option<Convolution> {
+        let attr = |name: &str| self.file.attribute(at, name);
+        let stated: Vec<f32> = attr("order").map(|text| numbers(text).take(2).collect()).unwrap_or_default();
+        let order = [stated.first().copied().unwrap_or(3.0), stated.get(1).or(stated.first()).copied().unwrap_or(3.0)];
+        (order.iter().all(|side| *side >= 1.0 && side.fract() == 0.0 && *side <= 1e6)).then_some(())?;
+        let order = order.map(|side| side as usize);
+        let kernel: Vec<f32> = attr("kernelMatrix").map(|text| numbers(text).collect()).unwrap_or_default();
+        (kernel.len() == order[0] * order[1]).then_some(())?;
+        let sum: f32 = kernel.iter().sum();
+        let divisor = attr("divisor").and_then(number).map(|(divisor, _)| divisor).filter(|divisor| *divisor != 0.0).unwrap_or(if sum == 0.0 { 1.0 } else { sum });
+        let target = |name: &str, side: usize| attr(name).and_then(number).map_or(Some(side / 2), |(at, _)| (at >= 0.0 && at < side as f32).then_some(at as usize));
+        let target = [target("targetX", order[0])?, target("targetY", order[1])?];
+        let edge = match attr("edgeMode").map(str::trim) {
+            Some("wrap") => Edge::Wrap,
+            Some("none") => Edge::None,
+            _ => Edge::Duplicate,
+        };
+        let bias = attr("bias").and_then(number).map_or(0.0, |(bias, _)| bias);
+        Some(Convolution { order, kernel, divisor, bias, target, edge, keep_alpha: attr("preserveAlpha").map(str::trim) == Some("true") })
     }
 
     /// A box clip's box (left, top, width, height), with the transform from its units to
@@ -1989,6 +2376,7 @@ impl<'a> Reading<'a> {
             "mask" => style.mask = self.pointed_to(value, &["mask"]),
             "clip-rule" => style.clip_even_odd = if value == "evenodd" { true } else { value != "nonzero" && style.clip_even_odd },
             "overflow" => style.overflows = matches!(value, "visible" | "auto"),
+            "shape-rendering" => style.crisp = matches!(value, "crispEdges" | "optimizeSpeed"),
             "marker-start" => style.markers[0] = self.pointed_to(value, &["marker"]),
             "marker-mid" => style.markers[1] = self.pointed_to(value, &["marker"]),
             "marker-end" => style.markers[2] = self.pointed_to(value, &["marker"]),
@@ -2049,7 +2437,7 @@ impl<'a> Reading<'a> {
         if name == "image" {
             // Once a program asks: see `enable_images`.
             if let Some(picture) = PICTURES.get() {
-                picture(self, at, style);
+                picture(self, at, style, None);
             }
             return None;
         }
@@ -2064,50 +2452,228 @@ impl<'a> Reading<'a> {
         (matches!(name, "path" | "line" | "polyline" | "polygon") && style.markers != [None; 3]).then(|| self.markers(path, style)).flatten()
     }
 
-    /// Keeps an `<image>`'s picture, styled `style`: sized by its box (one unit per pixel where
-    /// it gives none), fitted per `preserveAspectRatio`, clipped at its edges. One not held in
-    /// the file, or unreadable, is left out, as is one in a clip path (outlines only).
-    fn picture(&mut self, at: usize, style: &Style) {
+    /// Keeps an image's picture, styled `style`: in its box (`place` where given, else as its
+    /// element says: one unit per pixel where it gives no size), fitted per
+    /// `preserveAspectRatio`, clipped at its edges. An SVG file is read once the file's own is
+    /// (see `read_later`). One not to be had, or unreadable, is left out, as is one in a clip
+    /// path (outlines only).
+    fn picture(&mut self, at: usize, style: &Style, place: Option<[f32; 4]>) {
         if style.hidden || style.clipping {
             return;
         }
-        let read = match self.pictured.get(&at) {
-            Some(read) => *read,
-            None => self.picture_of(at),
-        };
-        self.pictured.insert(at, read);
-        let Some(kept) = read else { return };
+        if !self.pictured.contains_key(&at) {
+            let read = self.picture_of(at);
+            self.pictured.insert(at, read);
+        }
+        match self.pictured.get(&at).copied().flatten() {
+            Some(kept) => self.keep_picture(at, kept, style, place),
+            None => self.drawing_later(at, style, place),
+        }
+    }
+
+    /// Keeps a shape showing kept picture `kept` for image element `at` (see `picture`).
+    fn keep_picture(&mut self, at: usize, kept: u32, style: &Style, place: Option<[f32; 4]>) {
         let picture = &self.parsed.more().pictures[kept as usize];
         let [wide, high] = [picture.wide as f32, (picture.pixels.len() / picture.wide) as f32];
-        let [.., across, down] = self.parsed.view;
-        let length_of = |name: &str, whole: f32| self.file.attribute(at, name).and_then(|text| length(text, whole));
-        let [x, y, w, h] = [length_of("x", across).unwrap_or(0.0), length_of("y", down).unwrap_or(0.0), length_of("width", across).unwrap_or(wide), length_of("height", down).unwrap_or(high)];
-        let place = both(&[1.0, 0.0, 0.0, 1.0, x, y], &Aspect::read(self.file.attribute(at, "preserveAspectRatio").unwrap_or("")).fit([0.0, 0.0, wide, high], [w, h]));
-        // It shows where the picture and its box overlap.
-        let [left, top] = [place[4].max(x), place[5].max(y)];
-        let [right, bottom] = [(place[4] + place[0] * wide).min(x + w), (place[5] + place[3] * high).min(y + h)];
-        let path = self.kept_path(rect([left, top, right - left, bottom - top], [None; 2]));
-        self.parsed.more().pictures[kept as usize].place = place;
+        let [x, y, w, h] = self.image_box(at, place);
+        let [x, y, w, h] = [x.unwrap_or(0.0), y.unwrap_or(0.0), w.unwrap_or(wide), h.unwrap_or(high)];
+        let fit = both(&[1.0, 0.0, 0.0, 1.0, x, y], &Aspect::read(self.file.attribute(at, "preserveAspectRatio").unwrap_or("")).fit([0.0, 0.0, wide, high], [w, h]));
+        // It shows where the picture and its box overlap: in picture pixels.
+        let [left, top] = [(x - fit[4]) / fit[0], (y - fit[5]) / fit[3]].map(|side| side.max(0.0));
+        let [right, bottom] = [(x + w - fit[4]) / fit[0], (y + h - fit[5]) / fit[3]];
+        let [right, bottom] = [right.min(wide), bottom.min(high)];
         let solid = style.faded * style.opacity;
         if !positive(solid) || !(right > left && bottom > top) {
             return;
         }
+        let path = self.kept_path(rect([left, top, right - left, bottom - top], [None; 2]));
+        let shown = Style { table: both(&style.table, &fit), ..*style };
         self.pieces += 5;
-        self.spend(self.covers(path, style, false) * TILES);
+        self.spend(self.covers(path, &shown, false) * TILES);
         let pen = self.pen(style);
-        self.parsed.items.push(Item::Shape(Shape { path, table: style.table, fill: Ink::Picture(kept, solid), even_odd: false, line: Ink::None, pen, boxed: style.boxed }));
+        self.parsed.items.push(Item::Shape(Shape { path, table: shown.table, fill: Ink::Picture(kept, solid), even_odd: false, line: Ink::None, pen, boxed: style.boxed, crisp: false }));
     }
 
-    /// Reads and keeps an `<image>`'s picture: which kept one. Nothing if it holds none
-    /// readable. (Reading costs a step per 64 pixels.)
+    /// An image's box: left, top, width and height, as `place` says where given, else each as
+    /// its element says, where it does.
+    fn image_box(&self, at: usize, place: Option<[f32; 4]>) -> [Option<f32>; 4] {
+        if let Some(place) = place {
+            return place.map(Some);
+        }
+        let [.., across, down] = self.parsed.view;
+        let length_of = |name: &str, whole: f32| self.file.attribute(at, name).and_then(|text| length(text, whole));
+        [length_of("x", across), length_of("y", down), length_of("width", across), length_of("height", down)]
+    }
+
+    /// Reads and keeps an image's picture: which kept one. Nothing if it holds none readable;
+    /// an SVG file is kept as text (`More::files`) to read later. The bytes come from a `data:`
+    /// URL, else from the app's loader (see `enable_images_from`); reading counts a step per
+    /// 64 bytes before and per 64 pixels after.
     fn picture_of(&mut self, at: usize) -> Option<u32> {
         let href = self.file.attribute(at, "href").or_else(|| self.file.attribute(at, "xlink:href"))?;
-        let (wide, pixels) = crate::ui::read_picture(&data(href)?)?;
+        let loaded = || LOADER.get().filter(|_| !href.trim_start().starts_with("data:")).and_then(|load| load(href.trim()));
+        let bytes = data(href).or_else(loaded)?;
+        self.steps += bytes.len() / 64;
+        if self.spent() {
+            return None;
+        }
+        if let Some(text) = svg_text(&bytes) {
+            self.parsed.more().files.insert(at, text);
+            return None;
+        }
+        let (wide, pixels) = crate::ui::read_picture(&bytes)?;
         self.steps += pixels.len() / 64;
         let pixels = pixels.into_iter().map(premultiplied).collect();
         let pictures = &mut self.parsed.more().pictures;
-        pictures.push(Picture { pixels, wide, place: SAME });
+        pictures.push(Picture { pixels, wide });
         Some(pictures.len() as u32 - 1)
+    }
+
+    /// Waits to read the SVG file image element `at` holds, if any (see `picture`), as deep as
+    /// drawings may be brought.
+    fn drawing_later(&mut self, at: usize, style: &Style, place: Option<[f32; 4]>) {
+        let Some(text) = self.parsed.more().files.get(&at).cloned() else { return };
+        let aspect = Aspect::read(self.file.attribute(at, "preserveAspectRatio").unwrap_or(""));
+        let solid = style.faded * style.opacity;
+        let later = Later {
+            at: self.parsed.items.len(),
+            brought: Brought::File(text),
+            table: style.table,
+            share: style.share,
+            place: self.image_box(at, place),
+            aspect,
+            solid,
+            boxed: style.boxed,
+            depth: self.depth + 1,
+        };
+        if positive(solid) {
+            self.wait(later);
+        }
+    }
+
+    /// Keeps a drawing to read once the file's own is, unless brought too deep.
+    fn wait(&mut self, later: Later) {
+        if later.depth <= BROUGHT {
+            self.parsed.more().later.push(later);
+            self.later = Some(Reading::read_later);
+        }
+    }
+
+    /// Reads the drawings waiting (`More::later`), and those they bring in turn, each as far as
+    /// the budget goes; then puts each one's items where it was met, the innermost first, so
+    /// that the places met later stay right.
+    fn read_later(&mut self) {
+        self.later = None;
+        // Each drawing read: the one it was met in (none: this one), where, and its items.
+        let mut read: Vec<(Option<usize>, usize, Vec<Item>)> = Vec::new();
+        let mut waiting: std::collections::VecDeque<(Option<usize>, Later)> = std::mem::take(&mut self.parsed.more().later).into_iter().map(|later| (None, later)).collect();
+        while let Some((within, later)) = waiting.pop_front() {
+            let at = later.at;
+            let items = self.read_one(later);
+            let brought = std::mem::take(&mut self.parsed.more().later);
+            waiting.extend(brought.into_iter().map(|later| (Some(read.len()), later)));
+            read.push((within, at, items));
+        }
+        for n in (0..read.len()).rev() {
+            let (within, at, items) = (read[n].0, read[n].1, std::mem::take(&mut read[n].2));
+            let list = match within {
+                Some(within) => &mut read[within].2,
+                None => &mut self.parsed.items,
+            };
+            let at = at.min(list.len());
+            list.splice(at..at, items);
+        }
+    }
+
+    /// Reads one waiting drawing (see `read_later`) into what this reading keeps: its items, as
+    /// they go in where it was met. None once the budget is spent.
+    fn read_one(&mut self, later: Later) -> Vec<Item> {
+        if self.spent() {
+            return Vec::new();
+        }
+        match &later.brought {
+            Brought::Element(at) => self.read_element(*at, &later),
+            Brought::File(text) => self.read_file(text, &later),
+        }
+    }
+
+    /// Reads an element of this file as a drawing of its own (see `read_later`), in the units
+    /// `later` gives, onto the block begun for it.
+    fn read_element(&mut self, at: usize, later: &Later) -> Vec<Item> {
+        let file = std::mem::replace(&mut self.file, File::read(""));
+        let mut brought = Reading::with(file, (self.parsed.size, self.parsed.view, self.parsed.aspect), self.filtering);
+        self.lend_kept(&mut brought);
+        self.lend_cached(&mut brought);
+        brought.depth = later.depth;
+        brought.walk(at, Style { table: later.table, share: later.share, ..Style::default() });
+        self.lend_kept(&mut brought);
+        self.lend_cached(&mut brought);
+        self.file = brought.file;
+        brought.parsed.items
+    }
+
+    /// Reads another SVG file (see `read_later`): its view fitted into its box, on a block of
+    /// its own clipped to that box and composited at its opacity. (Parsing it costs a step per
+    /// 16 bytes.)
+    fn read_file(&mut self, text: &str, later: &Later) -> Vec<Item> {
+        self.steps += text.len() / 16;
+        let Some((mut brought, start)) = Reading::prepared(text, None).filter(|_| !self.spent()) else { return Vec::new() };
+        let [x, y] = [later.place[0].unwrap_or(0.0), later.place[1].unwrap_or(0.0)];
+        let [w, h] = [later.place[2].unwrap_or(brought.parsed.size[0]), later.place[3].unwrap_or(brought.parsed.size[1])];
+        if !(positive(w) && positive(h)) {
+            return Vec::new();
+        }
+        let fit = later.aspect.fit(brought.parsed.view, [w, h]);
+        let table = both(&later.table, &both(&[1.0, 0.0, 0.0, 1.0, x, y], &fit));
+        // It shows as a picture of its view would: where its view, fitted, lies in its box.
+        let [left, top, across, down] = brought.parsed.view;
+        let [shown_left, shown_top] = [(x + fit[4] + left * fit[0]).max(x), (y + fit[5] + top * fit[3]).max(y)];
+        let [shown_right, shown_bottom] = [(x + fit[4] + (left + across) * fit[0]).min(x + w), (y + fit[5] + (top + down) * fit[3]).min(y + h)];
+        self.lend_kept(&mut brought);
+        brought.depth = later.depth;
+        brought.walk(start, Style { table, share: later.share, boxed: later.boxed, ..Style::default() });
+        self.lend_kept(&mut brought);
+        let style = Style { table: later.table, share: later.share, ..Style::default() };
+        let path = self.kept_path(rect([shown_left, shown_top, shown_right - shown_left, shown_bottom - shown_top], [None; 2]));
+        self.spend(2.0 * later.share[1] + self.covers(path, &style, false));
+        let pen = self.pen(&style);
+        let edge = Shape { path, table: later.table, fill: Ink::Own(Color::WHITE), even_odd: false, line: Ink::None, pen, boxed: None, crisp: false };
+        let mut items = vec![Item::Begin];
+        items.append(&mut brought.parsed.items);
+        items.extend([Item::Begin, Item::Shape(edge), Item::Cut(Keep::Solid), Item::End(later.solid)]);
+        items
+    }
+
+    /// Swaps what a drawing being brought shares with this one (see `read_later`): all it keeps,
+    /// so that indices hold in either; the costs so far and the budget; and the fonts found.
+    /// Swapped again, all is given back.
+    fn lend_kept(&mut self, other: &mut Reading<'_>) {
+        let (mine, theirs) = (&mut self.parsed, &mut other.parsed);
+        std::mem::swap(&mut mine.paths, &mut theirs.paths);
+        std::mem::swap(&mut mine.pens, &mut theirs.pens);
+        std::mem::swap(&mut mine.dashes, &mut theirs.dashes);
+        std::mem::swap(&mut mine.gradients, &mut theirs.gradients);
+        std::mem::swap(&mut mine.stops, &mut theirs.stops);
+        std::mem::swap(&mut mine.tiles, &mut theirs.tiles);
+        std::mem::swap(&mut mine.boxes, &mut theirs.boxes);
+        std::mem::swap(&mut mine.more, &mut theirs.more);
+        std::mem::swap(&mut mine.uses_current_color, &mut theirs.uses_current_color);
+        std::mem::swap(&mut self.pieces, &mut other.pieces);
+        std::mem::swap(&mut self.steps, &mut other.steps);
+        std::mem::swap(&mut self.lookups, &mut other.lookups);
+        std::mem::swap(&mut self.passes, &mut other.passes);
+        std::mem::swap(&mut self.budget, &mut other.budget);
+        std::mem::swap(&mut self.fonts, &mut other.fonts);
+        std::mem::swap(&mut self.files, &mut other.files);
+    }
+
+    /// Swaps what this reading caches by element with one of an element of this same file
+    /// (see `lend_kept`).
+    fn lend_cached(&mut self, other: &mut Reading<'_>) {
+        std::mem::swap(&mut self.outlined, &mut other.outlined);
+        std::mem::swap(&mut self.gradients_read, &mut other.gradients_read);
+        std::mem::swap(&mut self.pictured, &mut other.pictured);
+        std::mem::swap(&mut self.faces, &mut other.faces);
     }
 
     /// Keeps a shape with outline `path`, styled `style` (with tiles `tiles`).
@@ -2117,7 +2683,16 @@ impl<'a> Reading<'a> {
         if style.clipping {
             self.pieces += self.parsed.paths[path as usize].steps().len();
             self.spend(self.covers(path, style, false));
-            self.parsed.items.push(Item::Shape(Shape { path, table: style.table, fill: Ink::Own(Color::WHITE), even_odd: style.clip_even_odd, line: Ink::None, pen, boxed: style.boxed }));
+            self.parsed.items.push(Item::Shape(Shape {
+                path,
+                table: style.table,
+                fill: Ink::Own(Color::WHITE),
+                even_odd: style.clip_even_odd,
+                line: Ink::None,
+                pen,
+                boxed: style.boxed,
+                crisp: style.crisp,
+            }));
             return;
         }
         // A semi-transparent shape both filled and stroked composites as one, else its stroke
@@ -2129,17 +2704,17 @@ impl<'a> Reading<'a> {
         let line = if style.pen.width > 0.0 { self.ink(style.paints[1], style.solid[1] * solid, style.ink, path, tiles[1]) } else { Ink::None };
         // A stroke costing more than the budget left is not drawn: one shape alone could cost
         // all of it and more (see `spent`).
-        let (steps, [_, outlines]) = (self.parsed.paths[path as usize].steps().len(), most(self.file.text.len()));
+        let (steps, [_, outlines]) = (self.parsed.paths[path as usize].steps().len(), most(self.budget));
         let lined = if line == Ink::None { 0 } else { self.line_pieces(path, style) };
         let (line, lined) = if self.pieces + 2 * steps + lined > outlines { (Ink::None, 0) } else { (line, lined) };
         if fill == Ink::None && line == Ink::None {
             return;
         }
         // A shape stroked under its fill is kept as two: stroke, then fill.
-        let (even_odd, table, boxed) = (style.even_odd, style.table, style.boxed);
+        let (even_odd, table, boxed, crisp) = (style.even_odd, style.table, style.boxed, style.crisp);
         let shapes = match style.under {
-            true => vec![Shape { path, table, fill: Ink::None, even_odd, line, pen, boxed }, Shape { path, table, fill, even_odd, line: Ink::None, pen, boxed }],
-            false => vec![Shape { path, table, fill, even_odd, line, pen, boxed }],
+            true => vec![Shape { path, table, fill: Ink::None, even_odd, line, pen, boxed, crisp }, Shape { path, table, fill, even_odd, line: Ink::None, pen, boxed, crisp }],
+            false => vec![Shape { path, table, fill, even_odd, line, pen, boxed, crisp }],
         };
         self.pieces += steps * shapes.len() + lined;
         // Fill and stroke each cover their bounding box's share of the block, more for
@@ -2152,7 +2727,8 @@ impl<'a> Reading<'a> {
             Ink::Tiles(..) | Ink::Picture(..) => TILES,
         };
         let boxed_line = if boxed.is_some() && line != Ink::None { 2.0 * style.share[1] } else { 0.0 };
-        self.spend(self.covers(path, style, line != Ink::None) * (worth(fill) + worth(line)) + boxed_line);
+        let crisp = if style.crisp { 2.0 } else { 1.0 };
+        self.spend(self.covers(path, style, line != Ink::None) * (worth(fill) + worth(line)) * crisp + boxed_line);
         if layered {
             self.begin(style);
         }
@@ -2160,12 +2736,12 @@ impl<'a> Reading<'a> {
         self.parsed.items.extend(layered.then_some(Item::End(style.opacity)));
     }
 
-    /// The letters of a text element and its `<tspan>`s, styled `style`: each piece's letters
-    /// as one kept outline, with its style. Each letter is its glyph's outline in the system
-    /// font of the first installed family its piece names, set along a line from the positions
-    /// the text and its pieces give; each chunk starting at a position of its own is placed
-    /// there by its anchor. Whitespace collapses as in a browser: trimmed at both ends, runs
-    /// made one.
+    /// The letters of a text element and its `<tspan>`s and `<textPath>`s, styled `style`: each
+    /// piece's letters as one kept outline, with its style. Each letter is its glyph's outline
+    /// in the system font of the first installed family its piece names (shaped as pages are,
+    /// with the feature `shaping`), set along a line from the positions the text and its pieces
+    /// give, or along a text path; each chunk starting at a position of its own is placed there
+    /// by its anchor. Whitespace collapses as in a browser: trimmed at both ends, runs made one.
     fn text(&mut self, at: usize, style: &Style) -> Vec<(u32, Style)> {
         let end = self.file.elements[at].end;
         self.steps += end - at + self.file.words.len();
@@ -2174,89 +2750,214 @@ impl<'a> Reading<'a> {
             // A piece belongs to the innermost piece around it; anything else (such as a title)
             // writes nothing.
             let around = pieces.iter().rposition(|piece| inner < self.file.elements[piece.at].end).unwrap_or(0);
-            if matches!(self.file.elements[inner].name, "tspan" | "a") {
+            if matches!(self.file.elements[inner].name, "tspan" | "a" | "textPath") {
                 let style = self.styled(inner, &pieces[around].style);
                 pieces.push(self.piece(inner, style, around));
             }
         }
         let words: Vec<(usize, String)> =
             self.file.words.iter().filter(|(owner, _)| (at..end).contains(owner)).filter_map(|(owner, words)| Some((pieces.iter().position(|piece| piece.at == *owner)?, characters(words)))).collect();
-        let mut setting = Setting { pen: pt(0.0, 0.0), start: 0.0, apart: 0.0, set: Vec::new(), space: None, before: None };
-        for (piece, words) in &words {
-            for letter in words.chars() {
-                self.letter(letter, *piece, &mut pieces, &mut setting);
-            }
+        let letters = self.given(&words, &mut pieces);
+        let mut pen = pt(0.0, 0.0);
+        let mut from = 0;
+        while from < letters.len() {
+            let path = on_path(&pieces, letters[from].piece);
+            let starts = |given: &Given| given.at[0].is_some() || given.at[1].is_some() || on_path(&pieces, given.piece) != path;
+            let to = from + 1 + letters[from + 1..].iter().take_while(|given| !starts(given)).count();
+            pen = self.chunk(&letters[from..to], &mut pieces, pen);
+            from = to;
         }
-        setting.end(&mut pieces);
-        let outlines: Vec<(Path, Style)> = pieces.into_iter().filter(|piece| !piece.outline.steps().is_empty()).map(|piece| (piece.outline, piece.style)).collect();
+        // Text is drawn smooth whatever `shape-rendering` says.
+        let outlines: Vec<(Path, Style)> = pieces.into_iter().filter(|piece| !piece.outline.steps().is_empty()).map(|piece| (piece.outline, Style { crisp: false, ..piece.style })).collect();
         outlines.into_iter().map(|(outline, style)| (self.kept_path(outline), style)).collect()
     }
 
-    /// A text piece as it starts: its element, style, parent piece, and its letters' given
-    /// positions (x, y, dx, dy).
+    /// A text piece as it starts: its element, style, parent piece, its letters' given
+    /// positions (x, y, dx, dy), and a `<textPath>`'s path.
     fn piece(&mut self, at: usize, style: Style, around: usize) -> Piece {
         let [.., wide, high] = self.parsed.view;
         let list =
             |name: &str, whole: f32| self.file.attribute(at, name).map(|value| value.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|one| length(one, whole)).collect()).unwrap_or_default();
         let places = [list("x", wide), list("y", high), list("dx", wide), list("dy", high)];
-        Piece { at, style, around, places, letters: 0, outline: Path::new() }
+        let path = (self.file.elements[at].name == "textPath").then(|| self.text_path(at));
+        Piece { at, style, around, places, letters: 0, path, outline: Path::new() }
     }
 
-    /// Sets one letter of piece `piece`: where the piece (or the nearest ancestor piece giving
-    /// one for that letter) puts it, or after the previous.
-    fn letter(&mut self, letter: char, piece: usize, pieces: &mut [Piece], setting: &mut Setting) {
-        // A text can stand for as much as a file could: it is read only as far as the budget
-        // allows.
-        if self.spent() {
-            return;
-        }
-        if letter.is_whitespace() {
-            setting.space = setting.before.map(|_| piece);
-            return;
-        }
-        if let Some(space) = setting.space.take() {
-            self.letter_at(' ', space, pieces, setting);
-        }
-        self.letter_at(letter, piece, pieces, setting);
+    /// A `<textPath>`'s path in the text's units, as its `path` says, else the shape it
+    /// references (with that shape's own transform); and where along it the text starts
+    /// (`startOffset`, a length or a share of the path's). An empty path for one naming no
+    /// shape: its letters then show nowhere.
+    fn text_path(&mut self, at: usize) -> (Path, f32) {
+        let path = match self.file.attribute(at, "path") {
+            Some(d) => Path::svg(d),
+            None => self.shape_path(at).unwrap_or_default(),
+        };
+        let from = self.file.attribute(at, "startOffset").and_then(|text| length(text, path.length())).unwrap_or(0.0);
+        (path, from)
     }
 
-    /// Sets one letter that is not a space between others (see `letter`).
-    fn letter_at(&mut self, letter: char, piece: usize, pieces: &mut [Piece], setting: &mut Setting) {
-        self.steps += LETTER;
-        // Its given position: from the piece or the nearest ancestor piece giving one for that
-        // letter index. Every piece it is in counts one more letter.
-        let mut given = [None; 4];
-        let mut inside = Some(piece);
-        while let Some(at) = inside {
-            let own = &mut pieces[at];
-            given = std::array::from_fn(|n| given[n].or(own.places[n].get(own.letters).copied()));
-            own.letters += 1;
-            inside = (at != 0).then_some(own.around);
+    /// The outline of the shape an element references, with that shape's own transform.
+    fn shape_path(&mut self, at: usize) -> Option<Path> {
+        let shape = self.file.linked(at)?;
+        let kept = self.outline(shape, self.file.elements[shape].name)?;
+        let mut path = self.parsed.paths[kept as usize].clone();
+        path.transform(Transform(self.file.attribute(shape, "transform").map_or(SAME, turned)));
+        Some(path)
+    }
+
+    /// A text's letters, each with its piece and given position: whitespace collapsed (see
+    /// `text`), as many as the budget allows. (A text can stand for as much as a file could.)
+    fn given(&mut self, words: &[(usize, String)], pieces: &mut [Piece]) -> Vec<Given> {
+        let (mut letters, mut space) = (Vec::new(), None);
+        for (piece, letter) in words.iter().flat_map(|(piece, words)| words.chars().map(move |letter| (*piece, letter))) {
+            if self.spent() {
+                break;
+            }
+            if letter.is_whitespace() {
+                space = (!letters.is_empty()).then_some(piece);
+                continue;
+            }
+            if let Some(space) = space.take() {
+                letters.push(given(' ', space, pieces));
+            }
+            letters.push(given(letter, piece, pieces));
+            self.steps += LETTER;
         }
-        // A letter with a position of its own starts a chunk: the previous one is placed by its
-        // anchor.
-        if given[0].is_some() || given[1].is_some() {
-            setting.end(pieces);
-            setting.pen = pt(given[0].unwrap_or(setting.pen.x), given[1].unwrap_or(setting.pen.y));
-            setting.start = setting.pen.x;
+        letters
+    }
+
+    /// Sets a chunk of letters (see `text`): from where its first letter is given, else where
+    /// the previous chunk ended (`pen`), or along its text path; placed by its first letter's
+    /// anchor. Gives where it ends.
+    fn chunk(&mut self, letters: &[Given], pieces: &mut [Piece], pen: Point) -> Point {
+        let first = &letters[0];
+        let path = on_path(pieces, first.piece);
+        let start = match path {
+            Some(_) => pt(first.at[0].unwrap_or(0.0), 0.0),
+            None => pt(first.at[0].unwrap_or(pen.x), first.at[1].unwrap_or(pen.y)),
+        };
+        let line = self.line(letters, pieces, start);
+        let back = (line.pen.x - line.apart - start.x) * pieces[first.piece].style.anchor;
+        let Some((path, from)) = path.and_then(|path| pieces[path].path.clone()) else {
+            for Set { piece, mut outline, .. } in line.set {
+                outline.transform(Transform([1.0, 0.0, 0.0, 1.0, -back, 0.0]));
+                pieces[piece].outline.add(&outline);
+            }
+            return line.pen;
+        };
+        let long = path.length();
+        for Set { piece, mut outline, middle } in line.set {
+            // Each glyph turned to the path's direction where its middle falls; one falling off
+            // either end is left out.
+            let along = from + middle - back;
+            let Some((p, degrees)) = path.point_at(along).filter(|_| (0.0..=long).contains(&along) && long > 0.0) else { continue };
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            outline.transform(Transform([cos, sin, -sin, cos, p.x - cos * middle, p.y - sin * middle]));
+            pieces[piece].outline.add(&outline);
         }
-        setting.pen = pt(setting.pen.x + given[2].unwrap_or(0.0), setting.pen.y + given[3].unwrap_or(0.0));
-        let style = pieces[piece].style;
+        path.point_at(from + line.pen.x - line.apart - back).map_or(pen, |(p, _)| p)
+    }
+
+    /// Sets a chunk's letters along a line from `start`, each in its piece's font, kerned by
+    /// pairs, spaced and moved as given.
+    #[cfg(not(feature = "shaping"))]
+    fn line(&mut self, letters: &[Given], pieces: &[Piece], start: Point) -> Line {
+        let mut line = Line { set: Vec::new(), pen: start, apart: 0.0 };
+        // The letter before: its font, letter and size.
+        let mut before: Option<(usize, char, f32)> = None;
+        for given in letters {
+            line.pen = pt(line.pen.x + given.at[2].unwrap_or(0.0), line.pen.y + given.at[3].unwrap_or(0.0));
+            let (style, letter) = (pieces[given.piece].style, given.letter);
+            let face = self.face(style.family, style.weight, style.italic);
+            let Some(font) = self.font(face, letter) else { continue };
+            let size = style.font_size;
+            // Two letters in the same font are kerned.
+            let kerned = before.filter(|(font_before, _, size_before)| *font_before == font && *size_before == size);
+            let kerned = kerned.map_or(0.0, |(_, before, _)| self.file_of(font).map_or(0.0, |file| file.kerning(before, letter, size)));
+            let Some(file) = self.file_of(font) else { continue };
+            let mut outline = file.outline(letter, size);
+            let (x, advance) = (line.pen.x + kerned, file.advance(letter, size));
+            outline.transform(Transform([1.0, 0.0, 0.0, 1.0, x, line.pen.y - file.metrics(size).ascent]));
+            line.set.push(Set { piece: given.piece, outline, middle: x + advance / 2.0 });
+            line.pen = pt(x + advance + style.spacing, line.pen.y);
+            (line.apart, before) = (style.spacing, Some((font, letter, size)));
+        }
+        line
+    }
+
+    /// Sets a chunk's letters along a line from `start` as pages set text: in the order shown,
+    /// right-to-left stretches reversed (with `right-to-left`); each run of one piece and font
+    /// shaped by its script's plan; spaced and moved as given.
+    #[cfg(feature = "shaping")]
+    fn line(&mut self, letters: &[Given], pieces: &[Piece], start: Point) -> Line {
+        let text: String = letters.iter().map(|given| given.letter).collect();
+        let mut stretches = vec![(0..text.len(), 0)];
+        if !crate::bidi::plain(&text) {
+            let mut order = crate::bidi::Order::default();
+            order.of(&text, None);
+            order.shown(&text, &mut stretches);
+        }
+        // Each letter's first byte, for turning stretches into letters.
+        let starts: Vec<usize> = text.char_indices().map(|(at, _)| at).collect();
+        let fonts: Vec<Option<usize>> = letters.iter().map(|given| self.letter_font(given, pieces)).collect();
+        let mut shaper = Shaper { line: Line { set: Vec::new(), pen: start, apart: 0.0 }, plans: Vec::new(), laid: Vec::new(), moved: vec![false; letters.len()] };
+        for (bytes, level) in stretches {
+            let [first, last] = [bytes.start, bytes.end].map(|byte| starts.partition_point(|at| *at < byte));
+            let mut runs = runs(&letters[..last], &fonts, first);
+            if level % 2 == 1 {
+                runs.reverse();
+            }
+            for run in runs {
+                self.shape_run(&letters[run.clone()], run.start, (&fonts, pieces, level % 2 == 1), &mut shaper);
+            }
+        }
+        shaper.line
+    }
+
+    /// The font a letter of a chunk is drawn in, as its piece's style finds it.
+    #[cfg(feature = "shaping")]
+    fn letter_font(&mut self, given: &Given, pieces: &[Piece]) -> Option<usize> {
+        let style = pieces[given.piece].style;
         let face = self.face(style.family, style.weight, style.italic);
-        let Some(font) = self.font(face, letter) else { return };
-        let size = style.font_size;
-        // Two letters in the same font are kerned.
-        let kerned = setting
-            .before
-            .filter(|(font_before, _, size_before)| *font_before == font && *size_before == size)
-            .map_or(0.0, |(_, before, _)| self.file_of(font).map_or(0.0, |file| file.kerning(before, letter, size)));
+        self.font(face, given.letter)
+    }
+
+    /// Shapes a run of a chunk's letters (the first being letter `first` of the chunk) and
+    /// sets its glyphs after those set so far: each letter's movement (dx, dy) before its first
+    /// glyph, its spacing after its last. (`fonts` are the chunk's letters' fonts.)
+    #[cfg(feature = "shaping")]
+    fn shape_run(&mut self, letters: &[Given], first: usize, (fonts, pieces, leftward): (&[Option<usize>], &[Piece], bool), shaper: &mut Shaper) {
+        let (Some(font), style) = (fonts[first], pieces[letters[0].piece].style) else { return };
         let Some(file) = self.file_of(font) else { return };
-        let mut outline = file.outline(letter, size);
-        outline.transform(Transform([1.0, 0.0, 0.0, 1.0, setting.pen.x + kerned, setting.pen.y - file.metrics(size).ascent]));
-        setting.set.push((piece, outline, style.anchor));
-        setting.pen = pt(setting.pen.x + kerned + file.advance(letter, size) + style.spacing, setting.pen.y);
-        setting.apart = style.spacing;
-        setting.before = Some((font, letter, size));
+        let text: String = letters.iter().map(|given| given.letter).collect();
+        let script = text.chars().find_map(crate::shaping::Script::of).unwrap_or(crate::shaping::Script::None);
+        let plan = match shaper.plans.iter().position(|(of, known, way, _)| (*of, *known, *way) == (font, script, leftward)) {
+            Some(plan) => plan,
+            None => {
+                shaper.plans.push((font, script, leftward, crate::shaping::Plan::of(file, script, leftward, crate::scripts::Language::NONE)));
+                shaper.plans.len() - 1
+            }
+        };
+        file.shape(&shaper.plans[plan].3, &text, &mut shaper.laid);
+        let unit = file.unit(style.font_size);
+        let line = &mut shaper.line;
+        for (n, laid) in shaper.laid.iter().enumerate() {
+            let own = first + laid.from as usize;
+            if !std::mem::replace(&mut shaper.moved[own], true) {
+                let at = letters[laid.from as usize].at;
+                line.pen = pt(line.pen.x + at[2].unwrap_or(0.0), line.pen.y + at[3].unwrap_or(0.0));
+            }
+            let [dx, dy] = laid.offset.map(|offset| offset as f32 * unit);
+            let (outline, _) = file.outline_through(laid.glyph, [unit, 0.0, 0.0, -unit, line.pen.x + dx, line.pen.y - dy]);
+            let advance = laid.advance as f32 * unit;
+            line.set.push(Set { piece: letters[0].piece, outline, middle: line.pen.x + advance / 2.0 });
+            line.pen.x += advance;
+            // A letter's spacing follows its last glyph.
+            if shaper.laid.get(n + 1).is_none_or(|next| next.from != laid.from) {
+                (line.pen.x, line.apart) = (line.pen.x + style.spacing, style.spacing);
+            }
+        }
+        self.steps += LETTER * shaper.laid.len();
     }
 
     /// The system font face for a family list (as written, where in the file): the first
@@ -2297,7 +2998,7 @@ impl<'a> Reading<'a> {
     /// Whether system fonts may still be looked up once more (see `LOOKUPS`, `HELD`).
     fn looks(&mut self) -> bool {
         self.lookups += 1;
-        self.lookups <= LOOKUPS.max(self.file.text.len() / 512) && self.files.iter().map(|file| file.bytes().0.len()).sum::<usize>() < HELD
+        self.lookups <= LOOKUPS.max(self.budget / 512) && self.files.iter().map(|file| file.bytes().0.len()).sum::<usize>() < HELD
     }
 
     /// A found font's file, if any.
@@ -2333,7 +3034,7 @@ impl<'a> Reading<'a> {
     /// (each takes a few bytes at least), nor more steps than those shapes could need, nor more
     /// full-picture passes than such a file could cause (see `passes`).
     fn spent(&self) -> bool {
-        let long = self.file.text.len();
+        let long = self.budget;
         let [shapes, outlines] = most(long);
         self.steps > 16 * shapes || self.parsed.items.len() > shapes || self.pieces > outlines || self.passes > passes(long)
     }
@@ -2685,7 +3386,7 @@ fn function(name: &str, inside: &str, walk: &Walk) -> Option<Filter> {
         _ => return None,
     };
     let steps = vec![svg_filters::Step { kind, inputs: [Input::Source; 2], place: [None; 4], space: walk.style.space }];
-    Some(Filter { table: walk.units, region: [-1e9, -1e9, 2e9, 2e9], steps })
+    Some(Filter { table: walk.units, region: [-1e9, -1e9, 2e9, 2e9], steps, images: 0 })
 }
 
 /// What `drop-shadow()` says: a colour (or the surrounding colour), the x and y offsets, and
@@ -2730,8 +3431,10 @@ fn input_of(named: Option<&str>, results: &[(&str, usize)], made: usize) -> Inpu
         None => fallback,
         Some("SourceGraphic") => Input::Source,
         Some("SourceAlpha") => Input::Alpha,
-        // Background and paint inputs are not read.
-        Some("BackgroundImage" | "BackgroundAlpha" | "FillPaint" | "StrokePaint") => Input::Clear,
+        Some("BackgroundImage") => Input::Background,
+        Some("BackgroundAlpha") => Input::BackgroundAlpha,
+        // Paint inputs are not read.
+        Some("FillPaint" | "StrokePaint") => Input::Clear,
         Some(name) => results.iter().rev().find(|(result, _)| *result == name).map_or(fallback, |(_, at)| Input::Made(*at)),
     }
 }
@@ -2890,6 +3593,53 @@ fn corners(path: &Path) -> Vec<(Point, f32)> {
         at = to;
     }
     corners.into_iter().map(|(point, into, out)| (point, halfway(into, out))).collect()
+}
+
+/// A letter of piece `piece` as given: its position from the piece or the nearest ancestor
+/// piece giving one for that letter index. Every piece it is in counts one more letter.
+fn given(letter: char, piece: usize, pieces: &mut [Piece]) -> Given {
+    let (mut at, mut inside) = ([None; 4], Some(piece));
+    while let Some(within) = inside {
+        let own = &mut pieces[within];
+        at = std::array::from_fn(|n| at[n].or(own.places[n].get(own.letters).copied()));
+        own.letters += 1;
+        inside = (within != 0).then_some(own.around);
+    }
+    Given { letter, piece, at }
+}
+
+/// The `<textPath>` piece a piece lies in (or is), if any.
+fn on_path(pieces: &[Piece], piece: usize) -> Option<usize> {
+    let mut inside = piece;
+    while pieces[inside].path.is_none() && inside != 0 {
+        inside = pieces[inside].around;
+    }
+    pieces[inside].path.as_ref().map(|_| inside)
+}
+
+/// What shaping a chunk keeps: the line so far; each font's plan per script and direction; the
+/// last run's glyphs; and which letters were moved already (see `Reading::shape_run`).
+#[cfg(feature = "shaping")]
+struct Shaper {
+    line: Line,
+    plans: Vec<(usize, crate::shaping::Script, bool, crate::shaping::Plan)>,
+    laid: Vec<crate::shaping::Laid>,
+    moved: Vec<bool>,
+}
+
+/// The runs a chunk's letters from `first` on are shaped in (see `Reading::line`), in order:
+/// each of one piece and font, and no longer than is shaped at once.
+#[cfg(feature = "shaping")]
+fn runs(letters: &[Given], fonts: &[Option<usize>], first: usize) -> Vec<std::ops::Range<usize>> {
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for at in first..letters.len() {
+        let same = |run: &std::ops::Range<usize>| (letters[run.start].piece, fonts[run.start]) == (letters[at].piece, fonts[at]) && run.len() < crate::shaping::LONGEST - 64;
+        match runs.last_mut().filter(|run| same(run)) {
+            Some(run) => run.end = at + 1,
+            None => runs.push(at..at + 1),
+        }
+    }
+    runs
 }
 
 /// Character data as written, with `&name;` and `&#number;` references decoded.
@@ -4016,5 +4766,234 @@ mod tests {
         let steps: usize = filters.iter().map(|filter| filter.steps.len()).sum();
         assert!(text.len() < 700 && steps == 2 && filters.len() == 2, "{} bytes, {steps} steps of {} filters", text.len(), filters.len());
         assert!(reading.passes <= passes(text.len()) + 3.0, "{} passes", reading.passes);
+    }
+
+    // Rows of what librsvg 2.62 draws of this round's test files (row 12 of a point light,
+    // row 20 of the rest), and what Edge draws for lighting colour.
+    const POINT_LIT: &str = "ffe0e0e0 ffdbdbdb ffc4c4c4 ffa1a1a1 ff848484 ff7c7c7c ff868686 ffa0a0a0 ffc4c4c4 ffe3e3e3 \
+        fff5f5f5 fff8f8f8 fff6f6f6 fff3f3f3 fff0f0f0 ffededed ffe9e9e9 ffe5e5e5 ffe0e0e0 ffdcdcdc \
+        ffd7d7d7 ffd3d3d3 ffcecece ffcacaca ffc6c6c6 ffc2c2c2 ffbebebe ffb9b9b9 ffa8a8a8 ff7c7c7c \
+        ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff2e2e2e ff8c8c8c ff9f9f9f";
+    const SPOT_LIT: &str = ". . . . . . . 7bffffff aaffffff aaffffff \
+        a9ffffff a8ffffff a7ffffff a4ffffff a2ffffff 9fffffff 9bffffff 97ffffff 93ffffff 8fffffff \
+        8bffffff 87ffffff 82ffffff 7effffff 7affffff 75ffffff 71ffffff 6dffffff 69ffffff 65ffffff \
+        61ffffff 5effffff 0dffffff . . 5effffff 5bffffff 58ffffff 55ffffff 52ffffff";
+    const CONVOLVED: &str = ". . . . . 33787878 33787878 33787878 33787878 33787878 \
+        33787878 33787878 33787878 33787878 f534cb66 ff33cc66 ff33cc66 ff33cc66 ff33cc66 ff33cc66 \
+        ff33cc66 ff33cc66 ff33cc66 ff33cc66 ff33cc66 f433cb65 33787878 33787878 33787878 33787878 \
+        33787878 33787878 33787878 33787878 33787878 . . . . .";
+    const DISPLACED: &str = "ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee \
+        ffd4e4d4 ff6cbf6c ff009900 ff009900 ff009900 ff009900 ff009900 ff009900 ff009900 ff009900 \
+        ff009900 ff009900 ff009900 ff009900 ff009900 ff009900 ff009900 ff35ac35 ffbcdbbc ffeeeeee \
+        ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee ffeeeeee abededed";
+    const NESTED: &str = ". . . . . . . . ffcc3300 ffcc3300 \
+        ffcc3300 ffcc3300 ffcc3300 ffcc3300 ff453387 ff0033cc ff0033cc ff0033cc ff0033cc ff0033cc \
+        ff0033cc ff0033cc ff0033cc ff0033cc ff0633c6 ff3d338f ff883344 ffc83304 ffcc3300 ffcc3300 \
+        ffcc3300 ffcc3300 . . . . . . . .";
+
+    #[test]
+    fn light_falls_on_the_surface_alpha_makes_as_librsvg_lights_it() {
+        enable_filters();
+        let point = r#"<filter id="e" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40"><feGaussianBlur in="SourceAlpha" stdDeviation="2"/><feDiffuseLighting surfaceScale="5"><fePointLight x="10" y="8" z="15"/></feDiffuseLighting></filter><rect x="6" y="6" width="28" height="28" rx="6" filter="url(#e)"/>"#;
+        assert!(near(&row_of(point, 12), &written(POINT_LIT), 3));
+        // A spot light's cone and fall-off; on the circle's own edge, its normals follow how
+        // the edge is smoothed.
+        let spot = r#"<filter id="e" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40"><feSpecularLighting surfaceScale="3" specularConstant="1.5" specularExponent="12"><feSpotLight x="0" y="0" z="30" pointsAtX="25" pointsAtY="25" specularExponent="2" limitingConeAngle="25"/></feSpecularLighting></filter><circle cx="20" cy="20" r="14" filter="url(#e)"/>"#;
+        assert!(near(&row_of(spot, 20)[8..32], &written(SPOT_LIT)[8..32], 1));
+        // A specular exponent outside 1 to 128 makes no step.
+        let wrong =
+            r#"<filter id="e"><feFlood flood-color="red"/><feSpecularLighting specularExponent="200"><feDistantLight/></feSpecularLighting></filter><rect width="40" height="40" filter="url(#e)"/>"#;
+        assert_eq!(row_of(wrong, 20)[20], RED);
+    }
+
+    #[test]
+    fn the_light_colour_is_taken_into_linear_light_as_browsers_take_it() {
+        enable_filters();
+        // A flat surface lit from 35 degrees up: Edge's colour, to the level. (librsvg uses the
+        // colour's sRGB values as linear ones: paler.)
+        let lit = r##"<filter id="e" x="0" y="0" width="1" height="1"><feDiffuseLighting in="SourceAlpha" surfaceScale="4" diffuseConstant="1.2" lighting-color="#fc8"><feDistantLight azimuth="45" elevation="35"/></feDiffuseLighting></filter><rect width="40" height="40" filter="url(#e)"/>"##;
+        assert_eq!(row_of(lit, 20)[20], 0xffd8_ad72);
+    }
+
+    #[test]
+    fn a_kernel_convolves_as_librsvg_convolves() {
+        enable_filters();
+        // A kernel wider than high, its target off centre, wrapping at the edges, with a divisor
+        // and a bias (added to colours as much as they are solid).
+        let kernel = r##"<filter id="e" x="0" y="0" width="1" height="1"><feConvolveMatrix order="5 3" kernelMatrix="1 2 3 2 1 0 0 0 0 0 -1 -2 -3 -2 -1" divisor="4" bias=".2" targetX="1" targetY="2" edgeMode="wrap"/></filter><rect x="5" y="5" width="30" height="30" fill="#c63" filter="url(#e)"/><circle cx="20" cy="20" r="6" fill="#3c6"/>"##;
+        let row = row_of(kernel, 20);
+        assert!(near(&row, &written(CONVOLVED), 3), "{row:x?}");
+        // Alpha kept: a box blur of the colours only (in linear light), nothing past the edges.
+        // (As librsvg draws it, to two levels.)
+        let kept = r##"<filter id="e" x="0" y="0" width="1" height="1"><feConvolveMatrix kernelMatrix="1 1 1 1 1 1 1 1 1" edgeMode="none" preserveAlpha="true"/></filter><rect width="40" height="40" fill="#08f" fill-opacity=".5" filter="url(#e)"/>"##;
+        assert_eq!([row_of(kept, 20)[20], row_of(kept, 20)[0]], [0x7f00_89ff, 0x7f00_70d7]);
+        // A kernel of the wrong size, or a target outside it, makes no step.
+        for wrong in [r#"kernelMatrix="1 1 1""#, r#"kernelMatrix="1 1 1 1" order="2" targetX="2""#] {
+            let text = format!(r#"<filter id="e"><feFlood flood-color="red"/><feConvolveMatrix {wrong}/></filter><rect width="40" height="40" filter="url(#e)"/>"#);
+            assert_eq!(row_of(&text, 20)[20], RED, "{wrong}");
+        }
+    }
+
+    #[test]
+    fn a_map_moves_pixels_as_librsvg_moves_them() {
+        enable_filters();
+        // Moved by the map's blue across and alpha down, blended between pixels.
+        let moved = r##"<filter id="e" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB"><feFlood flood-color="#c48" result="m"/><feDisplacementMap in="SourceGraphic" in2="m" scale="10" xChannelSelector="B" yChannelSelector="A"/></filter><g filter="url(#e)"><rect width="40" height="40" fill="#eee"/><circle cx="20" cy="20" r="10" fill="#090"/></g>"##;
+        assert!(near(&row_of(moved, 20), &written(DISPLACED), 6));
+    }
+
+    #[test]
+    fn an_image_step_draws_an_element_or_a_picture_in_its_place() {
+        enable_filters();
+        enable_images();
+        let shape = r##"<path id="p" d="M5 5L35 20L5 35z" fill="#e60"/>"##;
+        let plain = row_of(shape, 20);
+        // An element, in the units of what is filtered: as it is drawn by itself.
+        let element = format!(
+            r##"<defs>{shape}</defs><filter id="e" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40"><feImage href="#p"/></filter><rect width="1" height="1" filter="url(#e)"/>"##
+        );
+        assert!(near(&row_of(&element, 20), &plain, 1));
+        // In bounding-box units, fitted to the box of what is filtered (here half the size).
+        let boxed = r##"<defs><path id="q" d="M0 0H1V1H0z" fill="#e60"/></defs><filter id="e" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40" primitiveUnits="objectBoundingBox"><feImage href="#q"/></filter><rect x="10" y="10" width="20" height="20" filter="url(#e)"/>"##;
+        let row = row_of(boxed, 20);
+        assert!((0..40).all(|x| (row[x] == 0xffee_6600) == (10..30).contains(&x)));
+        // A picture in its subregion: an SVG one, stretched.
+        let picture = r##"<filter id="e" x="0" y="0" width="1" height="1"><feImage preserveAspectRatio="none" x="10" width="20" href="data:image/svg+xml;utf8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 4 4%22%3E%3Crect width=%224%22 height=%224%22 fill=%22%23a0f%22/%3E%3C/svg%3E"/></filter><rect width="40" height="40" filter="url(#e)"/>"##;
+        let row = row_of(picture, 20);
+        assert!((0..40).all(|x| (row[x] == 0xffaa_00ff) == (10..30).contains(&x)), "{row:x?}");
+    }
+
+    #[test]
+    fn a_background_input_takes_what_was_drawn_under_the_element() {
+        enable_filters();
+        // Blue on the left half, drawn first; then an element whose filter moves what lies
+        // under it across by ten, and takes its alpha in black.
+        let under = |input: &str| {
+            row_of(
+                &format!(
+                    r#"<rect width="20" height="40" fill="blue"/><filter id="e" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40"><feOffset in="{input}" dx="10"/></filter><rect width="40" height="40" fill="none" filter="url(#e)"/>"#
+                ),
+                20,
+            )
+        };
+        let moved = under("BackgroundImage");
+        assert!((0..40).all(|x| (moved[x] == 0xff00_00ff) == (0..30).contains(&x)), "{moved:x?}");
+        let alpha = under("BackgroundAlpha");
+        assert!((10..30).all(|x| alpha[x] == 0xff00_0000) && alpha[5] == 0xff00_00ff && alpha[35] == 0);
+    }
+
+    #[test]
+    fn crisp_shapes_cover_whole_pixels_where_their_middles_lie() {
+        enable_shape_rendering();
+        let crisp =
+            drawn(40, 40, r#"<circle cx="12.3" cy="20" r="8.3" fill="red" shape-rendering="crispEdges"/><path d="M24 4L37 36" stroke="red" stroke-width="2.6" shape-rendering="optimizeSpeed"/>"#);
+        assert!(crisp.iter().all(|pixel| *pixel == 0 || *pixel == RED));
+        // The circle's pixels are those whose middles it holds (but where a curve leaves a pixel
+        // all but half covered).
+        let inside = |at: usize| ((at % 40) as f32 + 0.5 - 12.3).hypot((at / 40) as f32 + 0.5 - 20.0) < 8.3;
+        let missed = (0..1600).filter(|at| at % 40 < 22 && (crisp[*at] == RED) != inside(*at)).count();
+        assert!(missed <= 2, "{missed}");
+        let smooth = drawn(40, 40, r#"<circle cx="12.3" cy="20" r="8.3" fill="red" shape-rendering="geometricPrecision"/>"#);
+        assert!(smooth.iter().any(|pixel| (1..255).contains(&(pixel >> 24))));
+    }
+
+    #[test]
+    fn abutting_shapes_of_a_clip_path_or_mask_leave_no_seam() {
+        enable_seamless_clips();
+        // Two rectangles meeting inside a pixel, as Edge draws them: whole there. (librsvg
+        // leaves a seam of three quarters.)
+        let clipped = row_of(
+            r#"<clipPath id="c"><rect x="5" y="5" width="15.5" height="30"/><rect x="20.5" y="5" width="14.5" height="30"/></clipPath><rect width="40" height="40" fill="red" clip-path="url(#c)"/>"#,
+            20,
+        );
+        assert!((5..35).all(|x| clipped[x] == RED), "{clipped:x?}");
+        // Two triangles going round opposite ways, meeting along a slant.
+        let slant = drawn(40, 40, r#"<clipPath id="c"><path d="M4 4L36 4L4 36z"/><path d="M36 4L4 36L36 36z"/></clipPath><rect width="40" height="40" fill="red" clip-path="url(#c)"/>"#);
+        assert!((4..36).all(|y| (4..36).all(|x| slant[y * 40 + x] == RED)));
+        let masked = row_of(
+            r##"<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="40" height="40"><path d="M6 6h14.3v28h-14.3z" fill="#fff"/><path d="M20.3 6h13.7v28h-13.7z" fill="#fff"/></mask><rect width="40" height="40" fill="red" mask="url(#m)"/>"##,
+            20,
+        );
+        assert!((6..34).all(|x| masked[x] == RED), "{masked:x?}");
+    }
+
+    #[test]
+    fn an_svg_image_is_drawn_sharp_in_its_box_as_librsvg_draws_it() {
+        enable_images();
+        // Its view fitted to the box and clipped there, as a picture of its own size would be.
+        let nested = r#"<image x="4" y="6" width="32" height="24" href="data:image/svg+xml;utf8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Ccircle cx=%225%22 cy=%225%22 r=%226%22 fill=%22%23c30%22/%3E%3Crect x=%222%22 y=%222%22 width=%226%22 height=%226%22 fill=%22%2303c%22 transform=%22rotate(20 5 5)%22/%3E%3C/svg%3E"/>"#;
+        let row = row_of(nested, 12);
+        assert!(near(&row, &written(NESTED), 10), "{row:x?}");
+    }
+
+    #[test]
+    fn images_in_other_files_come_from_the_app_s_loader() {
+        enable_images_from(|href| (href == "loaded.svg").then(|| br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><rect width="2" height="2" fill="red"/></svg>"#.to_vec()));
+        let row = row_of(r#"<image x="10" width="20" height="40" href="loaded.svg"/><image x="30" width="10" height="40" href="other.svg"/>"#, 20);
+        assert!((0..40).all(|x| (row[x] == RED) == (10..30).contains(&x)), "{row:x?}");
+    }
+
+    #[test]
+    fn drawings_brought_in_cost_from_the_file_s_budget() {
+        enable_filters();
+        enable_images();
+        // A drawing holding itself as an image four times, and a filter whose image is what it
+        // filters: each read only so deep, within what the file may cost.
+        let mut image = String::from(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>"#);
+        for _ in 0..8 {
+            let escaped = image.replace('%', "%25").replace('"', "%22").replace('<', "%3C").replace('>', "%3E").replace('#', "%23");
+            let one = format!(r#"<image width="10" height="10" href="data:image/svg+xml,{escaped}"/>"#);
+            image = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">{}</svg>"#, one.repeat(4));
+        }
+        let looped = r##"<svg viewBox="0 0 40 40"><filter id="e"><feImage href="#r"/><feGaussianBlur stdDeviation="9"/></filter><rect id="r" width="40" height="40" filter="url(#e)"/></svg>"##;
+        for text in [&image[..], looped] {
+            let reading = Reading::of(text, None).unwrap();
+            assert!(reading.passes <= passes(text.len()) + 3.0 && !reading.parsed.items.is_empty(), "{} passes of {} bytes", reading.passes, text.len());
+            assert!(decode(text, 64, 64).is_some());
+        }
+    }
+
+    #[test]
+    fn new_filter_steps_of_numbers_beyond_all_measure_stop_nothing() {
+        enable_filters();
+        let wild = ["1e40", "-1e38", "1e-38", "NaN", "inf", "0", "-0", "1e20", "16777217", "3"];
+        for (a, b) in wild.iter().flat_map(|a| wild.iter().map(move |b| (*a, *b))) {
+            let text = format!(
+                r##"<svg viewBox="0 0 100 100"><filter id="f" x="{a}" width="{b}" primitiveUnits="objectBoundingBox"><feDiffuseLighting surfaceScale="{a}" diffuseConstant="{b}"><fePointLight x="{a}" y="{b}" z="{a}"/></feDiffuseLighting>
+                <feSpecularLighting specularExponent="{a}" surfaceScale="{b}"><feSpotLight x="{b}" pointsAtX="{a}" specularExponent="{b}" limitingConeAngle="{a}"/></feSpecularLighting><feDiffuseLighting><feDistantLight azimuth="{a}" elevation="{b}"/></feDiffuseLighting>
+                <feConvolveMatrix order="{a} {b}" kernelMatrix="{a} {b} {a} {b}" divisor="{b}" bias="{a}" targetX="{b}"/><feConvolveMatrix kernelMatrix="{a} {b} {a} {b} {a} {b} {a} {b} {a}" bias="{b}" edgeMode="wrap"/>
+                <feDisplacementMap in2="SourceGraphic" scale="{a}" xChannelSelector="R"/><feImage href="#r" x="{a}" width="{b}"/><feOffset in="BackgroundImage" dx="{a}"/></filter>
+                <rect id="r" x="{a}" width="{b}" height="50" filter="url(#f)" transform="scale({a} {b})" shape-rendering="crispEdges"/><circle r="40" cx="50" cy="50" shape-rendering="crispEdges" stroke="red" stroke-width="{a}"/></svg>"##
+            );
+            assert!(decode(&text, 24, 24).is_some(), "{a} and {b}");
+        }
+    }
+
+    #[test]
+    fn text_follows_its_path_turned_with_it() {
+        enable_text();
+        // Down a vertical line: the letters stand in a narrow column about it; what runs past
+        // its end is left out.
+        let text = r##"<path id="p" d="M20 2V30"/><text font-family="sans-serif" font-size="8" fill="red"><textPath href="#p">IIIIIIIIIIIIIIIIIIIIIIIIIIIII</textPath></text>"##;
+        let down = drawn(40, 40, text);
+        let inked = |at: &usize| down[*at] >> 24 > 0x80;
+        let (columns, rows): (Vec<usize>, Vec<usize>) = (0..1600).filter(inked).map(|at| (at % 40, at / 40)).unzip();
+        assert!(!columns.is_empty() && columns.iter().all(|x| (12..=28).contains(x)), "{columns:?}");
+        assert!(rows.iter().all(|y| (1..=31).contains(y)) && rows.iter().any(|y| *y < 6) && rows.iter().any(|y| *y > 26), "{rows:?}");
+        // A text path naming no shape shows nothing.
+        assert!(drawn(40, 40, r##"<text font-size="8"><textPath href="#none">II</textPath></text>"##).iter().all(|pixel| *pixel == 0));
+    }
+
+    #[cfg(feature = "shaping")]
+    #[test]
+    fn shaped_text_joins_its_letters() {
+        enable_text();
+        // Arabic seens joined into one stroke along the baseline: no gap between the first ink
+        // and the last. (Where the system has no Arabic font, nothing is drawn to judge.)
+        let joined = drawn(64, 64, r#"<text x="60" y="40" font-family="sans-serif" font-size="24" text-anchor="end">سسس</text>"#);
+        let columns: Vec<usize> = (0..64).filter(|x| (0..64).any(|y| joined[y * 64 + x] >> 24 > 0x40)).collect();
+        if let (Some(first), Some(last)) = (columns.first(), columns.last()) {
+            assert_eq!(columns.len(), last - first + 1, "{columns:?}");
+        }
     }
 }

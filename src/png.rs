@@ -19,6 +19,35 @@ pub fn encode_rgba(width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
     Some(file(width, height, [8, 6], &[], &rows::<4>(width, &pixels[..width * height])))
 }
 
+/// Encodes frames as an animated PNG (APNG): each `width` pixels wide, rows of `0xAARRGGBB`
+/// not premultiplied, as many rows high as the first (a frame of another size is none), shown
+/// for its milliseconds; played `plays` times, 0 for ever. Nothing for no frames, or a size PNG
+/// cannot hold.
+pub(crate) fn encode_animation(width: usize, frames: &[(Vec<u32>, u16)], plays: u32) -> Option<Vec<u8>> {
+    let height = high(width, &frames.first()?.0)?;
+    let frames: Vec<&(Vec<u32>, u16)> = frames.iter().filter(|(pixels, _)| pixels.len() == width * height).collect();
+    let [wide, high] = [width as u32, height as u32].map(u32::to_be_bytes);
+    let header = [&wide[..], &high, &[8, 6, 0, 0, 0]].concat();
+    let mut file = [&START[..], &chunk(b"IHDR", &header), &chunk(b"acTL", &[(frames.len() as u32).to_be_bytes(), plays.to_be_bytes()].concat())].concat();
+    // Each frame's control chunk, and its data chunks after the first's, count on in one
+    // sequence. Every frame covers the canvas and replaces it.
+    let mut sequence = 0u32;
+    for (n, (pixels, shows)) in frames.into_iter().enumerate() {
+        let control = [&sequence.to_be_bytes()[..], &wide, &high, &[0; 8], &shows.to_be_bytes(), &1000u16.to_be_bytes(), &[0, 0]].concat();
+        file.extend(chunk(b"fcTL", &control));
+        sequence += 1;
+        let packed = deflate(&rows::<4>(width, pixels));
+        if n == 0 {
+            file.extend(chunk(b"IDAT", &packed));
+            continue;
+        }
+        file.extend(chunk(b"fdAT", &[&sequence.to_be_bytes()[..], &packed].concat()));
+        sequence += 1;
+    }
+    file.extend(chunk(b"IEND", &[]));
+    Some(file)
+}
+
 /// How many whole rows of `width` there are, where PNG can hold that size; none where not.
 fn high(width: usize, pixels: &[u32]) -> Option<usize> {
     let (height, most) = (pixels.len() / width.max(1), i32::MAX as usize);

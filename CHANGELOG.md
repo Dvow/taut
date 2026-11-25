@@ -20,7 +20,6 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - **Gallery:** in a window narrower than its top bar, as on a phone, the bar wraps: every part
   shows where Tab reaches it.
 - **`examples/apk.rs`** packs any file, not only an example: `apk -- tests/android.rs`.
-
 - **Video on iOS, Android and the web** (feature `video`), with the same API as elsewhere:
   iOS through AVFoundation, as macOS; Android through the NDK's media C API (extractor,
   system decoders into an image reader, AAudio for sound), loaded at run time, with no Java;
@@ -31,7 +30,6 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   parts told to readers changed order; the loader now moves only elements out of place.
 - `examples/web_page.rs` answers range requests (a browser seeks a video by them), and
   `examples/apk.rs` packs examples with the feature `video`.
-
 - **iOS keyboard:** the system's keyboard reads and edits the focused text box, so it corrects,
   predicts and capitalizes; composed text stands in place of the selection. A long press or a
   secondary click in a text box shows the system's edit menu.
@@ -43,7 +41,6 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - **iOS notifications:** `system_notification` and `notification_clicked`, as on macOS (app
   bundles).
 - `FileDialogRequest` has a new field `many`: code building one needs it.
-
 - **Android's system parts**, through the same calls as elsewhere, each compiled in only when
   called: the system file dialog (`FileDialog::native`; several files with `pick_many`; picked
   documents come as copies, and what the app writes to a copy goes back to its document);
@@ -55,6 +52,17 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   `examples/apk.rs` now packs (`classes.dex`: the activity `taut.Activity`, the file
   provider `taut.Files`), and the permission to notify, which it declares. New example
   `system_parts`.
+- **SVG:** every filter: `feImage` (an element or a picture), `feDiffuseLighting` and
+  `feSpecularLighting` with distant, point and spot lights, `feConvolveMatrix`,
+  `feDisplacementMap`, and the `BackgroundImage`/`BackgroundAlpha` inputs.
+  `shape-rendering` (`crispEdges`, `optimizeSpeed`) after `svg::enable_shape_rendering`. Text on a path (`<textPath>`); with the
+  feature `shaping`, SVG text is shaped as pages are. SVG files as images (`data:` URLs), and
+  pictures in other files through the app's loader (`svg::enable_images_from`), within the
+  file's cost budget. After `svg::enable_seamless_clips`, clip paths and masks leave no seam
+  where their shapes meet. SMIL animation
+  (`<animate>`, `<set>`, `<animateTransform>`): `svg::encode_animation` makes an APNG for
+  `Ui::add_animation`, `svg::decode_at` draws one moment. A program calling none of these
+  carries none of them.
 
 ## 0.3.0 (2026-11-24)
 
