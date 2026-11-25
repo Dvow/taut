@@ -562,6 +562,8 @@ impl Ui {
 
     /// A text box of `kind`, filling its width up to `widest`.
     pub(crate) fn edit_box(&mut self, text: &mut String, hint: &str, kind: Kind, widest: f32) -> Response {
+        #[cfg(target_os = "android")]
+        crate::android_input_method::hand_over();
         let (t, many, secret) = (self.theme, matches!(kind, Kind::Lines(..) | Kind::Page), kind == Kind::Secret);
         let line = self.text.metrics(t.font, self.scale).height().ceil();
         let (mut state, enter_left) = (self.interact(self.next_id()), std::mem::take(&mut self.asks.enter_left));

@@ -18,18 +18,26 @@
 //! new activity shows the same interface. Java is reached through JNI (`android_jni`), and the
 //! few classes the system's Java interfaces need are written at run time (`android_dex`): a
 //! view that takes the soft keyboard's text and window insets, and the node provider screen
-//! readers read (`android_access`).
+//! readers read (`android_access`). The soft keyboard's typing and what it composes are
+//! `android_input_method`'s, handed over by the first text box.
+//!
+//! The system parts (the file dialog, notifications, the clipboard's pictures and files, drops
+//! and drags, spelling, printing) each join the interface's runs the first time an app uses one
+//! (`add_part`): a program that never does carries none of them. They need the package's own
+//! classes, which `examples/apk.rs` writes.
+use crate::android_input_method::INPUT_METHOD;
 use crate::android_jni::{self as jni, Env, Native, Obj, Value};
 use crate::android_sys::*;
 use crate::android_text::SystemText;
 use crate::event::{Button, Event, Key, Mods};
 use crate::geom::{Size, pt};
-use crate::platform::{Clipboard, Window};
+use crate::platform::{Clipboard, PicturesAndFiles, Window};
 use crate::preferences::Preferences;
 use crate::surface::Surface;
 use crate::ui::Ui;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -64,15 +72,16 @@ struct Shell {
     insets: [i32; 4],
     /// The activity is in the foreground.
     resumed: bool,
-    /// A text box has focus, and whether it is a password's; the characters the input method
-    /// is composing, shown as typed.
+    /// A text box has focus, and whether it is a password's.
     typing: bool,
     password: bool,
-    composing: usize,
     /// The mouse buttons held, and the finger acting as the mouse (without the feature
     /// `touch`).
     buttons: i32,
     finger: Option<i32>,
+    /// The system drags what the app dragged out (`android_drag_drop`): the touch it began
+    /// with is the system's, and its cancelling is not the pointer coming up.
+    dragging_out: bool,
     /// Pixels a unit.
     scale: f32,
 }
@@ -88,9 +97,9 @@ thread_local! {
         resumed: false,
         typing: false,
         password: false,
-        composing: 0,
         buttons: 0,
         finger: None,
+        dragging_out: false,
         scale: 1.0,
     }) };
     static HEARD: RefCell<Vec<Heard>> = const { RefCell::new(Vec::new()) };
@@ -98,6 +107,48 @@ thread_local! {
     static HOST: RefCell<Option<Box<dyn Turns>>> = const { RefCell::new(None) };
     /// A turn is running: what is heard meanwhile waits for the next.
     static TURNING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The system parts in use: what each does around a run. (A face can be named on any thread.)
+static PARTS: std::sync::Mutex<Vec<Part>> = std::sync::Mutex::new(Vec::new());
+
+/// The parts in use, now.
+fn parts() -> Vec<Part> {
+    PARTS.lock().unwrap_or_else(|held| held.into_inner()).clone()
+}
+
+/// A system part's work around the interface's runs (see the module).
+#[derive(Clone, Copy)]
+pub(crate) struct Part {
+    /// Which part: each joins once.
+    pub name: &'static str,
+    /// Before a run: takes in what the system answered meanwhile; says whether to run.
+    pub before: fn(&mut Ui) -> bool,
+    /// After a run: does what the run asked of the system.
+    pub after: fn(&mut Ui),
+}
+
+/// The parts in use, as one part, once one joined: reached no other way, so a program using none
+/// carries none of it.
+static ALL_PARTS: std::sync::OnceLock<Part> = std::sync::OnceLock::new();
+
+/// Has a system part join the interface's runs, from the next on.
+pub(crate) fn add_part(part: Part) {
+    ALL_PARTS.get_or_init(|| Part { name: "all", before: parts_before, after: parts_after });
+    let mut parts = PARTS.lock().unwrap_or_else(|held| held.into_inner());
+    if !parts.iter().any(|known| known.name == part.name) {
+        parts.push(part);
+    }
+}
+
+/// The parts' work before a run: whether any says to run.
+fn parts_before(ui: &mut Ui) -> bool {
+    parts().iter().fold(false, |run, part| (part.before)(ui) | run)
+}
+
+/// The parts' work after a run.
+fn parts_after(ui: &mut Ui) {
+    parts().iter().for_each(|part| (part.after)(ui));
 }
 
 /// The looper's timer, and the waker's pipe (its writing end).
@@ -308,21 +359,13 @@ fn make_view() {
 
 /// Gives the library's classes their native methods.
 fn register(env: Env, classes: &[Obj; 3]) -> bool {
-    let native = |name: &'static CStr, signature: &'static CStr, function: *const c_void| Native { name: name.as_ptr(), signature: signature.as_ptr(), function };
     let host = [
-        native(c"getAccessibilityNodeProvider", c"()Landroid/view/accessibility/AccessibilityNodeProvider;", crate::android_access::provider as *const c_void),
-        native(c"onCreateInputConnection", c"(Landroid/view/inputmethod/EditorInfo;)Landroid/view/inputmethod/InputConnection;", connection as *const c_void),
-        native(c"onCheckIsTextEditor", c"()Z", is_text_editor as *const c_void),
-        native(c"onApplyWindowInsets", c"(Landroid/view/WindowInsets;)Landroid/view/WindowInsets;", insets_applied as *const c_void),
+        Native::new(c"getAccessibilityNodeProvider", c"()Landroid/view/accessibility/AccessibilityNodeProvider;", crate::android_access::provider as *const c_void),
+        Native::new(c"onCreateInputConnection", c"(Landroid/view/inputmethod/EditorInfo;)Landroid/view/inputmethod/InputConnection;", connection as *const c_void),
+        Native::new(c"onCheckIsTextEditor", c"()Z", is_text_editor as *const c_void),
+        Native::new(c"onApplyWindowInsets", c"(Landroid/view/WindowInsets;)Landroid/view/WindowInsets;", insets_applied as *const c_void),
     ];
-    let typing = [
-        native(c"commitText", c"(Ljava/lang/CharSequence;I)Z", commit_text as *const c_void),
-        native(c"setComposingText", c"(Ljava/lang/CharSequence;I)Z", set_composing_text as *const c_void),
-        native(c"finishComposingText", c"()Z", finish_composing_text as *const c_void),
-        native(c"deleteSurroundingText", c"(II)Z", delete_surrounding_text as *const c_void),
-        native(c"performEditorAction", c"(I)Z", editor_action as *const c_void),
-    ];
-    env.register(classes[0], &host) && env.register(classes[1], &crate::android_access::natives()) && env.register(classes[2], &typing)
+    env.register(classes[0], &host) && env.register(classes[1], &crate::android_access::natives())
 }
 
 extern "C" fn on_resume(_: *mut Activity) {
@@ -349,7 +392,8 @@ extern "C" fn on_destroy(_: *mut Activity) {
     if done && !TURNING.get() {
         HOST.set(None);
     }
-    SHELL.with_borrow_mut(|shell| (shell.activity, shell.view, shell.typing, shell.composing) = (std::ptr::null_mut(), std::ptr::null_mut(), false, 0));
+    SHELL.with_borrow_mut(|shell| (shell.activity, shell.view, shell.typing) = (std::ptr::null_mut(), std::ptr::null_mut(), false));
+    INPUT_METHOD.get().inspect(|typing| (typing.drop)());
     crate::android_access::forget();
 }
 
@@ -511,12 +555,21 @@ fn place_of(event: *const c_void, n: usize) -> crate::geom::Point {
     pt((x - insets[0] as f32) / scale, (y - insets[1] as f32) / scale)
 }
 
+/// Notes whether the system drags what the app dragged out.
+pub(crate) fn set_dragging_out(dragging: bool) {
+    SHELL.with_borrow_mut(|shell| (shell.dragging_out, shell.finger) = (dragging, None));
+}
+
 /// A motion: the mouse's, a pen's, a finger's, or a screen reader's exploring finger (hover
-/// events from a touch screen).
+/// events from a touch screen). (A touch the system took for a drag out is cancelled: the drag
+/// says where it ends.)
 fn motion(event: *mut c_void) -> bool {
     // SAFETY: the event is a motion event, alive.
     let (action, tool, buttons) = unsafe { (AMotionEvent_getAction(event), AMotionEvent_getToolType(event, 0), AMotionEvent_getButtonState(event)) };
     let (what, nth) = (action & 0xff, (action >> 8 & 0xff) as usize);
+    if what == CANCEL && SHELL.with_borrow(|shell| shell.dragging_out) {
+        return true;
+    }
     match tool {
         MOUSE => mouse(event, what, buttons),
         FINGER if matches!(what, HOVER_ENTER | HOVER_MOVE | HOVER_EXIT) => crate::android_access::hover(place_of(event, 0), what == HOVER_EXIT),
@@ -626,15 +679,15 @@ extern "C" fn is_text_editor(_: Env, _: Obj) -> u8 {
     SHELL.with_borrow(|shell| u8::from(shell.typing))
 }
 
-/// An input method connects: plain text (a password's, with no suggestions), the keyboard
-/// never full screen; the library's connection takes what it types.
+/// An input method connects: through `android_input_method`'s connection (none before a text
+/// box was described).
 extern "C" fn connection(env: Env, view: Obj, info: Obj) -> Obj {
-    let (password, class) = SHELL.with_borrow(|shell| (shell.password, shell.classes[2]));
-    // Text, and a password (0x81) or no auto-correction (0x8001); no full-screen editor.
-    env.set_int_field(info, c"inputType", if password { 0x81 } else { 0x8001 });
-    env.set_int_field(info, c"imeOptions", 0x1200_0000);
-    SHELL.with_borrow_mut(|shell| shell.composing = 0);
-    env.new_object(class, c"(Landroid/view/View;Z)V", &[Value::obj(view), Value::bool(false)])
+    INPUT_METHOD.get().map_or(std::ptr::null_mut(), |typing| (typing.connect)(env, view, info))
+}
+
+/// Whether the focused text box is a password's.
+pub(crate) fn typing_password() -> bool {
+    SHELL.with_borrow(|shell| shell.password)
 }
 
 /// The insets changed: what the system bars, the cutout and the keyboard cover now.
@@ -649,48 +702,6 @@ extern "C" fn insets_applied(env: Env, view: Obj, insets: Obj) -> Obj {
         kick();
     }
     insets
-}
-
-/// Text the input method typed: what it was composing is typed over.
-fn type_over(text: Option<String>, composing: bool) {
-    let Some(text) = text else { return };
-    let before = SHELL.with_borrow_mut(|shell| std::mem::replace(&mut shell.composing, if composing { text.chars().count() } else { 0 }));
-    (0..before).for_each(|_| heard(Heard::Event(Event::Key(Key::Backspace, Mods::NONE))));
-    if !text.is_empty() {
-        heard(Heard::Event(Event::Text(text)));
-    }
-    kick();
-}
-
-extern "C" fn commit_text(env: Env, _: Obj, text: Obj, _: c_int) -> u8 {
-    type_over(env.text(text), false);
-    1
-}
-
-extern "C" fn set_composing_text(env: Env, _: Obj, text: Obj, _: c_int) -> u8 {
-    type_over(env.text(text), true);
-    1
-}
-
-extern "C" fn finish_composing_text(_: Env, _: Obj) -> u8 {
-    SHELL.with_borrow_mut(|shell| shell.composing = 0);
-    1
-}
-
-extern "C" fn delete_surrounding_text(_: Env, _: Obj, before: c_int, after: c_int) -> u8 {
-    SHELL.with_borrow_mut(|shell| shell.composing = 0);
-    (0..before).for_each(|_| heard(Heard::Event(Event::Key(Key::Backspace, Mods::NONE))));
-    (0..after).for_each(|_| heard(Heard::Event(Event::Key(Key::Delete, Mods::NONE))));
-    kick();
-    1
-}
-
-/// The keyboard's action key (Done, Go): Enter.
-extern "C" fn editor_action(_: Env, _: Obj, _: c_int) -> u8 {
-    SHELL.with_borrow_mut(|shell| shell.composing = 0);
-    heard(Heard::Event(Event::Key(Key::Enter, Mods::NONE)));
-    kick();
-    1
 }
 
 // ---- the loop ----
@@ -719,16 +730,22 @@ struct Host<App> {
     /// run.
     typed_in: Option<crate::id::Id>,
     pressed: bool,
+    /// What the input method composes, as last drawn.
+    composed: Option<crate::android_input_method::Panel>,
 }
 
 impl<App: FnMut(&mut Ui)> Turns for Host<App> {
     fn turn(&mut self) -> Option<Duration> {
         self.ui.set_time(self.start.elapsed());
+        // (The window can show the system's file dialog: set here, not as the interface is
+        // made, which costs every program kilobytes.)
+        self.ui.set_native_file_dialog(true);
         self.rerun |= self.ui.wake_in() == Some(Duration::ZERO);
         for what in HEARD.with_borrow_mut(std::mem::take) {
             self.take(what);
         }
         self.listen();
+        self.rerun |= ALL_PARTS.get().is_some_and(|parts| (parts.before)(&mut self.ui));
         if self.rerun && !self.done && self.pixels[0] > 0 {
             self.describe();
         }
@@ -812,6 +829,9 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let closes = self.ui.take_closing() == Some(Ok(()));
         (self.rerun, self.done) = (false, self.done || closes || self.ui.quitting());
         let (_, _, _) = (self.ui.take_minimize(), self.ui.take_maximized(), self.ui.take_full_screen());
+        if let Some(parts) = ALL_PARTS.get() {
+            (parts.after)(&mut self.ui);
+        }
         self.keyboard();
         if self.ui.listening {
             crate::android_access::keep(&self.ui);
@@ -825,7 +845,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
 
     /// The soft keyboard shows while a text box has focus (again as it is pressed, should the
     /// person have put it away), and goes with it. Focus moving to another box starts its
-    /// input afresh.
+    /// input afresh, dropping what was composed.
     fn keyboard(&mut self) {
         let now = self.ui.ime_area().map(|_| self.ui.focus());
         let (was, pressed) = (std::mem::replace(&mut self.typed_in, now), std::mem::take(&mut self.pressed));
@@ -834,12 +854,16 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             (shell.typing, shell.password) = (now.is_some(), password);
             shell.view
         });
+        if was != now {
+            INPUT_METHOD.get().inspect(|typing| (typing.drop)());
+        }
         if (was != now || pressed && now.is_some()) && !view.is_null() {
             jni::soft_keyboard(env(), activity(), view, now.is_some(), was.is_some() && now.is_some() && was != now);
         }
     }
 
-    /// Draws what changed and shows it: copied into the window's buffer, inside the insets.
+    /// Draws what changed and shows it: copied into the window's buffer, inside the insets, with
+    /// what the input method composes over it.
     fn draw(&mut self) {
         let (window, resumed, insets) = SHELL.with_borrow(|shell| (shell.window, shell.resumed, shell.insets));
         if self.ui.size().w <= 0.0 {
@@ -847,11 +871,15 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         }
         let changed = self.surface.update(&mut self.ui);
         self.ui.changed();
-        if window.is_null() || !resumed || (changed.is_empty() && !self.whole) {
+        let typing = INPUT_METHOD.get();
+        let panel = typing.and_then(|typing| (typing.panel)(&mut self.ui, [insets[0], insets[1]]));
+        let was = std::mem::replace(&mut self.composed, panel);
+        if window.is_null() || !resumed || (changed.is_empty() && !self.whole && was == self.composed) {
             return;
         }
         let whole = std::mem::take(&mut self.whole);
-        let mut dirty = if whole { [0, 0, self.pixels[0], self.pixels[1]] } else { bounds(&changed, insets) };
+        let around = [was.as_ref(), self.composed.as_ref()].into_iter().flatten().map(|panel| panel.place).fold(bounds(&changed, insets), union);
+        let mut dirty = if whole { [0, 0, self.pixels[0], self.pixels[1]] } else { around };
         let mut buffer = WindowBuffer { width: 0, height: 0, stride: 0, format: 0, bits: std::ptr::null_mut(), reserved: [0; 6] };
         // SAFETY: the window is held; the buffer is written within its size and posted.
         unsafe {
@@ -860,23 +888,42 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             }
             let rows = std::slice::from_raw_parts_mut(buffer.bits.cast::<u32>(), (buffer.stride * buffer.height) as usize);
             copy_out(&self.surface, rows, &buffer, dirty, insets, self.ui.theme.bg.0);
+            if let Some((panel, typing)) = self.composed.as_ref().zip(typing) {
+                (typing.show)(panel, rows, &buffer);
+            }
             ANativeWindow_unlockAndPost(window);
         }
     }
 }
 
-/// The pixels changed places cover in the window: left, top, right, bottom.
+/// The pixels changed places cover in the window: left, top, right, bottom (all 0 for none).
 fn bounds(changed: &[[usize; 4]], insets: [i32; 4]) -> [i32; 4] {
+    if changed.is_empty() {
+        return [0; 4];
+    }
     let start = [i32::MAX, i32::MAX, 0, 0];
     let [left, top, right, bottom] = changed.iter().fold(start, |all, [l, t, r, b]| [all[0].min(*l as i32), all[1].min(*t as i32), all[2].max(*r as i32), all[3].max(*b as i32)]);
     [left + insets[0], top + insets[1], right + insets[0], bottom + insets[1]]
 }
 
+/// Two pixel rectangles' bounds (left, top, right, bottom); an empty one adds nothing.
+fn union(one: [i32; 4], other: [i32; 4]) -> [i32; 4] {
+    match (one[0] < one[2] && one[1] < one[3], other[0] < other[2] && other[1] < other[3]) {
+        (_, false) => one,
+        (false, true) => other,
+        (true, true) => [one[0].min(other[0]), one[1].min(other[1]), one[2].max(other[2]), one[3].max(other[3])],
+    }
+}
+
+/// A pixel as the window's buffer has it: red and blue trade places (the buffer is RGBA in
+/// memory), and it is opaque.
+pub(crate) fn swap(pixel: u32) -> u32 {
+    0xff00_0000 | pixel & 0x0000_ff00 | pixel >> 16 & 0xff | (pixel & 0xff) << 16
+}
+
 /// Copies the surface into the window's buffer over `dirty` (as the lock left it): the
-/// interface inside the insets, the background under them. Red and blue trade places (the
-/// buffer is RGBA in memory), and it is opaque.
+/// interface inside the insets, the background under them.
 fn copy_out(surface: &Surface, rows: &mut [u32], buffer: &WindowBuffer, dirty: [i32; 4], insets: [i32; 4], bg: u32) {
-    let swap = |pixel: u32| 0xff00_0000 | pixel & 0x0000_ff00 | pixel >> 16 & 0xff | (pixel & 0xff) << 16;
     let [left, top] = [dirty[0].max(0), dirty[1].max(0)];
     let [right, bottom] = [dirty[2].min(buffer.width), dirty[3].min(buffer.height)];
     for y in top..bottom {
@@ -904,7 +951,7 @@ pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
         None => Box::new(crate::text::BuiltInFont),
     };
     let ui = Ui::new(text, Box::new(SystemClipboard));
-    let host = Host { app, ui, surface: Surface::default(), rerun: true, done: false, whole: true, start: Instant::now(), pixels: [0, 0], typed_in: None, pressed: false };
+    let host = Host { app, ui, surface: Surface::default(), rerun: true, done: false, whole: true, start: Instant::now(), pixels: [0, 0], typed_in: None, pressed: false, composed: None };
     HOST.set(Some(Box::new(host)));
     heard(Heard::Looks);
     kick();
@@ -913,7 +960,7 @@ pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
 // ---- the clipboard ----
 
 /// The system clipboard, text only, for an interface.
-struct SystemClipboard;
+pub(crate) struct SystemClipboard;
 
 impl Clipboard for SystemClipboard {
     fn get(&mut self) -> Option<String> {
@@ -922,12 +969,42 @@ impl Clipboard for SystemClipboard {
     fn set(&mut self, text: &str) {
         jni::set_clipboard_text(env(), activity(), text);
     }
+    /// Pictures and files, once an interface asked for one: see `PicturesAndFiles`.
+    fn picture(&mut self) -> Option<(usize, Vec<u32>)> {
+        (PICTURES_AND_FILES.get()?.picture)(self)
+    }
+    fn set_picture(&mut self, width: usize, pixels: &[u32]) {
+        PICTURES_AND_FILES.get().map_or((), |its| (its.set_picture)(self, width, pixels))
+    }
+    fn files(&mut self) -> Vec<PathBuf> {
+        PICTURES_AND_FILES.get().map_or(Vec::new(), |its| (its.files)(self))
+    }
+    fn set_files(&mut self, files: &[PathBuf]) {
+        PICTURES_AND_FILES.get().map_or((), |its| (its.set_files)(self, files))
+    }
+}
+
+thread_local! {
+    /// The clipboard's picture and file code: none until an interface on this thread asks for
+    /// one (see `PicturesAndFiles`).
+    static PICTURES_AND_FILES: Cell<Option<PicturesAndFiles<SystemClipboard>>> = const { Cell::new(None) };
+}
+
+/// Hands the clipboard its picture and file code, on this thread (see `PicturesAndFiles`).
+pub(crate) fn hand_pictures_and_files() {
+    let (picture, set_picture) = (SystemClipboard::picture_on, SystemClipboard::put_picture);
+    PICTURES_AND_FILES.set(Some(PicturesAndFiles { picture, set_picture, files: SystemClipboard::files_on, set_files: SystemClipboard::put_files }));
 }
 
 /// Opens a link with the app the system opens it with (`open_with_system`): from any thread.
-/// Files are not opened (an app shares a file through a content provider of its own).
+/// (Files: see `android_files::open_file`.)
 pub(crate) fn open_link(link: &str) -> bool {
-    jni::open_link(LAST_ACTIVITY.load(Ordering::SeqCst), link)
+    jni::open_link(last_activity(), link)
+}
+
+/// The last activity's Java object, for any thread (a global reference; null before the first).
+pub(crate) fn last_activity() -> Obj {
+    LAST_ACTIVITY.load(Ordering::SeqCst)
 }
 
 /// Vulkan's loader (`libvulkan.so`), for layers: its `vkGetInstanceProcAddr`, or null.

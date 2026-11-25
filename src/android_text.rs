@@ -2,7 +2,9 @@
 //! library ([`AppFonts`]), as Android has no text drawing for native code. Roboto for the
 //! interface (bold and italic from its axes where it is variable), Droid Sans Mono for
 //! monospace, and for characters Roboto lacks the fallback fonts `/system/etc/fonts.xml` lists,
-//! in its order, each opened the first time it is needed.
+//! in its order, each opened the first time it is needed. A face named by family
+//! (`Face::named`) is drawn in the font the system's font matcher finds for it
+//! (`AFontMatcher`), from the first time one is named.
 // Elsewhere only its tests use it: the same frame drawn on Linux as on Android.
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 use crate::canvas::Canvas;
@@ -51,6 +53,13 @@ impl SystemText {
     }
 }
 
+/// The fallback fonts in `folder` that `list` (a `fonts.xml`) names, none opened yet: for a
+/// named face's fonts.
+#[cfg(target_os = "android")]
+fn fallbacks(folder: &Path, list: &str) -> Fallbacks {
+    Fallbacks { slots: fallback_files(list).into_iter().map(|(name, nth)| Slot::Untried(folder.join(name), nth)).collect() }
+}
+
 /// The fonts with a face's file, if there is one.
 fn with_face(fonts: AppFonts, face: Face, file: Option<FontFile>) -> AppFonts {
     match (face, file) {
@@ -84,7 +93,7 @@ pub(crate) fn fallback_files(list: &str) -> Vec<(String, usize)> {
 }
 
 /// An attribute's value in a tag's text: `weight="400"`.
-fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+pub(crate) fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
     let opening = tag.split('>').next()?;
     let at = opening.find(&format!("{name}=\""))? + name.len() + 2;
     opening[at..].split('"').next()
@@ -263,22 +272,144 @@ pub(crate) fn listed(family: Option<&str>) -> Vec<(String, crate::system_fonts::
     found
 }
 
+// ---- faces named by family ----
+
+/// Has the window draw faces named by family in the fonts the system matches for them, from
+/// the next run on. (The first face named hands this over: a program naming none carries none
+/// of it.)
+#[cfg(target_os = "android")]
+pub(crate) fn hand_named() {
+    static HANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if HANDED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    crate::android::add_part(crate::android::Part { name: "named fonts", before: name_faces, after: |_| () });
+    crate::platform::Waker.wake();
+}
+
+/// Before the first run after a face was named: the window's text becomes the system's with
+/// named faces, and the interface runs again.
+#[cfg(target_os = "android")]
+fn name_faces(ui: &mut crate::ui::Ui) -> bool {
+    thread_local! {
+        static NAMING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if NAMING.replace(true) {
+        return false;
+    }
+    let Some(system) = SystemText::new() else { return false };
+    ui.set_text_system(Box::new(NamedText { system, named: Vec::new() }));
+    true
+}
+
+/// The system's text, with faces named by family drawn in their own fonts.
+#[cfg(target_os = "android")]
+struct NamedText {
+    system: SystemText,
+    /// Each named face so far, and its fonts (none where the system matched no file).
+    named: Vec<(Face, Option<AppFonts>)>,
+}
+
+#[cfg(target_os = "android")]
+impl NamedText {
+    /// A named face's fonts, found the first time; none for the system's own faces.
+    fn fonts(&mut self, face: Face) -> Option<&mut AppFonts> {
+        if !matches!(face, Face::Named(_)) {
+            return None;
+        }
+        let at = match self.named.iter().position(|(known, _)| *known == face) {
+            Some(at) => at,
+            None => {
+                self.named.push((face, matched(face)));
+                self.named.len() - 1
+            }
+        };
+        self.named[at].1.as_mut()
+    }
+}
+
+/// The same font, in the regular face of the fonts drawing it.
+#[cfg(target_os = "android")]
+fn regular(font: Font) -> Font {
+    Font { face: Face::Regular, ..font }
+}
+
+#[cfg(target_os = "android")]
+impl TextSystem for NamedText {
+    fn metrics(&mut self, font: Font, scale: f32) -> Metrics {
+        match self.fonts(font.face) {
+            Some(fonts) => fonts.metrics(regular(font), scale),
+            None => self.system.metrics(font, scale),
+        }
+    }
+    fn measure(&mut self, text: &str, font: Font, scale: f32, stops: Option<&mut Vec<f32>>) -> f32 {
+        match self.fonts(font.face) {
+            Some(fonts) => fonts.measure(text, regular(font), scale, stops),
+            None => self.system.measure(text, font, scale, stops),
+        }
+    }
+    fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
+        match self.fonts(font.face) {
+            Some(fonts) => fonts.draw(canvas, text, x, y, regular(font), color),
+            None => self.system.draw(canvas, text, x, y, font, color),
+        }
+    }
+    fn file(&mut self, face: Face, letter: char) -> Option<&FontFile> {
+        if self.fonts(face).is_some() {
+            return self.fonts(face)?.file(Face::Regular, letter);
+        }
+        self.system.file(face, letter)
+    }
+    fn set_language(&mut self, language: Language) {
+        self.system.set_language(language);
+        self.named.iter_mut().filter_map(|(_, fonts)| fonts.as_mut()).for_each(|fonts| fonts.set_language(language));
+    }
+}
+
+/// A named face's font, as the system's font matcher finds it for the family and style (the
+/// system's own font for a family it lacks), falling back as the system's text does.
+#[cfg(target_os = "android")]
+fn matched(face: Face) -> Option<AppFonts> {
+    use crate::android_sys::*;
+    let (family, of, style) = crate::system_fonts::asked(face);
+    let family = family.unwrap_or_else(|| if of == Face::Mono { "monospace" } else { "sans-serif" }.into());
+    let family = std::ffi::CString::new(family).ok()?;
+    let letter = [u16::from(b'A')];
+    // SAFETY: a matcher made, used and destroyed here; the font it gives (never null) is read
+    // and closed.
+    let (path, nth, axes) = unsafe {
+        let matcher = AFontMatcher_create();
+        AFontMatcher_setStyle(matcher, style.weight, style.italic);
+        let font = AFontMatcher_match(matcher, family.as_ptr(), letter.as_ptr(), 1, std::ptr::null_mut());
+        AFontMatcher_destroy(matcher);
+        let path = std::ffi::CStr::from_ptr(AFont_getFontFilePath(font)).to_string_lossy().into_owned();
+        let axes: Vec<([u8; 4], f32)> = (0..AFont_getAxisCount(font) as u32).map(|n| (AFont_getAxisTag(font, n).to_be_bytes(), AFont_getAxisValue(font, n))).collect();
+        let nth = AFont_getCollectionIndex(font);
+        AFont_close(font);
+        (path, nth, axes)
+    };
+    let file = FontFile::open(&path).and_then(|file| if nth == 0 { Some(file) } else { file.nth(nth) })?;
+    let file = axes.iter().fold(file, |file, (tag, value)| file.with_variation(tag, *value));
+    let list = LISTS.iter().find_map(|list| std::fs::read_to_string(list).ok()).unwrap_or_default();
+    Some(AppFonts::new(file).fallback(Box::new(fallbacks(Path::new(FONTS), &list))))
+}
+
 // The gallery example, drawn by the tests below as an emulator shows it.
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "android")))]
 #[allow(dead_code, unused_attributes, unused_imports, clippy::all)]
 #[path = "../examples/gallery.rs"]
 mod gallery;
 
-#[cfg(test)]
+// (Tests driving an emulator from the computer.)
+#[cfg(all(test, not(target_os = "android")))]
 mod tests {
     use super::*;
+    use crate::android_emulator::*;
     use crate::geom::Size;
     use crate::platform::LocalClipboard;
     use crate::preferences::Preferences;
     use crate::surface::Surface;
     use crate::ui::Ui;
-    use std::process::Command;
-    use std::time::Duration;
 
     const LIST: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <familyset>
@@ -346,73 +477,10 @@ mod tests {
         assert_eq!((said.preferences.dark, said.preferences.accent, said.preferences.text_scale), (false, Some(Color(0xff00_61a4)), 1.0));
     }
 
-    /// `adb`, from the SDK or the path.
-    fn adb(args: &[&str]) -> Vec<u8> {
-        let tools = std::env::var_os("ANDROID_HOME").map(|home| std::path::PathBuf::from(home).join("platform-tools").join("adb"));
-        let program = tools.filter(|path| path.exists()).unwrap_or_else(|| "adb".into());
-        Command::new(program).args(args).output().map(|done| done.stdout).unwrap_or_default()
-    }
-
-    fn shell(command: &str) -> String {
-        String::from_utf8_lossy(&adb(&["shell", command])).into_owned()
-    }
-
-    fn settle(seconds: u64) {
-        std::thread::sleep(Duration::from_secs(seconds));
-    }
-
-    /// One node of a `uiautomator dump`.
-    #[derive(Clone, Debug, Default)]
-    struct Node {
-        class: String,
-        text: String,
-        checked: bool,
-        focused: bool,
-        bounds: [i32; 4],
-    }
-
-    impl Node {
-        fn middle(&self) -> (i32, i32) {
-            ((self.bounds[0] + self.bounds[2]) / 2, (self.bounds[1] + self.bounds[3]) / 2)
-        }
-    }
-
-    /// The window's nodes, as `uiautomator` reads them (through the library's provider); the
-    /// dump is kept in `out`.
-    fn dump(out: &Path, name: &str) -> Vec<Node> {
-        shell("uiautomator dump /sdcard/taut-ui.xml");
-        let xml = String::from_utf8_lossy(&adb(&["exec-out", "cat", "/sdcard/taut-ui.xml"])).into_owned();
-        let _ = std::fs::write(out.join(format!("{name}.xml")), &xml);
-        xml.split("<node ").skip(1).map(node_of).collect()
-    }
-
-    fn node_of(tag: &str) -> Node {
-        let value = |name: &str| attribute(tag, name).unwrap_or_default().replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
-        let corners: Vec<i32> = value("bounds").split(|c: char| !c.is_ascii_digit() && c != '-').filter_map(|part| part.parse().ok()).collect();
-        Node { class: value("class"), text: value("text"), checked: value("checked") == "true", focused: value("focused") == "true", bounds: corners.try_into().unwrap_or_default() }
-    }
-
-    fn find<'a>(nodes: &'a [Node], class: &str, text: &str) -> Option<&'a Node> {
-        nodes.iter().find(|node| node.class == class && node.text.starts_with(text))
-    }
-
-    fn tap(node: &Node) {
-        let (x, y) = node.middle();
-        shell(&format!("input tap {x} {y}"));
-        settle(2);
-    }
-
     /// The last window line the app logged.
     fn window_said() -> Option<Said> {
         let log = String::from_utf8_lossy(&adb(&["logcat", "-d", "-s", "taut:I"])).into_owned();
         log.lines().rev().find_map(said)
-    }
-
-    /// The screen, as a picture: width and pixels.
-    fn screen(out: &Path, name: &str) -> (usize, Vec<u32>) {
-        let png = adb(&["exec-out", "screencap", "-p"]);
-        let _ = std::fs::write(out.join(format!("{name}.png")), &png);
-        crate::png::decode(&png).unwrap_or_default()
     }
 
     /// The gallery as the app drew it, the same size and scale, with the emulator's own fonts
@@ -466,7 +534,7 @@ mod tests {
         adb(&["logcat", "-c"]);
         // A slow emulator's "isn't responding" dialogs would cover the app.
         shell("settings put global hide_error_dialogs 1; settings put system accelerometer_rotation 0; settings put system user_rotation 0");
-        shell("am start -W -n taut.example.gallery/android.app.NativeActivity");
+        shell("am start -W -n taut.example.gallery/taut.Activity");
         settle(6);
         for _ in 0..20 {
             if dump(&out, "first").iter().any(|node| node.class == "android.widget.CheckBox") {
@@ -548,7 +616,7 @@ mod tests {
         if away.lines().any(|line| line.contains("mResumedActivity") && line.contains("taut.example.gallery")) {
             wrong.push("the gallery stayed in front of the home screen".into());
         }
-        shell("am start -W -n taut.example.gallery/android.app.NativeActivity");
+        shell("am start -W -n taut.example.gallery/taut.Activity");
         settle(4);
         let nodes = dump(&out, "back");
         if find(&nodes, "android.widget.Switch", "Light colours").is_none() || !nodes.iter().any(|node| node.class == "android.widget.EditText" && node.text == "item") {

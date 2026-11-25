@@ -10,17 +10,28 @@
 //! 1. The example is built as a shared library, stripped: a crate of its own in
 //!    `target/apk/<name>`, whose library is the example's file, linked by the NDK's `clang`. (On Android an app is a
 //!    library the system's `NativeActivity` loads; the example's `android_main` starts it.)
-//! 2. `aapt2 link` makes the package from a manifest: `NativeActivity`, the library's name,
-//!    no Java (`hasCode="false"`), every configuration change kept in the running app.
-//! 3. `aapt add` puts the library in it, as `lib/<abi>/lib<name>.so`.
+//! 2. `aapt2 link` makes the package from a manifest: the activity `taut.Activity` (a
+//!    `NativeActivity`), the library's name, every configuration change kept in the running app,
+//!    the file provider `taut.Files`, and the permission to post notifications.
+//! 3. `aapt add` puts the library in it, as `lib/<abi>/lib<name>.so`, and `classes.dex`: the
+//!    classes the library's system parts need (the file dialog, notifications, sharing files,
+//!    drops, spelling, printing), written here (`android_dex::APP`). An app packed another way
+//!    without them has the rest.
 //! 4. `zipalign`, then `apksigner` with `target/apk/debug.keystore` (made once by `keytool`).
 //!
 //! Another file than an example's is packed the same, named by its stem: `apk -- tests/android.rs`.
 //!
-//! The APK is `target/apk/<name>.apk` (or `--out`). Targets: `aarch64-linux-android`
-//! (phones), `x86_64-linux-android` (the emulator); the default is the first.
+//! The APK is `target/apk/<name>.apk` (or `--out`), its package `taut.example.<name>` (or
+//! `--package`). Targets: `aarch64-linux-android` (phones), `x86_64-linux-android` (the
+//! emulator); the default is the first.
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+// The library's DEX writer, for the package's own classes.
+#[cfg(not(target_os = "android"))]
+#[allow(dead_code, reason = "the tool writes the package's classes, not the library's")]
+#[path = "../src/android_dex.rs"]
+mod android_dex;
 
 /// Android 11: the oldest system the library runs on (window insets by type).
 const MIN_SDK: u32 = 30;
@@ -34,6 +45,7 @@ struct Asked {
     target: String,
     features: Vec<String>,
     out: Option<PathBuf>,
+    package: Option<String>,
 }
 
 fn main() {
@@ -46,7 +58,8 @@ fn main() {
     let work = root.join("target").join("apk").join(&asked.example);
     let library = build(&asked, &root, &work, &ndk);
     let abi = if asked.target.starts_with("x86_64") { "x86_64" } else { "arm64-v8a" };
-    std::fs::write(work.join("AndroidManifest.xml"), manifest(&asked.example)).unwrap_or_else(|_| fail("cannot write the manifest"));
+    let package = asked.package.clone().unwrap_or_else(|| format!("taut.example.{}", asked.example));
+    std::fs::write(work.join("AndroidManifest.xml"), manifest(&asked.example, &package)).unwrap_or_else(|_| fail("cannot write the manifest"));
     let unsigned = work.join("unaligned.apk");
     let jar = platform.to_string_lossy().into_owned();
     let (min, most) = (MIN_SDK.to_string(), TARGET_SDK.to_string());
@@ -54,7 +67,8 @@ fn main() {
     let inside = format!("lib/{abi}/lib{}.so", asked.example);
     std::fs::create_dir_all(work.join("lib").join(abi)).unwrap_or_else(|_| fail("cannot make the lib folder"));
     std::fs::copy(&library, work.join(&inside)).unwrap_or_else(|_| fail("cannot copy the library"));
-    run(&tool(&tools, "aapt"), &["add", "-f", &text(&unsigned), &inside], Some(&work));
+    write_classes(&work);
+    run(&tool(&tools, "aapt"), &["add", "-f", &text(&unsigned), &inside, "classes.dex"], Some(&work));
     let aligned = work.join("aligned.apk");
     run(&tool(&tools, "zipalign"), &["-f", "-p", "4", &text(&unsigned), &text(&aligned)], None);
     let keys = keystore(&root.join("target").join("apk"));
@@ -64,9 +78,9 @@ fn main() {
     println!("{}", out.display());
 }
 
-/// The command line: the example's name, `--target`, `--features`, `--out`.
+/// The command line: the example's name, `--target`, `--features`, `--out`, `--package`.
 fn asked(args: Vec<String>) -> Asked {
-    let mut asked = Asked { example: String::new(), source: None, target: "aarch64-linux-android".into(), features: Vec::new(), out: None };
+    let mut asked = Asked { example: String::new(), source: None, target: "aarch64-linux-android".into(), features: Vec::new(), out: None, package: None };
     let mut words = args.into_iter();
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -77,11 +91,12 @@ fn asked(args: Vec<String>) -> Asked {
                 asked.example = Path::new(&word).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
                 asked.source = Some(PathBuf::from(word));
             }
+            "--package" => asked.package = words.next(),
             _ => asked.example = word,
         }
     }
     if asked.example.is_empty() {
-        fail("say which example: cargo run --example apk -- gallery [--target x86_64-linux-android] [--features touch] [--out app.apk]");
+        fail("say which example: cargo run --example apk -- gallery [--target x86_64-linux-android] [--features touch] [--out app.apk] [--package an.app.id]");
     }
     asked
 }
@@ -114,14 +129,25 @@ fn build(asked: &Asked, root: &Path, work: &Path, ndk: &Path) -> PathBuf {
     targets.join(&asked.target).join("release").join(format!("lib{}.so", asked.example))
 }
 
-/// The app's manifest: one `NativeActivity`, loading the example's library.
-fn manifest(name: &str) -> String {
+/// Writes the package's own classes, `classes.dex`, into `work`.
+#[cfg(not(target_os = "android"))]
+fn write_classes(work: &Path) {
+    std::fs::write(work.join("classes.dex"), android_dex::dex(&android_dex::APP)).unwrap_or_else(|_| fail("cannot write classes.dex"));
+}
+
+/// (The tool runs where APKs are made, never on Android.)
+#[cfg(target_os = "android")]
+fn write_classes(_: &Path) {}
+
+/// The app's manifest: one activity, loading the example's library, and the file provider.
+fn manifest(name: &str, package: &str) -> String {
     let changes = "orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density|uiMode|fontScale|locale|layoutDirection";
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="taut.example.{name}" android:versionCode="1" android:versionName="1.0">
-    <application android:label="{name}" android:hasCode="false" android:extractNativeLibs="true">
-        <activity android:name="android.app.NativeActivity" android:exported="true" android:configChanges="{changes}"
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{package}" android:versionCode="1" android:versionName="1.0">
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application android:label="{name}" android:hasCode="true" android:extractNativeLibs="true">
+        <activity android:name="taut.Activity" android:exported="true" android:configChanges="{changes}"
             android:windowSoftInputMode="adjustResize" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
             <meta-data android:name="android.app.lib_name" android:value="{name}" />
             <intent-filter>
@@ -129,6 +155,7 @@ fn manifest(name: &str) -> String {
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <provider android:name="taut.Files" android:authorities="{package}.taut.files" android:exported="false" android:grantUriPermissions="true" />
     </application>
 </manifest>
 "#

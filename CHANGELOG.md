@@ -44,6 +44,18 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   bundles).
 - `FileDialogRequest` has a new field `many`: code building one needs it.
 
+- **Android's system parts**, through the same calls as elsewhere, each compiled in only when
+  called: the system file dialog (`FileDialog::native`; several files with `pick_many`; picked
+  documents come as copies, and what the app writes to a copy goes back to its document);
+  pictures and files on the clipboard; notifications, asking Android 13's permission on first
+  use, clicks heard; spell checking (`check_spelling`, the system's checker); drops from other
+  apps and drags out to them; printing (`print`, `print_laid`) through the print dialog;
+  `open_with_system` opens the app's files; `Face::named` finds system fonts. What an input
+  method composes shows at the text cursor until committed. They need the classes
+  `examples/apk.rs` now packs (`classes.dex`: the activity `taut.Activity`, the file
+  provider `taut.Files`), and the permission to notify, which it declares. New example
+  `system_parts`.
+
 ## 0.3.0 (2026-11-24)
 
 Code written for 0.2 builds unchanged; to move up, change `taut = "0.2"` to `taut = "0.3"`.

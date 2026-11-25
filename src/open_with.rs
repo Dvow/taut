@@ -2,7 +2,8 @@
 //! in the file manager does. On Windows the shell (`ShellExecuteW`) uses the person's own
 //! choices. On Linux a link goes to the desktop portal (`org.freedesktop.portal.OpenURI`); a
 //! file, or a link with no portal, goes to `xdg-open`. (The portal takes files only as open
-//! file descriptors, which is not worth it here.)
+//! file descriptors, which is not worth it here.) On Android an intent views it: a file by the
+//! package's provider (`android_files`).
 //!
 //! Either runs on a thread of its own, so a window never waits; only a program that calls
 //! `open_with_system` carries this.
@@ -80,11 +81,14 @@ fn opened(what: &OsStr) -> bool {
     open_by(what, crate::atspi::Bus::session(), OsStr::new("xdg-open"))
 }
 
-/// Hands a link to the app Android opens it with. Says whether one took it. (Files are not
-/// opened: an app shares a file through a content provider of its own.)
+/// Hands a link, or one of the app's files, to the app Android opens it with. Says whether one
+/// took it.
 #[cfg(target_os = "android")]
 fn opened(what: &OsStr) -> bool {
-    what.to_str().is_some_and(|link| is_link(link) && crate::android::open_link(link))
+    match what.to_str().filter(|text| is_link(text)) {
+        Some(link) => crate::android::open_link(link),
+        None => crate::android_files::open_file(std::path::Path::new(what)),
+    }
 }
 
 /// Hands `what` to `open`, which opens it as a double click in Finder does. Says whether it

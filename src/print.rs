@@ -3,7 +3,8 @@
 //!
 //! On Windows the pages go to the printer's spooler as shapes and text, or as pixels where the
 //! printer can't blend (`print_windows.rs`); on Linux the desktop portal shows its dialog and
-//! takes the pages as a PDF (`print_linux.rs`). Where neither exists, nothing is printed.
+//! takes the pages as a PDF (`print_linux.rs`), as Android's print dialog does
+//! (`android_print.rs`). Elsewhere nothing is printed.
 //!
 //! Pages can be laid out for the paper the person picks ([`print_laid`]): the app's layout runs
 //! again for the sheet's size once it is known.
@@ -14,6 +15,8 @@ use crate::geom::Size;
 use crate::paper::Paper;
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "android")]
+use crate::android_print::ask;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 use crate::print_linux::ask;
 #[cfg(windows)]
@@ -92,13 +95,13 @@ pub fn print_laid(title: &str, lay: impl FnMut(Size) -> Paper + Send + 'static) 
 }
 
 /// Pages to print: laid out already, or laid out for the sheet once it is known.
-#[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code, reason = "Apple systems and Android print nothing yet"))]
+#[cfg_attr(target_vendor = "apple", allow(dead_code, reason = "Apple systems print nothing yet"))]
 pub(crate) enum Pages {
     Ready(Box<Paper>),
     Laid(Box<dyn FnMut(Size) -> Paper + Send>),
 }
 
-#[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code, reason = "Apple systems and Android print nothing yet"))]
+#[cfg_attr(target_vendor = "apple", allow(dead_code, reason = "Apple systems print nothing yet"))]
 impl Pages {
     /// The pages for a sheet of `size` units (where known): laid out for it, or as they are.
     pub(crate) fn for_sheet(&mut self, size: Option<Size>) -> Paper {
@@ -138,12 +141,12 @@ pub(crate) fn parent() -> String {
 /// Says what came of printing, and has the window run again to hear it.
 pub(crate) fn tell(outcome: &Mutex<Option<PrintOutcome>>, printed: PrintOutcome) {
     *outcome.lock().unwrap_or_else(|held| held.into_inner()) = Some(printed);
-    #[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
+    #[cfg(any(windows, target_os = "android", all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
     crate::platform::Waker.wake();
 }
 
 /// No way of printing: nothing is printed.
-#[cfg(not(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
+#[cfg(not(any(windows, target_os = "android", all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
 fn ask(pages: Pages, title: &str, outcome: Arc<Mutex<Option<PrintOutcome>>>) {
     let _ = (pages, title);
     tell(&outcome, PrintOutcome::Unable);

@@ -125,6 +125,16 @@ unsafe extern "C" {
     pub fn AMotionEvent_getAxisValue(event: *const c_void, axis: i32, index: usize) -> f32;
     pub fn ALooper_forThread() -> *mut c_void;
     pub fn ALooper_addFd(looper: *mut c_void, fd: c_int, ident: c_int, events: c_int, callback: LooperCallback, data: *mut c_void) -> c_int;
+    pub fn AFontMatcher_create() -> *mut c_void;
+    pub fn AFontMatcher_destroy(matcher: *mut c_void);
+    pub fn AFontMatcher_setStyle(matcher: *mut c_void, weight: u16, italic: bool);
+    pub fn AFontMatcher_match(matcher: *const c_void, family: *const c_char, text: *const u16, long: u32, run: *mut u32) -> *mut c_void;
+    pub fn AFont_close(font: *mut c_void);
+    pub fn AFont_getFontFilePath(font: *const c_void) -> *const c_char;
+    pub fn AFont_getCollectionIndex(font: *const c_void) -> usize;
+    pub fn AFont_getAxisCount(font: *const c_void) -> usize;
+    pub fn AFont_getAxisTag(font: *const c_void, axis: u32) -> u32;
+    pub fn AFont_getAxisValue(font: *const c_void, axis: u32) -> f32;
 }
 
 #[link(name = "log")]

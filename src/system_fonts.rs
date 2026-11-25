@@ -100,7 +100,6 @@ fn family(name: &str) -> Option<u16> {
 }
 
 /// A family's name, by index.
-#[cfg_attr(target_os = "android", allow(dead_code))]
 fn name(family: u16) -> String {
     held(&FAMILIES).get(usize::from(family)).map_or_else(String::new, |name| name.to_string())
 }
@@ -148,6 +147,8 @@ impl Face {
 /// The face for `kept`: an existing index, or a new one. (Past the 65,536th, the system face it
 /// is based on.)
 fn keep(kept: Kept) -> Face {
+    #[cfg(target_os = "android")]
+    crate::android_text::hand_named();
     let mut named = held(&NAMED);
     let at = named.iter().position(|known| *known == kept).unwrap_or(named.len());
     if at > usize::from(u16::MAX) {
@@ -249,9 +250,9 @@ pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::Fon
     crate::core_text::file_for(face, letter).and_then(crate::font_file::FontFile::open)
 }
 
-/// How CoreText (or a browser) is asked for a face's font: the family named, if any (else the
-/// system's font for face `of`), and the style.
-#[cfg(any(target_vendor = "apple", target_family = "wasm"))]
+/// How CoreText, a browser or Android's font matcher is asked for a face's font: the family
+/// named, if any (else the system's font for face `of`), and the style.
+#[cfg(any(target_vendor = "apple", target_family = "wasm", target_os = "android"))]
 pub(crate) fn asked(face: Face) -> (Option<String>, Face, Style) {
     let kept = kept(face);
     (kept.family.map(name), kept.of, kept.style)

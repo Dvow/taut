@@ -6,7 +6,8 @@
 //! (`Shell_NotifyIcon`): the app's own, or one that exists only while the notification shows.
 //! On Linux it goes to `org.freedesktop.Notifications`, or, in a Flatpak sandbox, through the
 //! desktop portal. On macOS and iOS it goes to the user notification centre, which serves app
-//! bundles only: a program run as a bare executable shows none.
+//! bundles only: a program run as a bare executable shows none. On Android it goes to the
+//! `NotificationManager`, once the person allows it (`android_notifications.rs`).
 use crate::ui::Ui;
 use std::cell::RefCell;
 
@@ -57,6 +58,8 @@ impl Ui {
     /// removes it; the app usually comes forward ([`bring_to_front`](Self::bring_to_front)) and
     /// shows what it was about.
     pub fn notification_clicked(&mut self) -> Option<Notification> {
+        #[cfg(target_os = "android")]
+        crate::android_notifications::hear_click();
         let clicked = NOTICES.with_borrow_mut(|notices| (!notices.clicked.is_empty()).then(|| notices.clicked.remove(0)));
         self.again |= clicked.is_some();
         clicked.map(Notification)

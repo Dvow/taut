@@ -333,8 +333,10 @@ jobs:
 
   # Android: built for the emulator and phones, packed as APKs (examples/apk.rs), and the
   # gallery run on an Android 15 emulator (src/android_text.rs): its first page against the
-  # Linux frame, taps, keys, typing, rotation, home and back, and what uiautomator reads; and
-  # what screen readers read, through the provider and uiautomator (tests/android.rs).
+  # Linux frame, taps, keys, typing, rotation, home and back, and what uiautomator reads; what
+  # screen readers read, through the provider and uiautomator (tests/android.rs); and the system
+  # parts (src/android_emulator.rs): file dialog, clipboard, notifications, spelling, composing,
+  # named fonts, printing, opening files, drags between two apps.
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -364,6 +366,8 @@ jobs:
           cargo run --example apk -- hello --target aarch64-linux-android
           cargo run --example apk -- gallery --target aarch64-linux-android --features touch --out target/apk/gallery-arm64.apk
           cargo run --example apk -- tests/android.rs --target x86_64-linux-android
+          cargo run --example apk -- system_parts --target x86_64-linux-android
+          cargo run --example apk -- system_parts --target x86_64-linux-android --package taut.example.parts2 --out target/apk/parts2.apk
           ls -l target/*-linux-android/release/lib*.so target/apk/*.apk
       - name: KVM for the emulator
         run: |
@@ -396,6 +400,9 @@ jobs:
       - name: Video on the emulator (the library's video tests, run there)
         if: ${{ !cancelled() }}
         run: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME TAUT_VIDEO=required cargo test --features video --test video_android -- --nocapture
+      - name: The system parts on the emulator
+        if: ${{ !cancelled() }}
+        run: TAUT_ANDROID_PARTS_APK=$PWD/target/apk/system_parts.apk TAUT_ANDROID_OTHER_APK=$PWD/target/apk/parts2.apk TAUT_PICTURES=$PWD/android-parts cargo test --lib the_system_parts_on_an_android_emulator -- --nocapture
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
@@ -405,6 +412,9 @@ jobs:
             android/*.xml
             android/logcat.txt
             android/readers
+            android-parts/*.png
+            android-parts/*.xml
+            android-parts/logcat.txt
             emulator.log
 
   docs:

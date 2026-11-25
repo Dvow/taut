@@ -886,7 +886,8 @@ impl Ui {
 
 /// The system checker for the language of this name ("" for the user's own), if any: on Windows
 /// its own; on Linux Enchant's, for whatever dictionary Enchant finds; on macOS
-/// `NSSpellChecker` (`ns_spell_checker.rs`); elsewhere none.
+/// `NSSpellChecker` (`ns_spell_checker.rs`); on Android its spell checker
+/// (`android_spell_checker.rs`); elsewhere none.
 pub(crate) fn system(language: &str) -> Option<Box<dyn Check>> {
     several(language, |name| Speller::open(name).map(|speller| Box::new(speller) as Box<dyn Check>))
 }
@@ -926,18 +927,20 @@ impl Check for Several {
     }
 }
 
+#[cfg(target_os = "android")]
+use crate::android_spell_checker::{Speller, own_language};
 #[cfg(target_os = "macos")]
 use crate::ns_spell_checker::{Speller, own_language};
 
-#[cfg(any(target_os = "ios", target_os = "android", not(any(windows, unix))))]
+#[cfg(any(target_os = "ios", not(any(windows, unix))))]
 struct Speller;
-#[cfg(any(target_os = "ios", target_os = "android", not(any(windows, unix))))]
+#[cfg(any(target_os = "ios", not(any(windows, unix))))]
 impl Speller {
     fn open(_: &str) -> Option<Speller> {
         None
     }
 }
-#[cfg(any(target_os = "ios", target_os = "android", not(any(windows, unix))))]
+#[cfg(any(target_os = "ios", not(any(windows, unix))))]
 impl Check for Speller {
     fn wrong(&self, _: &str) -> bool {
         false
@@ -947,7 +950,7 @@ impl Check for Speller {
     }
     fn add(&mut self, _: &str) {}
 }
-#[cfg(any(target_os = "ios", target_os = "android", not(any(windows, unix))))]
+#[cfg(any(target_os = "ios", not(any(windows, unix))))]
 fn own_language() -> String {
     String::new()
 }

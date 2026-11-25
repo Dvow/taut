@@ -157,8 +157,11 @@ Popovers anchored to their button.
 ## Windows and the desktop
 
 - **Android** (`NativeActivity`, Android 11+): the activity's window inside system bars, cutout
-  and soft keyboard; rotation, pause and resume keep the interface; soft keyboard and its text;
-  system fonts; dark mode, accent and text size. `examples/apk.rs` packs an example as an APK.
+  and soft keyboard; rotation, pause and resume keep the interface; soft keyboard and its text,
+  what it composes shown; system fonts, named ones too; dark mode, accent and text size. The
+  system's file dialog (documents as copies, written back), notifications, spell checking,
+  printing, drops and drags between apps, opening the app's files. `examples/apk.rs` packs an
+  example as an APK.
 - Any number of windows sharing app state; several screens; four kinds of second window (normal,
   tool, dialog, always on top); close requests that can be refused, also at logoff.
 - Frameless windows with app-drawn title strips (real title bar on Windows: snapping works);
@@ -168,8 +171,7 @@ Popovers anchored to their button.
   `taut::storage` writes atomically to the settings folder.
 - Drag and drop between boxes, from other programs (files, text) and out to them (files, text,
   pictures, links).
-- Clipboard (Windows, X11, Wayland, macOS, iOS): text, pictures, files. Android
-  and the web: text.
+- Clipboard (Windows, X11, Wayland, macOS, iOS, Android): text, pictures, files. The web: text.
 - **The web** (`wasm32-unknown-unknown`, no crates): a page's canvas, sharp at its pixel
   ratio; mouse, wheel, pinch, fingers, pens, keys, input methods; the browser's text or the
   page's fonts; ARIA elements for screen readers; `localStorage`, file picker, downloads. A

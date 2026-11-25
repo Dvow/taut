@@ -580,7 +580,7 @@ extern "C" fn extra_data(env: Env, _: Obj, id: c_int, info: Obj, key: Obj, argum
     let (view, scale, insets) = view();
     let origin = window_origin(env, view);
     let corner = [origin[0] + insets[0], origin[1] + insets[1]].map(|at| at as f32);
-    let places = crate::android_jni::new_objects(env, c"android/graphics/RectF", end - start);
+    let places = crate::android_jni::new_object_array(env, c"android/graphics/RectF", end - start);
     for unit in start..end {
         let place = node.letter_rect(letter_at_unit(node.text(), unit as u32));
         let shows = !place.grow(0.5).intersect(node.seen).is_empty();

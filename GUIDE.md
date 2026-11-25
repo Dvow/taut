@@ -72,7 +72,9 @@ extern "C" fn android_main() {
 ```
 
 `cargo run --example apk -- hello --target aarch64-linux-android --features touch` packs an
-example as a signed APK with the SDK's tools (`examples/apk.rs`).
+example as a signed APK with the SDK's tools (`examples/apk.rs`), with the classes the system
+parts need (file dialog, notifications, clipboard pictures and files, drops, spelling,
+printing). An app packed another way has the rest.
 
 On the web, the same program built for `wasm32-unknown-unknown` draws in a page's `<canvas>`;
 `run` returns at once. `cargo run --example web_page -- <program>.wasm` writes the page and its
@@ -1254,7 +1256,8 @@ fn main() {
   folder.
 - macOS: `NSStatusItem` (its menu on a right click), `RegisterEventHotKey` (Ctrl is Command), a
   socket in the temporary folder; `UNUserNotificationCenter`, for an app bundle only.
-- Android: none of it. No tray, notifications or hotkeys; `hide_window` does nothing.
+- Android: notifications (`NotificationManager`; Android 13's permission asked on the first);
+  no tray or hotkeys; `hide_window` does nothing.
 - Unused, none of it is compiled in.
 
 ## Scenes

@@ -229,7 +229,6 @@ pub trait Clipboard {
 /// [`Ui::clipboard_files`](crate::Ui::clipboard_files), through `hand_pictures_and_files`), and
 /// reached no other way: a program that never does is built without it, and its clipboard holds
 /// text alone.
-#[cfg_attr(target_os = "android", allow(dead_code))] // (A text-only clipboard there.)
 pub(crate) struct PicturesAndFiles<C> {
     pub picture: TakesPicture<C>,
     pub set_picture: fn(&mut C, usize, &[u32]),
@@ -238,7 +237,6 @@ pub(crate) struct PicturesAndFiles<C> {
 }
 
 /// Takes a picture off the clipboard: its width and pixels.
-#[cfg_attr(target_os = "android", allow(dead_code))]
 type TakesPicture<C> = fn(&mut C) -> Option<(usize, Vec<u32>)>;
 
 impl<C> Clone for PicturesAndFiles<C> {
@@ -261,6 +259,8 @@ pub(crate) fn hand_pictures_and_files() {
     crate::macos::hand_pictures_and_files();
     #[cfg(target_os = "ios")]
     crate::ios::hand_pictures_and_files();
+    #[cfg(target_os = "android")]
+    crate::android::hand_pictures_and_files();
 }
 
 /// Hands the windows their drop handling (files and text dragged in from other programs), on
@@ -281,13 +281,15 @@ pub(crate) fn hand_drops() {
     crate::macos_files::hand_drops();
     #[cfg(target_os = "ios")]
     crate::ios_files::hand_drops();
+    #[cfg(target_os = "android")]
+    crate::android_drag_drop::hand_drops();
 }
 
 /// Hands the windows their drag-out code, on this thread: the first time an app hands something
 /// out ([`Ui::drag_out`](crate::Ui::drag_out)). Reached no other way, so a program that never
 /// does is built without it. (On Windows OLE hands it to the system, see `ole_drag::Outward`;
 /// on X11 the windows speak XDND themselves; on macOS see `macos_drag_out`, on iOS
-/// `ios_drag_out`.)
+/// `ios_drag_out`, on Android `android_drag_drop`.)
 pub(crate) fn enable_drag_out() {
     #[cfg(windows)]
     crate::windows::enable_drag_out();
@@ -297,12 +299,14 @@ pub(crate) fn enable_drag_out() {
     crate::macos_drag_out::enable();
     #[cfg(target_os = "ios")]
     crate::ios_drag_out::enable();
+    #[cfg(target_os = "android")]
+    crate::android_drag_drop::hand_drops();
 }
 
 /// Hands the windows their way to ask for the system's file dialog, on this thread: the first
 /// time an app asks for it ([`FileDialog::native`](crate::FileDialog::native)). Reached no
 /// other way, so a program that never asks is built without it. (On Linux the desktop portal is
-/// asked, on Windows the system itself.)
+/// asked, on Windows the system itself, on Android the document picker.)
 pub(crate) fn hand_file_dialog() {
     #[cfg(windows)]
     crate::windows::hand_file_dialog();
@@ -312,6 +316,8 @@ pub(crate) fn hand_file_dialog() {
     crate::macos_files::hand_file_dialog();
     #[cfg(target_os = "ios")]
     crate::ios_files::hand_file_dialog();
+    #[cfg(target_os = "android")]
+    crate::android_file_dialog::hand_file_dialog();
 }
 
 /// Hands the windows their desktop integration, on this thread: the first time an app asks for
@@ -321,7 +327,7 @@ pub(crate) fn hand_file_dialog() {
 /// ([`Ui::hide_window`](crate::Ui::hide_window)), or to be the single running instance
 /// (`single_instance`). Reached no other way, so a program that never asks is built without it.
 /// (On Windows through the shell, in `shell`; on Linux through D-Bus, in `freedesktop`, and X
-/// for hotkeys.)
+/// for hotkeys; on Android notifications alone, in `android_notifications`.)
 pub(crate) fn hand_desktop() {
     #[cfg(windows)]
     crate::windows::hand_desktop();
@@ -333,6 +339,8 @@ pub(crate) fn hand_desktop() {
     crate::macos_shell::hand_desktop();
     #[cfg(target_os = "ios")]
     crate::ios::hand_desktop();
+    #[cfg(target_os = "android")]
+    crate::android_notifications::hand_desktop();
 }
 
 /// Seconds since 1970, UTC, by the system's clock: what `SystemTime::now()` gives, and in a

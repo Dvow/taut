@@ -234,8 +234,9 @@ pub(crate) type Own = fn(&mut Ui, &mut FileDialog) -> Option<PathBuf>;
 pub struct FileDialog {
     /// Show the system's dialog instead of the library's where the window can: the one users
     /// know from every other program. Where it cannot (another renderer, a DLL, a Linux desktop
-    /// without a portal; and for picking many files), the library's is shown, if this dialog
-    /// has it (see `native`). Answers come back the same way either way.
+    /// without a portal; and for picking many files, but on Android, whose system dialog picks
+    /// no folders), the library's is shown, if this dialog has it (see `native`). Answers come
+    /// back the same way either way.
     pub native: bool,
     /// The library's own dialog, where this one may show it (see `native`): set only by
     /// what may show it. So on Windows a program whose dialogs are all the system's does not
@@ -401,10 +402,11 @@ impl FileDialog {
     /// at once with nothing. For the system's where possible and the library's anywhere else:
     /// `FileDialog { native: true, ..Default::default() }`.)
     pub fn native() -> Self {
-        // (A page's is the browser's picker: it has no folders to show the library's in.)
-        #[cfg(any(windows, target_family = "wasm"))]
+        // (A page's is the browser's picker: it has no folders to show the library's in.
+        // Android's picks documents, which are not files the library's could list.)
+        #[cfg(any(windows, target_family = "wasm", target_os = "android"))]
         let own = None;
-        #[cfg(not(any(windows, target_family = "wasm")))]
+        #[cfg(not(any(windows, target_family = "wasm", target_os = "android")))]
         let own = Some(Ui::own_file_dialog as Own);
         FileDialog::new(true, own)
     }
@@ -473,7 +475,8 @@ impl FileDialog {
     /// Shows the dialog to pick one or more files (with Ctrl and Shift), starting in `folder`:
     /// all selected are in `chosen` when it answers.
     pub fn pick_many(&mut self, folder: impl Into<PathBuf>) {
-        // Only the library's dialog picks several: the system's may not.
+        // Only the library's dialog picks several, but on Android: the system's may not.
+        #[cfg(not(target_os = "android"))]
         self.own.get_or_insert(Ui::own_file_dialog);
         self.show(folder.into(), String::new(), [false, false, true]);
     }
@@ -485,6 +488,9 @@ impl FileDialog {
     /// Shows the dialog to pick a folder, starting in `folder`: the answer is the folder
     /// selected in its list, or with none, the one shown.
     pub fn pick_folder(&mut self, folder: impl Into<PathBuf>) {
+        // Android's dialog picks no folders: they have no path there.
+        #[cfg(target_os = "android")]
+        self.own.get_or_insert(Ui::own_file_dialog);
         self.show(folder.into(), String::new(), [false, true, false]);
     }
     fn show(&mut self, folder: PathBuf, name: String, [saving, folders, many]: [bool; 3]) {
@@ -636,7 +642,17 @@ impl FileDialog {
         self.shown = false;
         let went = answer.as_deref().and_then(|file| if self.folders { Some(file) } else { file.parent() }).map(PathBuf::from);
         self.folder = went.unwrap_or(std::mem::take(&mut self.folder));
-        answer.and_then(|file| self.answer(vec![file]))
+        // (Android's dialog may answer with several.)
+        #[cfg(target_os = "android")]
+        let chosen = crate::android_file_dialog::chosen;
+        #[cfg(not(target_os = "android"))]
+        let chosen = |file| vec![file];
+        answer.and_then(|file| self.answer(chosen(file)))
+    }
+    /// Whether the system's dialog does what is asked: several files only on Android and iOS,
+    /// and on Android no folder.
+    fn system_does(&self) -> bool {
+        if cfg!(target_os = "android") { !self.folders } else { !self.many || cfg!(target_os = "ios") }
     }
     /// Takes a folder, when one is asked for: the one named in the box, or with none, the one
     /// shown. (Above the drives there is none.)
@@ -701,8 +717,7 @@ impl Ui {
     /// folder is asked for, Enter and double click enter folders as usual, and the button picks
     /// one.
     pub fn file_dialog(&mut self, files: &mut FileDialog) -> Option<PathBuf> {
-        // (Only iOS's system dialog is asked for several files.)
-        if files.shown && files.native && self.system_files && (!files.many || cfg!(target_os = "ios")) {
+        if files.shown && files.native && self.system_files && files.system_does() {
             return self.ask_system(files);
         }
         // With no library dialog, this one is the system's, on Windows: see
@@ -1591,6 +1606,8 @@ impl Ui {
         }
         if !std::mem::replace(&mut self.file_asked, true) {
             crate::platform::hand_file_dialog();
+            #[cfg(target_os = "android")]
+            crate::android_file_dialog::note_many(files.many);
             let (folder, name, endings) = (files.folder.clone(), files.name.clone(), files.endings.clone());
             self.file_ask = Some(FileDialogRequest { saving: files.saving, folders: files.folders, folder, name, endings, title: files.title(), many: files.many });
         }

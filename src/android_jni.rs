@@ -1,7 +1,8 @@
 //! Android's Java, called through JNI: the classes `android_dex` writes, loaded and given their
 //! native methods; and the system services an app reaches only from Java (the clipboard, the
 //! soft keyboard, window insets, the person's display settings, opening a link). Everything here
-//! runs on the main thread, where the activity's own `JNIEnv` is, but `open_link`.
+//! runs on the main thread, where the activity's own `JNIEnv` is, but what takes a thread's own
+//! interface (`thread_env`).
 use crate::android_dex::{Class, dex};
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_void};
@@ -34,6 +35,9 @@ impl Value {
     pub(crate) fn float(f: f32) -> Value {
         Value { j: i64::from(f.to_bits()) }
     }
+    pub(crate) fn long(j: i64) -> Value {
+        Value { j }
+    }
     /// As an object (null for none).
     pub(crate) fn object(self) -> Obj {
         // SAFETY: every field is plain data, and a value made from another type reads as null
@@ -52,6 +56,10 @@ impl Value {
         // SAFETY: plain data.
         unsafe { self.f }
     }
+    pub(crate) fn as_long(self) -> i64 {
+        // SAFETY: plain data.
+        unsafe { self.j }
+    }
 }
 
 /// A native method handed to Java: name, descriptor, the function.
@@ -62,6 +70,12 @@ pub(crate) struct Native {
     pub function: *const c_void,
 }
 
+impl Native {
+    pub(crate) fn new(name: &'static CStr, signature: &'static CStr, function: *const c_void) -> Native {
+        Native { name: name.as_ptr(), signature: signature.as_ptr(), function }
+    }
+}
+
 /// JNI's table: the slots used, numbered as in `jni.h`.
 const FIND_CLASS: usize = 6;
 const EXCEPTION_DESCRIBE: usize = 16;
@@ -69,35 +83,50 @@ const EXCEPTION_CLEAR: usize = 17;
 const PUSH_LOCAL_FRAME: usize = 19;
 const POP_LOCAL_FRAME: usize = 20;
 const NEW_GLOBAL_REF: usize = 21;
+const DELETE_GLOBAL_REF: usize = 22;
 const DELETE_LOCAL_REF: usize = 23;
+const IS_SAME_OBJECT: usize = 24;
 const NEW_OBJECT_A: usize = 30;
 const GET_OBJECT_CLASS: usize = 31;
 const GET_METHOD_ID: usize = 33;
+/// `CallNonvirtualBooleanMethodA`.
+const CALL_NONVIRTUAL_BOOLEAN_METHOD_A: usize = 69;
 /// The first `Call<Type>MethodA`, for objects; the others follow, three slots apart, in the
 /// order of `TYPES`. Statics likewise.
 const CALL_OBJECT_METHOD_A: usize = 36;
 const CALL_STATIC_OBJECT_METHOD_A: usize = 116;
+/// `CallVoidMethodA`.
+const CALL_VOID_METHOD_A: usize = 63;
 const TYPES: &[u8] = b"LZBCSIJFDV";
 const GET_FIELD_ID: usize = 94;
+const GET_OBJECT_FIELD: usize = 95;
 const GET_INT_FIELD: usize = 100;
 const GET_FLOAT_FIELD: usize = 102;
+const SET_OBJECT_FIELD: usize = 104;
 const SET_INT_FIELD: usize = 109;
 const GET_STATIC_METHOD_ID: usize = 113;
 const GET_STATIC_FIELD_ID: usize = 144;
+const GET_STATIC_OBJECT_FIELD: usize = 145;
 const GET_STATIC_INT_FIELD: usize = 150;
 const NEW_STRING: usize = 163;
 const GET_STRING_LENGTH: usize = 164;
+const GET_ARRAY_LENGTH: usize = 171;
 const NEW_OBJECT_ARRAY: usize = 172;
+const GET_OBJECT_ARRAY_ELEMENT: usize = 173;
 const SET_OBJECT_ARRAY_ELEMENT: usize = 174;
 const NEW_INT_ARRAY: usize = 179;
 const GET_INT_ARRAY_REGION: usize = 203;
+const SET_INT_ARRAY_REGION: usize = 211;
 const REGISTER_NATIVES: usize = 215;
 const GET_STRING_REGION: usize = 220;
 const EXCEPTION_CHECK: usize = 228;
 const NEW_DIRECT_BYTE_BUFFER: usize = 229;
-/// The VM's own table: attach and detach a thread.
+/// The VM's own table: attach and detach a thread, and a thread's interface.
 const ATTACH_CURRENT_THREAD: usize = 4;
 const DETACH_CURRENT_THREAD: usize = 5;
+const GET_ENV: usize = 6;
+/// `JNI_VERSION_1_6`.
+const VERSION: i32 = 0x0001_0006;
 
 /// A thread's JNI interface (`JNIEnv*`).
 #[repr(transparent)]
@@ -107,6 +136,45 @@ pub(crate) struct Env(pub *mut *const *const c_void);
 thread_local! {
     /// The main thread's interface, from the activity.
     static MAIN: Cell<Env> = const { Cell::new(Env(std::ptr::null_mut())) };
+    /// Another thread's interface, once it was attached here (detached as the thread ends).
+    static ATTACHED: Attached = const { Attached(Cell::new(Env(std::ptr::null_mut()))) };
+}
+
+/// A thread attached to the VM by the library, detached when the thread ends (the VM ends the
+/// process if a thread ends attached).
+struct Attached(Cell<Env>);
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        if !self.0.get().0.is_null() {
+            vm_call::<extern "C" fn(*mut c_void) -> i32>(DETACH_CURRENT_THREAD).map(|(vm, detach)| detach(vm));
+        }
+    }
+}
+
+/// A function of the VM's own table, with the VM.
+fn vm_call<F: Copy>(slot: usize) -> Option<(*mut c_void, F)> {
+    let vm = VM.load(Ordering::SeqCst);
+    // SAFETY: the VM's table has every slot of `jni.h`'s `JNIInvokeInterface`; the caller names
+    // the slot's type.
+    (!vm.is_null()).then(|| (vm, unsafe { std::mem::transmute_copy(&*(*(vm as *mut *const *const c_void)).add(slot)) }))
+}
+
+/// This thread's interface: the main thread's, or another's, attached the first time and for
+/// as long as the thread lives. None before an activity started.
+pub(crate) fn thread_env() -> Option<Env> {
+    if let Some(env) = env().or_else(|| Some(ATTACHED.with(|kept| kept.0.get())).filter(|env| !env.0.is_null())) {
+        return Some(env);
+    }
+    let mut raw: *mut c_void = std::ptr::null_mut();
+    let (vm, get) = vm_call::<extern "C" fn(*mut c_void, *mut *mut c_void, i32) -> i32>(GET_ENV)?;
+    if get(vm, &mut raw, VERSION) == 0 {
+        return Some(Env(raw.cast()));
+    }
+    let (vm, attach) = vm_call::<extern "C" fn(*mut c_void, *mut *mut c_void, *mut c_void) -> i32>(ATTACH_CURRENT_THREAD)?;
+    let env = (attach(vm, &mut raw, std::ptr::null_mut()) == 0).then_some(Env(raw.cast()))?;
+    ATTACHED.with(|kept| kept.0.set(env));
+    Some(env)
 }
 
 /// The VM, for threads of the library's own.
@@ -171,6 +239,38 @@ impl Env {
             return Value { j: 0 };
         }
         self.invoke(CALL_OBJECT_METHOD_A, on, method, signature, args)
+    }
+
+    /// Calls a method that returns nothing: says whether it ran, without Java throwing.
+    pub(crate) fn run(self, on: Obj, name: &CStr, signature: &CStr, args: &[Value]) -> bool {
+        if on.is_null() {
+            return false;
+        }
+        // SAFETY: as in `call`; the method returns nothing.
+        unsafe {
+            let class = self.slot::<extern "C" fn(Env, Obj) -> Obj>(GET_OBJECT_CLASS)(self, on);
+            let method = self.slot::<extern "C" fn(Env, Obj, *const c_char, *const c_char) -> Obj>(GET_METHOD_ID)(self, class, name.as_ptr(), signature.as_ptr());
+            self.drop_local(class);
+            if self.threw() || method.is_null() {
+                return false;
+            }
+            self.slot::<extern "C" fn(Env, Obj, Obj, *const Value)>(CALL_VOID_METHOD_A)(self, on, method, args.as_ptr());
+        }
+        !self.threw()
+    }
+
+    /// Calls a `boolean` method of an object as `class` (with slashes) has it, not as the
+    /// object's own class overrides it: what Java's `super.` calls.
+    pub(crate) fn call_super(self, on: Obj, class: &CStr, name: &CStr, signature: &CStr, args: &[Value]) -> bool {
+        let class = self.class(class);
+        // SAFETY: the class is alive; its method is asked for by name and signature, and called
+        // on an object of a class that extends it.
+        let said = unsafe {
+            let method = self.slot::<extern "C" fn(Env, Obj, *const c_char, *const c_char) -> Obj>(GET_METHOD_ID)(self, class, name.as_ptr(), signature.as_ptr());
+            !method.is_null() && self.slot::<extern "C" fn(Env, Obj, Obj, Obj, *const Value) -> u8>(CALL_NONVIRTUAL_BOOLEAN_METHOD_A)(self, on, class, method, args.as_ptr()) != 0
+        };
+        self.drop_local(class);
+        !self.threw() && said
     }
 
     /// Calls a static method of a class.
@@ -265,6 +365,38 @@ impl Env {
         }
     }
 
+    /// An object field of an object, by name and type (null without one).
+    pub(crate) fn object_field(self, on: Obj, name: &CStr, kind: &CStr) -> Obj {
+        let field = if on.is_null() { std::ptr::null_mut() } else { self.field(on, name, kind) };
+        // SAFETY: the field is the object's, of an object type.
+        if field.is_null() { field } else { unsafe { self.slot::<extern "C" fn(Env, Obj, Obj) -> Obj>(GET_OBJECT_FIELD)(self, on, field) } }
+    }
+
+    /// Sets an object field of an object.
+    pub(crate) fn set_object_field(self, on: Obj, name: &CStr, kind: &CStr, value: Obj) {
+        let field = if on.is_null() { std::ptr::null_mut() } else { self.field(on, name, kind) };
+        if !field.is_null() {
+            // SAFETY: the field is the object's, of an object type the value has.
+            unsafe { self.slot::<extern "C" fn(Env, Obj, Obj, Obj)>(SET_OBJECT_FIELD)(self, on, field, value) };
+        }
+    }
+
+    /// A static object field of a class, by name and type (null without one).
+    pub(crate) fn static_object(self, class: &CStr, name: &CStr, kind: &CStr) -> Obj {
+        let class = self.class(class);
+        if class.is_null() {
+            return class;
+        }
+        // SAFETY: the class is alive; its field is asked for by name and type.
+        let value = unsafe {
+            let field = self.slot::<extern "C" fn(Env, Obj, *const c_char, *const c_char) -> Obj>(GET_STATIC_FIELD_ID)(self, class, name.as_ptr(), kind.as_ptr());
+            if field.is_null() { field } else { self.slot::<extern "C" fn(Env, Obj, Obj) -> Obj>(GET_STATIC_OBJECT_FIELD)(self, class, field) }
+        };
+        let value = if self.threw() { std::ptr::null_mut() } else { value };
+        self.drop_local(class);
+        value
+    }
+
     /// A static `int` field of a class (0 without one).
     pub(crate) fn static_int(self, class: &CStr, name: &CStr) -> i32 {
         let class = self.class(class);
@@ -312,6 +444,20 @@ impl Env {
         if of.is_null() { of } else { unsafe { self.slot::<extern "C" fn(Env, Obj) -> Obj>(NEW_GLOBAL_REF)(self, of) } }
     }
 
+    /// Lets go of a global reference.
+    pub(crate) fn drop_global(self, of: Obj) {
+        if !of.is_null() {
+            // SAFETY: a global reference the library made, not used after.
+            unsafe { self.slot::<extern "C" fn(Env, Obj)>(DELETE_GLOBAL_REF)(self, of) };
+        }
+    }
+
+    /// Whether two references are to the same object.
+    pub(crate) fn same(self, one: Obj, other: Obj) -> bool {
+        // SAFETY: two live references (or nulls).
+        unsafe { self.slot::<extern "C" fn(Env, Obj, Obj) -> u8>(IS_SAME_OBJECT)(self, one, other) != 0 }
+    }
+
     /// Lets go of a local reference.
     pub(crate) fn drop_local(self, of: Obj) {
         if !of.is_null() {
@@ -351,8 +497,8 @@ pub(crate) fn new_ints(env: Env, long: i32) -> Obj {
     if env.threw() { std::ptr::null_mut() } else { made }
 }
 
-/// A new Java array of `long` nulls, for objects of the class named.
-pub(crate) fn new_objects(env: Env, class: &CStr, long: i32) -> Obj {
+/// A new Java array of `long` nulls, for objects of the class named (with slashes).
+pub(crate) fn new_object_array(env: Env, class: &CStr, long: i32) -> Obj {
     let class = env.class(class);
     if class.is_null() {
         return class;
@@ -372,6 +518,25 @@ pub(crate) fn set_object(env: Env, array: Obj, at: i32, item: Obj) {
     }
 }
 
+/// A new Java array of the class named (with slashes) holding `items`.
+pub(crate) fn new_objects(env: Env, class: &CStr, items: &[Obj]) -> Obj {
+    let made = new_object_array(env, class, items.len() as i32);
+    for (at, item) in items.iter().enumerate() {
+        set_object(env, made, at as i32, *item);
+    }
+    made
+}
+
+/// The objects in a Java array (local references; none for null).
+pub(crate) fn objects(env: Env, of: Obj) -> Vec<Obj> {
+    if of.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the array is alive; each element up to its length is read.
+    let long = unsafe { env.slot::<extern "C" fn(Env, Obj) -> i32>(GET_ARRAY_LENGTH)(env, of) };
+    (0..long.max(0)).map(|at| unsafe { env.slot::<extern "C" fn(Env, Obj, i32) -> Obj>(GET_OBJECT_ARRAY_ELEMENT)(env, of, at) }).collect()
+}
+
 /// Reads the first numbers of a Java `int[]` into `into`.
 pub(crate) fn ints(env: Env, of: Obj, into: &mut [i32]) {
     if !of.is_null() {
@@ -379,6 +544,29 @@ pub(crate) fn ints(env: Env, of: Obj, into: &mut [i32]) {
         unsafe { env.slot::<extern "C" fn(Env, Obj, i32, i32, *mut i32)>(GET_INT_ARRAY_REGION)(env, of, 0, into.len() as i32, into.as_mut_ptr()) };
         env.threw();
     }
+}
+
+/// A bitmap of a picture: `width` pixels a row, `0xAARRGGBB` not premultiplied.
+pub(crate) fn bitmap(env: Env, width: usize, pixels: &[u32]) -> Obj {
+    let height = pixels.len() / width.max(1);
+    let colours = new_ints(env, pixels.len() as i32);
+    if colours.is_null() || height == 0 {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the array was made as long as the pixels, which are read whole.
+    unsafe { env.slot::<extern "C" fn(Env, Obj, i32, i32, *const u32)>(SET_INT_ARRAY_REGION)(env, colours, 0, pixels.len() as i32, pixels.as_ptr()) };
+    let config = env.static_object(c"android/graphics/Bitmap$Config", c"ARGB_8888", c"Landroid/graphics/Bitmap$Config;");
+    let args = [Value::obj(colours), Value::int(width as i32), Value::int(height as i32), Value::obj(config)];
+    env.call_static(c"android/graphics/Bitmap", c"createBitmap", c"([IIILandroid/graphics/Bitmap$Config;)Landroid/graphics/Bitmap;", &args).object()
+}
+
+/// Whether the activity is the package's own `taut.Activity` (see `examples/apk.rs`), which
+/// keeps what the system answers for the library.
+pub(crate) fn is_app_activity(env: Env, activity: Obj) -> bool {
+    let class = env.call(activity, c"getClass", c"()Ljava/lang/Class;", &[]).object();
+    let name = env.text(env.call(class, c"getName", c"()Ljava/lang/String;", &[]).object());
+    env.drop_local(class);
+    name.as_deref() == Some("taut.Activity")
 }
 
 /// The library's Java classes: a view (accessibility host, input method target, insets), its
@@ -527,31 +715,28 @@ pub(crate) fn display(env: Env, activity: Obj) -> Display {
 /// Opens a link with the app the system opens it with (an `ACTION_VIEW` intent), from any
 /// thread. Says whether an app took it.
 pub(crate) fn open_link(activity: Obj, link: &str) -> bool {
-    let vm = VM.load(Ordering::SeqCst);
-    if vm.is_null() || activity.is_null() {
-        return false;
-    }
-    let mut raw: *mut c_void = std::ptr::null_mut();
-    // SAFETY: the VM's own table, slots 4 and 5: this thread is attached for the call and
-    // detached after.
-    let env = unsafe {
-        let table = *(vm as *mut *const *const c_void);
-        let attach: extern "C" fn(*mut c_void, *mut *mut c_void, *mut c_void) -> i32 = std::mem::transmute_copy(&*table.add(ATTACH_CURRENT_THREAD));
-        (attach(vm, &mut raw, std::ptr::null_mut()) == 0).then_some(Env(raw.cast()))
-    };
-    let Some(env) = env else { return false };
-    let opened = env.frame(|| {
+    let Some(env) = thread_env().filter(|_| !activity.is_null()) else { return false };
+    env.frame(|| {
         let uri = env.call_static(c"android/net/Uri", c"parse", c"(Ljava/lang/String;)Landroid/net/Uri;", &[Value::obj(env.string(link))]).object();
         let intent = env.new_named(c"android/content/Intent", c"(Ljava/lang/String;Landroid/net/Uri;)V", &[Value::obj(env.string("android.intent.action.VIEW")), Value::obj(uri)]);
-        env.call(intent, c"addFlags", c"(I)Landroid/content/Intent;", &[Value::int(0x1000_0000)]);
-        env.call(activity, c"startActivity", c"(Landroid/content/Intent;)V", &[Value::obj(intent)]);
-        !intent.is_null() && !env.threw()
-    });
-    // SAFETY: as above.
-    unsafe {
-        let table = *(vm as *mut *const *const c_void);
-        let detach: extern "C" fn(*mut c_void) -> i32 = std::mem::transmute_copy(&*table.add(DETACH_CURRENT_THREAD));
-        detach(vm);
-    }
-    opened
+        start_new_task(env, activity, intent)
+    })
+}
+
+/// Starts an activity for `intent` in a task of its own: says whether one did.
+pub(crate) fn start_new_task(env: Env, activity: Obj, intent: Obj) -> bool {
+    env.call(intent, c"addFlags", c"(I)Landroid/content/Intent;", &[Value::int(NEW_TASK)]);
+    env.run(activity, c"startActivity", c"(Landroid/content/Intent;)V", &[Value::obj(intent)])
+}
+
+/// `Intent.FLAG_ACTIVITY_NEW_TASK`.
+pub(crate) const NEW_TASK: i32 = 0x1000_0000;
+
+/// A class of the app's own package (its `classes.dex`, see `examples/apk.rs`), by name with
+/// dots, as a global reference: null if the package lacks it.
+pub(crate) fn app_class(env: Env, activity: Obj, name: &str) -> Obj {
+    env.frame(|| {
+        let loader = env.call(activity, c"getClassLoader", c"()Ljava/lang/ClassLoader;", &[]).object();
+        env.global(env.call(loader, c"loadClass", c"(Ljava/lang/String;)Ljava/lang/Class;", &[Value::obj(env.string(name))]).object())
+    })
 }

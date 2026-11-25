@@ -8,11 +8,14 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   Arch Linux; on GitHub runners macOS 26 on arm64, iOS 26 in its simulator and Android 15 on an
   x86-64 emulator; Edge and Chrome, headless).
 - Android: one window, the activity's; second windows are not shown. The CPU draws and shows:
-  `Renderer` and `gpu` change nothing. No tray, notifications, hotkeys, drag and drop,
-  printing, spell checking, system file dialog or pictures and files on the clipboard. What an
-  input method composes is typed into the box as it goes, not underlined. `open_with_system`
-  opens links only. `Face::named` fonts are not looked up. Untried: TalkBack itself (nodes read
-  with `uiautomator`, and in the app through its provider), a real phone, arm64 beyond building.
+  `Renderer` and `gpu` change nothing. No tray or hotkeys (Android has none); `hide_window`
+  does nothing. The system's file dialog picks files, not folders (a folder of documents has no
+  path): `pick_folder` shows the library's dialog. Picked documents are copies, written back
+  after the run that changed them. What an input method composes shows in a small panel at the
+  text cursor, over the box. The system parts need the package's classes (`examples/apk.rs`);
+  an app packed otherwise has none of them. Untried: TalkBack itself (nodes read with
+  `uiautomator`, and in the app through its provider), a real phone, arm64 beyond building; the
+  emulator's own keyboard composes nothing (a test keyboard did).
 - Web: one window, the page's; no second windows, tray, hotkeys, system notifications, drag and
   drop with other programs, printing, one running copy, GPU paths or threads. Clipboard: text
   only; a menu's Paste has the page's last copy or paste unless the person let the page read the

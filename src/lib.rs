@@ -71,10 +71,28 @@ mod accessibility;
 mod android;
 #[cfg(target_os = "android")]
 mod android_access;
+#[cfg(target_os = "android")]
+mod android_clipboard;
 #[cfg(any(target_os = "android", test))]
 mod android_dex;
 #[cfg(target_os = "android")]
+mod android_drag_drop;
+#[cfg(all(test, not(target_os = "android")))]
+mod android_emulator;
+#[cfg(target_os = "android")]
+mod android_file_dialog;
+#[cfg(target_os = "android")]
+mod android_files;
+#[cfg(any(target_os = "android", test))]
+mod android_input_method;
+#[cfg(target_os = "android")]
 mod android_jni;
+#[cfg(target_os = "android")]
+mod android_notifications;
+#[cfg(target_os = "android")]
+mod android_print;
+#[cfg(target_os = "android")]
+mod android_spell_checker;
 #[cfg(target_os = "android")]
 mod android_sys;
 #[cfg(any(target_os = "android", test))]
