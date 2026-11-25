@@ -4452,10 +4452,9 @@ pub(crate) mod tests {
 
     #[test]
     fn a_line_of_text_stands_with_its_letters_in_the_middle_of_its_box() {
-        // Words in the system fonts at UI sizes, each in a 61-pixel-high box. An all-caps word
-        // has its capitals' middle at the box's middle, to half a pixel (rows are whole); a
-        // word with lowercase has the point halfway between the middle of its capitals and of
-        // its x-height there. Windows' font keeps much more room above its letters than below
+        // Words in the system fonts at UI sizes, each in a 61-pixel-high box: their capitals'
+        // middle is at the box's middle, to half a pixel (rows are whole), and lowercase stands
+        // on the same baseline. Windows' font keeps much more room above its letters than below
         // the baseline: placed by line height alone, words stood up to a pixel and a half low.
         let middle = |font: Font, letter: &str| {
             let mut ui = Ui::new(crate::platform::system_text(), Box::new(crate::platform::LocalClipboard::default()));
@@ -4468,10 +4467,7 @@ pub(crate) mod tests {
         for font in [10.5, 11.0, 11.5, 12.0, 13.0, 16.0, 24.0].into_iter().flat_map(|size| [Font::new(size), Font::new(size).bold(), Font::new(size).mono()]) {
             let [top, line] = middle(font, "HEIGHT 12");
             assert!(((top + line) / 2.0 - 30.0).abs() <= 0.5, "{font:?}: its capitals stand {} pixels under the middle of their box", (top + line) / 2.0 - 30.0);
-            // "Hx": the top of the "H" and the baseline; "x" alone: its top.
-            let ([top, line], [small, _]) = (middle(font, "Hx"), middle(font, "x"));
-            let off = ((top + line) / 2.0 + (small + line) / 2.0) / 2.0 - 30.0;
-            assert!(off.abs() <= 0.5, "{font:?}: its letters stand {off} pixels under the middle of their box");
+            assert_eq!(middle(font, "Hix")[1], line, "{font:?}: lowercase stands on the capitals' baseline");
         }
     }
 
