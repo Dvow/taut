@@ -5,6 +5,8 @@
 //! 1024×1024). The reader kept no more shapes than a file of its length could write, but each
 //! could cost an image's worth. Now what is kept is bounded to as many image-covers as such a
 //! file could produce (64 at least). Regression tests: each failed before its fix.
+// (Measured by a thread's processor time, which Windows and Unix give.)
+#![cfg(any(windows, unix))]
 use std::time::Duration;
 
 /// A drawing of 100 by 100 units in which `inner` is drawn 4^`levels` times, by groups that

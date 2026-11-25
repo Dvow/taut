@@ -1,5 +1,6 @@
 //! The library inside a DLL, used by a program knowing only a few C functions: the `overlay`
 //! example is loaded as any program loads a DLL, driven, and inspected.
+#![cfg(any(windows, unix))]
 use std::ffi::{CString, c_void};
 
 #[cfg(windows)]

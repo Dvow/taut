@@ -172,6 +172,9 @@ fn loader() -> Option<unsafe extern "system" fn(Object, *const c_char) -> *const
     let found = unsafe { Some(LoadLibraryA(c"vulkan-1.dll".as_ptr())).filter(|library| *library != 0).map(|library| GetProcAddress(library, c"vkGetInstanceProcAddr".as_ptr().cast())) };
     #[cfg(unix)]
     let found = unsafe { Some(dlopen(c"libvulkan.so.1".as_ptr(), 2)).filter(|library| !library.is_null()).map(|library| dlsym(library, c"vkGetInstanceProcAddr".as_ptr()).cast_const()) };
+    // (A system with neither, as a browser page, has no loader.)
+    #[cfg(not(any(windows, unix)))]
+    let found: Option<*const c_void> = None;
     // SAFETY: the loader's function is declared as vulkan_core.h declares it.
     found.filter(|found| !found.is_null()).map(|found| unsafe { std::mem::transmute(found) })
 }
