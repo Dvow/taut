@@ -20,9 +20,9 @@ pub fn encode_rgba(width: usize, pixels: &[u32]) -> Option<Vec<u8>> {
 }
 
 /// Encodes frames as an animated PNG (APNG): each `width` pixels wide, rows of `0xAARRGGBB`
-/// not premultiplied, as many rows high as the first (a frame of another size is none), shown
-/// for its milliseconds; played `plays` times, 0 for ever. Nothing for no frames, or a size PNG
-/// cannot hold.
+/// not premultiplied, as many rows high as the first (a frame of another size is left out),
+/// shown for its milliseconds; played `plays` times, 0 for ever. Nothing for no frames, or a
+/// size PNG cannot hold.
 pub(crate) fn encode_animation(width: usize, frames: &[(Vec<u32>, u16)], plays: u32) -> Option<Vec<u8>> {
     let height = high(width, &frames.first()?.0)?;
     let frames: Vec<&(Vec<u32>, u16)> = frames.iter().filter(|(pixels, _)| pixels.len() == width * height).collect();

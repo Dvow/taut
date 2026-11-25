@@ -141,12 +141,12 @@ pub(crate) fn parent() -> String {
 /// Says what came of printing, and has the window run again to hear it.
 pub(crate) fn tell(outcome: &Mutex<Option<PrintOutcome>>, printed: PrintOutcome) {
     *outcome.lock().unwrap_or_else(|held| held.into_inner()) = Some(printed);
-    #[cfg(any(windows, target_os = "android", all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
+    #[cfg(any(windows, all(unix, not(target_vendor = "apple"))))]
     crate::platform::Waker.wake();
 }
 
 /// No way of printing: nothing is printed.
-#[cfg(not(any(windows, target_os = "android", all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
+#[cfg(not(any(windows, all(unix, not(target_vendor = "apple")))))]
 fn ask(pages: Pages, title: &str, outcome: Arc<Mutex<Option<PrintOutcome>>>) {
     let _ = (pages, title);
     tell(&outcome, PrintOutcome::Unable);

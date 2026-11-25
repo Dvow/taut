@@ -393,12 +393,8 @@ impl Ui {
     /// Takes the first table navigation key, with any modifiers except Alt.
     fn take_cell_key(&mut self) -> Option<(Key, Mods)> {
         let at = self.input.strokes.iter().position(|stroke| matches!(stroke, Stroke::Key(key, mods) if KEYS.contains(key) && !mods.alt))?;
-        match self.input.strokes.remove(at) {
-            Stroke::Key(key, mods) => Some((key, mods)),
-            Stroke::Text(_) => None,
-            #[cfg(target_os = "ios")]
-            Stroke::Replace(_) => None,
-        }
+        let Stroke::Key(key, mods) = self.input.strokes.remove(at) else { return None };
+        Some((key, mods))
     }
 
     /// Rows per page: as many as fit between the rows kept in view.

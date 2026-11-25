@@ -27,8 +27,6 @@ const GRANT_WRITE: i32 = 2;
 struct Asked {
     /// The picker's request code while it is up.
     code: i32,
-    /// Several documents may be picked.
-    many: bool,
     /// Documents picked, being copied.
     copying: Option<Copying>,
     /// Every copy of the last answer.
@@ -44,11 +42,6 @@ thread_local! {
 /// Has the windows ask the picker for the file dialog, from the next run on.
 pub(crate) fn hand_file_dialog() {
     add_part(Part { name: "file dialog", before: take_answer, after: ask_if_asked });
-}
-
-/// Notes whether the dialog being asked for picks several files.
-pub(crate) fn note_many(many: bool) {
-    ASKED.with_borrow_mut(|asked| asked.many = many);
 }
 
 /// Every file of the answer whose first is `first`.
@@ -84,8 +77,7 @@ fn show_picker(env: Env, activity: Obj, request: &FileDialogRequest) -> bool {
         let listed: Vec<Obj> = kinds.iter().map(|kind| env.string(kind)).collect();
         put_extra(env, intent, "android.intent.extra.MIME_TYPES", c"(Ljava/lang/String;[Ljava/lang/String;)Landroid/content/Intent;", Value::obj(jni::new_objects(env, c"java/lang/String", &listed)));
     }
-    let many = ASKED.with_borrow(|asked| asked.many) && !request.saving;
-    put_extra(env, intent, "android.intent.extra.ALLOW_MULTIPLE", c"(Ljava/lang/String;Z)Landroid/content/Intent;", Value::bool(many));
+    put_extra(env, intent, "android.intent.extra.ALLOW_MULTIPLE", c"(Ljava/lang/String;Z)Landroid/content/Intent;", Value::bool(request.many && !request.saving));
     if request.saving {
         put_extra(env, intent, "android.intent.extra.TITLE", c"(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;", Value::obj(env.string(&request.name)));
     }

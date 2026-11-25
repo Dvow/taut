@@ -171,7 +171,7 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - SVG not read: `animateMotion`, animations begun by events or other animations,
   `FillPaint`/`StrokePaint` inputs, `kernelUnitLength`. Images in other files only through the
   app's loader; drawings an image brings, four deep at most. SMIL animation plays as encoded
-  frames (`svg::encode_animation`), not in a `Drawing`. Small blurs use a true Gaussian (as
+  frames (`svg::encode_animation`, a minute at most), not in a `Drawing`. Small blurs use a true Gaussian (as
   browsers; librsvg differs). SVG text is unshaped without `shaping`. Masks and non-box clips
   multiply edge coverages; two opposite subpaths of one shape can show a hairline. Crisp edges
   paint pixels more than half covered (librsvg: pixels whose sample point is). Of 2,986 Linux

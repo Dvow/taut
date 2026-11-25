@@ -104,9 +104,9 @@ fn opened(what: &OsStr) -> bool {
 /// in the system's preview, or offered to the apps that open it (see `ios_files`).
 #[cfg(target_os = "ios")]
 fn opened(what: &OsStr) -> bool {
-    match what.to_str() {
-        Some(text) if is_link(text) => crate::ios::open_link(text),
-        _ => crate::ios_files::open_file(std::path::Path::new(what)),
+    match what.to_str().filter(|text| is_link(text)) {
+        Some(link) => crate::ios::open_link(link),
+        None => crate::ios_files::open_file(std::path::Path::new(what)),
     }
 }
 

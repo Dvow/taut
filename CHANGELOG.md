@@ -52,17 +52,16 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   `examples/apk.rs` now packs (`classes.dex`: the activity `taut.Activity`, the file
   provider `taut.Files`), and the permission to notify, which it declares. New example
   `system_parts`.
-- **SVG:** every filter: `feImage` (an element or a picture), `feDiffuseLighting` and
-  `feSpecularLighting` with distant, point and spot lights, `feConvolveMatrix`,
-  `feDisplacementMap`, and the `BackgroundImage`/`BackgroundAlpha` inputs.
-  `shape-rendering` (`crispEdges`, `optimizeSpeed`) after `svg::enable_shape_rendering`. Text on a path (`<textPath>`); with the
-  feature `shaping`, SVG text is shaped as pages are. SVG files as images (`data:` URLs), and
-  pictures in other files through the app's loader (`svg::enable_images_from`), within the
-  file's cost budget. After `svg::enable_seamless_clips`, clip paths and masks leave no seam
-  where their shapes meet. SMIL animation
-  (`<animate>`, `<set>`, `<animateTransform>`): `svg::encode_animation` makes an APNG for
-  `Ui::add_animation`, `svg::decode_at` draws one moment. A program calling none of these
-  carries none of them.
+- **SVG:** every filter primitive: `feImage` (an element or a picture), `feDiffuseLighting`
+  and `feSpecularLighting` (distant, point and spot lights), `feConvolveMatrix`,
+  `feDisplacementMap`; the `BackgroundImage` and `BackgroundAlpha` inputs. Text on a path
+  (`<textPath>`), shaped with the feature `shaping`. SVG files as images (`data:` URLs), and
+  images in other files through the app's loader (`svg::enable_images_from`), within the file's
+  cost budget. `shape-rendering` after `svg::enable_shape_rendering`; clip paths and masks
+  without seams after `svg::enable_seamless_clips`. SMIL animation (`<animate>`, `<set>`,
+  `<animateTransform>`): `svg::encode_animation` makes an APNG for `Ui::add_animation` (a
+  minute at most), `svg::decode_at` draws one moment. A program calling none of these carries
+  none of them.
 
 ## 0.3.0 (2026-11-24)
 

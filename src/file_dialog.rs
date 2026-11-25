@@ -221,8 +221,8 @@ pub struct FileDialogRequest {
     pub endings: Vec<String>,
     /// The title.
     pub title: &'static str,
-    /// Several files may be chosen ([`FileDialog::pick_many`]): asked of the system on iOS;
-    /// elsewhere the library's dialog picks several.
+    /// Several files may be chosen ([`FileDialog::pick_many`]): asked of the system on iOS and
+    /// Android; elsewhere the library's dialog picks several.
     pub many: bool,
 }
 
@@ -234,9 +234,9 @@ pub(crate) type Own = fn(&mut Ui, &mut FileDialog) -> Option<PathBuf>;
 pub struct FileDialog {
     /// Show the system's dialog instead of the library's where the window can: the one users
     /// know from every other program. Where it cannot (another renderer, a DLL, a Linux desktop
-    /// without a portal; and for picking many files, but on Android, whose system dialog picks
-    /// no folders), the library's is shown, if this dialog has it (see `native`). Answers come
-    /// back the same way either way.
+    /// without a portal; several files, but on iOS and Android; a folder, on Android), the
+    /// library's is shown, if this dialog has it (see `native`). Answers come back the same way
+    /// either way.
     pub native: bool,
     /// The library's own dialog, where this one may show it (see `native`): set only by
     /// what may show it. So on Windows a program whose dialogs are all the system's does not
@@ -475,7 +475,7 @@ impl FileDialog {
     /// Shows the dialog to pick one or more files (with Ctrl and Shift), starting in `folder`:
     /// all selected are in `chosen` when it answers.
     pub fn pick_many(&mut self, folder: impl Into<PathBuf>) {
-        // Only the library's dialog picks several, but on Android: the system's may not.
+        // The library's dialog picks several where the system's may not (Android's does).
         #[cfg(not(target_os = "android"))]
         self.own.get_or_insert(Ui::own_file_dialog);
         self.show(folder.into(), String::new(), [false, false, true]);
@@ -1606,8 +1606,6 @@ impl Ui {
         }
         if !std::mem::replace(&mut self.file_asked, true) {
             crate::platform::hand_file_dialog();
-            #[cfg(target_os = "android")]
-            crate::android_file_dialog::note_many(files.many);
             let (folder, name, endings) = (files.folder.clone(), files.name.clone(), files.endings.clone());
             self.file_ask = Some(FileDialogRequest { saving: files.saving, folders: files.folders, folder, name, endings, title: files.title(), many: files.many });
         }

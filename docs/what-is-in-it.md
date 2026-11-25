@@ -140,7 +140,7 @@ Popovers anchored to their button.
   redraws per frame. Play, pause, seek to the exact frame, volume, mute, loop, end; controls for
   keyboard and screen readers.
 - SVG: clip paths, masks, patterns, markers, symbols; on request, `shape-rendering`, seamless
-  clip paths and masks, text (on paths too; shaped with `shaping`), filters (all of them,
+  clip paths and masks, text (on paths too; shaped with `shaping`), filters (every primitive,
   lighting and `BackgroundImage` included; about 90 KB), pictures and nested SVG (in the file,
   or through the app's loader), and SMIL animation as frames. Drawing cost is bounded by file
   length.

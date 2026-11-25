@@ -101,13 +101,11 @@ impl Metrics {
     pub fn height(&self) -> f32 {
         self.ascent + self.descent
     }
-    /// How far above the top of its line slot, `height` tall, a line of text is drawn: so the
-    /// band from its baseline to its cap height sits in the slot's middle. Caps, digits and
-    /// lowercase look centred, descenders hang below, and every line in one font has the same
-    /// baseline whatever its letters. (Placed by ascent and descent, text sits low in a button:
-    /// most fonts keep more room above for accents than below.) Negative for a font whose
-    /// glyphs sit high. A font without a cap height is centred by ascent and descent. (The line
-    /// is snapped to whole pixels when drawn.)
+    /// How far above the top of its line slot, `height` tall, a line of text is drawn so that
+    /// the band from its baseline to its cap height sits in the slot's middle: every line in one
+    /// font has the same baseline, whatever its letters. (Placed by ascent and descent, text sits
+    /// low: most fonts keep more room above for accents than below.) Negative for a font whose
+    /// glyphs sit high; a font without a cap height is centred by ascent and descent.
     pub fn lift(&self, height: f32) -> f32 {
         let band = if self.cap_height > 0.0 { self.cap_height } else { self.ascent - self.descent };
         self.ascent - (height + band) / 2.0

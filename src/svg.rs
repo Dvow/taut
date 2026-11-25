@@ -54,8 +54,8 @@
 //! clip path, `mask-type`, and marker clipping are ignored. Text is not rotated per letter;
 //! unshaped (without `shaping`) it has no joining or right-to-left order; it uses the
 //! family's font or the system's fallback. A gradient focus outside its circle is moved onto
-//! it; a subpath starting where the previous unclosed one ended continues it; `em` is 16 units; percentages refer to
-//! the root viewport, also in nested ones.
+//! it; a subpath starting where the previous unclosed one ended continues it; `em` is 16
+//! units; percentages refer to the root viewport, also in nested ones.
 //!
 //! Deliberate differences from librsvg: a blur with deviation under two pixels integrates the
 //! Gaussian over each pixel (librsvg samples further out, so its small blurs come out
@@ -81,13 +81,13 @@
 //!
 //! Accuracy: a shape is filled by summing each edge's coverage per pixel (see
 //! [`Canvas::fill_with`]), exact where one edge crosses a pixel. Where two do, both count: two
-//! opposite subpaths of one shape touching leave a hairline seam, and a stroke overlapping itself (sharp
-//! corners between segments shorter than its width, self-crossings, reversals, touching dash
-//! ends) darkens the edge pixels of the overlap by up to a quarter. Two subpaths' strokes are
-//! drawn separately and combined: exact where they cross, up to a quarter off where they run
-//! along each other. Non-rectangular clips, masks and viewport clips of strokes multiply
-//! coverages at shared edge pixels (as librsvg does, except for strokes in a viewport).
-//! Transformed pattern tiles are sampled bilinearly.
+//! opposite subpaths of one shape touching leave a hairline seam, and a stroke overlapping
+//! itself (sharp corners between segments shorter than its width, self-crossings, reversals,
+//! touching dash ends) darkens the edge pixels of the overlap by up to a quarter. Two
+//! subpaths' strokes are drawn separately and combined: exact where they cross, up to a quarter
+//! off where they run along each other. Non-rectangular clips, masks and viewport clips of
+//! strokes multiply coverages at shared edge pixels (as librsvg does, except for strokes in a
+//! viewport). Transformed pattern tiles are sampled bilinearly.
 use crate::canvas::{Canvas, color_at};
 use crate::color::Color;
 use crate::font_file::FontFile;
@@ -98,6 +98,7 @@ use crate::svg_filters::{self, Convolution, Edge, Filter, Function, Input, Kind,
 use crate::text::Face;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// A drawing the interface keeps, to show wherever asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,10 +282,10 @@ pub fn decode_at(svg: &str, width: usize, height: usize, seconds: f32) -> Option
 
 /// Encodes an SVG file's SMIL animation as an animated PNG of `width` by `height` pixels, to
 /// play with [`Ui::add_animation`](crate::Ui::add_animation): 30 frames a second, fewer where all
-/// frames would pass 64 megapixels. An animation that ends plays once and stays at its end; one
-/// that runs for ever is one cycle of all that repeats (up to a minute), from when all of it
-/// has begun, on repeat. Each frame costs what drawing the file costs. Nothing for a file with
-/// no drawing or no animation.
+/// frames would pass 64 megapixels, a minute at most. An animation that ends plays once and
+/// stays at its end; one that runs for ever is one cycle of all that repeats, from when all of
+/// it has begun, on repeat. Each frame costs what drawing the file costs. Nothing for a file
+/// with no drawing or no animation.
 pub fn encode_animation(svg: &str, width: usize, height: usize) -> Option<Vec<u8>> {
     crate::svg_animation::encode(svg, width, height)
 }
@@ -962,15 +963,22 @@ struct Picture {
     wide: usize,
 }
 
-/// What a drawing holds besides shapes, if any: its filters and images; the SVG files image
-/// elements hold, by element; and the drawings waiting to be read once the file's own is (see
-/// `Reading::read_later`).
+/// What a drawing holds besides shapes, if any: its filters and images, and the drawings
+/// waiting to be read once the file's own is (see `Reading::read_later`).
 #[derive(Default)]
 struct More {
     filters: Vec<Filter>,
     pictures: Vec<Picture>,
-    files: HashMap<usize, String>,
     later: Vec<Later>,
+}
+
+/// What an image element holds, as read (see `Reading::picture_of`): a kept picture (which), an
+/// SVG file's text to read once the file's own is, or nothing to show.
+#[derive(Clone)]
+enum Pictured {
+    Picture(u32),
+    Drawing(Rc<str>),
+    Nothing,
 }
 
 /// A drawing read once the file's own is (see `Reading::read_later`): an element a `feImage`
@@ -997,7 +1005,7 @@ struct Later {
 /// What a waiting drawing is: an element of the file, or another file's text.
 enum Brought {
     Element(usize),
-    File(String),
+    File(Rc<str>),
 }
 
 /// How many drawings deep images and `feImage` may bring drawings: a file holding itself goes no
@@ -1040,8 +1048,8 @@ struct Reading<'a> {
     outlined: HashMap<usize, u32>,
     /// Gradients read, by element; none for one with no stops.
     gradients_read: HashMap<usize, Option<Gradient>>,
-    /// Images read, by element: which kept one; none for one unreadable.
-    pictured: HashMap<usize, Option<u32>>,
+    /// Images read, by element.
+    pictured: HashMap<usize, Pictured>,
     /// System fonts letters were found in, each with the face and letter it was found for (0:
     /// the face's own font): which font file.
     fonts: Vec<(Face, char, Option<u32>)>,
@@ -1086,8 +1094,42 @@ struct Piece {
     around: usize,
     places: [Vec<f32>; 4],
     letters: usize,
-    path: Option<(Path, f32)>,
+    path: Option<(Track, f32)>,
     outline: Path,
+}
+
+/// A text path laid flat: its segments, each with how far along the path it starts, and the
+/// path's length. A glyph is placed by a search, not a walk of the whole path.
+#[derive(Default)]
+struct Track {
+    segments: Vec<(Point, Point, f32)>,
+    length: f32,
+}
+
+impl Track {
+    /// A path's segments, its curves flattened to within a 16,384th of its size.
+    fn of(path: &Path) -> Track {
+        let Rect { w, h, .. } = path.bounds();
+        let mut track = Track::default();
+        path.flatten(1.0, pt(0.0, 0.0), (w.max(h) / 256.0).max(1e-6), |a, b| {
+            let long = (b.x - a.x).hypot(b.y - a.y);
+            if long > 0.0 {
+                track.segments.push((a, b, track.length));
+                track.length += long;
+            }
+        });
+        track
+    }
+
+    /// The point `along` the path, and its direction there (cosine, sine): the start before
+    /// it, the end past it. Nothing for an empty track.
+    fn point_at(&self, along: f32) -> Option<(Point, [f32; 2])> {
+        let at = self.segments.partition_point(|(.., from)| *from <= along).saturating_sub(1);
+        let (a, b, from) = *self.segments.get(at)?;
+        let long = (b.x - a.x).hypot(b.y - a.y);
+        let t = ((along - from) / long).clamp(0.0, 1.0);
+        Some((pt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t), [(b.x - a.x) / long, (b.y - a.y) / long]))
+    }
 }
 
 /// A letter of a text as given: its piece, and its position as the pieces give it (x, y, dx,
@@ -1515,10 +1557,10 @@ fn data(address: &str) -> Option<Vec<u8>> {
 
 /// The text of an SVG file in bytes: UTF-8 (a byte order mark aside) whose first tag opens
 /// after nothing but whitespace. Nothing for other bytes.
-fn svg_text(bytes: &[u8]) -> Option<String> {
+fn svg_text(bytes: &[u8]) -> Option<Rc<str>> {
     let text = std::str::from_utf8(bytes).ok()?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    text.trim_start().starts_with('<').then(|| text.to_string())
+    text.trim_start().starts_with('<').then(|| Rc::from(text))
 }
 
 /// A canvas pixel unpremultiplied, as a picture keeps it.
@@ -1917,6 +1959,8 @@ impl<'a> Reading<'a> {
         let path = self.kept_path(merged);
         let shape = Shape { path, table: SAME, fill, even_odd: false, line: Ink::None, pen, boxed, crisp: false };
         self.parsed.items.splice(at..at + run, [Item::Shape(shape)]);
+        // Drawings waiting to go in after the run go in that much earlier.
+        self.parsed.more().later.iter_mut().filter(|later| later.at > at).for_each(|later| later.at -= run - 1);
     }
 
     /// Keeps a shape the walk reached, styled by `style`, or begins what it needs first: a
@@ -2043,14 +2087,14 @@ impl<'a> Reading<'a> {
     fn image_block(&mut self, image: Imaged, filter: &Filter, walk: &Walk) {
         self.begin(&walk.style);
         let style = Style { table: filter.table, share: walk.style.share, ..Style::default() };
-        let Imaged::Element(element, units) = image else {
-            if let (Imaged::Href(at, place), Some(picture)) = (image, PICTURES.get()) {
-                picture(self, at, &style, Some(place));
+        match (image, PICTURES.get()) {
+            (Imaged::Element(element, units), _) => {
+                let (at, depth, table) = (self.parsed.items.len(), self.depth + 1, both(&filter.table, &units));
+                self.wait(Later { at, brought: Brought::Element(element), table, share: style.share, place: [None; 4], aspect: Aspect::read(""), solid: 1.0, boxed: None, depth });
             }
-            return;
-        };
-        let (at, depth, table) = (self.parsed.items.len(), self.depth + 1, both(&filter.table, &units));
-        self.wait(Later { at, brought: Brought::Element(element), table, share: style.share, place: [None; 4], aspect: Aspect::read(""), solid: 1.0, boxed: None, depth });
+            (Imaged::Href(at, place), Some(picture)) => picture(self, at, &style, Some(place)),
+            (Imaged::Href(..), None) => {}
+        }
     }
 
     /// A filter element applied to what a walk drew, whose bounding box is `square` (the
@@ -2462,12 +2506,13 @@ impl<'a> Reading<'a> {
             return;
         }
         if !self.pictured.contains_key(&at) {
-            let read = self.picture_of(at);
+            let read = self.picture_of(at).unwrap_or(Pictured::Nothing);
             self.pictured.insert(at, read);
         }
-        match self.pictured.get(&at).copied().flatten() {
-            Some(kept) => self.keep_picture(at, kept, style, place),
-            None => self.drawing_later(at, style, place),
+        match self.pictured.get(&at).cloned() {
+            Some(Pictured::Picture(kept)) => self.keep_picture(at, kept, style, place),
+            Some(Pictured::Drawing(text)) => self.drawing_later(at, text, style, place),
+            _ => {}
         }
     }
 
@@ -2505,11 +2550,10 @@ impl<'a> Reading<'a> {
         [length_of("x", across), length_of("y", down), length_of("width", across), length_of("height", down)]
     }
 
-    /// Reads and keeps an image's picture: which kept one. Nothing if it holds none readable;
-    /// an SVG file is kept as text (`More::files`) to read later. The bytes come from a `data:`
-    /// URL, else from the app's loader (see `enable_images_from`); reading counts a step per
-    /// 64 bytes before and per 64 pixels after.
-    fn picture_of(&mut self, at: usize) -> Option<u32> {
+    /// Reads an image: a picture is kept, an SVG file's text kept to read later. Nothing if it
+    /// holds none readable. The bytes come from a `data:` URL, else from the app's loader (see
+    /// `enable_images_from`); reading counts a step per 64 bytes before and per 64 pixels after.
+    fn picture_of(&mut self, at: usize) -> Option<Pictured> {
         let href = self.file.attribute(at, "href").or_else(|| self.file.attribute(at, "xlink:href"))?;
         let loaded = || LOADER.get().filter(|_| !href.trim_start().starts_with("data:")).and_then(|load| load(href.trim()));
         let bytes = data(href).or_else(loaded)?;
@@ -2518,21 +2562,19 @@ impl<'a> Reading<'a> {
             return None;
         }
         if let Some(text) = svg_text(&bytes) {
-            self.parsed.more().files.insert(at, text);
-            return None;
+            return Some(Pictured::Drawing(text));
         }
         let (wide, pixels) = crate::ui::read_picture(&bytes)?;
         self.steps += pixels.len() / 64;
         let pixels = pixels.into_iter().map(premultiplied).collect();
         let pictures = &mut self.parsed.more().pictures;
         pictures.push(Picture { pixels, wide });
-        Some(pictures.len() as u32 - 1)
+        Some(Pictured::Picture(pictures.len() as u32 - 1))
     }
 
-    /// Waits to read the SVG file image element `at` holds, if any (see `picture`), as deep as
-    /// drawings may be brought.
-    fn drawing_later(&mut self, at: usize, style: &Style, place: Option<[f32; 4]>) {
-        let Some(text) = self.parsed.more().files.get(&at).cloned() else { return };
+    /// Waits to read the SVG file image element `at` holds (see `picture`), as deep as drawings
+    /// may be brought.
+    fn drawing_later(&mut self, at: usize, text: Rc<str>, style: &Style, place: Option<[f32; 4]>) {
         let aspect = Aspect::read(self.file.attribute(at, "preserveAspectRatio").unwrap_or(""));
         let solid = style.faded * style.opacity;
         let later = Later {
@@ -2783,17 +2825,19 @@ impl<'a> Reading<'a> {
         Piece { at, style, around, places, letters: 0, path, outline: Path::new() }
     }
 
-    /// A `<textPath>`'s path in the text's units, as its `path` says, else the shape it
-    /// references (with that shape's own transform); and where along it the text starts
-    /// (`startOffset`, a length or a share of the path's). An empty path for one naming no
-    /// shape: its letters then show nowhere.
-    fn text_path(&mut self, at: usize) -> (Path, f32) {
+    /// A `<textPath>`'s path in the text's units, laid flat: as its `path` says, else the shape
+    /// it references (with that shape's own transform); and where along it the text starts
+    /// (`startOffset`, a length or a share of the path's). An empty track for one naming no
+    /// shape: its letters then show nowhere. (Laying it flat costs a step per segment.)
+    fn text_path(&mut self, at: usize) -> (Track, f32) {
         let path = match self.file.attribute(at, "path") {
             Some(d) => Path::svg(d),
             None => self.shape_path(at).unwrap_or_default(),
         };
-        let from = self.file.attribute(at, "startOffset").and_then(|text| length(text, path.length())).unwrap_or(0.0);
-        (path, from)
+        let track = Track::of(&path);
+        self.steps += track.segments.len();
+        let from = self.file.attribute(at, "startOffset").and_then(|text| length(text, track.length)).unwrap_or(0.0);
+        (track, from)
     }
 
     /// The outline of the shape an element references, with that shape's own transform.
@@ -2838,24 +2882,27 @@ impl<'a> Reading<'a> {
         };
         let line = self.line(letters, pieces, start);
         let back = (line.pen.x - line.apart - start.x) * pieces[first.piece].style.anchor;
-        let Some((path, from)) = path.and_then(|path| pieces[path].path.clone()) else {
+        let Some((track, from)) = path.and_then(|path| pieces[path].path.as_ref()) else {
             for Set { piece, mut outline, .. } in line.set {
                 outline.transform(Transform([1.0, 0.0, 0.0, 1.0, -back, 0.0]));
                 pieces[piece].outline.add(&outline);
             }
             return line.pen;
         };
-        let long = path.length();
+        // Each glyph turned to the path's direction where its middle falls; one falling off
+        // either end is left out.
+        let mut placed = Vec::with_capacity(line.set.len());
         for Set { piece, mut outline, middle } in line.set {
-            // Each glyph turned to the path's direction where its middle falls; one falling off
-            // either end is left out.
             let along = from + middle - back;
-            let Some((p, degrees)) = path.point_at(along).filter(|_| (0.0..=long).contains(&along) && long > 0.0) else { continue };
-            let (sin, cos) = degrees.to_radians().sin_cos();
+            let Some((p, [cos, sin])) = track.point_at(along).filter(|_| (0.0..=track.length).contains(&along)) else { continue };
             outline.transform(Transform([cos, sin, -sin, cos, p.x - cos * middle, p.y - sin * middle]));
+            placed.push((piece, outline));
+        }
+        let end = track.point_at(from + line.pen.x - line.apart - back).map_or(pen, |(p, _)| p);
+        for (piece, outline) in placed {
             pieces[piece].outline.add(&outline);
         }
-        path.point_at(from + line.pen.x - line.apart - back).map_or(pen, |(p, _)| p)
+        end
     }
 
     /// Sets a chunk's letters along a line from `start`, each in its piece's font, kerned by
@@ -4915,6 +4962,40 @@ mod tests {
             20,
         );
         assert!((6..34).all(|x| masked[x] == RED), "{masked:x?}");
+    }
+
+    /// An SVG file as a `data:` URL, its view 4 units square.
+    fn svg_url(inside: &str) -> String {
+        let file = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4">{inside}</svg>"#);
+        format!("data:image/svg+xml,{}", file.replace('%', "%25").replace('"', "%22").replace('<', "%3C").replace('>', "%3E").replace('#', "%23"))
+    }
+
+    #[test]
+    fn a_drawing_brought_into_a_mask_whose_fills_merge_stays_in_the_mask() {
+        enable_images();
+        enable_seamless_clips();
+        // Two fills that become one, then an image whose drawing is read after the walk.
+        let white = svg_url(r#"<rect width="4" height="4" fill="white"/>"#);
+        let text = format!(
+            r#"<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="40" height="40"><rect width="10" height="40" fill="white"/><rect x="10" width="10" height="40" fill="white"/><image x="20" width="20" height="40" preserveAspectRatio="none" href="{white}"/></mask><rect width="40" height="40" fill="red" mask="url(#m)"/>"#
+        );
+        let row = row_of(&text, 20);
+        assert!(row.iter().all(|pixel| *pixel == RED), "{row:x?}");
+    }
+
+    #[test]
+    fn an_image_read_again_is_its_own_file_whatever_other_files_hold() {
+        enable_filters();
+        enable_images();
+        // The image (element 2) holds a red file whose own element 2 is an image of a blue one;
+        // a filter draws the group holding the image again, after that file was read.
+        let blue = svg_url(r#"<rect width="4" height="4" fill="blue"/>"#);
+        let red = svg_url(&format!(r#"<rect width="4" height="4" fill="red"/><image width="0" height="0" href="{blue}"/>"#));
+        let text = format!(
+            r##"<g id="g"><image width="20" height="40" preserveAspectRatio="none" href="{red}"/></g><filter id="e" filterUnits="userSpaceOnUse" x="0" y="0" width="40" height="40"><feImage href="#g"/></filter><rect width="40" height="40" filter="url(#e)"/>"##
+        );
+        let row = row_of(&text, 20);
+        assert!((0..20).all(|x| row[x] == RED), "{row:x?}");
     }
 
     #[test]

@@ -423,7 +423,7 @@ struct Taken {
 /// lie on top of it, and are dropped. Outside the region, or with no primitives, nothing is
 /// left.
 pub(crate) fn apply(filter: &Filter, blocks: &mut Vec<Block>) {
-    // (The images are blocks like the element's. One the reader left short, never.)
+    // (The reader begins a block for each image, so all are there; the element's stays.)
     let mut images = Vec::with_capacity(filter.images);
     while images.len() < filter.images && blocks.len() > 1 {
         images.extend(blocks.pop());

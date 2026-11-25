@@ -13,6 +13,7 @@
 //! `points`, path data with the same commands, `viewBox`, transforms) are interpolated number by
 //! number, colours channel by channel; other values change halfway, as a discrete step does.
 use crate::svg::{File, color, number};
+use std::collections::HashMap;
 
 /// The properties the reader takes from `style` as well as from attributes (see
 /// `Reading::take_property`): an animated one is written into `style`.
@@ -66,9 +67,9 @@ const FRAMES: f32 = 30.0;
 /// The most pixels all frames of an encoded animation may come to: past it, fewer frames.
 const PIXELS: usize = 1 << 26;
 
-/// The longest cycle of an animation that runs for ever: one whose parts meet only later is cut
-/// there.
-const CYCLE: f32 = 60.0;
+/// The longest span encoded as frames, in seconds: an animation that ends later, or runs for ever
+/// with parts that meet only later, is cut there. (It bounds how often a file is drawn.)
+const LONGEST: f32 = 60.0;
 
 /// How an animation goes from value to value.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -115,10 +116,18 @@ pub(crate) struct Timeline<'a> {
 }
 
 impl<'a> Timeline<'a> {
-    /// Reads a file's animations. (None where it has none.)
+    /// Reads a file's animations.
     pub(crate) fn read(text: &'a str) -> Timeline<'a> {
         let file = File::read(text);
-        let animations = (0..file.elements.len()).filter_map(|at| animation(&file, at)).collect();
+        // Each element's parent, by a list of the elements open around it.
+        let (mut animations, mut open): (Vec<Animation>, Vec<usize>) = (Vec::new(), Vec::new());
+        for at in 0..file.elements.len() {
+            while open.last().is_some_and(|parent| file.elements[*parent].end <= at) {
+                open.pop();
+            }
+            animations.extend(animation(&file, at, open.last().copied()));
+            open.push(at);
+        }
         Timeline { file, animations }
     }
 
@@ -127,39 +136,43 @@ impl<'a> Timeline<'a> {
         // Each animated attribute's value, by element: animations replace or add to the value
         // under them, in order.
         let mut values: Vec<(usize, &str, String)> = Vec::new();
+        // Where each element's attribute is in `values`.
+        let mut slots: HashMap<(usize, &str), usize> = HashMap::new();
         for animation in &self.animations {
             let Some(value) = animation.at(seconds) else { continue };
-            let under = values.iter().rposition(|(at, name, _)| (*at, *name) == (animation.target, animation.name));
-            let value = match (animation.additive, under) {
-                (true, Some(under)) => added(&values[under].2, &value, animation.name),
-                (true, None) => added(&base(&self.file, animation.target, animation.name), &value, animation.name),
-                (false, _) => value,
+            let (target, name) = (animation.target, animation.name);
+            let Some(&under) = slots.get(&(target, name)) else {
+                let value = if animation.additive { added(&base(&self.file, target, name), &value, name) } else { value };
+                slots.insert((target, name), values.len());
+                values.push((target, name, value));
+                continue;
             };
-            match under {
-                Some(under) => values[under].2 = value,
-                None => values.push((animation.target, animation.name, value)),
+            if animation.additive {
+                values[under].2 = added(&values[under].2, &value, name);
+            } else {
+                values[under].2 = value;
             }
         }
+        values.sort_by_key(|(at, ..)| *at);
         written(&self.file, &values)
     }
 
-    /// The span worth drawing as frames: where it starts and how long it is (seconds), and how
-    /// often it plays (0 for ever). An animation that runs for ever is one cycle of all that
-    /// repeats, from when all of them have begun and the rest have ended. Nothing without
-    /// animations.
+    /// The span worth drawing as frames: where it starts and how long it is (seconds, at most
+    /// `LONGEST`), and how often it plays (0 for ever). An animation that runs for ever is one
+    /// cycle of all that repeats, from when all of them have begun and the rest have ended.
+    /// Nothing without animations.
     pub(crate) fn span(&self) -> Option<(f32, f32, u32)> {
         let timings: Vec<Timing> = self.animations.iter().map(|animation| animation.timing).filter(|timing| timing.begin.is_finite()).collect();
-        let repeating: Vec<&Timing> = timings.iter().filter(|timing| timing.active.is_infinite() && timing.simple.is_some()).collect();
+        let (repeating, ending): (Vec<Timing>, Vec<Timing>) = timings.iter().partition(|timing| timing.active.is_infinite() && timing.simple.is_some());
         // Where each that ends (or stands still once begun) is done.
-        let done = |timing: &&Timing| timing.begin + if timing.active.is_finite() { timing.active } else { 0.0 };
-        let last = timings.iter().filter(|timing| !(timing.active.is_infinite() && timing.simple.is_some())).map(|timing| done(&timing)).fold(0.0f32, f32::max);
+        let last = ending.iter().map(|timing| timing.begin + if timing.active.is_finite() { timing.active } else { 0.0 }).fold(0.0f32, f32::max);
         if repeating.is_empty() {
-            return (!timings.is_empty()).then_some((0.0, last, 1));
+            return (!timings.is_empty()).then_some((0.0, last.min(LONGEST), 1));
         }
         let start = repeating.iter().map(|timing| timing.begin).fold(last, f32::max);
         // The cycles' least common multiple, in milliseconds.
         let cycle = repeating.iter().filter_map(|timing| timing.simple).map(|simple| (simple * 1000.0).round().max(1.0) as u64).fold(1, |all, one| (all / gcd(all, one)).saturating_mul(one));
-        Some((start, (cycle as f32 / 1000.0).min(CYCLE), 0))
+        Some((start, (cycle as f32 / 1000.0).min(LONGEST), 0))
     }
 }
 
@@ -199,7 +212,9 @@ impl Animation<'_> {
         }
         let times = self.key_times();
         let step = times.windows(2).position(|pair| share < pair[1]).unwrap_or(count - 2);
-        let local = ((share - times[step]) / (times[step + 1] - times[step])).clamp(0.0, 1.0);
+        // (A step of no time, as at key times "0;1;1", is at its end.)
+        let gap = times[step + 1] - times[step];
+        let local = if gap > 0.0 { ((share - times[step]) / gap).clamp(0.0, 1.0) } else { 1.0 };
         let local = match self.splines.get(step).filter(|_| self.mode == Mode::Spline) {
             Some(spline) => eased(spline, local),
             None => local,
@@ -229,15 +244,15 @@ impl Animation<'_> {
 }
 
 /// The animation element `at` is, if it is one: its target (the element it references, else
-/// its parent), attribute, values and timing. Nothing for another element, or one with no
+/// its `parent`), attribute, values and timing. Nothing for another element, or one with no
 /// attribute or values to animate.
-fn animation<'a>(file: &File<'a>, at: usize) -> Option<Animation<'a>> {
+fn animation<'a>(file: &File<'a>, at: usize, parent: Option<usize>) -> Option<Animation<'a>> {
     let kind = file.elements[at].name;
     if !matches!(kind, "animate" | "set" | "animateTransform" | "animateColor") {
         return None;
     }
     let attr = |name: &str| file.attribute(at, name).map(str::trim);
-    let target = file.linked(at).or_else(|| (0..at).rev().find(|parent| file.elements[*parent].end > at))?;
+    let target = file.linked(at).or(parent)?;
     let turn = (kind == "animateTransform").then(|| attr("type").unwrap_or("translate"));
     let name = attr("attributeName").or(turn.map(|_| "transform"))?;
     let mut values = values(file, (at, target, name), kind == "set")?;
@@ -353,14 +368,20 @@ fn clock(text: &str) -> Option<f32> {
     Some(count * times)
 }
 
+/// The number `text` starts with, and the rest, where it starts with one (a sign at most before
+/// its digits).
+fn number_here(text: &str) -> Option<(f32, &str)> {
+    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
+    digits.starts_with(|c: char| c.is_ascii_digit() || c == '.').then(|| number(text)).flatten()
+}
+
 /// A value's numbers, and the rest of it with whitespace and commas left out: two values of one
-/// kind have the same rest. (For `#rgb` colours, none.)
+/// kind have the same rest. (Colours are taken apart by `channels`.)
 fn parts(text: &str) -> (Vec<f32>, String) {
     let (mut numbers, mut rest, mut at) = (Vec::new(), String::new(), 0);
     while at < text.len() {
         let here = &text[at..];
-        let starts = here.starts_with(|c: char| c.is_ascii_digit() || c == '.') || (here.starts_with(['-', '+']) && here[1..].starts_with(|c: char| c.is_ascii_digit() || c == '.'));
-        if let Some((number, after)) = number(here).filter(|_| starts) {
+        if let Some((number, after)) = number_here(here) {
             numbers.push(number);
             at = text.len() - after.len();
             continue;
@@ -379,8 +400,7 @@ fn with_numbers(text: &str, numbers: &[f32]) -> String {
     let (mut written, mut at, mut next) = (String::with_capacity(text.len()), 0, numbers.iter());
     while at < text.len() {
         let here = &text[at..];
-        let starts = here.starts_with(|c: char| c.is_ascii_digit() || c == '.') || (here.starts_with(['-', '+']) && here[1..].starts_with(|c: char| c.is_ascii_digit() || c == '.'));
-        if let Some((_, after)) = number(here).filter(|_| starts) {
+        if let Some((_, after)) = number_here(here) {
             // (A number running into the last, as "1-2", gets a space before it.)
             if written.ends_with(|c: char| c.is_ascii_digit() || c == '.') {
                 written.push(' ');
@@ -485,19 +505,17 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
 /// Attributes by name, with values.
 type Values<'a> = Vec<(&'a str, String)>;
 
-/// A file's text with attributes set to values (each by element and name): the properties at
-/// the end of their element's `style`, where they win over style rules and attributes; any
-/// other attribute in place, or added after its element's name.
+/// A file's text with attributes set to values (each by element and name, in element order):
+/// the properties at the end of their element's `style`, where they win over style rules and
+/// attributes; any other attribute in place, or added after its element's name.
 fn written(file: &File, values: &[(usize, &str, String)]) -> String {
     // Each change: where in the text, how many bytes it replaces, and with what. (Quotes in a
     // value would end it: they go.)
     let mut changes: Vec<(usize, usize, String)> = Vec::new();
-    let mut elements: Vec<usize> = values.iter().map(|(at, ..)| *at).collect();
-    elements.sort_unstable();
-    elements.dedup();
-    for at in elements {
+    for element in values.chunk_by(|a, b| a.0 == b.0) {
+        let at = element[0].0;
         let named_end = file.place_of(file.elements[at].name)[1] as usize;
-        let mine = values.iter().filter(|(of, ..)| *of == at).map(|(_, name, value)| (*name, value.replace(['"', '\''], "")));
+        let mine = element.iter().map(|(_, name, value)| (*name, value.replace(['"', '\''], "")));
         let (properties, attributes): (Values, Values) = mine.partition(|(name, _)| PROPERTIES.contains(name));
         let declared: String = properties.iter().map(|(name, value)| format!(";{name}:{value}")).collect();
         match file.attribute(at, "style") {
@@ -511,14 +529,15 @@ fn written(file: &File, values: &[(usize, &str, String)]) -> String {
             changes.push((from as usize, (to - from) as usize, change));
         }
     }
-    // From the end, so that places further on stay right. (Additions at one place may go in
-    // any order.)
-    changes.sort_by_key(|(place, ..)| std::cmp::Reverse(*place));
-    let mut text = file.text.to_string();
+    // In one pass from the start. (Additions at one place may go in any order.)
+    changes.sort_by_key(|(place, ..)| *place);
+    let (mut text, mut done) = (String::with_capacity(file.text.len() + changes.iter().map(|(.., with)| with.len()).sum::<usize>()), 0);
     for (place, long, with) in changes {
-        text.replace_range(place..place + long, &with);
+        text += file.text.get(done..place).unwrap_or("");
+        text += &with;
+        done = done.max(place + long);
     }
-    text
+    text + file.text.get(done..).unwrap_or("")
 }
 
 /// The SMIL animation of an SVG file as an animated PNG, `width` by `height` pixels (see
@@ -592,6 +611,19 @@ mod tests {
         // A spline easing in: slower at first.
         let eased = x(r#"calcMode="spline" keySplines="0.5 0 1 1;0 0 1 1""#, 0.25);
         assert!(eased < 5.0 && eased > 0.0, "{eased}");
+    }
+
+    #[test]
+    fn a_key_time_repeated_at_the_end_holds_the_last_value() {
+        let file = r#"<svg><rect x="0"><animate attributeName="x" values="0;10;30" keyTimes="0;1;1" dur="1s" fill="freeze"/></rect></svg>"#;
+        let frame = Timeline::read(file).frame(2.0);
+        assert_eq!(File::read(&frame).attribute(1, "x"), Some("30"));
+    }
+
+    #[test]
+    fn a_long_animation_is_encoded_for_a_minute_at_most() {
+        let file = r#"<svg><rect><animate attributeName="x" values="0;1" dur="100000s"/></rect></svg>"#;
+        assert_eq!(Timeline::read(file).span(), Some((0.0, LONGEST, 1)));
     }
 
     #[test]
