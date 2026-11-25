@@ -28,7 +28,7 @@
 //! While no screen reader listens, nothing is built. While one does, a run that changes no
 //! input keeps the nodes, and one that only moves boxes (scrolling) moves them.
 use crate::event::{Key, Mods};
-use crate::geom::{Point, Rect, rect};
+use crate::geom::{Rect, rect};
 use crate::id::{Id, fold, hash};
 use crate::layout::{Align, Content, NONE, Tree};
 use crate::spell::Spelling;
@@ -353,7 +353,6 @@ impl AccessNode {
     }
     /// Each line's first character: as wrapped where its text is laid out, else after each
     /// line break.
-    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
     pub(crate) fn line_starts(&self) -> Vec<u32> {
         if let Some(letters) = &self.letters {
             return letters.lines.clone();
@@ -362,20 +361,19 @@ impl AccessNode {
         std::iter::once(0).chain(breaks).collect()
     }
     /// The line (from 0) character `letter` is on. (The text's end is on the last.)
-    #[cfg(target_os = "macos")]
+    #[cfg(target_vendor = "apple")]
     pub(crate) fn line_of(&self, letter: u32) -> usize {
         self.line_starts().partition_point(|start| *start <= letter).saturating_sub(1)
     }
     /// Line `line`'s characters: from its first up to the next line's (its break included).
     /// None past the last.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_vendor = "apple", target_os = "android", test))]
     pub(crate) fn line_range(&self, line: usize) -> Option<[u32; 2]> {
         let (starts, count) = (self.line_starts(), self.text().chars().count() as u32);
         Some([*starts.get(line)?, starts.get(line + 1).copied().unwrap_or(count)])
     }
     /// Where character `letter` lies in the window: as drawn, else its whole box. Past the end,
     /// an empty place after the last.
-    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
     pub(crate) fn letter_rect(&self, letter: u32) -> Rect {
         let Some(letters) = &self.letters else { return self.rect };
         let corner = |place: Rect| place.moved(self.text_rect.x, self.text_rect.y);
@@ -386,7 +384,7 @@ impl AccessNode {
     }
     /// Where characters `from` to `to` show: a rectangle per line, cut to what shows. (An empty
     /// range: the cursor's place there, one unit wide.)
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "ios"))]
     pub(crate) fn range_rects(&self, [from, to]: [u32; 2]) -> Vec<Rect> {
         if from >= to {
             let at = self.letter_rect(from);
@@ -416,8 +414,8 @@ impl AccessNode {
     }
     /// The character at a point in the window, or nearest it on the line there. None where
     /// its letters are not known, or for a point outside it.
-    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
-    pub(crate) fn letter_at(&self, point: Point) -> Option<u32> {
+    #[cfg(any(not(target_os = "android"), test))]
+    pub(crate) fn letter_at(&self, point: crate::geom::Point) -> Option<u32> {
         let letters = self.letters.as_ref().filter(|_| self.rect.contains(point))?;
         let near = |place: &Rect| {
             let place = place.moved(self.text_rect.x, self.text_rect.y);
@@ -426,6 +424,29 @@ impl AccessNode {
         };
         let nearest = letters.places.iter().enumerate().min_by(|(_, one), (_, other)| near(one).partial_cmp(&near(other)).unwrap_or(std::cmp::Ordering::Equal));
         nearest.map(|(at, _)| at as u32)
+    }
+    /// The text unit a reader moves to from character `from`: the next one forward, or the one
+    /// before; from its first character to one past its last. None at the end.
+    #[cfg(any(target_os = "android", test))]
+    pub(crate) fn unit_range(&self, from: u32, unit: TextUnit, forward: bool) -> Option<[u32; 2]> {
+        let letters: Vec<char> = self.text().chars().collect();
+        let (count, from) = (letters.len() as u32, from.min(letters.len() as u32));
+        match unit {
+            TextUnit::Character if forward => (from < count).then_some([from, from + 1]),
+            TextUnit::Character => from.checked_sub(1).map(|before| [before, from]),
+            TextUnit::Word => next_run(&letters, from, forward, char::is_alphanumeric),
+            TextUnit::Paragraph => next_run(&letters, from, forward, |letter| letter != '\n'),
+            TextUnit::Line => self.line_range_from(from, count, forward),
+        }
+    }
+    /// The line a reader moves to from character `from`: forward, the line starting there or
+    /// the next; back, the line before it starts. (As wrapped.)
+    #[cfg(any(target_os = "android", test))]
+    fn line_range_from(&self, from: u32, count: u32, forward: bool) -> Option<[u32; 2]> {
+        let starts = self.line_starts();
+        let line = if forward { starts.iter().position(|start| *start >= from)? } else { starts.partition_point(|start| *start < from).checked_sub(1)? };
+        let range = self.line_range(line)?;
+        (range[0] < count).then_some(range)
     }
 
     /// For the column heading the rows are sorted by: the direction, in the word both Windows
@@ -478,7 +499,6 @@ pub(crate) fn view(nodes: &[AccessNode], at: usize) -> Rect {
 }
 
 /// A cell's table, by node index.
-#[cfg(any(windows, all(unix, not(any(target_os = "ios", target_os = "android")))))]
 pub(crate) fn table_of(nodes: &[AccessNode], cell: usize) -> Option<usize> {
     let row = nodes.get(cell).filter(|cell| cell.role == Role::Cell)?.parent?;
     nodes.get(row)?.parent.filter(|table| nodes.get(*table).is_some_and(|table| table.role == Role::Table))
@@ -486,16 +506,78 @@ pub(crate) fn table_of(nodes: &[AccessNode], cell: usize) -> Option<usize> {
 
 /// A table's cell at a row and column from 0: its node index. None for a row out of view,
 /// whose cells have no nodes.
-#[cfg(any(windows, all(unix, not(any(target_os = "ios", target_os = "android")))))]
+#[cfg(not(target_os = "android"))]
 pub(crate) fn cell_at(nodes: &[AccessNode], table: usize, place: [u32; 2]) -> Option<usize> {
     (table + 1..nodes.len()).find(|at| nodes[*at].grid == Some(place) && table_of(nodes, *at) == Some(table))
 }
 
+/// The rows of a long table told now (those in view): from the first to one past the last,
+/// from 0 among all its rows.
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+pub(crate) fn rows_in_view(nodes: &[AccessNode], table: usize) -> Option<[u32; 2]> {
+    let rows = nodes[table + 1..].iter().filter(|node| node.parent == Some(table) && node.role == Role::TableRow);
+    let indices = rows.filter_map(|row| row.position.map(|[nth, _]| nth - 1));
+    indices.fold(None, |span, row| Some(span.map_or([row, row + 1], |[from, to]: [u32; 2]| [from.min(row), to.max(row + 1)])))
+}
+
+/// The row a reader paging through a long table has shown: as many rows past those in view as
+/// show, or before them. None at the end it pages toward.
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+pub(crate) fn row_a_page_away(nodes: &[AccessNode], table: usize, forward: bool) -> Option<u32> {
+    let ([from, to], [rows, _]) = (rows_in_view(nodes, table)?, nodes[table].grid?);
+    let shown = to - from;
+    if forward { (to < rows).then(|| (to - 1 + shown).min(rows - 1)) } else { (from > 0).then(|| from.saturating_sub(shown)) }
+}
+
 /// The heading over a table column, from 0.
-#[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
 pub(crate) fn heading_at(nodes: &[AccessNode], table: usize, column: u32) -> Option<usize> {
     let heads = |at: &usize| nodes[*at].role == Role::ColumnHeader && nodes[*at].parent == Some(table);
     (table + 1..nodes.len()).find(|at| heads(at) && nodes[*at].position.is_some_and(|of| of[0] == column + 1))
+}
+
+/// A unit a reader moves through text by: a character, word, line (as wrapped) or paragraph.
+#[cfg(any(target_os = "android", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextUnit {
+    Character,
+    Word,
+    Line,
+    Paragraph,
+}
+
+/// The next run of letters that are `inside` from `from` (or the one before it): from its
+/// first letter to one past its last.
+#[cfg(any(target_os = "android", test))]
+fn next_run(letters: &[char], from: u32, forward: bool, inside: fn(char) -> bool) -> Option<[u32; 2]> {
+    let within = |at: u32| letters.get(at as usize).is_some_and(|letter| inside(*letter));
+    let count = letters.len() as u32;
+    if forward {
+        let start = (from..count).find(|at| within(*at))?;
+        let end = (start..count).find(|at| !within(*at)).unwrap_or(count);
+        return Some([start, end]);
+    }
+    let end = (0..from).rev().find(|at| within(*at))? + 1;
+    let start = (0..end).rev().find(|at| !within(*at)).map_or(0, |out| out + 1);
+    Some([start, end])
+}
+
+/// UTF-16 units in the first `letters` characters of a text: where a character starts as
+/// Apple's and Android's text count.
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+pub(crate) fn units_before(text: &str, letters: u32) -> u32 {
+    text.chars().take(letters as usize).map(|letter| letter.len_utf16() as u32).sum()
+}
+
+/// The character holding UTF-16 unit `unit` of a text, from its start (the text's end, past it).
+#[cfg(any(target_os = "ios", target_os = "android", test))]
+pub(crate) fn letter_at_unit(text: &str, unit: u32) -> u32 {
+    let mut seen = 0;
+    let before = text.chars().take_while(|letter| {
+        seen += letter.len_utf16() as u32;
+        seen <= unit
+    });
+    before.count() as u32
 }
 
 /// The text in a box and its descendants, piece after piece, up to `most` pieces.
@@ -690,7 +772,6 @@ fn walk_access_boxes(visible: &mut VisibleBoxes, boxes: &mut Vec<AccessBox>, tre
 
 /// Brings a copy of the nodes the current ones were moved from (`Ui::access_moved_from`) up
 /// to date: where each lies, what of it shows, and the letters of what shows.
-#[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
 pub(crate) fn follow_move(kept: &mut [AccessNode], now: &[AccessNode]) {
     for (kept, now) in kept.iter_mut().zip(now) {
         (kept.rect, kept.seen, kept.visible, kept.text_box, kept.text_rect) = (now.rect, now.seen, now.visible, now.text_box, now.text_rect);
@@ -1092,7 +1173,6 @@ impl Ui {
     }
     /// Which nodes these were moved from, where only where they lie and what of them shows (and
     /// so which have letters) changed since: their version. A copy of those follows with `follow_move`.
-    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
     pub(crate) fn access_moved_from(&self) -> Option<u64> {
         self.visible_boxes.access_cache.first().map(|cache| cache.moved_from).filter(|from| *from != 0)
     }
@@ -1503,7 +1583,6 @@ impl Ui {
     /// Has a table's row (from 0) show for a screen reader that asked: scrolled into view where
     /// it is a long list's. With `pick`, it is then selected alone (`Some(true)`), as a click
     /// does, or added to the selection or taken out of it, as a Control+click does.
-    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code, reason = "UIAccessibility and Android read no lines, letters or long tables yet"))]
     pub(crate) fn row_for_reader(&mut self, table: Id, row: u32, pick: Option<bool>) {
         let at = self.access_nodes.iter().position(|node| node.id == table && node.role == Role::Table);
         let told = at.and_then(|at| self.access_nodes[at + 1..].iter().find(|node| node.parent == Some(at) && node.role == Role::TableRow && node.position.is_some_and(|of| of[0] == row + 1)));
@@ -1797,6 +1876,32 @@ mod tests {
         assert!(trial.find(Role::Cell, "Row 902").visible && trial.ui.table_reading.asked.is_none());
     }
 
+    #[test]
+    fn a_reader_pages_through_a_long_table_a_screenful_at_a_time() {
+        let mut trial = Trial::new(Ledger::default(), ledger);
+        trial.run();
+        let table = |trial: &Trial<Ledger>| trial.access_nodes().iter().position(|node| node.role == Role::Table).unwrap();
+        let view = |trial: &Trial<Ledger>| rows_in_view(trial.access_nodes(), table(trial)).unwrap();
+        let [first, end] = view(&trial);
+        assert_eq!((first, row_a_page_away(trial.access_nodes(), table(&trial), false)), (0, None), "nothing before the first row");
+        let shown = end - first;
+        let id = trial.access_nodes()[table(&trial)].id;
+        // A page on: the rows after those that showed.
+        let row = row_a_page_away(trial.access_nodes(), table(&trial), true).unwrap();
+        trial.ui.row_for_reader(id, row, None);
+        trial.run();
+        assert_eq!(view(&trial), [end, end + shown]);
+        // And back again.
+        let row = row_a_page_away(trial.access_nodes(), table(&trial), false).unwrap();
+        trial.ui.row_for_reader(id, row, None);
+        trial.run();
+        assert_eq!(view(&trial), [first, end]);
+        // At the last row, there is no page after.
+        trial.ui.row_for_reader(id, 999, None);
+        trial.run();
+        assert_eq!((view(&trial)[1], row_a_page_away(trial.access_nodes(), table(&trial), true)), (1000, None));
+    }
+
     /// What a scroll costs a page of 10,000 rows (40,000 boxes): without a screen reader; with
     /// one; with one and a provider copying what changed; with one and a provider following a
     /// move. The quickest of many, in µs, each way in turn. (Run in release: `cargo test
@@ -1848,5 +1953,48 @@ mod tests {
     fn counts_of<A>(trial: &Trial<A>) -> (u32, u32) {
         let cache = trial.ui.visible_boxes.access_cache.first().expect("a cache kept while a screen reader listens");
         (cache.built, cache.moved)
+    }
+
+    #[test]
+    fn a_reader_moves_through_text_by_character_word_line_and_paragraph() {
+        let mut trial = Trial::new(String::new(), |_: &mut String, ui: &mut Ui| {
+            ui.column().w(crate::Length::Px(200.0)).open();
+            ui.paragraph(LONG);
+            ui.close();
+        });
+        trial.run();
+        let text = trial.find(Role::Text, LONG).clone();
+        assert_eq!(text.unit_range(0, super::TextUnit::Character, true), Some([0, 1]));
+        assert_eq!(text.unit_range(0, super::TextUnit::Character, false), None);
+        assert_eq!(text.unit_range(3, super::TextUnit::Word, true), Some([4, 7]), "past the space, \"two\"");
+        assert_eq!(text.unit_range(5, super::TextUnit::Word, false), Some([4, 5]), "back from inside a word, to its start");
+        assert_eq!(text.unit_range(4, super::TextUnit::Word, false), Some([0, 3]));
+        let count = LONG.chars().count() as u32;
+        assert_eq!(text.unit_range(count, super::TextUnit::Word, true), None);
+        // Lines as wrapped: forward from a line's start is that line; back is the one before.
+        let lines = text.line_starts();
+        assert!(lines.len() > 2, "{lines:?}");
+        assert_eq!(text.unit_range(0, super::TextUnit::Line, true), Some([0, lines[1]]));
+        assert_eq!(text.unit_range(1, super::TextUnit::Line, true), Some([lines[1], lines[2]]));
+        assert_eq!(text.unit_range(lines[1], super::TextUnit::Line, false), Some([0, lines[1]]));
+        assert_eq!(text.unit_range(0, super::TextUnit::Line, false), None);
+        let last = *lines.last().unwrap();
+        assert_eq!(text.unit_range(last, super::TextUnit::Line, true), Some([last, count]));
+        assert_eq!(text.unit_range(count, super::TextUnit::Line, true), None);
+        // Paragraphs split at line breaks.
+        let mut two = text.clone();
+        (two.name, two.letters) = ("one\n\ntwo three".into(), None);
+        assert_eq!(two.unit_range(0, super::TextUnit::Paragraph, true), Some([0, 3]));
+        assert_eq!(two.unit_range(3, super::TextUnit::Paragraph, true), Some([5, 14]));
+        assert_eq!(two.unit_range(14, super::TextUnit::Paragraph, false), Some([5, 14]));
+        assert_eq!(two.unit_range(5, super::TextUnit::Paragraph, false), Some([0, 3]));
+        assert_eq!(two.line_starts(), [0, 4, 5]);
+    }
+
+    #[test]
+    fn utf16_units_and_letters_convert_both_ways() {
+        let text = "a\u{1f600}b\u{e9}";
+        assert_eq!([0, 1, 2, 3, 4].map(|letters| units_before(text, letters)), [0, 1, 3, 4, 5]);
+        assert_eq!([0, 1, 2, 3, 4, 5, 9].map(|unit| letter_at_unit(text, unit)), [0, 1, 1, 2, 3, 4, 4]);
     }
 }

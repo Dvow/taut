@@ -519,8 +519,8 @@ mod tests {
         settle(2);
         let nodes = dump(&out, "tabbed");
         let now = told_focus(&nodes);
-        if now == focused {
-            wrong.push(format!("Tab left focus on {now:?}"));
+        if now == focused || now.is_none() {
+            wrong.push(format!("Tab moved focus from {focused:?} to {now:?}, not to another part that shows"));
         }
         // A tap on a tab shows its page.
         let parts = find(&nodes, "android.widget.Button", "Parts").cloned().expect("the tab Parts");

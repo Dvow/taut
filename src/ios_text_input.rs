@@ -211,14 +211,14 @@ extern "C" fn yes_please(_: Obj, _: Sel) -> Bool {
     1
 }
 
-extern "C" fn ignored(_: Obj, _: Sel, _: Obj) {}
+pub(crate) extern "C" fn ignored(_: Obj, _: Sel, _: Obj) {}
 
-extern "C" fn ignored_direction(_: Obj, _: Sel, _: isize, _: Obj) {}
+pub(crate) extern "C" fn ignored_direction(_: Obj, _: Sel, _: isize, _: Obj) {}
 
 // ---- positions and ranges ----
 
 /// A position at an offset (autoreleased).
-fn position(offset: usize) -> Obj {
+pub(crate) fn position(offset: usize) -> Obj {
     // SAFETY: an object of the position class with room for an offset beside it, written once.
     unsafe {
         let made = class_createInstance(position_class(), size_of::<usize>());
@@ -228,7 +228,7 @@ fn position(offset: usize) -> Obj {
 }
 
 /// A range between two offsets (autoreleased).
-fn range(from: usize, to: usize) -> Obj {
+pub(crate) fn range(from: usize, to: usize) -> Obj {
     // SAFETY: an object of the range class with room for two offsets beside it, written once.
     unsafe {
         let made = class_createInstance(range_class(), 2 * size_of::<usize>());
@@ -244,13 +244,13 @@ fn is_of(object: Obj, made: Obj) -> bool {
 }
 
 /// A position's offset: 0 for one not the library's.
-fn offset_of(position: Obj) -> usize {
+pub(crate) fn offset_of(position: Obj) -> usize {
     // SAFETY: a position of the library's class has its offset beside it.
     if is_of(position, position_class()) { unsafe { object_getIndexedIvars(position).cast::<usize>().read() } } else { 0 }
 }
 
 /// A range's two offsets: none for one not the library's.
-fn ends_of(range: Obj) -> [usize; 2] {
+pub(crate) fn ends_of(range: Obj) -> [usize; 2] {
     // SAFETY: a range of the library's class has its offsets beside it.
     if is_of(range, range_class()) { unsafe { object_getIndexedIvars(range).cast::<[usize; 2]>().read() } } else { [0, 0] }
 }
@@ -273,7 +273,7 @@ fn length() -> usize {
     COMPOSING.with_borrow(|composing| composing.marked.len())
 }
 
-extern "C" fn beginning(_: Obj, _: Sel) -> Obj {
+pub(crate) extern "C" fn beginning(_: Obj, _: Sel) -> Obj {
     position(0)
 }
 
@@ -281,41 +281,54 @@ extern "C" fn end(_: Obj, _: Sel) -> Obj {
     position(length())
 }
 
-extern "C" fn range_between(_: Obj, _: Sel, from: Obj, to: Obj) -> Obj {
+pub(crate) extern "C" fn range_between(_: Obj, _: Sel, from: Obj, to: Obj) -> Obj {
     range(offset_of(from), offset_of(to))
 }
 
-/// A position `by` units from another; nil outside the document.
-extern "C" fn moved(_: Obj, _: Sel, from: Obj, by: isize) -> Obj {
+/// A position `by` units from another in a document `length` units long; nil outside it.
+pub(crate) fn moved_within(from: Obj, by: isize, length: usize) -> Obj {
     let to = offset_of(from) as isize + by;
-    if (0..=length() as isize).contains(&to) { position(to as usize) } else { std::ptr::null_mut() }
+    if (0..=length as isize).contains(&to) { position(to as usize) } else { std::ptr::null_mut() }
 }
 
 /// The same toward a side: left, up and backward count down.
-extern "C" fn moved_toward(input: Obj, name: Sel, from: Obj, direction: isize, by: isize) -> Obj {
+pub(crate) fn moved_toward_within(from: Obj, direction: isize, by: isize, length: usize) -> Obj {
     let back = matches!(direction, LEFT | UP | BACKWARD);
-    moved(input, name, from, if back { -by } else { by })
+    moved_within(from, if back { -by } else { by }, length)
 }
 
-extern "C" fn compared(_: Obj, _: Sel, one: Obj, other: Obj) -> isize {
+/// The character next to a position toward a side, in a document `length` units long.
+pub(crate) fn extended_within(from: Obj, direction: isize, length: usize) -> Obj {
+    let at = offset_of(from);
+    if matches!(direction, LEFT | UP) { range(at.saturating_sub(1), at) } else { range(at, (at + 1).min(length)) }
+}
+
+extern "C" fn moved(_: Obj, _: Sel, from: Obj, by: isize) -> Obj {
+    moved_within(from, by, length())
+}
+
+extern "C" fn moved_toward(_: Obj, _: Sel, from: Obj, direction: isize, by: isize) -> Obj {
+    moved_toward_within(from, direction, by, length())
+}
+
+pub(crate) extern "C" fn compared(_: Obj, _: Sel, one: Obj, other: Obj) -> isize {
     offset_of(one).cmp(&offset_of(other)) as isize
 }
 
-extern "C" fn offset_between(_: Obj, _: Sel, from: Obj, to: Obj) -> isize {
+pub(crate) extern "C" fn offset_between(_: Obj, _: Sel, from: Obj, to: Obj) -> isize {
     offset_of(to) as isize - offset_of(from) as isize
 }
 
-extern "C" fn farthest(_: Obj, _: Sel, within: Obj, direction: isize) -> Obj {
+pub(crate) extern "C" fn farthest(_: Obj, _: Sel, within: Obj, direction: isize) -> Obj {
     let [from, to] = ends_of(within);
     position(if matches!(direction, LEFT | UP) { from } else { to })
 }
 
 extern "C" fn extended(_: Obj, _: Sel, from: Obj, direction: isize) -> Obj {
-    let at = offset_of(from);
-    if matches!(direction, LEFT | UP) { range(at.saturating_sub(1), at) } else { range(at, (at + 1).min(length())) }
+    extended_within(from, direction, length())
 }
 
-extern "C" fn left_to_right(_: Obj, _: Sel, _: Obj, _: isize) -> isize {
+pub(crate) extern "C" fn left_to_right(_: Obj, _: Sel, _: Obj, _: isize) -> isize {
     0
 }
 

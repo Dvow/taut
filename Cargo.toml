@@ -85,6 +85,11 @@ harness = false
 name = "ios"
 harness = false
 
+# Screen readers on an Android emulator, from Linux: the same file is the app checking itself.
+[[test]]
+name = "android"
+harness = false
+
 # Videos on a Mac: AVFoundation plays only while the main thread's run loop turns.
 [[test]]
 name = "video_macos"

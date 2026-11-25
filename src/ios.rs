@@ -1107,7 +1107,7 @@ impl Host {
 }
 
 /// One turn of the window, unless one is running (then the queued one comes after it).
-fn turn() {
+pub(crate) fn turn() {
     repeat_keys();
     let _pool = Pool::new();
     HOST.with(|host| {

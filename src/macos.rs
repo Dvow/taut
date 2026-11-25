@@ -710,8 +710,9 @@ trait Turns {
 }
 
 /// While the person drags a window's edge, the loop's turn runs from inside AppKit's own: the
-/// window is redrawn at each size. Not while a turn is running already.
-fn live_turn() {
+/// window is redrawn at each size. So does a screen reader's question that needs the window
+/// run first (a long table's row out of view). Not while a turn is running already.
+pub(crate) fn live_turn() {
     let Some(host) = LIVE.get() else { return };
     if TURNING.get() {
         return;

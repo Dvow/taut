@@ -87,6 +87,8 @@ const GET_STATIC_FIELD_ID: usize = 144;
 const GET_STATIC_INT_FIELD: usize = 150;
 const NEW_STRING: usize = 163;
 const GET_STRING_LENGTH: usize = 164;
+const NEW_OBJECT_ARRAY: usize = 172;
+const SET_OBJECT_ARRAY_ELEMENT: usize = 174;
 const NEW_INT_ARRAY: usize = 179;
 const GET_INT_ARRAY_REGION: usize = 203;
 const REGISTER_NATIVES: usize = 215;
@@ -349,6 +351,27 @@ pub(crate) fn new_ints(env: Env, long: i32) -> Obj {
     if env.threw() { std::ptr::null_mut() } else { made }
 }
 
+/// A new Java array of `long` nulls, for objects of the class named.
+pub(crate) fn new_objects(env: Env, class: &CStr, long: i32) -> Obj {
+    let class = env.class(class);
+    if class.is_null() {
+        return class;
+    }
+    // SAFETY: a plain call of the interface, with a live class.
+    let made = unsafe { env.slot::<extern "C" fn(Env, i32, Obj, Obj) -> Obj>(NEW_OBJECT_ARRAY)(env, long, class, std::ptr::null_mut()) };
+    env.drop_local(class);
+    if env.threw() { std::ptr::null_mut() } else { made }
+}
+
+/// Puts an object into a Java array of objects, at `at`.
+pub(crate) fn set_object(env: Env, array: Obj, at: i32, item: Obj) {
+    if !array.is_null() {
+        // SAFETY: the array is alive and of the item's class; Java throws (cleared) past its end.
+        unsafe { env.slot::<extern "C" fn(Env, Obj, i32, Obj)>(SET_OBJECT_ARRAY_ELEMENT)(env, array, at, item) };
+        env.threw();
+    }
+}
+
 /// Reads the first numbers of a Java `int[]` into `into`.
 pub(crate) fn ints(env: Env, of: Obj, into: &mut [i32]) {
     if !of.is_null() {
@@ -380,6 +403,7 @@ pub(crate) const CLASSES: [Class; 3] = [
             ("createAccessibilityNodeInfo", "(I)Landroid/view/accessibility/AccessibilityNodeInfo;"),
             ("performAction", "(IILandroid/os/Bundle;)Z"),
             ("findFocus", "(I)Landroid/view/accessibility/AccessibilityNodeInfo;"),
+            ("addExtraDataToAccessibilityNodeInfo", "(ILandroid/view/accessibility/AccessibilityNodeInfo;Ljava/lang/String;Landroid/os/Bundle;)V"),
         ],
     },
     Class {

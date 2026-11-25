@@ -661,16 +661,26 @@ extern "C" fn headings(element: Obj, _: Sel) -> Obj {
     with_node(element, heads).unwrap_or(std::ptr::null_mut())
 }
 
-/// A table's cell. One of a long table's row not told (it tells rows in view) is none, and the
-/// row is scrolled into view, its cell there once the window has run.
+/// A table's cell. One of a long table's row not told (it tells rows in view) is scrolled into
+/// view at once, the window running, and its cell given. (Asked while the window runs, the
+/// row comes with the next turn, and the cell is none until then.)
 extern "C" fn cell_for(element: Obj, _: Sel, column: isize, row: isize) -> Obj {
     let place = [row.max(0) as u32, column.max(0) as u32];
-    let found = with_node(element, |told, at| (crate::accessibility::cell_at(&told.nodes, at, place).map(|cell| told.elements[cell]), told.nodes[at].grid.unwrap_or_default()));
-    let Some((cell, [rows, columns])) = found else { return std::ptr::null_mut() };
-    if cell.is_none() && place[0] < rows && place[1] < columns {
-        act(element, move |ui, table| ui.row_for_reader(table, place[0], None));
+    if let Some(cell) = cell_element(element, place) {
+        return cell;
     }
-    cell.unwrap_or(std::ptr::null_mut())
+    let inside = with_node(element, |told, at| told.nodes[at].grid.is_some_and(|[rows, columns]| place[0] < rows && place[1] < columns));
+    if inside != Some(true) {
+        return std::ptr::null_mut();
+    }
+    act(element, move |ui, table| ui.row_for_reader(table, place[0], None));
+    crate::macos::live_turn();
+    cell_element(element, place).unwrap_or(std::ptr::null_mut())
+}
+
+/// The element of a table's cell at a row and column, if told.
+fn cell_element(table: Obj, place: [u32; 2]) -> Option<Obj> {
+    with_node(table, |told, at| crate::accessibility::cell_at(&told.nodes, at, place).map(|cell| told.elements[cell])).flatten()
 }
 
 /// A table row's index among all rows; a tree item's among its tree's items told.

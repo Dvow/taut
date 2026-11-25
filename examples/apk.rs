@@ -15,6 +15,8 @@
 //! 3. `aapt add` puts the library in it, as `lib/<abi>/lib<name>.so`.
 //! 4. `zipalign`, then `apksigner` with `target/apk/debug.keystore` (made once by `keytool`).
 //!
+//! Another file than an example's is packed the same, named by its stem: `apk -- tests/android.rs`.
+//!
 //! The APK is `target/apk/<name>.apk` (or `--out`). Targets: `aarch64-linux-android`
 //! (phones), `x86_64-linux-android` (the emulator); the default is the first.
 use std::path::{Path, PathBuf};
@@ -27,6 +29,8 @@ const TARGET_SDK: u32 = 35;
 /// What was asked on the command line.
 struct Asked {
     example: String,
+    /// The file to pack, where not `examples/<example>.rs`.
+    source: Option<PathBuf>,
     target: String,
     features: Vec<String>,
     out: Option<PathBuf>,
@@ -62,13 +66,17 @@ fn main() {
 
 /// The command line: the example's name, `--target`, `--features`, `--out`.
 fn asked(args: Vec<String>) -> Asked {
-    let mut asked = Asked { example: String::new(), target: "aarch64-linux-android".into(), features: Vec::new(), out: None };
+    let mut asked = Asked { example: String::new(), source: None, target: "aarch64-linux-android".into(), features: Vec::new(), out: None };
     let mut words = args.into_iter();
     while let Some(word) = words.next() {
         match word.as_str() {
             "--target" => asked.target = words.next().unwrap_or_default(),
             "--features" => asked.features.extend(words.next().unwrap_or_default().split(',').filter(|one| !one.is_empty()).map(String::from)),
             "--out" => asked.out = words.next().map(PathBuf::from),
+            _ if word.ends_with(".rs") => {
+                asked.example = Path::new(&word).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+                asked.source = Some(PathBuf::from(word));
+            }
             _ => asked.example = word,
         }
     }
@@ -85,7 +93,7 @@ fn build(asked: &Asked, root: &Path, work: &Path, ndk: &Path) -> PathBuf {
         .iter()
         .map(|name| format!("{name} = [\"taut/{name}\"]\n"))
         .collect();
-    let source = root.join("examples").join(format!("{}.rs", asked.example));
+    let source = asked.source.as_ref().map_or_else(|| root.join("examples").join(format!("{}.rs", asked.example)), |source| root.join(source));
     let crate_file = format!(
         "[package]\nname = \"{name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\ncrate-type = [\"cdylib\"]\npath = {source:?}\n\n[dependencies]\ntaut = {{ path = {root:?} }}\n\n[features]\n{features}\n[profile.release]\nstrip = true\n\n[workspace]\n",
         name = asked.example,

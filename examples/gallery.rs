@@ -116,6 +116,8 @@ pub struct App {
     presses: u32,
     /// Which page the tabs show.
     page: usize,
+    /// The width the bar under the menus needs on one line (0 until measured).
+    top_bar_width: f32,
     /// How much room a row of the list gets: its number among the choices.
     room: usize,
     filter: String,
@@ -332,7 +334,11 @@ fn shortcuts(app: &mut App, ui: &mut Ui) {
 /// shows its keys; what does not fit goes into the menu at the end of the tool bar.
 fn top_bar(app: &mut App, ui: &mut Ui) {
     let t = ui.theme;
-    ui.row().pad((10.0, 8.0)).gap(8.0).fill(t.panel).open();
+    // (In a window narrower than its parts need, as on a phone, it wraps: every part shows,
+    // where Tab reaches it.)
+    let wraps = ui.size().w < app.top_bar_width;
+    let bar = if wraps { ui.wrapping_row() } else { ui.row() };
+    bar.pad((10.0, 8.0)).gap(8.0).fill(t.panel).open();
     ui.label(&format!("{}: 60 items, {} presses counted", app.name, app.presses));
     tool_bar(app, ui);
     ui.el().w(Length::Px(170.0)).open();
@@ -345,6 +351,9 @@ fn top_bar(app: &mut App, ui: &mut Ui) {
     }
     app.presses += ui.primary_button("Count one").clicked as u32;
     let more = ui.icon_button(MORE, "More");
+    if !wraps {
+        app.top_bar_width = more.rect.right() + 10.0;
+    }
     if more.clicked {
         ui.open_popup(more.id, more.rect);
     }
@@ -1250,6 +1259,7 @@ pub fn app() -> App {
         name: "Gallery".into(),
         presses: 0,
         page: 0,
+        top_bar_width: 0.0,
         room: 0,
         filter: String::new(),
         notes: String::new(),

@@ -6,10 +6,15 @@
 //! the screen and the actions it takes. A reader's actions come back as the interface's own
 //! (`press_for_reader` and the like). A reader exploring by touch sends hover events, which
 //! the window hears (`hover`); the node under the finger is announced.
-use crate::accessibility::{AccessNode, Role};
+//!
+//! Text is read by character, word, line (as wrapped) and paragraph, and each letter's place on
+//! the screen is given (`EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY`). A table is a collection:
+//! its rows count all rows, told or not, and a reader scrolling it, or asking for a row out of
+//! view, has that row shown.
+use crate::accessibility::{AccessNode, Role, TextUnit, letter_at_unit, units_before};
 use crate::android::{Heard, activity, heard, kick, view};
 use crate::android_jni::{Env, Native, Obj, Value};
-use crate::geom::Point;
+use crate::geom::{Point, Rect};
 use crate::id::Id;
 use crate::ui::Ui;
 use std::cell::RefCell;
@@ -23,20 +28,29 @@ const SELECT: i32 = 4;
 const CLICK: i32 = 16;
 const ACCESSIBILITY_FOCUS: i32 = 64;
 const CLEAR_ACCESSIBILITY_FOCUS: i32 = 128;
+const NEXT_AT_GRANULARITY: i32 = 256;
+const PREVIOUS_AT_GRANULARITY: i32 = 512;
 const SCROLL_FORWARD: i32 = 0x1000;
 const SCROLL_BACKWARD: i32 = 0x2000;
 const SET_SELECTION: i32 = 0x2_0000;
 const EXPAND: i32 = 0x4_0000;
 const COLLAPSE: i32 = 0x8_0000;
 const SET_TEXT: i32 = 0x20_0000;
-/// `android.R.id.accessibilityActionShowOnScreen` and `…SetProgress`.
+/// `android.R.id.accessibilityActionShowOnScreen`, `…ScrollToPosition` and `…SetProgress`.
 const SHOW_ON_SCREEN: i32 = 0x0102_0036;
+const SCROLL_TO_POSITION: i32 = 0x0102_0037;
 const SET_PROGRESS: i32 = 0x0102_003d;
+/// The units text is read by (`MOVEMENT_GRANULARITY_*`): characters, words, lines, paragraphs.
+const GRANULARITIES: [(i32, TextUnit); 4] = [(1, TextUnit::Character), (2, TextUnit::Word), (4, TextUnit::Line), (8, TextUnit::Paragraph)];
+/// What a reader asks for each letter's place by, and the most letters it may ask for.
+const LETTER_PLACES: &str = "android.view.accessibility.extra.DATA_TEXT_CHARACTER_LOCATION_KEY";
+const MOST_LETTERS: i32 = 20_000;
 /// Event types (`AccessibilityEvent.TYPE_*`).
 const VIEW_FOCUSED: i32 = 8;
 const HOVER_ENTER: i32 = 128;
 const HOVER_EXIT: i32 = 256;
 const CONTENT_CHANGED: i32 = 2048;
+const TEXT_TRAVERSED: i32 = 0x2_0000;
 const ACCESSIBILITY_FOCUSED: i32 = 0x8000;
 const ACCESSIBILITY_FOCUS_CLEARED: i32 = 0x1_0000;
 /// Which focus `findFocus` asks for.
@@ -57,6 +71,9 @@ struct Told {
     hovered: Option<i32>,
     /// The node with keyboard focus, as last told.
     focused: Option<i32>,
+    /// Where a reader is in each text it reads that is not a text box's (whose cursor is), by
+    /// character.
+    reading: HashMap<i32, u32>,
     /// The provider object (`taut.Nodes`), made once.
     provider: Obj,
 }
@@ -76,12 +93,13 @@ pub(crate) fn forget() {
 }
 
 /// The provider's native methods.
-pub(crate) fn natives() -> [Native; 3] {
+pub(crate) fn natives() -> [Native; 4] {
     let native = |name: &'static CStr, signature: &'static CStr, function: *const c_void| Native { name: name.as_ptr(), signature: signature.as_ptr(), function };
     [
         native(c"createAccessibilityNodeInfo", c"(I)Landroid/view/accessibility/AccessibilityNodeInfo;", node_info as *const c_void),
         native(c"performAction", c"(IILandroid/os/Bundle;)Z", perform as *const c_void),
         native(c"findFocus", c"(I)Landroid/view/accessibility/AccessibilityNodeInfo;", find_focus as *const c_void),
+        native(c"addExtraDataToAccessibilityNodeInfo", c"(ILandroid/view/accessibility/AccessibilityNodeInfo;Ljava/lang/String;Landroid/os/Bundle;)V", extra_data as *const c_void),
     ]
 }
 
@@ -104,14 +122,20 @@ pub(crate) extern "C" fn provider(env: Env, _: Obj) -> Obj {
 }
 
 /// After a run: the nodes are kept, and readers hear that the window changed, and where focus
-/// went.
+/// went. (Nodes that only moved, as in a scroll, are followed where they went.)
 pub(crate) fn keep(ui: &Ui) {
-    let version = ui.access_version();
+    let (version, moved_from) = (ui.access_version(), ui.access_moved_from());
     let changed = TOLD.with_borrow_mut(|told| {
-        if std::mem::replace(&mut told.version, version) == version {
+        let was = std::mem::replace(&mut told.version, version);
+        if was == version {
             return None;
         }
-        told.nodes = ui.access_nodes().to_vec();
+        let nodes = ui.access_nodes();
+        if moved_from == Some(was) && told.nodes.len() == nodes.len() {
+            crate::accessibility::follow_move(&mut told.nodes, nodes);
+            return Some(None);
+        }
+        told.nodes = nodes.to_vec();
         let Told { nodes, ids, next, .. } = told;
         for node in nodes.iter() {
             ids.entry(node.id).or_insert_with(|| (*next, *next += 1).0);
@@ -129,7 +153,12 @@ pub(crate) fn keep(ui: &Ui) {
 
 /// The virtual view id of a node, and the node.
 fn node_of(told: &Told, id: i32) -> Option<&AccessNode> {
-    told.nodes.iter().find(|node| told.ids.get(&node.id) == Some(&id))
+    index_of(told, id).map(|at| &told.nodes[at])
+}
+
+/// Where a virtual view's node is among the nodes.
+fn index_of(told: &Told, id: i32) -> Option<usize> {
+    told.nodes.iter().position(|node| told.ids.get(&node.id) == Some(&id))
 }
 
 /// The class of the Android widget a role is like: what a reader names it by.
@@ -221,7 +250,7 @@ fn describe(env: Env, info: Obj, view: Obj, id: i32, node: &AccessNode) {
     text(c"setClassName", class_of(node.role));
     let parent = TOLD.with_borrow(|told| node.parent.and_then(|at| told.nodes.get(at)).and_then(|parent| told.ids.get(&parent.id).copied()));
     env.call(info, c"setParent", c"(Landroid/view/View;I)V", &[Value::obj(view), Value::int(parent.unwrap_or(HOST))]);
-    let index = TOLD.with_borrow(|told| told.nodes.iter().position(|one| told.ids.get(&one.id) == Some(&id)));
+    let index = TOLD.with_borrow(|told| index_of(told, id));
     add_children(env, info, view, index);
     let [left, top, right, bottom] = on_screen(env, node);
     let bounds = env.new_named(c"android/graphics/Rect", c"(IIII)V", &[Value::int(left), Value::int(top), Value::int(right), Value::int(bottom)]);
@@ -253,6 +282,135 @@ fn describe(env: Env, info: Obj, view: Obj, id: i32, node: &AccessNode) {
     let reader_focus = TOLD.with_borrow(|told| told.reader_focus);
     set(c"setAccessibilityFocused", reader_focus == Some(id));
     actions(env, info, node, reader_focus == Some(id));
+    if node.reads_text() && !node.text().is_empty() {
+        text_info(env, info, node);
+    }
+    let place = TOLD.with_borrow(|told| index.and_then(|at| place_in_collection(&told.nodes, at)));
+    place.into_iter().for_each(|place| collection_info(env, info, place));
+}
+
+/// What a reader reads text by: the units it moves by (character to paragraph), a text box's
+/// cursor, and each letter's place on request.
+fn text_info(env: Env, info: Obj, node: &AccessNode) {
+    let add = |action: i32| env.call(info, c"addAction", c"(I)V", &[Value::int(action)]);
+    env.call(info, c"setMovementGranularities", c"(I)V", &[Value::int(GRANULARITIES.iter().map(|(bit, _)| bit).sum())]);
+    add(NEXT_AT_GRANULARITY);
+    add(PREVIOUS_AT_GRANULARITY);
+    if let Some([anchor, cursor]) = node.caret {
+        let [anchor, cursor] = [anchor, cursor].map(|letter| units_before(node.text(), letter) as i32);
+        env.call(info, c"setTextSelection", c"(II)V", &[Value::int(anchor), Value::int(cursor)]);
+    }
+    let key = env.string(LETTER_PLACES);
+    let keys = env.call_static(c"java/util/Collections", c"singletonList", c"(Ljava/lang/Object;)Ljava/util/List;", &[Value::obj(key)]).object();
+    env.call(info, c"setAvailableExtraData", c"(Ljava/util/List;)V", &[Value::obj(keys)]);
+}
+
+/// Where a node is in a table or tree, as Android's collections count: the whole (its rows
+/// and columns, whether a tree, whether its rows can be selected, and the rows in view), or one
+/// item.
+/// (A table's headings are its row 0; its rows follow.)
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Collection {
+    Whole { rows: i32, columns: i32, tree: bool, selectable: bool, in_view: Option<[u32; 3]> },
+    Item { row: i32, column: i32, columns: i32, heading: bool, selected: bool },
+}
+
+/// Node `at`'s place in a table or tree, if it is one or in one.
+fn place_in_collection(nodes: &[AccessNode], at: usize) -> Option<Collection> {
+    let node = &nodes[at];
+    let selected = node.on == Some(true);
+    let parent = node.parent.filter(|up| matches!(nodes[*up].role, Role::Table | Role::Tree));
+    match (node.role, parent) {
+        (Role::Table, _) => Some(table_whole(nodes, at)),
+        (Role::Tree, _) => Some(Collection::Whole { rows: tree_items(nodes, at).count() as i32, columns: 1, tree: true, selectable: selectable_rows(nodes, at), in_view: None }),
+        (Role::TableRow, Some(table)) => Some(Collection::Item { row: index_in_set(node) + heading_rows(nodes, table), column: 0, columns: column_count(nodes, table), heading: false, selected }),
+        (Role::ColumnHeader, Some(_)) => Some(Collection::Item { row: 0, column: index_in_set(node), columns: 1, heading: true, selected: false }),
+        (Role::TreeItem, Some(tree)) => Some(Collection::Item { row: tree_items(nodes, tree).take_while(|item| *item < at).count() as i32, column: 0, columns: 1, heading: false, selected }),
+        (Role::Cell, _) => cell_place(nodes, at),
+        _ => None,
+    }
+}
+
+/// A table as a whole: its rows (its headings' first), columns, and the rows in view.
+fn table_whole(nodes: &[AccessNode], table: usize) -> Collection {
+    let rows = nodes[table].grid.map_or(0, |[rows, _]| rows);
+    let in_view = crate::accessibility::rows_in_view(nodes, table).map(|[from, to]| [from, to, rows]);
+    Collection::Whole { rows: rows as i32 + heading_rows(nodes, table), columns: column_count(nodes, table), tree: false, selectable: selectable_rows(nodes, table), in_view }
+}
+
+/// A table cell's place: its row (after the headings) and column, selected with its row.
+fn cell_place(nodes: &[AccessNode], at: usize) -> Option<Collection> {
+    let ([row, column], table) = (nodes[at].grid?, crate::accessibility::table_of(nodes, at)?);
+    let selected = nodes[at].parent.is_some_and(|row| nodes[row].on == Some(true));
+    Some(Collection::Item { row: row as i32 + heading_rows(nodes, table), column: column as i32, columns: 1, heading: false, selected })
+}
+
+/// The nodes directly in node `parent`.
+fn children(nodes: &[AccessNode], parent: usize) -> impl Iterator<Item = usize> + '_ {
+    (parent + 1..nodes.len()).filter(move |child| nodes[*child].parent == Some(parent))
+}
+
+/// A tree's items, by node index.
+fn tree_items(nodes: &[AccessNode], tree: usize) -> impl Iterator<Item = usize> + '_ {
+    children(nodes, tree).filter(|item| nodes[*item].role == Role::TreeItem)
+}
+
+/// The rows a table's headings take: one where it has headings.
+fn heading_rows(nodes: &[AccessNode], table: usize) -> i32 {
+    i32::from(children(nodes, table).any(|child| nodes[child].role == Role::ColumnHeader))
+}
+
+/// Whether a table's rows or a tree's items can be selected.
+fn selectable_rows(nodes: &[AccessNode], parent: usize) -> bool {
+    children(nodes, parent).any(|child| nodes[child].on.is_some() && matches!(nodes[child].role, Role::TableRow | Role::TreeItem))
+}
+
+/// A table's columns (those shown).
+fn column_count(nodes: &[AccessNode], table: usize) -> i32 {
+    nodes[table].grid.map_or(1, |[_, columns]| columns as i32)
+}
+
+/// A node's place in its set, from 0.
+fn index_in_set(node: &AccessNode) -> i32 {
+    node.position.map_or(0, |[nth, _]| nth as i32 - 1)
+}
+
+/// Tells a reader a node's place in its table or tree; a long table scrolls by rows.
+fn collection_info(env: Env, info: Obj, place: Collection) {
+    let item_info = c"android/view/accessibility/AccessibilityNodeInfo$CollectionItemInfo";
+    match place {
+        Collection::Whole { rows, columns, tree, selectable, in_view } => {
+            let mode = Value::int(if selectable { 2 } else { 0 });
+            let args = [Value::int(rows), Value::int(columns), Value::bool(tree), mode];
+            let whole = env
+                .call_static(c"android/view/accessibility/AccessibilityNodeInfo$CollectionInfo", c"obtain", c"(IIZI)Landroid/view/accessibility/AccessibilityNodeInfo$CollectionInfo;", &args)
+                .object();
+            env.call(info, c"setCollectionInfo", c"(Landroid/view/accessibility/AccessibilityNodeInfo$CollectionInfo;)V", &[Value::obj(whole)]);
+            in_view.into_iter().for_each(|in_view| scrolls(env, info, in_view));
+        }
+        Collection::Item { row, column, columns, heading, selected } => {
+            let args = [Value::int(row), Value::int(1), Value::int(column), Value::int(columns), Value::bool(heading), Value::bool(selected)];
+            let item = env.call_static(item_info, c"obtain", c"(IIIIZZ)Landroid/view/accessibility/AccessibilityNodeInfo$CollectionItemInfo;", &args).object();
+            env.call(info, c"setCollectionItemInfo", c"(Landroid/view/accessibility/AccessibilityNodeInfo$CollectionItemInfo;)V", &[Value::obj(item)]);
+        }
+    }
+}
+
+/// A long table's scroll actions: forward while rows lie after those in view (`from` to `to` of
+/// `rows`), back while some lie before, and to any row.
+fn scrolls(env: Env, info: Obj, [from, to, rows]: [u32; 3]) {
+    let add = |action: i32| env.call(info, c"addAction", c"(I)V", &[Value::int(action)]);
+    let (back, on) = (from > 0, to < rows);
+    env.call(info, c"setScrollable", c"(Z)V", &[Value::bool(back || on)]);
+    if back {
+        add(SCROLL_BACKWARD);
+    }
+    if on {
+        add(SCROLL_FORWARD);
+    }
+    let to_row =
+        env.new_named(c"android/view/accessibility/AccessibilityNodeInfo$AccessibilityAction", c"(ILjava/lang/CharSequence;)V", &[Value::int(SCROLL_TO_POSITION), Value::obj(std::ptr::null_mut())]);
+    env.call(info, c"addAction", c"(Landroid/view/accessibility/AccessibilityNodeInfo$AccessibilityAction;)V", &[Value::obj(to_row)]);
 }
 
 /// The actions a node takes, and the states that go with them.
@@ -315,7 +473,13 @@ extern "C" fn perform(env: Env, _: Obj, id: c_int, action: c_int, arguments: Obj
         CLEAR_ACCESSIBILITY_FOCUS => return reader_focus(None),
         CLICK => Box::new(move |ui| ui.press_for_reader(known)),
         FOCUS => Box::new(move |ui| ui.set_focus(known)),
+        SCROLL_FORWARD | SCROLL_BACKWARD if node.role == Role::Table => return page(id, known, action == SCROLL_FORWARD),
         SCROLL_FORWARD | SCROLL_BACKWARD => Box::new(move |ui| ui.step_for_reader(known, action == SCROLL_FORWARD)),
+        SCROLL_TO_POSITION => {
+            let row = env.call(arguments, c"getInt", c"(Ljava/lang/String;)I", &[Value::obj(env.string("android.view.accessibility.action.ARGUMENT_ROW_INT"))]).as_int();
+            return scroll_to_row(id, known, row);
+        }
+        NEXT_AT_GRANULARITY | PREVIOUS_AT_GRANULARITY => return move_by_granularity(env, id, &node, arguments, action == NEXT_AT_GRANULARITY),
         EXPAND | COLLAPSE => Box::new(move |ui| ui.open_for_reader(known, action == EXPAND)),
         SELECT => Box::new(move |ui| ui.pick_for_reader(known)),
         SHOW_ON_SCREEN => Box::new(move |ui| ui.show_for_reader(known)),
@@ -331,17 +495,109 @@ extern "C" fn perform(env: Env, _: Obj, id: c_int, action: c_int, arguments: Obj
         }
         SET_SELECTION => {
             let int = |name: &str| env.call(arguments, c"getInt", c"(Ljava/lang/String;)I", &[Value::obj(env.string(name))]).as_int().max(0) as u32;
-            let range = [int("ACTION_ARGUMENT_SELECTION_START_INT"), int("ACTION_ARGUMENT_SELECTION_END_INT")];
+            let range = [int("ACTION_ARGUMENT_SELECTION_START_INT"), int("ACTION_ARGUMENT_SELECTION_END_INT")].map(|unit| letter_at_unit(node.text(), unit));
             Box::new(move |ui| ui.select_for_reader(known, range))
         }
         _ => return 0,
     };
+    in_next_turn(deed)
+}
+
+/// Has the interface do something for a reader, in its next turn.
+fn in_next_turn(deed: impl FnOnce(&mut Ui) + 'static) -> u8 {
     heard(Heard::Other(Box::new(move |ui| {
         deed(ui);
         true
     })));
     kick();
     1
+}
+
+/// A reader scrolls a long table a page on, or back: the row a page past those in view (or
+/// before them) is shown.
+fn page(id: i32, table: Id, forward: bool) -> u8 {
+    let row = TOLD.with_borrow(|told| crate::accessibility::row_a_page_away(&told.nodes, index_of(told, id)?, forward));
+    row.map_or(0, |row| in_next_turn(move |ui| ui.row_for_reader(table, row, None)))
+}
+
+/// A reader asks for a table's row (counting its headings' row first): it is shown.
+fn scroll_to_row(id: i32, table: Id, asked: i32) -> u8 {
+    let row = TOLD.with_borrow(|told| u32::try_from(asked).ok()?.checked_sub(heading_rows(&told.nodes, index_of(told, id)?) as u32));
+    row.map_or(0, |row| in_next_turn(move |ui| ui.row_for_reader(table, row, None)))
+}
+
+/// A reader moves through a node's text by a unit (`GRANULARITIES`), forward or back: a text
+/// box's cursor moves (selecting, where asked); other text's place (a password box's too) is
+/// kept here. Readers hear the unit passed over.
+fn move_by_granularity(env: Env, id: i32, node: &AccessNode, arguments: Obj, forward: bool) -> u8 {
+    let asked = env.call(arguments, c"getInt", c"(Ljava/lang/String;)I", &[Value::obj(env.string("ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT"))]).as_int();
+    let extend = env.call(arguments, c"getBoolean", c"(Ljava/lang/String;)Z", &[Value::obj(env.string("ACTION_ARGUMENT_EXTEND_SELECTION_BOOLEAN"))]).as_bool();
+    let Some(unit) = GRANULARITIES.iter().find(|(bit, _)| *bit == asked).map(|(_, unit)| *unit) else { return 0 };
+    let typed = node.role == Role::TextBox;
+    let count = node.text().chars().count() as u32;
+    let kept = TOLD.with_borrow(|told| told.reading.get(&id).copied());
+    let from = if typed { node.caret.map_or(0, |[_, cursor]| cursor) } else { kept.unwrap_or(if forward { 0 } else { count }) };
+    let Some([start, end]) = node.unit_range(from, unit, forward) else { return 0 };
+    let to = if forward { end } else { start };
+    if typed {
+        let anchor = if extend { node.caret.map_or(from, |[anchor, _]| anchor) } else { to };
+        let known = node.id;
+        in_next_turn(move |ui| ui.select_for_reader(known, [anchor, to]));
+    } else {
+        TOLD.with_borrow_mut(|told| told.reading.insert(id, to));
+    }
+    traversed(env, id, [start, end].map(|letter| units_before(node.text(), letter) as i32), forward, asked);
+    1
+}
+
+/// Tells readers a reader moved over UTF-16 units `from` to `to` of a node's text, forward or
+/// back, by a granularity.
+fn traversed(env: Env, id: i32, [from, to]: [i32; 2], forward: bool, granularity: i32) {
+    let action = if forward { NEXT_AT_GRANULARITY } else { PREVIOUS_AT_GRANULARITY };
+    send_with(id, TEXT_TRAVERSED, |event| {
+        env.call(event, c"setFromIndex", c"(I)V", &[Value::int(from)]);
+        env.call(event, c"setToIndex", c"(I)V", &[Value::int(to)]);
+        env.call(event, c"setAction", c"(I)V", &[Value::int(action)]);
+        env.call(event, c"setMovementGranularity", c"(I)V", &[Value::int(granularity)]);
+    });
+}
+
+/// A reader asks where a node's letters are (`LETTER_PLACES`): from a UTF-16 unit, so many,
+/// each a rectangle on the screen in pixels, or none for one that does not show.
+extern "C" fn extra_data(env: Env, _: Obj, id: c_int, info: Obj, key: Obj, arguments: Obj) {
+    if env.text(key).as_deref() != Some(LETTER_PLACES) {
+        return;
+    }
+    let Some(node) = TOLD.with_borrow(|told| node_of(told, id).cloned()) else { return };
+    let int = |name: &str| env.call(arguments, c"getInt", c"(Ljava/lang/String;I)I", &[Value::obj(env.string(name)), Value::int(-1)]).as_int();
+    let start = int("android.view.accessibility.extra.DATA_TEXT_CHARACTER_LOCATION_ARG_START_INDEX");
+    let long = int("android.view.accessibility.extra.DATA_TEXT_CHARACTER_LOCATION_ARG_LENGTH").min(MOST_LETTERS);
+    let units = node.text().encode_utf16().count() as i32;
+    if start < 0 || long <= 0 || start >= units {
+        return;
+    }
+    let end = (start + long).min(units);
+    let (view, scale, insets) = view();
+    let origin = window_origin(env, view);
+    let corner = [origin[0] + insets[0], origin[1] + insets[1]].map(|at| at as f32);
+    let places = crate::android_jni::new_objects(env, c"android/graphics/RectF", end - start);
+    for unit in start..end {
+        let place = node.letter_rect(letter_at_unit(node.text(), unit as u32));
+        let shows = !place.grow(0.5).intersect(node.seen).is_empty();
+        let rect = shows.then(|| letter_on_screen(env, place, corner, scale));
+        if let Some(rect) = rect {
+            crate::android_jni::set_object(env, places, unit - start, rect);
+            env.drop_local(rect);
+        }
+    }
+    let extras = env.call(info, c"getExtras", c"()Landroid/os/Bundle;", &[]).object();
+    env.call(extras, c"putParcelableArray", c"(Ljava/lang/String;[Landroid/os/Parcelable;)V", &[Value::obj(key), Value::obj(places)]);
+}
+
+/// A letter's place on the screen, in pixels, from the window's corner there.
+fn letter_on_screen(env: Env, place: Rect, corner: [f32; 2], scale: f32) -> Obj {
+    let edges = [place.x * scale + corner[0], place.y * scale + corner[1], place.right() * scale + corner[0], place.bottom() * scale + corner[1]];
+    env.new_named(c"android/graphics/RectF", c"(FFFF)V", &edges.map(Value::float))
 }
 
 /// The reader's focus moves to a node, or leaves: the reader hears.
@@ -381,6 +637,11 @@ fn node_under(told: &Told, at: Point) -> Option<i32> {
 /// Tells readers something happened to a node (or the host view): an event sent up from the
 /// view as from that virtual view, with its text.
 fn send(id: i32, kind: i32) {
+    send_with(id, kind, |_| {});
+}
+
+/// The same, the event filled in further by `more`.
+fn send_with(id: i32, kind: i32, more: impl FnOnce(Obj)) {
     let Some(env) = crate::android_jni::env() else { return };
     let (view, _, _) = view();
     if view.is_null() {
@@ -401,6 +662,7 @@ fn send(id: i32, kind: i32) {
         let said = node.map(|node| if node.name.is_empty() { node.value } else { node.name }).unwrap_or_default();
         let list = env.call(event, c"getText", c"()Ljava/util/List;", &[]).object();
         env.call(list, c"add", c"(Ljava/lang/Object;)Z", &[Value::obj(env.string(&said))]);
+        more(event);
         let parent = env.call(view, c"getParent", c"()Landroid/view/ViewParent;", &[]).object();
         env.call(parent, c"requestSendAccessibilityEvent", c"(Landroid/view/View;Landroid/view/accessibility/AccessibilityEvent;)Z", &[Value::obj(view), Value::obj(event)]);
     });

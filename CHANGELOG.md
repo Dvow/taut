@@ -11,6 +11,15 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   higher than one in capitals (8 pixels above "Delete" and 10 below in a 28-pixel button at
   100%). `Metrics::lift` takes the height of the line slot instead of whether the line has
   lowercase.
+- **Screen readers on iOS and Android** read text by line as wrapped and by character, word
+  and selection, with each letter's place: iOS through `UIAccessibilityReadingContent` and a
+  `UITextInput` for each text (iOS 18.1 and later), Android through movement granularities and
+  `EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY`. A long table is a data table (iOS) or a collection
+  (Android) of all its rows: a row out of view shows when a reader asks for it or scrolls a page.
+- **macOS:** a long table's cell out of view comes on a reader's first ask.
+- **Gallery:** in a window narrower than its top bar, as on a phone, the bar wraps: every part
+  shows where Tab reaches it.
+- **`examples/apk.rs`** packs any file, not only an example: `apk -- tests/android.rs`.
 
 ## 0.3.0 (2026-11-24)
 

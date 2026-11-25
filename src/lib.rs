@@ -276,6 +276,8 @@ mod truetype_hinting;
 pub mod ui;
 #[cfg(target_os = "ios")]
 mod ui_accessibility;
+#[cfg(target_os = "ios")]
+mod ui_accessibility_text;
 #[cfg(windows)]
 mod uia;
 mod variable_fonts;

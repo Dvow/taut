@@ -333,7 +333,8 @@ jobs:
 
   # Android: built for the emulator and phones, packed as APKs (examples/apk.rs), and the
   # gallery run on an Android 15 emulator (src/android_text.rs): its first page against the
-  # Linux frame, taps, keys, typing, rotation, home and back, and what uiautomator reads.
+  # Linux frame, taps, keys, typing, rotation, home and back, and what uiautomator reads; and
+  # what screen readers read, through the provider and uiautomator (tests/android.rs).
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -362,6 +363,7 @@ jobs:
           cargo run --example apk -- gallery --target x86_64-linux-android --features touch
           cargo run --example apk -- hello --target aarch64-linux-android
           cargo run --example apk -- gallery --target aarch64-linux-android --features touch --out target/apk/gallery-arm64.apk
+          cargo run --example apk -- tests/android.rs --target x86_64-linux-android
           ls -l target/*-linux-android/release/lib*.so target/apk/*.apk
       - name: KVM for the emulator
         run: |
@@ -388,6 +390,9 @@ jobs:
           sleep 10
       - name: The gallery on the emulator
         run: TAUT_ANDROID_APK=$PWD/target/apk/gallery.apk TAUT_PICTURES=$PWD/android cargo test --lib the_gallery_on_an_android_emulator -- --nocapture
+      - name: Screen readers on the emulator
+        if: ${{ !cancelled() }}
+        run: TAUT_ANDROID_APK=$PWD/target/apk/android.apk TAUT_PICTURES=$PWD/android/readers cargo test --test android -- --nocapture
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
@@ -396,6 +401,7 @@ jobs:
             android/*.png
             android/*.xml
             android/logcat.txt
+            android/readers
             emulator.log
 
   docs:

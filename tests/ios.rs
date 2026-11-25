@@ -58,9 +58,40 @@ fn parts(parts: &mut Parts, ui: &mut taut::Ui) {
     ui.close();
 }
 
+/// The page a reader reads: a paragraph that wraps onto several lines, a text box, and a table
+/// of five hundred rows (those in view told).
+#[cfg(target_os = "ios")]
+#[derive(Debug)]
+struct Reading {
+    notes: String,
+    table: taut::Table,
+}
+
+#[cfg(target_os = "ios")]
+const PARAGRAPH: &str = "A paragraph long enough to break onto several lines of a phone's window, which a screen reader reads line by line and letter by letter.";
+
+#[cfg(target_os = "ios")]
+fn reading(page: &mut Reading, ui: &mut taut::Ui) {
+    ui.theme = ui.system_theme();
+    ui.column().pad(16.0).gap(12.0).grow().open();
+    ui.paragraph(PARAGRAPH);
+    ui.text_box(&mut page.notes, "Notes");
+    let columns = [taut::Column::new("Name").px(160.0), taut::Column::new("Size").px(80.0)];
+    ui.table(&mut page.table, &columns);
+    for row in ui.rows(500, 24.0) {
+        ui.selectable_row(row, false);
+        ui.cell(&format!("row {row}"));
+        ui.cell("1 KB");
+        ui.close();
+    }
+    ui.close();
+    ui.close();
+    ui.close();
+}
+
 #[cfg(target_os = "ios")]
 mod phone {
-    use super::{Parts, parts};
+    use super::{PARAGRAPH, Parts, Reading, parts, reading};
     use std::cell::RefCell;
     use std::ffi::{CStr, c_char, c_void};
     use std::io::Write;
@@ -286,7 +317,14 @@ mod phone {
             }
         });
         let window = Window { title: "taut check", ..Default::default() };
-        if mode == "parts" {
+        if mode == "reader" {
+            let state = Rc::new(RefCell::new((Reading { notes: "héllo wörld".into(), table: taut::Table::default() }, ReaderScript::default())));
+            taut::run(window, move |ui| {
+                let (page, script) = &mut *state.borrow_mut();
+                reading(page, ui);
+                script.step(ui);
+            });
+        } else if mode == "parts" {
             let state = Rc::new(RefCell::new((Parts::default(), Script::default())));
             taut::run(window, move |ui| {
                 let (parts_now, script) = &mut *state.borrow_mut();
@@ -539,6 +577,189 @@ mod phone {
             send2::<(), _, _>(scene, c"requestGeometryUpdateWithPreferences:errorHandler:", wanted, std::ptr::null_mut::<c_void>());
         }
     }
+
+    // ---- the reader page, read through the methods UIKit calls of its elements: lines
+    // (UIAccessibilityReadingContent), letters and selection (each element's
+    // accessibilityTextInputResponder, a UITextInput), and the table as a data table ----
+
+    unsafe extern "C" {
+        static _dispatch_main_q: u8;
+        fn dispatch_async_f(queue: *const c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
+    }
+
+    thread_local! {
+        /// What the reader was given asking for row 400's first cell between turns: its label
+        /// and the row it says it is in.
+        static ROW_ASKED: RefCell<Option<(String, Range)>> = const { RefCell::new(None) };
+    }
+
+    /// The table: the top element that is a data table (container type 1).
+    fn table() -> Obj {
+        let elements: Obj = unsafe { send0(view(), c"accessibilityElements") };
+        items(elements).into_iter().find(|element| unsafe { send0::<isize>(*element, c"accessibilityContainerType") } == 1).unwrap_or(std::ptr::null_mut())
+    }
+    /// An element's lines, as the reader reads them one by one.
+    fn lines_of(element: Obj) -> Vec<String> {
+        let line = |nth: isize| unsafe { send1::<Obj, _>(element, c"accessibilityContentForLineNumber:", nth) };
+        (0..).map(line).take_while(|line| !line.is_null()).map(text_of).collect()
+    }
+    /// The middle of a rectangle.
+    fn middle(rect: Rect) -> Point {
+        Point { x: rect.origin.x + rect.size.x / 2.0, y: rect.origin.y + rect.size.y / 2.0 }
+    }
+    /// A range of a reader's text, from one UTF-16 unit to another.
+    fn units(reader: Obj, from: isize, to: isize) -> Obj {
+        unsafe {
+            let start: Obj = send0(reader, c"beginningOfDocument");
+            let [from, to]: [Obj; 2] = [from, to].map(|unit| send2(reader, c"positionFromPosition:offset:", start, unit));
+            send2(reader, c"textRangeFromPosition:toPosition:", from, to)
+        }
+    }
+    /// Where a range of a reader's text starts and ends, in UTF-16 units.
+    fn ends(reader: Obj, range: Obj) -> [isize; 2] {
+        unsafe {
+            let start: Obj = send0(reader, c"beginningOfDocument");
+            [c"start", c"end"].map(|end| send2(reader, c"offsetFromPosition:toPosition:", start, send0::<Obj>(range, end)))
+        }
+    }
+    /// A cell of the table, through the data table's own method.
+    fn cell(row: usize, column: usize) -> Obj {
+        unsafe { send2(table(), c"accessibilityDataTableCellElementForRow:column:", row, column) }
+    }
+    /// Asked between the window's turns, as VoiceOver asks: row 400's first cell.
+    extern "C" fn ask_for_row_400(_: *mut c_void) {
+        let cell = cell(400, 0);
+        let said = unsafe { (text_of(send0(cell, c"accessibilityLabel")), send0::<Range>(cell, c"accessibilityRowRange")) };
+        ROW_ASKED.with_borrow_mut(|asked| *asked = Some(said));
+    }
+
+    /// The reader page, driven a step at a time as the parts page is.
+    #[derive(Default)]
+    struct ReaderScript {
+        step: usize,
+        since: Option<Instant>,
+        acted: bool,
+    }
+
+    impl ReaderScript {
+        fn step(&mut self, ui: &mut Ui) {
+            let since = *self.since.get_or_insert_with(Instant::now);
+            let Some(name) = READER_STEPS.get(self.step).copied().filter(|name| !name.is_empty()) else { return };
+            if since.elapsed() < Duration::from_millis(500) {
+                return;
+            }
+            if !self.acted {
+                self.acted = true;
+                return Self::act(name);
+            }
+            match Self::check(name, ui) {
+                Ok(()) => note("reader.txt", &format!("ok {name}")),
+                Err(_) if since.elapsed() < Duration::from_secs(8) => return,
+                Err(why) => note("reader.txt", &format!("FAILED {name}: {why}")),
+            }
+            (self.step, self.since, self.acted) = (self.step + 1, Some(Instant::now()), false);
+            if READER_STEPS[self.step].is_empty() {
+                note("reader.txt", "done");
+            }
+        }
+
+        fn act(name: &str) {
+            match name {
+                "reader asked" => _ = elements(),
+                "a reader selects in the text box" => {
+                    let reader: Obj = unsafe { send0(element("Notes"), c"accessibilityTextInputResponder") };
+                    unsafe { send1::<(), _>(reader, c"setSelectedTextRange:", units(reader, 1, 4)) };
+                }
+                "a row out of view comes at once" => unsafe { dispatch_async_f((&raw const _dispatch_main_q).cast(), std::ptr::null_mut(), ask_for_row_400) },
+                "a three-finger swipe pages the table on" => _ = unsafe { send1::<u8, _>(table(), c"accessibilityScroll:", 3isize) },
+                _ => {}
+            }
+        }
+
+        /// Whether the step's outcome shows: if not, what does.
+        fn check(name: &str, ui: &Ui) -> Result<(), String> {
+            let truth = |ok: bool, said: String| if ok { Ok(()) } else { Err(said) };
+            match name {
+                "reader asked" => truth(!elements().is_empty() && !ui.visible_access_nodes().is_empty(), "no elements".into()),
+                "lines as wrapped" => Self::lines(),
+                "letters where drawn" => Self::letters(),
+                "a reader selects in the text box" => {
+                    let caret = ui.access_nodes().iter().find(|node| node.role == Role::TextBox).and_then(|node| node.caret);
+                    let reader: Obj = unsafe { send0(element("Notes"), c"accessibilityTextInputResponder") };
+                    let told = ends(reader, unsafe { send0(reader, c"selectedTextRange") });
+                    truth(caret == Some([1, 4]) && told == [1, 4], format!("the box's selection {caret:?}, the reader's {told:?}"))
+                }
+                "a data table" => Self::data_table(),
+                "a row out of view comes at once" => {
+                    let asked = ROW_ASKED.with_borrow(Clone::clone);
+                    truth(matches!(&asked, Some((label, Range { location: 400, length: 1 })) if label == "row 400"), format!("given {asked:?}"))
+                }
+                "a three-finger swipe pages the table on" => {
+                    let first = ui.visible_access_nodes().iter().find(|node| node.role == Role::Cell).map(|node| node.name.clone());
+                    truth(first.as_deref().is_some_and(|first| first != "row 0" && first != "row 400"), format!("the first cell in view is {first:?}"))
+                }
+                _ => Ok(()),
+            }
+        }
+
+        /// The paragraph by lines: its lines make its text, each lower than the one before, and
+        /// a point on a line is on that line.
+        fn lines() -> Result<(), String> {
+            let paragraph = element(PARAGRAPH);
+            let page = text_of(unsafe { send0(paragraph, c"accessibilityPageContent") });
+            let lines = lines_of(paragraph);
+            if page != PARAGRAPH || lines.len() < 2 || lines.concat() != PARAGRAPH {
+                return Err(format!("page {page:?}, lines {lines:?}"));
+            }
+            let frame = |nth: isize| unsafe { send1::<Rect, _>(paragraph, c"accessibilityFrameForLineNumber:", nth) };
+            let (first, second) = (frame(0), frame(1));
+            let found = unsafe { send1::<isize, _>(paragraph, c"accessibilityLineNumberForPoint:", middle(second)) };
+            let ok = second.origin.y >= first.origin.y + first.size.y - 1.0 && found == 1;
+            if ok { Ok(()) } else { Err(format!("lines at {first:?} and {second:?}; the second's middle is on line {found}")) }
+        }
+
+        /// The paragraph by letters: a range's text and place, the cursor's place, the letter at a
+        /// point, a rectangle per line, and the system's tokenizer over it.
+        fn letters() -> Result<(), String> {
+            let reader: Obj = unsafe { send0(element(PARAGRAPH), c"accessibilityTextInputResponder") };
+            if reader.is_null() {
+                return Err("no reader".into());
+            }
+            let word = units(reader, 2, 11);
+            let (said, place) = unsafe { (text_of(send1(reader, c"textInRange:", word)), send1::<Rect, _>(reader, c"firstRectForRange:", word)) };
+            let caret = unsafe { send1::<Rect, _>(reader, c"caretRectForPosition:", send0::<Obj>(word, c"start")) };
+            let at = ends(reader, unsafe { send1(reader, c"characterRangeAtPoint:", middle(place)) });
+            let all = units(reader, 0, PARAGRAPH.len() as isize);
+            let rects = items(unsafe { send1(reader, c"selectionRectsForRange:", all) }).len();
+            let tokenizer: Obj = unsafe { send0(reader, c"tokenizer") };
+            let lines = lines_of(element(PARAGRAPH)).len();
+            let ok = said == "paragraph" && (caret.origin.x - place.origin.x).abs() < 0.5 && (2..11).contains(&at[0]) && rects == lines && !tokenizer.is_null();
+            if ok { Ok(()) } else { Err(format!("{said:?} at {place:?}, the cursor at {caret:?}, the letter at its middle {at:?}, {rects} rectangles for {lines} lines")) }
+        }
+
+        /// The table as a data table: all its rows, its columns, a cell's row, a column's heading.
+        fn data_table() -> Result<(), String> {
+            let table = table();
+            let (rows, columns) = unsafe { (send0::<usize>(table, c"accessibilityRowCount"), send0::<usize>(table, c"accessibilityColumnCount")) };
+            let first = cell(0, 0);
+            let (label, row) = unsafe { (text_of(send0(first, c"accessibilityLabel")), send0::<Range>(first, c"accessibilityRowRange")) };
+            let headings = items(unsafe { send1(table, c"accessibilityHeaderElementsForColumn:", 1usize) });
+            let heading = headings.first().map(|heading| text_of(unsafe { send0(*heading, c"accessibilityLabel") }));
+            let ok = (rows, columns) == (500, 2) && label == "row 0" && (row.location, row.length) == (0, 1) && heading.as_deref() == Some("Size");
+            if ok { Ok(()) } else { Err(format!("{rows} rows, {columns} columns; the first cell {label:?} in {row:?}; heading {heading:?}")) }
+        }
+    }
+
+    const READER_STEPS: [&str; 8] = [
+        "reader asked",
+        "lines as wrapped",
+        "letters where drawn",
+        "a reader selects in the text box",
+        "a data table",
+        "a row out of view comes at once",
+        "a three-finger swipe pages the table on",
+        "",
+    ];
 }
 
 #[cfg(target_os = "macos")]
@@ -750,6 +971,16 @@ mod mac {
         if let Ok(looks) = note(&device, CHECK_ID, "looks.txt", |_| true, Duration::ZERO) {
             println!("looks:\n{looks}");
         }
+
+        // What a reader reads of lines, letters and a long table.
+        launch(&device, CHECK_ID, "reader")?;
+        let read = note(&device, CHECK_ID, "reader.txt", |text| text.contains("done"), Duration::from_secs(120));
+        let read = read.unwrap_or_else(|error| error);
+        println!(
+            "reader:
+{read}"
+        );
+        failed.extend(read.lines().filter(|line| line.starts_with("FAILED") || line.contains("after")).map(str::to_owned));
 
         // The parts, driven.
         launch(&device, CHECK_ID, "parts")?;

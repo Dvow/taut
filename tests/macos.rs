@@ -84,6 +84,11 @@ mod mac {
         fn CFDataGetBytePtr(data: Obj) -> *const u8;
         fn CFDataGetLength(data: Obj) -> isize;
         fn CFRelease(object: Obj);
+        fn CFAbsoluteTimeGetCurrent() -> f64;
+        fn CFRunLoopGetMain() -> Obj;
+        fn CFRunLoopTimerCreate(allocator: Obj, fire: f64, interval: f64, flags: usize, order: isize, callout: extern "C" fn(Obj, *mut c_void), context: *mut c_void) -> Obj;
+        fn CFRunLoopAddTimer(run_loop: Obj, timer: Obj, mode: Obj);
+        static kCFRunLoopDefaultMode: Obj;
     }
     unsafe extern "C" {
         fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
@@ -1171,6 +1176,77 @@ mod mac {
         })
     }
 
+    thread_local! {
+        /// What a reader asking for a long table's row out of view was given: the row its cell
+        /// says it is in, or what went wrong.
+        static ROW_ASKED: RefCell<Option<Result<[isize; 2], String>>> = const { RefCell::new(None) };
+    }
+
+    /// A table of a thousand rows, those in view told.
+    fn long_table(table: &mut taut::Table, ui: &mut Ui) {
+        ui.column().pad(10.0).grow().open();
+        let columns = [taut::Column::new("Name").px(120.0), taut::Column::new("Size").px(80.0)];
+        ui.table(table, &columns);
+        for row in ui.rows(1000, 22.0) {
+            ui.selectable_row(row, false);
+            ui.cell(&format!("row {row}"));
+            ui.cell("1 KB");
+            ui.close();
+        }
+        ui.close();
+        ui.close();
+        ui.close();
+    }
+
+    /// The cell of row 900 of the long table, as a client asks for it: the row it says it is in.
+    fn cell_of_row_900() -> Result<[isize; 2], String> {
+        let program = unsafe { AXUIElementCreateApplication(std::process::id() as i32) };
+        let windows = ask(program, "AXWindows").map(items).unwrap_or_default();
+        let ours = windows.into_iter().find(|one| ask(*one, "AXTitle").and_then(text_of).as_deref() == Some("Long table")).ok_or("no window")?;
+        let mut found = Vec::new();
+        all_under(ours, 0, &mut found);
+        let table = found.iter().find(|(_, role, _)| role == "AXTable").map(|(element, ..)| *element).ok_or("no table")?;
+        let numbers: Vec<Obj> = [0i64, 900].iter().map(|n| send(class(c"NSNumber"), c"numberWithLongLong:", (*n,))).collect();
+        let cell = ask_of(table, "AXCellForColumnAndRow", array(&numbers)).ok_or("no cell on the first ask")?;
+        range_of(ask(cell, "AXRowIndexRange")).ok_or_else(|| "the cell has no row".into())
+    }
+
+    /// The run loop's timer: asks as a reader in another program does, between the window's turns.
+    extern "C" fn ask_for_row_900(_: Obj, _: *mut c_void) {
+        // (Asked first: the window runs inside the ask, and its check reads what is kept here.)
+        let asked = cell_of_row_900();
+        ROW_ASKED.with_borrow_mut(|kept| *kept = Some(asked));
+    }
+
+    /// A reader asks a long table for a cell of a row out of view, between the window's turns (as
+    /// VoiceOver does), and is given it on that first ask.
+    fn a_long_tables_cell_out_of_view_comes_on_the_first_ask() -> Vec<String> {
+        let mut table = taut::Table::default();
+        let window = Window { title: "Long table", width: 360.0, height: 300.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            long_table(&mut table, ui);
+            match steps.step {
+                0 if steps.waited(300) => {
+                    if unsafe { AXIsProcessTrusted() } == 0 {
+                        println!("    the system does not trust this program to read others: not read");
+                        steps.done = true;
+                        return;
+                    }
+                    // (A run of the window's own may not ask: the row needs another run first.)
+                    let timer = unsafe { CFRunLoopTimerCreate(std::ptr::null_mut(), CFAbsoluteTimeGetCurrent() + 0.2, 0.0, 0, 0, ask_for_row_900, std::ptr::null_mut()) };
+                    unsafe { CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopDefaultMode) };
+                    steps.next();
+                }
+                1 => {
+                    let Some(asked) = ROW_ASKED.with_borrow_mut(Option::take) else { return };
+                    steps.check(asked == Ok([900, 1]), || format!("asked for row 900, given {asked:?}"));
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
     /// A view and all within it, as AppKit has them, that is of a class.
     fn views_of(view: Obj, class_name: &str, depth: usize, into: &mut Vec<Obj>) {
         if text_of(send(send::<Obj>(view, c"className", ()), c"description", ())).as_deref() == Some(class_name) {
@@ -1569,7 +1645,7 @@ mod mac {
     pub fn main() {
         unsafe { objc_setExceptionPreprocessor(thrown) };
         type Check = fn() -> Vec<String>;
-        let checks: [(&str, Check); 18] = [
+        let checks: [(&str, Check); 19] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
             ("metal shows on the screen what the CPU shows", metal_shows_on_the_screen_what_the_cpu_shows),
             ("keys and an input method's text reach the focused box", keys_and_an_input_methods_text_reach_the_focused_box),
@@ -1584,6 +1660,7 @@ mod mac {
             ("a waker on another thread wakes the window", a_waker_on_another_thread_wakes_the_window),
             ("a reader reads the window and presses its button", a_reader_reads_the_window_and_presses_its_button),
             ("a reader reads text by ranges, and tables and trees by rows", a_reader_reads_text_by_ranges_and_tables_and_trees_by_rows),
+            ("a long table's cell out of view comes on the first ask", a_long_tables_cell_out_of_view_comes_on_the_first_ask),
             ("the tray icon is a status item with a menu", the_tray_icon_is_a_status_item_with_a_menu),
             ("a notification from an app bundle reaches the system", a_notification_from_an_app_bundle_reaches_the_system),
             ("a global hotkey is registered and heard", a_global_hotkey_is_registered_and_heard),

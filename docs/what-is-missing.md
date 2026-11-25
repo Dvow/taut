@@ -12,7 +12,7 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   printing, spell checking, system file dialog or pictures and files on the clipboard. What an
   input method composes is typed into the box as it goes, not underlined. `open_with_system`
   opens links only. `Face::named` fonts are not looked up. Untried: TalkBack itself (nodes read
-  with `uiautomator`), a real phone, arm64 beyond building.
+  with `uiautomator`, and in the app through its provider), a real phone, arm64 beyond building.
 - Web: one window, the page's; no second windows, tray, hotkeys, system notifications, drag and
   drop with other programs, printing, one running copy, GPU paths or threads. Clipboard: text
   only; a menu's Paste has the page's last copy or paste unless the person let the page read the
@@ -26,8 +26,9 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - iOS: the keyboard sees only what an input method composes: no autocorrection, predictions or
   automatic capitals. A long press opens the library's menu, not the system's edit menu. Reading
   the clipboard asks the person, except through the system's Paste.
-- iOS and Android: readers get no wrapped lines, letter places or rows out of view of long tables
-  yet.
+- iOS: readers get letters and words through a text interface from iOS 18.1 on (before, lines
+  only). Text is read through it, not typed.
+- Android: readers move through text by character, word, line and paragraph, not by page.
 - iOS: checked in the simulator only, through the methods UIKit calls: not on a device, not with
   VoiceOver itself, real touches or a real hardware keyboard.
 - macOS: what an input method composes shows in a small panel at the text cursor, over the box,
@@ -219,8 +220,7 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Checked with UI Automation and libatspi clients in real windows; never with a real screen
   reader.
 - Long tables: a row out of view is reached by scrolling it into view (no UI Automation
-  virtualized items; on macOS its cell comes on the next ask). Windows lists the selected rows
-  in view.
+  virtualized items). Windows lists the selected rows in view.
 - Letter places only for text that shows and is one box's (not `ui.words` pieces or a row read
   as one); elsewhere lines are as typed.
 - Misspellings told for all of a box's text up to 64 KB; past that, the visible words.
