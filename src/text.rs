@@ -101,19 +101,16 @@ impl Metrics {
     pub fn height(&self) -> f32 {
         self.ascent + self.descent
     }
-    /// How far above its line slot a line of text is drawn, to centre its glyphs visually in
-    /// the line height. Caps and digits centre on the cap height. With lowercase (`small`), on
-    /// the point halfway between that and the x-height's centre, where mostly-lowercase text
-    /// looks right. Many fonts reserve more room above for accents than below: positioned by
-    /// line height alone, their text sits low in a button. Negative for a font whose glyphs sit
-    /// high; 0 for one without a cap height. (The resulting position is snapped to whole pixels
-    /// when drawn.)
-    pub fn lift(&self, small: bool) -> f32 {
-        if self.cap_height <= 0.0 {
-            return 0.0;
-        }
-        let small = if small && self.x_height > 0.0 { self.x_height } else { self.cap_height };
-        (self.ascent - self.descent) / 2.0 - (self.cap_height + small) / 4.0
+    /// How far above the top of its line slot, `height` tall, a line of text is drawn: so the
+    /// band from its baseline to its cap height sits in the slot's middle. Caps, digits and
+    /// lowercase look centred, descenders hang below, and every line in one font has the same
+    /// baseline whatever its letters. (Placed by ascent and descent, text sits low in a button:
+    /// most fonts keep more room above for accents than below.) Negative for a font whose
+    /// glyphs sit high. A font without a cap height is centred by ascent and descent. (The line
+    /// is snapped to whole pixels when drawn.)
+    pub fn lift(&self, height: f32) -> f32 {
+        let band = if self.cap_height > 0.0 { self.cap_height } else { self.ascent - self.descent };
+        self.ascent - (height + band) / 2.0
     }
 }
 
@@ -797,15 +794,14 @@ mod tests {
         assert!(px.iter().filter(|p| **p != 0).count() > 20);
         assert_eq!(BuiltInFont.measure("Hi!", Font::new(8.0), 1.0, None), 18.0);
         assert_eq!(BuiltInFont.metrics(Font::new(8.0), 1.0).height(), 10.0);
-        // A font with ascent 12 and descent 3, cap height 9 and x-height 6: its line centre is
-        // 4.5 above the baseline, as is its cap centre. A caps-only line stays put. The
-        // x-height centre is 3 up, and halfway between is 3.75: a line with lowercase sits
-        // three quarters of a pixel low, and is drawn that much higher. A font whose glyphs sit
-        // high is drawn lower; one without an x-height goes by caps alone; and one without a
-        // cap height stays put.
-        let lift = |ascent: f32, descent: f32, cap: f32, small: f32| [false, true].map(|with_small| Metrics { ascent, descent, cap_height: cap, x_height: small }.lift(with_small));
-        assert_eq!([lift(12.0, 3.0, 9.0, 6.0), lift(14.0, 3.0, 9.0, 7.0), lift(8.0, 6.0, 8.0, 6.0)], [[0.0, 0.75], [1.0, 1.5], [-3.0, -2.5]]);
-        assert_eq!([lift(13.0, 3.0, 8.0, 0.0), lift(13.0, 3.0, 0.0, 6.0)], [[1.0, 1.0], [0.0, 0.0]]);
+        // A font with ascent 12, descent 3 and cap height 9, in a slot as tall as its line: its
+        // cap centre is 4.5 above the baseline, as is the line's centre, so it stays put. With
+        // ascent 14 and descent 3 the caps would sit a pixel low, and are drawn that much
+        // higher; in a slot a pixel taller, half a pixel higher. A font whose glyphs sit high is
+        // drawn lower; one without a cap height is centred by ascent and descent.
+        let lift = |ascent: f32, descent: f32, cap: f32, height: f32| Metrics { ascent, descent, cap_height: cap, x_height: 0.0 }.lift(height);
+        assert_eq!([lift(12.0, 3.0, 9.0, 15.0), lift(14.0, 3.0, 9.0, 17.0), lift(14.0, 3.0, 9.0, 18.0), lift(8.0, 6.0, 8.0, 14.0)], [0.0, 1.0, 0.5, -3.0]);
+        assert_eq!([lift(13.0, 3.0, 0.0, 16.0), lift(13.0, 3.0, 0.0, 17.0)], [0.0, -0.5]);
     }
 
     /// A text split into grapheme clusters.

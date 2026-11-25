@@ -252,9 +252,8 @@ pub(crate) struct Bit {
     pub stops: u32,
     pub x: f32,
     pub wide: f32,
-    /// Its ascent and descent from the baseline (each lifted as typed text is, see
-    /// [`Metrics::lift`](crate::text::Metrics::lift), so pieces of one font align whatever
-    /// glyphs they hold).
+    /// Its ascent and descent from the baseline (each lifted as a single line is, see
+    /// [`Metrics::lift`](crate::text::Metrics::lift)).
     pub above: f32,
     pub below: f32,
 }
@@ -304,15 +303,16 @@ pub(crate) struct Laid {
     pub frags: Vec<Frag>,
 }
 
-/// A font's ascent and descent, lifted as typed text is: asked of the system once per font,
-/// cached in `fonts`.
+/// A font's ascent and descent, lifted as a single line is (see
+/// [`Metrics::lift`](crate::text::Metrics::lift)): asked of the system once per font, cached in
+/// `fonts`.
 pub(crate) fn heights(system: &mut dyn TextSystem, font: Font, scale: f32, fonts: &mut Vec<(Font, [f32; 2])>) -> [f32; 2] {
     let plain = Font { decoration: Decoration::None, ..font };
     if let Some((_, known)) = fonts.iter().find(|(known, _)| *known == plain) {
         return *known;
     }
     let metrics = system.metrics(plain, scale);
-    let lift = metrics.lift(true);
+    let lift = metrics.lift(metrics.height());
     let both = [metrics.ascent - lift, metrics.descent + lift];
     fonts.push((plain, both));
     both
@@ -666,8 +666,7 @@ impl Ui {
     }
 
     /// One fragment of a row: its piece's background, if any, and its text, icon or picture.
-    /// (Text is placed as typed text is, each piece lifted alike: so pieces of one font share a
-    /// baseline whatever glyphs they hold.)
+    /// (Text is placed as a single line is: pieces of one font share a baseline.)
     fn write_frag(&mut self, shape: &Shape, frag: &Frag, [x, y]: [f32; 2], lit: &[u32]) {
         let bit = shape.laid.bits[frag.bit as usize];
         let (x, y) = (x + frag.x, y + frag.y);

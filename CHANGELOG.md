@@ -3,6 +3,15 @@
 Changes an app can notice, newest first. Before 1.0, a new minor version (0.1 → 0.2) may need
 code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
+## Unreleased
+
+- **Text centred in its box:** a line of text in a button, menu item, list row or any box now
+  has the band from its baseline to its cap height in the middle, and every line in one font
+  has the same baseline. Before, a label with lowercase letters sat up to a pixel and a half
+  higher than one in capitals (8 pixels above "Delete" and 10 below in a 28-pixel button at
+  100%). `Metrics::lift` takes the height of the line slot instead of whether the line has
+  lowercase.
+
 ## 0.3.0 (2026-11-24)
 
 Code written for 0.2 builds unchanged; to move up, change `taut = "0.2"` to `taut = "0.3"`.

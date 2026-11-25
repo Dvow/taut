@@ -1117,3 +1117,25 @@ fn a_box_that_was_there_already_has_all_its_text_selected() {
     assert_eq!(ui.focus(), field);
     assert_eq!(ui.text_edit_state(field).map(|typing| typing.selection), Some([0, 9]));
 }
+
+/// The first and last rows of pixels that `label`'s letters reach, in the system's text in a
+/// box 28 units tall.
+fn ink_rows(ui: &mut Ui, label: &str) -> [usize; 2] {
+    let font = ui.theme.font;
+    ui.run(&mut |ui| _ = ui.el().size(120.0, 28.0).fill(Color::WHITE).align(Align::Center, Align::Center).text(label, font, Color::BLACK).show());
+    let screen = Surface::draw(ui, 64);
+    let inked: Vec<usize> = (0..screen.height).filter(|y| screen.pixels[y * screen.width..][..screen.width].iter().any(|pixel| *pixel != screen.pixels[0])).collect();
+    [inked[0], inked[inked.len() - 1]]
+}
+
+#[test]
+fn a_line_of_text_is_centred_on_its_capitals_and_keeps_one_baseline() {
+    let mut ui = Ui::new(taut::platform::system_text(), Box::new(taut::LocalClipboard::default()));
+    for scale in [1.0, 1.5] {
+        ui.resize(taut::geom::Size { w: 120.0, h: 28.0 }, scale);
+        let [capitals, lowercase, tall] = ["HIL", "Hix", "Hil"].map(|label| ink_rows(&mut ui, label));
+        let height = (28.0 * scale) as usize;
+        assert!(capitals[0].abs_diff(height - 1 - capitals[1]) <= 1, "capitals at rows {capitals:?} of {height} at {scale}x: centred to within a pixel");
+        assert_eq!([lowercase[1], tall[1]], [capitals[1]; 2], "lowercase on the capitals' baseline at {scale}x");
+    }
+}

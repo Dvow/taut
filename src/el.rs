@@ -594,7 +594,7 @@ impl El<'_> {
     /// Its text is being edited: the selection (the second end is the cursor), in bytes, and
     /// whether the cursor shows now.
     pub(crate) fn select(mut self, range: Option<[u32; 2]>, cursor: bool) -> Self {
-        (self.spec.select, self.spec.caret, self.spec.typed) = (range, cursor, true);
+        (self.spec.select, self.spec.caret) = (range, cursor);
         self.frame(Part::Edited, |frame| frame.edited = range.is_some())
     }
     /// Holds an icon, `size` units square.

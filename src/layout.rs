@@ -413,9 +413,6 @@ pub(crate) struct Spec {
     /// whether the cursor is drawn now (it blinks).
     pub select: Option<[u32; 2]>,
     pub caret: bool,
-    /// Its text is typed text: a line sits where a line with descenders would, whatever it
-    /// holds, so it doesn't move while typing.
-    pub typed: bool,
     /// How much it and its content are faded when drawn: 0 not at all, 255 fully (hidden,
     /// keeping its room: see [`El::opacity`](crate::El::opacity) and
     /// [`El::hidden`](crate::El::hidden)).
@@ -505,9 +502,9 @@ pub(crate) struct Tree {
     /// The boxes whose text wraps.
     pub wrapping: Vec<u32>,
     stops: Vec<f32>,
-    /// Each text's single-line width, and its line height: as measured the first time, kept
-    /// between runs.
-    sizes: ById<[f32; 4]>,
+    /// Each text's single-line width, its line height and its lift: as measured the first
+    /// time, kept between runs.
+    sizes: ById<[f32; 3]>,
     /// The columns or rows of the grid being laid out: size and growth weight, then start and
     /// size.
     tracks: Vec<[f32; 2]>,
@@ -810,10 +807,13 @@ impl Tree {
         }
         let piece = &self.strings[start as usize..end as usize];
         let key = hash((piece, font.face, font.size.to_bits(), scale.to_bits()));
-        // With the line's lift: from its own glyphs, and as typed text.
-        let sized = |metrics: crate::text::Metrics, wide: f32| [wide.ceil(), metrics.height().ceil(), metrics.lift(piece.chars().any(char::is_lowercase)), metrics.lift(true)];
+        // With the line's lift in its slot, which is a whole number of units tall.
+        let sized = |metrics: crate::text::Metrics, wide: f32| {
+            let height = metrics.height().ceil();
+            [wide.ceil(), height, metrics.lift(height)]
+        };
         let size = self.sizes.entry(key).or_insert_with(|| sized(text.metrics(font, scale), text.measure(piece, font, scale, None)));
-        (place.line_height, place.lift) = (size[1], size[if self.specs[i].typed { 3 } else { 2 }]);
+        (place.line_height, place.lift) = (size[1], size[2]);
         size[0]
     }
 
