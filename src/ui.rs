@@ -171,6 +171,9 @@ pub struct Response {
 pub(crate) enum Stroke {
     Key(Key, Mods),
     Text(String),
+    /// What the system's keyboard did to the focused text box (iOS).
+    #[cfg(target_os = "ios")]
+    Replace(Box<crate::text_edit::Replace>),
 }
 
 #[derive(Default)]
@@ -1193,6 +1196,8 @@ impl Ui {
         self.measures.clear();
         self.touch.dragged.clear();
         self.touch.zooms.clear();
+        #[cfg(target_os = "ios")]
+        self.crossing.offers.clear();
         self.bar.clear();
         self.asks.begin();
         (self.shapes_used, self.enabled, self.join_next, self.cells_next, self.pointer_shown, self.moves_wanted, self.hiding) = (0, true, false, false, false, false, None);

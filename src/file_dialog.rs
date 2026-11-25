@@ -221,6 +221,9 @@ pub struct FileDialogRequest {
     pub endings: Vec<String>,
     /// The title.
     pub title: &'static str,
+    /// Several files may be chosen ([`FileDialog::pick_many`]): asked of the system on iOS;
+    /// elsewhere the library's dialog picks several.
+    pub many: bool,
 }
 
 /// The library's own dialog: what [`Ui::file_dialog`] shows instead of the system's.
@@ -698,7 +701,8 @@ impl Ui {
     /// folder is asked for, Enter and double click enter folders as usual, and the button picks
     /// one.
     pub fn file_dialog(&mut self, files: &mut FileDialog) -> Option<PathBuf> {
-        if files.shown && files.native && self.system_files && !files.many {
+        // (Only iOS's system dialog is asked for several files.)
+        if files.shown && files.native && self.system_files && (!files.many || cfg!(target_os = "ios")) {
             return self.ask_system(files);
         }
         // With no library dialog, this one is the system's, on Windows: see
@@ -1578,13 +1582,17 @@ impl Ui {
             let ended = answer.clone().map(|file| if files.saving { files.ended(file) } else { file });
             match ended.as_ref().filter(|ended| answer.as_ref() != Some(*ended) && ended.exists()) {
                 Some(ended) => files.ask_again(ended),
+                // iOS's picker answers with every file chosen: the first comes back, all are
+                // in `chosen`.
+                #[cfg(target_os = "ios")]
+                None if files.many => return files.system_answered(ended).inspect(|_| files.chosen = crate::ios_files::all_picked()),
                 None => return files.system_answered(ended),
             }
         }
         if !std::mem::replace(&mut self.file_asked, true) {
             crate::platform::hand_file_dialog();
             let (folder, name, endings) = (files.folder.clone(), files.name.clone(), files.endings.clone());
-            self.file_ask = Some(FileDialogRequest { saving: files.saving, folders: files.folders, folder, name, endings, title: files.title() });
+            self.file_ask = Some(FileDialogRequest { saving: files.saving, folders: files.folders, folder, name, endings, title: files.title(), many: files.many });
         }
         None
     }

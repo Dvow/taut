@@ -1627,6 +1627,9 @@ impl Ui {
         }
         let was = (code.version, code.sels.clone());
         self.code_pointer(code, state, sizes);
+        // The system's keyboard types into it (iOS).
+        #[cfg(target_os = "ios")]
+        crate::ios_text_input::hand_typing();
         let page = ((code.view[1] / sizes.row) as usize).saturating_sub(1).max(1);
         let Ui { input, clipboard, .. } = self;
         input.strokes.retain(|stroke| match stroke {
@@ -1636,6 +1639,9 @@ impl Ui {
                 code.put(typed, true);
                 false
             }
+            // (The system's keyboard edits text boxes only.)
+            #[cfg(target_os = "ios")]
+            Stroke::Replace(_) => true,
         });
         if was != (code.version, code.sels.clone()) {
             (code.moved, code.reveal, self.again) = (self.now, true, true);

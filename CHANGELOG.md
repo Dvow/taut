@@ -32,6 +32,18 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - `examples/web_page.rs` answers range requests (a browser seeks a video by them), and
   `examples/apk.rs` packs examples with the feature `video`.
 
+- **iOS keyboard:** the system's keyboard reads and edits the focused text box, so it corrects,
+  predicts and capitalizes; composed text stands in place of the selection. A long press or a
+  secondary click in a text box shows the system's edit menu.
+- **iOS files:** `FileDialog::native()` is the system's document picker: open one file or
+  several (`pick_many`, all in `chosen`), a folder, or save (the person places the file, the app
+  writes it). `open_with_system` opens files in the system's preview. Files, pictures and text
+  drop in; `drag_out` lifts with a long press. Files on the clipboard both ways; the program's
+  own copy reads back without asking the person.
+- **iOS notifications:** `system_notification` and `notification_clicked`, as on macOS (app
+  bundles).
+- `FileDialogRequest` has a new field `many`: code building one needs it.
+
 ## 0.3.0 (2026-11-24)
 
 Code written for 0.2 builds unchanged; to move up, change `taut = "0.2"` to `taut = "0.3"`.

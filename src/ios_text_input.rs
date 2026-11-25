@@ -1,25 +1,39 @@
-//! Typed text on iOS: a view of the library's own (`TautTextInput`), a sliver over the text
-//! cursor, is the first responder while a text box has focus, so the system's keyboard shows,
-//! and a hardware keyboard and input methods type through it. Without focus in a text box, the
+//! Typed text on iOS: a view of the library's own (`TautTextInput`), as large as the page, is
+//! the first responder while a text box has focus, so the system's keyboard shows, and a
+//! hardware keyboard and input methods type through it. Without focus in a text box, the
 //! library's view is, and the keyboard goes.
 //!
-//! It is a `UITextInput` whose document is only what an input method is composing (its
-//! *marked text*), as on macOS: the keyboard sees none of the text box's text, so it neither
-//! corrects nor predicts words, and capitalizes nothing by itself. Positions are UTF-16 units
-//! into that text, kept in objects of the library's position and range classes. What an input
-//! method composes is shown over the text cursor, underlined, its selected part thicker; what
-//! it commits, and what is typed, is [`Event::Text`]. Return, Tab and Delete from the system's
-//! keyboard are keys.
+//! It is a `UITextInput` whose document is the focused text box's text, so the keyboard
+//! corrects, predicts and capitalizes as in any app. Its changes (`insertText:`,
+//! `replaceRange:withText:`, `setSelectedTextRange:`) are made to the view's copy at once, as
+//! the keyboard reads it back before the box runs, and reach the box as one stroke each. After
+//! each run the copy follows the box, and the keyboard hears when the app changed it. Places on
+//! the screen (the caret, a range's rectangles, the position nearest a point) are measured on
+//! the box's lines as last laid out. In a password box, and in parts editing text their own way
+//! (the code box), the document is only what an input method composes, and the keyboard
+//! neither corrects nor capitalizes.
 //!
-//! The system's Copy, Cut, Paste and Select All (its edit menu, the shortcut bar over an iPad's
-//! keyboard, the menu bar) are the keys that do them, Command with C, X, V or A.
+//! Positions are UTF-16 units into the document, kept in objects of the library's position and
+//! range classes. What an input method composes (its *marked text*) stands in the document in
+//! place of the selection it replaces; it shows over the text cursor, underlined, its selected
+//! part thicker, and reaches the box once committed. Return, Tab and Delete are keys.
+//!
+//! The system's Copy, Cut, Paste, Select and Select All (its edit menu, the shortcut bar over an
+//! iPad's keyboard, the menu bar) do what their keys do. A long press or a secondary click in a
+//! text box shows the system's edit menu. All of this is handed to the window by the first box
+//! that edits text (`hand_typing`), and what reads a text box's text by the first text box
+//! (`hand_text_boxes`).
 use crate::event::{Event, Key, Mods};
-use crate::geom::Rect;
+use crate::geom::{Point, Rect, pt, rect};
 use crate::ios::{Heard, heard};
+use crate::layout::{Align, Content};
 use crate::macos_sys::*;
-use crate::ui::Ui;
+use crate::text::{Carets, Line};
+use crate::text_edit::{Replace, step, word_edge};
+use crate::ui::{Stroke, Ui};
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
+use std::ops::Range;
 
 #[link(name = "objc")]
 unsafe extern "C" {
@@ -33,20 +47,39 @@ unsafe extern "C" {
     static NSBackgroundColorAttributeName: Obj;
 }
 
-/// `UITextLayoutDirection` and `UITextStorageDirection`: what counts as backward.
+/// `UITextLayoutDirection` and `UITextStorageDirection`: what counts as backward, and up and
+/// down.
 const LEFT: isize = 3;
 const UP: isize = 4;
+const DOWN: isize = 5;
 const BACKWARD: isize = 1;
 /// Underline styles: single, thick.
 const SINGLE: isize = 1;
 const THICK: isize = 2;
+/// Text input traits: the system's choice, no, and capitals starting sentences.
+const DEFAULT: isize = 0;
+const NO: isize = 1;
+const SENTENCES: isize = 2;
 
-/// What the input view keeps: what is composed and its selected part (UTF-16 units), whether a
-/// text box has the keyboard, and where its text cursor is (in the library's view's points).
+/// The document the keyboard edits, and what the input view keeps besides.
 #[derive(Default)]
-struct Composing {
-    marked: Vec<u16>,
+struct Document {
+    /// The focused text box's text, its selection (anchor, cursor, in bytes), and the box, as
+    /// the box will have them once the changes sent are made: while the text is the document
+    /// (`whole`).
+    text: String,
+    selection: [usize; 2],
+    whole: bool,
+    box_id: crate::id::Id,
+    /// Changes sent to the box and not yet made.
+    sent: usize,
+    /// What an input method composes, the bytes of `text` it stands for, and its selected part
+    /// (UTF-16 units of `marked`).
+    marked: String,
+    over: [usize; 2],
     picked: NSRange,
+    /// Whether a text box has the keyboard, a password box, and where its text cursor is (in
+    /// page units).
     editing: bool,
     secret: bool,
     cursor: Option<Rect>,
@@ -54,14 +87,15 @@ struct Composing {
     tokenizer: Obj,
     style: Obj,
     label: Obj,
+    menu: Obj,
 }
 
 thread_local! {
     static INPUT: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
-    static COMPOSING: RefCell<Composing> = RefCell::new(Composing::default());
+    static DOCUMENT: RefCell<Document> = RefCell::new(Document::default());
 }
 
-/// A plain method's types: an object, a `BOOL`, a number.
+/// Plain methods' types: an object, a number, a `BOOL`.
 const OBJECT: &str = "@@:";
 const NUMBER: &str = "q@:";
 
@@ -70,13 +104,13 @@ fn input_class() -> Obj {
     let (yes, rect) = (format!("{BOOL}@:"), format!("{RECT}@:@"));
     let methods: Vec<(&CStr, *const c_void, String)> = vec![
         (c"canBecomeFirstResponder", yes_please as *const c_void, yes.clone()),
-        (c"hasText", yes_please as *const c_void, yes),
+        (c"hasText", has_text as *const c_void, yes.clone()),
         (c"insertText:", inserted as *const c_void, "v@:@".into()),
         (c"deleteBackward", deleted as *const c_void, "v@:".into()),
         (c"textInRange:", text_in as *const c_void, "@@:@".into()),
         (c"replaceRange:withText:", replaced as *const c_void, "v@:@@".into()),
         (c"selectedTextRange", selected_range as *const c_void, OBJECT.into()),
-        (c"setSelectedTextRange:", ignored as *const c_void, "v@:@".into()),
+        (c"setSelectedTextRange:", set_selected_range as *const c_void, "v@:@".into()),
         (c"markedTextRange", marked_range as *const c_void, OBJECT.into()),
         (c"markedTextStyle", style as *const c_void, OBJECT.into()),
         (c"setMarkedTextStyle:", set_style as *const c_void, "v@:@".into()),
@@ -98,20 +132,21 @@ fn input_class() -> Obj {
         (c"setBaseWritingDirection:forRange:", ignored_direction as *const c_void, "v@:q@".into()),
         (c"firstRectForRange:", first_rect as *const c_void, rect.clone()),
         (c"caretRectForPosition:", caret_rect as *const c_void, rect),
-        (c"selectionRectsForRange:", no_rects as *const c_void, "@@:@".into()),
+        (c"selectionRectsForRange:", selection_rects as *const c_void, "@@:@".into()),
         (c"closestPositionToPoint:", closest as *const c_void, format!("@@:{POINT}")),
         (c"closestPositionToPoint:withinRange:", closest_within as *const c_void, format!("@@:{POINT}@")),
-        (c"characterRangeAtPoint:", no_range as *const c_void, format!("@@:{POINT}")),
-        (c"autocorrectionType", no_trait as *const c_void, NUMBER.into()),
-        (c"spellCheckingType", no_trait as *const c_void, NUMBER.into()),
-        (c"smartQuotesType", no_trait as *const c_void, NUMBER.into()),
-        (c"smartDashesType", no_trait as *const c_void, NUMBER.into()),
-        (c"smartInsertDeleteType", no_trait as *const c_void, NUMBER.into()),
-        (c"autocapitalizationType", none_trait as *const c_void, NUMBER.into()),
-        (c"isSecureTextEntry", secret as *const c_void, format!("{BOOL}@:")),
+        (c"characterRangeAtPoint:", range_at as *const c_void, format!("@@:{POINT}")),
+        (c"autocorrectionType", correcting as *const c_void, NUMBER.into()),
+        (c"spellCheckingType", correcting as *const c_void, NUMBER.into()),
+        (c"smartQuotesType", correcting as *const c_void, NUMBER.into()),
+        (c"smartDashesType", correcting as *const c_void, NUMBER.into()),
+        (c"smartInsertDeleteType", correcting as *const c_void, NUMBER.into()),
+        (c"autocapitalizationType", capitals as *const c_void, NUMBER.into()),
+        (c"isSecureTextEntry", secret as *const c_void, yes),
         (c"copy:", copied as *const c_void, "v@:@".into()),
         (c"cut:", cut as *const c_void, "v@:@".into()),
         (c"paste:", pasted as *const c_void, "v@:@".into()),
+        (c"select:", word_selected as *const c_void, "v@:@".into()),
         (c"selectAll:", all_selected as *const c_void, "v@:@".into()),
         (c"canPerformAction:withSender:", can_perform as *const c_void, format!("{BOOL}@::@")),
         (c"pressesBegan:withEvent:", crate::ios::presses_began as *const c_void, "v@:@@".into()),
@@ -134,8 +169,44 @@ fn range_class() -> Obj {
     made_class(c"TautTextRange", c"UITextRange", &methods, &[])
 }
 
+/// A selection's rectangle, kept beside the object with whether it holds the selection's start
+/// and end.
+#[derive(Clone, Copy)]
+struct Piece {
+    rect: NSRect,
+    start: bool,
+    end: bool,
+}
+
+/// The class of a selection's rectangles.
+fn piece_class() -> Obj {
+    let flag = format!("{BOOL}@:");
+    let methods: Vec<(&CStr, *const c_void, String)> = vec![
+        (c"rect", piece_rect as *const c_void, format!("{RECT}@:")),
+        (c"writingDirection", left_to_right_piece as *const c_void, NUMBER.into()),
+        (c"containsStart", piece_starts as *const c_void, flag.clone()),
+        (c"containsEnd", piece_ends as *const c_void, flag.clone()),
+        (c"isVertical", not_vertical as *const c_void, flag),
+    ];
+    let listed: Vec<(&CStr, *const c_void, &str)> = methods.iter().map(|(name, imp, types)| (*name, *imp, types.as_str())).collect();
+    made_class(c"TautSelectionRect", c"UITextSelectionRect", &listed, &[])
+}
+
+/// Hands the window typing, on this thread: the input view, and the long press in text boxes.
+/// From the first box that edits text (a text box, the code box), so a program without one
+/// carries none of it.
+pub(crate) fn hand_typing() {
+    if crate::ios::TYPING.get().is_some() {
+        return;
+    }
+    crate::ios::TYPING.set(Some(follow));
+    let view = crate::ios::view();
+    open(view);
+    hold_in_text_boxes(view);
+}
+
 /// Makes the input view, inside the library's view: clear, touched by nothing.
-pub(crate) fn open(view: Obj) {
+fn open(view: Obj) {
     // SAFETY: a view of the library's class made on the main thread; the library's view keeps
     // it, and it is kept here too.
     unsafe {
@@ -143,36 +214,115 @@ pub(crate) fn open(view: Obj) {
         send::<()>(input, c"setUserInteractionEnabled:", (0 as Bool,));
         send::<()>(input, c"setBackgroundColor:", (send::<Obj>(class(c"UIColor"), c"clearColor", ()),));
         send::<()>(view, c"addSubview:", (input,));
+        send::<()>(input, c"release", ());
         let tokenizer: Obj = send(send::<Obj>(class(c"UITextInputStringTokenizer"), c"alloc", ()), c"initWithTextInput:", (input,));
-        COMPOSING.with_borrow_mut(|composing| composing.tokenizer = tokenizer);
+        DOCUMENT.with_borrow_mut(|document| document.tokenizer = tokenizer);
         INPUT.set(input);
     }
 }
 
+// ---- after a run: the document follows the box ----
+
+/// What the box shows the keyboard after a run: the text box with focus (if it is one whose
+/// text is the document), its text and selection.
+struct Focused {
+    whole: bool,
+    box_id: crate::id::Id,
+    text: String,
+    selection: [usize; 2],
+}
+
+/// What the keyboard needs of text boxes beyond what an input method composes: the focused
+/// box's text, places on its lines, and where characters and words end. Handed over the first
+/// time a text box is typed in (`hand_text_boxes`), so a program without one carries none of
+/// it.
+#[derive(Clone, Copy)]
+struct TextBoxes {
+    text: fn(&Ui) -> Option<String>,
+    caret: fn(&mut Ui, usize) -> Option<Rect>,
+    pieces: fn(&mut Ui, [usize; 2]) -> Vec<Rect>,
+    nearest: fn(&mut Ui, Point) -> Option<usize>,
+    /// Where the character before a byte starts, and the word around a byte.
+    before: fn(&str, usize) -> usize,
+    word: fn(&str, usize) -> [usize; 2],
+}
+
+thread_local! {
+    static TEXT_BOXES: Cell<Option<TextBoxes>> = const { Cell::new(None) };
+}
+
+/// Hands the keyboard what it needs of text boxes (see `TextBoxes`), on this thread.
+pub(crate) fn hand_text_boxes() {
+    hand_typing();
+    if TEXT_BOXES.get().is_some() {
+        return;
+    }
+    TEXT_BOXES.set(Some(TextBoxes {
+        text: box_text,
+        caret: |ui, at| laid_out(ui)?.caret(ui, at),
+        pieces: |ui, bytes| laid_out(ui).map_or_else(Vec::new, |laid| laid.pieces(ui, bytes)),
+        nearest: |ui, to| laid_out(ui)?.nearest(ui, to),
+        before: |text, at| step(text, at, false),
+        word: |text, at| [word_edge(text, at, false), word_edge(text, at, true)],
+    }));
+}
+
+/// The focused text box's text as last laid out (empty while it shows its hint): while it is
+/// the document, a plain text box's.
+fn box_text(ui: &Ui) -> Option<String> {
+    let plain = ui.ime_area().is_some() && !ui.password_focused() && ui.edit.id == ui.focus();
+    if !plain || ui.edit.empty {
+        return plain.then(String::new);
+    }
+    let Content::Text { start, end, .. } = ui.tree.specs.get(ui.typed_in? as usize)?.content else { return None };
+    ui.tree.strings.get(start as usize..end as usize).map(str::to_string)
+}
+
+/// What the keyboard is to see after this run.
+fn focused(ui: &Ui) -> Focused {
+    match TEXT_BOXES.get().and_then(|boxes| (boxes.text)(ui)) {
+        Some(text) => Focused { whole: true, box_id: ui.edit.id, text, selection: [ui.edit.anchor, ui.edit.cursor] },
+        None => Focused { whole: false, box_id: ui.edit.id, text: String::new(), selection: [0; 2] },
+    }
+}
+
 /// After a run: the input view takes the keyboard while a text box has focus, and gives it back
-/// to the library's view after; it lies over the text cursor. A password box starts the keyboard
-/// afresh.
-pub(crate) fn follow(view: Obj, ui: &mut Ui) {
-    let input = INPUT.get();
-    let origin = crate::ios::origin();
-    let cursor = ui.ime_area().map(|at| Rect { x: at.x + origin.x as f32, y: at.y + origin.y as f32, ..at });
-    let secret = ui.password_focused();
-    let (was_editing, was_secret, was_at) = COMPOSING.with_borrow(|composing| (composing.editing, composing.secret, composing.cursor));
-    let editing = cursor.is_some();
-    COMPOSING.with_borrow_mut(|composing| (composing.editing, composing.secret, composing.cursor) = (editing, secret, cursor));
-    if let Some(at) = cursor {
-        // SAFETY: the input view moves over the text cursor.
-        unsafe { send::<()>(input, c"setFrame:", (NSRect::new(f64::from(at.x), f64::from(at.y), 1.0, f64::from(at.h.max(1.0))),)) };
+/// to the library's view after; it lies over the page (`area`, in the view). Its document
+/// follows the box, and the keyboard hears what the app changed. A password box, and another
+/// kind of box, start the keyboard afresh.
+pub(crate) fn follow(ui: &mut Ui, area: NSRect) {
+    // SAFETY: the input view lies over the page.
+    unsafe { send::<()>(INPUT.get(), c"setFrame:", (area,)) };
+    let now = focused(ui);
+    let (editing, secret, cursor) = (ui.ime_area().is_some(), ui.password_focused(), ui.ime_area());
+    let (fresh, moved, waiting) = DOCUMENT.with_borrow_mut(|document| {
+        let fresh = (editing, secret, now.whole, now.box_id) != (document.editing, document.secret, document.whole, document.box_id);
+        let moved = cursor != document.cursor;
+        (document.editing, document.secret, document.cursor) = (editing, secret, cursor);
+        (fresh, moved, document.sent > 0)
+    });
+    if fresh {
+        start_afresh(editing, now);
+    } else if !waiting {
+        keep_up(now, moved);
     }
-    if editing == was_editing && secret == was_secret {
-        if cursor != was_at {
-            moved_cursor();
-        }
-        return show_marked();
+    show_marked();
+    // (The menu shows the input view's actions: once it has the keyboard.)
+    if editing && let Some(at) = ui.edit.menu_at.take() {
+        show_edit_menu(at);
     }
-    drop_marked();
-    // SAFETY: the keyboard goes to the input view or comes back to the library's view; starting
-    // again, the keyboard reads the traits afresh (a password box's).
+}
+
+/// Another box has focus, or none: the document is the new box's, and the keyboard goes to the
+/// input view (starting again, it reads the traits afresh) or comes back to the library's view.
+fn start_afresh(editing: bool, now: Focused) {
+    DOCUMENT.with_borrow_mut(|document| {
+        (document.whole, document.box_id, document.text, document.selection) = (now.whole, now.box_id, now.text, now.selection);
+        document.marked.clear();
+    });
+    hide_marked();
+    let (input, view) = (INPUT.get(), crate::ios::view());
+    // SAFETY: plain requests of two views of the library's.
     unsafe {
         if editing {
             send::<Bool>(input, c"resignFirstResponder", ());
@@ -183,27 +333,28 @@ pub(crate) fn follow(view: Obj, ui: &mut Ui) {
     }
 }
 
-/// The text cursor moved: the keyboard hears the selection changed (and starts a word afresh).
-fn moved_cursor() {
-    let delegate = COMPOSING.with_borrow(|composing| composing.delegate);
-    // SAFETY: the keyboard's delegate (nil answers nothing) hears it.
-    unsafe {
-        send::<()>(delegate, c"selectionWillChange:", (INPUT.get(),));
-        send::<()>(delegate, c"selectionDidChange:", (INPUT.get(),));
+/// The same box has focus: what changed in it besides the keyboard's own changes (the app's, or
+/// a key's) is the document's now, and the keyboard hears it. What an input method composed
+/// over text that changed is dropped.
+fn keep_up(now: Focused, cursor_moved: bool) {
+    let (text_changed, selection_changed) = DOCUMENT.with_borrow(|document| (document.text != now.text, document.selection != now.selection));
+    DOCUMENT.with_borrow_mut(|document| (document.text, document.selection) = (now.text, now.selection));
+    if text_changed {
+        DOCUMENT.with_borrow_mut(|document| document.marked.clear());
+        return tell(c"textWillChange:", c"textDidChange:");
+    }
+    if selection_changed || (cursor_moved && !now.whole) {
+        tell(c"selectionWillChange:", c"selectionDidChange:");
     }
 }
 
-/// Forgets what an input method composed, and tells the keyboard the text changed.
-fn drop_marked() {
-    let delegate = COMPOSING.with_borrow_mut(|composing| {
-        composing.marked.clear();
-        composing.delegate
-    });
-    hide_marked();
-    // SAFETY: the keyboard's delegate (nil answers nothing) hears the document changed.
+/// Tells the keyboard (the input view's delegate) of a change it did not make.
+fn tell(will: &CStr, did: &CStr) {
+    let delegate = DOCUMENT.with_borrow(|document| document.delegate);
+    // SAFETY: the keyboard's delegate (nil answers nothing) hears it.
     unsafe {
-        send::<()>(delegate, c"textWillChange:", (INPUT.get(),));
-        send::<()>(delegate, c"textDidChange:", (INPUT.get(),));
+        send::<()>(delegate, will, (INPUT.get(),));
+        send::<()>(delegate, did, (INPUT.get(),));
     }
 }
 
@@ -214,6 +365,288 @@ extern "C" fn yes_please(_: Obj, _: Sel) -> Bool {
 pub(crate) extern "C" fn ignored(_: Obj, _: Sel, _: Obj) {}
 
 pub(crate) extern "C" fn ignored_direction(_: Obj, _: Sel, _: isize, _: Obj) {}
+
+// ---- the document: the box's text, with what is composed in place ----
+
+/// UTF-16 units in `text` before byte `at`.
+fn units(text: &str, at: usize) -> usize {
+    text.get(..at).map_or_else(|| text.encode_utf16().count(), |before| before.encode_utf16().count())
+}
+
+/// The byte of `text` at UTF-16 unit `at` (the end, past it).
+fn byte_at(text: &str, at: usize) -> usize {
+    let mut counted = 0;
+    for (byte, letter) in text.char_indices() {
+        if counted >= at {
+            return byte;
+        }
+        counted += letter.len_utf16();
+    }
+    text.len()
+}
+
+/// The two ends in order.
+fn sorted([one, other]: [usize; 2]) -> [usize; 2] {
+    [one.min(other), one.max(other)]
+}
+
+impl Document {
+    fn composing(&self) -> bool {
+        !self.marked.is_empty()
+    }
+    /// The document: the text with what is composed in place of what it stands for.
+    fn shown(&self) -> String {
+        match self.composing() {
+            true => [&self.text[..self.over[0]], &self.marked, &self.text[self.over[1]..]].concat(),
+            false => self.text.clone(),
+        }
+    }
+    fn length(&self) -> usize {
+        units(&self.text, self.text.len()) + units(&self.marked, self.marked.len()) - self.over_units()
+    }
+    /// The UTF-16 units of the text that what is composed stands for.
+    fn over_units(&self) -> usize {
+        if self.composing() { units(&self.text[self.over[0]..], self.over[1] - self.over[0]) } else { 0 }
+    }
+    /// The byte of the text at a document position: inside what is composed, where it starts.
+    fn byte_of(&self, at: usize) -> usize {
+        if !self.composing() {
+            return byte_at(&self.text, at);
+        }
+        let (before, marked) = (units(&self.text, self.over[0]), units(&self.marked, self.marked.len()));
+        match at {
+            _ if at <= before => byte_at(&self.text, at),
+            _ if at < before + marked => self.over[0],
+            _ => self.over[1] + byte_at(&self.text[self.over[1]..], at - before - marked),
+        }
+    }
+    /// The document position of a byte of the text.
+    fn position_of(&self, at: usize) -> usize {
+        let unit = units(&self.text, at);
+        if self.composing() && at >= self.over[1] { unit + units(&self.marked, self.marked.len()) - self.over_units() } else { unit }
+    }
+    /// What is selected, as document positions: inside what is composed, the input method's own
+    /// selection.
+    fn selected(&self) -> [usize; 2] {
+        if self.composing() {
+            let start = units(&self.text, self.over[0]) + self.picked.location;
+            return [start, start + self.picked.length];
+        }
+        let [from, to] = sorted(self.selection);
+        [self.position_of(from), self.position_of(to)]
+    }
+}
+
+/// Replaces the text's bytes `range` with `with` and sets the selection (anchor, cursor): here
+/// at once, and in the box as the next run's first stroke.
+fn change(range: Range<usize>, with: &str, selection: [usize; 2]) {
+    DOCUMENT.with_borrow_mut(|document| {
+        document.text.replace_range(range.clone(), with);
+        (document.selection, document.sent) = (selection, document.sent + 1);
+    });
+    let done = Box::new(Replace { range, with: with.into(), selection });
+    heard(Heard::Other(Box::new(move |ui: &mut Ui| {
+        ui.input.strokes.push(Stroke::Replace(done));
+        DOCUMENT.with_borrow_mut(|document| document.sent -= 1);
+        true
+    })));
+}
+
+/// Commits what an input method composed: it replaces what it stood for, the cursor after it.
+fn commit_marked() {
+    let (over, marked) = DOCUMENT.with_borrow_mut(|document| (document.over, std::mem::take(&mut document.marked)));
+    hide_marked();
+    if marked.is_empty() && over[0] == over[1] {
+        return;
+    }
+    let cursor = over[0] + marked.len();
+    change(over[0]..over[1], &marked, [cursor; 2]);
+}
+
+/// Text typed, or committed by an input method, in place of the selection (or of what was
+/// composed). Return and Tab are their keys (unless a hardware key already said so). Outside
+/// a plain text box the text is typed as it comes.
+fn typed(text: String) {
+    let key = match text.as_str() {
+        "\n" | "\r" => Some(Key::Enter),
+        "\t" => Some(Key::Tab),
+        _ => None,
+    };
+    let whole = DOCUMENT.with_borrow(|document| document.whole);
+    match key {
+        Some(key) => {
+            commit_marked_or_drop(whole);
+            if !crate::ios::key_held(key) {
+                heard(Heard::Event(Event::Key(key, Mods::NONE)));
+            }
+        }
+        None if whole => type_over(&text),
+        None => {
+            DOCUMENT.with_borrow_mut(|document| document.marked.clear());
+            hide_marked();
+            if !text.is_empty() {
+                heard(Heard::Event(Event::Text(text)));
+            }
+        }
+    }
+}
+
+/// What was composed is committed (in a plain text box), or forgotten.
+fn commit_marked_or_drop(whole: bool) {
+    if whole {
+        return commit_marked();
+    }
+    let committed = DOCUMENT.with_borrow_mut(|document| std::mem::take(&mut document.marked));
+    hide_marked();
+    if !committed.is_empty() {
+        heard(Heard::Event(Event::Text(committed)));
+    }
+}
+
+/// Text in place of what was composed, or else of the selection; the cursor after it.
+fn type_over(text: &str) {
+    let range = DOCUMENT.with_borrow_mut(|document| match std::mem::take(&mut document.marked).is_empty() {
+        true => sorted(document.selection),
+        false => document.over,
+    });
+    hide_marked();
+    change(range[0]..range[1], text, [range[0] + text.len(); 2]);
+}
+
+extern "C" fn has_text(_: Obj, _: Sel) -> Bool {
+    Bool::from(DOCUMENT.with_borrow(|document| document.length() > 0))
+}
+
+extern "C" fn inserted(_: Obj, _: Sel, text: Obj) {
+    typed(text_of(text));
+}
+
+/// The keyboard's Delete: what was composed goes; else the selection, or the character before
+/// the cursor (unless a hardware key already deleted it).
+extern "C" fn deleted(_: Obj, _: Sel) {
+    let (composing, whole) = DOCUMENT.with_borrow(|document| (document.composing(), document.whole));
+    if composing {
+        DOCUMENT.with_borrow_mut(|document| document.marked.clear());
+        hide_marked();
+        return tell(c"textWillChange:", c"textDidChange:");
+    }
+    if crate::ios::key_held(Key::Backspace) {
+        return;
+    }
+    let Some(boxes) = TEXT_BOXES.get().filter(|_| whole) else {
+        return heard(Heard::Event(Event::Key(Key::Backspace, Mods::NONE)));
+    };
+    let [from, to] = DOCUMENT.with_borrow(|document| sorted(document.selection));
+    let from = if from == to { DOCUMENT.with_borrow(|document| (boxes.before)(&document.text, to)) } else { from };
+    if from < to {
+        change(from..to, "", [from; 2]);
+    }
+}
+
+/// The keyboard replaces part of the document (a corrected word): in a plain text box, that
+/// part of the text, the selection moving with what follows it; elsewhere, typed.
+extern "C" fn replaced(_: Obj, _: Sel, within: Obj, text: Obj) {
+    let text = text_of(text);
+    if !DOCUMENT.with_borrow(|document| document.whole) {
+        return typed(text);
+    }
+    commit_marked();
+    let [from, to] = ends_of(within);
+    let (bytes, selection) = DOCUMENT.with_borrow(|document| {
+        let bytes = document.byte_of(from)..document.byte_of(to);
+        (bytes.clone(), document.selection.map(|at| moved_by(at, &bytes, text.len())))
+    });
+    change(bytes, &text, selection);
+}
+
+/// Where a place in the text goes when bytes `replaced` become `added` bytes: after them, by as
+/// much as they grew; inside them, to their end.
+fn moved_by(at: usize, replaced: &Range<usize>, added: usize) -> usize {
+    match at {
+        _ if at >= replaced.end => at + added - replaced.len(),
+        _ if at > replaced.start => replaced.start + added,
+        _ => at,
+    }
+}
+
+/// The keyboard moves the cursor, or selects (in a plain text box, not while composing).
+extern "C" fn set_selected_range(_: Obj, _: Sel, within: Obj) {
+    let [from, to] = ends_of(within);
+    let (whole, composing, cursor) = DOCUMENT.with_borrow(|document| (document.whole, document.composing(), document.selection[1]));
+    if !whole || composing {
+        return;
+    }
+    let selection = DOCUMENT.with_borrow(|document| [document.byte_of(from), document.byte_of(to)]);
+    change(cursor..cursor, "", selection);
+}
+
+/// The selection, or within what is composed, the input method's.
+extern "C" fn selected_range(_: Obj, _: Sel) -> Obj {
+    let [from, to] = DOCUMENT.with_borrow(Document::selected);
+    range(from, to)
+}
+
+extern "C" fn marked_range(_: Obj, _: Sel) -> Obj {
+    let marked = DOCUMENT.with_borrow(|document| document.composing().then(|| units(&document.text, document.over[0])).map(|from| (from, units(&document.marked, document.marked.len()))));
+    marked.map_or(std::ptr::null_mut(), |(from, long)| range(from, from + long))
+}
+
+extern "C" fn style(_: Obj, _: Sel) -> Obj {
+    DOCUMENT.with_borrow(|document| document.style)
+}
+
+extern "C" fn set_style(_: Obj, _: Sel, style: Obj) {
+    DOCUMENT.with_borrow_mut(|document| document.style = style);
+}
+
+/// An input method composes, in place of the selection (or of what it composed before).
+/// Composing nothing ends it: in a plain text box, the selection it stood for goes with it.
+extern "C" fn marked(_: Obj, _: Sel, text: Obj, picked: NSRange) {
+    let text = text_of(text);
+    let ended = DOCUMENT.with_borrow_mut(|document| {
+        if !document.composing() {
+            document.over = if document.whole { sorted(document.selection) } else { [0; 2] };
+        }
+        (document.marked, document.picked) = (text, picked);
+        document.whole && !document.composing()
+    });
+    if ended {
+        commit_marked();
+    }
+    show_marked();
+}
+
+/// The input method is done: what it composed is committed.
+extern "C" fn unmarked(_: Obj, _: Sel) {
+    let whole = DOCUMENT.with_borrow(|document| document.whole);
+    commit_marked_or_drop(whole);
+}
+
+extern "C" fn text_in(_: Obj, _: Sel, within: Obj) -> Obj {
+    let [from, to] = ends_of(within);
+    let shown: Vec<u16> = DOCUMENT.with_borrow(|document| document.shown().encode_utf16().collect());
+    ns_string(&String::from_utf16_lossy(&shown[from.min(shown.len())..to.min(shown.len())]))
+}
+
+/// The text in a plain or attributed string.
+fn text_of(string: Obj) -> String {
+    // SAFETY: both kinds answer `isKindOfClass:`; an attributed one answers `string`.
+    let attributed = unsafe { send::<Bool>(string, c"isKindOfClass:", (class(c"NSAttributedString"),)) } != 0;
+    let plain = if attributed { unsafe { send(string, c"string", ()) } } else { string };
+    rust_string(plain).unwrap_or_default()
+}
+
+extern "C" fn delegate(_: Obj, _: Sel) -> Obj {
+    DOCUMENT.with_borrow(|document| document.delegate)
+}
+
+extern "C" fn set_delegate(_: Obj, _: Sel, delegate: Obj) {
+    DOCUMENT.with_borrow_mut(|document| document.delegate = delegate);
+}
+
+extern "C" fn tokenizer(_: Obj, _: Sel) -> Obj {
+    DOCUMENT.with_borrow(|document| document.tokenizer)
+}
 
 // ---- positions and ranges ----
 
@@ -232,7 +665,7 @@ pub(crate) fn range(from: usize, to: usize) -> Obj {
     // SAFETY: an object of the range class with room for two offsets beside it, written once.
     unsafe {
         let made = class_createInstance(range_class(), 2 * size_of::<usize>());
-        object_getIndexedIvars(made).cast::<[usize; 2]>().write([from.min(to), from.max(to)]);
+        object_getIndexedIvars(made).cast::<[usize; 2]>().write(sorted([from, to]));
         send(made, c"autorelease", ())
     }
 }
@@ -268,9 +701,9 @@ extern "C" fn range_empty(range: Obj, _: Sel) -> Bool {
     Bool::from(from == to)
 }
 
-/// The document's length: what is composed.
+/// The document's length, in UTF-16 units.
 fn length() -> usize {
-    COMPOSING.with_borrow(|composing| composing.marked.len())
+    DOCUMENT.with_borrow(Document::length)
 }
 
 pub(crate) extern "C" fn beginning(_: Obj, _: Sel) -> Obj {
@@ -307,8 +740,24 @@ extern "C" fn moved(_: Obj, _: Sel, from: Obj, by: isize) -> Obj {
     moved_within(from, by, length())
 }
 
+/// The same toward a side; up and down go by lines, where the box's lines are known.
 extern "C" fn moved_toward(_: Obj, _: Sel, from: Obj, direction: isize, by: isize) -> Obj {
+    let lines = match direction {
+        UP => Some(-by),
+        DOWN => Some(by),
+        _ => None,
+    };
+    if let Some(to) = lines.and_then(|lines| line_away(offset_of(from), lines)) {
+        return position(to);
+    }
     moved_toward_within(from, direction, by, length())
+}
+
+/// The position `lines` lines below (above, if negative) a position, at the same x.
+fn line_away(at: usize, lines: isize) -> Option<usize> {
+    let caret = caret_at(at)?;
+    let to = pt(caret.x, caret.y + caret.h * (lines as f32 + 0.5));
+    nearest_to(to)
 }
 
 pub(crate) extern "C" fn compared(_: Obj, _: Sel, one: Obj, other: Obj) -> isize {
@@ -332,154 +781,232 @@ pub(crate) extern "C" fn left_to_right(_: Obj, _: Sel, _: Obj, _: isize) -> isiz
     0
 }
 
-// ---- the document: what is composed ----
+// ---- places on the screen, in page units (the input view's own) ----
 
-/// The composed text between two offsets.
-fn piece(from: usize, to: usize) -> String {
-    COMPOSING.with_borrow(|composing| {
-        let marked = &composing.marked;
-        String::from_utf16_lossy(&marked[from.min(marked.len())..to.min(marked.len())])
-    })
+/// Where the box's text lies as last laid out: its element, where its text starts and ends in
+/// the tree's strings, its font and alignment, the room inside its padding, and its lines.
+struct LaidOut {
+    start: usize,
+    end: usize,
+    font: crate::text::Font,
+    side: f32,
+    inside: Rect,
+    line_height: f32,
+    lines: Vec<Line>,
 }
 
-extern "C" fn text_in(_: Obj, _: Sel, within: Obj) -> Obj {
-    let [from, to] = ends_of(within);
-    ns_string(&piece(from, to))
-}
-
-/// The text in a plain or attributed string.
-fn text_of(string: Obj) -> String {
-    // SAFETY: both kinds answer `isKindOfClass:`; an attributed one answers `string`.
-    let attributed = unsafe { send::<Bool>(string, c"isKindOfClass:", (class(c"NSAttributedString"),)) } != 0;
-    let plain = if attributed { unsafe { send(string, c"string", ()) } } else { string };
-    rust_string(plain).unwrap_or_default()
-}
-
-/// Text typed, or committed by an input method: Return and Tab as their keys (unless a
-/// hardware key already said so); the rest as text.
-fn typed(text: String) {
-    COMPOSING.with_borrow_mut(|composing| composing.marked.clear());
-    hide_marked();
-    let key = match text.as_str() {
-        "\n" | "\r" => Some(Key::Enter),
-        "\t" => Some(Key::Tab),
-        _ => None,
+/// The focused text box's text as last laid out.
+fn laid_out(ui: &Ui) -> Option<LaidOut> {
+    let at = ui.typed_in?;
+    let (spec, place) = (ui.tree.specs.get(at as usize)?, ui.tree.places.get(at as usize)?);
+    let Content::Text { start, end, font, wrap, side, .. } = spec.content else { return None };
+    let (start, end) = (start as usize, end as usize);
+    let lines = match wrap {
+        true => ui.tree.lines.get(place.lines.0 as usize..place.lines.1 as usize)?.to_vec(),
+        false => vec![Line { start, end, width: place.fit[0] }],
     };
-    match key {
-        Some(key) if crate::ios::key_held(key) => {}
-        Some(key) => heard(Heard::Event(Event::Key(key, Mods::NONE))),
-        None if !text.is_empty() => heard(Heard::Event(Event::Text(text))),
-        None => {}
+    let side = match side {
+        Align::Center => 0.5,
+        Align::End => 1.0,
+        _ => 0.0,
+    };
+    Some(LaidOut { start, end, font, side, inside: ui.tree.rect_of(at).inset(spec.frame.pad), line_height: place.line_height, lines })
+}
+
+/// A cursor's place on a line: where it stands (with `right-to-left`, of the two).
+#[cfg(feature = "right-to-left")]
+fn stands([x, _]: Carets) -> f32 {
+    x
+}
+#[cfg(not(feature = "right-to-left"))]
+fn stands(x: Carets) -> f32 {
+    x
+}
+
+impl LaidOut {
+    /// The line byte `at` of the tree's strings is on.
+    fn row_of(&self, at: usize) -> usize {
+        self.lines.iter().rposition(|line| line.start <= at).unwrap_or(0)
+    }
+    /// What line `row` marks for a selection (each piece's left and right, from the box's
+    /// left) and where a cursor on it stands; as `Ui::place_cursor` measures it.
+    fn marks(&self, ui: &mut Ui, row: usize, selection: [usize; 2], cursor: Option<usize>, pieces: &mut Vec<[f32; 2]>) -> Option<f32> {
+        let line = *self.lines.get(row)?;
+        let Ui { tree, text, scale, edit, .. } = ui;
+        let paragraph = tree.strings[self.start..line.start].rfind('\n').map_or(self.start, |at| self.start + at + 1);
+        let leftward = crate::bidi::leftward(&tree.strings[paragraph..self.end]);
+        let words = &tree.strings[line.start..line.end];
+        let carets = crate::text::marks(text.as_mut(), words, line.start, line.width, self.font, *scale, leftward, selection, cursor, edit.after, pieces);
+        let shift = ((self.inside.w - line.width).max(0.0) * if leftward { 1.0 - self.side } else { self.side }).round();
+        pieces.iter_mut().for_each(|piece| *piece = piece.map(|x| x + shift));
+        Some(carets.map_or(shift, |carets| stands(carets) + shift))
+    }
+    /// The caret at byte `at` of the box's text.
+    fn caret(&self, ui: &mut Ui, at: usize) -> Option<Rect> {
+        let at = (self.start + at).min(self.end);
+        let row = self.row_of(at);
+        let x = self.marks(ui, row, [0; 2], Some(at), &mut Vec::new())?;
+        Some(rect(self.inside.x + x, self.inside.y + row as f32 * self.line_height, 2.0, self.line_height))
+    }
+    /// The rectangles of bytes `from` to `to` of the box's text, a line at a time.
+    fn pieces(&self, ui: &mut Ui, [from, to]: [usize; 2]) -> Vec<Rect> {
+        let [from, to] = [(self.start + from).min(self.end), (self.start + to).min(self.end)];
+        let (mut found, mut pieces) = (Vec::new(), Vec::new());
+        for row in self.row_of(from)..=self.row_of(to) {
+            self.marks(ui, row, [from, to], None, &mut pieces);
+            let top = self.inside.y + row as f32 * self.line_height;
+            found.extend(pieces.iter().map(|[left, right]| rect(self.inside.x + left, top, right - left, self.line_height)));
+        }
+        found
+    }
+    /// The byte of the box's text nearest a point: on the line there, the cursor position
+    /// standing closest.
+    fn nearest(&self, ui: &mut Ui, to: Point) -> Option<usize> {
+        let row = (((to.y - self.inside.y) / self.line_height.max(1.0)).max(0.0) as usize).min(self.lines.len().checked_sub(1)?);
+        let line = self.lines[row];
+        let (mut best, mut at) = ((f32::INFINITY, line.start), line.start);
+        loop {
+            let x = self.marks(ui, row, [0; 2], Some(at), &mut Vec::new())?;
+            let off = (self.inside.x + x - to.x).abs();
+            if off < best.0 {
+                best = (off, at);
+            }
+            if at >= line.end {
+                return Some(best.1 - self.start);
+            }
+            at = (self.start + step(&ui.tree.strings[self.start..self.end], at - self.start, true)).min(line.end);
+        }
     }
 }
 
-extern "C" fn inserted(_: Obj, _: Sel, text: Obj) {
-    typed(text_of(text));
+/// Measures on the box's text as last laid out, in a plain text box; none while a run is going
+/// on.
+fn measured<T>(work: impl FnOnce(&mut Ui, TextBoxes) -> Option<T>) -> Option<T> {
+    let boxes = TEXT_BOXES.get().filter(|_| DOCUMENT.with_borrow(|document| document.whole))?;
+    crate::ios::with_ui(|ui| work(ui, boxes)).flatten()
 }
 
-/// The keyboard's Delete: Backspace (unless a hardware key already said so).
-extern "C" fn deleted(_: Obj, _: Sel) {
-    if length() > 0 {
-        return drop_marked();
+/// The caret at a document position.
+fn caret_at(at: usize) -> Option<Rect> {
+    let byte = DOCUMENT.with_borrow(|document| document.byte_of(at));
+    measured(|ui, boxes| (boxes.caret)(ui, byte))
+}
+
+/// The document position nearest a point. (An empty box shows its hint: none there.)
+fn nearest_to(to: Point) -> Option<usize> {
+    let byte = measured(|ui, boxes| (boxes.nearest)(ui, to))?;
+    Some(DOCUMENT.with_borrow(|document| document.position_of(byte.min(document.text.len()))))
+}
+
+/// The rectangles of a document range.
+fn pieces_of(within: Obj) -> Vec<Rect> {
+    let [from, to] = ends_of(within);
+    let bytes = DOCUMENT.with_borrow(|document| [document.byte_of(from), document.byte_of(to)]);
+    measured(|ui, boxes| Some((boxes.pieces)(ui, bytes))).unwrap_or_default()
+}
+
+fn ns_rect(at: Rect) -> NSRect {
+    NSRect::new(f64::from(at.x), f64::from(at.y), f64::from(at.w), f64::from(at.h))
+}
+
+/// The text cursor as last shown: where the keyboard's places fall back to.
+fn cursor_rect() -> NSRect {
+    ns_rect(DOCUMENT.with_borrow(|document| document.cursor).unwrap_or(rect(0.0, 0.0, 2.0, 1.0)))
+}
+
+/// Where a range is: what is composed, as shown; else its first line's piece.
+extern "C" fn first_rect(_: Obj, _: Sel, within: Obj) -> NSRect {
+    let label = DOCUMENT.with_borrow(|document| if document.composing() { document.label } else { std::ptr::null_mut() });
+    if !label.is_null() {
+        let origin = crate::ios::origin();
+        // SAFETY: a label answers its frame, in the library's view.
+        let frame = unsafe { send_rect(label, c"frame", ()) };
+        return NSRect::new(frame.origin.x - origin.x, frame.origin.y - origin.y, frame.size.width, frame.size.height);
     }
-    if !crate::ios::key_held(Key::Backspace) {
-        heard(Heard::Event(Event::Key(Key::Backspace, Mods::NONE)));
+    pieces_of(within).first().map_or_else(cursor_rect, |piece| ns_rect(*piece))
+}
+
+extern "C" fn caret_rect(_: Obj, _: Sel, at: Obj) -> NSRect {
+    caret_at(offset_of(at)).map_or_else(cursor_rect, ns_rect)
+}
+
+/// A range's rectangles, a line at a time, the first holding its start and the last its end.
+extern "C" fn selection_rects(_: Obj, _: Sel, within: Obj) -> Obj {
+    let found = pieces_of(within);
+    let last = found.len().saturating_sub(1);
+    let made: Vec<Obj> = found.iter().enumerate().map(|(nth, at)| piece(Piece { rect: ns_rect(*at), start: nth == 0, end: nth == last })).collect();
+    ns_array(&made)
+}
+
+extern "C" fn closest(_: Obj, _: Sel, to: NSPoint) -> Obj {
+    position(nearest_to(pt(to.x as f32, to.y as f32)).unwrap_or_else(length))
+}
+
+extern "C" fn closest_within(_: Obj, _: Sel, to: NSPoint, within: Obj) -> Obj {
+    let [from, end] = ends_of(within);
+    position(nearest_to(pt(to.x as f32, to.y as f32)).unwrap_or(end).clamp(from, end))
+}
+
+/// The character at a point.
+extern "C" fn range_at(_: Obj, _: Sel, to: NSPoint) -> Obj {
+    let Some(at) = nearest_to(pt(to.x as f32, to.y as f32)) else { return std::ptr::null_mut() };
+    range(at, (at + 1).min(length()))
+}
+
+/// A selection's rectangle (autoreleased).
+fn piece(made: Piece) -> Obj {
+    // SAFETY: an object of the rectangle class with room for a piece beside it, written once.
+    unsafe {
+        let object = class_createInstance(piece_class(), size_of::<Piece>());
+        object_getIndexedIvars(object).cast::<Piece>().write(made);
+        send(object, c"autorelease", ())
     }
 }
 
-/// A keyboard replaces part of the document: what composed there is committed as this text.
-extern "C" fn replaced(_: Obj, _: Sel, _: Obj, text: Obj) {
-    typed(text_of(text));
+/// The piece beside a selection's rectangle.
+fn piece_of(object: Obj) -> Piece {
+    // SAFETY: a rectangle of the library's class has its piece beside it.
+    unsafe { object_getIndexedIvars(object).cast::<Piece>().read() }
 }
 
-/// The input method's selection within what it composes; else an empty one at the end.
-extern "C" fn selected_range(_: Obj, _: Sel) -> Obj {
-    let (picked, long) = COMPOSING.with_borrow(|composing| (composing.picked, composing.marked.len()));
-    if long == 0 { range(0, 0) } else { range(picked.location.min(long), (picked.location + picked.length).min(long)) }
+extern "C" fn piece_rect(object: Obj, _: Sel) -> NSRect {
+    piece_of(object).rect
 }
 
-extern "C" fn marked_range(_: Obj, _: Sel) -> Obj {
-    let long = length();
-    if long == 0 { std::ptr::null_mut() } else { range(0, long) }
+extern "C" fn piece_starts(object: Obj, _: Sel) -> Bool {
+    Bool::from(piece_of(object).start)
 }
 
-extern "C" fn style(_: Obj, _: Sel) -> Obj {
-    COMPOSING.with_borrow(|composing| composing.style)
+extern "C" fn piece_ends(object: Obj, _: Sel) -> Bool {
+    Bool::from(piece_of(object).end)
 }
 
-extern "C" fn set_style(_: Obj, _: Sel, style: Obj) {
-    COMPOSING.with_borrow_mut(|composing| composing.style = style);
-}
-
-/// An input method composes: noted, and shown over the text cursor. Nothing composed ends it.
-extern "C" fn marked(_: Obj, _: Sel, text: Obj, picked: NSRange) {
-    let text = text_of(text);
-    COMPOSING.with_borrow_mut(|composing| (composing.marked, composing.picked) = (text.encode_utf16().collect(), picked));
-    show_marked();
-}
-
-/// The input method is done: what it composed is committed.
-extern "C" fn unmarked(_: Obj, _: Sel) {
-    let text = piece(0, length());
-    typed(text);
-}
-
-extern "C" fn delegate(_: Obj, _: Sel) -> Obj {
-    COMPOSING.with_borrow(|composing| composing.delegate)
-}
-
-extern "C" fn set_delegate(_: Obj, _: Sel, delegate: Obj) {
-    COMPOSING.with_borrow_mut(|composing| composing.delegate = delegate);
-}
-
-extern "C" fn tokenizer(_: Obj, _: Sel) -> Obj {
-    COMPOSING.with_borrow(|composing| composing.tokenizer)
-}
-
-/// Where composed text is, in the input view: from the text cursor, as wide as shown.
-extern "C" fn first_rect(_: Obj, _: Sel, _: Obj) -> NSRect {
-    let (height, width) = COMPOSING.with_borrow(|composing| (composing.cursor.map_or(1.0, |at| at.h), composing.label));
-    // SAFETY: a label answers its frame (nil answers nothing).
-    let wide = unsafe { send_rect(width, c"frame", ()) }.size.width.max(1.0);
-    NSRect::new(0.0, 0.0, wide, f64::from(height))
-}
-
-extern "C" fn caret_rect(_: Obj, _: Sel, _: Obj) -> NSRect {
-    let height = COMPOSING.with_borrow(|composing| composing.cursor.map_or(1.0, |at| at.h));
-    NSRect::new(0.0, 0.0, 2.0, f64::from(height))
-}
-
-extern "C" fn no_rects(_: Obj, _: Sel, _: Obj) -> Obj {
-    ns_array(&[])
-}
-
-extern "C" fn closest(_: Obj, _: Sel, _: NSPoint) -> Obj {
-    position(length())
-}
-
-extern "C" fn closest_within(_: Obj, _: Sel, _: NSPoint, within: Obj) -> Obj {
-    position(ends_of(within)[1])
-}
-
-extern "C" fn no_range(_: Obj, _: Sel, _: NSPoint) -> Obj {
-    std::ptr::null_mut()
-}
-
-/// Corrections, spelling, smart quotes, dashes and spaces: off (`No` is 1).
-extern "C" fn no_trait(_: Obj, _: Sel) -> isize {
-    1
-}
-
-/// Capitals made by the keyboard: none (0).
-extern "C" fn none_trait(_: Obj, _: Sel) -> isize {
+extern "C" fn left_to_right_piece(_: Obj, _: Sel) -> isize {
     0
 }
 
-extern "C" fn secret(_: Obj, _: Sel) -> Bool {
-    Bool::from(COMPOSING.with_borrow(|composing| composing.secret))
+extern "C" fn not_vertical(_: Obj, _: Sel) -> Bool {
+    0
 }
 
-// ---- the system's edit actions ----
+// ---- traits ----
+
+/// Corrections, spelling, smart quotes, dashes and spaces: the system's choice in a plain text
+/// box; elsewhere off (the keyboard sees no text there).
+extern "C" fn correcting(_: Obj, _: Sel) -> isize {
+    if DOCUMENT.with_borrow(|document| document.whole) { DEFAULT } else { NO }
+}
+
+/// Capitals at the start of sentences in a plain text box; elsewhere none.
+extern "C" fn capitals(_: Obj, _: Sel) -> isize {
+    if DOCUMENT.with_borrow(|document| document.whole) { SENTENCES } else { 0 }
+}
+
+extern "C" fn secret(_: Obj, _: Sel) -> Bool {
+    Bool::from(DOCUMENT.with_borrow(|document| document.secret))
+}
+
+// ---- the system's edit actions and menu ----
 
 /// Command with a letter, as the keys would do it.
 fn command(letter: char) {
@@ -504,10 +1031,104 @@ extern "C" fn all_selected(_: Obj, _: Sel, _: Obj) {
     command('a');
 }
 
-/// Copy, Cut, Paste and Select All are offered; nothing else.
+/// The system's Select: the word at the cursor.
+extern "C" fn word_selected(_: Obj, _: Sel, _: Obj) {
+    let Some(boxes) = TEXT_BOXES.get() else { return };
+    let (word, cursor) = DOCUMENT.with_borrow(|document| ((boxes.word)(&document.text, document.selection[1]), document.selection[1]));
+    change(cursor..cursor, "", word);
+}
+
+/// What the edit menu offers: Cut and Copy with a selection (not of a password), Paste with
+/// text to paste, Select with none in a plain text box, and Select All.
 extern "C" fn can_perform(_: Obj, _: Sel, action: Sel, _: Obj) -> Bool {
-    let offered = [c"copy:", c"cut:", c"paste:", c"selectAll:"];
-    Bool::from(offered.into_iter().any(|name| std::ptr::eq(sel(name), action)))
+    let (secret, whole, [from, to], empty) = DOCUMENT.with_borrow(|document| (document.secret, document.whole, document.selected(), document.length() == 0));
+    let picked = from != to && !secret;
+    // SAFETY: a plain question of the pasteboard, which asks the person nothing.
+    let pastes = || unsafe { send::<Bool>(send::<Obj>(class(c"UIPasteboard"), c"generalPasteboard", ()), c"hasStrings", ()) } != 0;
+    let offered = |name: &CStr| std::ptr::eq(sel(name), action);
+    let can = match () {
+        _ if offered(c"cut:") || offered(c"copy:") => picked,
+        _ if offered(c"paste:") => pastes(),
+        _ if offered(c"select:") => whole && from == to && !empty,
+        _ => offered(c"selectAll:") && !empty,
+    };
+    Bool::from(can)
+}
+
+/// Shows the system's edit menu at a place on the page (made the first time). Before iOS 16,
+/// the shared menu controller's.
+pub(crate) fn show_edit_menu(at: Point) {
+    let input = INPUT.get();
+    let at = NSPoint { x: f64::from(at.x), y: f64::from(at.y) };
+    if class(c"UIEditMenuInteraction").is_null() {
+        // SAFETY: the shared menu controller shows the first responder's actions at a place.
+        return unsafe { send::<()>(send::<Obj>(class(c"UIMenuController"), c"sharedMenuController", ()), c"showMenuFromView:rect:", (input, NSRect::new(at.x, at.y, 1.0, 1.0))) };
+    }
+    if DOCUMENT.with_borrow(|document| document.menu.is_null()) {
+        let menu = edit_menu(input);
+        DOCUMENT.with_borrow_mut(|document| document.menu = menu);
+    }
+    let menu = DOCUMENT.with_borrow(|document| document.menu);
+    // SAFETY: a configuration at the place, autoreleased, presented by the input view's
+    // interaction.
+    unsafe {
+        let asked: Obj = send(class(c"UIEditMenuConfiguration"), c"configurationWithIdentifier:sourcePoint:", (std::ptr::null_mut::<c_void>(), at));
+        send::<()>(menu, c"presentEditMenuWithConfiguration:", (asked,));
+    }
+}
+
+/// The edit menu's interaction, handed to the input view, which keeps it.
+fn edit_menu(input: Obj) -> Obj {
+    // SAFETY: an interaction without a delegate (the menu holds the responder's actions),
+    // handed to the view.
+    unsafe {
+        let menu: Obj = send(send::<Obj>(class(c"UIEditMenuInteraction"), c"alloc", ()), c"initWithDelegate:", (std::ptr::null_mut::<c_void>(),));
+        send::<()>(input, c"addInteraction:", (menu,));
+        send::<()>(menu, c"release", ());
+        menu
+    }
+}
+
+// ---- the long press in a text box ----
+
+/// The long press's own class: the view knows it from other long presses (a drag's lift).
+fn long_press_class() -> Obj {
+    made_class(c"TautLongPress", c"UILongPressGestureRecognizer", &[], &[])
+}
+
+/// A long press on the text box being typed in shows the system's edit menu: the view learns to
+/// hear it, and to let it begin only there.
+fn hold_in_text_boxes(view: Obj) {
+    let methods: [(&CStr, *const c_void, String); 2] = [(c"held:", held as *const c_void, "v@:@".into()), (c"gestureRecognizerShouldBegin:", may_begin as *const c_void, format!("{BOOL}@:@"))];
+    let listed: Vec<(&CStr, *const c_void, &str)> = methods.iter().map(|(name, imp, types)| (*name, *imp, types.as_str())).collect();
+    add_methods(crate::ios::view_class(), &listed);
+    // SAFETY: a recognizer made with the view as its target, handed to the view, which keeps it.
+    unsafe {
+        let gesture: Obj = send(send::<Obj>(long_press_class(), c"alloc", ()), c"initWithTarget:action:", (view, sel(c"held:")));
+        send::<()>(gesture, c"setCancelsTouchesInView:", (0 as Bool,));
+        send::<()>(view, c"addGestureRecognizer:", (gesture,));
+        send::<()>(gesture, c"release", ());
+    }
+}
+
+/// The long press: the system's edit menu where it is.
+extern "C" fn held(view: Obj, _: Sel, gesture: Obj) {
+    if crate::ios::state_of(gesture) == crate::ios::BEGAN {
+        show_edit_menu(crate::ios::place_of(view, gesture));
+    }
+}
+
+/// Whether one of the view's gestures may begin: the long press only on the text box being
+/// typed in, held as the mouse (elsewhere a long press is the touch feature's right click);
+/// others as UIView says.
+extern "C" fn may_begin(view: Obj, _: Sel, gesture: Obj) -> Bool {
+    if !is_of(gesture, long_press_class()) {
+        // SAFETY: UIView's own answer.
+        return unsafe { crate::ios::send_super(view, c"UIView", c"gestureRecognizerShouldBegin:", (gesture,)) };
+    }
+    let at = crate::ios::place_of(view, gesture);
+    let typing_here = |ui: &mut Ui| ui.ime_area().is_some() && ui.input.down[0] && ui.visible_boxes.rects.get(&ui.focus()).is_some_and(|rect| rect.contains(at));
+    Bool::from(crate::ios::with_ui(typing_here).unwrap_or(false))
 }
 
 // ---- what is composed, shown ----
@@ -515,9 +1136,11 @@ extern "C" fn can_perform(_: Obj, _: Sel, action: Sel, _: Obj) -> Bool {
 /// Shows what is composed over the text cursor, underlined, the selected part thicker, on the
 /// system's background; hides it when nothing is.
 fn show_marked() {
-    let (text, picked, cursor) = COMPOSING.with_borrow(|composing| (String::from_utf16_lossy(&composing.marked), composing.picked, composing.cursor));
+    let (text, picked, cursor) = DOCUMENT.with_borrow(|document| (document.marked.clone(), document.picked, document.cursor));
     let Some(at) = cursor.filter(|_| !text.is_empty()) else { return hide_marked() };
     let label = label();
+    let origin = crate::ios::origin();
+    let (x, y) = (f64::from(at.x) + origin.x, f64::from(at.y) + origin.y);
     // SAFETY: a string made and handed to the label, which keeps it; the label is moved.
     unsafe {
         send::<()>(label, c"setAttributedText:", (dressed(&text, picked),));
@@ -525,20 +1148,20 @@ fn show_marked() {
         send::<()>(label, c"setFont:", (font,));
         send::<()>(label, c"sizeToFit", ());
         let size = send_rect(label, c"frame", ()).size;
-        send::<()>(label, c"setFrame:", (NSRect::new(f64::from(at.x), f64::from(at.y), size.width, f64::from(at.h).max(size.height)),));
+        send::<()>(label, c"setFrame:", (NSRect::new(x, y, size.width, f64::from(at.h).max(size.height)),));
         send::<()>(label, c"setHidden:", (0 as Bool,));
     }
 }
 
 fn hide_marked() {
-    let label = COMPOSING.with_borrow(|composing| composing.label);
+    let label = DOCUMENT.with_borrow(|document| document.label);
     // SAFETY: a label (nil answers nothing) is hidden.
     unsafe { send::<()>(label, c"setHidden:", (1 as Bool,)) };
 }
 
 /// The label showing what is composed, made the first time, in the library's view.
 fn label() -> Obj {
-    let known = COMPOSING.with_borrow(|composing| composing.label);
+    let known = DOCUMENT.with_borrow(|document| document.label);
     if !known.is_null() {
         return known;
     }
@@ -548,12 +1171,11 @@ fn label() -> Obj {
         send::<()>(label, c"setUserInteractionEnabled:", (0 as Bool,));
         send::<()>(label, c"setBackgroundColor:", (send::<Obj>(class(c"UIColor"), c"systemBackgroundColor", ()),));
         send::<()>(label, c"setTextColor:", (send::<Obj>(class(c"UIColor"), c"labelColor", ()),));
-        let input = INPUT.get();
-        send::<()>(send::<Obj>(input, c"superview", ()), c"addSubview:", (label,));
+        send::<()>(crate::ios::view(), c"addSubview:", (label,));
         send::<()>(label, c"release", ());
         label
     };
-    COMPOSING.with_borrow_mut(|composing| composing.label = label);
+    DOCUMENT.with_borrow_mut(|document| document.label = label);
     label
 }
 

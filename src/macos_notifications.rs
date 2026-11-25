@@ -1,12 +1,16 @@
-//! System notifications on macOS: the user notification centre (`UNUserNotificationCenter`).
-//! It serves only app bundles: a program run as a bare executable has no bundle identifier, and
-//! the centre will not take it (it ends the program). So outside an app bundle notifications are
-//! dropped; inside one they show as every app's do.
+//! System notifications on macOS and iOS: the user notification centre
+//! (`UNUserNotificationCenter`). It serves only app bundles: a program run as a bare executable
+//! has no bundle identifier, and the centre will not take it (it ends the program). So outside
+//! an app bundle notifications are dropped; inside one they show as every app's do.
 //!
 //! The first notification loads the framework, asks the person's permission (the system asks
 //! once per app), and makes the application's delegate the centre's: it hears clicks, and lets
 //! a notification show while the app is in front. A picture goes as an attachment, written to a
-//! PNG file the system takes over.
+//! PNG file the system takes over. (On iOS a click that starts the program comes before any
+//! notification was asked for: it is not heard.)
+#[cfg(target_os = "ios")]
+use crate::ios::{Heard, heard};
+#[cfg(target_os = "macos")]
 use crate::macos::{Heard, heard};
 use crate::macos_sys::*;
 use crate::notifications::{NOTICES, Out};
@@ -88,12 +92,17 @@ fn opened() -> Obj {
         (c"userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:", clicked as *const c_void, "v@:@@@?"),
         (c"userNotificationCenter:willPresentNotification:withCompletionHandler:", in_front as *const c_void, "v@:@@@?"),
     ];
-    add_methods(class(c"TautApplication"), &methods);
+    // The application's delegate's class, and the application's.
+    #[cfg(target_os = "macos")]
+    let (delegate, application) = (c"TautApplication", c"NSApplication");
+    #[cfg(target_os = "ios")]
+    let (delegate, application) = (c"TautAppDelegate", c"UIApplication");
+    add_methods(class(delegate), &methods);
     // SAFETY: the centre lives for the program; the delegate is the application's own, which
     // answers the methods above; the block answers the permission (and ignores it).
     unsafe {
         let centre: Obj = send(class(c"UNUserNotificationCenter"), c"currentNotificationCenter", ());
-        let app: Obj = send(class(c"NSApplication"), c"sharedApplication", ());
+        let app: Obj = send(class(application), c"sharedApplication", ());
         send::<()>(centre, c"setDelegate:", (send::<Obj>(app, c"delegate", ()),));
         let answered = block(permitted as *const c_void);
         send::<()>(centre, c"requestAuthorizationWithOptions:completionHandler:", (ALERTS_AND_SOUNDS, answered));
@@ -161,7 +170,10 @@ extern "C" fn clicked(_: Obj, _: Sel, _: Obj, response: Obj, done: *const Block)
     let named = unsafe { send::<Obj>(send::<Obj>(send::<Obj>(response, c"notification", ()), c"request", ()), c"identifier", ()) };
     if let Some(number) = rust_string(named).and_then(|named| named.parse().ok()) {
         NOTICES.with_borrow_mut(|notices| notices.clicked.push(number));
+        #[cfg(target_os = "macos")]
         heard(Heard::Desktop);
+        #[cfg(target_os = "ios")]
+        heard(Heard::Other(Box::new(|_| true)));
     }
     // SAFETY: the system's block takes nothing (the number is not read).
     if !done.is_null() {

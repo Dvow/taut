@@ -396,6 +396,8 @@ impl Ui {
         match self.input.strokes.remove(at) {
             Stroke::Key(key, mods) => Some((key, mods)),
             Stroke::Text(_) => None,
+            #[cfg(target_os = "ios")]
+            Stroke::Replace(_) => None,
         }
     }
 

@@ -149,6 +149,21 @@ pub(crate) struct Edit {
     /// The box's text width: an RTL line is right-aligned in it.
     room: f32,
     places: Vec<[f32; 2]>,
+    /// The text is empty (the box shows its hint), and where the system's edit menu was asked
+    /// for (iOS).
+    #[cfg(target_os = "ios")]
+    pub empty: bool,
+    #[cfg(target_os = "ios")]
+    pub menu_at: Option<Point>,
+}
+
+/// What the system's keyboard did to the focused text box (iOS): bytes `range` replaced by
+/// `with`, then the selection set (anchor, cursor).
+#[cfg(target_os = "ios")]
+pub(crate) struct Replace {
+    pub range: Range<usize>,
+    pub with: String,
+    pub selection: [usize; 2],
 }
 
 impl Edit {
@@ -202,6 +217,16 @@ impl Edit {
     fn insert(&mut self, text: &mut String, new: &str, many: bool, typed: bool) {
         let new: String = new.chars().filter(|c| *c != '\r').map(|c| if c == '\n' && !many { ' ' } else { c }).collect();
         self.replace(text, self.selection(), &new, typed);
+    }
+
+    /// Does what the system's keyboard did (iOS): a one-line box turns newlines into spaces;
+    /// ends inside a character snap to its start.
+    #[cfg(target_os = "ios")]
+    fn keyboard(&mut self, text: &mut String, Replace { range, with, selection }: &Replace, many: bool) {
+        let with: String = with.chars().filter(|c| *c != '\r').map(|c| if c == '\n' && !many { ' ' } else { c }).collect();
+        let from = snap(text, range.start);
+        self.replace(text, from..snap(text, range.end).max(from), &with, true);
+        (self.anchor, self.cursor, self.after) = (snap(text, selection[0]), snap(text, selection[1]), false);
     }
 
     /// Undoes the last change, or (`again`) redoes the last undone one.
@@ -614,7 +639,12 @@ impl Ui {
         if state.right_clicked {
             self.set_focus(state.id);
         }
-        if !self.context_menu(state) {
+        // On iOS the system's edit menu shows instead, where the box was pressed.
+        #[cfg(target_os = "ios")]
+        if state.right_clicked {
+            self.edit.menu_at = self.pointer();
+        }
+        if cfg!(target_os = "ios") || !self.context_menu(state) {
             return;
         }
         if let Some(hooks) = self.asks.spelling.hooks() {
@@ -670,7 +700,18 @@ impl Ui {
                 edit.insert(text, typed, many, true);
                 false
             }
+            #[cfg(target_os = "ios")]
+            Stroke::Replace(done) => {
+                edit.keyboard(text, done, many);
+                false
+            }
         });
+        // The system's keyboard reads text boxes once one is typed in (iOS: see `ios_text_input`).
+        #[cfg(target_os = "ios")]
+        {
+            edit.empty = text.is_empty();
+            crate::ios_text_input::hand_text_boxes();
+        }
         // What spell checking needs to know of typing, and of a word corrected from its menu:
         // see `spell`.
         if let Some(hooks) = asks.spelling.hooks() {

@@ -243,7 +243,6 @@ pub(crate) fn made_class(name: &CStr, superclass: &CStr, methods: &[(&CStr, *con
 }
 
 /// Adds methods to a class made before.
-#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) fn add_methods(class: Obj, methods: &[(&CStr, *const c_void, &str)]) {
     for (name, imp, types) in methods {
         let types = std::ffi::CString::new(*types).unwrap_or_default();

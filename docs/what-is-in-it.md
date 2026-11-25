@@ -168,7 +168,7 @@ Popovers anchored to their button.
   `taut::storage` writes atomically to the settings folder.
 - Drag and drop between boxes, from other programs (files, text) and out to them (files, text,
   pictures, links).
-- Clipboard (Windows, X11, Wayland, macOS): text, pictures, files. iOS: text, pictures. Android
+- Clipboard (Windows, X11, Wayland, macOS, iOS): text, pictures, files. Android
   and the web: text.
 - **The web** (`wasm32-unknown-unknown`, no crates): a page's canvas, sharp at its pixel
   ratio; mouse, wheel, pinch, fingers, pens, keys, input methods; the browser's text or the
@@ -178,10 +178,13 @@ Popovers anchored to their button.
 - **iOS and iPadOS** (UIKit): one window filling its scene, the safe area and keyboard kept
   clear; rotation, Split View and Stage Manager sizes; dark mode, Dynamic Type, more contrast,
   less motion; fingers, Apple Pencil, trackpad and mouse, hardware keyboards, input methods, the
-  system's Copy, Cut, Paste and Select All; VoiceOver; going to the background heard as
+  system's keyboard reading text boxes (corrections, predictions, capitals) and its edit menu;
+  the document picker as the system file dialog (several files, folders, saving); files opened
+  in the system's preview; files, pictures and text dropped in; drag out; files on the
+  clipboard; VoiceOver; going to the background heard as
   minimized. `examples/ios_bundle.rs` makes an example an app for the simulator or a device.
-- Tray icon with native menu, system notifications (on macOS for app bundles), global hotkeys,
-  single instance. Unused, none of it is compiled in.
+- Tray icon with native menu, system notifications (on macOS and iOS for app bundles), global
+  hotkeys, single instance. Unused, none of it is compiled in.
 - **GPU or CPU** (`gpu`): Direct3D 11 or 12, Vulkan or OpenGL (Windows), OpenGL ES 3 (EGL) and
   Vulkan (Linux, X11), or Metal (macOS) show the pixels the CPU drew, byte for byte the same; whole frames in step with
   the screen; only changed rectangles uploaded (and presented, where the path can); a missing

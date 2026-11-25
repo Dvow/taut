@@ -16,20 +16,23 @@
 //! background, after which the system may stop the program at any time.
 //!
 //! Fingers are [`Event::Touch`] with the feature `touch`; without it the first finger is the
-//! mouse, as under Wayland. A pencil is the mouse with [`Event::Stylus`] (`touch`); a pointer
-//! (a trackpad or mouse) is the mouse, its scrolling the wheel, its pinch a zoom. Keys of a
-//! hardware keyboard come by their HID usage; Command and Control are both `ctrl`. Typed text,
-//! from either keyboard and input methods, goes through `ios_text_input`, which takes the
-//! keyboard while a text box has focus. Screen readers read `ui_accessibility`.
+//! mouse, as under Wayland, and a long press is a right click. A pencil is the mouse with
+//! [`Event::Stylus`] (`touch`); a pointer (a trackpad or mouse) is the mouse, its scrolling the
+//! wheel, its pinch a zoom. Keys of a hardware keyboard come by their HID usage; Command and
+//! Control are both `ctrl`. Typed text, from either keyboard and input methods, goes through
+//! `ios_text_input`, which takes the keyboard while a text box has focus. Screen readers read
+//! `ui_accessibility`.
 //!
 //! The window fills its scene: of [`Window`], only the title is used (it names the scene in
 //! the iPad's app switcher). The CPU draws and Core Animation shows; `Renderer` and `gpu`
 //! change nothing yet.
 //!
 //! The app hears the program go to the background as its window minimized
-//! ([`Event::Minimized`], [`Ui::window_minimized`]): the moment to save its state. Tray icons,
-//! global hotkeys, second windows, file drops and the system's file dialog have no iOS
-//! equivalent here: they do nothing.
+//! ([`Event::Minimized`], [`Ui::window_minimized`]): the moment to save its state. The system's
+//! file dialog, drops and files opened are `ios_files`'; dragging out is `ios_drag_out`'s;
+//! notifications are the user notification centre's (`macos_notifications`). Each is handed
+//! to the window the first time an app asks for it. Tray icons, global hotkeys and second
+//! windows have no iOS equivalent: they do nothing.
 use crate::color::Color;
 use crate::core_text::SystemText;
 use crate::event::{Button, Cursor, Event, Key, Mods};
@@ -46,6 +49,7 @@ use crate::touch::TouchPhase;
 use crate::ui::Ui;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -96,7 +100,7 @@ unsafe extern "C" {
 const PENCIL: isize = 2;
 const POINTER: isize = 3;
 /// `UIGestureRecognizerState`: began, changed, ended, cancelled.
-const BEGAN: isize = 1;
+pub(crate) const BEGAN: isize = 1;
 const CHANGED: isize = 2;
 /// Modifier bits (`UIKeyModifierFlags`, as AppKit's): Shift, Control, Option, Command.
 const SHIFT: isize = 1 << 17;
@@ -164,9 +168,37 @@ thread_local! {
     /// What UIKit's calls ask while a turn may be running: the view, where the page lies in it,
     /// whether the page is dark, and the pointer's shape.
     static VIEW: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
+    static CONTROLLER: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
     static ORIGIN: Cell<NSPoint> = const { Cell::new(NSPoint { x: 0.0, y: 0.0 }) };
     static DARK_PAGE: Cell<bool> = const { Cell::new(false) };
     static CURSOR: Cell<Cursor> = const { Cell::new(Cursor::Arrow) };
+}
+
+/// What the window does after each run for a part an app asked for (see `follow_parts`); and
+/// for typing, with the page's place in the view.
+pub(crate) type AfterRun = fn(&mut Ui);
+pub(crate) type Typing = fn(&mut Ui, NSRect);
+
+thread_local! {
+    /// The parts handed to the window, each the first time an app asks for it: typing (see
+    /// `ios_text_input`, which follows each run with the window's page), the system's
+    /// file dialog, drops, dragging out, notifications. Nothing until then.
+    pub(crate) static TYPING: Cell<Option<Typing>> = const { Cell::new(None) };
+    pub(crate) static FILE_DIALOG: Cell<Option<AfterRun>> = const { Cell::new(None) };
+    pub(crate) static DROPS: Cell<Option<AfterRun>> = const { Cell::new(None) };
+    pub(crate) static DRAG_OUT: Cell<Option<AfterRun>> = const { Cell::new(None) };
+    static NOTIFICATIONS: Cell<Option<fn()>> = const { Cell::new(None) };
+}
+
+/// Hands the window its notifications: shown after each run from now on.
+pub(crate) fn hand_desktop() {
+    NOTIFICATIONS.set(Some(show_notifications));
+}
+
+/// Shows the notifications the app asked for.
+fn show_notifications() {
+    let out = crate::notifications::NOTICES.with_borrow_mut(|notices| std::mem::take(&mut notices.out));
+    crate::macos_notifications::show(out);
 }
 
 /// The program is running: a waker may queue a turn.
@@ -183,6 +215,44 @@ pub(crate) fn heard(what: Heard) {
 /// Where the page lies in the view, in points.
 pub(crate) fn origin() -> NSPoint {
     ORIGIN.get()
+}
+
+/// The library's view: null until the window opens.
+pub(crate) fn view() -> Obj {
+    VIEW.get()
+}
+
+/// Does work with the window's interface, unless a turn is running (then none).
+pub(crate) fn with_ui<T>(work: impl FnOnce(&mut Ui) -> T) -> Option<T> {
+    HOST.with(|host| host.try_borrow_mut().ok()?.as_mut().map(|host| work(&mut host.ui)))
+}
+
+/// The view controller showing what is in front: the window's, or what it presents (a dialog
+/// over a dialog). Null until the window opens.
+pub(crate) fn front_controller() -> Obj {
+    let mut front = CONTROLLER.get();
+    loop {
+        // SAFETY: a controller answers what it presents (nil for nothing; nil answers nil).
+        let over: Obj = unsafe { send(front, c"presentedViewController", ()) };
+        if over.is_null() {
+            return front;
+        }
+        front = over;
+    }
+}
+
+/// Has work done on the main thread, from any thread.
+pub(crate) fn on_main(work: Box<dyn FnOnce() + Send>) {
+    let work = Box::into_raw(Box::new(work));
+    // SAFETY: the box is handed to the main queue, which hands it back to `do_work`.
+    unsafe { dispatch_async_f(main_queue(), work.cast(), do_work) };
+}
+
+extern "C" fn do_work(work: *mut c_void) {
+    // SAFETY: the box `on_main` made.
+    let work = unsafe { Box::from_raw(work.cast::<Box<dyn FnOnce() + Send>>()) };
+    let _pool = Pool::new();
+    work();
 }
 
 /// The main queue.
@@ -494,7 +564,7 @@ extern "C" fn traits_changed(_: Obj, _: Sel, _: Obj) {
 }
 
 /// Where a touch (or gesture) is, in units from the page's top left.
-fn place_of(view: Obj, touch: Obj) -> Point {
+pub(crate) fn place_of(view: Obj, touch: Obj) -> Point {
     // SAFETY: a touch or gesture answers its place in a view.
     let at: NSPoint = unsafe { send(touch, c"locationInView:", (view,)) };
     let origin = ORIGIN.get();
@@ -639,7 +709,7 @@ fn as_mouse(place: Point, phase: TouchPhase) {
 }
 
 /// A gesture recognizer's state.
-fn state_of(gesture: Obj) -> isize {
+pub(crate) fn state_of(gesture: Obj) -> isize {
     // SAFETY: a gesture recognizer answers its state.
     unsafe { send(gesture, c"state", ()) }
 }
@@ -917,18 +987,19 @@ fn open(window: Obj) {
         (view, controller, page)
     };
     let pointer = listen_to_pointer(view);
-    crate::ios_text_input::open(view);
     // SAFETY: the view takes the keys of a hardware keyboard.
     unsafe { send::<Bool>(view, c"becomeFirstResponder", ()) };
     let mut ui = Ui::new(Box::new(text), Box::new(SystemClipboard));
     ui.set_preferences(preferences(view));
     ui.set_screens(screens());
+    ui.set_native_file_dialog(true);
     #[rustfmt::skip]
     let host = Host {
         app, ui, window, view, controller, page, area: NSRect::default(), keyboard: 0.0, scale: 1.0, surface: Surface::default(),
         background: Color::NONE, pointer, rerun: true, start: Instant::now(), title,
     };
     VIEW.set(view);
+    CONTROLLER.set(controller);
     HOST.set(Some(host));
     RUNNING.store(true, Ordering::SeqCst);
     crate::ui_accessibility::listen_if_running(view);
@@ -1014,7 +1085,10 @@ impl Host {
             unsafe { exit(0) }
         }
         self.follow();
-        crate::ios_text_input::follow(self.view, &mut self.ui);
+        if let Some(typing) = TYPING.get() {
+            typing(&mut self.ui, self.area);
+        }
+        self.follow_parts();
         if self.ui.listening {
             crate::ui_accessibility::keep(self.view, (self.area.origin.x, self.area.origin.y), &self.ui);
         }
@@ -1036,6 +1110,17 @@ impl Host {
         let background = self.ui.theme.bg.solid();
         if std::mem::replace(&mut self.background, background) != background {
             self.paint_background(background);
+        }
+    }
+
+    /// Does what the interface asks of the parts handed to the window: the system's file
+    /// dialog, drops, dragging out, notifications.
+    fn follow_parts(&mut self) {
+        for part in [FILE_DIALOG.get(), DROPS.get(), DRAG_OUT.get()].into_iter().flatten() {
+            part(&mut self.ui);
+        }
+        if let Some(show) = NOTIFICATIONS.get() {
+            show();
         }
     }
 
@@ -1142,19 +1227,15 @@ pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
 /// Opens a link with the app the system opens it with, from the main thread. Says it was
 /// handed on.
 pub(crate) fn open_link(link: &str) -> bool {
-    let link = Box::into_raw(Box::new(link.to_string()));
-    // SAFETY: the box is handed to the main queue, which takes it back.
-    unsafe { dispatch_async_f(main_queue(), link.cast(), open_now) };
+    let link = link.to_string();
+    on_main(Box::new(move || open_now(&link)));
     true
 }
 
-extern "C" fn open_now(link: *mut c_void) {
-    // SAFETY: the box `open_link` made.
-    let link = unsafe { Box::from_raw(link.cast::<String>()) };
-    let _pool = Pool::new();
+fn open_now(link: &str) {
     // SAFETY: a URL made from the text (nil if it is none), handed to the application.
     unsafe {
-        let url: Obj = send(class(c"NSURL"), c"URLWithString:", (ns_string(&link),));
+        let url: Obj = send(class(c"NSURL"), c"URLWithString:", (ns_string(link),));
         let app: Obj = send(class(c"UIApplication"), c"sharedApplication", ());
         if !url.is_null() {
             let options: Obj = send(class(c"NSDictionary"), c"dictionary", ());
@@ -1165,14 +1246,45 @@ extern "C" fn open_now(link: *mut c_void) {
 
 // ---- the clipboard ----
 
-/// The system clipboard (the general pasteboard), for an interface. Reading it asks the person
-/// first (iOS 16), unless they pasted through the system's own Paste.
+/// The system clipboard (the general pasteboard), for an interface. Reading what another app
+/// put there asks the person first (iOS 16), unless they pasted through the system's own
+/// Paste; what the program put there itself is read back without asking.
 struct SystemClipboard;
+
+/// What the program last copied of one kind, and the pasteboard's change count right after:
+/// while the count holds, the pasteboard holds that.
+type Copied<T> = &'static std::thread::LocalKey<RefCell<Option<(isize, T)>>>;
+
+/// A picture: its width, and its pixels.
+type Picture = (usize, Vec<u32>);
+
+thread_local! {
+    static COPIED_TEXT: RefCell<Option<(isize, String)>> = const { RefCell::new(None) };
+    static COPIED_PICTURE: RefCell<Option<(isize, Picture)>> = const { RefCell::new(None) };
+    static COPIED_FILES: RefCell<Option<(isize, Vec<PathBuf>)>> = const { RefCell::new(None) };
+}
 
 /// The general pasteboard.
 fn pasteboard() -> Obj {
     // SAFETY: a plain question.
     unsafe { send(class(c"UIPasteboard"), c"generalPasteboard", ()) }
+}
+
+/// The pasteboard's change count: asking it asks the person nothing.
+fn change_count() -> isize {
+    // SAFETY: a plain question of the pasteboard.
+    unsafe { send(pasteboard(), c"changeCount", ()) }
+}
+
+/// Notes what the program just put on the pasteboard.
+fn keep_copied<T>(kind: Copied<T>, what: T) {
+    kind.set(Some((change_count(), what)));
+}
+
+/// What the program put on the pasteboard, while it is still there.
+fn read_copied<T: Clone>(kind: Copied<T>) -> Option<T> {
+    let count = change_count();
+    kind.with_borrow(|copied| copied.as_ref().filter(|(at, _)| *at == count).map(|(_, what)| what.clone()))
 }
 
 /// The system's Paste: the pasteboard's text read now, for the paste that follows.
@@ -1185,7 +1297,7 @@ pub(crate) fn paste_now() {
 
 impl Clipboard for SystemClipboard {
     fn get(&mut self) -> Option<String> {
-        if let Some(text) = PASTED.take() {
+        if let Some(text) = PASTED.take().or_else(|| read_copied(&COPIED_TEXT)) {
             return Some(text);
         }
         let _pool = Pool::new();
@@ -1196,38 +1308,41 @@ impl Clipboard for SystemClipboard {
         let _pool = Pool::new();
         // SAFETY: the pasteboard takes the text, in place of what it held.
         unsafe { send::<()>(pasteboard(), c"setString:", (ns_string(text),)) };
+        keep_copied(&COPIED_TEXT, text.into());
     }
-    /// Pictures, once an interface asked for one: see `PicturesAndFiles`. (Files: none, as
-    /// iOS has none on its pasteboard.)
+    /// Pictures and files, once an interface asked for either: see `PicturesAndFiles`.
     fn picture(&mut self) -> Option<(usize, Vec<u32>)> {
         (PICTURES.get()?.picture)(self)
     }
     fn set_picture(&mut self, width: usize, pixels: &[u32]) {
         PICTURES.get().map_or((), |its| (its.set_picture)(self, width, pixels))
     }
-    fn files(&mut self) -> Vec<std::path::PathBuf> {
+    fn files(&mut self) -> Vec<PathBuf> {
         PICTURES.get().map_or(Vec::new(), |its| (its.files)(self))
     }
-    fn set_files(&mut self, files: &[std::path::PathBuf]) {
+    fn set_files(&mut self, files: &[PathBuf]) {
         PICTURES.get().map_or((), |its| (its.set_files)(self, files))
     }
 }
 
 thread_local! {
-    /// The clipboard's picture code: none until an interface on this thread asks for one (see
-    /// `PicturesAndFiles`).
+    /// The clipboard's picture and file code: none until an interface on this thread asks for
+    /// one (see `PicturesAndFiles`).
     static PICTURES: Cell<Option<PicturesAndFiles<SystemClipboard>>> = const { Cell::new(None) };
 }
 
-/// Hands the clipboard its picture code, on this thread (see `PicturesAndFiles`).
+/// Hands the clipboard its picture and file code, on this thread (see `PicturesAndFiles`).
 pub(crate) fn hand_pictures_and_files() {
-    let (picture, set_picture) = (SystemClipboard::picture_on, SystemClipboard::put_picture);
-    PICTURES.set(Some(PicturesAndFiles { picture, set_picture, files: |_| Vec::new(), set_files: |_, _| {} }));
+    let (picture, set_picture, files, set_files) = (SystemClipboard::picture_on, SystemClipboard::put_picture, SystemClipboard::files_on, SystemClipboard::put_files);
+    PICTURES.set(Some(PicturesAndFiles { picture, set_picture, files, set_files }));
 }
 
 impl SystemClipboard {
     /// The picture on the pasteboard, as PNG.
     fn picture_on(&mut self) -> Option<(usize, Vec<u32>)> {
+        if let Some(own) = read_copied(&COPIED_PICTURE) {
+            return Some(own);
+        }
         let _pool = Pool::new();
         // SAFETY: plain questions of the pasteboard and its image.
         let png = unsafe { UIImagePNGRepresentation(send(pasteboard(), c"image", ())) };
@@ -1239,5 +1354,20 @@ impl SystemClipboard {
         let _pool = Pool::new();
         // SAFETY: the pasteboard takes the bytes as a PNG, in place of what it held.
         unsafe { send::<()>(pasteboard(), c"setData:forPasteboardType:", (ns_data(&png), ns_string("public.png"))) };
+        keep_copied(&COPIED_PICTURE, (width, pixels.to_vec()));
+    }
+    /// The files on the pasteboard (see `ios_files::pasted_files`).
+    fn files_on(&mut self) -> Vec<PathBuf> {
+        if let Some(own) = read_copied(&COPIED_FILES) {
+            return own;
+        }
+        let _pool = Pool::new();
+        crate::ios_files::pasted_files(pasteboard())
+    }
+    /// Puts files on the pasteboard, for another app to paste.
+    fn put_files(&mut self, files: &[PathBuf]) {
+        let _pool = Pool::new();
+        crate::ios_files::put_files(pasteboard(), files);
+        keep_copied(&COPIED_FILES, files.to_vec());
     }
 }

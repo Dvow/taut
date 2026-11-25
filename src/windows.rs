@@ -3972,7 +3972,8 @@ pub(crate) mod tests {
                 std::process::exit(3);
             })
         };
-        let ask = |saving: bool, name: &str, title: &'static str| FileDialogRequest { saving, folders: false, folder: folder.clone(), name: name.into(), endings: vec![".txt".into()], title };
+        let ask =
+            |saving: bool, name: &str, title: &'static str| FileDialogRequest { saving, folders: false, folder: folder.clone(), name: name.into(), endings: vec![".txt".into()], title, many: false };
         // An existing file is picked; a cancelled dialog answers nothing; and a name to save
         // under gets the app's default extension.
         let pressed = person("Pick one", 1);

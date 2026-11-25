@@ -20,12 +20,17 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   download. The person's fonts aren't listed (`system_fonts::families` is empty). Code after
   `taut::run` runs at once. Readers: tested against the DOM, not with a screen reader itself.
 - macOS: `layer_vulkan` untested (no Vulkan loader or MoltenVK on the runner).
-- iOS: the CPU draws and Core Animation shows; `Renderer` and `gpu` change nothing. No tray,
-  hotkeys, notifications, second windows, drops, drag out or system file dialog. Links open,
-  files don't. Without `touch`, only the first finger works, as the mouse.
-- iOS: the keyboard sees only what an input method composes: no autocorrection, predictions or
-  automatic capitals. A long press opens the library's menu, not the system's edit menu. Reading
-  the clipboard asks the person, except through the system's Paste.
+- iOS: the CPU draws and Core Animation shows; `Renderer` and `gpu` change nothing. No tray or
+  global hotkeys (iOS has neither). No second windows: an iPhone app has one; on iPad they are
+  not opened as scenes yet. Without `touch`, only the first finger works, as the mouse.
+- iOS: in a password box and the code box the keyboard sees only what an input method composes
+  (no corrections). The system's loupe and selection handles don't show: taut draws its own
+  selection. Reading what another app put on the clipboard asks the person, except through the
+  system's Paste.
+- iOS: a drag out lifts only with a long press (a pointer dragged past the window takes nothing
+  out); a dropped folder is not taken. A notification click that starts the program is not
+  heard. Unchecked: a notification shown (the simulator never grants permission), the document
+  picker's own screens (it is answered through its delegate).
 - iOS: readers get letters and words through a text interface from iOS 18.1 on (before, lines
   only). Text is read through it, not typed.
 - Android: readers move through text by character, word, line and paragraph, not by page.

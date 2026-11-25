@@ -96,11 +96,14 @@ fn opened(what: &OsStr) -> bool {
     std::process::Command::new("/usr/bin/open").arg(what).status().is_ok_and(|status| status.success())
 }
 
-/// Hands a link to the system (`UIApplication openURL:`), on the main thread. Files have no
-/// program to open them on iOS: says it took none.
+/// Hands a link to the system (`UIApplication openURL:`), on the main thread; a file is shown
+/// in the system's preview, or offered to the apps that open it (see `ios_files`).
 #[cfg(target_os = "ios")]
 fn opened(what: &OsStr) -> bool {
-    what.to_str().is_some_and(|text| is_link(text) && crate::ios::open_link(text))
+    match what.to_str() {
+        Some(text) if is_link(text) => crate::ios::open_link(text),
+        _ => crate::ios_files::open_file(std::path::Path::new(what)),
+    }
 }
 
 /// The same over `bus`, with `opener` for what the portal does not take.

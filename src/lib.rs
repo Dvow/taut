@@ -162,6 +162,10 @@ mod inspect;
 #[cfg(target_os = "ios")]
 mod ios;
 #[cfg(target_os = "ios")]
+mod ios_drag_out;
+#[cfg(target_os = "ios")]
+mod ios_files;
+#[cfg(target_os = "ios")]
 mod ios_text_input;
 pub mod jpeg;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
@@ -188,7 +192,7 @@ mod macos_composing;
 mod macos_drag_out;
 #[cfg(target_os = "macos")]
 mod macos_files;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 mod macos_notifications;
 #[cfg(target_os = "macos")]
 mod macos_shell;

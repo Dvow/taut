@@ -551,7 +551,15 @@ pub(crate) mod tests {
 
     /// A file to open, asked for as an app does.
     fn ask() -> FileDialogRequest {
-        FileDialogRequest { saving: false, folders: false, folder: "/home/someone/Pictures of mine".into(), name: String::new(), endings: vec![".png".into(), ".jpeg".into()], title: "Open a file" }
+        FileDialogRequest {
+            saving: false,
+            folders: false,
+            folder: "/home/someone/Pictures of mine".into(),
+            name: String::new(),
+            endings: vec![".png".into(), ".jpeg".into()],
+            title: "Open a file",
+            many: false,
+        }
     }
 
     /// What a file dialog request says: the window, the title, then each option as

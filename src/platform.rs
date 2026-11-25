@@ -279,12 +279,15 @@ pub(crate) fn hand_drops() {
     crate::wayland::hand_drops();
     #[cfg(target_os = "macos")]
     crate::macos_files::hand_drops();
+    #[cfg(target_os = "ios")]
+    crate::ios_files::hand_drops();
 }
 
 /// Hands the windows their drag-out code, on this thread: the first time an app hands something
 /// out ([`Ui::drag_out`](crate::Ui::drag_out)). Reached no other way, so a program that never
 /// does is built without it. (On Windows OLE hands it to the system, see `ole_drag::Outward`;
-/// on X11 the windows speak XDND themselves; on macOS see `macos_drag_out`.)
+/// on X11 the windows speak XDND themselves; on macOS see `macos_drag_out`, on iOS
+/// `ios_drag_out`.)
 pub(crate) fn enable_drag_out() {
     #[cfg(windows)]
     crate::windows::enable_drag_out();
@@ -292,6 +295,8 @@ pub(crate) fn enable_drag_out() {
     crate::x11::enable_drag_out();
     #[cfg(target_os = "macos")]
     crate::macos_drag_out::enable();
+    #[cfg(target_os = "ios")]
+    crate::ios_drag_out::enable();
 }
 
 /// Hands the windows their way to ask for the system's file dialog, on this thread: the first
@@ -305,6 +310,8 @@ pub(crate) fn hand_file_dialog() {
     crate::portal::hand_file_dialog();
     #[cfg(target_os = "macos")]
     crate::macos_files::hand_file_dialog();
+    #[cfg(target_os = "ios")]
+    crate::ios_files::hand_file_dialog();
 }
 
 /// Hands the windows their desktop integration, on this thread: the first time an app asks for
@@ -324,6 +331,8 @@ pub(crate) fn hand_desktop() {
     crate::wayland::hand_desktop();
     #[cfg(target_os = "macos")]
     crate::macos_shell::hand_desktop();
+    #[cfg(target_os = "ios")]
+    crate::ios::hand_desktop();
 }
 
 /// Seconds since 1970, UTC, by the system's clock: what `SystemTime::now()` gives, and in a

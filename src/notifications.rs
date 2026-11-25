@@ -5,8 +5,8 @@
 //! A notification is shown after the run that asks for it. On Windows it comes from a tray icon
 //! (`Shell_NotifyIcon`): the app's own, or one that exists only while the notification shows.
 //! On Linux it goes to `org.freedesktop.Notifications`, or, in a Flatpak sandbox, through the
-//! desktop portal. On macOS it goes to the user notification centre, which serves app bundles
-//! only: a program run as a bare executable shows none.
+//! desktop portal. On macOS and iOS it goes to the user notification centre, which serves app
+//! bundles only: a program run as a bare executable shows none.
 use crate::ui::Ui;
 use std::cell::RefCell;
 
@@ -16,7 +16,6 @@ pub struct Notification(pub(crate) u32);
 
 /// A notification still to be shown: its number, title, text and picture (width in pixels, and
 /// pixels).
-#[cfg_attr(target_os = "ios", allow(dead_code, reason = "iOS has no such part"))]
 pub(crate) struct Out {
     pub number: u32,
     pub title: String,

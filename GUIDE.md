@@ -53,7 +53,10 @@ fn main() {
 On Linux, a window is a Wayland window where a compositor answers, else X11;
 `TAUT_BACKEND=x11` forces X. On macOS, an AppKit window, run from the main thread; Command and
 Control are both `ctrl`. On iOS, a UIKit window filling its scene, run from the main thread;
-`run` never returns. `examples/ios_bundle.rs` makes an example an app.
+`run` never returns. The system's keyboard edits text boxes (corrections, predictions,
+capitals) and a long press shows its edit menu; `FileDialog::native()` is its document picker
+(`pick_many` too); drops, `drag_out`, notifications and `open_with_system` for files go through
+UIKit. `examples/ios_bundle.rs` makes an example an app.
 
 On Android, the app is a library `NativeActivity` loads. It exports `android_main`, which calls
 `main`; `run` opens the activity's window and returns, and the interface runs on the main
@@ -541,7 +544,8 @@ fn larger_parts(state: &mut State, ui: &mut Ui) {
 
     // File dialog: `state.dialog.pick(".")`, `save`, `pick_folder`, `only(&[".png"])`;
     // `state.dialog.words` translates it. `FileDialog::native()` uses the system's dialog
-    // where possible (Windows; Linux with a portal file dialog), answering the same way.
+    // where possible (Windows; Linux with a portal file dialog; macOS; iOS, for several files
+    // too), answering the same way.
     if let Some(path) = ui.file_dialog(&mut state.dialog) {
         let _ = path; // open it
     }
