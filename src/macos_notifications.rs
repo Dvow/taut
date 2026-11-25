@@ -26,43 +26,9 @@ unsafe extern "C" {
     fn dlopen(path: *const c_char, mode: c_int) -> *mut c_void;
 }
 
-#[link(name = "System")]
-unsafe extern "C" {
-    /// The class of blocks that live for good (`BLOCK_IS_GLOBAL`).
-    static _NSConcreteGlobalBlock: [usize; 0];
-}
-
-/// `BLOCK_IS_GLOBAL`.
-const LIVES_ON: i32 = 1 << 28;
-
-/// A block's descriptor: its size.
-#[repr(C)]
-struct Descriptor {
-    reserved: usize,
-    size: usize,
-}
-
-/// A block as the compiler lays one out, holding nothing: what the system calls back.
-#[repr(C)]
-struct Block {
-    isa: *const c_void,
-    flags: i32,
-    reserved: i32,
-    invoke: *const c_void,
-    descriptor: *const Descriptor,
-}
-
-static DESCRIBED: Descriptor = Descriptor { reserved: 0, size: size_of::<Block>() };
-
 thread_local! {
     /// The centre, once asked: null outside an app bundle.
     static CENTRE: Cell<Option<Obj>> = const { Cell::new(None) };
-}
-
-/// A block calling `invoke` (made to live for good: the system may keep it).
-fn block(invoke: *const c_void) -> *const Block {
-    let isa = (&raw const _NSConcreteGlobalBlock).cast();
-    Box::leak(Box::new(Block { isa, flags: LIVES_ON, reserved: 0, invoke, descriptor: &DESCRIBED }))
 }
 
 /// Whether the program is an app bundle: then it has an identifier.
@@ -104,14 +70,14 @@ fn opened() -> Obj {
         let centre: Obj = send(class(c"UNUserNotificationCenter"), c"currentNotificationCenter", ());
         let app: Obj = send(class(application), c"sharedApplication", ());
         send::<()>(centre, c"setDelegate:", (send::<Obj>(app, c"delegate", ()),));
-        let answered = block(permitted as *const c_void);
+        let answered: *const Block<()> = Block::leaked(permitted as *const c_void, ());
         send::<()>(centre, c"requestAuthorizationWithOptions:completionHandler:", (ALERTS_AND_SOUNDS, answered));
         centre
     }
 }
 
 /// The person's answer to the permission: the system keeps it.
-extern "C" fn permitted(_: *const Block, _: Bool, _: Obj) {}
+extern "C" fn permitted(_: *const Block<()>, _: Bool, _: Obj) {}
 
 /// Shows the notifications an app asked for: each with its number as its identifier. None
 /// outside an app bundle.
@@ -156,16 +122,16 @@ fn attachment(number: u32, width: usize, pixels: &[u32]) -> Option<Obj> {
 ///
 /// # Safety
 /// `done` is a block taking that number.
-unsafe fn call(done: *const Block, number: usize) {
+unsafe fn call(done: *const Block<()>, number: usize) {
     // SAFETY: as the caller promises: a block's function takes the block, then its arguments.
     unsafe {
-        let invoke: extern "C" fn(*const Block, usize) = std::mem::transmute((*done).invoke);
+        let invoke: extern "C" fn(*const Block<()>, usize) = std::mem::transmute((*done).invoke);
         invoke(done, number);
     }
 }
 
 /// The person clicked a notification: the app hears which, in its next run.
-extern "C" fn clicked(_: Obj, _: Sel, _: Obj, response: Obj, done: *const Block) {
+extern "C" fn clicked(_: Obj, _: Sel, _: Obj, response: Obj, done: *const Block<()>) {
     // SAFETY: a response answers its notification, that its request, that its identifier.
     let named = unsafe { send::<Obj>(send::<Obj>(send::<Obj>(response, c"notification", ()), c"request", ()), c"identifier", ()) };
     if let Some(number) = rust_string(named).and_then(|named| named.parse().ok()) {
@@ -182,7 +148,7 @@ extern "C" fn clicked(_: Obj, _: Sel, _: Obj, response: Obj, done: *const Block)
 }
 
 /// A notification comes while the app is in front: it shows anyway.
-extern "C" fn in_front(_: Obj, _: Sel, _: Obj, _: Obj, done: *const Block) {
+extern "C" fn in_front(_: Obj, _: Sel, _: Obj, _: Obj, done: *const Block<()>) {
     // SAFETY: the system's block takes how to show it.
     if !done.is_null() {
         unsafe { call(done, IN_FRONT) };

@@ -285,6 +285,10 @@ impl Told {
         let corner = self.on_screen(Rect::default()).origin;
         crate::geom::pt((at.x - corner.x) as f32, (at.y - corner.y) as f32)
     }
+    /// A point in the view, in the page's units.
+    pub(crate) fn in_page(&self, at: NSPoint) -> crate::geom::Point {
+        crate::geom::pt((at.x - self.origin.0) as f32, (at.y - self.origin.1) as f32)
+    }
 }
 
 /// Has the window do something to an element's node in the next turn: what a reader asked.

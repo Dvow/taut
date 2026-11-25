@@ -9,18 +9,13 @@ use crate::accessibility::{AccessNode, Role, letter_at_unit, units_before};
 use crate::geom::Rect;
 use crate::ios_text_input::{
     beginning, compared, ends_of, extended_within, farthest, ignored, ignored_direction, left_to_right, moved_toward_within, moved_within, offset_between, offset_of, position, range, range_between,
+    selection_rect,
 };
 use crate::macos_sys::*;
 use crate::ui_accessibility::{Told, act, with_node};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
-
-#[link(name = "objc")]
-unsafe extern "C" {
-    fn class_createInstance(class: Obj, extra: usize) -> Obj;
-    fn object_getIndexedIvars(object: Obj) -> *mut c_void;
-}
 
 /// What reads an element's text: its reader object, the reader's tokenizer (words and lines,
 /// found through the reader), and the selection of text that is not a text box's.
@@ -139,14 +134,11 @@ extern "C" fn reader_of(element: Obj, _: Sel) -> Obj {
 
 /// A new reader for an element, with its tokenizer, kept until the element goes.
 fn made_reader(element: Obj) -> Obj {
-    // SAFETY: an object of the reader class with room for its element beside it, written once;
-    // then a tokenizer of the system's for it. Both are kept (retained) until `forget`.
-    let (object, tokenizer) = unsafe {
-        let object = class_createInstance(reader_class(), size_of::<Obj>());
-        object_getIndexedIvars(object).cast::<Obj>().write(element);
-        let tokenizer: Obj = send(send::<Obj>(class(c"UITextInputStringTokenizer"), c"alloc", ()), c"initWithTextInput:", (object,));
-        (object, tokenizer)
-    };
+    // A reader keeping its element beside it, and a tokenizer of the system's for it: both kept
+    // (retained) until `forget`.
+    let object = new_with_extra(reader_class(), element);
+    // SAFETY: the tokenizer reads the reader's text through its methods.
+    let tokenizer: Obj = unsafe { send(send::<Obj>(class(c"UITextInputStringTokenizer"), c"alloc", ()), c"initWithTextInput:", (object,)) };
     READERS.with_borrow_mut(|readers| readers.insert(element as usize, Reader { object, tokenizer, selection: [0, 0] }));
     object
 }
@@ -163,8 +155,8 @@ pub(crate) fn forget(element: Obj) {
 
 /// A reader's element.
 fn element_of(reader: Obj) -> Obj {
-    // SAFETY: a reader of the library's class has its element beside it.
-    unsafe { object_getIndexedIvars(reader).cast::<Obj>().read() }
+    // SAFETY: only readers answer the reader class's methods; each keeps its element.
+    unsafe { extra_of(reader) }
 }
 
 /// Works with a reader's text node (and the window's nodes).
@@ -286,7 +278,7 @@ extern "C" fn selection_rects(reader: Obj, _: Sel, within: Obj) -> Obj {
 /// the end below it.
 fn nearest(reader: Obj, at: NSPoint) -> usize {
     let found = |told: &Told, node: &AccessNode| {
-        let point = crate::geom::pt((at.x - told.origin.0) as f32, (at.y - told.origin.1) as f32);
+        let point = told.in_page(at);
         let letter = node.letter_at(point).unwrap_or(if point.y < node.rect.y { 0 } else { node.text().chars().count() as u32 });
         units_before(node.text(), letter) as usize
     };
@@ -305,69 +297,8 @@ extern "C" fn closest_within(reader: Obj, _: Sel, at: NSPoint, within: Obj) -> O
 /// The character at a point in the view; nil off the text.
 extern "C" fn letter_at_point(reader: Obj, _: Sel, at: NSPoint) -> Obj {
     let found = |told: &Told, node: &AccessNode| {
-        let letter = node.letter_at(crate::geom::pt((at.x - told.origin.0) as f32, (at.y - told.origin.1) as f32))?;
+        let letter = node.letter_at(told.in_page(at))?;
         Some([letter, letter + 1].map(|end| units_before(node.text(), end) as usize))
     };
     with_reader(reader, found).flatten().map_or(std::ptr::null_mut(), |[from, to]| range(from, to))
-}
-
-// ---- selection rectangles ----
-
-/// What a selection rectangle keeps beside it: its place, and whether it holds the range's
-/// start and end.
-#[derive(Clone, Copy)]
-struct SelectionPlace {
-    place: NSRect,
-    start: bool,
-    end: bool,
-}
-
-/// The selection rectangle class, made once.
-fn selection_rect_class() -> Obj {
-    let yes_no = format!("{BOOL}@:");
-    let methods: [(&CStr, *const c_void, &str); 5] = [
-        (c"rect", rect_of as *const c_void, &format!("{RECT}@:")),
-        (c"writingDirection", left_to_right_rect as *const c_void, "q@:"),
-        (c"containsStart", holds_start as *const c_void, &yes_no),
-        (c"containsEnd", holds_end as *const c_void, &yes_no),
-        (c"isVertical", not_vertical as *const c_void, &yes_no),
-    ];
-    made_class(c"TautSelectionRect", c"UITextSelectionRect", &methods, &[])
-}
-
-/// A selection rectangle (autoreleased).
-fn selection_rect(place: NSRect, start: bool, end: bool) -> Obj {
-    // SAFETY: an object of the class with room for what it keeps beside it, written once.
-    unsafe {
-        let made = class_createInstance(selection_rect_class(), size_of::<SelectionPlace>());
-        object_getIndexedIvars(made).cast::<SelectionPlace>().write(SelectionPlace { place, start, end });
-        send(made, c"autorelease", ())
-    }
-}
-
-/// What a selection rectangle keeps.
-fn place_of(rect: Obj) -> SelectionPlace {
-    // SAFETY: a rectangle of the library's class keeps this beside it.
-    unsafe { object_getIndexedIvars(rect).cast::<SelectionPlace>().read() }
-}
-
-extern "C" fn rect_of(rect: Obj, _: Sel) -> NSRect {
-    place_of(rect).place
-}
-
-extern "C" fn holds_start(rect: Obj, _: Sel) -> Bool {
-    Bool::from(place_of(rect).start)
-}
-
-extern "C" fn holds_end(rect: Obj, _: Sel) -> Bool {
-    Bool::from(place_of(rect).end)
-}
-
-extern "C" fn not_vertical(_: Obj, _: Sel) -> Bool {
-    0
-}
-
-/// `NSWritingDirectionLeftToRight`.
-extern "C" fn left_to_right_rect(_: Obj, _: Sel) -> isize {
-    0
 }

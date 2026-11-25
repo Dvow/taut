@@ -3,7 +3,7 @@
 //! classes are reached by name. Bytes are played from a file of their own, removed after. It
 //! plays while the main thread's run loop turns (AppKit's or UIKit's).
 
-use crate::macos_sys::{Args, Bool, Obj, Pool, class, ns_string, rust_string, sel, send};
+use crate::macos_sys::{Block, Bool, Obj, Pool, class, ns_string, rust_string, send, send_large};
 use crate::video::{News, VideoError, VideoSource};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::PathBuf;
@@ -14,12 +14,6 @@ use std::time::Duration;
 unsafe extern "C" {
     fn dlopen(name: *const c_char, flags: c_int) -> *mut c_void;
     fn dlsym(library: *mut c_void, name: *const c_char) -> *mut c_void;
-}
-#[link(name = "objc")]
-unsafe extern "C" {
-    fn objc_msgSend();
-    #[cfg(target_arch = "x86_64")]
-    fn objc_msgSend_stret();
 }
 
 /// A time as CoreMedia keeps it: `value / timescale` seconds, valid where `flags & 1`.
@@ -102,19 +96,6 @@ unsafe fn function<F: Copy>(at: *mut c_void) -> F {
     unsafe { std::mem::transmute_copy(&at) }
 }
 
-/// Sends a message whose result is a `CMTime`: through memory on x86-64.
-///
-/// # Safety
-/// As `send`.
-unsafe fn send_time(to: Obj, name: &CStr) -> CMTime {
-    #[cfg(target_arch = "x86_64")]
-    let via = objc_msgSend_stret;
-    #[cfg(not(target_arch = "x86_64"))]
-    let via = objc_msgSend;
-    // SAFETY: as the caller promises; nil would answer garbage here, so it is not asked.
-    if to.is_null() { CMTime::default() } else { unsafe { ().send(via, to, sel(name)) } }
-}
-
 /// An `AVPlayer` with one item and its video output.
 pub(crate) struct Player {
     functions: &'static Functions,
@@ -128,56 +109,27 @@ pub(crate) struct Player {
     last: Option<i64>,
     /// The file bytes were written to.
     written: Option<PathBuf>,
-    /// Seeks asked for; frames wait until the player has finished as many (`Seeked::done`):
+    /// Seeks asked for; frames wait until the player has finished as many (`seeked`):
     /// while it decodes its way to the time asked, it hands out frames on the way.
     seeks: u32,
     /// What the player calls when a seek is over.
     seeked: &'static Seeked,
 }
 
-#[link(name = "System")]
-unsafe extern "C" {
-    /// The class of blocks that live for good (`BLOCK_IS_GLOBAL`).
-    static _NSConcreteGlobalBlock: [usize; 0];
+/// The block a seek calls when it is over, finished or not, with the count of seeks over. It
+/// lives for good: the player may call it after the `Player` is gone (some 40 bytes for each
+/// video opened).
+type Seeked = Block<AtomicU32>;
+
+/// A new block counting seeks over.
+fn seeked() -> &'static Seeked {
+    Block::leaked(seek_over as *const c_void, AtomicU32::new(0))
 }
 
-/// A block's descriptor: its size.
-#[repr(C)]
-struct Descriptor {
-    reserved: usize,
-    size: usize,
-}
-
-static DESCRIBED: Descriptor = Descriptor { reserved: 0, size: size_of::<Seeked>() };
-
-/// The block a seek calls when it is over, finished or not, laid out as the compiler lays one
-/// out, with the count it adds to. It lives for good: the player may call it after the
-/// `Player` is gone (some 40 bytes for each video opened).
-#[repr(C)]
-struct Seeked {
-    isa: *const c_void,
-    flags: i32,
-    reserved: i32,
-    invoke: unsafe extern "C" fn(*const Seeked, Bool),
-    descriptor: *const Descriptor,
-    done: AtomicU32,
-}
-
-// SAFETY: its count is atomic; the rest is never changed.
-unsafe impl Sync for Seeked {}
-
-impl Seeked {
-    fn new() -> &'static Seeked {
-        /// `BLOCK_IS_GLOBAL`.
-        const LIVES_ON: i32 = 1 << 28;
-        let isa = (&raw const _NSConcreteGlobalBlock).cast();
-        Box::leak(Box::new(Seeked { isa, flags: LIVES_ON, reserved: 0, invoke: Seeked::over, descriptor: &DESCRIBED, done: AtomicU32::new(0) }))
-    }
-    /// The seek is over.
-    unsafe extern "C" fn over(block: *const Seeked, _finished: Bool) {
-        // SAFETY: the player calls the block with itself, which lives for good.
-        unsafe { (*block).done.fetch_add(1, Ordering::Release) };
-    }
+/// A seek is over.
+extern "C" fn seek_over(block: *const Seeked, _finished: Bool) {
+    // SAFETY: the player calls the block with itself, which lives for good.
+    unsafe { (*block).held.fetch_add(1, Ordering::Release) };
 }
 
 impl Player {
@@ -203,7 +155,7 @@ impl Player {
             if sound {
                 plays_sound();
             }
-            Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written, seeks: 0, seeked: Seeked::new() })
+            Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written, seeks: 0, seeked: seeked() })
         }
     }
 
@@ -228,11 +180,11 @@ impl Player {
     }
     pub(crate) fn position(&mut self) -> Duration {
         // SAFETY: a live player.
-        unsafe { send_time(self.player, c"currentTime") }.known().unwrap_or_default()
+        unsafe { send_large::<CMTime>(self.player, c"currentTime", ()) }.known().unwrap_or_default()
     }
     pub(crate) fn length(&mut self) -> Option<Duration> {
         // SAFETY: a live item.
-        unsafe { send_time(self.item, c"duration") }.known()
+        unsafe { send_large::<CMTime>(self.item, c"duration", ()) }.known()
     }
     pub(crate) fn set_volume(&mut self, volume: f32) {
         // SAFETY: a live player.
@@ -268,14 +220,14 @@ impl Player {
     /// The newest frame where there is one not given yet: its width and time, its pixels in
     /// `into`. None before the item is ready (its length known) and its first seek is over.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
-        if !self.ready || self.seeked.done.load(Ordering::Acquire) != self.seeks {
+        if !self.ready || self.seeked.held.load(Ordering::Acquire) != self.seeks {
             return None;
         }
         let _pool = Pool::new();
         let mut shown = CMTime::default();
         // SAFETY: live objects; the buffer copied is ours and released.
         let buffer: *mut c_void = unsafe {
-            let now = send_time(self.player, c"currentTime");
+            let now: CMTime = send_large(self.player, c"currentTime", ());
             if send::<Bool>(self.output, c"hasNewPixelBufferForItemTime:", (now,)) == 0 {
                 return None;
             }

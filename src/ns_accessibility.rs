@@ -10,7 +10,7 @@
 //! value, state, its place on the screen, its parent and children. What a reader does
 //! (press, step, focus, type, scroll into view) reaches the window's interface as input does,
 //! in the loop's next turn.
-use crate::accessibility::{AccessNode, Role};
+use crate::accessibility::{AccessNode, Role, letter_at_unit, units_before};
 use crate::id::Id;
 use crate::macos::{Heard, heard};
 use crate::macos_sys::*;
@@ -492,24 +492,6 @@ extern "C" fn allowed(element: Obj, _: Sel, asked: Sel) -> Bool {
     state(element, |node| roles.contains(&node.role))
 }
 
-/// UTF-16 units in the first `chars` characters of a text.
-fn units(text: &str, chars: usize) -> usize {
-    text.chars().take(chars).map(char::len_utf16).sum()
-}
-
-/// The character at (or holding) a UTF-16 unit of a text, from its start.
-fn chars_to(text: &str, unit: usize) -> u32 {
-    let (mut seen, mut count) = (0, 0);
-    for letter in text.chars() {
-        seen += letter.len_utf16();
-        if seen > unit {
-            break;
-        }
-        count += 1;
-    }
-    count
-}
-
 /// The text of a text box or of plain text, if the element is one.
 fn text_of_box(element: Obj) -> Option<String> {
     with_node(element, |told, at| told.nodes[at].reads_text().then(|| told.nodes[at].text().to_string())).flatten()
@@ -530,8 +512,8 @@ extern "C" fn character_count(element: Obj, _: Sel) -> isize {
 fn selection(element: Obj) -> NSRange {
     let found = with_node(element, |told, at| told.nodes[at].caret.map(|[anchor, cursor]| (told.nodes[at].value.clone(), anchor.min(cursor), anchor.max(cursor))));
     let Some(Some((text, from, to))) = found else { return NSRange::default() };
-    let start = units(&text, from as usize);
-    NSRange { location: start, length: units(&text, to as usize) - start }
+    let start = units_before(&text, from) as usize;
+    NSRange { location: start, length: units_before(&text, to) as usize - start }
 }
 
 extern "C" fn selected_range(element: Obj, _: Sel) -> NSRange {
@@ -540,7 +522,7 @@ extern "C" fn selected_range(element: Obj, _: Sel) -> NSRange {
 
 extern "C" fn select_range(element: Obj, _: Sel, range: NSRange) {
     let Some(text) = text_of_box(element) else { return };
-    let ends = [chars_to(&text, range.location), chars_to(&text, range.location + range.length)];
+    let ends = [letter_at_unit(&text, range.location as u32), letter_at_unit(&text, (range.location + range.length) as u32)];
     act(element, move |ui, id| ui.select_for_reader(id, ends));
 }
 
@@ -552,19 +534,19 @@ extern "C" fn selected_text(element: Obj, _: Sel) -> Obj {
 extern "C" fn whole_range(element: Obj, _: Sel) -> NSRange {
     let shown = with_node(element, |told, at| (told.nodes[at].text().to_string(), told.nodes[at].shown_letters()));
     let Some((text, [from, to])) = shown else { return NSRange::default() };
-    let start = units(&text, from as usize);
-    NSRange { location: start, length: units(&text, to as usize) - start }
+    let start = units_before(&text, from) as usize;
+    NSRange { location: start, length: units_before(&text, to) as usize - start }
 }
 
 /// The line (from 0, as wrapped) a UTF-16 unit of an element's text is on.
 fn line_of(element: Obj, unit: usize) -> isize {
-    with_node(element, |told, at| told.nodes[at].line_of(chars_to(told.nodes[at].text(), unit)) as isize).unwrap_or(0)
+    with_node(element, |told, at| told.nodes[at].line_of(letter_at_unit(told.nodes[at].text(), unit as u32)) as isize).unwrap_or(0)
 }
 
 extern "C" fn cursor_line(element: Obj, _: Sel) -> isize {
     let Some(text) = text_of_box(element) else { return 0 };
     let cursor = with_node(element, |told, at| told.nodes[at].caret.map_or(0, |[_, cursor]| cursor)).unwrap_or(0);
-    line_of(element, units(&text, cursor as usize))
+    line_of(element, units_before(&text, cursor) as usize)
 }
 
 extern "C" fn string_for(element: Obj, _: Sel, range: NSRange) -> Obj {
@@ -581,7 +563,7 @@ extern "C" fn attributed_for(element: Obj, _: Sel, range: NSRange) -> Obj {
         let made: Obj = send(made, c"initWithString:", (ns_string(&piece(&text, range)),));
         let yes: Obj = send(class(c"NSNumber"), c"numberWithBool:", (1 as Bool,));
         for [from, to] in wrong {
-            let (from, to) = (units(&text, from as usize), units(&text, to as usize));
+            let (from, to) = (units_before(&text, from) as usize, units_before(&text, to) as usize);
             let (start, end) = (from.max(range.location), to.min(range.location + range.length));
             if start < end {
                 let within = NSRange { location: start - range.location, length: end - start };
@@ -600,23 +582,23 @@ extern "C" fn line_for(element: Obj, _: Sel, unit: isize) -> isize {
 extern "C" fn range_for_line(element: Obj, _: Sel, line: isize) -> NSRange {
     let found = with_node(element, |told, at| (told.nodes[at].text().to_string(), told.nodes[at].line_range(line.max(0) as usize)));
     let Some((text, range)) = found else { return NSRange::default() };
-    let [from, to] = range.unwrap_or([text.chars().count() as u32; 2]).map(|letter| units(&text, letter as usize));
+    let [from, to] = range.unwrap_or([text.chars().count() as u32; 2]).map(|letter| units_before(&text, letter) as usize);
     NSRange { location: from, length: to - from }
 }
 
 /// The character holding a UTF-16 unit: one or two units.
 extern "C" fn range_for_index(element: Obj, _: Sel, unit: isize) -> NSRange {
     let Some(text) = text_of_box(element) else { return NSRange::default() };
-    let nth = chars_to(&text, unit.max(0) as usize) as usize;
-    let length = text.chars().nth(nth).map_or(0, char::len_utf16);
-    NSRange { location: units(&text, nth), length }
+    let nth = letter_at_unit(&text, unit.max(0) as u32);
+    let length = text.chars().nth(nth as usize).map_or(0, char::len_utf16);
+    NSRange { location: units_before(&text, nth) as usize, length }
 }
 
 /// Where a piece of the text is drawn: the box around its letters.
 extern "C" fn frame_for_range(element: Obj, _: Sel, range: NSRange) -> NSRect {
     let place = |told: &Told, at: usize| {
         let (node, text) = (&told.nodes[at], told.nodes[at].text());
-        let [from, to] = [chars_to(text, range.location), chars_to(text, range.location + range.length)];
+        let [from, to] = [letter_at_unit(text, range.location as u32), letter_at_unit(text, (range.location + range.length) as u32)];
         let letters = (from..to.max(from + 1)).map(|letter| node.letter_rect(letter)).reduce(|one, other| one.union(other));
         (told.view, letters.unwrap_or(node.rect))
     };
@@ -629,7 +611,7 @@ extern "C" fn range_for_position(element: Obj, _: Sel, at: NSPoint) -> NSRange {
         let node = &told.nodes[at_node];
         let letter = node.letter_at(in_view(told.view, at))?;
         let (text, length) = (node.text(), node.text().chars().nth(letter as usize).map_or(0, char::len_utf16));
-        Some(NSRange { location: units(text, letter as usize), length })
+        Some(NSRange { location: units_before(text, letter) as usize, length })
     };
     with_node(element, letter).flatten().unwrap_or_default()
 }

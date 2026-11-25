@@ -564,13 +564,13 @@ fn next_run(letters: &[char], from: u32, forward: bool, inside: fn(char) -> bool
 
 /// UTF-16 units in the first `letters` characters of a text: where a character starts as
 /// Apple's and Android's text count.
-#[cfg(any(target_os = "ios", target_os = "android", test))]
+#[cfg(any(target_vendor = "apple", target_os = "android", test))]
 pub(crate) fn units_before(text: &str, letters: u32) -> u32 {
     text.chars().take(letters as usize).map(|letter| letter.len_utf16() as u32).sum()
 }
 
 /// The character holding UTF-16 unit `unit` of a text, from its start (the text's end, past it).
-#[cfg(any(target_os = "ios", target_os = "android", test))]
+#[cfg(any(target_vendor = "apple", target_os = "android", test))]
 pub(crate) fn letter_at_unit(text: &str, unit: u32) -> u32 {
     let mut seen = 0;
     let before = text.chars().take_while(|letter| {
@@ -1964,30 +1964,30 @@ mod tests {
         });
         trial.run();
         let text = trial.find(Role::Text, LONG).clone();
-        assert_eq!(text.unit_range(0, super::TextUnit::Character, true), Some([0, 1]));
-        assert_eq!(text.unit_range(0, super::TextUnit::Character, false), None);
-        assert_eq!(text.unit_range(3, super::TextUnit::Word, true), Some([4, 7]), "past the space, \"two\"");
-        assert_eq!(text.unit_range(5, super::TextUnit::Word, false), Some([4, 5]), "back from inside a word, to its start");
-        assert_eq!(text.unit_range(4, super::TextUnit::Word, false), Some([0, 3]));
+        assert_eq!(text.unit_range(0, TextUnit::Character, true), Some([0, 1]));
+        assert_eq!(text.unit_range(0, TextUnit::Character, false), None);
+        assert_eq!(text.unit_range(3, TextUnit::Word, true), Some([4, 7]), "past the space, \"two\"");
+        assert_eq!(text.unit_range(5, TextUnit::Word, false), Some([4, 5]), "back from inside a word, to its start");
+        assert_eq!(text.unit_range(4, TextUnit::Word, false), Some([0, 3]));
         let count = LONG.chars().count() as u32;
-        assert_eq!(text.unit_range(count, super::TextUnit::Word, true), None);
+        assert_eq!(text.unit_range(count, TextUnit::Word, true), None);
         // Lines as wrapped: forward from a line's start is that line; back is the one before.
         let lines = text.line_starts();
         assert!(lines.len() > 2, "{lines:?}");
-        assert_eq!(text.unit_range(0, super::TextUnit::Line, true), Some([0, lines[1]]));
-        assert_eq!(text.unit_range(1, super::TextUnit::Line, true), Some([lines[1], lines[2]]));
-        assert_eq!(text.unit_range(lines[1], super::TextUnit::Line, false), Some([0, lines[1]]));
-        assert_eq!(text.unit_range(0, super::TextUnit::Line, false), None);
+        assert_eq!(text.unit_range(0, TextUnit::Line, true), Some([0, lines[1]]));
+        assert_eq!(text.unit_range(1, TextUnit::Line, true), Some([lines[1], lines[2]]));
+        assert_eq!(text.unit_range(lines[1], TextUnit::Line, false), Some([0, lines[1]]));
+        assert_eq!(text.unit_range(0, TextUnit::Line, false), None);
         let last = *lines.last().unwrap();
-        assert_eq!(text.unit_range(last, super::TextUnit::Line, true), Some([last, count]));
-        assert_eq!(text.unit_range(count, super::TextUnit::Line, true), None);
+        assert_eq!(text.unit_range(last, TextUnit::Line, true), Some([last, count]));
+        assert_eq!(text.unit_range(count, TextUnit::Line, true), None);
         // Paragraphs split at line breaks.
         let mut two = text.clone();
         (two.name, two.letters) = ("one\n\ntwo three".into(), None);
-        assert_eq!(two.unit_range(0, super::TextUnit::Paragraph, true), Some([0, 3]));
-        assert_eq!(two.unit_range(3, super::TextUnit::Paragraph, true), Some([5, 14]));
-        assert_eq!(two.unit_range(14, super::TextUnit::Paragraph, false), Some([5, 14]));
-        assert_eq!(two.unit_range(5, super::TextUnit::Paragraph, false), Some([0, 3]));
+        assert_eq!(two.unit_range(0, TextUnit::Paragraph, true), Some([0, 3]));
+        assert_eq!(two.unit_range(3, TextUnit::Paragraph, true), Some([5, 14]));
+        assert_eq!(two.unit_range(14, TextUnit::Paragraph, false), Some([5, 14]));
+        assert_eq!(two.unit_range(5, TextUnit::Paragraph, false), Some([0, 3]));
         assert_eq!(two.line_starts(), [0, 4, 5]);
     }
 

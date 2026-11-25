@@ -35,12 +35,6 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
 use std::ops::Range;
 
-#[link(name = "objc")]
-unsafe extern "C" {
-    fn class_createInstance(class: Obj, extra: usize) -> Obj;
-    fn object_getIndexedIvars(object: Obj) -> *mut c_void;
-}
-
 #[link(name = "UIKit", kind = "framework")]
 unsafe extern "C" {
     static NSUnderlineStyleAttributeName: Obj;
@@ -169,23 +163,23 @@ fn range_class() -> Obj {
     made_class(c"TautTextRange", c"UITextRange", &methods, &[])
 }
 
-/// A selection's rectangle, kept beside the object with whether it holds the selection's start
-/// and end.
+/// What a selection rectangle keeps beside it: its place, and whether it holds the range's
+/// start and end.
 #[derive(Clone, Copy)]
-struct Piece {
+struct SelectionRect {
     rect: NSRect,
     start: bool,
     end: bool,
 }
 
-/// The class of a selection's rectangles.
-fn piece_class() -> Obj {
+/// The selection rectangle class, made once (also what readers' text gives).
+fn selection_rect_class() -> Obj {
     let flag = format!("{BOOL}@:");
     let methods: Vec<(&CStr, *const c_void, String)> = vec![
-        (c"rect", piece_rect as *const c_void, format!("{RECT}@:")),
-        (c"writingDirection", left_to_right_piece as *const c_void, NUMBER.into()),
-        (c"containsStart", piece_starts as *const c_void, flag.clone()),
-        (c"containsEnd", piece_ends as *const c_void, flag.clone()),
+        (c"rect", rect_of as *const c_void, format!("{RECT}@:")),
+        (c"writingDirection", left_to_right_rect as *const c_void, NUMBER.into()),
+        (c"containsStart", holds_start as *const c_void, flag.clone()),
+        (c"containsEnd", holds_end as *const c_void, flag.clone()),
         (c"isVertical", not_vertical as *const c_void, flag),
     ];
     let listed: Vec<(&CStr, *const c_void, &str)> = methods.iter().map(|(name, imp, types)| (*name, *imp, types.as_str())).collect();
@@ -294,7 +288,8 @@ pub(crate) fn follow(ui: &mut Ui, area: NSRect) {
     // SAFETY: the input view lies over the page.
     unsafe { send::<()>(INPUT.get(), c"setFrame:", (area,)) };
     let now = focused(ui);
-    let (editing, secret, cursor) = (ui.ime_area().is_some(), ui.password_focused(), ui.ime_area());
+    let (cursor, secret) = (ui.ime_area(), ui.password_focused());
+    let editing = cursor.is_some();
     let (fresh, moved, waiting) = DOCUMENT.with_borrow_mut(|document| {
         let fresh = (editing, secret, now.whole, now.box_id) != (document.editing, document.secret, document.whole, document.box_id);
         let moved = cursor != document.cursor;
@@ -337,10 +332,15 @@ fn start_afresh(editing: bool, now: Focused) {
 /// a key's) is the document's now, and the keyboard hears it. What an input method composed
 /// over text that changed is dropped.
 fn keep_up(now: Focused, cursor_moved: bool) {
-    let (text_changed, selection_changed) = DOCUMENT.with_borrow(|document| (document.text != now.text, document.selection != now.selection));
-    DOCUMENT.with_borrow_mut(|document| (document.text, document.selection) = (now.text, now.selection));
+    let (text_changed, selection_changed) = DOCUMENT.with_borrow_mut(|document| {
+        let changed = (document.text != now.text, document.selection != now.selection);
+        (document.text, document.selection) = (now.text, now.selection);
+        if changed.0 {
+            document.marked.clear();
+        }
+        changed
+    });
     if text_changed {
-        DOCUMENT.with_borrow_mut(|document| document.marked.clear());
         return tell(c"textWillChange:", c"textDidChange:");
     }
     if selection_changed || (cursor_moved && !now.whole) {
@@ -652,22 +652,14 @@ extern "C" fn tokenizer(_: Obj, _: Sel) -> Obj {
 
 /// A position at an offset (autoreleased).
 pub(crate) fn position(offset: usize) -> Obj {
-    // SAFETY: an object of the position class with room for an offset beside it, written once.
-    unsafe {
-        let made = class_createInstance(position_class(), size_of::<usize>());
-        object_getIndexedIvars(made).cast::<usize>().write(offset);
-        send(made, c"autorelease", ())
-    }
+    // SAFETY: an object of the library's, handed on autoreleased.
+    unsafe { send(new_with_extra(position_class(), offset), c"autorelease", ()) }
 }
 
 /// A range between two offsets (autoreleased).
 pub(crate) fn range(from: usize, to: usize) -> Obj {
-    // SAFETY: an object of the range class with room for two offsets beside it, written once.
-    unsafe {
-        let made = class_createInstance(range_class(), 2 * size_of::<usize>());
-        object_getIndexedIvars(made).cast::<[usize; 2]>().write(sorted([from, to]));
-        send(made, c"autorelease", ())
-    }
+    // SAFETY: an object of the library's, handed on autoreleased.
+    unsafe { send(new_with_extra(range_class(), sorted([from, to])), c"autorelease", ()) }
 }
 
 /// Whether an object is of a class of the library's.
@@ -679,13 +671,13 @@ fn is_of(object: Obj, made: Obj) -> bool {
 /// A position's offset: 0 for one not the library's.
 pub(crate) fn offset_of(position: Obj) -> usize {
     // SAFETY: a position of the library's class has its offset beside it.
-    if is_of(position, position_class()) { unsafe { object_getIndexedIvars(position).cast::<usize>().read() } } else { 0 }
+    if is_of(position, position_class()) { unsafe { extra_of(position) } } else { 0 }
 }
 
 /// A range's two offsets: none for one not the library's.
 pub(crate) fn ends_of(range: Obj) -> [usize; 2] {
     // SAFETY: a range of the library's class has its offsets beside it.
-    if is_of(range, range_class()) { unsafe { object_getIndexedIvars(range).cast::<[usize; 2]>().read() } } else { [0, 0] }
+    if is_of(range, range_class()) { unsafe { extra_of(range) } } else { [0, 0] }
 }
 
 extern "C" fn range_start(range: Obj, _: Sel) -> Obj {
@@ -934,7 +926,7 @@ extern "C" fn caret_rect(_: Obj, _: Sel, at: Obj) -> NSRect {
 extern "C" fn selection_rects(_: Obj, _: Sel, within: Obj) -> Obj {
     let found = pieces_of(within);
     let last = found.len().saturating_sub(1);
-    let made: Vec<Obj> = found.iter().enumerate().map(|(nth, at)| piece(Piece { rect: ns_rect(*at), start: nth == 0, end: nth == last })).collect();
+    let made: Vec<Obj> = found.iter().enumerate().map(|(nth, at)| selection_rect(ns_rect(*at), nth == 0, nth == last)).collect();
     ns_array(&made)
 }
 
@@ -953,35 +945,32 @@ extern "C" fn range_at(_: Obj, _: Sel, to: NSPoint) -> Obj {
     range(at, (at + 1).min(length()))
 }
 
-/// A selection's rectangle (autoreleased).
-fn piece(made: Piece) -> Obj {
-    // SAFETY: an object of the rectangle class with room for a piece beside it, written once.
-    unsafe {
-        let object = class_createInstance(piece_class(), size_of::<Piece>());
-        object_getIndexedIvars(object).cast::<Piece>().write(made);
-        send(object, c"autorelease", ())
-    }
+/// A selection rectangle (autoreleased).
+pub(crate) fn selection_rect(rect: NSRect, start: bool, end: bool) -> Obj {
+    // SAFETY: an object of the library's, handed on autoreleased.
+    unsafe { send(new_with_extra(selection_rect_class(), SelectionRect { rect, start, end }), c"autorelease", ()) }
 }
 
-/// The piece beside a selection's rectangle.
-fn piece_of(object: Obj) -> Piece {
-    // SAFETY: a rectangle of the library's class has its piece beside it.
-    unsafe { object_getIndexedIvars(object).cast::<Piece>().read() }
+/// What a selection rectangle keeps.
+fn kept_by(object: Obj) -> SelectionRect {
+    // SAFETY: only objects of the selection rectangle class answer its methods.
+    unsafe { extra_of(object) }
 }
 
-extern "C" fn piece_rect(object: Obj, _: Sel) -> NSRect {
-    piece_of(object).rect
+extern "C" fn rect_of(object: Obj, _: Sel) -> NSRect {
+    kept_by(object).rect
 }
 
-extern "C" fn piece_starts(object: Obj, _: Sel) -> Bool {
-    Bool::from(piece_of(object).start)
+extern "C" fn holds_start(object: Obj, _: Sel) -> Bool {
+    Bool::from(kept_by(object).start)
 }
 
-extern "C" fn piece_ends(object: Obj, _: Sel) -> Bool {
-    Bool::from(piece_of(object).end)
+extern "C" fn holds_end(object: Obj, _: Sel) -> Bool {
+    Bool::from(kept_by(object).end)
 }
 
-extern "C" fn left_to_right_piece(_: Obj, _: Sel) -> isize {
+/// `NSWritingDirectionLeftToRight`.
+extern "C" fn left_to_right_rect(_: Obj, _: Sel) -> isize {
     0
 }
 
@@ -1033,7 +1022,7 @@ extern "C" fn all_selected(_: Obj, _: Sel, _: Obj) {
 
 /// The system's Select: the word at the cursor.
 extern "C" fn word_selected(_: Obj, _: Sel, _: Obj) {
-    let Some(boxes) = TEXT_BOXES.get() else { return };
+    let Some(boxes) = TEXT_BOXES.get().filter(|_| DOCUMENT.with_borrow(|document| document.whole)) else { return };
     let (word, cursor) = DOCUMENT.with_borrow(|document| ((boxes.word)(&document.text, document.selection[1]), document.selection[1]));
     change(cursor..cursor, "", word);
 }
@@ -1044,7 +1033,7 @@ extern "C" fn can_perform(_: Obj, _: Sel, action: Sel, _: Obj) -> Bool {
     let (secret, whole, [from, to], empty) = DOCUMENT.with_borrow(|document| (document.secret, document.whole, document.selected(), document.length() == 0));
     let picked = from != to && !secret;
     // SAFETY: a plain question of the pasteboard, which asks the person nothing.
-    let pastes = || unsafe { send::<Bool>(send::<Obj>(class(c"UIPasteboard"), c"generalPasteboard", ()), c"hasStrings", ()) } != 0;
+    let pastes = || unsafe { send::<Bool>(crate::ios::pasteboard(), c"hasStrings", ()) } != 0;
     let offered = |name: &CStr| std::ptr::eq(sel(name), action);
     let can = match () {
         _ if offered(c"cut:") || offered(c"copy:") => picked,
@@ -1057,7 +1046,7 @@ extern "C" fn can_perform(_: Obj, _: Sel, action: Sel, _: Obj) -> Bool {
 
 /// Shows the system's edit menu at a place on the page (made the first time). Before iOS 16,
 /// the shared menu controller's.
-pub(crate) fn show_edit_menu(at: Point) {
+fn show_edit_menu(at: Point) {
     let input = INPUT.get();
     let at = NSPoint { x: f64::from(at.x), y: f64::from(at.y) };
     if class(c"UIEditMenuInteraction").is_null() {

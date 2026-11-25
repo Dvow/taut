@@ -165,8 +165,8 @@ thread_local! {
     /// Text pasted by the system's Paste (its edit menu, the keyboard's bar): read at once, as
     /// the system allows without asking the person, and taken by the next paste.
     static PASTED: RefCell<Option<String>> = const { RefCell::new(None) };
-    /// What UIKit's calls ask while a turn may be running: the view, where the page lies in it,
-    /// whether the page is dark, and the pointer's shape.
+    /// What UIKit's calls ask while a turn may be running: the view and its controller, where
+    /// the page lies in the view, whether the page is dark, and the pointer's shape.
     static VIEW: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
     static CONTROLLER: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
     static ORIGIN: Cell<NSPoint> = const { Cell::new(NSPoint { x: 0.0, y: 0.0 }) };
@@ -1265,7 +1265,7 @@ thread_local! {
 }
 
 /// The general pasteboard.
-fn pasteboard() -> Obj {
+pub(crate) fn pasteboard() -> Obj {
     // SAFETY: a plain question.
     unsafe { send(class(c"UIPasteboard"), c"generalPasteboard", ()) }
 }

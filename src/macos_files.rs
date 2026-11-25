@@ -153,35 +153,14 @@ pub(crate) fn hand_file_dialog() {
     DIALOG.set(Some(ask));
 }
 
-/// A block's descriptor: its size.
-#[repr(C)]
-struct Descriptor {
-    reserved: usize,
-    size: usize,
-}
+/// The dialog's completion block: it holds the view whose app asked, and the panel.
+type Answering = Block<Asked>;
 
-/// A completion block as the compiler lays one out, with what it holds after: the view whose
-/// app asked, and the panel.
-#[repr(C)]
-struct Answering {
-    isa: *const c_void,
-    flags: i32,
-    reserved: i32,
-    invoke: extern "C" fn(*const Answering, isize),
-    descriptor: *const Descriptor,
+/// What the dialog's block holds.
+struct Asked {
     view: Obj,
     panel: Obj,
 }
-
-#[link(name = "System")]
-unsafe extern "C" {
-    /// The class of blocks that live for good (`BLOCK_IS_GLOBAL`), which copying leaves be.
-    static _NSConcreteGlobalBlock: [usize; 0];
-}
-
-/// `BLOCK_IS_GLOBAL`.
-const LIVES_ON: i32 = 1 << 28;
-static DESCRIBED: Descriptor = Descriptor { reserved: 0, size: size_of::<Answering>() };
 
 /// Shows the system's dialog for a request, as a sheet on the window: to open a file, pick a
 /// folder, or save. The window's interface hears the answer when the person closes it.
@@ -211,15 +190,15 @@ fn ask(window: Obj, view: Obj, request: FileDialogRequest) {
         if !kinds.is_empty() && !request.folders {
             send::<()>(panel, c"setAllowedFileTypes:", (ns_array(&kinds),));
         }
-        let block = Box::leak(Box::new(Answering { isa: (&raw const _NSConcreteGlobalBlock).cast(), flags: LIVES_ON, reserved: 0, invoke: answered, descriptor: &DESCRIBED, view, panel }));
-        send::<()>(panel, c"beginSheetModalForWindow:completionHandler:", (window, std::ptr::from_mut(block)));
+        let block: *const Answering = Block::leaked(answered as *const c_void, Asked { view, panel });
+        send::<()>(panel, c"beginSheetModalForWindow:completionHandler:", (window, block));
     }
 }
 
 /// The dialog was closed: the window's interface gets the file or folder chosen, or none.
 extern "C" fn answered(block: *const Answering, response: isize) {
     // SAFETY: the block is the one `ask` made, which lives for good.
-    let Answering { view, panel, .. } = unsafe { &*block };
+    let Asked { view, panel } = unsafe { &(*block).held };
     let (view, panel) = (*view, *panel);
     // SAFETY: the panel answers its address; it is let go here, once.
     let chosen: Option<PathBuf> = (response == CHOSEN).then(|| rust_string(unsafe { send(send::<Obj>(panel, c"URL", ()), c"path", ()) }).map(PathBuf::from)).flatten();

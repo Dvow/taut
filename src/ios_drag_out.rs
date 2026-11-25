@@ -8,13 +8,12 @@
 //! PNG. The box itself lifts, as its picture. At the end its app hears what the other app did
 //! (copied, moved, or nothing).
 use crate::drag_drop::{DragData, DropEffect};
-use crate::geom::{Rect, pt};
+use crate::geom::Rect;
 use crate::ios::{Heard, heard};
 use crate::macos_sys::*;
 use crate::ui::Ui;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
-use std::path::Path;
 
 /// `UIDropOperation`: copied, moved.
 const COPY: isize = 2;
@@ -69,7 +68,7 @@ fn follow(ui: &mut Ui) {
 /// The drag items for what goes out (retained).
 fn items(what: DragData) -> Vec<Obj> {
     let providers: Vec<Obj> = match what {
-        DragData::Files(files) => files.iter().map(|file| file_provider(file)).collect(),
+        DragData::Files(files) => files.iter().map(|file| crate::ios_files::file_provider(file)).collect(),
         DragData::Text(text) => vec![provider(c"initWithObject:", ns_string(text))],
         DragData::Link(address) => vec![provider(c"initWithObject:", link(address))],
         DragData::Picture(width, pixels) => crate::png::encode_rgba(width, pixels).map(|png| picture_provider(&png)).into_iter().collect(),
@@ -77,28 +76,20 @@ fn items(what: DragData) -> Vec<Obj> {
     providers.into_iter().filter(|made| !made.is_null()).map(drag_item).collect()
 }
 
-/// An item provider made by `made` from one object (retained; nil if it cannot be).
+/// An item provider made by `made` from one object (retained; nil for nil: a link that is
+/// no address).
 fn provider(made: &CStr, from: Obj) -> Obj {
+    if from.is_null() {
+        return std::ptr::null_mut();
+    }
     // SAFETY: a provider made with one object, as `made` takes it.
     unsafe { send(send::<Obj>(class(c"NSItemProvider"), c"alloc", ()), made, (from,)) }
-}
-
-/// A provider of a file, named as it is (retained; nil if it cannot be read).
-fn file_provider(file: &Path) -> Obj {
-    let made = provider(c"initWithContentsOfURL:", file_address(&file.to_string_lossy()));
-    crate::ios_files::name_as(made, file);
-    made
 }
 
 /// A provider of PNG bytes (retained).
 fn picture_provider(png: &[u8]) -> Obj {
     // SAFETY: a provider made with the bytes, as PNG.
     unsafe { send(send::<Obj>(class(c"NSItemProvider"), c"alloc", ()), c"initWithItem:typeIdentifier:", (ns_data(png), ns_string("public.png"))) }
-}
-
-fn file_address(path: &str) -> Obj {
-    // SAFETY: an address made from a path (autoreleased).
-    unsafe { send(class(c"NSURL"), c"fileURLWithPath:", (ns_string(path),)) }
 }
 
 fn link(address: &str) -> Obj {
@@ -119,10 +110,7 @@ fn drag_item(provider: Obj) -> Obj {
 /// The system lifts a drag where the finger is: the box there that hands something out runs
 /// once as the one lifted, and what it hands out is the drag's. None where no box does.
 extern "C" fn items_to_lift(_: Obj, _: Sel, _: Obj, session: Obj) -> Obj {
-    // SAFETY: a session answers its place in a view.
-    let at: NSPoint = unsafe { send(session, c"locationInView:", (crate::ios::view(),)) };
-    let origin = crate::ios::origin();
-    let at = pt((at.x - origin.x) as f32, (at.y - origin.y) as f32);
+    let at = crate::ios::place_of(crate::ios::view(), session);
     let lifted = crate::ios::with_ui(|ui| {
         let (id, rect) = ui.crossing.offers.iter().rev().find(|(_, rect)| rect.contains(at)).copied()?;
         ui.crossing.lift = id;

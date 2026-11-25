@@ -12,7 +12,7 @@
 //! drag is taken while the app takes what it carries, as on the desktops.
 use crate::event::Event;
 use crate::file_dialog::FileDialogRequest;
-use crate::geom::{Point, pt};
+use crate::geom::Point;
 use crate::ios::{Heard, heard};
 use crate::macos_sys::*;
 use crate::ui::Ui;
@@ -78,8 +78,16 @@ fn file_type(provider: Obj) -> Option<Obj> {
     read.or(files.first().copied())
 }
 
+/// A provider of a file, named as it is (retained; nil if it cannot be read).
+pub(crate) fn file_provider(file: &Path) -> Obj {
+    // SAFETY: a provider made from the file's address (nil if it cannot be read).
+    let made: Obj = unsafe { send(send::<Obj>(class(c"NSItemProvider"), c"alloc", ()), c"initWithContentsOfURL:", (file_address(file),)) };
+    name_as(made, file);
+    made
+}
+
 /// Names a provider's file as the file it is made from.
-pub(crate) fn name_as(provider: Obj, file: &Path) {
+fn name_as(provider: Obj, file: &Path) {
     let name = file.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
     // SAFETY: a provider takes a name (nil answers nothing).
     unsafe { send::<()>(provider, c"setSuggestedName:", (ns_string(&name),)) };
@@ -147,7 +155,7 @@ fn ask(request: &FileDialogRequest) {
 }
 
 /// A file's address (autoreleased).
-fn file_address(path: &Path) -> Obj {
+pub(crate) fn file_address(path: &Path) -> Obj {
     // SAFETY: an address made from a path.
     unsafe { send(class(c"NSURL"), c"fileURLWithPath:", (ns_string(&path.to_string_lossy()),)) }
 }
@@ -300,10 +308,7 @@ fn carried(session: Obj) -> Option<bool> {
 
 /// Where a drag is over the page.
 fn place_of(session: Obj) -> Point {
-    // SAFETY: a session answers its place in a view.
-    let at: NSPoint = unsafe { send(session, c"locationInView:", (crate::ios::view(),)) };
-    let origin = crate::ios::origin();
-    pt((at.x - origin.x) as f32, (at.y - origin.y) as f32)
+    crate::ios::place_of(crate::ios::view(), session)
 }
 
 /// The interface hears files or text come over the window, or go.
@@ -405,8 +410,16 @@ fn land_files(providers: &[Obj], at: Point) {
         let into = folder.join(file_name(provider, kind));
         let held = (Arriving { landing: landing.clone(), nth }, into);
         // SAFETY: the provider writes the file and calls the block, which lives for good.
-        unsafe { send::<Obj>(provider, c"loadFileRepresentationForTypeIdentifier:completionHandler:", (kind, block(file_arrived as *const c_void, held))) };
+        unsafe { send::<Obj>(provider, c"loadFileRepresentationForTypeIdentifier:completionHandler:", (kind, completion(file_arrived as *const c_void, held))) };
     }
+}
+
+/// A block the system calls once with what arrived, handing its function `held` (taken then).
+type Completion<T> = Block<Cell<Option<T>>>;
+
+/// A block calling `invoke` once with `held` (see `Block::leaked`).
+fn completion<T: 'static>(invoke: *const c_void, held: T) -> *const Completion<T> {
+    Block::leaked(invoke, Cell::new(Some(held)))
 }
 
 /// Text dropped: each item's, a line each.
@@ -416,13 +429,13 @@ fn land_text(providers: &[Obj], at: Point) {
     for (nth, provider) in texts.into_iter().enumerate() {
         let held = Arriving { landing: landing.clone(), nth };
         // SAFETY: the provider reads the text and calls the block, which lives for good.
-        unsafe { send::<Obj>(provider, c"loadObjectOfClass:completionHandler:", (class(c"NSString"), block(text_arrived as *const c_void, held))) };
+        unsafe { send::<Obj>(provider, c"loadObjectOfClass:completionHandler:", (class(c"NSString"), completion(text_arrived as *const c_void, held))) };
     }
 }
 
 /// A dropped file arrived, in a temporary place the system takes back after: it is copied where
 /// it was to go.
-extern "C" fn file_arrived(block: *const Block<(Arriving<PathBuf>, PathBuf)>, address: Obj, _: Obj) {
+extern "C" fn file_arrived(block: *const Completion<(Arriving<PathBuf>, PathBuf)>, address: Obj, _: Obj) {
     let _pool = Pool::new();
     // SAFETY: the block `land_files` made, called once; the address is a file's (or nil).
     let Some((arriving, into)) = (unsafe { (*block).held.take() }) else { return };
@@ -439,48 +452,11 @@ fn copy_in(from: &Path, into: &Path) -> Option<PathBuf> {
 }
 
 /// Dropped text arrived.
-extern "C" fn text_arrived(block: *const Block<Arriving<String>>, text: Obj, _: Obj) {
+extern "C" fn text_arrived(block: *const Completion<Arriving<String>>, text: Obj, _: Obj) {
     let _pool = Pool::new();
     // SAFETY: the block `land_text` made, called once; the object is a string (or nil).
     let Some(arriving) = (unsafe { (*block).held.take() }) else { return };
     arrive(arriving, rust_string(text));
-}
-
-// ---- completion blocks ----
-
-#[link(name = "System")]
-unsafe extern "C" {
-    /// The class of blocks that live for good (`BLOCK_IS_GLOBAL`), which copying leaves be.
-    static _NSConcreteGlobalBlock: [usize; 0];
-}
-
-/// `BLOCK_IS_GLOBAL`.
-const LIVES_ON: i32 = 1 << 28;
-
-/// A block's descriptor: its size.
-#[repr(C)]
-struct Descriptor {
-    reserved: usize,
-    size: usize,
-}
-
-/// A block as the compiler lays one out, holding what its function takes once called.
-#[repr(C)]
-struct Block<T> {
-    isa: *const c_void,
-    flags: i32,
-    reserved: i32,
-    invoke: *const c_void,
-    descriptor: *const Descriptor,
-    held: Cell<Option<T>>,
-}
-
-/// A block calling `invoke` with what it holds. It lives for good (a few bytes each), as the
-/// system may touch it after calling it.
-fn block<T>(invoke: *const c_void, held: T) -> *const Block<T> {
-    let descriptor = Box::leak(Box::new(Descriptor { reserved: 0, size: size_of::<Block<T>>() }));
-    let isa = (&raw const _NSConcreteGlobalBlock).cast();
-    Box::leak(Box::new(Block { isa, flags: LIVES_ON, reserved: 0, invoke, descriptor, held: Cell::new(Some(held)) }))
 }
 
 // ---- opening files ----
@@ -548,12 +524,8 @@ fn pasted_file(board: Obj, provider: Obj, nth: usize, folder: &Path) -> Option<P
 
 /// Puts files on the pasteboard, each as itself, for another app to paste.
 pub(crate) fn put_files(board: Obj, files: &[PathBuf]) {
-    let provider = |file: &PathBuf| -> Obj {
-        // SAFETY: a provider of the file (nil if it cannot be read), autoreleased.
-        let made: Obj = unsafe { send(send::<Obj>(send::<Obj>(class(c"NSItemProvider"), c"alloc", ()), c"initWithContentsOfURL:", (file_address(file),)), c"autorelease", ()) };
-        name_as(made, file);
-        made
-    };
+    // SAFETY: providers made here, handed on autoreleased.
+    let provider = |file: &PathBuf| unsafe { send::<Obj>(file_provider(file), c"autorelease", ()) };
     let providers: Vec<Obj> = files.iter().map(provider).filter(|made| !made.is_null()).collect();
     // SAFETY: the pasteboard takes the providers, in place of what it held.
     unsafe { send::<()>(board, c"setItemProviders:", (ns_array(&providers),)) };

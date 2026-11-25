@@ -56,10 +56,11 @@ pub(crate) struct NSRange {
 pub(crate) const NOT_FOUND: usize = isize::MAX as usize;
 
 /// Type encodings of the methods the library's classes add: what the runtime says of them to
-/// whoever asks (key-value coding, accessibility). `BOOL` is `B` on arm64, `c` on x86-64.
-#[cfg(target_arch = "aarch64")]
+/// whoever asks (key-value coding, accessibility). `BOOL` is C's `bool` (`B`), except on an
+/// Intel Mac (`signed char`, `c`).
+#[cfg(any(target_arch = "aarch64", target_os = "ios"))]
 pub(crate) const BOOL: &str = "B";
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(not(any(target_arch = "aarch64", target_os = "ios")))]
 pub(crate) const BOOL: &str = "c";
 pub(crate) const RECT: &str = "{CGRect={CGPoint=dd}{CGSize=dd}}";
 pub(crate) const POINT: &str = "{CGPoint=dd}";
@@ -208,12 +209,22 @@ pub(crate) unsafe fn send<R>(to: Obj, name: &CStr, args: impl Args) -> R {
 /// # Safety
 /// As `send`.
 pub(crate) unsafe fn send_rect(to: Obj, name: &CStr, args: impl Args) -> NSRect {
+    // SAFETY: as the caller promises.
+    unsafe { send_large(to, name, args) }
+}
+
+/// Sends a message whose result is a struct larger than 16 bytes (a rectangle, a `CMTime`):
+/// on x86-64 it comes back through memory. Nil answers the default.
+///
+/// # Safety
+/// As `send`.
+pub(crate) unsafe fn send_large<R: Default>(to: Obj, name: &CStr, args: impl Args) -> R {
     #[cfg(target_arch = "x86_64")]
     let via = objc_msgSend_stret;
     #[cfg(not(target_arch = "x86_64"))]
     let via = objc_msgSend;
     // SAFETY: as the caller promises; nil would answer garbage here, so it is not asked.
-    if to.is_null() { NSRect::default() } else { unsafe { args.send(via, to, sel(name)) } }
+    if to.is_null() { R::default() } else { unsafe { args.send(via, to, sel(name)) } }
 }
 
 /// A new class of the library's own, `name`, made from `superclass` with these methods (name,
@@ -307,6 +318,72 @@ pub(crate) fn array_items(array: Obj) -> Vec<Obj> {
     // SAFETY: nil answers 0; each index is below the count.
     let count: usize = unsafe { send(array, c"count", ()) };
     (0..count).map(|at| unsafe { send(array, c"objectAtIndex:", (at,)) }).collect()
+}
+
+#[link(name = "System")]
+unsafe extern "C" {
+    /// The class of blocks that live for good, which copying leaves be.
+    static _NSConcreteGlobalBlock: [usize; 0];
+}
+
+/// A block's descriptor: its size.
+#[repr(C)]
+struct BlockDescriptor {
+    reserved: usize,
+    size: usize,
+}
+
+/// An Objective-C block as Clang lays one out, with what its function reads (`held`) after the
+/// header: what the system calls back. Its function takes the block, then the call's arguments.
+#[repr(C)]
+pub(crate) struct Block<T> {
+    isa: *const c_void,
+    flags: i32,
+    reserved: i32,
+    pub(crate) invoke: *const c_void,
+    descriptor: *const BlockDescriptor,
+    pub(crate) held: T,
+}
+
+impl<T> Block<T> {
+    /// A block calling `invoke` with `held`. It lives for good (a few bytes each): the system
+    /// may call or copy it after the caller is gone, and copying a global block keeps it.
+    pub(crate) fn leaked(invoke: *const c_void, held: T) -> &'static Block<T> {
+        /// `BLOCK_IS_GLOBAL`.
+        const GLOBAL: i32 = 1 << 28;
+        let descriptor = &const { BlockDescriptor { reserved: 0, size: size_of::<Block<T>>() } };
+        let isa = (&raw const _NSConcreteGlobalBlock).cast();
+        Box::leak(Box::new(Block { isa, flags: GLOBAL, reserved: 0, invoke, descriptor, held }))
+    }
+}
+
+#[cfg(target_os = "ios")]
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn class_createInstance(class: Obj, extra: usize) -> Obj;
+    fn object_getIndexedIvars(object: Obj) -> *mut c_void;
+}
+
+/// A new object of a class of the library's with `extra` kept beside it, in its extra bytes
+/// (retained: the caller releases or autoreleases it).
+#[cfg(target_os = "ios")]
+pub(crate) fn new_with_extra<T: Copy>(class: Obj, extra: T) -> Obj {
+    // SAFETY: an object with room for a `T` beside it, written once.
+    unsafe {
+        let made = class_createInstance(class, size_of::<T>());
+        object_getIndexedIvars(made).cast::<T>().write(extra);
+        made
+    }
+}
+
+/// What an object made by `new_with_extra` keeps beside it.
+///
+/// # Safety
+/// `object` was made by `new_with_extra` with a `T`.
+#[cfg(target_os = "ios")]
+pub(crate) unsafe fn extra_of<T: Copy>(object: Obj) -> T {
+    // SAFETY: as the caller promises.
+    unsafe { object_getIndexedIvars(object).cast::<T>().read() }
 }
 
 /// An autorelease pool, drained where it ends.
