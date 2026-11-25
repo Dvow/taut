@@ -573,7 +573,7 @@ mod host {
         adb(&["install", "-r", &apk.to_string_lossy()]);
         adb(&["logcat", "-c"]);
         shell("settings put global hide_error_dialogs 1; settings put system accelerometer_rotation 0; settings put system user_rotation 0");
-        shell(&format!("am start -W -n {PACKAGE}/android.app.NativeActivity"));
+        shell(&format!("am start -W -n {PACKAGE}/taut.Activity"));
         // What the app found reading itself.
         let found = findings(Duration::from_secs(120));
         println!("the app's findings:\n{found}");
