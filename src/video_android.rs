@@ -373,11 +373,14 @@ fn bytes_source(media: &'static Media, extractor: Object, bytes: &Arc<Vec<u8>>) 
     }
 }
 
-/// A data source's read: up to `size` bytes from `offset`.
+/// A data source's read: up to `size` bytes from `offset`; -1 past the end (`NdkMediaDataSource.h`).
 unsafe extern "C" fn read_at(bytes: *mut c_void, offset: i64, into: *mut c_void, size: usize) -> isize {
     // SAFETY: the user data is the bytes, alive while the source is.
     let bytes: &Vec<u8> = unsafe { &*bytes.cast() };
     let Some(part) = usize::try_from(offset).ok().and_then(|from| bytes.get(from..)) else { return -1 };
+    if part.is_empty() && size > 0 {
+        return -1;
+    }
     let count = part.len().min(size);
     // SAFETY: the extractor's buffer has room for `size` bytes.
     unsafe { std::ptr::copy_nonoverlapping(part.as_ptr(), into.cast(), count) };
@@ -746,8 +749,8 @@ impl Pictures {
             self.show(next, shared);
             return Ok(false);
         }
-        let rest = if asked.playing { at - asked.now } else { Duration::from_millis(50) };
-        shared.wait(rest.min(Duration::from_millis(20)));
+        let rest = if asked.playing { (at - asked.now).min(Duration::from_millis(20)) } else { Duration::from_millis(50) };
+        shared.wait(rest);
         Ok(false)
     }
 
@@ -875,11 +878,14 @@ impl Plane<'_> {
     }
 }
 
-/// A plane of a live image, borrowed while the image lives.
-fn plane(media: &'static Media, image: Object, number: i32) -> Option<Plane<'static>> {
+/// A plane of a live image, borrowed for as long as `image` is (which the caller deletes only
+/// after).
+fn plane<'a>(media: &'static Media, image: &'a Object, number: i32) -> Option<Plane<'a>> {
     let (mut row, mut step, mut data, mut length) = (0, 0, null_mut(), 0);
-    // SAFETY: a live image; its plane's bytes are read only before the image is deleted.
+    // SAFETY: a live image; its plane's bytes are read only while it is borrowed, before it is
+    // deleted.
     unsafe {
+        let image = *image;
         let read = (media.AImage_getPlaneRowStride)(image, number, &mut row) | (media.AImage_getPlanePixelStride)(image, number, &mut step);
         if read != 0 || (media.AImage_getPlaneData)(image, number, &mut data, &mut length) != 0 || data.is_null() {
             return None;
@@ -902,7 +908,7 @@ fn rgb_of(media: &'static Media, image: Object, colours: Colours) -> Option<(usi
         _ => [0, 0, width, height],
     }
     .map(|edge| edge.max(0) as usize);
-    let [Some(y), Some(u), Some(v)] = [0, 1, 2].map(|number| plane(media, image, number)) else { return None };
+    let [Some(y), Some(u), Some(v)] = [0, 1, 2].map(|number| plane(media, &image, number)) else { return None };
     let rows = (top..bottom).flat_map(|row| (left..right).map(move |column| (column, row)));
     let pixels = rows.map(|(x, row)| colours.rgb(y.at(x, row), u.at(x / 2, row / 2), v.at(x / 2, row / 2))).collect();
     Some((right - left, pixels))
@@ -1071,9 +1077,10 @@ impl Speaker {
 /// 16-bit samples from a decoder's bytes (16-bit, or float), at a volume.
 fn samples(bytes: &[u8], float: bool, volume: f32) -> Vec<i16> {
     let scale = |sample: f32| (sample * volume).clamp(-32768.0, 32767.0) as i16;
-    match float {
-        true => bytes.as_chunks::<4>().0.iter().map(|sample| scale(f32::from_le_bytes(*sample) * 32767.0)).collect(),
-        false => bytes.as_chunks::<2>().0.iter().map(|sample| scale(f32::from(i16::from_le_bytes(*sample)))).collect(),
+    if float {
+        bytes.as_chunks::<4>().0.iter().map(|sample| scale(f32::from_le_bytes(*sample) * 32767.0)).collect()
+    } else {
+        bytes.as_chunks::<2>().0.iter().map(|sample| scale(f32::from(i16::from_le_bytes(*sample)))).collect()
     }
 }
 

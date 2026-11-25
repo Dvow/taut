@@ -87,11 +87,11 @@ fn asked(args: Vec<String>) -> Asked {
             "--target" => asked.target = words.next().unwrap_or_default(),
             "--features" => asked.features.extend(words.next().unwrap_or_default().split(',').filter(|one| !one.is_empty()).map(String::from)),
             "--out" => asked.out = words.next().map(PathBuf::from),
+            "--package" => asked.package = words.next(),
             _ if word.ends_with(".rs") => {
                 asked.example = Path::new(&word).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
                 asked.source = Some(PathBuf::from(word));
             }
-            "--package" => asked.package = words.next(),
             _ => asked.example = word,
         }
     }

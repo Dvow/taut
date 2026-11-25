@@ -109,7 +109,8 @@ thread_local! {
     static TURNING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The system parts in use: what each does around a run. (A face can be named on any thread.)
+/// The system parts in use: what each does around a run. (Parts join from any thread: a face
+/// is named on any.)
 static PARTS: std::sync::Mutex<Vec<Part>> = std::sync::Mutex::new(Vec::new());
 
 /// The parts in use, now.
@@ -393,8 +394,15 @@ extern "C" fn on_destroy(_: *mut Activity) {
         HOST.set(None);
     }
     SHELL.with_borrow_mut(|shell| (shell.activity, shell.view, shell.typing) = (std::ptr::null_mut(), std::ptr::null_mut(), false));
-    INPUT_METHOD.get().inspect(|typing| (typing.drop)());
+    drop_composed();
     crate::android_access::forget();
+}
+
+/// Drops what the input method composes, once a text box handed it over.
+fn drop_composed() {
+    if let Some(typing) = INPUT_METHOD.get() {
+        (typing.drop)();
+    }
 }
 
 /// Nothing is kept in the activity's saved state: the interface itself outlives the activity.
@@ -855,7 +863,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             shell.view
         });
         if was != now {
-            INPUT_METHOD.get().inspect(|typing| (typing.drop)());
+            drop_composed();
         }
         if (was != now || pressed && now.is_some()) && !view.is_null() {
             jni::soft_keyboard(env(), activity(), view, now.is_some(), was.is_some() && now.is_some() && was != now);

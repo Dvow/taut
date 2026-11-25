@@ -146,8 +146,11 @@ struct Attached(Cell<Env>);
 
 impl Drop for Attached {
     fn drop(&mut self) {
-        if !self.0.get().0.is_null() {
-            vm_call::<extern "C" fn(*mut c_void) -> i32>(DETACH_CURRENT_THREAD).map(|(vm, detach)| detach(vm));
+        if self.0.get().0.is_null() {
+            return;
+        }
+        if let Some((vm, detach)) = vm_call::<extern "C" fn(*mut c_void) -> i32>(DETACH_CURRENT_THREAD) {
+            detach(vm);
         }
     }
 }
@@ -163,8 +166,12 @@ fn vm_call<F: Copy>(slot: usize) -> Option<(*mut c_void, F)> {
 /// This thread's interface: the main thread's, or another's, attached the first time and for
 /// as long as the thread lives. None before an activity started.
 pub(crate) fn thread_env() -> Option<Env> {
-    if let Some(env) = env().or_else(|| Some(ATTACHED.with(|kept| kept.0.get())).filter(|env| !env.0.is_null())) {
+    if let Some(env) = env() {
         return Some(env);
+    }
+    let attached = ATTACHED.with(|kept| kept.0.get());
+    if !attached.0.is_null() {
+        return Some(attached);
     }
     let mut raw: *mut c_void = std::ptr::null_mut();
     let (vm, get) = vm_call::<extern "C" fn(*mut c_void, *mut *mut c_void, i32) -> i32>(GET_ENV)?;
@@ -223,10 +230,10 @@ impl Env {
         if self.threw() { std::ptr::null_mut() } else { class }
     }
 
-    /// Calls `name` with `signature` on an object (none: nothing happens).
-    pub(crate) fn call(self, on: Obj, name: &CStr, signature: &CStr, args: &[Value]) -> Value {
+    /// The id of an object's method `name` with `signature` (null for a null object, or none).
+    fn method_of(self, on: Obj, name: &CStr, signature: &CStr) -> Obj {
         if on.is_null() {
-            return Value { j: 0 };
+            return on;
         }
         // SAFETY: the object is alive; its class answers the method, or Java throws (cleared).
         let method = unsafe {
@@ -235,7 +242,13 @@ impl Env {
             self.drop_local(class);
             method
         };
-        if self.threw() || method.is_null() {
+        if self.threw() { std::ptr::null_mut() } else { method }
+    }
+
+    /// Calls `name` with `signature` on an object (none: nothing happens).
+    pub(crate) fn call(self, on: Obj, name: &CStr, signature: &CStr, args: &[Value]) -> Value {
+        let method = self.method_of(on, name, signature);
+        if method.is_null() {
             return Value { j: 0 };
         }
         self.invoke(CALL_OBJECT_METHOD_A, on, method, signature, args)
@@ -243,19 +256,12 @@ impl Env {
 
     /// Calls a method that returns nothing: says whether it ran, without Java throwing.
     pub(crate) fn run(self, on: Obj, name: &CStr, signature: &CStr, args: &[Value]) -> bool {
-        if on.is_null() {
+        let method = self.method_of(on, name, signature);
+        if method.is_null() {
             return false;
         }
-        // SAFETY: as in `call`; the method returns nothing.
-        unsafe {
-            let class = self.slot::<extern "C" fn(Env, Obj) -> Obj>(GET_OBJECT_CLASS)(self, on);
-            let method = self.slot::<extern "C" fn(Env, Obj, *const c_char, *const c_char) -> Obj>(GET_METHOD_ID)(self, class, name.as_ptr(), signature.as_ptr());
-            self.drop_local(class);
-            if self.threw() || method.is_null() {
-                return false;
-            }
-            self.slot::<extern "C" fn(Env, Obj, Obj, *const Value)>(CALL_VOID_METHOD_A)(self, on, method, args.as_ptr());
-        }
+        // SAFETY: a method of the object's class that returns nothing.
+        unsafe { self.slot::<extern "C" fn(Env, Obj, Obj, *const Value)>(CALL_VOID_METHOD_A)(self, on, method, args.as_ptr()) };
         !self.threw()
     }
 
@@ -263,6 +269,9 @@ impl Env {
     /// object's own class overrides it: what Java's `super.` calls.
     pub(crate) fn call_super(self, on: Obj, class: &CStr, name: &CStr, signature: &CStr, args: &[Value]) -> bool {
         let class = self.class(class);
+        if class.is_null() {
+            return false;
+        }
         // SAFETY: the class is alive; its method is asked for by name and signature, and called
         // on an object of a class that extends it.
         let said = unsafe {
@@ -733,10 +742,11 @@ pub(crate) fn start_new_task(env: Env, activity: Obj, intent: Obj) -> bool {
 pub(crate) const NEW_TASK: i32 = 0x1000_0000;
 
 /// A class of the app's own package (its `classes.dex`, see `examples/apk.rs`), by name with
-/// dots, as a global reference: null if the package lacks it.
+/// dots, as a local reference: null if the package lacks it.
 pub(crate) fn app_class(env: Env, activity: Obj, name: &str) -> Obj {
-    env.frame(|| {
-        let loader = env.call(activity, c"getClassLoader", c"()Ljava/lang/ClassLoader;", &[]).object();
-        env.global(env.call(loader, c"loadClass", c"(Ljava/lang/String;)Ljava/lang/Class;", &[Value::obj(env.string(name))]).object())
-    })
+    let (loader, name) = (env.call(activity, c"getClassLoader", c"()Ljava/lang/ClassLoader;", &[]).object(), env.string(name));
+    let class = env.call(loader, c"loadClass", c"(Ljava/lang/String;)Ljava/lang/Class;", &[Value::obj(name)]).object();
+    env.drop_local(name);
+    env.drop_local(loader);
+    class
 }

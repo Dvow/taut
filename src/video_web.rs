@@ -83,11 +83,11 @@ impl Player {
         let mut state = [0f64; 4];
         // SAFETY: the loader writes four numbers, and answers the error's length.
         let told = unsafe { video_state(self.id, state.as_mut_ptr()) };
-        let [at, length, ended, error] = state;
+        let [at, length, ended, error_kind] = state;
         self.position = Duration::from_secs_f64(at.max(0.0));
         self.length = (length.is_finite() && length >= 0.0).then(|| Duration::from_secs_f64(length));
-        let error = (error != 0.0).then(|| String::from_utf8_lossy(&took(told)).into_owned());
-        News { ended: ended != 0.0, error, clears_on_play: state[3] == 2.0 }
+        let error = (error_kind != 0.0).then(|| String::from_utf8_lossy(&took(told)).into_owned());
+        News { ended: ended != 0.0, error, clears_on_play: error_kind == 2.0 }
     }
 
     /// The frame on show, where it was not given yet: its width and time, its pixels in `into`.

@@ -131,9 +131,10 @@ mod connection {
     fn tell_selection(env: Env, connection: Obj) {
         env.frame(|| {
             let text = env.call(connection, c"getEditable", c"()Landroid/text/Editable;", &[]).object();
-            let at = |class: &CStr, name: &CStr| env.call_static(class, name, c"(Ljava/lang/CharSequence;)I", &[Value::obj(text)]).as_int();
-            let [start, end] = [c"getSelectionStart", c"getSelectionEnd"].map(|name| at(c"android/text/Selection", name));
-            let [from, to] = [c"getComposingSpanStart", c"getComposingSpanEnd"].map(|name| at(CONNECTION, name));
+            let selection = |name: &CStr| env.call_static(c"android/text/Selection", name, c"(Ljava/lang/CharSequence;)I", &[Value::obj(text)]).as_int();
+            let composing = |name: &CStr| env.call_static(CONNECTION, name, c"(Landroid/text/Spannable;)I", &[Value::obj(text)]).as_int();
+            let [start, end] = [c"getSelectionStart", c"getSelectionEnd"].map(selection);
+            let [from, to] = [c"getComposingSpanStart", c"getComposingSpanEnd"].map(composing);
             let args = [Value::obj(view().0), Value::int(start), Value::int(end), Value::int(from), Value::int(to)];
             env.call(jni::service(env, activity(), "input_method"), c"updateSelection", c"(Landroid/view/View;IIII)V", &args);
         });
@@ -145,13 +146,13 @@ mod connection {
         if !text.is_empty() {
             heard(Heard::Event(Event::Text(text)));
         }
-        kick();
     }
 
     /// The input method committed text: it is typed, in place of what it was composing.
     extern "C" fn commit_text(env: Env, connection: Obj, text: Obj, cursor: c_int) -> u8 {
         env.call_super(connection, CONNECTION, c"commitText", c"(Ljava/lang/CharSequence;I)Z", &[Value::obj(text), Value::int(cursor)]);
         type_text(env.text(text).unwrap_or_default());
+        kick();
         tell_selection(env, connection);
         1
     }
@@ -169,7 +170,8 @@ mod connection {
     /// The input method is done composing: what it composed is typed as it is.
     extern "C" fn finish_composing_text(env: Env, connection: Obj) -> u8 {
         env.call_super(connection, CONNECTION, c"finishComposingText", c"()Z", &[]);
-        type_text(COMPOSING.with_borrow(String::clone));
+        type_text(COMPOSING.take());
+        kick();
         tell_selection(env, connection);
         1
     }
@@ -186,10 +188,7 @@ mod connection {
 
     /// The keyboard's action key (Done, Go): what was composed is typed, then Enter.
     extern "C" fn editor_action(_: Env, _: Obj, _: c_int) -> u8 {
-        let composed = COMPOSING.take();
-        if !composed.is_empty() {
-            heard(Heard::Event(Event::Text(composed)));
-        }
+        type_text(COMPOSING.take());
         heard(Heard::Event(Event::Key(Key::Enter, Mods::NONE)));
         kick();
         1

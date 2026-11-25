@@ -71,7 +71,7 @@ fn ask_permission(env: Env, activity: Obj) {
         return ASKED.set(false);
     }
     env.frame(|| {
-        env.set_int_field(activity, c"permitted", 0);
+        env.set_int_field(activity, c"permission_request", 0);
         let asked = jni::new_objects(env, c"java/lang/String", &[env.string(PERMISSION)]);
         env.call(activity, c"requestPermissions", c"([Ljava/lang/String;I)V", &[Value::obj(asked), Value::int(ASKING)]);
     });
@@ -82,10 +82,10 @@ fn ask_permission(env: Env, activity: Obj) {
 fn take_permission(_: &mut Ui) -> bool {
     let (env, activity) = (jni::env(), activity());
     let Some(env) = env.filter(|_| ASKED.get() && !activity.is_null()) else { return false };
-    if env.int_field(activity, c"permitted") != ASKING {
+    if env.int_field(activity, c"permission_request") != ASKING {
         return false;
     }
-    env.set_int_field(activity, c"permitted", 0);
+    env.set_int_field(activity, c"permission_request", 0);
     ASKED.set(false);
     let waiting = WAITING.with_borrow_mut(std::mem::take);
     if permitted(env, activity) {

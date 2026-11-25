@@ -94,12 +94,11 @@ pub(crate) fn forget() {
 
 /// The provider's native methods.
 pub(crate) fn natives() -> [Native; 4] {
-    let native = |name: &'static CStr, signature: &'static CStr, function: *const c_void| Native { name: name.as_ptr(), signature: signature.as_ptr(), function };
     [
-        native(c"createAccessibilityNodeInfo", c"(I)Landroid/view/accessibility/AccessibilityNodeInfo;", node_info as *const c_void),
-        native(c"performAction", c"(IILandroid/os/Bundle;)Z", perform as *const c_void),
-        native(c"findFocus", c"(I)Landroid/view/accessibility/AccessibilityNodeInfo;", find_focus as *const c_void),
-        native(c"addExtraDataToAccessibilityNodeInfo", c"(ILandroid/view/accessibility/AccessibilityNodeInfo;Ljava/lang/String;Landroid/os/Bundle;)V", extra_data as *const c_void),
+        Native::new(c"createAccessibilityNodeInfo", c"(I)Landroid/view/accessibility/AccessibilityNodeInfo;", node_info as *const c_void),
+        Native::new(c"performAction", c"(IILandroid/os/Bundle;)Z", perform as *const c_void),
+        Native::new(c"findFocus", c"(I)Landroid/view/accessibility/AccessibilityNodeInfo;", find_focus as *const c_void),
+        Native::new(c"addExtraDataToAccessibilityNodeInfo", c"(ILandroid/view/accessibility/AccessibilityNodeInfo;Ljava/lang/String;Landroid/os/Bundle;)V", extra_data as *const c_void),
     ]
 }
 

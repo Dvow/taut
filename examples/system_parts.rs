@@ -98,16 +98,12 @@ fn answers(parts: &mut Parts, ui: &mut Ui) {
         parts.said[NOTIFIED] = format!("Notification: clicked{}", if ours { "" } else { ", from before" });
     }
     if let Some(outcome) = parts.printing.as_ref().and_then(PrintJob::outcome) {
-        parts.said[PRINTED] = format!(
-            "Printing: {}",
-            if outcome == PrintOutcome::Sent {
-                "sent"
-            } else if outcome == PrintOutcome::Closed {
-                "closed"
-            } else {
-                "unable"
-            }
-        );
+        let what = match outcome {
+            PrintOutcome::Sent => "sent",
+            PrintOutcome::Closed => "closed",
+            _ => "unable",
+        };
+        parts.said[PRINTED] = format!("Printing: {what}");
         parts.printing = None;
     }
 }

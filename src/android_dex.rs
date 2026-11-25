@@ -727,7 +727,7 @@ pub(crate) const APP: [Class; 6] = [
     Class {
         name: "taut/Activity",
         parent: "android/app/NativeActivity",
-        fields: &[("request", "I"), ("result", "I"), ("answer", "Landroid/content/Intent;"), ("permitted", "I")],
+        fields: &[("request", "I"), ("result", "I"), ("answer", "Landroid/content/Intent;"), ("permission_request", "I")],
         methods: &ACTIVITY,
         ..BARE
     },
@@ -788,7 +788,7 @@ const ACTIVITY: [Method; 3] = [
         name: "onRequestPermissionsResult",
         descriptor: "(I[Ljava/lang/String;[I)V",
         registers: 4,
-        code: &[Op::With(iput(1, 0), Ref::Field("taut/Activity", "permitted", "I")), Op::Units(&[RETURN_VOID])],
+        code: &[Op::With(iput(1, 0), Ref::Field("taut/Activity", "permission_request", "I")), Op::Units(&[RETURN_VOID])],
     },
 ];
 
@@ -939,14 +939,14 @@ mod tests {
     fn a_method_with_code_has_its_registers_and_resolved_references() {
         let file = dex(&APP);
         let pools = Pools::of(&APP);
-        let field = pools.field(&Kept { class: "Ltaut/Activity;".into(), name: "permitted".into(), kind: "I".into() });
-        // `onRequestPermissionsResult`: four registers, four in, none out; `iput v1, v0, permitted`.
+        let field = pools.field(&Kept { class: "Ltaut/Activity;".into(), name: "permission_request".into(), kind: "I".into() });
+        // `onRequestPermissionsResult`: four registers, four in, none out; `iput v1, v0, permission_request`.
         let header = [4u16, 4, 0, 0, 0, 0, 3, 0, 0x0159, field as u16, 0x000e];
         let bytes: Vec<u8> = header.iter().flat_map(|unit| unit.to_le_bytes()).collect();
         assert!(file.windows(bytes.len()).any(|window| window == bytes), "the method's code item");
         // Fields are sorted by class, then name.
         let names: Vec<&str> = pools.fields.iter().filter(|one| one.class == "Ltaut/Activity;").map(|one| one.name.as_str()).collect();
-        assert_eq!(names, ["answer", "permitted", "request", "result"]);
+        assert_eq!(names, ["answer", "permission_request", "request", "result"]);
     }
 
     /// The SDK's own `dexdump`, where the SDK is here (`ANDROID_HOME`): what it says of `file`.
@@ -979,7 +979,7 @@ mod tests {
         for said in [
             "Superclass        : 'Landroid/app/NativeActivity;'",
             "#0              : 'Landroid/view/View$OnDragListener;'",
-            "name          : 'permitted'",
+            "name          : 'permission_request'",
             "iput-object v3, v0, Ltaut/Activity;.answer:Landroid/content/Intent;",
             "invoke-super {v0, v1}, Landroid/app/NativeActivity;.onNewIntent:(Landroid/content/Intent;)V",
             "invoke-static {v1, v2}, Landroid/os/ParcelFileDescriptor;.open:(Ljava/io/File;I)Landroid/os/ParcelFileDescriptor;",

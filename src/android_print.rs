@@ -64,7 +64,11 @@ fn start(env: Env, activity: Obj, title: &str) -> Option<Obj> {
     let args = [Value::obj(env.string(title)), Value::obj(adapter), Value::obj(std::ptr::null_mut())];
     let job =
         env.call(jni::service(env, activity, "print"), c"print", c"(Ljava/lang/String;Landroid/print/PrintDocumentAdapter;Landroid/print/PrintAttributes;)Landroid/print/PrintJob;", &args).object();
-    (!adapter.is_null() && !job.is_null()).then_some(adapter)
+    if adapter.is_null() || job.is_null() {
+        env.drop_global(adapter);
+        return None;
+    }
+    Some(adapter)
 }
 
 /// Gives `taut.Pages` its natives.
@@ -147,8 +151,8 @@ fn write_pdf(fd: i32, pdf: &[u8]) -> bool {
 /// The dialog is done: the app hears whether the pages went to the printer the person
 /// confirmed, could not, or the dialog was closed.
 extern "C" fn finish(env: Env, adapter: Obj) {
-    let Some(at) = JOBS.with_borrow(|jobs| jobs.iter().position(|job| env.same(job.adapter, adapter))) else { return };
-    let job = JOBS.with_borrow_mut(|jobs| jobs.remove(at));
+    let taken = JOBS.with_borrow_mut(|jobs| jobs.iter().position(|job| env.same(job.adapter, adapter)).map(|at| jobs.remove(at)));
+    let Some(job) = taken else { return };
     let outcome = match (job.confirmed, job.sent) {
         (false, _) => PrintOutcome::Closed,
         (true, true) => PrintOutcome::Sent,
