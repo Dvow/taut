@@ -28,9 +28,8 @@ const APPLE_NOTES: &[u8] = b"Apple iOS\0\0\x01MM";
 pub(crate) fn read(file: &[u8]) -> Option<(usize, Vec<u32>, GainMap)> {
     let exif = segments(file).find_map(|(marker, body)| body.strip_prefix(EXIF).filter(|_| marker == 0xE1));
     let (map, curve) = gain_map_of(file, exif)?;
+    let map = decoded_map(map, curve, exif.and_then(crate::exif_orientation::turn), size(frame(file)?))?;
     let (width, sdr) = crate::jpeg::decode(file)?;
-    let turn = exif.and_then(crate::exif_orientation::turn);
-    let map = decoded_map(map, curve, turn, [width, sdr.len() / width.max(1)])?;
     Some((width, sdr, map))
 }
 
@@ -49,24 +48,32 @@ fn gain_map_of<'a>(file: &'a [u8], exif: Option<&[u8]>) -> Option<(&'a [u8], Cur
 }
 
 /// The gain map in `jpeg` (a JPEG of grey or colour gains): decoded as stored, turned `turn`
-/// way (EXIF), as values 0 to 1. Nothing where its frame says it is larger than the picture's
-/// `size` (or says its height later): it is then not decoded.
-fn decoded_map(jpeg: &[u8], curve: Curve, turn: Option<usize>, size: [usize; 2]) -> Option<GainMap> {
-    // The frame's header: precision, height, width, components.
-    let frame = segments(jpeg).find_map(|(marker, body)| body.get(..6).filter(|_| matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF)))?;
-    let [high, wide] = [[frame[1], frame[2]], [frame[3], frame[4]]].map(|two| u16::from_be_bytes(two) as usize);
-    let [across, down] = if turn.is_some_and(|turn| turn >= 5) { [high, wide] } else { [wide, high] };
-    if across == 0 || down == 0 || across > size[0] || down > size[1] {
+/// way (EXIF), as values 0 to 1. Nothing where its frame says it is larger than the picture
+/// (`picture`: its size as stored) or says its height later: it is then not decoded.
+fn decoded_map(jpeg: &[u8], curve: Curve, turn: Option<usize>, picture: [usize; 2]) -> Option<GainMap> {
+    let header = frame(jpeg)?;
+    let [wide, high] = size(header);
+    if wide == 0 || high == 0 || wide > picture[0] || high > picture[1] {
         return None;
     }
     let (width, pixels) = crate::jpeg::decode(&kept(jpeg, |marker, _| !matches!(marker, 0xE1 | 0xE2)))?;
     let (width, pixels) = crate::exif_orientation::turned(turn, width, pixels);
-    let colours = if frame[5] == 1 { 1 } else { 3 };
+    let colours = if header[5] == 1 { 1 } else { 3 };
     let mut values = Vec::with_capacity(pixels.len() * colours);
     for pixel in pixels {
         values.extend(pixel.to_be_bytes()[1..=colours].iter().map(|byte| crate::hdr::half(*byte as f32 / 255.0)));
     }
     Some(GainMap { width, colours, values, curve, serial: 0 })
+}
+
+/// A JPEG's frame header: precision, height, width (two bytes each) and components.
+fn frame(jpeg: &[u8]) -> Option<&[u8]> {
+    segments(jpeg).find_map(|(marker, body)| body.get(..6).filter(|_| matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF)))
+}
+
+/// The width and height a frame header says (a height of 0: said after the first scan).
+fn size(frame: &[u8]) -> [usize; 2] {
+    [u16::from_be_bytes([frame[3], frame[4]]) as usize, u16::from_be_bytes([frame[1], frame[2]]) as usize]
 }
 
 /// A JPEG with only the segments before its first scan that `keep` keeps (by marker and
@@ -141,13 +148,19 @@ fn curve_of(jpeg: &[u8], exif: Option<&[u8]>) -> Option<Curve> {
 }
 
 /// Whether a curve is one libultrahdr takes: every number finite, each colour's most gain not
-/// under its least, gammas above 0, offsets not below it, its full headroom not under its least.
+/// under its least, gammas above 0, its least headroom not below 0 and its full one above it.
 fn sound(curve: &Curve) -> bool {
     let ends = [curve.offset, curve.none, curve.full];
     curve.gamma.iter().chain(&curve.low).chain(&curve.high).chain(&ends).all(|number| number.is_finite())
         && (0..3).all(|colour| curve.high[colour] >= curve.low[colour] && curve.gamma[colour] > 0.0)
-        && curve.offset >= 0.0
-        && curve.full >= curve.none
+        && curve.none >= 0.0
+        && curve.full > curve.none
+}
+
+/// The one offset taken for a map's SDR and HDR offsets: their mean. Nothing where one is
+/// negative (libultrahdr refuses those).
+fn offset(offsets: &[f32]) -> Option<f32> {
+    offsets.iter().all(|offset| *offset >= 0.0).then(|| offsets.iter().sum::<f32>() / offsets.len() as f32)
 }
 
 /// ISO 21496-1's metadata: version 0, then flags (three colours, one denominator for all, the
@@ -179,15 +192,15 @@ fn iso_curve(data: &[u8]) -> Option<Curve> {
     let (none, full) = (fraction(false)?, fraction(false)?);
     let mut curve = Curve { gamma: [1.0; 3], low: [0.0; 3], high: [0.0; 3], offset: 0.0, none, full };
     let colours = if flags & 0x80 != 0 { 3 } else { 1 };
-    let mut offsets = 0.0;
+    let mut offsets = [0.0; 6];
     for colour in 0..colours {
         [curve.low[colour], curve.high[colour], curve.gamma[colour]] = [fraction(true)?, fraction(true)?, fraction(false)?];
-        offsets += fraction(true)? + fraction(true)?;
+        offsets[colour * 2..][..2].copy_from_slice(&[fraction(true)?, fraction(true)?]);
     }
     for colour in colours..3 {
         (curve.low[colour], curve.high[colour], curve.gamma[colour]) = (curve.low[0], curve.high[0], curve.gamma[0]);
     }
-    curve.offset = offsets / (2 * colours) as f32;
+    curve.offset = offset(&offsets[..colours * 2])?;
     Some(curve)
 }
 
@@ -203,8 +216,7 @@ fn adobe_curve(xmp: &str) -> Option<Curve> {
     let (high, [full, ..]) = (said(xmp, prefix, "GainMapMax").and_then(numbers)?, said(xmp, prefix, "HDRCapacityMax").and_then(numbers)?);
     let (low, gamma, [none, ..]) = (numbers_or("GainMapMin", 0.0)?, numbers_or("Gamma", 1.0)?, numbers_or("HDRCapacityMin", 0.0)?);
     let (sdr, hdr) = (numbers_or("OffsetSDR", 1.0 / 64.0)?, numbers_or("OffsetHDR", 1.0 / 64.0)?);
-    let offset = sdr.iter().chain(&hdr).sum::<f32>() / 6.0;
-    Some(Curve { gamma, low, high, offset, none, full })
+    Some(Curve { gamma, low, high, offset: offset([sdr, hdr].as_flattened())?, none, full })
 }
 
 /// Apple's gain map XMP: its version said, its headroom (stops) said there or in the picture's
@@ -428,6 +440,16 @@ mod tests {
         assert!(adobe_curve(&xmp.replace("'1.0'", "'2.0'")).is_none(), "another version");
         assert!(adobe_curve(&xmp.replace("<rdf:Description", "<rdf:Description gm:BaseRenditionIsHDR='True'")).is_none(), "made from an HDR picture");
         assert!(adobe_curve(&xmp.replace("gm:HDRCapacityMax = \"2.5\"", "")).is_none(), "no full headroom said");
+    }
+
+    #[test]
+    fn metadata_libultrahdr_refuses_is_refused() {
+        let xmp = "<rdf:Description xmlns:gm='http://ns.adobe.com/hdr-gain-map/1.0/' gm:Version='1.0' gm:GainMapMax='2' gm:HDRCapacityMax='2' gm:OffsetSDR='-0.01' gm:OffsetHDR='0.05'/>";
+        assert!(adobe_curve(xmp).is_none(), "an offset below 0, though their mean is above");
+        let curve = adobe_curve(&xmp.replace("'-0.01'", "'0.01'")).expect("Adobe's XMP");
+        assert!(sound(&curve));
+        assert!(!sound(&Curve { none: 2.0, ..curve }), "no headroom between least and full");
+        assert!(!sound(&Curve { none: -1.0, ..curve }), "a least headroom below 0");
     }
 
     #[test]

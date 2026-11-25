@@ -17,7 +17,7 @@ use crate::geom::{Point, Rect, pt, rect};
 use crate::id::Id;
 use crate::layout::{Flow, Length};
 use crate::rich_text::Span;
-use crate::text_edit::{Edit, step, word_edge};
+use crate::text_edit::step;
 use crate::ui::{Measure, Response, Stroke, Ui};
 use crate::vertical_layout::{Laid, middles};
 use crate::vertical_paragraph::{Kept, Shown};
@@ -63,7 +63,7 @@ impl Ui {
         crate::android_input_method::hand_over();
         let t = self.theme;
         let (id, at) = (self.next_id(), self.tree.specs.len() as u32);
-        let mut state = self.interact(id);
+        let (mut state, enter_left) = (self.interact(id), std::mem::take(&mut self.asks.enter_left));
         let many = matches!(kind, Kind::Columns(..));
         let read = self.rooms.get(&id).copied().unwrap_or([self.size().w, self.size().h, 0.0]);
         let room = if many { read[1].max(1.0) } else { f32::INFINITY };
@@ -74,7 +74,7 @@ impl Ui {
             self.set_cursor(Cursor::Text);
         }
         if state.focused {
-            state.changed = self.type_vertical(text, &state, many, &mut shown, room, &mut kept.edit);
+            state.changed = self.type_vertical(text, &state, many, enter_left, &mut shown, &mut kept.edit);
         }
         let empty = text.is_empty();
         if empty {
@@ -157,27 +157,17 @@ impl Ui {
         }
     }
 
-    /// Feeds pointer, keys and typed text to the focused vertical box (laid out in `shown`, its
-    /// columns `room` long). Returns whether the text changed.
-    fn type_vertical(&mut self, text: &mut String, state: &Response, many: bool, shown: &mut Shown, room: f32, edited: &mut Edited) -> bool {
-        if self.edit.id != state.id {
-            self.edit = Edit::new(state.id, text.len());
-        }
-        self.edit.enter_left = std::mem::take(&mut self.asks.enter_left);
-        self.edit.fit(text);
-        if std::mem::take(&mut self.select_all) {
-            (self.edit.anchor, self.edit.cursor) = (0, text.len());
-        }
-        let was = (self.edit.cursor, self.edit.anchor, self.edit.version);
-        if state.hovered && self.input.pressed[0] {
-            self.edit.anchor_set = self.input.mods.shift;
-        }
+    /// Feeds pointer, keys and typed text to the focused vertical box (laid out in `shown`),
+    /// Enter left to the app or not. Returns whether the text changed.
+    fn type_vertical(&mut self, text: &mut String, state: &Response, many: bool, enter_left: bool, shown: &mut Shown, edited: &mut Edited) -> bool {
+        let pressed = (state.hovered && self.input.pressed[0]).then_some(self.input.mods.shift);
+        let was = self.edit.start(state.id, text, enter_left, std::mem::take(&mut self.select_all), pressed);
         if let (true, Some(at)) = (state.pressed, self.input.pointer) {
             self.point_vertical(text, at, shown);
         }
         let strokes = std::mem::take(&mut self.input.strokes);
         for stroke in strokes {
-            let used = self.stroke_vertical(text, &stroke, many, shown, room, edited);
+            let used = self.stroke_vertical(text, &stroke, many, shown, edited);
             if !used {
                 self.input.strokes.push(stroke);
             }
@@ -187,37 +177,36 @@ impl Ui {
             self.edit.empty = text.is_empty();
             crate::ios_text_input::hand_text_boxes();
         }
-        let changed = was.2 != self.edit.version;
-        if was != (self.edit.cursor, self.edit.anchor, self.edit.version) {
-            (self.edit.moved, self.edit.reveal) = (self.now, true);
-            self.again |= changed;
-        }
+        let changed = self.edit.done(was, self.now);
+        self.again |= changed;
         if changed {
+            let room = shown.room;
             self.lay_box(shown, text, room);
         }
         changed
     }
 
     /// One key or typed text, for the focused vertical box; whether it was used.
-    fn stroke_vertical(&mut self, text: &mut String, stroke: &Stroke, many: bool, shown: &mut Shown, room: f32, edited: &mut Edited) -> bool {
+    fn stroke_vertical(&mut self, text: &mut String, stroke: &Stroke, many: bool, shown: &mut Shown, edited: &mut Edited) -> bool {
         match stroke {
             Stroke::Text(typed) => self.edit.insert(text, typed, many, true),
             #[cfg(target_os = "ios")]
             Stroke::Replace(done) => self.edit.keyboard(text, done, many),
             Stroke::Key(_, mods) if mods.alt => return false,
-            Stroke::Key(key, mods) => return self.key_vertical(text, (*key, *mods), many, shown, room, edited),
+            Stroke::Key(key, mods) => return self.key_vertical(text, (*key, *mods), many, shown, edited),
         }
         true
     }
 
     /// A key for the focused vertical box: one that edits as in any text box, or moves the
     /// cursor along or across columns (on the text as laid out now). Whether it was used.
-    fn key_vertical(&mut self, text: &mut String, (key, mods): (Key, Mods), many: bool, shown: &mut Shown, room: f32, edited: &mut Edited) -> bool {
+    fn key_vertical(&mut self, text: &mut String, (key, mods): (Key, Mods), many: bool, shown: &mut Shown, edited: &mut Edited) -> bool {
         if self.edit.change(text, key, mods, many, self.clipboard.as_mut()) {
             edited.along = None;
             return true;
         }
         if shown.laid.text != *text {
+            let room = shown.room;
             self.lay_box(shown, text, room);
         }
         let Some(to) = moved(&shown.laid, text, self.edit.cursor, key, mods, &mut edited.along) else { return false };
@@ -234,15 +223,7 @@ impl Ui {
         let Some(corner) = shown.corner else { return };
         let middles = middles(&shown.laid.columns, shown.laid.wide.ceil());
         let to = offset_at(&shown.laid, &middles, pt(at.x - corner.x, at.y - corner.y)).min(text.len());
-        let edit = &mut self.edit;
-        match (edit.anchor_set, self.input.clicks) {
-            (true, 2..) => {}
-            (true, _) => edit.cursor = to,
-            (false, 2) => (edit.anchor, edit.cursor) = (word_edge(text, to, false), word_edge(text, to, true)),
-            (false, 3..) => (edit.anchor, edit.cursor) = (0, text.len()),
-            (false, _) => (edit.anchor, edit.cursor) = (to, to),
-        }
-        edit.anchor_set = true;
+        self.edit.press_at(text, to, self.input.clicks);
     }
 }
 

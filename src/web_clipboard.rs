@@ -26,7 +26,7 @@ unsafe extern "C" {
 mod heard {
     /// The picture on the clipboard (PNG bytes; none for no picture).
     pub const PICTURE: u32 = 0;
-    /// A pasted file: `number` is its name's length, the bytes its name then its contents.
+    /// A pasted file: its name and contents.
     pub const FILE: u32 = 1;
     /// The files just handed over were pasted (none: the paste held none).
     pub const FILES: u32 = 2;
@@ -84,10 +84,8 @@ fn heard(_: &mut Ui, heard: Heard) -> (Then, u32) {
             HELD.with_borrow_mut(|held| held.picture = picture);
         }
         heard::FILE => {
-            let named = (heard.number as usize).min(heard.bytes.len());
-            let name = String::from_utf8_lossy(&heard.bytes[..named]).into_owned();
-            let path = PathBuf::from("/pasted").join(name);
-            crate::web_host::keep_file(path.clone(), heard.bytes[named..].to_vec());
+            let path = PathBuf::from("/pasted").join(&heard.name);
+            crate::web_host::keep_file(path.clone(), heard.bytes);
             HELD.with_borrow_mut(|held| held.incoming.push(path));
         }
         heard::FILES => {

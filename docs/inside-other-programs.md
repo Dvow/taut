@@ -19,14 +19,12 @@ for place in surface.update(&mut ui) {
 - `platform::system_text()` uses system fonts on any surface; on Windows, `platform::Messages`
   turns another window's messages into events.
 - Layers for Direct3D 9, 11 and 12, OpenGL 3.3+ and OpenGL ES 3.0+, Vulkan and Metal (macOS,
-  iOS): made once from the program's
-  device (`layer_d3d9`, `layer_d3d11`, `layer_d3d12`, `layer_opengl`, `layer_vulkan`,
-  `layer_metal`), then
-  `layer.draw(..)` each frame after the program's drawing. Each uploads only changed regions,
-  draws one quad, and returns errors as values; Direct3D 9 and 11 and OpenGL restore all state
-  they set. Unused, a layer isn't compiled in. Examples: `d3d9.rs`, `d3d11.rs`, `d3d12.rs`,
-  `opengl.rs`, `vulkan.rs`; wgpu in chapter 9. `tests/renderers.rs` compares each with the
-  surface.
+  iOS): made once from the program's device (`layer_d3d9`, `layer_d3d11`, `layer_d3d12`,
+  `layer_opengl`, `layer_vulkan`, `layer_metal`), then `layer.draw(..)` each frame after the
+  program's drawing. Each uploads only changed regions, draws one quad, and returns errors as
+  values; Direct3D 9 and 11 and OpenGL restore all state they set. Unused, a layer isn't
+  compiled in. Examples: `d3d9.rs`, `d3d11.rs`, `d3d12.rs`, `opengl.rs`, `vulkan.rs`; wgpu in
+  chapter 9. `tests/renderers.rs` compares each with the surface.
 - Any other renderer: `surface.upload(place)` gives each changed place as a texture upload
   takes it.
 - `examples/overlay.rs`: everything as a DLL with a C interface; `tests/dll.rs` loads and

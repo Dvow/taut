@@ -42,7 +42,7 @@ fn told(text: &mut String, reading: &str) -> Thing {
 
 /// The reading's font: half the base's, undecorated.
 fn reading_font(base: Font) -> Font {
-    Font { size: base.size * crate::vertical_layout::READING, decoration: Decoration::None, ..base }
+    Font { size: base.size * crate::ruby::READING, decoration: Decoration::None, ..base }
 }
 
 /// How much of a font's em lies above its baseline: from its file where the library reads it,
@@ -81,8 +81,7 @@ fn measure(laid: &mut Laid, at: usize, text: &str, system: &mut dyn TextSystem, 
     let letters = [base.chars().next().unwrap_or(' '), read.chars().next().unwrap_or(' ')];
     let [above, below] = crate::rich_text::heights(system, bit.font, scale, &mut Vec::new());
     let [_, top] = reading_height(system, bit.font, letters, scale);
-    let firsts = |words: &str| cluster_firsts(words);
-    let reaches = crate::ruby::reach(long - base_long, places(&firsts(base)), reading_font(bit.font).size);
+    let reaches = crate::ruby::reach(long - base_long, places(&cluster_firsts(base)), reading_font(bit.font).size);
     // (Over text no larger than its base, by at most half that text.)
     let beside = |other: &Bit| matches!(other.thing, Thing::Words) && other.font.size <= bit.font.size && reaches > 0.0;
     let back = at.checked_sub(1).map(|before| laid.bits[before]).filter(beside).map_or(0.0, |before| reaches.min(before.wide / 2.0));

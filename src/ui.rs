@@ -102,11 +102,11 @@ pub(crate) struct Stored {
     /// when the picture is first shown that small (mipmaps).
     smaller: Vec<(usize, Vec<u32>)>,
     /// An icon's other images, each made for a smaller size, smallest last.
-    made: Vec<MadeForSize>,
+    icon_images: Vec<IconImage>,
 }
 
 /// An icon's image made for a size, and its smaller copies (as `Stored` has).
-struct MadeForSize {
+struct IconImage {
     width: usize,
     pixels: Vec<u32>,
     smaller: Vec<(usize, Vec<u32>)>,
@@ -119,9 +119,9 @@ impl Stored {
     /// (So a large photo shown small is drawn from about as many pixels as show, each averaging
     /// all of the photo under it.)
     pub fn shown(&mut self, wide: f32, high: f32) -> (&[u32], usize) {
-        let fits = |made: &&mut MadeForSize| made.width as f32 >= wide && (made.pixels.len() / made.width) as f32 >= high;
-        match self.made.iter_mut().rev().find(fits) {
-            Some(made) => mip_level(&made.pixels, made.width, &mut made.smaller, wide, high),
+        let fits = |image: &&mut IconImage| image.width as f32 >= wide && (image.pixels.len() / image.width.max(1)) as f32 >= high;
+        match self.icon_images.iter_mut().rev().find(fits) {
+            Some(image) => mip_level(&image.pixels, image.width, &mut image.smaller, wide, high),
             None => mip_level(&self.pixels, self.width, &mut self.smaller, wide, high),
         }
     }
@@ -1322,6 +1322,10 @@ impl Ui {
         if let Some(bring) = self.asks.bring {
             bring(self);
         }
+        // Vertical text notes where its boxes lie, and places a vertical text box's cursor.
+        if let Some(vertical) = crate::vertical_paragraph::VERTICAL.get() {
+            (vertical.settle)(self);
+        }
         self.scroll();
         // An Escape nothing in the innermost dialog took closes it, in the next pass.
         if let Some(dialog) = self.dialog_escape.take().filter(|_| self.key(Key::Escape, Mods::NONE)) {
@@ -2177,7 +2181,7 @@ impl Ui {
     /// each `0xAARRGGBB`. Kept until [`drop_picture`](Self::drop_picture) or the window closes.
     #[doc(alias("image", "texture", "bitmap"))]
     pub fn add_picture(&mut self, width: usize, pixels: Vec<u32>) -> Picture {
-        Picture(self.pictures.put(Stored { width, pixels, version: 0, smaller: Vec::new(), made: Vec::new() }))
+        Picture(self.pictures.put(Stored { width, pixels, version: 0, smaller: Vec::new(), icon_images: Vec::new() }))
     }
     /// Drops a picture: its pixels are freed, and where it still shows, nothing does. For apps
     /// whose pictures come and go (icons loaded as needed, a scrolled gallery): what is never
@@ -2205,8 +2209,8 @@ impl Ui {
         if let [0, 0, 1 | 2, 0, ..] = file {
             let mut images = crate::bmp::decode_icon_images(file)?;
             let (width, pixels) = images.remove(0);
-            let made = images.into_iter().map(|(width, pixels)| MadeForSize { width, pixels, smaller: Vec::new() }).collect();
-            return Some(Picture(self.pictures.put(Stored { width, pixels, version: 0, smaller: Vec::new(), made })));
+            let icon_images = images.into_iter().map(|(width, pixels)| IconImage { width, pixels, smaller: Vec::new() }).collect();
+            return Some(Picture(self.pictures.put(Stored { width, pixels, version: 0, smaller: Vec::new(), icon_images })));
         }
         read_picture(file).map(|(width, pixels)| self.add_picture(width, pixels))
     }
@@ -2280,7 +2284,7 @@ impl Ui {
         self.again |= (width, pixels.len()) != (stored.width, stored.pixels.len());
         (stored.width, stored.pixels, stored.version) = (width, pixels, stored.version + 1);
         stored.smaller.clear();
-        stored.made.clear();
+        stored.icon_images.clear();
         #[cfg(feature = "hdr")]
         self.light.maps.remove(&picture.0);
     }

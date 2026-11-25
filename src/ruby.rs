@@ -10,6 +10,9 @@
 //!
 //! Readers are told the base with its reading after it, in brackets.
 
+/// How large a reading is beside its base.
+pub(crate) const READING: f32 = 0.5;
+
 /// How extra length is spread over a stretch of text: before its first character, and at each
 /// place between characters where text may be spread.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

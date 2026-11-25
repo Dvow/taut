@@ -646,11 +646,7 @@ impl Ui {
         for (_, frag) in targets {
             let frag = shape.laid.frags[*frag as usize];
             let link = shape.laid.bits[frag.bit as usize].link;
-            let id = self.id(("link", link, frag.part));
-            let state = if frag.part == 0 { self.press(id) } else { self.interact(id) };
-            if state.hovered {
-                self.set_cursor(Cursor::Hand);
-            }
+            let state = self.link_state(link, frag.part);
             if state.hovered || state.focused {
                 lit.push(link);
             }
@@ -666,16 +662,33 @@ impl Ui {
         for (row, frag) in targets {
             let (row, frag) = (shape.laid.rows[*row as usize], shape.laid.frags[*frag as usize]);
             let link = shape.laid.bits[frag.bit as usize].link;
-            let place = [corner[0] + row.left + frag.x, corner[1] + row.top];
-            let target = self.el().key(("link", link, frag.part)).offset(place[0], place[1]).size(frag.wide, row.high).radius(2.0).sense();
-            if frag.part > 0 {
-                target.show();
-                continue;
-            }
-            let state = target.focusable().show();
+            let place = crate::geom::rect(corner[0] + row.left + frag.x, corner[1] + row.top, frag.wide, row.high);
             let [from, to] = shape.links.get(link as usize - 1).copied().unwrap_or_default();
-            self.tell(&state, Role::Link, None, shape.text.get(from as usize..to as usize).unwrap_or(""));
+            self.link_box(link, frag.part, place, shape.text.get(from as usize..to as usize).unwrap_or(""));
         }
+    }
+
+    /// The user's interaction with fragment `part` of link `link` (from 1) in the open box: the
+    /// first fragment is pressed by the keyboard too; the pointer is a hand over any.
+    pub(crate) fn link_state(&mut self, link: u32, part: u32) -> crate::ui::Response {
+        let id = self.id(("link", link, part));
+        let state = if part == 0 { self.press(id) } else { self.interact(id) };
+        if state.hovered {
+            self.set_cursor(Cursor::Hand);
+        }
+        state
+    }
+
+    /// The pressable box `link_state` asked about, at `place` in the open box: the link's first
+    /// fragment a Tab stop, told to screen readers as the link, `name`.
+    pub(crate) fn link_box(&mut self, link: u32, part: u32, place: crate::geom::Rect, name: &str) {
+        let target = self.el().key(("link", link, part)).offset(place.x, place.y).size(place.w, place.h).radius(2.0).sense();
+        if part > 0 {
+            target.show();
+            return;
+        }
+        let state = target.focusable().show();
+        self.tell(&state, Role::Link, None, name);
     }
 
     /// Describes rows `rows` of some text into the open box, placed from `corner` (the origin

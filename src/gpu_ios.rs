@@ -10,7 +10,7 @@
 //!   texture, drawn whole.
 //! - In the background nothing goes to the GPU, as iOS asks: the last frame is waited for as the
 //!   app leaves, and what changed meanwhile is drawn when it comes back.
-//! - A device lost is let go of and opened again, drawn whole; after three, the CPU shows the
+//! - A device lost is let go of and opened again, drawn whole; after a fourth, the CPU shows the
 //!   window. The CPU shows it whole whenever the GPU stops.
 use crate::geom::rect;
 use crate::gpu_metal::{Metal, Way};

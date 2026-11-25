@@ -123,9 +123,9 @@ Popovers anchored to their button.
   `vmtx`/`VORG` (matches HarfBuzz in seven CJK fonts); tate-chu-yoko (`ui.upright_digits`;
   `Span::upright` with `ruby`); fullwidth punctuation trimmed beside punctuation, as Chrome does.
   Matches Chrome within a pixel on 108 clusters in Yu Gothic.
-- **Ruby** (`Span::ruby`, feature `ruby`): readings over rich text and beside vertical text, spread and reaching
-  over neighbours as CSS Ruby and JLREQ have it; within a pixel of Chrome. Readers hear each reading
-  after its base, in brackets.
+- **Ruby** (`Span::ruby`, feature `ruby`): readings over rich text and beside vertical text,
+  spread and reaching over neighbours as CSS Ruby and JLREQ have it; within a pixel of Chrome.
+  Readers hear each reading after its base, in brackets.
 - **Dates, times, numbers** in the user's system format (order, separators, digit counts, group
   sizes such as 12,34,567); month and day names and AM/PM in the system's language; Windows
   region changes followed while running; overridable.

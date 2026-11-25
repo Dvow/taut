@@ -8,7 +8,6 @@
 //! read it by column as by line, and find each character where it is drawn.
 use crate::accessibility::{AccessBox, AccessNode, Letters, Role};
 use crate::color::Color;
-use crate::event::Cursor;
 use crate::geom::{Rect, rect};
 use crate::id::{ById, hash};
 use crate::layout::{Flow, Length};
@@ -20,27 +19,32 @@ use crate::ui::{Measure, Response, Ui};
 use crate::vertical_layout::{Asked, Laid, middles};
 use std::sync::Arc;
 
-/// Gives the nodes of vertical text their characters' places (see `tell_letters`).
-type TellsLetters = fn(&Writings, &mut [AccessNode], &[AccessBox]);
+/// The code vertical text runs outside its own calls, handed over by the first vertical text
+/// described (`VERTICAL`), so a program with none carries none of it.
+pub(crate) struct Hooks {
+    /// After layout, before scrolling.
+    pub settle: fn(&mut Ui),
+    /// Gives the nodes of vertical text their characters' places.
+    pub tell_letters: fn(&Writings, &mut [AccessNode], &[AccessBox]),
+    /// Frees what vertical text keeps.
+    free: fn(&mut Held),
+}
 
-/// The code giving screen readers the places of vertical text's characters: set by the first
-/// vertical text described, so a program with none carries none of it. (What vertical text
-/// keeps, `Kept`, is kept with rich text's, and its code after layout is `settle`.)
-pub(crate) static TELL_LETTERS: std::sync::OnceLock<TellsLetters> = std::sync::OnceLock::new();
+/// The hooks, once vertical text is described.
+pub(crate) static VERTICAL: std::sync::OnceLock<&'static Hooks> = std::sync::OnceLock::new();
 
-/// What vertical text keeps, held with rich text's: none until vertical text is described. Freed
-/// by code that making it hands over (`FREE`), so a program with no vertical text carries no
-/// code for it.
+/// The one set of hooks.
+static HOOKS: Hooks = Hooks { settle, tell_letters, free };
+
+/// What vertical text keeps, held with rich text's: none until vertical text is described.
+/// Freed through `VERTICAL`, so a program with no vertical text carries no code for it.
 #[derive(Default)]
 pub(crate) struct Held(std::mem::ManuallyDrop<Option<Box<Kept>>>);
 
-/// Frees what vertical text keeps: set when it is first kept.
-static FREE: std::sync::OnceLock<fn(&mut Held)> = std::sync::OnceLock::new();
-
 impl Drop for Held {
     fn drop(&mut self) {
-        if let Some(free) = FREE.get() {
-            free(self);
+        if let Some(vertical) = VERTICAL.get() {
+            (vertical.free)(self);
         }
     }
 }
@@ -109,7 +113,7 @@ impl Ui {
 
     /// Sets runs of up to `most` ASCII digits (and no more digits either side) across one em in
     /// vertical text described from now on: "12" in a date, as CSS `text-combine-upright:
-    /// digits` does. 0 (the start) sets none.
+    /// digits` does; at most 4. 0 (the start) sets none.
     pub fn upright_digits(&mut self, most: u8) {
         let mut kept = self.take_vertical();
         kept.digits = most.min(4);
@@ -211,32 +215,20 @@ impl Ui {
         for (piece, place) in stretches(laid, |piece| laid.pieces[piece].link != 0) {
             let link = laid.pieces[piece].link;
             part = if part.0 == link { (link, part.1 + 1) } else { (link, 0) };
-            let id = self.id(("link", link, part.1));
-            let state = if part.1 == 0 { self.press(id) } else { self.interact(id) };
-            if state.hovered {
-                self.set_cursor(Cursor::Hand);
-            }
+            let state = self.link_state(link, part.1);
             if state.hovered || state.focused {
                 self.el().offset(place.x - 1.0, place.y).size(1.0, place.h).fill(laid.pieces[piece].color).show();
             }
             pressed = if state.clicked { link } else { pressed };
-            let target = self.el().key(("link", link, part.1)).offset(place.x, place.y).size(place.w, place.h).radius(2.0).sense();
-            if part.1 > 0 {
-                target.show();
-                continue;
-            }
-            let state = target.focusable().show();
             let words = &laid.text[laid.pieces[piece].words[0] as usize..laid.pieces[piece].words[1] as usize];
-            self.tell(&state, Role::Link, None, words);
+            self.link_box(link, part.1, place, words);
         }
         pressed
     }
 
-    /// The vertical text state, made on first use; and its code after layout (`settle`) and
-    /// for screen readers (`tell_letters`) handed over.
+    /// The vertical text state, made on first use; and its hooks handed over.
     pub(crate) fn take_vertical(&mut self) -> Box<Kept> {
-        self.asks.bring = Some(settle);
-        TELL_LETTERS.get_or_init(|| tell_letters);
+        VERTICAL.get_or_init(|| &HOOKS);
         let mut writings = self.take_writings();
         let kept = writings.vertical.0.take();
         self.keep_writings(writings);
@@ -245,18 +237,25 @@ impl Ui {
 
     /// Puts the vertical text state back.
     pub(crate) fn keep_vertical(&mut self, kept: Box<Kept>) {
-        FREE.get_or_init(|| free);
         let mut writings = self.take_writings();
         *writings.vertical.0 = Some(kept);
         self.keep_writings(writings);
     }
 }
 
-/// After layout (in place of bringing a box into view, which it does too): the paragraphs not
-/// described are forgotten, the rest marked unused for the next run; where boxes holding text
-/// lie is kept; a vertical text box's cursor is placed (see `vertical_text_box`).
+/// What a window's vertical text keeps, if it has any.
+fn kept_of(writings: &Writings) -> Option<&Kept> {
+    let rich = writings.kept.as_ref()?.downcast_ref::<crate::rich_text::Kept>()?;
+    rich.vertical.0.as_deref()
+}
+
+/// After layout, in a window with vertical text: the paragraphs not described are forgotten,
+/// the rest marked unused for the next run; where boxes holding text lie is kept; a vertical
+/// text box's cursor is placed (see `vertical_text_box`).
 fn settle(ui: &mut Ui) {
-    ui.bring_into_view();
+    if kept_of(&ui.writings).is_none() {
+        return;
+    }
     let mut kept = ui.take_vertical();
     kept.shown.retain(|_, shown| std::mem::take(&mut shown.used));
     kept.settled = std::mem::take(&mut kept.told);
@@ -268,11 +267,10 @@ fn settle(ui: &mut Ui) {
     ui.keep_vertical(kept);
 }
 
-/// Gives the nodes of vertical text told this run their characters' places (see `Letters`):
-/// as the box holding them lies now. And forgets what was told, for the next run.
+/// Gives the nodes of vertical text settled last their characters' places (see `Letters`): as
+/// the box holding them lies now.
 fn tell_letters(writings: &Writings, nodes: &mut [AccessNode], boxes: &[AccessBox]) {
-    let rich = writings.kept.as_ref().and_then(|kept| kept.downcast_ref::<crate::rich_text::Kept>());
-    let Some(kept) = rich.and_then(|rich| rich.vertical.0.as_deref()) else { return };
+    let Some(kept) = kept_of(writings) else { return };
     for node in nodes.iter_mut().filter(|node| node.visible) {
         let Some((_, holder, letters)) = kept.settled.iter().find(|(at, ..)| *at == node.at) else { continue };
         let Some((_, place, ..)) = boxes.iter().find(|(at, ..)| at == holder) else { continue };
@@ -662,7 +660,7 @@ mod against_edge {
                     let step = laid.steps[at as usize];
                     let color = laid.pieces[step.piece as usize].color.0 & 0xffffff;
                     for place in &laid.places[step.places[0] as usize..step.places[1] as usize] {
-                        let size = laid.pieces[step.piece as usize].font.size * if place.rect.x > 0.0 { crate::vertical_layout::READING } else { 1.0 };
+                        let size = laid.pieces[step.piece as usize].font.size * if place.rect.x > 0.0 { crate::ruby::READING } else { 1.0 };
                         let middle = place.rect.x + place.rect.w / 2.0;
                         let region = rect(case.at[0] + x + middle - size / 2.0 - 1.0, case.at[1] + column.tops[n] + place.rect.y - 1.0, size + 2.0, place.rect.h + 2.0);
                         let off = if laid.pieces[step.piece as usize].upright { chrome_across(size) } else { 0.0 };

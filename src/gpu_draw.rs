@@ -209,7 +209,7 @@ impl DrawList {
     }
 
     /// Records the part `area` (in units) of `ui`'s window, `size` pixels big.
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[cfg(any(target_vendor = "apple", target_os = "android", target_family = "wasm"))]
     pub(crate) fn record(&mut self, ui: &mut crate::ui::Ui, area: Rect, size: [i32; 2]) {
         self.begin(size);
         let mut canvas = Canvas::recording(self, size[0] as usize, size[1] as usize, (0, 0), ui.scale());

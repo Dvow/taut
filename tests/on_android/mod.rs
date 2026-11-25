@@ -1,7 +1,6 @@
 //! Checks built for an x86-64 Android emulator, pushed with `adb` and run there as command-line
 //! programs. Needs the NDK (`ANDROID_NDK_HOME`, else the newest in `$ANDROID_HOME/ndk`) and an
 //! emulator that `adb` reaches.
-#![allow(dead_code)] // each file of tests uses its own part of this
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -45,12 +44,12 @@ pub fn built(linker: &Path, which: &[&str], features: &str, name: &str) -> PathB
     PathBuf::from(program.replace("\\\\", "\\"))
 }
 
-/// Pushes `program` to the emulator as `name` and runs it there with `arguments` (and `before`,
-/// a shell command run first, as setting variables); what it said, and whether all passed.
-pub fn ran(adb: &Path, program: &Path, name: &str, before: &str, arguments: &str) -> (String, bool) {
+/// Pushes `program` to the emulator as `name` and runs it there with `arguments` and `variables`
+/// (`NAME=value`, space apart); what it said, and whether all passed.
+pub fn ran(adb: &Path, program: &Path, name: &str, variables: &str, arguments: &str) -> (String, bool) {
     let pushed = Command::new(adb).arg("push").arg(program).arg(format!("{THERE}/{name}")).output().expect("adb runs");
     assert!(pushed.status.success(), "adb push: {}", String::from_utf8_lossy(&pushed.stderr));
-    let run = format!("cd {THERE} && chmod +x {name} && {before} ./{name} {arguments} 2>&1; echo \"exit $?\"");
+    let run = format!("cd {THERE} && chmod +x {name} && {variables} ./{name} {arguments} 2>&1; echo \"exit $?\"");
     let done = Command::new(adb).args(["shell", &run]).output().expect("adb runs");
     let said = String::from_utf8_lossy(&done.stdout).into_owned();
     let passed = said.contains("test result: ok.") && !said.contains(" 0 passed") && said.trim_end().ends_with("exit 0");

@@ -152,14 +152,19 @@ impl Pass {
     fn program(&self) -> c_uint {
         let (gl, mut linked) = (&self.gl, 0);
         let shaders = [(VERTEX_SHADER, CORNERS), (FRAGMENT_SHADER, LIGHT)].map(|(kind, source)| self.shader(kind, source));
-        // SAFETY: OpenGL's documented calls on the current context.
+        // SAFETY: OpenGL's documented calls on the current context; deleting shader 0 does
+        // nothing.
         unsafe {
+            if shaders.contains(&0) {
+                shaders.iter().for_each(|shader| (gl.glDeleteShader)(*shader));
+                return 0;
+            }
             let program = (gl.glCreateProgram)();
             shaders.iter().for_each(|shader| (gl.glAttachShader)(program, *shader));
             (gl.glLinkProgram)(program);
             (gl.glGetProgramiv)(program, LINK_STATUS, &mut linked);
             shaders.iter().for_each(|shader| (gl.glDeleteShader)(*shader));
-            if linked == 0 || shaders.contains(&0) {
+            if linked == 0 {
                 (gl.glDeleteProgram)(program);
                 return 0;
             }
@@ -176,7 +181,11 @@ impl Pass {
             (gl.glShaderSource)(shader, 1, &source.as_ptr().cast(), null());
             (gl.glCompileShader)(shader);
             (gl.glGetShaderiv)(shader, COMPILE_STATUS, &mut compiled);
-            if compiled != 0 { shader } else { 0 }
+            if compiled == 0 {
+                (gl.glDeleteShader)(shader);
+                return 0;
+            }
+            shader
         }
     }
 

@@ -158,16 +158,6 @@ struct Owner {
 }
 
 impl Owner {
-    /// An OpenGL function of the current context by name: WGL's, or for those of OpenGL 1.1
-    /// opengl32.dll's own; null where neither has it.
-    #[cfg(feature = "hdr")]
-    fn function(&self, name: &CStr) -> *const c_void {
-        // SAFETY: a context is current; the name ends in a zero. Drivers give nothing (or 1, 2,
-        // 3 or -1) for OpenGL 1.1's own functions.
-        let found = unsafe { (self.wgl.find)(name.as_ptr()) };
-        if matches!(found as isize, -1..=3) { function_in(system_library("opengl32.dll"), name) as *const c_void } else { found }
-    }
-
     /// Makes the context current with `dc`, if it is not. Says whether it is.
     fn with(&self, dc: HANDLE) -> bool {
         if self.current.load(Relaxed) == dc {
@@ -183,8 +173,9 @@ impl Owner {
 /// The OpenGL context a program's windows are shown with.
 pub(crate) struct Device {
     owner: Owner,
-    /// The pixel format every window is given, and whether it is of floats (see `hdr_opengl`).
+    /// The pixel format every window is given.
     format: i32,
+    /// Whether that is of floats (see `hdr_opengl`).
     #[cfg(feature = "hdr")]
     float: bool,
     /// A float pixel format the driver offers, where it does.
@@ -278,12 +269,7 @@ impl Device {
     /// The device, with its functions found while the context is current on `dc`; current on
     /// no thread after. Nothing where a function is missing or it draws on the CPU.
     fn loaded(library: isize, wgl: Wgl, context: HANDLE, format: i32, dc: HANDLE) -> Option<Device> {
-        let find = |name: &str| {
-            // SAFETY: the context is current; the names end in a zero. Drivers give nothing (or
-            // 1, 2, 3 or -1) for OpenGL 1.1's own functions, which opengl32.dll has.
-            let found = unsafe { (wgl.find)(name.as_ptr().cast()) };
-            if matches!(found as isize, -1..=3) { function_in(library, CStr::from_bytes_until_nul(name.as_bytes()).unwrap_or_default()) as *const c_void } else { found }
-        };
+        let find = |name: &str| gl_function(&wgl, library, CStr::from_bytes_until_nul(name.as_bytes()).unwrap_or_default());
         let gl = Gl::load(&find).filter(|gl| !software(gl));
         // SAFETY: as declared in wglext.h and glcorearb.h.
         let interval = Some(find("wglSwapIntervalEXT\0")).filter(|found| !found.is_null()).map(|found| unsafe { std::mem::transmute(found) });
@@ -313,6 +299,15 @@ impl Device {
         let reset = self.reset.is_some_and(|reset| self.owner.current.load(Relaxed) != 0 && unsafe { reset() } != 0);
         self.lost.get() || reset
     }
+}
+
+/// An OpenGL function of the current context by name: WGL's, or for those of OpenGL 1.1
+/// opengl32.dll's (`library`) own; null where neither has it.
+fn gl_function(wgl: &Wgl, library: isize, name: &CStr) -> *const c_void {
+    // SAFETY: a context is current; the name ends in a zero. Drivers give nothing (or 1, 2, 3
+    // or -1) for OpenGL 1.1's own functions.
+    let found = unsafe { (wgl.find)(name.as_ptr()) };
+    if matches!(found as isize, -1..=3) { function_in(library, name) as *const c_void } else { found }
 }
 
 /// The pixel format for 8-bit colour on `dc`, as GDI chooses it; nothing where it draws on the
@@ -557,7 +552,7 @@ impl Shown {
             self.copy_to_back_buffer();
             return true;
         }
-        let made = self.pass.get_or_insert_with(|| crate::hdr_opengl::Pass::new(&mut |name| self.owner.function(name)));
+        let made = self.pass.get_or_insert_with(|| crate::hdr_opengl::Pass::new(&mut |name| gl_function(&self.owner.wgl, system_library("opengl32.dll"), name)));
         let Some(pass) = made.as_mut() else { return false };
         self.hdr.on = self.hdr.wanted();
         let constants = self.hdr.constants();
@@ -575,13 +570,16 @@ impl Shown {
 
 impl Drop for Shown {
     fn drop(&mut self) {
-        let gl = &self.owner.gl;
+        let (gl, current) = (&self.owner.gl, self.owner.with(self.dc));
+        // (The HDR pass is let go of only with the context current; else its objects are left.)
+        #[cfg(feature = "hdr")]
+        if let Some(pass) = self.pass.take().flatten().filter(|_| !current) {
+            std::mem::forget(pass);
+        }
         // SAFETY: the texture and framebuffer are this window's, let go of while the context is
         // current with its device context, which is then given back.
         unsafe {
-            if self.owner.with(self.dc) {
-                #[cfg(feature = "hdr")]
-                drop(self.pass.take());
+            if current {
                 (gl.glDeleteFramebuffers)(1, &self.framebuffer);
                 (gl.glDeleteBuffers)(1, &self.buffer);
                 (gl.glDeleteTextures)(1, &self.texture);

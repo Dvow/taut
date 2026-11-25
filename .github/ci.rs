@@ -39,8 +39,10 @@ fn main() -> ExitCode {
     }
 }
 
+/// Whether the step passed, or why it could not run.
 type Done = Result<bool, String>;
 
+/// `ci apt`: installs `packages`, keeping what was downloaded (see the top).
 fn apt(packages: &[String]) -> Done {
     let kept = home().join("debs");
     fs::create_dir_all(&kept).map_err(|e| format!("{}: {e}", kept.display()))?;
@@ -65,17 +67,20 @@ fn apt(packages: &[String]) -> Done {
     Ok(true)
 }
 
+/// The package files in `folder`.
 fn debs_in(folder: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(folder) else { return Vec::new() };
     let paths = entries.filter_map(|entry| Some(entry.ok()?.path()));
     paths.filter(|path| path.extension().is_some_and(|e| e == "deb")).map(|path| path.display().to_string()).collect()
 }
 
+/// Runs `args` as root.
 fn sudo(args: &[&str]) -> Result<(), String> {
     let status = Command::new("sudo").args(args).status().map_err(|e| format!("sudo: {e}"))?;
     if status.success() { Ok(()) } else { Err(format!("sudo {} ended with {status}", args.join(" "))) }
 }
 
+/// `ci desk`: runs `command` under a Weston of its own (see the top).
 fn desk(kind: &str, display: &str, command: &[String]) -> Done {
     let runtime = std::env::temp_dir().join(format!("taut-desk-{}", std::process::id()));
     fs::create_dir_all(&runtime).map_err(|e| format!("{}: {e}", runtime.display()))?;
@@ -87,8 +92,9 @@ fn desk(kind: &str, display: &str, command: &[String]) -> Done {
     let started = |program: &str, args: &[&str], log: &str, extra: &[(&str, &str)]| {
         let log = fs::File::create(runtime.join(log)).map_err(|e| e.to_string())?;
         let mut command = Command::new(program);
-        command.args(args).envs(env).envs(extra.iter().copied()).stdout(log.try_clone().map_err(|e| e.to_string())?);
-        command.env_remove("WAYLAND_DISPLAY").env_remove("DISPLAY").env_remove("WAYLAND_SOCKET").stderr(log);
+        // (Removed first: `extra` may give Weston its X display.)
+        command.env_remove("WAYLAND_DISPLAY").env_remove("DISPLAY").env_remove("WAYLAND_SOCKET");
+        command.args(args).envs(env).envs(extra.iter().copied()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
         command.spawn().map_err(|e| format!("{program}: {e}"))
     };
 
@@ -163,6 +169,7 @@ fn wait_for(path: &Path, tenths: u32) {
     }
 }
 
+/// The home folder.
 fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }

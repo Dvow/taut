@@ -506,15 +506,23 @@ impl Pass {
             (calls.vkDestroyBuffer)(device, buffer, null());
             (calls.vkFreeMemory)(device, memory, null());
         }
-        self.size = [0; 2];
+        // (A new view may get the old one's handle: the set is to be written again.)
+        (self.size, self.named) = ([0; 2], [0; 2]);
+    }
+
+    /// Lets go of the view of the window's image, before the image goes: a new image may get
+    /// its handle. (The device is idle.)
+    pub(crate) fn forget_picture(&mut self) {
+        // SAFETY: the device is done with the view; a null handle is let be.
+        unsafe { (self.calls.vkDestroyImageView)(self.device, self.picture_view.1, null()) };
+        (self.picture_view, self.named) = ((0, 0), [0; 2]);
     }
 
     /// Names `picture` (the window's image, B8G8R8A8) and the gains in the descriptor set,
     /// where it names others. (The device is idle: each frame is waited for.)
     fn name(&mut self, picture: Handle) -> bool {
         if self.picture_view.0 != picture {
-            // SAFETY: the device is done with the old view.
-            unsafe { (self.calls.vkDestroyImageView)(self.device, self.picture_view.1, null()) };
+            self.forget_picture();
             self.picture_view = (picture, self.view(picture, B8G8R8A8_UNORM).unwrap_or(0));
         }
         let views = [self.picture_view.1, self.gains.view];
@@ -592,11 +600,11 @@ impl Drop for Pass {
     fn drop(&mut self) {
         self.forget_targets();
         self.let_go_of_gains();
+        self.forget_picture();
         let (calls, device) = (&self.calls, self.device);
         // SAFETY: the device is done with the pass (each frame is waited for); each is held
         // once, here; null handles are let be.
         unsafe {
-            (calls.vkDestroyImageView)(device, self.picture_view.1, null());
             (calls.vkDestroyPipeline)(device, self.pipeline, null());
             (calls.vkDestroyPipelineLayout)(device, self.layout, null());
             (calls.vkDestroyDescriptorPool)(device, self.pool, null());
@@ -605,12 +613,6 @@ impl Drop for Pass {
             (calls.vkDestroyRenderPass)(device, self.render_pass, null());
         }
     }
-}
-
-/// The kinds of `memory` that have all of `wanted`, one bit each.
-fn kinds(memory: &VkPhysicalDeviceMemoryProperties, wanted: u32) -> u32 {
-    let types = memory.types.iter().take(memory.type_count as usize).enumerate();
-    types.filter(|(_, kind)| kind.flags & wanted == wanted).fold(0, |all, (at, _)| all | 1 << at)
 }
 
 #[cfg(windows)]

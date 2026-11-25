@@ -75,14 +75,14 @@ jobs:
           path: ~/debs
           key: debs-ubuntu-${{ steps.image.outputs.name }}-${{ hashFiles('.github/workflows/ci.yml', '.github/ci.rs') }}
           restore-keys: debs-ubuntu-
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
       - name: What the tests and walks load
         run: |
           rustc -O --edition 2024 .github/ci.rs -o ~/ci
           ~/ci apt xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
             libx11-6 libxtst6 libxi6 libxrandr2 libxkbcommon0 libfontconfig1 libfreetype6 libharfbuzz0b fonts-dejavu-core \
             libegl1 libgles2 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 xclip
-      - name: Rust
-        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
       - uses: actions/cache@v6
         with:
           path: target
@@ -148,6 +148,8 @@ jobs:
           path: ~/debs
           key: debs-wayland-${{ steps.image.outputs.name }}-${{ hashFiles('.github/workflows/ci.yml', '.github/ci.rs') }}
           restore-keys: debs-wayland-
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
       - name: Weston, lavapipe, Xvfb; and /dev/udmabuf
         run: |
           rustc -O --edition 2024 .github/ci.rs -o ~/ci
@@ -159,8 +161,6 @@ jobs:
           sudo chmod 666 /dev/udmabuf
           weston --version
           vulkaninfo --summary 2>&1 | grep -E "deviceName|driverInfo"
-      - name: Rust
-        run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
       - name: Build the tests
         run: cargo test --lib --all-features --no-run
       - name: Tests with a played compositor

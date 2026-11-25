@@ -230,13 +230,18 @@ impl Vulkan {
         (made == 0).then_some(surface)
     }
 
-    /// The device and queue family best showing `surface`: a GPU before the CPU at work; unless
+    /// The device and queue family best showing `window` (an `ANativeWindow`, alive), asked
+    /// through a surface made on it for the question: a GPU before the CPU at work; unless
     /// `any`, only a GPU.
-    fn choose(&self, surface: Handle, any: bool) -> Option<Chosen> {
+    fn choose(&self, window: *mut c_void, any: bool) -> Option<Chosen> {
+        let surface = self.surface(window)?;
         // SAFETY: Vulkan's documented enumeration.
         let devices = listed(null_mut(), |count, list| unsafe { (self.calls.vkEnumeratePhysicalDevices)(self.instance, count, list) });
         let usable = devices.into_iter().filter_map(|physical| self.chosen(physical, surface));
-        usable.filter(|chosen| any || !chosen.cpu).min_by_key(|chosen| chosen.cpu)
+        let chosen = usable.filter(|chosen| any || !chosen.cpu).min_by_key(|chosen| chosen.cpu);
+        // SAFETY: the surface was made here, and is not used after.
+        unsafe { (self.calls.vkDestroySurfaceKHR)(self.instance, surface, null()) };
+        chosen
     }
 
     /// What device `physical` is, where it can show `surface`: a queue family that draws and
@@ -294,12 +299,7 @@ impl Gpu {
     /// `window` is an `ANativeWindow`, alive until the window is let go of (`forget`).
     pub(crate) unsafe fn open(window: *mut c_void, any: bool) -> Option<(Gpu, Shows)> {
         let vulkan = Vulkan::open()?;
-        let surface = vulkan.surface(window)?;
-        let Some(chosen) = vulkan.choose(surface, any) else {
-            // SAFETY: the surface was just made, and is not used after.
-            unsafe { (vulkan.calls.vkDestroySurfaceKHR)(vulkan.instance, surface, null()) };
-            return None;
-        };
+        let chosen = vulkan.choose(window, any)?;
         #[cfg(feature = "gpu-draw")]
         let cpu = chosen.cpu;
         let mut gpu = Gpu::make(vulkan, chosen)?;
@@ -307,7 +307,8 @@ impl Gpu {
         {
             gpu.drawing = crate::gpu_draw::Drawing::chosen(!any, !cpu, crate::platform::setting("TAUT_DRAW").as_deref());
         }
-        let shows = gpu.shows(surface)?;
+        // SAFETY: as the caller promises.
+        let shows = unsafe { gpu.window(window) }?;
         Some((gpu, shows))
     }
 
@@ -720,6 +721,8 @@ impl Gpu {
         }
         self.fill_picture(shows);
         let to_blit = barrier(image, LAYOUT_UNDEFINED, LAYOUT_TRANSFER_DESTINATION, 0, ACCESS_TRANSFER_WRITE);
+        // (The clear and the blit both write the image: the blit waits for the clear.)
+        let cleared = barrier(image, LAYOUT_TRANSFER_DESTINATION, LAYOUT_TRANSFER_DESTINATION, ACCESS_TRANSFER_WRITE, ACCESS_TRANSFER_WRITE);
         let to_show = barrier(image, LAYOUT_TRANSFER_DESTINATION, LAYOUT_PRESENT, ACCESS_TRANSFER_WRITE, 0);
         let ([left, top], shown) = (shows.at, shows.shown());
         let room = left > 0 || top > 0 || [left + shown[0], top + shown[1]] != shows.window;
@@ -736,6 +739,7 @@ impl Gpu {
             (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_blit);
             if room {
                 (on.vkCmdClearColorImage)(commands, image, LAYOUT_TRANSFER_DESTINATION, &colour, 1, &WHOLE);
+                (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &cleared);
             }
             if shown.iter().all(|side| *side > 0) {
                 (on.vkCmdBlitImage)(commands, shows.picture, LAYOUT_TRANSFER_SOURCE, image, LAYOUT_TRANSFER_DESTINATION, 1, &blit, 0);

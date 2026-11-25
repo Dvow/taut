@@ -78,11 +78,13 @@ pub(crate) fn break_class(letter: char) -> BreakClass {
     }
 }
 
-/// Whether a line may break before a character of class `after`, the last character before
-/// it that was no space being of class `before`, with spaces between them or not.
-pub(crate) fn may_break(before: BreakClass, spaced: bool, after: BreakClass) -> bool {
+/// Whether a line may break before character `after`, the last character before it that was
+/// no space being `before`, with spaces between them or not.
+fn may_break(before: char, spaced: bool, after: char) -> bool {
     use BreakClass::*;
-    match (before, spaced, after) {
+    // (Brackets that are not East Asian: fullwidth and CJK ones lie from U+2E80.)
+    let narrow = |letter: char| (letter as u32) < 0x2e80;
+    match (break_class(before), spaced, break_class(after)) {
         (_, _, Space) => false,                                                          // LB7
         (ZeroWidth, ..) => true,                                                         // LB8
         (Glue, false, _) | (_, false, Glue) => false,                                    // LB11, LB12
@@ -97,6 +99,8 @@ pub(crate) fn may_break(before: BreakClass, spaced: bool, after: BreakClass) -> 
         (Prefix, _, Ideograph | Number | Letter) | (Ideograph, _, Postfix) => false,     // LB23a, LB24, LB25
         (Postfix, _, Number | Letter) | (Number | Letter, _, Prefix | Postfix) => false, // LB24, LB25
         (After, _, Number) => false,                                                     // LB25 (a hyphen before digits)
+        (Letter | Number, _, Open) if narrow(after) => false,                            // LB30: "f(x"
+        (Close, _, Letter | Number) if matches!(before, ')' | ']') => false,             // LB30: "(s)he"
         _ => true,                                                                       // LB31
     }
 }
@@ -107,13 +111,13 @@ pub(crate) fn break_chances(text: &str, chances: &mut Vec<usize>) {
     chances.clear();
     let (mut at, mut before, mut spaced) = (0, None, false);
     while at < text.len() {
-        let class = text[at..].chars().next().map_or(BreakClass::Letter, break_class);
-        if before.is_some_and(|before| may_break(before, spaced, class)) {
+        let letter = text[at..].chars().next().unwrap_or(' ');
+        if before.is_some_and(|before| may_break(before, spaced, letter)) {
             chances.push(at);
         }
-        match class {
+        match break_class(letter) {
             BreakClass::Space => spaced = true,
-            _ => (before, spaced) = (Some(class), false),
+            _ => (before, spaced) = (Some(letter), false),
         }
         at += crate::text::cluster(&text[at..]);
     }
@@ -250,11 +254,32 @@ pub(crate) fn words(text: &str) -> Vec<usize> {
 }
 
 #[cfg(test)]
-#[cfg(feature = "brahmic")]
 mod tests {
     use super::*;
 
+    /// Where `text` may break.
+    fn chances(text: &str) -> Vec<usize> {
+        let mut found = Vec::new();
+        break_chances(text, &mut found);
+        found
+    }
+
     #[test]
+    fn cjk_text_breaks_between_ideographs_but_not_before_closing_marks_or_after_opening_ones() {
+        assert_eq!(chances("あい。「う」"), [3, 9]);
+        // Small kana and the long vowel mark may start a line, as CSS `line-break: normal` has it.
+        assert_eq!(chances("ちょっとー"), [3, 6, 9, 12]);
+    }
+
+    #[test]
+    fn letters_keep_to_narrow_brackets_beside_them_but_not_to_fullwidth_ones() {
+        assert_eq!(chances("f(x)あ"), [4]);
+        assert_eq!(chances("(s)he"), []);
+        assert_eq!(chances("A（注）"), [1]);
+    }
+
+    #[test]
+    #[cfg(feature = "brahmic")]
     fn syllables_of_thai_lao_and_burmese_are_not_broken() {
         let letters = |text: &str| text.chars().collect::<Vec<_>>();
         // เป็น: not after เ. น้ำ: not before the sara am. ไทย: before ไ, yes.
@@ -266,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "brahmic"))]
     fn windows_says_where_the_words_of_thai_end() {
         // ภาษาไทย ("the Thai language"): two words, the second from the fifth character. (From
         // Windows' dictionary: without it nothing is found, which is fine.)

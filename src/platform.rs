@@ -123,17 +123,12 @@ pub enum Renderer {
     Metal,
 }
 
-/// The GPU paths this system has, best first.
+/// The GPU paths this system has, best first. (Apple's systems have one, Metal; a page one,
+/// WebGL2.)
 #[cfg(all(windows, feature = "gpu"))]
 const BEST: [Renderer; 4] = [Renderer::Direct3D11, Renderer::Direct3D12, Renderer::Vulkan, Renderer::OpenGL];
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
-#[allow(dead_code)] // (X11 has one path so far.)
 const BEST: [Renderer; 2] = [Renderer::OpenGL, Renderer::Vulkan];
-/// A page has WebGL2.
-#[cfg(all(target_family = "wasm", feature = "gpu"))]
-const BEST: [Renderer; 1] = [Renderer::OpenGL];
-#[cfg(all(target_vendor = "apple", feature = "gpu"))]
-const BEST: [Renderer; 1] = [Renderer::Metal];
 #[cfg(all(target_os = "android", feature = "gpu"))]
 const BEST: [Renderer; 2] = [Renderer::Vulkan, Renderer::OpenGL];
 
@@ -156,8 +151,7 @@ impl Renderer {
 
     /// The GPU paths a window asking for this tries, in turn: the one named, then the system's,
     /// best first. None for the CPU.
-    #[cfg(feature = "gpu")]
-    #[cfg_attr(unix, allow(dead_code))] // (X11 has one path so far; macOS one.)
+    #[cfg(all(feature = "gpu", not(any(target_vendor = "apple", target_family = "wasm"))))]
     pub(crate) fn tried(self) -> impl Iterator<Item = Renderer> {
         let named = BEST.into_iter().filter(move |path| *path == self);
         named.chain(BEST.into_iter().filter(move |path| *path != self && self != Renderer::Cpu))

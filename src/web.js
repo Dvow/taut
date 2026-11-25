@@ -33,6 +33,7 @@ const HEARD = {
     dragDrop: [1, 2],
     dragEnd: [1, 3],
     dragLeft: [1, 4],
+    dragOffered: [1, 5],
     clipboardPicture: [2, 0],
     pastedFile: [2, 1],
     pastedFiles: [2, 2],
@@ -48,10 +49,6 @@ const HEARD = {
     pickedFolder: [7, 2],
     saveChosen: [7, 3],
 };
-// Countries whose paper is Letter (CLDR's paperSize).
-const LETTER = ["US", "CA", "MX", "PR", "PH", "CL", "CO", "VE", "GT", "PA", "SV", "NI", "HN", "CR", "DO", "BZ"];
-// What WebGL2 names a device that is the CPU at work.
-const SOFTWARE = /SwiftShader|llvmpipe|softpipe|Software|Basic Render|WARP/i;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -126,9 +123,9 @@ export class Page {
         this.measure = textCanvas();
         this.videos = new Map();
         this.videoCount = 0;
-        this.dropsTaken = [false, false];
-        this.offers = [];
+        this.dropping = 0;
         this.pointedAt = [0, 0];
+        this.dragFrom = null;
         this.dragItems = [];
         this.draggingOut = false;
         this.droppedHere = false;
@@ -284,7 +281,7 @@ export class Page {
             open_link: (at, length) => typeof open === "function" && open(page.text(at, length), "_blank", "noopener,noreferrer"),
             ask_file: (at, length, name, nameLength, kind) => page.askFile(page.text(at, length), page.text(name, nameLength), kind),
             download: (name, length, at, size) => page.download(page.text(name, length), page.bytes(at, size).slice()),
-            save_file: (at, length, bytes, size) => page.saveFile(page.text(at, length), page.bytes(bytes, size).slice()),
+            save_file: (at, length) => page.saveFile(page.bytes(at, length).slice()),
             font_file: (nth, face) => page.fontFile(nth, face),
             take: (into) => page.take(into),
             text_metrics: (at, length, out) => floats(out, page.metrics(page.text(at, length))),
@@ -298,26 +295,31 @@ export class Page {
             video_sound: (id, volume, muted) => page.videoSound(id, volume, muted),
             video_state: (id, out) => page.videoState(id, out),
             video_frame: (id, out) => page.videoFrame(id, out),
-            drops_taken: (files, text) => (page.dropsTaken = [files !== 0, text !== 0]),
-            drag_offers: (at, count) => (page.offers = Array.from(new Float32Array(page.exports.memory.buffer, at, count * 4))),
+            drag_from: (left, top, width, height) => (page.dragFrom = [left, top, width, height]),
             drag_item: (kind, name, nameLength, at, length) => page.dragItems.push([kind, page.text(name, nameLength), page.bytes(at, length).slice()]),
             clipboard_watch: () => (page.clipboardParts = true),
             clipboard_picture_set: (at, length) => page.copyPicture(page.bytes(at, length).slice()),
             notify: (number, title, titleLength, text, textLength, png, pngLength) => page.notify(number, page.text(title, titleLength), page.text(text, textLength), page.bytes(png, pngLength).slice()),
             first_copy: (at, length) => page.firstCopy(page.text(at, length)),
-            letter_paper: () => page.letterPaper(),
+            region: () => page.region(),
             print_page: (at, length, width, height, pageWidth, pageHeight) => page.printing.push({ rgba: page.bytes(at, length).slice(), width, height, size: [pageWidth, pageHeight] }),
             print_pages: (at, length, job) => page.printPages(page.text(at, length), job),
-            ask_fonts: () => page.askFonts(),
+            ask_fonts: (again) => page.askFonts(again !== 0),
             gpu_open: () => page.gpuOpen(),
             gpu_close: () => page.gpuClose(),
             setting: (at, length) => page.setting(page.text(at, length)),
         };
     }
 
-    // Tells a part of the program what the page heard (`HEARD`): its answer.
-    heard([part, what], x = 0, y = 0, number = 0, bytes = new Uint8Array()) {
-        return this.call("taut_heard", part, what, x, y, number, bytes);
+    // Tells a part of the program what the page heard (`HEARD`): its answer. `name` is a file's.
+    heard([part, what], x = 0, y = 0, number = 0, bytes = new Uint8Array(), name = "") {
+        return this.call("taut_heard", part, what, x, y, number, bytes, name);
+    }
+
+    // Text kept for the program to `take`: its length in bytes.
+    kept(text) {
+        this.made = encoder.encode(text);
+        return this.made.length;
     }
 
     // A place of a DOM event, in CSS pixels from the canvas's corner.
@@ -427,7 +429,7 @@ export class Page {
         // (What a press may drag is what it pressed, wherever it moves since.)
         if (event.type === "pointerdown" || (event.type === "pointermove" && event.buttons === 0)) {
             this.pointedAt = this.placeOf(event);
-            this.canvas.draggable = this.offered(...this.pointedAt);
+            this.canvas.draggable = this.heard(HEARD.dragOffered, ...this.pointedAt) !== 0;
         }
         if (event.type === "pointerdown") {
             // (Over a box handing something out, the browser may start a drag.)
@@ -497,7 +499,7 @@ export class Page {
             if (file.type === "image/png") {
                 this.heard(HEARD.clipboardPicture, 0, 0, 0, bytes);
             }
-            this.heard(HEARD.pastedFile, 0, 0, ...named(file.name, bytes));
+            this.heard(HEARD.pastedFile, 0, 0, 0, bytes, file.name);
         }
         this.heard(HEARD.pastedFiles);
     }
@@ -892,13 +894,13 @@ export class Page {
             return;
         }
         const folder = (kind & 4) !== 0;
-        const names = files.map((file) => (folder && file.webkitRelativePath) || file.name);
         for (const [at, file] of files.entries()) {
             const last = !folder && at === files.length - 1;
-            this.heard(last ? HEARD.pickedLast : HEARD.pickedMore, 0, 0, ...named(names[at], new Uint8Array(await file.arrayBuffer())));
+            const name = (folder && file.webkitRelativePath) || file.name;
+            this.heard(last ? HEARD.pickedLast : HEARD.pickedMore, 0, 0, 0, new Uint8Array(await file.arrayBuffer()), name);
         }
         if (folder) {
-            this.heard(HEARD.pickedFolder, 0, 0, 0, names[0].split("/")[0]);
+            this.heard(HEARD.pickedFolder);
         }
     }
 
@@ -912,7 +914,7 @@ export class Page {
         const types = endings.length > 0 ? [{ description: endings.join(", "), accept: { "application/octet-stream": endings } }] : undefined;
         showSaveFilePicker({ suggestedName: name, types }).then(
             (handle) => {
-                this.saved = { path: `/saved/${handle.name}`, handle };
+                this.saved = handle;
                 this.heard(HEARD.saveChosen, 0, 0, 0, handle.name);
             },
             () => this.call("taut_file", "", new Uint8Array()),
@@ -920,19 +922,14 @@ export class Page {
         return 1;
     }
 
-    // Writes `bytes` into the file the save picker chose for `path` (the program may have added an
-    // ending): whether it chose one.
-    saveFile(path, bytes) {
-        const saved = this.saved;
-        if (!saved || (path !== saved.path && !path.startsWith(`${saved.path}.`))) {
-            return 0;
-        }
-        const written = saved.handle.createWritable().then(async (into) => {
+    // Writes `bytes` into the file the save picker chose last.
+    saveFile(bytes) {
+        const handle = this.saved;
+        const written = handle.createWritable().then(async (into) => {
             await into.write(bytes);
             await into.close();
         });
-        written.catch((error) => console.error(`taut: ${path} was not saved: ${error.message}`));
-        return 1;
+        written.catch((error) => console.error(`taut: ${handle.name} was not saved: ${error.message}`));
     }
 
     download(name, bytes) {
@@ -945,16 +942,14 @@ export class Page {
 
     // ---- drag and drop with other programs ----
 
-    // What a drag from elsewhere brings that the program takes: 1 files, 2 text, 0 nothing.
-    // (Files and text are files to a program taking files.)
-    dropKind(data) {
+    // What a drag holds: 1 files, 2 text, 3 both.
+    holds(data) {
         const types = [...data.types];
-        if (types.includes("Files") && this.dropsTaken[0]) {
-            return 1;
-        }
-        return (types.includes("text/plain") || types.includes("text/uri-list")) && this.dropsTaken[1] ? 2 : 0;
+        return (types.includes("Files") ? 1 : 0) | (types.includes("text/plain") || types.includes("text/uri-list") ? 2 : 0);
     }
 
+    // A drag over the page: the program's own, or one from elsewhere, which the program answers
+    // with what it takes of it (1 files, 2 text, 0 nothing), kept for the drop.
     dragOver(event) {
         const [x, y] = this.placeOf(event);
         if (this.draggingOut) {
@@ -963,8 +958,8 @@ export class Page {
             this.heard(HEARD.dragOver, x, y);
             return;
         }
-        const kind = this.dropKind(event.dataTransfer);
-        if (kind && this.heard(HEARD.dropOver, x, y, kind)) {
+        this.dropping = this.heard(HEARD.dropOver, x, y, this.holds(event.dataTransfer));
+        if (this.dropping) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
         }
@@ -988,38 +983,22 @@ export class Page {
             return;
         }
         const data = event.dataTransfer;
-        const kind = this.dropKind(data);
-        if (kind === 2) {
+        if (this.dropping === 2) {
             this.heard(HEARD.droppedText, x, y, 0, data.getData("text/plain") || data.getData("text/uri-list"));
             return;
         }
-        const files = kind === 1 ? [...data.files] : [];
+        const files = this.dropping === 1 ? [...data.files] : [];
         for (const file of files) {
-            this.heard(HEARD.droppedFile, 0, 0, ...named(file.name, new Uint8Array(await file.arrayBuffer())));
+            this.heard(HEARD.droppedFile, 0, 0, 0, new Uint8Array(await file.arrayBuffer()), file.name);
         }
         this.heard(HEARD.droppedFiles, x, y);
     }
 
-    // The place (left, top, width, height in CSS pixels) of the box handing something out at
-    // this place, the last drawn; none where there is none.
-    offerAt(x, y) {
-        let found = null;
-        for (let at = 0; at < this.offers.length; at += 4) {
-            const [left, top, width, height] = this.offers.slice(at, at + 4);
-            found = x >= left && y >= top && x < left + width && y < top + height ? [left, top, width, height] : found;
-        }
-        return found;
-    }
-
-    offered(x, y) {
-        return this.offerAt(x, y) !== null;
-    }
-
-    // The browser starts dragging from the canvas: the box there hands out the drag's items, or
-    // there is no drag.
+    // The browser starts dragging from the canvas: the box there hands out the drag's items, and
+    // its place for the picture (`dragFrom`), or there is no drag.
     dragStart(event) {
         const [x, y] = this.pointedAt;
-        this.dragItems = [];
+        Object.assign(this, { dragItems: [], dragFrom: null });
         if (!this.heard(HEARD.dragStart, x, y) || this.dragItems.length === 0) {
             event.preventDefault();
             return;
@@ -1034,17 +1013,17 @@ export class Page {
                 data.setData("text/uri-list", text);
                 data.setData("text/plain", text);
             } else {
-                this.dragFile(data, name, bytes);
+                this.dragFile(data, name, bytes, kind === 3 ? "image/png" : "application/octet-stream");
             }
         }
         data.effectAllowed = "copyMove";
         this.dragPicture(data, x, y);
     }
 
-    // A file dragged out: as a file, and Chrome saves the first where it is dropped on the
-    // desktop.
-    dragFile(data, name, bytes) {
-        const file = new File([bytes], name, { type: name.endsWith(".png") ? "image/png" : "application/octet-stream" });
+    // A file dragged out (`type` its MIME type): as a file, and Chrome saves the first where it is
+    // dropped on the desktop.
+    dragFile(data, name, bytes, type) {
+        const file = new File([bytes], name, { type });
         data.items.add(file);
         if (!data.types.includes("downloadurl")) {
             data.setData("DownloadURL", `${file.type}:${name}:${URL.createObjectURL(file)}`);
@@ -1053,11 +1032,10 @@ export class Page {
 
     // What follows the pointer: the box dragged, as the canvas shows it.
     dragPicture(data, x, y) {
-        const offer = this.offerAt(x, y);
-        if (!offer || this.glCanvas) {
+        if (!this.dragFrom || this.glCanvas) {
             return;
         }
-        const [left, top, width, height] = offer;
+        const [left, top, width, height] = this.dragFrom;
         const scale = this.size[2];
         const picture = Object.assign(document.createElement("canvas"), { width: Math.ceil(width * scale), height: Math.ceil(height * scale) });
         picture.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:${height}px;`;
@@ -1131,12 +1109,13 @@ export class Page {
 
     // ---- printing ----
 
-    // Whether the browser's language names a country whose paper is Letter.
-    letterPaper() {
+    // The country the browser's language names ("US"; none where it can't tell), kept for
+    // `take`: its length.
+    region() {
         try {
-            return LETTER.includes(new Intl.Locale(navigator.language).maximize().region) ? 1 : 0;
+            return this.kept(new Intl.Locale(navigator.language).maximize().region || "");
         } catch {
-            return 0;
+            return this.kept("");
         }
     }
 
@@ -1179,31 +1158,31 @@ export class Page {
     // ---- the person's fonts ----
 
     // Lists the person's fonts, where the browser can (asking the person the first time): a line
-    // a font, its family and style. Refused, it is asked again at the next press.
-    askFonts() {
-        if (typeof queryLocalFonts !== "function" || (this.fontsRefused && !navigator.userActivation?.isActive)) {
+    // a font, its family and style. Asked `again` after a refusal, only from a press or a key.
+    askFonts(again) {
+        if (typeof queryLocalFonts !== "function" || (again && !navigator.userActivation?.isActive)) {
             return;
         }
         queryLocalFonts().then(
             (fonts) => this.heard(HEARD.fontsListed, 0, 0, 0, fonts.map((font) => `${font.family}\t${font.style}`).join("\n")),
-            () => (this.fontsRefused = true) && this.heard(HEARD.fontsRefused),
+            () => this.heard(HEARD.fontsRefused),
         );
     }
 
     // ---- WebGL2 (feature `gpu`) ----
 
-    // A WebGL2 canvas over the 2D one, the program drawing into it from now on: 1 on a GPU, 2 on
-    // a software device, 0 where there is none.
+    // A WebGL2 canvas over the 2D one, the program drawing into it from now on: its device's
+    // name kept for `take`, and that name's length; -1 where there is none.
     gpuOpen() {
         if (!this.box) {
-            return 0;
+            return -1;
         }
         const canvas = document.createElement("canvas");
         canvas.style.cssText = `${this.canvas.style.cssText}pointer-events:none;`;
         canvas.setAttribute("aria-hidden", "true");
         const gl = canvas.getContext("webgl2", { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false });
         if (!gl) {
-            return 0;
+            return -1;
         }
         [canvas.width, canvas.height] = [this.canvas.width, this.canvas.height];
         canvas.addEventListener("webglcontextlost", (event) => {
@@ -1214,7 +1193,7 @@ export class Page {
         Object.assign(this, { gl, glCanvas: canvas, glObjects: [null] });
         const named = gl.getExtension("WEBGL_debug_renderer_info");
         this.glName = String(gl.getParameter(named ? named.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
-        return SOFTWARE.test(this.glName) ? 2 : 1;
+        return this.kept(this.glName);
     }
 
     gpuClose() {
@@ -1225,11 +1204,7 @@ export class Page {
     // A setting the page gave (`renderer`, `draw`), kept for `take`: its length, or -1.
     setting(name) {
         const value = this.options[name];
-        if (typeof value !== "string") {
-            return -1;
-        }
-        this.made = encoder.encode(value);
-        return this.made.length;
+        return typeof value === "string" ? this.kept(value) : -1;
     }
 
     // WebGL2's functions as OpenGL ES 3's, for the program: objects by number (0 none).
@@ -1458,15 +1433,6 @@ export class Page {
         new Float64Array(this.exports.memory.buffer, out, 3).set([width, height, time]);
         return this.made.length;
     }
-}
-
-// A file as one part of the program hears it: its name's length, and its name then its bytes.
-function named(name, bytes) {
-    const encoded = encoder.encode(name);
-    const both = new Uint8Array(encoded.length + bytes.length);
-    both.set(encoded);
-    both.set(bytes, encoded.length);
-    return [encoded.length, both];
 }
 
 // The canvas text is measured and drawn on: one of its own, read back often.

@@ -147,7 +147,7 @@ pub(crate) fn memory_type(properties: &VkPhysicalDeviceMemoryProperties, type_bi
 }
 
 /// The kinds of `memory` that have all of `wanted`, one bit each.
-#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(target_os = "android", feature = "gpu-draw")))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(target_os = "android", feature = "gpu-draw", all(windows, feature = "hdr"))))]
 #[inline]
 pub(crate) fn kinds(memory: &VkPhysicalDeviceMemoryProperties, wanted: u32) -> u32 {
     let types = memory.types.iter().take(memory.type_count as usize).enumerate();

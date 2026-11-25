@@ -1539,8 +1539,8 @@ impl Ui {
         place_radio_buttons(nodes, rovers);
         lay_all_letters(nodes, &old, boxes, tree, text.as_mut(), *scale);
         // (Vertical text is drawn as shapes: it tells where its letters are itself.)
-        if let Some(letters) = crate::vertical_paragraph::TELL_LETTERS.get() {
-            letters(writings, nodes, boxes);
+        if let Some(vertical) = crate::vertical_paragraph::VERTICAL.get() {
+            (vertical.tell_letters)(writings, nodes, boxes);
         }
         select_rows(nodes, &table_reading.told);
     }

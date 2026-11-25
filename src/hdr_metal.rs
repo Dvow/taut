@@ -1,10 +1,11 @@
 //! HDR through Metal on macOS (the feature `hdr`, see `hdr`): a window lit on a screen with EDR
 //! headroom presented in extended dynamic range.
 //!
-//! - The screen: its window's `NSScreen`, whose `maximumExtendedDynamicRangeColorComponentValue`
-//!   is the headroom now. It changes with the screen's brightness and what else shows HDR, and
-//!   nothing says so: it is read again every run, and a quarter of a second apart while a window
-//!   is lit.
+//! - The screen: its window's `NSScreen`. It has EDR where its
+//!   `maximumPotentialExtendedDynamicRangeColorComponentValue` is above 1; its headroom now is
+//!   `maximumExtendedDynamicRangeColorComponentValue`, 1 until something on the screen shows
+//!   EDR, then changing with brightness. Read again every run, and a quarter of a second apart
+//!   while a window is in EDR.
 //! - While lit there, the window's `CAMetalLayer` takes `RGBA16Float` in extended linear sRGB
 //!   (`wantsExtendedDynamicRangeContent`), 1.0 being SDR white; else BGRA8 in sRGB as ever, the
 //!   same pixels.
@@ -49,19 +50,24 @@ fragment float4 lit(Corner in [[stage_in]], texture2d<float, access::read> pictu
 }
 ";
 
-/// The screen window `window` is on: HDR where it has EDR headroom now (SDR white at 80 nits,
-/// its peak that many times brighter).
+/// The screen window `window` is on: HDR where it can show EDR (SDR white at 80 nits, its peak
+/// as many times brighter as its headroom now). (The headroom now stays 1 until something on
+/// the screen shows EDR: it can't tell whether the screen has EDR.)
 pub(crate) fn screen_of(window: Obj) -> Screen {
     #[cfg(test)]
     if let Some(faked) = tests::FAKED.get() {
         return faked;
     }
-    // SAFETY: a window answers its screen (+0, nil off every screen), and a screen its headroom.
-    let most = unsafe {
+    // SAFETY: a window answers its screen (+0, nil off every screen), and a screen its headroom
+    // at most and now (CGFloat).
+    let [most, now] = unsafe {
         let screen: Obj = send(window, c"screen", ());
-        if screen.is_null() { 1.0 } else { send::<f64>(screen, c"maximumExtendedDynamicRangeColorComponentValue", ()) }
+        if screen.is_null() {
+            return Screen::SDR;
+        }
+        [send::<f64>(screen, c"maximumPotentialExtendedDynamicRangeColorComponentValue", ()), send::<f64>(screen, c"maximumExtendedDynamicRangeColorComponentValue", ())]
     };
-    Screen { hdr: most > 1.0, white: Screen::SDR.white, peak: Screen::SDR.white * most as f32 }
+    Screen { hdr: most > 1.0, white: Screen::SDR.white, peak: Screen::SDR.white * now.max(1.0) as f32 }
 }
 
 /// The pass from a window's texture to an EDR drawable: its pipeline.

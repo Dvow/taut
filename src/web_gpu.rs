@@ -24,7 +24,7 @@ use std::ptr::null;
 
 #[link(wasm_import_module = "taut")]
 unsafe extern "C" {
-    fn gpu_open() -> u32;
+    fn gpu_open() -> i32;
     fn gpu_close();
     fn setting(name: *const u8, length: usize) -> i32;
 }
@@ -117,10 +117,8 @@ void main() {
 }
 ";
 
-/// What the loader answers `gpu_open`: no WebGL2; WebGL2 on a GPU; on the CPU (a software
-/// device).
-const NONE: u32 = 0;
-const SOFTWARE: u32 = 2;
+/// What WebGL2 names a device that is the CPU at work, in part (any case).
+const SOFTWARE: [&str; 6] = ["swiftshader", "llvmpipe", "softpipe", "software", "basic render", "warp"];
 
 /// What the loader hears: the context was lost.
 const LOST: u32 = 0;
@@ -134,10 +132,10 @@ thread_local! {
 /// GPU draws parts itself, what it records to and draws with.
 pub(crate) struct Gpu {
     program: c_uint,
-    height: c_int,
+    height_location: c_int,
     texture: c_uint,
     size: [c_int; 2],
-    most: c_int,
+    max_texture_size: c_int,
     #[cfg(feature = "gpu-draw")]
     drawing: crate::gpu_draw::Drawing,
     #[cfg(feature = "gpu-draw")]
@@ -155,12 +153,10 @@ impl Gpu {
         if chosen == Renderer::Cpu {
             return None;
         }
-        // SAFETY: a plain request.
-        let device = unsafe { gpu_open() };
-        let software = device == SOFTWARE;
-        if device == NONE {
-            return None;
-        }
+        // SAFETY: a plain request, answered with the length of the device's name (-1: none).
+        let device = usize::try_from(unsafe { gpu_open() }).ok().map(took)?;
+        let device = String::from_utf8_lossy(&device).to_lowercase();
+        let software = SOFTWARE.iter().any(|name| device.contains(name));
         if software && chosen == Renderer::Auto {
             close();
             return None;
@@ -168,10 +164,10 @@ impl Gpu {
         add_part(parts::GPU, Part { after: |_| {}, heard });
         let mut gpu = Gpu {
             program: 0,
-            height: -1,
+            height_location: -1,
             texture: 0,
             size: [0; 2],
-            most: 0,
+            max_texture_size: 0,
             #[cfg(feature = "gpu-draw")]
             drawing: crate::gpu_draw::Drawing::chosen(chosen == Renderer::Auto, !software, setting_of("draw").as_deref()),
             #[cfg(feature = "gpu-draw")]
@@ -193,8 +189,8 @@ impl Gpu {
             glLinkProgram(self.program);
             glGetProgramiv(self.program, LINK_STATUS, &mut linked);
             shaders.iter().for_each(|shader| glDeleteShader(*shader));
-            self.height = glGetUniformLocation(self.program, c"height".as_ptr());
-            glGetIntegerv(MAX_TEXTURE_SIZE, &mut self.most);
+            self.height_location = glGetUniformLocation(self.program, c"height".as_ptr());
+            glGetIntegerv(MAX_TEXTURE_SIZE, &mut self.max_texture_size);
             glGenTextures(1, &mut self.texture);
             linked != 0 && !shaders.contains(&0) && glGetError() == 0
         }
@@ -209,7 +205,7 @@ impl Gpu {
         if size.contains(&0) {
             return true;
         }
-        if LOST_CONTEXT.get() || size.iter().any(|side| *side > self.most) {
+        if LOST_CONTEXT.get() || size.iter().any(|side| *side > self.max_texture_size) {
             return false;
         }
         let mut places: Vec<Rect> = ui.changes().as_slice().to_vec();
@@ -260,11 +256,7 @@ impl Gpu {
             return false;
         }
         let mut list = std::mem::take(&mut *self.list);
-        list.begin(self.size);
-        let mut canvas = crate::canvas::Canvas::recording(&mut list, self.size[0] as usize, self.size[1] as usize, (0, 0), ui.scale());
-        canvas.clip(area.snap_to_pixels(ui.scale()));
-        ui.paint(&mut canvas);
-        drop(canvas);
+        list.record(ui, area.snap_to_pixels(ui.scale()), self.size);
         let made = self.pipeline.get_or_insert_with(|| crate::gpu_draw_opengl::Pipeline::new(&mut found, false).map(Box::new));
         let drawn = !list.failed && made.as_mut().is_some_and(|pipeline| pipeline.draw(self.texture, self.size, &list, place));
         list.finish(drawn);
@@ -284,7 +276,7 @@ impl Gpu {
             glUseProgram(self.program);
             glActiveTexture(TEXTURE0);
             glBindTexture(TEXTURE_2D, self.texture);
-            glUniform1i(self.height, height);
+            glUniform1i(self.height_location, height);
             glDrawArrays(TRIANGLES, 0, 3);
         }
     }

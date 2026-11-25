@@ -195,11 +195,10 @@ impl Ui {
     /// [`scroll_to_row`](Self::scroll_to_row).)
     pub fn scroll_into_view(&mut self, id: Id) {
         self.asks.into_view = id;
-        // (Vertical text may have set its own code there, which brings boxes into view too.)
-        self.asks.bring.get_or_insert(Ui::bring_into_view);
+        self.asks.bring = Some(Ui::bring_into_view);
     }
     /// Brings the requested box into view once described: see `show`.
-    pub(crate) fn bring_into_view(&mut self) {
+    fn bring_into_view(&mut self) {
         let id = self.asks.into_view;
         let Some(at) = self.tree.specs.iter().position(|spec| spec.id == id).filter(|_| id != 0) else { return };
         self.asks.into_view = 0;

@@ -15,7 +15,7 @@
 //! The device is opened when the window first shows, on the main thread. It outlives the
 //! activity's window: a window that goes (the activity paused or gone) takes only its surface
 //! with it, and the next is drawn whole. A device lost is let go of and opened again, drawn
-//! whole; after three, the CPU shows the window.
+//! whole; after a fourth, the CPU shows the window.
 use crate::android_input_method::Panel;
 use crate::geom::{Rect, rect};
 use crate::platform::{Renderer, ShownBy};
@@ -133,18 +133,25 @@ impl Screen {
         }
         let scale = ui.scale();
         let size = [(ui.size().w * scale).round() as i32, (ui.size().h * scale).round() as i32];
-        if !self.ready(window, size) {
+        let ready = self.ready(window, size);
+        if !ready && !self.failed() {
             self.let_go();
             self.asks = None;
             return ShownBy::CpuAfresh;
         }
-        let (Some(gpu), Some(shows)) = (self.gpu.as_mut(), self.shows.as_mut()) else { return ShownBy::Cpu };
-        let changed = gpu.draw_changes(shows, ui, surface, window);
-        if changed || window.again || window.panels[0] != window.panels[1] {
-            gpu.show(shows, ui.theme.bg.solid().0, window.again);
+        if let (true, Some(gpu), Some(shows)) = (ready, self.gpu.as_mut(), self.shows.as_mut()) {
+            let changed = gpu.draw_changes(shows, ui, surface, window);
+            if changed || window.again || window.panels[0] != window.panels[1] {
+                gpu.show(shows, ui.theme.bg.solid().0, window.again);
+            }
         }
         self.mend();
         if self.asks.is_some() { ShownBy::Gpu } else { ShownBy::CpuAfresh }
+    }
+
+    /// Whether the device was lost or the window went: `mend` lets go of them.
+    fn failed(&self) -> bool {
+        self.gpu.as_ref().is_some_and(Gpu::lost) || self.shows.as_ref().is_some_and(Shows::gone)
     }
 
     /// Opens the device and shows the window through it, where neither is yet, and gives the
@@ -594,7 +601,7 @@ mod tests {
         }
     }
 
-    /// The renderers to check, each named, with the device's name.
+    /// The renderers checked.
     const BOTH: [Renderer; 2] = [Renderer::Vulkan, Renderer::OpenGL];
 
     /// One check on the GPU at a time.
@@ -676,6 +683,25 @@ mod tests {
             bench.click(pt(30.0, 40.0));
             assert_eq!(bench.draw(false, [None, None]), ShownBy::CpuAfresh, "{renderer:?}: one lost too many");
             assert_eq!((bench.screen.renderer(), bench.draw(false, [None, None])), (Renderer::Cpu, ShownBy::Cpu));
+        }
+    }
+
+    #[test]
+    fn a_device_lost_as_the_interface_changes_size_is_opened_again() {
+        let _one = one();
+        for renderer in BOTH {
+            let mut bench = Bench::new(renderer, [200, 160], 1.0, counter());
+            bench.draw(false, [None, None]);
+            bench.shown();
+            bench.lose();
+            // The interface gets shorter in the same window, as when the soft keyboard comes up.
+            let size = bench.ui.size();
+            bench.ui.resize(Size { w: size.w, h: size.h - 30.0 }, 1.0);
+            bench.run();
+            assert_eq!(bench.draw(false, [None, None]), ShownBy::Gpu, "{renderer:?}: the lost device is let go, not the GPU");
+            assert_eq!(bench.draw(false, [None, None]), ShownBy::Gpu);
+            let frame = bench.shown();
+            assert_eq!(bench.check(&frame, 0, &format!("{renderer:?}, a new device at the new size")), 0);
         }
     }
 

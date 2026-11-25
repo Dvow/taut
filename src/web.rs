@@ -79,7 +79,7 @@ pub fn save(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
         crate::web_host::save_as(&name.to_string_lossy(), bytes);
         return Ok(());
     }
-    match crate::web_host::save_to(file, bytes) {
+    match crate::web_files::save_chosen(file, bytes) {
         true => Ok(()),
         false => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "the file dialog saved nowhere of this name")),
     }
@@ -108,6 +108,7 @@ mod tests {
             include_str!("web_clipboard.rs"),
             include_str!("web_desktop.rs"),
             include_str!("web_drag_drop.rs"),
+            include_str!("web_files.rs"),
             include_str!("web_fonts.rs"),
             include_str!("web_gpu.rs"),
             include_str!("web_print.rs"),

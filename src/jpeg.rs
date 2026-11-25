@@ -348,8 +348,10 @@ impl Jpeg {
         let (bits, mut answers) = (Bits { data, at: 0, held: 0, count: 0 }, Answers { data, at: 0, above: 0, span: 0, ahead: 0 });
         answers.begin();
         let (guesses, leaning) = (vec![[0; 256]; if self.arithmetic { 8 } else { 0 }], [0; 4]);
-        // Lossless and arithmetic coded, each sample's difference conditions its neighbours'.
-        let conditions = self.planes.iter().map(|plane| vec![0; if self.exact && self.arithmetic { plane.wide * plane.high } else { 0 }]).collect();
+        // Lossless and arithmetic coded (`rare-jpeg`), each sample's difference conditions its
+        // neighbours'.
+        let conditioned = RARE && self.exact && self.arithmetic;
+        let conditions = if conditioned { self.planes.iter().map(|plane| vec![0; plane.wide * plane.high]).collect() } else { Vec::new() };
         let (step, carried, shift) = (1 << shift.min(13), if self.differential { 0 } else { -1 }, shift as u32);
         let mut pass = Pass { bits, answers, guesses, leaning, from, to, step, more, before: [0; 4], carried, empty: 0, rule: first, shift, top: 0, conditions };
         match (self.exact, self.arithmetic) {

@@ -23,15 +23,12 @@ use crate::color::Color;
 use crate::font_file::{FontFile, Placing};
 use crate::geom::{Rect, rect};
 use crate::path::Path;
-use crate::ruby::{Spread, can_spread};
+use crate::ruby::{READING, Spread, can_spread};
 use crate::scripts::Language;
 use crate::shaping::{Plan, Script};
 use crate::text::{Font, TextSystem, cluster};
 use crate::vertical_text::{Stands, middle, next_run, stands};
 use std::ops::Range;
-
-/// How much smaller a ruby reading is than its base.
-pub(crate) const READING: f32 = 0.5;
 
 /// How wide, in ems, a run set across may be before it is narrowed.
 const ACROSS: f32 = 1.1;
@@ -252,10 +249,10 @@ impl Laid {
         let mut width = font.shape(&plan(), text, &mut shaped) as f32 * unit;
         let room = run.size * ACROSS;
         for form in [b"hwid", b"twid", b"qwid"] {
-            let mut narrower = Vec::new();
             if width <= room {
                 break;
             }
+            let mut narrower = Vec::new();
             let wide = font.shape(&plan().with_feature(font, form), text, &mut narrower) as f32 * unit;
             if wide <= room {
                 (width, shaped) = (wide, narrower);

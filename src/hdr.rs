@@ -282,6 +282,13 @@ fn cut(a: [i32; 4], b: [i32; 4]) -> [i32; 4] {
 }
 
 #[cfg(feature = "hdr")]
+/// Whether `a` and `b` (left, top, right, bottom) share a pixel.
+fn overlap(a: [i32; 4], b: [i32; 4]) -> bool {
+    let [left, top, right, bottom] = cut(a, b);
+    left < right && top < bottom
+}
+
+#[cfg(feature = "hdr")]
 /// A 16-bit float (IEEE 754 half), the nearest to `value`; infinity past the largest, 0 for
 /// what is too small (gains are never that small).
 pub(crate) fn half(value: f32) -> u16 {
@@ -476,7 +483,7 @@ impl Ui {
             }
             let spec = &self.tree.specs[seen.at as usize];
             let area = pixels(seen.area, self.scale);
-            if ends.is_empty() && spec.fill.a() == 255 && glows.iter().any(|glow: &Glow| !glow.covers && cut(glow.area, area)[..2] != cut(glow.area, area)[2..]) {
+            if ends.is_empty() && spec.fill.a() == 255 && glows.iter().any(|glow: &Glow| !glow.covers && overlap(glow.area, area)) {
                 glows.push(Glow { area, shape: shape(seen.rect, self.scale), radius: spec.radius * self.scale, gain: 1.0, map: None, weight: 1.0, covers: true });
             }
         }
@@ -672,6 +679,17 @@ mod lit {
         // Nothing lit: nothing kept.
         gains.take(Vec::new(), [640, 480], &trial.ui.light.maps);
         assert!(!gains.any() && gains.plane.is_empty());
+    }
+
+    #[test]
+    fn a_box_beside_a_lit_one_does_not_cover_it() {
+        let trial = Trial::new((), |_: &mut (), ui: &mut Ui| {
+            ui.el().flow(Flow::Stack).size(200.0, 100.0).open();
+            ui.el().size(40.0, 20.0).fill(Color::WHITE).brightness(2.0).show();
+            ui.el().offset(40.0, 0.0).size(40.0, 20.0).fill(Color::BLACK).show();
+            ui.close();
+        });
+        assert_eq!(trial.ui.glows().len(), 1, "the lit box alone");
     }
 
     #[test]

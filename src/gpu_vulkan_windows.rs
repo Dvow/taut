@@ -174,12 +174,15 @@ impl Device {
         };
         // Swap chains; changed rectangles named, and HDR metadata, where the device has them.
         let metadata = metadata && cfg!(feature = "hdr");
-        let second = if regions { c"VK_KHR_incremental_present" } else { c"VK_EXT_hdr_metadata" };
-        let (names, count) = ([c"VK_KHR_swapchain".as_ptr(), second.as_ptr(), c"VK_EXT_hdr_metadata".as_ptr()], 1 + regions as u32 + metadata as u32);
+        let (mut names, mut count) = ([null(); 3], 0);
+        for (name, _) in [(c"VK_KHR_swapchain", true), (c"VK_KHR_incremental_present", regions), (c"VK_EXT_hdr_metadata", metadata)].iter().filter(|(_, had)| *had) {
+            names[count] = name.as_ptr();
+            count += 1;
+        }
         let priority = 1.0f32;
         let queue = VkDeviceQueueCreateInfo { kind: 2, family, count: 1, priorities: &priority, ..Default::default() };
         let features = Device::features(&calls, physical);
-        let asked = VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: count, extensions: names.as_ptr(), features: features.as_ptr().cast(), ..Default::default() };
+        let asked = VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: count as u32, extensions: names.as_ptr(), features: features.as_ptr().cast(), ..Default::default() };
         // SAFETY: the physical device is the instance's; the description lives through the call.
         if unsafe { (calls.vkCreateDevice)(physical, &asked, null(), &mut owner.device) } < 0 {
             // SAFETY: nothing else holds the instance.
@@ -761,40 +764,54 @@ impl Shown {
             (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_read);
         }
         (self.fresh, self.waiting) = (false, Vec::new());
-        if self.drawn_lit(commands, at) {
-            #[cfg(test)]
-            tests::record(self, commands, image, LAYOUT_PRESENT);
-            return;
-        }
-        // SAFETY: as above.
-        unsafe {
-            (calls.vkCmdCopyImage)(commands, self.picture, LAYOUT_TRANSFER_SOURCE, image, LAYOUT_TRANSFER_DESTINATION, 1, &whole);
-            #[cfg(test)]
-            tests::record(self, commands, image, LAYOUT_TRANSFER_DESTINATION);
-            (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &to_present);
+        match self.drawn_lit(commands, at) {
+            Some(true) => {
+                #[cfg(test)]
+                tests::record(self, commands, image, LAYOUT_PRESENT);
+            }
+            // (An HDR image takes no copy of the picture: left as it is this once.)
+            // SAFETY: as above.
+            Some(false) => unsafe { (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &to_present) },
+            // SAFETY: as above.
+            None => unsafe {
+                (calls.vkCmdCopyImage)(commands, self.picture, LAYOUT_TRANSFER_SOURCE, image, LAYOUT_TRANSFER_DESTINATION, 1, &whole);
+                #[cfg(test)]
+                tests::record(self, commands, image, LAYOUT_TRANSFER_DESTINATION);
+                (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &to_present);
+            },
         }
     }
 
     /// Records the picture drawn lit into swap chain image `at`, made ready to present, while
-    /// presented in HDR. Says whether it was.
+    /// presented in HDR: whether it was. Where the pass fails, it is given up: the next present
+    /// goes back to SDR. Nothing while not presented in HDR.
     #[cfg(feature = "hdr")]
-    fn drawn_lit(&mut self, commands: Object, at: usize) -> bool {
-        let (Some(Some(pass)), Some(kind)) = (self.pass.as_mut(), self.kind.filter(|_| self.hdr.on)) else { return false };
-        pass.prepare(&mut self.hdr.gains) && pass.record(commands, self.picture, at, self.extent, crate::hdr_vulkan::constants(kind, self.hdr.screen))
+    fn drawn_lit(&mut self, commands: Object, at: usize) -> Option<bool> {
+        let (Some(Some(pass)), Some(kind)) = (self.pass.as_mut(), self.kind.filter(|_| self.hdr.on)) else { return None };
+        let drawn = pass.prepare(&mut self.hdr.gains) && pass.record(commands, self.picture, at, self.extent, crate::hdr_vulkan::constants(kind, self.hdr.screen));
+        if !drawn {
+            self.pass = Some(None);
+        }
+        Some(drawn)
     }
 
     #[cfg(not(feature = "hdr"))]
     #[inline]
-    fn drawn_lit(&mut self, _: Object, _: usize) -> bool {
-        false
+    fn drawn_lit(&mut self, _: Object, _: usize) -> Option<bool> {
+        None
     }
 
     /// Lets go of the picture and the buffer, and their memory. (The device is idle first.)
     fn let_go_of_picture(&mut self) {
         let (calls, device) = (&self.owner.calls, self.owner.device);
+        // SAFETY: the device is alive.
+        unsafe { (calls.vkDeviceWaitIdle)(device) };
+        #[cfg(feature = "hdr")]
+        if let Some(Some(pass)) = &mut self.pass {
+            pass.forget_picture();
+        }
         // SAFETY: each is this window's; nothing is let go of where nothing was made.
         unsafe {
-            (calls.vkDeviceWaitIdle)(device);
             (calls.vkDestroyImage)(device, std::mem::take(&mut self.picture), null());
             (calls.vkFreeMemory)(device, std::mem::take(&mut self.picture_memory), null());
             (calls.vkDestroyBuffer)(device, std::mem::take(&mut self.buffer), null());
@@ -874,7 +891,7 @@ pub(crate) mod tests {
         let to_read = barrier(image, layout, LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_WRITE | 0x100, ACCESS_TRANSFER_READ);
         let back = barrier(image, LAYOUT_TRANSFER_SOURCE, layout, ACCESS_TRANSFER_READ, ACCESS_TRANSFER_WRITE);
         unsafe {
-            (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER | 0x400, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_read);
+            (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER | STAGE_COLOUR, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_read);
             (readback.vkCmdCopyImageToBuffer)(commands, image, LAYOUT_TRANSFER_SOURCE, buffer, 1, &whole);
             (calls.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER | 0x4000, 0, 0, null(), 0, null(), 1, &back);
         }

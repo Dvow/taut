@@ -41,7 +41,6 @@ unsafe extern "C" {
     fn open_link(link: *const u8, length: usize);
     fn ask_file(accept: *const u8, length: usize, name: *const u8, name_length: usize, kind: u32) -> u32;
     fn download(name: *const u8, name_length: usize, bytes: *const u8, length: usize);
-    fn save_file(path: *const u8, path_length: usize, bytes: *const u8, length: usize) -> u32;
     fn font_file(nth: u32, face: *mut u32) -> usize;
     fn take(into: *mut u8);
     pub(crate) fn text_metrics(font: *const u8, length: usize, sizes: *mut f32);
@@ -107,14 +106,6 @@ pub(crate) fn save_as(name: &str, bytes: &[u8]) {
     unsafe { download(name.as_ptr(), name.len(), bytes.as_ptr(), bytes.len()) };
 }
 
-/// Writes `bytes` into the file the browser's save picker chose for `path` (`/saved/<name>`):
-/// whether it chose one.
-pub(crate) fn save_to(path: &std::path::Path, bytes: &[u8]) -> bool {
-    let path = path.to_string_lossy();
-    // SAFETY: the loader reads both at once.
-    unsafe { save_file(path.as_ptr(), path.len(), bytes.as_ptr(), bytes.len()) != 0 }
-}
-
 /// The font files the page gave the loader (`fonts`), each with the face it is for: 0
 /// regular, 1 bold, 2 mono, 3 italic.
 fn page_fonts() -> Vec<(u32, Vec<u8>)> {
@@ -172,13 +163,14 @@ pub(crate) mod parts {
     pub const COUNT: usize = 8;
 }
 
-/// What the loader heard for a part: which kind of thing, where (CSS pixels), a number, and
-/// bytes (text, or a file).
+/// What the loader heard for a part: which kind of thing, where (CSS pixels), a number, bytes
+/// (text, or a file's contents), and a file's name.
 pub(crate) struct Heard {
     pub what: u32,
     pub at: Point,
     pub number: f64,
     pub bytes: Vec<u8>,
+    pub name: String,
 }
 
 /// What the interface does once a part heard something.
@@ -679,19 +671,20 @@ pub extern "C" fn taut_file(name: *mut u8, name_length: usize, bytes: *mut u8, l
     });
 }
 
-/// The loader heard something for a part (see `parts`): what kind of thing, where, a number and
-/// bytes. Answers the part's number (0 for a part not in use).
+/// The loader heard something for a part (see `parts`): what kind of thing, where, a number,
+/// bytes and a name. Answers the part's number (0 for a part not in use).
 #[unsafe(no_mangle)]
-pub extern "C" fn taut_heard(part: u32, what: u32, x: f32, y: f32, number: f64, bytes: *mut u8, length: usize) -> u32 {
-    let bytes = given(bytes, length);
+pub extern "C" fn taut_heard(part: u32, what: u32, x: f32, y: f32, number: f64, bytes: *mut u8, length: usize, name: *mut u8, name_length: usize) -> u32 {
+    let (bytes, name) = (given(bytes, length), given_text(name, name_length));
     let Some(part) = PARTS.get().get(part as usize).copied().flatten() else { return 0 };
     let mut answer = 0;
     with_host(|host| {
-        let (then, said) = (part.heard)(&mut host.ui, Heard { what, at: pt(x, y), number, bytes });
+        let (then, said) = (part.heard)(&mut host.ui, Heard { what, at: pt(x, y), number, bytes, name });
         (answer, host.rerun) = (said, host.rerun || then != Then::Wait);
         match then {
+            Then::Wait => {}
+            Then::Run => host.schedule(),
             Then::RunNow => now_and_later(host),
-            _ => host.schedule(),
         }
     });
     answer

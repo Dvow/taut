@@ -10,19 +10,22 @@
 use crate::paper::Paper;
 use crate::print::{Pages, PrintOutcome, tell};
 use crate::ui::Ui;
-use crate::web_host::{Heard, Part, Then, add_part, parts};
+use crate::web_host::{Heard, Part, Then, add_part, parts, took};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 #[link(wasm_import_module = "taut")]
 unsafe extern "C" {
-    fn letter_paper() -> u32;
+    fn region() -> usize;
     fn print_page(rgba: *const u8, length: usize, width: u32, height: u32, page_width: f32, page_height: f32);
     fn print_pages(title: *const u8, length: usize, job: u32);
 }
 
 /// Pixels a unit the pages are drawn at: 288 dots an inch.
 const SCALE: f32 = 3.0;
+
+/// Countries whose paper is Letter (CLDR's `paperSize`).
+const LETTER: [&str; 16] = ["US", "CA", "MX", "PR", "PH", "CL", "CO", "VE", "GT", "PA", "SV", "NI", "HN", "CR", "DO", "BZ"];
 
 /// What the loader hears of printing, for job `number`: its dialog closed, or it can't print.
 const CLOSED: u32 = 0;
@@ -45,8 +48,7 @@ thread_local! {
 /// Shows the print dialog for the pages; says what came of it once it closes.
 pub(crate) fn ask(mut pages: Pages, title: &str, outcome: Outcome) {
     add_part(parts::PRINT, Part { after: |_| {}, heard });
-    // SAFETY: a plain question.
-    let sheet = if unsafe { letter_paper() } != 0 { Paper::LETTER } else { Paper::A4 };
+    let sheet = if uses_letter() { Paper::LETTER } else { Paper::A4 };
     let paper = pages.for_sheet(Some(sheet));
     (0..paper.pages()).for_each(|page| hand_page(&paper, page));
     let job = JOBS.with_borrow_mut(|jobs| {
@@ -56,6 +58,14 @@ pub(crate) fn ask(mut pages: Pages, title: &str, outcome: Outcome) {
     });
     // SAFETY: the loader reads `length` bytes; it answers through `heard`.
     unsafe { print_pages(title.as_ptr(), title.len(), job) };
+}
+
+/// Whether the browser's language names a country whose paper is Letter.
+fn uses_letter() -> bool {
+    // SAFETY: a plain question, answered with the length of the country's code.
+    let length = unsafe { region() };
+    let region = took(length);
+    LETTER.iter().any(|country| country.as_bytes() == region)
 }
 
 /// Draws a page and hands its pixels to the loader, red first.

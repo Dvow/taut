@@ -117,7 +117,7 @@ pub(crate) struct Edit {
     /// (which would reveal where they end).
     pub secret: bool,
     /// Enter without Shift goes to the app ([`Ui::enter_submits`]).
-    pub enter_left: bool,
+    enter_left: bool,
     /// Cursor and anchor, in bytes: the text between is selected.
     pub cursor: usize,
     pub anchor: usize,
@@ -125,7 +125,7 @@ pub(crate) struct Edit {
     /// previous one (two places where directions meet).
     pub after: bool,
     /// The press moving the cursor has already set the anchor.
-    pub anchor_set: bool,
+    anchor_set: bool,
     /// The word at the cursor is being written: the last change was to the text, and the cursor
     /// has not moved by itself since. (A misspelled word is marked only once ended: see
     /// `spell`.)
@@ -167,7 +167,7 @@ pub(crate) struct Replace {
 }
 
 impl Edit {
-    pub(crate) fn new(id: Id, cursor: usize) -> Self {
+    fn new(id: Id, cursor: usize) -> Self {
         Edit { id, cursor, anchor: cursor, ..Default::default() }
     }
 
@@ -176,8 +176,36 @@ impl Edit {
     }
 
     /// Clamps the cursor to the text, which the app may have changed.
-    pub(crate) fn fit(&mut self, text: &str) {
+    fn fit(&mut self, text: &str) {
         (self.cursor, self.anchor) = (snap(text, self.cursor), snap(text, self.anchor));
+    }
+
+    /// Takes this run's input for focused box `id`: made afresh for a new box, the cursor
+    /// fitted to `text` (all of it selected where asked), Enter left to the app or not; a
+    /// button `pressed` over the box (with Shift held or not) starts a new press. Returns the
+    /// cursor, anchor and version before the input, for `done`.
+    pub(crate) fn start(&mut self, id: Id, text: &str, enter_left: bool, select_all: bool, pressed: Option<bool>) -> (usize, usize, u32) {
+        if self.id != id {
+            *self = Edit::new(id, text.len());
+        }
+        self.enter_left = enter_left;
+        self.fit(text);
+        if select_all {
+            (self.anchor, self.cursor) = (0, text.len());
+        }
+        if let Some(shift) = pressed {
+            self.anchor_set = shift; // Shift keeps the anchor
+        }
+        (self.cursor, self.anchor, self.version)
+    }
+
+    /// Ends this run's input, started at `was`, at `now`: where the cursor moved, it blinks
+    /// afresh and is brought into view. Whether the text changed.
+    pub(crate) fn done(&mut self, was: (usize, usize, u32), now: Duration) -> bool {
+        if was != (self.cursor, self.anchor, self.version) {
+            (self.moved, self.reveal) = (now, true);
+        }
+        was.2 != self.version
     }
 
     /// Takes layout's result: the lines (in bytes of the whole run's text, this text starting
@@ -349,6 +377,11 @@ impl Edit {
         let row = (((p.y - self.origin.y) / self.line_height.max(1.0)).max(0.0) as usize).min(self.lines.len() - 1);
         let (at, after) = self.offset_in(text, row, p.x - self.origin.x, places);
         self.after = after;
+        self.press_at(text, at, clicks);
+    }
+
+    /// The pointer is down at byte `at`, the `clicks`th press in a row: as `point` says.
+    pub(crate) fn press_at(&mut self, text: &str, at: usize, clicks: u8) {
         match (self.anchor_set, clicks) {
             (true, 2..) => {}
             (true, _) => self.cursor = at,
@@ -678,18 +711,9 @@ impl Ui {
             dots.clear();
             wide
         };
-        if edit.id != state.id {
-            *edit = Edit::new(state.id, text.len());
-        }
-        (edit.secret, edit.enter_left) = (secret, enter_left);
-        edit.fit(text);
-        if std::mem::take(select_all) {
-            (edit.anchor, edit.cursor) = (0, text.len());
-        }
-        let was = (edit.cursor, edit.anchor, edit.version);
-        if state.hovered && input.pressed[0] {
-            edit.anchor_set = input.mods.shift; // Shift keeps the anchor
-        }
+        let pressed = (state.hovered && input.pressed[0]).then_some(input.mods.shift);
+        let was = edit.start(state.id, text, enter_left, std::mem::take(select_all), pressed);
+        edit.secret = secret;
         if let (true, Some(p)) = (state.pressed, input.pointer) {
             match edit.lines.is_empty() {
                 true => *again = true, // not yet laid out as the focused box: next run
@@ -719,11 +743,8 @@ impl Ui {
         if let Some(hooks) = asks.spelling.hooks() {
             (hooks.typed)(&mut asks.spelling, edit, text, state.id, was);
         }
-        let changed = was.2 != edit.version;
-        if was != (edit.cursor, edit.anchor, edit.version) {
-            (edit.moved, edit.reveal) = (*now, true);
-            *again |= changed; // an earlier box may show the text too
-        }
+        let changed = edit.done(was, *now);
+        *again |= changed; // an earlier box may show the text too
         changed
     }
 

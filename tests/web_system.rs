@@ -432,15 +432,32 @@ window.page = await start("page.wasm", { element: document.getElementById("app")
 
         /// The line the page says starting with `start`, once it says it has `wanted` in it.
         fn said(&mut self, start: &str, wanted: &str) -> String {
-            let script = format!("[...page.readers.querySelectorAll('[data-key]')].map((made) => made.textContent).find((line) => line.startsWith({}))", Json::quoted(start));
+            self.once(start, |tab| tab.line(start).contains(wanted))
+        }
+
+        /// Clicks a part by its name until the line starting with `start` is `done` (what the
+        /// page reads in the background has come): that line.
+        fn click_until(&mut self, name: &str, start: &str, done: impl Fn(&str) -> bool) -> String {
+            self.once(start, |tab| {
+                tab.click(name);
+                done(&tab.line(start))
+            })
+        }
+
+        /// The line the page says starting with `start`, once `done` (tried every 50 ms, at most
+        /// 30 seconds).
+        fn once(&mut self, start: &str, mut done: impl FnMut(&mut Self) -> bool) -> String {
             let since = Instant::now();
-            loop {
-                let line = self.eval(&script).text();
-                if line.contains(wanted) || since.elapsed() > Duration::from_secs(30) {
-                    return line;
-                }
+            while !done(self) && since.elapsed() < Duration::from_secs(30) {
                 std::thread::sleep(Duration::from_millis(50));
             }
+            self.line(start)
+        }
+
+        /// The line the page says starting with `start`, now.
+        fn line(&mut self, start: &str) -> String {
+            let script = format!("[...page.readers.querySelectorAll('[data-key]')].map((made) => made.textContent).find((line) => line.startsWith({}))", Json::quoted(start));
+            self.eval(&script).text()
         }
 
         /// The middle of a part, by its name, in CSS pixels.
@@ -547,18 +564,16 @@ window.page = await start("page.wasm", { element: document.getElementById("app")
         // Another program copies a picture of three pixels; the page gains the keyboard.
         let other = "(async () => { const canvas = new OffscreenCanvas(3, 1); const context = canvas.getContext('2d'); context.fillStyle = '#123456'; context.fillRect(0, 0, 3, 1); await navigator.clipboard.write([new ClipboardItem({ 'image/png': await canvas.convertToBlob({ type: 'image/png' }) })]); document.activeElement.blur(); page.box.focus(); return true; })()";
         tab.eval(other);
-        std::thread::sleep(Duration::from_millis(300));
-        tab.click("Paste picture");
-        assert_eq!(tab.said("Clipboard:", "picture 3x1"), "Clipboard: picture 3x1, another");
+        let pasted = tab.click_until("Paste picture", "Clipboard:", |line| line.contains("3x1"));
+        assert_eq!(pasted, "Clipboard: picture 3x1, another");
         // Pasted with Control+V: the picture, and its file.
         tab.eval("page.box.focus(); true");
         for kind in ["rawKeyDown", "keyUp"] {
             tab.call("Input.dispatchKeyEvent", &format!(r#"{{"type":"{kind}","modifiers":2,"key":"v","code":"KeyV","windowsVirtualKeyCode":86,"commands":["paste"]}}"#));
         }
-        std::thread::sleep(Duration::from_millis(300));
-        tab.click("Paste files");
-        let pasted = tab.said("Clipboard:", "files ");
-        assert!(pasted.starts_with("Clipboard: files ") && pasted.len() > "Clipboard: files ".len(), "{pasted}");
+        let named = |line: &str| line.strip_prefix("Clipboard: files ").is_some_and(|names| !names.is_empty());
+        let pasted = tab.click_until("Paste files", "Clipboard:", named);
+        assert!(named(&pasted), "{pasted}");
     }
 
     /// A notification shows with the title, text and picture asked for; its click is heard.
@@ -685,8 +700,11 @@ window.page = await start("page.wasm", { element: document.getElementById("app")
         assert!(most <= TOLERANCE, "WebGL2's pixels {most} levels from the CPU's");
         tab.eval("page.gl.getExtension('WEBGL_lose_context').loseContext(); true");
         tab.until("the CPU shows the page again", "page.glCanvas === null");
-        std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(most_apart(&cpu, &tab.picture()), 0, "after the context was lost, the CPU's pixels");
+        let since = Instant::now();
+        while most_apart(&cpu, &tab.picture()) != 0 {
+            assert!(since.elapsed() < Duration::from_secs(30), "after the context was lost, the CPU's pixels within 30 s");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// The most two pictures' channels differ.

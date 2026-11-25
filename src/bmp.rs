@@ -10,8 +10,8 @@
 //! An ICO holds one icon at several sizes. Each is a BMP without its 14-byte file header, whose
 //! height is doubled because a 1-bit transparency mask row follows each pixel row; or a whole
 //! PNG. The largest is read, or every one. Written, each size is stored as PNG or 32-bit BMP,
-//! whichever is smaller (PNG past 256 pixels, which a BMP in an icon can't be). A program that
-//! writes no icon carries none of this.
+//! whichever is smaller; past 256 pixels, always PNG. A program that writes no icon carries none
+//! of this.
 //!
 //! Not read: BMPs holding JPEG or PNG (only for printers), the two OS/2-only compressions, and
 //! colour profiles (ignored: colours are taken as stored).

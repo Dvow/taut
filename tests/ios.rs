@@ -1453,6 +1453,14 @@ mod mac {
         Ok(Page { size: Size { w, h }, scale, at: [x, y], preferences })
     }
 
+    /// What app `id` drew of its window itself, as the Mac reads it (`drawn.png`).
+    fn drawn_by_app(device: &str, id: &str) -> Result<Surface, String> {
+        let container = simctl(&["get_app_container", device, id, "data"])?;
+        let png = std::fs::read(Path::new(container.trim()).join("tmp").join("taut-check").join("drawn.png")).map_err(|error| error.to_string())?;
+        let (width, pixels) = taut::png::decode(&png).ok_or("the app drew nothing")?;
+        Ok(Surface { width, height: pixels.len() / width.max(1), pixels })
+    }
+
     /// The gallery drawn on the Mac, at the page's size and scale, with CoreText.
     fn drawn_here(page: &Page) -> Surface {
         let mut ui = Ui::new(taut::platform::system_text(), Box::new(LocalClipboard::default()));
@@ -1536,12 +1544,6 @@ mod mac {
         }
         let app = check_app("touch,gpu-draw", GPU_ID, "ios-gpu")?;
         simctl(&["install", device, &app.to_string_lossy()])?;
-        let container = simctl(&["get_app_container", device, GPU_ID, "data"])?;
-        let drawn = || -> Result<Surface, String> {
-            let png = std::fs::read(Path::new(container.trim()).join("tmp/taut-check/drawn.png")).map_err(|error| error.to_string())?;
-            let (width, pixels) = taut::png::decode(&png).ok_or("the app drew nothing")?;
-            Ok(Surface { width, height: pixels.len() / width.max(1), pixels })
-        };
         for (draw, tolerance) in [("cpu", 0), ("gpu", 4)] {
             launch_with(device, GPU_ID, "gallery", &[("TAUT_RENDERER", "metal"), ("TAUT_DRAW", draw)])?;
             let ready = note(device, GPU_ID, "ready.txt", |text| text.ends_with('\n'), Duration::from_secs(120))?;
@@ -1557,7 +1559,7 @@ mod mac {
                     failed.push(format!("{name}: {:.3}% of pixels differ from the CPU's", share * 100.0));
                 }
             };
-            let phone = drawn()?;
+            let phone = drawn_by_app(device, GPU_ID)?;
             check(screen(device, &format!("metal-{draw}"))?, &page, &phone, &format!("metal-{draw}"));
             simctl(&["launch", device, "com.apple.Preferences"])?;
             std::thread::sleep(Duration::from_secs(4));
@@ -1566,7 +1568,7 @@ mod mac {
             check(screen(device, &format!("metal-{draw}-back"))?, &page, &phone, &format!("metal-{draw}, back from the background"));
             signal(device, GPU_ID, "turn")?;
             let turned = note(device, GPU_ID, "turned.txt", |text| text.ends_with('\n'), Duration::from_secs(60))?;
-            let (page, phone) = (page_of(&turned)?, drawn()?);
+            let (page, phone) = (page_of(&turned)?, drawn_by_app(device, GPU_ID)?);
             let shot = upright(screen(device, &format!("metal-{draw}-turned"))?, &page, &phone);
             check(shot, &page, &phone, &format!("metal-{draw}, turned"));
             _ = simctl(&["terminate", device, GPU_ID]);
@@ -1601,10 +1603,7 @@ mod mac {
         }
         // The same against the app's own drawing, made on the phone: the screen shows its pixels
         // as they are, where they belong.
-        let container = simctl(&["get_app_container", &device, CHECK_ID, "data"])?;
-        let drawn = std::fs::read(Path::new(container.trim()).join("tmp/taut-check/drawn.png")).unwrap_or_default();
-        let (width, pixels) = taut::png::decode(&drawn).ok_or("the app drew nothing")?;
-        let phone = Surface { width, height: pixels.len() / width.max(1), pixels };
+        let phone = drawn_by_app(&device, CHECK_ID)?;
         let (share, most) = compared(&shown, &page, &phone, "check-gallery-phone", 32);
         println!("the screen against the phone's own drawing: {:.3}% of pixels apart, at most {most}", share * 100.0);
         if share > 0.001 {

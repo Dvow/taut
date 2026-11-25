@@ -4,11 +4,11 @@
 use crate::system_fonts::Style;
 use crate::ui::Ui;
 use crate::web_host::{Heard, Part, Then, add_part, parts};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 #[link(wasm_import_module = "taut")]
 unsafe extern "C" {
-    fn ask_fonts();
+    fn ask_fonts(again: u32);
 }
 
 /// What the loader hears: the list, or that the browser refused to give it.
@@ -17,24 +17,28 @@ const LISTED: u32 = 0;
 thread_local! {
     /// The person's fonts as the browser listed them, each family and style; none until asked.
     static LOCAL_FONTS: RefCell<Option<Vec<(String, Style)>>> = const { RefCell::new(None) };
+    /// The browser refused the last time it was asked.
+    static REFUSED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The person's fonts, each family and style: all, or one family's. Empty until the browser
 /// answers (the window runs again then), and for good where it lists none.
 pub(crate) fn listed(family: Option<&str>) -> Vec<(String, Style)> {
-    let Some(fonts) = LOCAL_FONTS.with_borrow(Clone::clone) else {
+    let wanted = |(of, _): &&(String, Style)| family.is_none_or(|family| of.eq_ignore_ascii_case(family));
+    let found = LOCAL_FONTS.with_borrow(|fonts| fonts.as_ref().map(|fonts| fonts.iter().filter(wanted).cloned().collect()));
+    found.unwrap_or_else(|| {
         LOCAL_FONTS.set(Some(Vec::new()));
         add_part(parts::FONTS, Part { after: |_| {}, heard });
         // SAFETY: a plain request, answered through `heard`.
-        unsafe { ask_fonts() };
-        return Vec::new();
-    };
-    fonts.into_iter().filter(|(of, _)| family.is_none_or(|family| of.eq_ignore_ascii_case(family))).collect()
+        unsafe { ask_fonts(REFUSED.get() as u32) };
+        Vec::new()
+    })
 }
 
 /// The browser's list: a line a font, its family and style name apart by a tab. Or it refused:
-/// it is asked again at the next call.
+/// it is asked again at the next call (from a press or a key).
 fn heard(_: &mut Ui, heard: Heard) -> (Then, u32) {
+    REFUSED.set(heard.what != LISTED);
     if heard.what != LISTED {
         LOCAL_FONTS.set(None);
         return (Then::Wait, 0);

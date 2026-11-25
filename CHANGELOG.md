@@ -107,8 +107,8 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   `ui.vertical_text_area` take typing: Up and Down move along a column, Left and Right across
   columns, an input method composes at the cursor, and screen readers read by column with each
   character's place. Fullwidth punctuation beside punctuation is set half width, as Chrome does.
-- **Tate-chu-yoko:** `ui.upright_digits(n)` sets runs of up to `n` digits across one em in
-  vertical text; `Span::upright` (feature `ruby`) any piece.
+- **Tate-chu-yoko:** `ui.upright_digits(n)` sets runs of up to `n` digits (at most 4) across one
+  em in vertical text; `Span::upright` (feature `ruby`) any piece.
 - **Ruby** (feature `ruby`): `Span::ruby(reading)` sets a reading over rich text (`ui.rich`) and
   beside vertical text, as CSS Ruby Layout and Chrome set it. Readers hear it after its base, in
   brackets.

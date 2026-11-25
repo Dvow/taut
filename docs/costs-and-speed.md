@@ -50,7 +50,7 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | `touch` | touch, pen and pinch gestures | a finger is the system's mouse (Wayland: the first finger) | 30 KB; 12 KB | 40 KB; 19 KB |
 | `cff` | CFF and CFF2 fonts (most `.otf`) | not read | nothing; 17 KB | nothing; 17 KB |
 | `color-profiles` | colour profiles in picture files | colours as stored | nothing; 7 KB | nothing; 7 KB |
-| `rare-jpeg` | hierarchical and lossless arithmetic-coded JPEGs | not read | 2 KB; 25 KB | 4 KB; 41 KB |
+| `rare-jpeg` | hierarchical and lossless arithmetic-coded JPEGs | not read | nothing; 10 KB | nothing; 12 KB |
 | `woff2` | WOFF2 fonts (with a Brotli decoder) | not read | nothing; 95 KB | nothing; 99 KB |
 | `hinting` | TrueType fonts' own hinting instructions run | every font autohinted | nothing; 93 KB | nothing; 96 KB |
 | `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | 63 KB; 60 KB |
