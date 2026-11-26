@@ -4,13 +4,14 @@
 //!   drives as a person and the system would, through the methods UIKit calls. `parts`: touches,
 //!   keys, typed, corrected and composed text, the keyboard reading the box, the edit menu, a
 //!   screen reader, rotation. `system`: the system's file dialog, a file opened, drops, a drag
-//!   out, files on the clipboard. `notices`: a notification and a click on it. It writes what it
-//!   saw into its temporary folder.
+//!   out, files on the clipboard. `notices`: a notification and a click on it. `windows`: a
+//!   second window in a scene of its own (iPad), pressed, closed by the person and by the app.
+//!   It writes what it saw into its temporary folder.
 //! - On a Mac (`mac`), with `TAUT_IOS_SIMULATOR=1`, it builds that app and the gallery example
 //!   as bundles (`examples/ios_bundle.rs`), boots the newest iPhone simulator, runs them, reads
 //!   their notes, takes the screen (`simctl io screenshot`) and holds it against the same
 //!   interface drawn on the Mac; switches the simulator to dark mode, and sends the app to the
-//!   background and back. Without that variable it does nothing (a simulator takes minutes).
+//!   background and back; then drives `windows` on the newest iPad simulator. Without that variable it does nothing (a simulator takes minutes).
 //!
 //! `TAUT_SHOTS` names a folder for the pictures: the screen, and the Mac's drawing.
 //! Run without libtest's harness (`harness = false`): UIKit runs only on the main thread.
@@ -291,10 +292,10 @@ mod phone {
     /// whether a preview of what lifts comes with them.
     fn lift_at(at: Point) -> (Vec<String>, bool) {
         let session = session(&[], at);
-        let drags = interaction_delegate(c"UIDragInteraction");
-        let lifted = items(unsafe { send2(drags, c"dragInteraction:itemsForBeginningSession:", std::ptr::null_mut::<c_void>(), session) });
+        let drags = interaction(c"UIDragInteraction");
+        let lifted = items(unsafe { send2(delegate_of(drags), c"dragInteraction:itemsForBeginningSession:", drags, session) });
         let name = |item: Obj| text_of(unsafe { send0(send0::<Obj>(item, c"itemProvider"), c"suggestedName") });
-        let preview = |item: &Obj| unsafe { send3::<Obj, _, _, _>(drags, c"dragInteraction:previewForLiftingItem:session:", std::ptr::null_mut::<c_void>(), *item, session) };
+        let preview = |item: &Obj| unsafe { send3::<Obj, _, _, _>(delegate_of(drags), c"dragInteraction:previewForLiftingItem:session:", drags, *item, session) };
         (lifted.iter().map(|item| name(*item)).collect(), lifted.first().is_some_and(|item| !preview(item).is_null()))
     }
 
@@ -333,12 +334,13 @@ mod phone {
     fn view() -> Obj {
         unsafe { send0(root(), c"view") }
     }
-    /// The window's view controller.
+    /// The first window's view controller (the scene of a second window is titled "Second").
     fn root() -> Obj {
         unsafe {
             let app: Obj = send0(class(c"UIApplication"), c"sharedApplication");
-            let scene: Obj = send0(send0::<Obj>(app, c"connectedScenes"), c"anyObject");
-            let window = items(send0(scene, c"windows")).first().copied().unwrap_or(std::ptr::null_mut());
+            let scenes = items(send0(send0::<Obj>(app, c"connectedScenes"), c"allObjects"));
+            let first = scenes.into_iter().find(|scene| text_of(send0(*scene, c"title")) != "Second").unwrap_or(std::ptr::null_mut());
+            let window = items(send0(first, c"windows")).first().copied().unwrap_or(std::ptr::null_mut());
             send0(window, c"rootViewController")
         }
     }
@@ -354,16 +356,18 @@ mod phone {
     fn input() -> Obj {
         subview(c"TautTextInput")
     }
-    /// The delegate of the view's interaction of a class.
-    fn interaction_delegate(name: &CStr) -> Obj {
+    /// The view's interaction of a class (null for none).
+    fn interaction(name: &CStr) -> Obj {
         let interactions = items(unsafe { send0(view(), c"interactions") });
-        let found = interactions.into_iter().find(|one| unsafe { send1::<u8, _>(*one, c"isKindOfClass:", class(name)) } != 0);
-        found.map_or(std::ptr::null_mut(), |interaction| unsafe { send0(interaction, c"delegate") })
+        interactions.into_iter().find(|one| is_of(*one, name)).unwrap_or(std::ptr::null_mut())
+    }
+    /// An interaction's delegate: what UIKit calls, with the interaction.
+    fn delegate_of(interaction: Obj) -> Obj {
+        unsafe { send0(interaction, c"delegate") }
     }
     /// Where the page lies in the view: its top left.
     fn origin() -> Point {
-        let insets: Insets = unsafe { send0(view(), c"safeAreaInsets") };
-        Point { x: insets.left, y: insets.top }
+        origin_in(view())
     }
 
     // ---- the keyboard's view of the text box ----
@@ -442,6 +446,7 @@ mod phone {
             "parts" => drive(window, Parts::default()),
             "system" => drive(window, System::new()),
             "notices" => drive(window, Notices::default()),
+            "windows" => drive(window, Windows::default()),
             _ => {
                 let mut app = super::gallery::app();
                 let mut shown = Shown::default();
@@ -573,19 +578,20 @@ mod phone {
         fn check(&mut self, name: &str, ui: &Ui) -> bool;
     }
 
-    /// Where the script is: its step, since when, whether it acted; a touch held down, and until
-    /// when.
+    /// Where the script is: its step, since when, whether it acted; a touch held down, the view it
+    /// is on, and until when.
     struct Script {
         step: usize,
         since: Option<Instant>,
         acted: bool,
         held: Obj,
+        held_on: Obj,
         until: Instant,
     }
 
     impl Default for Script {
         fn default() -> Self {
-            Script { step: 0, since: None, acted: false, held: std::ptr::null_mut(), until: Instant::now() }
+            Script { step: 0, since: None, acted: false, held: std::ptr::null_mut(), held_on: std::ptr::null_mut(), until: Instant::now() }
         }
     }
 
@@ -627,7 +633,7 @@ mod phone {
                 return true;
             }
             let touch = std::mem::replace(&mut self.held, std::ptr::null_mut());
-            unsafe { send2::<(), _, _>(view(), c"touchesEnded:withEvent:", set_of(touch), std::ptr::null_mut::<c_void>()) };
+            unsafe { send2::<(), _, _>(self.held_on, c"touchesEnded:withEvent:", set_of(touch), std::ptr::null_mut::<c_void>()) };
             true
         }
 
@@ -638,9 +644,14 @@ mod phone {
 
         /// The same, lifting after a while.
         fn hold(&mut self, at: Point, kind: isize, held: Duration) {
+            self.hold_on(view(), at, kind, held);
+        }
+
+        /// The same on a view of another window.
+        fn hold_on(&mut self, on: Obj, at: Point, kind: isize, held: Duration) {
             let touch = touch_at(at, kind);
-            unsafe { send2::<(), _, _>(view(), c"touchesBegan:withEvent:", set_of(touch), std::ptr::null_mut::<c_void>()) };
-            (self.held, self.until) = (touch, Instant::now() + held);
+            unsafe { send2::<(), _, _>(on, c"touchesBegan:withEvent:", set_of(touch), std::ptr::null_mut::<c_void>()) };
+            (self.held, self.held_on, self.until) = (touch, on, Instant::now() + held);
         }
 
         /// A pointer's secondary click (a trackpad's two-finger click): down, then up a run later.
@@ -648,7 +659,7 @@ mod phone {
             let touch = touch_at(at, 3);
             let event: Obj = unsafe { send0(stand_in(c"CheckEvent", c"NSObject", &[(c"buttonMask", secondary_button as *const c_void, c"q@:")]), c"new") };
             unsafe { send2::<(), _, _>(view(), c"touchesBegan:withEvent:", set_of(touch), event) };
-            (self.held, self.until) = (touch, Instant::now());
+            (self.held, self.held_on, self.until) = (touch, view(), Instant::now());
         }
 
         fn key(code: isize, flags: isize, letters: &'static str) {
@@ -1017,34 +1028,32 @@ mod phone {
                     "the preview is put away" => send2::<(), _, _>(presented(), c"dismissViewControllerAnimated:completion:", 0u8, std::ptr::null_mut::<c_void>()),
                     "files come over the window" => {
                         let session = session(&[file_item(&self.sample[0])], drop_here());
-                        let drops = interaction_delegate(c"UIDropInteraction");
-                        _ = send2::<u8, _, _>(drops, c"dropInteraction:canHandleSession:", std::ptr::null_mut::<c_void>(), session);
-                        send2::<(), _, _>(drops, c"dropInteraction:sessionDidEnter:", std::ptr::null_mut::<c_void>(), session);
+                        let drops = interaction(c"UIDropInteraction");
+                        _ = send2::<u8, _, _>(delegate_of(drops), c"dropInteraction:canHandleSession:", drops, session);
+                        send2::<(), _, _>(delegate_of(drops), c"dropInteraction:sessionDidEnter:", drops, session);
                     }
                     "files and a picture are dropped" => {
                         let picture: Obj = send1(class(c"UIImage"), c"imageWithData:", send2::<Obj, _, _>(class(c"NSData"), c"dataWithBytes:length:", png().as_ptr(), png().len()));
                         let dragged = [file_item(&self.sample[0]), drag_item(c"initWithObject:", picture)];
                         let session = session(&dragged, drop_here());
-                        send2::<(), _, _>(interaction_delegate(c"UIDropInteraction"), c"dropInteraction:performDrop:", std::ptr::null_mut::<c_void>(), session);
+                        let drops = interaction(c"UIDropInteraction");
+                        send2::<(), _, _>(delegate_of(drops), c"dropInteraction:performDrop:", drops, session);
                     }
                     "text is dropped" => {
                         let session = session(&[drag_item(c"initWithObject:", string("dropped words"))], drop_here());
-                        let drops = interaction_delegate(c"UIDropInteraction");
-                        send2::<(), _, _>(drops, c"dropInteraction:sessionDidEnter:", std::ptr::null_mut::<c_void>(), session);
-                        send2::<(), _, _>(drops, c"dropInteraction:performDrop:", std::ptr::null_mut::<c_void>(), session);
+                        let drops = interaction(c"UIDropInteraction");
+                        send2::<(), _, _>(delegate_of(drops), c"dropInteraction:sessionDidEnter:", drops, session);
+                        send2::<(), _, _>(delegate_of(drops), c"dropInteraction:performDrop:", drops, session);
                     }
                     // (UIKit lifts between runs: the box is run again while it does.)
                     "a long press lifts the box's file" => {
                         let at = middle_of(ui, Role::Button, "Drag me");
                         after_this_run(Box::new(move || LIFTS.set(lift_at(at))));
                     }
-                    "the other app copies it" => send3::<(), _, _, _>(
-                        interaction_delegate(c"UIDragInteraction"),
-                        c"dragInteraction:session:didEndWithOperation:",
-                        std::ptr::null_mut::<c_void>(),
-                        std::ptr::null_mut::<c_void>(),
-                        2isize,
-                    ),
+                    "the other app copies it" => {
+                        let drags = interaction(c"UIDragInteraction");
+                        send3::<(), _, _, _>(delegate_of(drags), c"dragInteraction:session:didEndWithOperation:", drags, std::ptr::null_mut::<c_void>(), 2isize);
+                    }
                     "files copied are read back" => (self.copy, self.read) = (true, true),
                     "files another app copied are pasted" => {
                         let provider: Obj = send2(
@@ -1323,6 +1332,100 @@ mod phone {
             }
         }
     }
+
+    // ---- second windows (iPad) ----
+
+    /// The page of second windows: one opened in a scene of its own, pressed, closed by the
+    /// person (its app hears it), opened again, then closed by the app.
+    #[derive(Debug, Default)]
+    struct Windows {
+        titled: bool,
+        second: taut::SecondWindow,
+        presses: u32,
+        close_requests: u32,
+    }
+
+    impl Page for Windows {
+        const NOTE: &'static str = "windows.txt";
+        const STEPS: &'static [&'static str] = &[
+            "a second window opens in a scene of its own",
+            "a touch on it reaches its interface",
+            "it shows its own page",
+            "the person closing its scene is a close request",
+            "it opens again",
+            "the app closes it",
+            "",
+        ];
+
+        fn describe(&mut self, ui: &mut Ui) {
+            if !std::mem::replace(&mut self.titled, true) {
+                ui.set_title("First");
+            }
+            ui.label("First window");
+            if ui.window(&mut self.second, "Second") {
+                self.presses += ui.button("Press").clicked as u32;
+                ui.label(&format!("Pressed {}", self.presses));
+                self.close_requests += ui.close_requested() as u32;
+                ui.close();
+            }
+        }
+
+        fn act(&mut self, script: &mut Script, name: &str, ui: &mut Ui) {
+            match name {
+                "a second window opens in a scene of its own" | "it opens again" => self.second.open = true,
+                "a touch on it reaches its interface" => {
+                    let Some(id) = ui.windows().find(|(_, title, _)| *title == "Second").map(|(id, ..)| id) else { return };
+                    let button = ui.in_window(id, |ui| ui.visible_access_nodes().iter().find(|node| node.role == Role::Button).map(|node| node.rect));
+                    let (view, rect) = (scene_view("Second"), button.flatten().unwrap_or_default());
+                    let at = origin_in(view);
+                    script.hold_on(view, Point { x: at.x + f64::from(rect.x + rect.w / 2.0), y: at.y + f64::from(rect.y + rect.h / 2.0) }, 0, Duration::ZERO);
+                }
+                "the person closing its scene is a close request" => unsafe {
+                    let session: Obj = send0(scene_named("Second"), c"session");
+                    let app: Obj = send0(class(c"UIApplication"), c"sharedApplication");
+                    let nothing = std::ptr::null_mut::<c_void>();
+                    send3::<(), _, _, _>(app, c"requestSceneSessionDestruction:options:errorHandler:", session, nothing, nothing);
+                },
+                "the app closes it" => self.second.open = false,
+                _ => {}
+            }
+        }
+
+        fn check(&mut self, name: &str, _: &Ui) -> bool {
+            let scenes = || items(unsafe { send0(send0::<Obj>(send0::<Obj>(class(c"UIApplication"), c"sharedApplication"), c"connectedScenes"), c"allObjects") }).len();
+            match name {
+                "a second window opens in a scene of its own" | "it opens again" => scenes() == 2 && is_of(scene_view("Second"), c"TautView") && scene_view("Second") != view(),
+                "a touch on it reaches its interface" => self.presses == 1,
+                "it shows its own page" => unsafe {
+                    let page: Obj = send0(send0::<Obj>(send0::<Obj>(scene_view("Second"), c"layer"), c"sublayers"), c"firstObject");
+                    !send0::<Obj>(page, c"contents").is_null()
+                },
+                "the person closing its scene is a close request" => self.close_requests == 1 && !self.second.open && scenes() == 1,
+                "the app closes it" => scenes() == 1,
+                _ => true,
+            }
+        }
+    }
+
+    /// A connected scene, by its title.
+    fn scene_named(title: &str) -> Obj {
+        let scenes = items(unsafe { send0(send0::<Obj>(send0::<Obj>(class(c"UIApplication"), c"sharedApplication"), c"connectedScenes"), c"allObjects") });
+        scenes.into_iter().find(|scene| text_of(unsafe { send0(*scene, c"title") }) == title).unwrap_or(std::ptr::null_mut())
+    }
+    /// The library's view in a scene, by its title (null where there is none).
+    fn scene_view(title: &str) -> Obj {
+        let windows = items(unsafe { send0(scene_named(title), c"windows") });
+        windows.first().map_or(std::ptr::null_mut(), |window| unsafe { send0(send0::<Obj>(*window, c"rootViewController"), c"view") })
+    }
+    /// Whether an object is of a class (false for null).
+    fn is_of(object: Obj, name: &CStr) -> bool {
+        !object.is_null() && unsafe { send1::<u8, _>(object, c"isKindOfClass:", class(name)) } != 0
+    }
+    /// Where the page lies in a view: its top left.
+    fn origin_in(view: Obj) -> Point {
+        let insets: Insets = unsafe { send0(view, c"safeAreaInsets") };
+        Point { x: insets.left, y: insets.top }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1576,13 +1679,24 @@ mod mac {
         Ok(failed)
     }
 
+    /// Second windows on the newest iPad simulator, each a scene of its own.
+    fn ipad_windows(check: &Path) -> Result<Vec<String>, String> {
+        let device = ios_bundle::newest_simulator("iPad")?;
+        println!("simulator {device}");
+        ios_bundle::boot(&device)?;
+        simctl(&["install", &device, &check.to_string_lossy()])?;
+        let failed = driven(&device, "windows")?;
+        _ = simctl(&["terminate", &device, CHECK_ID]);
+        Ok(failed)
+    }
+
     /// Everything, in order; the failures.
     fn checks() -> Result<Vec<String>, String> {
         let mut failed = Vec::new();
         let check = check_app("touch", CHECK_ID, "ios")?;
         let asked = ios_bundle::Asked { example: "gallery".into(), id: "dev.taut.gallery".into(), ..Default::default() };
         let gallery = ios_bundle::build(&asked, &built())?;
-        let device = ios_bundle::newest_iphone()?;
+        let device = ios_bundle::newest_simulator("iPhone")?;
         println!("simulator {device}");
         ios_bundle::boot(&device)?;
         simctl(&["ui", &device, "appearance", "light"])?;
@@ -1651,6 +1765,7 @@ mod mac {
         // dims the screen while it asks).
         failed.extend(gpu_checks(&device)?);
         failed.extend(driven(&device, "notices")?);
+        failed.extend(ipad_windows(&check)?);
         for log in std::fs::read_dir(built()).map_err(|error| error.to_string())?.flatten() {
             let path = log.path();
             if path.extension().is_some_and(|ending| ending == "err" || ending == "out") {

@@ -1111,6 +1111,17 @@ impl CodeEditor {
         self.change(edits, Some(carets), typed);
     }
 
+    /// Deletes what an input method asks around each selection (Android): each becomes a cursor.
+    #[cfg(any(target_os = "android", test))]
+    fn delete_around(&mut self, around: crate::text_edit::DeleteAround) {
+        self.each(false, |code, sel| {
+            let selected = sel.range();
+            let kept = code.text[selected.clone()].to_string();
+            let caret = if sel.cursor < sel.anchor { 0 } else { kept.len() };
+            (around.range(&code.text, selected), kept, caret)
+        });
+    }
+
     /// Inserts typed or pasted text at every cursor, replacing each selection. (Its line ends
     /// become the text's own.)
     fn put(&mut self, text: &str, typed: bool) {
@@ -1639,6 +1650,11 @@ impl Ui {
                 code.put(typed, true);
                 false
             }
+            #[cfg(any(target_os = "android", test))]
+            Stroke::DeleteAround(around) => {
+                code.delete_around(*around);
+                false
+            }
             // (The system's keyboard edits text boxes only.)
             #[cfg(target_os = "ios")]
             Stroke::Replace(_) => true,
@@ -2144,6 +2160,16 @@ mod tests {
         code.sels = vec![Sel::at(1), Sel::at(2)];
         keys(&mut code, &[(Key::Home, NONE)]);
         assert_eq!(code.sels.len(), 1);
+    }
+
+    #[test]
+    fn an_input_method_deletes_whole_characters_before_every_cursor() {
+        let mut code = CodeEditor::new("a😀\nbe\u{301}", &Syntax::PLAIN);
+        code.sels = vec![Sel::at(5), Sel::at(code.text.len())];
+        code.delete_around(crate::text_edit::DeleteAround { before: 1, after: 0, in_code_points: false });
+        assert_eq!(shown(&code), "a|\nbe|", "half an emoji takes it whole; an accent goes without its letter");
+        keys(&mut code, &[(Key::Char('z'), CTRL)]);
+        assert_eq!(code.text, "a😀\nbe\u{301}", "undone at once");
     }
 
     #[test]

@@ -47,7 +47,8 @@ mod connection {
     use crate::android_jni::{self as jni, Env, Native, Obj, Value};
     use crate::android_sys::WindowBuffer;
     use crate::event::{Event, Key, Mods};
-    use crate::ui::Ui;
+    use crate::text_edit::DeleteAround;
+    use crate::ui::{Stroke, Ui};
     use std::cell::RefCell;
     use std::ffi::{CStr, c_int, c_void};
 
@@ -88,6 +89,7 @@ mod connection {
             Native::new(c"setComposingText", c"(Ljava/lang/CharSequence;I)Z", set_composing_text as *const c_void),
             Native::new(c"finishComposingText", c"()Z", finish_composing_text as *const c_void),
             Native::new(c"deleteSurroundingText", c"(II)Z", delete_surrounding_text as *const c_void),
+            Native::new(c"deleteSurroundingTextInCodePoints", c"(II)Z", delete_surrounding_code_points as *const c_void),
             Native::new(c"performEditorAction", c"(I)Z", editor_action as *const c_void),
         ];
         if env.register(class, &natives) {
@@ -176,11 +178,27 @@ mod connection {
         1
     }
 
-    /// The input method deletes around the cursor: as many Backspace and Delete keys.
+    /// The input method deletes around the selection: so many UTF-16 units before and after it.
     extern "C" fn delete_surrounding_text(env: Env, connection: Obj, before: c_int, after: c_int) -> u8 {
-        env.call_super(connection, CONNECTION, c"deleteSurroundingText", c"(II)Z", &[Value::int(before), Value::int(after)]);
-        (0..before).for_each(|_| heard(Heard::Event(Event::Key(Key::Backspace, Mods::NONE))));
-        (0..after).for_each(|_| heard(Heard::Event(Event::Key(Key::Delete, Mods::NONE))));
+        delete_around(env, connection, [before, after], false)
+    }
+
+    /// The same counted in code points.
+    extern "C" fn delete_surrounding_code_points(env: Env, connection: Obj, before: c_int, after: c_int) -> u8 {
+        delete_around(env, connection, [before, after], true)
+    }
+
+    /// Deletes `before` and `after` the focused box's selection, whole characters (its own text
+    /// as the connection keeps it, too); nothing for a count below zero.
+    fn delete_around(env: Env, connection: Obj, [before, after]: [c_int; 2], in_code_points: bool) -> u8 {
+        let (Ok(before), Ok(after)) = (usize::try_from(before), usize::try_from(after)) else { return 0 };
+        let method = if in_code_points { c"deleteSurroundingTextInCodePoints" } else { c"deleteSurroundingText" };
+        env.call_super(connection, CONNECTION, method, c"(II)Z", &[Value::int(before as c_int), Value::int(after as c_int)]);
+        let around = DeleteAround { before, after, in_code_points };
+        heard(Heard::Other(Box::new(move |ui: &mut Ui| {
+            ui.input.strokes.push(Stroke::DeleteAround(around));
+            true
+        })));
         tell_selection(env, connection);
         kick();
         1

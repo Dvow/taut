@@ -24,10 +24,10 @@
 //! Nothing is linked at build time: libXi is opened by name with the first window. On a display
 //! without the extension, or below XI 2.2, windows receive core events, as in a program built
 //! without the feature.
+use crate::dynamic_library::library;
 use crate::event::Event;
 use crate::geom::pt;
 use crate::touch::{Stylus, Touch, TouchPhase};
-use crate::x11::{dlclose, dlopen, library, symbol};
 use std::ffi::{CStr, c_char, c_int, c_uchar, c_uint, c_ulong, c_void};
 
 library!(XInput, ["libXi.so.6", "libXi.so"], {

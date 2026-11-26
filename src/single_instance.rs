@@ -67,19 +67,21 @@ pub(crate) struct Tokens {
 /// thread. If the first copy cannot be reached within five seconds, or the system has no way,
 /// every start is a first.
 pub fn single_instance(name: &str) -> bool {
-    let here = Relaunch { args: std::env::args_os().skip(1).collect(), working_dir: std::env::current_dir().unwrap_or_default() };
-    let tokens = Tokens { wayland: var("XDG_ACTIVATION_TOKEN"), x: var("DESKTOP_STARTUP_ID") };
-    let packed = packed(&tokens, &here);
     crate::platform::hand_desktop();
     #[cfg(windows)]
-    return crate::windows_shell::first_copy(name, &packed);
+    return crate::windows_shell::first_copy(name, &this_start());
     #[cfg(unix)]
-    return linux::first_copy(name, &packed);
+    return linux::first_copy(name, &this_start());
     // A page hands over its address instead (see `web_desktop`).
     #[cfg(target_family = "wasm")]
-    let _ = packed;
-    #[cfg(target_family = "wasm")]
     return crate::web_desktop::first(name);
+}
+
+/// This start, packed for the first copy: its arguments, working folder and activation tokens.
+fn this_start() -> Vec<u8> {
+    let here = Relaunch { args: std::env::args_os().skip(1).collect(), working_dir: std::env::current_dir().unwrap_or_default() };
+    let tokens = Tokens { wayland: var("XDG_ACTIVATION_TOKEN"), x: var("DESKTOP_STARTUP_ID") };
+    packed(&tokens, &here)
 }
 
 /// An environment variable as text (empty if unset).

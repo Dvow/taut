@@ -4,8 +4,8 @@
 //! - The screen: its window's `NSScreen`. It has EDR where its
 //!   `maximumPotentialExtendedDynamicRangeColorComponentValue` is above 1; its headroom now is
 //!   `maximumExtendedDynamicRangeColorComponentValue`, 1 until something on the screen shows
-//!   EDR, then changing with brightness. Read again every run, and a quarter of a second apart
-//!   while a window is in EDR.
+//!   EDR, then changing with brightness. Read again every run; AppKit says when it changes
+//!   (`NSApplicationDidChangeScreenParametersNotification`), which starts a run.
 //! - While lit there, the window's `CAMetalLayer` takes `RGBA16Float` in extended linear sRGB
 //!   (`wantsExtendedDynamicRangeContent`), 1.0 being SDR white; else BGRA8 in sRGB as ever, the
 //!   same pixels.
@@ -27,8 +27,6 @@ const LOAD_NOTHING: usize = 0;
 const STORE: usize = 1;
 /// `MTLPrimitiveTypeTriangle`.
 const TRIANGLES: usize = 3;
-/// How long a lit window's screen may go unread, at most.
-pub(crate) const WATCHED: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The shaders: one triangle over the drawable, each pixel the window's lit by its gains (red,
 /// green, blue, and a gain map's offset) where `light.z` says the window is lit; `light.x` SDR

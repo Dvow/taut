@@ -183,10 +183,11 @@ fn heard_dragging(ui: &mut Ui, heard: Heard) -> (Then, u32) {
             ui.event(Event::Leave);
             (Then::Run, 0)
         }
+        // (Run at once too: the end follows at once, and has the pointer leave.)
         dragging::DROP => {
             [Event::Move(heard.at), Event::Release(Button::Left)].into_iter().for_each(|event| _ = ui.event(event));
             ui.set_drop_effect(None);
-            (Then::Run, 0)
+            (Then::RunNow, 0)
         }
         dragging::END => {
             let taken = match heard.number as u32 {

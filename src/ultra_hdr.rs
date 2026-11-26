@@ -34,16 +34,21 @@ pub(crate) fn read(file: &[u8]) -> Option<(usize, Vec<u32>, GainMap)> {
 }
 
 /// The gain map's JPEG in `file`, and how its values become gains: the first JPEG after the
-/// picture whose metadata says so. `exif`: the picture's EXIF notes.
+/// picture whose metadata says so. `exif`: the picture's EXIF notes. A start of a JPEG that
+/// can't be measured is passed over.
 fn gain_map_of<'a>(file: &'a [u8], exif: Option<&[u8]>) -> Option<(&'a [u8], Curve)> {
     let mut after = length(file)?;
     loop {
         let start = after + file.get(after..)?.windows(3).position(|bytes| bytes == [0xFF, 0xD8, 0xFF])?;
-        let jpeg = &file[start..start + length(&file[start..])?];
+        let Some(long) = length(&file[start..]) else {
+            after = start + 1;
+            continue;
+        };
+        let jpeg = &file[start..start + long];
         if let Some(curve) = curve_of(jpeg, exif) {
             return Some((jpeg, curve));
         }
-        after = start + jpeg.len();
+        after = start + long;
     }
 }
 
@@ -428,6 +433,17 @@ mod tests {
         // A map larger than its picture: refused, the map read no further.
         let (map, curve) = gain_map_of(&android, None).unwrap();
         assert!(decoded_map(map, curve, None, [48, 32]).is_some() && decoded_map(map, curve, None, [8, 8]).is_none(), "a map larger than the picture");
+    }
+
+    #[test]
+    fn a_start_of_a_jpeg_that_cant_be_measured_is_passed_over_to_the_gain_map() {
+        let android = std::fs::read(pictures().join("ultra-hdr-android.jpg")).unwrap();
+        let picture = length(&android).unwrap();
+        // A start of a JPEG whose first segment's length runs past the file's end.
+        let broken = [&android[..picture], &[0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xFF], &android[picture..]].concat();
+        assert!(length(&broken[picture..]).is_none(), "can't be measured");
+        let (map, _) = gain_map_of(&broken, None).expect("the gain map after it");
+        assert_eq!(map, gain_map_of(&android, None).unwrap().0);
     }
 
     #[test]

@@ -334,8 +334,8 @@ const EVERY: Digest = [u64::MAX; 8];
 pub(crate) type Normalizer = fn(&FontFile, &[(char, u32)], &mut Vec<(u32, u16)>, crate::normalization::Way) -> (Vec<(char, u32)>, Vec<u32>);
 
 /// Places marks in a font without `GPOS`: a mark character's class (none for others), and the
-/// placing of a run's glyphs, in logical order (right to left where `true`).
-pub(crate) type FallbackMarks = (fn(char) -> Option<u8>, fn(&FontFile, &mut [Laid], bool));
+/// placing of a run's glyphs, in logical order, in their direction.
+pub(crate) type FallbackMarks = (fn(char) -> Option<u8>, fn(&FontFile, &mut [Laid], crate::fallback_marks::Direction));
 
 impl Plan {
     /// The lookups of a script, direction and language from a font's tables; and composition as
@@ -376,7 +376,7 @@ impl Plan {
         let found = forms.iter().flatten().map(|lookup| Step { lookup: *lookup, mask: ALL, joiners: true, non_joiners: true, syllable: false });
         swaps[1] = merged(swaps[1].iter().copied().chain(found).collect());
         let moves = steps(moving, asked, &DOWNWARD_MOVES);
-        Plan { swaps, moves, kerned: true, leftward: false, joins: false, downward: true, upright_forms: forms.is_none(), stretch: false, fallback_marks: None, ..plan }.digested(font)
+        Plan { swaps, moves, kerned: true, leftward: false, joins: false, downward: true, upright_forms: forms.is_none(), stretch: false, ..plan }.digested(font)
     }
 
     /// The plan with one more feature's lookups applied after the rest, under whichever script
@@ -462,10 +462,12 @@ fn steps(table: Bytes, asked: Asked, features: &[Feature]) -> Vec<Step> {
 
 /// Steps in lookup order, each lookup once: for the glyphs of all steps naming it, skipping
 /// joiners only where all do.
-pub(crate) fn merged(mut steps: Vec<Step>) -> Vec<Step> {
-    steps.sort_by_key(|step| step.lookup);
+pub(crate) fn merged(steps: Vec<Step>) -> Vec<Step> {
+    // (A heap sorts with a fraction of the code `sort` takes; the steps of one lookup merge in
+    // any order.)
+    let order = std::collections::BinaryHeap::from_iter(steps.iter().enumerate().map(|(n, step)| (step.lookup, n))).into_sorted_vec();
     let mut merged: Vec<Step> = Vec::new();
-    for step in steps {
+    for step in order.into_iter().map(|(_, n)| steps[n]) {
         match merged.last_mut() {
             Some(last) if last.lookup == step.lookup => {
                 (last.mask, last.joiners, last.non_joiners) = (last.mask | step.mask, last.joiners && step.joiners, last.non_joiners && step.non_joiners);
@@ -689,7 +691,7 @@ impl FontFile {
         // one case where such a font's plan has no `fallback_marks`.)
         let hang = moves.0.is_empty() && !leftward && (syllabic.is_some() || plan.fallback_marks.is_some());
         if plan.zeroing == Zeroing::Early {
-            zero_marks(glyphs, hang);
+            zero_marks(glyphs, hang, plan.downward);
         }
         for step in &plan.moves {
             shaper.carry(moves, true, *step, glyphs);
@@ -698,11 +700,11 @@ impl FontFile {
             self.kern_older(glyphs);
         }
         if plan.zeroing == Zeroing::Late {
-            zero_marks(glyphs, hang);
+            zero_marks(glyphs, hang, plan.downward);
         }
         fix_attached(glyphs, leftward, plan.downward);
         if let Some((_, place)) = plan.fallback_marks {
-            place(self, glyphs, leftward);
+            place(self, glyphs, crate::fallback_marks::Direction::of(plan.downward, leftward));
         }
         if syllabic.is_some() {
             glyphs.retain(|laid| !laid.ignorable());
@@ -1817,10 +1819,14 @@ fn covering(table: Bytes, at: usize, digest: &mut Digest) -> bool {
 }
 
 /// Zeroes mark glyphs' advances; with `hang`, each is still drawn where it was, hanging over
-/// the glyph before.
-fn zero_marks(glyphs: &mut [Laid], hang: bool) {
+/// the glyph before (in vertical text, `downward`, the one above).
+fn zero_marks(glyphs: &mut [Laid], hang: bool, downward: bool) {
     for laid in glyphs.iter_mut().filter(|laid| laid.mark()) {
-        laid.offset[0] -= if hang { laid.advance } else { 0 };
+        match (hang, downward) {
+            (true, false) => laid.offset[0] -= laid.advance,
+            (true, true) => laid.offset[1] += laid.advance,
+            (false, _) => {}
+        }
         laid.advance = 0;
     }
 }

@@ -26,11 +26,16 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   in phone browsers (they need a service worker). One copy: two tabs opened at the same moment
   may both start as first; a tab can't come forward. Printing: pages as pictures (288 dpi), not
   text; the browser doesn't say whether the person printed (`Sent` once its dialog closes).
-  Fonts: listed in Chrome and Edge only, once the person allows it. Readers: tested against the
+  Fonts: listed in Chrome and Edge only, once the person allows it (until then they list none;
+  the page asks again at the next press). Readers: tested against the
   DOM, not with a screen reader itself.
 - macOS: `layer_vulkan` untested (no Vulkan loader or MoltenVK on the runner).
-- iOS: no tray or global hotkeys (iOS has neither). No second windows: an iPhone app has one; on
-  iPad they are not opened as scenes yet. Without `touch`, only the first finger works, as the
+- iOS: no tray or global hotkeys (iOS has neither). Second windows only on iPad (an iPhone shows
+  one scene), each a scene the system sizes and places: a second window's size, place, screen
+  and kind (tool, dialog, on top) are not used, though a dialog still keeps the windows opened
+  before it from input. A scene the person opens from the system has nothing to show and
+  closes. The bundle's `Info.plist` needs `UIApplicationSupportsMultipleScenes` (as
+  `examples/ios_bundle.rs` writes it). Without `touch`, only the first finger works, as the
   mouse.
 - iOS: in a password box and the code box the keyboard sees only what an input method composes
   (no corrections). The system's loupe and selection handles don't show: taut draws its own
@@ -170,15 +175,15 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Vertical text: no icons or pictures among it, no underlines in it (links get one while hovered),
   no colour emoji; its text boxes are not spell checked and set no digits across. A run set across
   one em is centred, as CSS has it; Chrome sets it off centre by up to 0.1 em. A word longer than a
-  column breaks where it must (CSS lets it overflow).
+  column breaks where it must (CSS lets it overflow). “ ” turn as Unicode's orientation table has
+  them (Chrome stands them upright in Yu Gothic). Punctuation is trimmed in any language (Chrome
+  trims none in text marked English).
 - Ruby in rich text with the system's text places the reading by the font's ascent and descent, not
   its typographic em box (app fonts use that). Readings in one line are each placed against their own
   base, not on one line. Horizontal text does not trim fullwidth punctuation.
 - Without `shaping`, app fonts draw glyph by glyph, kerned by pairs (pages shape fully); system
   text keeps its default forms. With it, scripts shaped by syllable take language forms only
   with `brahmic` too; system text on the web takes none.
-- Vertical text in fonts without `GPOS` leaves marks where zeroing leaves them (HarfBuzz's
-  fallback places them).
 - `shaping` shapes each line the first time it is seen (15–40 µs in Segoe UI or Calibri: 0.4 s
   for a window of 10,000 new rows) and keeps up to 16 MB of runs; a full draw takes about 40%
   longer.
@@ -194,8 +199,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   the line taller); without it, not.
 - Named faces are kept for the program's life; names over 128 bytes match nothing; beyond 4,096
   families or 65,536 faces, new names use the system font.
-- Windows: the first letter no linked font has costs a full font scan (about 60 ms, 47 KB);
-  SVG text loads whole fonts (a CJK page peaked at about 43 MB).
+- Windows: the first letter no linked font has costs a full font scan (about 60 ms, 47 KB). SVG
+  text reads `CFF` fonts whole (`glyf` fonts a glyph at a time).
 
 ## Pictures
 
@@ -205,14 +210,16 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Lossy WebP decodes about 4× slower than an equivalent JPEG (a 1920×1080 photo: 60 ms against
   14 ms), most of it the loop filter and the boolean decoder, done one pixel and one bit at a
   time.
-- SVG not read: `animateMotion`, animations begun by events or other animations,
-  `FillPaint`/`StrokePaint` inputs, `kernelUnitLength`. Images in other files only through the
-  app's loader; drawings an image brings, four deep at most. SMIL animation plays as encoded
-  frames (`svg::encode_animation`, a minute at most), not in a `Drawing`. Small blurs use a true Gaussian (as
-  browsers; librsvg differs). SVG text is unshaped without `shaping`. Masks and non-box clips
-  multiply edge coverages; two opposite subpaths of one shape can show a hairline. Crisp edges
-  paint pixels more than half covered (librsvg: pixels whose sample point is). Of 2,986 Linux
-  desktop icons, 392 differ visibly from librsvg at 1×, 185 at 3×.
+- SVG not read: a pattern as a `FillPaint`/`StrokePaint` input (librsvg tiles it), `wallclock()`
+  and focus events in `begin`/`end`. Images in other files only through the app's loader;
+  drawings an image brings, four deep at most. SMIL as frames (`svg::encode_animation`): a
+  minute at most, timed parts only. In a window (`AnimatedDrawing`): the last 4,096 events its
+  file waits for are kept; the pointer is over a shape's fill or stroke, clips and masks aside,
+  text as its whole element. A kernel unit finer than a pixel counts as one pixel. Small blurs
+  use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped without `shaping`.
+  Masks and non-box clips multiply edge coverages; two opposite subpaths of one shape can show
+  a hairline. Crisp edges paint pixels more than half covered (librsvg: pixels whose sample
+  point is). Of 2,986 Linux desktop icons, 392 differ visibly from librsvg at 1×, 185 at 3×.
 - SVG cost beyond the file's budget is skipped; a small file can still take seconds at
   4096×4096.
 - Highly compressible PNGs (30:1+) decode up to 1/7 slower than with an exact buffer.

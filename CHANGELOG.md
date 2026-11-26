@@ -200,6 +200,62 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - **SVG text** (`shaping`) is shaped in runs of one script (a Latin word and a Hindi one in one
   font were shaped as one script), a grapheme cluster in one font, and a family's own font is
   the one it draws a space in (a family without Latin letters fell back for its spaces).
+- **Fixed (Windows, feature `gpu`):** a window a GPU path shows draws what changed even where
+  Windows drops it from the window's update region and sends no paint (seen while another
+  thread of the program painted): the window keeps such places and draws them on a message of
+  its own.
+- **Fixed (Linux):** windows opening on several threads at once could leave the program's
+  `LC_CTYPE` changed for good. The library's brief changes of it now take turns.
+- **Fixed (web):** the app's own drag let go on the page was sometimes lost: the drop is now
+  handled at once, before the browser ends the drag.
+- **Second windows on iPad**, each a scene of its own: asked for as the app first describes it,
+  closed as it stops; the person closing the scene is a close request. Touches, keys, drops,
+  drags out and screen readers go to the window they are in; typing and the system's dialogs
+  to the window in front. An iPhone shows none, as before. `examples/ios_bundle.rs` writes
+  `UIApplicationSupportsMultipleScenes`; its `newest_iphone()` is `newest_simulator("iPhone")`.
+- **Fixed:** on Android, an input method deleting around the cursor cut an emoji in half and
+  took an accented letter whole where it asked for the accent. It now deletes what the input
+  method counts, in UTF-16 units (`deleteSurroundingText`) or code points
+  (`deleteSurroundingTextInCodePoints`), whole characters, beside the selection, as one undo.
+- **Fixed:** on the web, fonts refused by Chrome or Edge (which list none until the person
+  allows it) were never asked for again; now the next press asks.
+- **Fixed (Android, `gpu`):** a window the GPU gives up (too many devices lost, or none fits) is
+  handed back to the CPU in RGBA. It was left at the activity's RGB 565, and the CPU wrote
+  32-bit pixels into it. Vulkan swap chains take the window's own RGBA where offered.
+- **Fixed (Windows, `hdr`):** while a window is lit, a change of its screen's SDR white or peak
+  shows it again, and Vulkan sets its HDR metadata again. Before, the metadata was set only when
+  the swap chain was made, and the frame waited for the next change.
+- **macOS (`hdr`):** EDR headroom changes come from AppKit's notice; the polling every 250 ms
+  while a window is in EDR is gone.
+- **Fixed (`hdr`):** an Ultra HDR JPEG with a start of a JPEG that can't be measured before its
+  gain map is read with its map, not as SDR.
+- X11's and Android's Vulkan paths share one module, their EGL paths another; OpenGL's and
+  Vulkan's function tables are found by one loader.
+- **Bidi by paragraph:** a wrapped line of mixed-direction text is ordered as its whole paragraph
+  orders it (UAX #9), so numbers and punctuation at a line's ends take the direction they would
+  unwrapped. `TextSystem::places` and `TextSystem::draw_line` take a `Paragraph` (the line's
+  direction and the text around it) in place of `leftward: bool`; `Paragraph::whole(leftward)`
+  is the old meaning.
+- **Shaped forms drawn by the system:** with `shaping`, a line shaped for its language's forms
+  in the system's fonts is drawn by GDI, FreeType or CoreText glyph by glyph
+  (`TextSystem::draw_glyphs`), not by taut's rasterizer: its letters look like the system's own
+  text. `hello` with `shaping` is 24 KB smaller on Windows, 7 KB on Linux.
+- **SVG text on Windows** reads a system font's glyphs as it draws them: a page of CJK text
+  peaks at 6 MB, not 51 MB.
+- **Vertical text:** marks in fonts without `GPOS` are placed as HarfBuzz places them; full
+  stops, commas, colons and quotation marks are trimmed by the kind their glyph shows in the
+  font, as Chrome does; a column broken inside a word no longer overshoots by half an em after
+  a trimmed mark; Chinese text may break before 〜 and ゠.
+- **Line breaks:** a no-break space after a hyphen may start a line (UAX #14 LB12a).
+- **SVG animation in a window:** `svg::AnimatedDrawing` plays a file's SMIL animation in a box
+  (`ui.animated_drawing`), only that box redrawn per frame. Clicks, presses, pointer moves over
+  its shapes and `accessKey(x)` begin and end what waits for them; the app can seek, pause and
+  begin or end an element. `animateMotion` (a path, an `<mpath>` or points, `keyPoints`,
+  `rotate`); animations begun and ended by others (`a.end+1s`, `a.begin`, `a.repeat(2)`), several
+  begins, `restart`, `min` and `max`, here and in `svg::encode_animation`. A `set` with `dur`
+  ends after it (it held for ever).
+- **SVG filters:** `FillPaint` and `StrokePaint` inputs, and `kernelUnitLength` on lighting and
+  convolution, as librsvg draws them.
 
 ## 0.3.0 (2026-11-24)
 

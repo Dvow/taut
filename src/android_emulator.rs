@@ -39,7 +39,7 @@ fn adb_run(args: &[&str]) -> Output {
 }
 
 /// Copies the emulator's file `path` into `folder`, again until it comes whole: a copy that a
-/// dropped connection cuts short fails (where `exec-out cat` ends early without a word).
+/// dropped connection cuts short fails.
 pub(crate) fn pull(path: &str, folder: &Path) {
     let since = Instant::now();
     loop {
@@ -50,6 +50,18 @@ pub(crate) fn pull(path: &str, folder: &Path) {
         assert!(since.elapsed() < OUT_OF_REACH, "{path} was not copied: {}", String::from_utf8_lossy(&done.stderr));
         settle(1);
     }
+}
+
+/// The emulator's file `path`, whole, by `pull`. (What `exec-out` prints can end early and
+/// still exit 0: one copy of a 32 MB font in nine, on the runner.)
+pub(crate) fn read(path: &str) -> Vec<u8> {
+    let folder = std::env::temp_dir().join(format!("taut-adb-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    pull(path, &folder);
+    let copy = folder.join(path.rsplit('/').next().unwrap_or(path));
+    let bytes = std::fs::read(&copy).unwrap_or_default();
+    let _ = std::fs::remove_file(copy);
+    bytes
 }
 
 /// Whether `adb`'s errors say it never reached the emulator, so the command did nothing there.
@@ -93,19 +105,67 @@ impl Node {
     }
 }
 
-/// The focused window's nodes, as `uiautomator` reads them; the dump is kept in `out`.
+/// The focused window's nodes, as `uiautomator` reads them; the dump is kept in `out`. A dump
+/// that failed is asked again: on a busy emulator `uiautomator` itself can fail to connect to
+/// the system and stop with an exception.
 pub(crate) fn dump(out: &Path, name: &str) -> Vec<Node> {
-    shell("uiautomator dump /sdcard/taut-ui.xml");
-    let xml = String::from_utf8_lossy(&adb(&["exec-out", "cat", "/sdcard/taut-ui.xml"])).into_owned();
+    let since = Instant::now();
+    while !shell("rm -f /sdcard/taut-ui.xml; uiautomator dump /sdcard/taut-ui.xml 2>&1").contains("dumped to") {
+        assert!(since.elapsed() < OUT_OF_REACH, "uiautomator dumped nothing");
+        settle(1);
+    }
+    let xml = String::from_utf8_lossy(&read("/sdcard/taut-ui.xml")).into_owned();
     let _ = std::fs::write(out.join(format!("{name}.xml")), &xml);
     xml.split("<node ").skip(1).map(node_of).collect()
 }
 
+/// Whether an app of one of these packages crashed since the log was cleared: the log's crash
+/// buffer names its process. (`uiautomator` stopping on its own is no app's crash.)
+pub(crate) fn crashed(packages: &[&str]) -> bool {
+    let crashes = String::from_utf8_lossy(&adb(&["logcat", "-d", "-b", "crash"])).into_owned();
+    crashes.lines().any(|line| packages.iter().any(|package| line.contains(package)))
+}
+
 fn node_of(tag: &str) -> Node {
-    let value = |name: &str| attribute(tag, name).unwrap_or_default().replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+    let value = |name: &str| unescaped(attribute(tag, name).unwrap_or_default());
     let corners: Vec<i32> = value("bounds").split(|c: char| !c.is_ascii_digit() && c != '-').filter_map(|part| part.parse().ok()).collect();
     let (checked, focused) = (value("checked") == "true", value("focused") == "true");
     Node { class: value("class"), text: value("text"), described: value("content-desc"), checked, focused, bounds: corners.try_into().unwrap_or_default() }
+}
+
+/// An attribute's text with XML's escapes undone: the five named ones, and letters by number
+/// (`&#128512;`, `&#x1F600;`, as `uiautomator` writes an emoji).
+fn unescaped(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        match rest.split_once(';').and_then(|(name, after)| Some((escaped(name)?, after))) {
+            Some((letter, after)) => {
+                out.push(letter);
+                rest = after;
+            }
+            None => out.push('&'),
+        }
+    }
+    out + rest
+}
+
+/// The letter an XML escape stands for, by its name between `&` and `;`.
+fn escaped(name: &str) -> Option<char> {
+    let number = match name {
+        "quot" => return Some('"'),
+        "apos" => return Some('\''),
+        "lt" => return Some('<'),
+        "gt" => return Some('>'),
+        "amp" => return Some('&'),
+        _ => match name.strip_prefix("#x") {
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => name.strip_prefix('#')?.parse().ok()?,
+        },
+    };
+    char::from_u32(number)
 }
 
 pub(crate) fn find<'a>(nodes: &'a [Node], class: &str, text: &str) -> Option<&'a Node> {
@@ -126,7 +186,8 @@ pub(crate) fn tap(node: &Node) {
 
 /// The screen, as a picture: width and pixels.
 pub(crate) fn screen(out: &Path, name: &str) -> (usize, Vec<u32>) {
-    let png = adb(&["exec-out", "screencap", "-p"]);
+    shell("screencap -p /sdcard/taut-screen.png");
+    let png = read("/sdcard/taut-screen.png");
     let _ = std::fs::write(out.join(format!("{name}.png")), &png);
     crate::png::decode(&png).unwrap_or_default()
 }
@@ -156,8 +217,10 @@ mod tests {
     use crate::android_dex::{BARE, Class, Method, Op, Ref, dex};
 
     /// A keyboard for tests: an input method with no keys of its own, which composes as keys
-    /// say: C composes "hel", D "hello", E commits what is composed, F drops it. (The
-    /// emulator's own keyboard commits every letter at once, everywhere: it composes nothing.)
+    /// say: C composes "hel", D "hello", E commits what is composed, F drops it. G commits two
+    /// emoji and an "e" with a combining acute; H deletes one UTF-16 unit before the cursor, I
+    /// three, J one code point. (The emulator's own keyboard commits every letter at once,
+    /// everywhere: it composes nothing.)
     const KEYBOARD: Class = Class {
         name: "taut/Keyboard",
         parent: "android/inputmethodservice/InputMethodService",
@@ -188,6 +251,22 @@ mod tests {
                 Op::Units(&[op(0x13, 1), 34, op2(0x33, 5, 1), 8]),
                 Op::With(op(CONST_STRING, 3), Ref::Text("")),
                 Op::Invoke(INTERFACE, Ref::Method("android/view/inputmethod/InputConnection", "setComposingText", "(Ljava/lang/CharSequence;I)Z"), &[0, 3, 2]),
+                Op::Units(&[return_int(2)]),
+                // G (35): commit two emoji and an accented "e".
+                Op::Units(&[op(0x13, 1), 35, op2(0x33, 5, 1), 8]),
+                Op::With(op(CONST_STRING, 3), Ref::Text("😀😀e\u{301}")),
+                Op::Invoke(INTERFACE, Ref::Method("android/view/inputmethod/InputConnection", "commitText", "(Ljava/lang/CharSequence;I)Z"), &[0, 3, 2]),
+                Op::Units(&[return_int(2)]),
+                // H (36), I (37): delete 1 and 3 UTF-16 units before the cursor (v1), none after (v3).
+                Op::Units(&[op(0x13, 1), 36, op2(0x33, 5, 1), 8, const4(1, 1), const4(3, 0)]),
+                Op::Invoke(INTERFACE, Ref::Method("android/view/inputmethod/InputConnection", "deleteSurroundingText", "(II)Z"), &[0, 1, 3]),
+                Op::Units(&[return_int(2)]),
+                Op::Units(&[op(0x13, 1), 37, op2(0x33, 5, 1), 8, const4(1, 3), const4(3, 0)]),
+                Op::Invoke(INTERFACE, Ref::Method("android/view/inputmethod/InputConnection", "deleteSurroundingText", "(II)Z"), &[0, 1, 3]),
+                Op::Units(&[return_int(2)]),
+                // J (38): delete one code point before the cursor.
+                Op::Units(&[op(0x13, 1), 38, op2(0x33, 5, 1), 8, const4(1, 1), const4(3, 0)]),
+                Op::Invoke(INTERFACE, Ref::Method("android/view/inputmethod/InputConnection", "deleteSurroundingTextInCodePoints", "(II)Z"), &[0, 1, 3]),
                 Op::Units(&[return_int(2)]),
                 // Any other key: as the input method service does.
                 Op::Invoke(SUPER, Ref::Method("android/inputmethodservice/InputMethodService", "onKeyDown", "(ILandroid/view/KeyEvent;)Z"), &[4, 5, 6]),
@@ -341,7 +420,22 @@ mod tests {
         if box_text(out) != committed {
             wrong.push(format!("dropping what was composed left {:?}", box_text(out)));
         }
+        deleting(out, wrong);
         shell("ime reset");
+    }
+
+    /// The test keyboard deletes before the cursor: an accent without its letter, whole emoji
+    /// counted in UTF-16 units, and in code points.
+    fn deleting(out: &Path, wrong: &mut Vec<String>) {
+        let before = box_text(out);
+        for (key, wanted) in [("G", "😀😀e\u{301}"), ("H", "😀😀e"), ("I", "😀"), ("J", "")] {
+            shell(&format!("input keyevent KEYCODE_{key}"));
+            settle(1);
+            let shown = box_text(out);
+            if shown != format!("{before}{wanted}") {
+                wrong.push(format!("after {key}: {shown:?}, not {before:?} and {wanted:?}"));
+            }
+        }
     }
 
     /// The document picker, from the folder Downloads: taps the card of the file `name`.
@@ -510,6 +604,12 @@ mod tests {
     }
 
     #[test]
+    fn xml_escapes_in_a_dump_are_undone() {
+        assert_eq!(unescaped("a&lt;b&amp;&quot;c&#128512;&#x1F600;"), "a<b&\"c😀😀");
+        assert_eq!(unescaped("&unknown; & &#xZZ; fine"), "&unknown; & &#xZZ; fine", "what isn't an escape stays");
+    }
+
+    #[test]
     fn adb_errors_from_a_dropped_emulator_are_told_apart() {
         let lost = ["error: device offline\n", "error: no devices/emulators found\n", "error: device 'emulator-5554' not found\n", "adb.exe: device 'emulator-5554' not found\r\n"];
         for lost in lost {
@@ -557,7 +657,7 @@ mod tests {
         drag_across(&out, "taut.example.parts2", &mut wrong);
         let log = String::from_utf8_lossy(&adb(&["logcat", "-d"])).into_owned();
         let _ = std::fs::write(out.join("logcat.txt"), &log);
-        assert!(!log.contains("FATAL EXCEPTION") && !log.contains("Fatal signal"), "an app crashed: see logcat.txt");
+        assert!(!crashed(&["taut.example.system", "taut.example.parts2"]), "an app crashed: see logcat.txt");
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 }

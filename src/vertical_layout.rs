@@ -11,7 +11,9 @@
 //! Fullwidth punctuation beside other such punctuation is set half width where the font has
 //! half-width forms (`vhal`), as Chrome trims it (CSS `text-spacing-trim: normal`): an opening
 //! bracket after another, a middle dot or a closing mark; a closing mark before another, a
-//! middle dot or a narrow closing mark. Not at a column's start or end.
+//! middle dot or a narrow closing mark. Not at a column's start or end. Full stops, commas,
+//! colons and quotation marks are of the kind their glyphs show in the font, as Chrome finds it
+//! (a Japanese font's full stop closes; a Traditional Chinese one's sits in the middle).
 //!
 //! A run set across is shaped as horizontal text. Wider than 1.1 em (Chrome's and EPUB's room),
 //! it takes the font's half, third or quarter width forms (`hwid`, `twid`, `qwid`) where they
@@ -67,10 +69,10 @@ pub(crate) struct Place {
 
 /// One step down a column: a cluster, or what stays together (a run set across one em, a ruby
 /// base with its reading). Its bytes, length along the column, glyphs and places, piece;
-/// whether a line may break before it; how much may be cut off its start and end (punctuation
-/// set half width beside other punctuation); and for a ruby step, how far its reading may reach
-/// over the steps before and after it, and how far right of the column's middle its em box
-/// ends.
+/// whether a line may break before it; its kind of punctuation, and how much may be cut off its
+/// start and end (punctuation set half width beside other punctuation); and for a ruby step,
+/// how far its reading may reach over the steps before and after it, and how far right of the
+/// column's middle its em box ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Step {
     pub bytes: [u32; 2],
@@ -79,6 +81,7 @@ pub(crate) struct Step {
     pub places: [u32; 2],
     pub piece: u32,
     pub chance: bool,
+    pub mark: Mark,
     pub cut: [f32; 2],
     pub reach: f32,
     pub over: f32,
@@ -174,7 +177,7 @@ impl Laid {
             self.add_piece(&fonts, at as u32, asked);
         }
         self.mark_cuts();
-        self.mark_chances();
+        self.mark_chances(asked.language);
         self.break_columns(asked.room);
     }
 
@@ -212,7 +215,7 @@ impl Laid {
         let system = system && fonts[1].is_some();
         let script = text.chars().find_map(Script::of).unwrap_or(Script::None);
         let mut shaped = Vec::new();
-        let halves = run.way == Way::Upright && crate::shaping::positions_with(font, b"vhal");
+        let spacing = crate::shaping::positions_with(font, b"vhal").then(|| Spacing::of(font, language)).flatten();
         match run.way {
             Way::Upright => _ = font.shape(&Plan::downward(font, script, language), text, &mut shaped),
             Way::Turned => _ = font.shape(&Plan::of(font, script, false, language), text, &mut shaped),
@@ -233,8 +236,9 @@ impl Laid {
                 glyph += 1;
             }
             self.push_step([*byte, end_byte], along, [first_glyph, self.glyphs.len() as u32], run.piece, wide);
-            if halves {
-                self.steps.last_mut().expect("just added").cut = [run.size / 2.0; 2];
+            if let Some(spacing) = &spacing {
+                let step = self.steps.last_mut().expect("just added");
+                (step.mark, step.cut) = (spacing.mark_of(self.text[*byte as usize..].chars().next().unwrap_or(' ')), if run.way == Way::Upright { [run.size / 2.0; 2] } else { [0.0; 2] });
             }
         }
     }
@@ -291,7 +295,8 @@ impl Laid {
     fn push_step(&mut self, bytes: [u32; 2], long: f32, glyphs: [u32; 2], piece: u32, wide: f32) {
         self.places.push(Place { bytes, rect: rect(-wide / 2.0, 0.0, wide, long) });
         let places = [self.places.len() as u32 - 1, self.places.len() as u32];
-        self.steps.push(Step { bytes, long, glyphs, places, piece, ..Step::default() });
+        let mark = mark_of(self.text[bytes[0] as usize..].chars().next().unwrap_or(' '));
+        self.steps.push(Step { bytes, long, glyphs, places, piece, mark, ..Step::default() });
     }
 }
 
@@ -381,9 +386,9 @@ impl Laid {
         let glyphs = [self.steps[first].glyphs[0], self.glyphs.len() as u32];
         let places = [self.steps[first].places[0], self.places.len() as u32];
         let reach = crate::ruby::reach(long - base_long, base_places, size);
-        let bytes = [given.words[0], given.reading[1] + 1];
+        let (bytes, mark) = ([given.words[0], given.reading[1] + 1], self.steps[first].mark);
         self.steps.truncate(first);
-        self.steps.push(Step { bytes, long, glyphs, places, piece, reach, over: across + (size / 2.0).ceil(), ..Step::default() });
+        self.steps.push(Step { bytes, long, glyphs, places, piece, mark, reach, over: across + (size / 2.0).ceil(), ..Step::default() });
     }
 
     /// Moves a stretch of steps' glyphs and places to stand one after another from the joined
@@ -424,10 +429,11 @@ impl Laid {
 
 // ---- punctuation set half width ----
 
-/// How a fullwidth punctuation mark sits in its em (CSS Text 4's text spacing classes, as a
-/// Japanese font has them), for trimming the space between such marks.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Mark {
+/// How a fullwidth punctuation mark sits in its em (CSS Text 4's text spacing classes), for
+/// trimming the space between such marks.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub(crate) enum Mark {
+    #[default]
     Other,
     Open,
     Close,
@@ -436,7 +442,70 @@ enum Mark {
     CloseNarrow,
 }
 
-/// The kind of mark a character is.
+/// How a font sets the marks whose kind depends on it, as Chrome finds it (`HanKerning`): its
+/// full stops and commas (、。，．), colon, semicolon, and whether its quotation marks (“‘”’) are
+/// fullwidth. (A Japanese font sets its full stops at the top of the em, a Traditional Chinese
+/// one centres them.)
+struct Spacing {
+    dot: Mark,
+    colon: Mark,
+    semicolon: Mark,
+    quotes_fullwidth: bool,
+}
+
+impl Spacing {
+    /// A font's, from its vertical glyphs' boxes in their ems: none where one of those marks is
+    /// not one glyph of its own (Chrome then trims none).
+    fn of(font: &FontFile, language: Language) -> Option<Spacing> {
+        const MARKS: &str = "\u{3001}\u{3002}\u{ff0c}\u{ff0e}\u{ff1a}\u{ff1b}\u{201c}\u{2018}\u{201d}\u{2019}";
+        let mut shaped = Vec::new();
+        font.shape(&Plan::downward(font, Script::None, language), MARKS, &mut shaped);
+        (shaped.len() == 10 && shaped.iter().enumerate().all(|(n, laid)| laid.from as usize == n)).then_some(())?;
+        let kinds = |from: usize, to: usize| kind_of(font, &shaped[from..to]);
+        let quotes_fullwidth = kinds(6, 8) == Mark::Open && kinds(8, 10) == Mark::Close;
+        Some(Spacing { dot: kinds(0, 4), colon: kinds(4, 5), semicolon: kinds(5, 6), quotes_fullwidth })
+    }
+
+    /// The kind of mark a character is in this font.
+    fn mark_of(&self, letter: char) -> Mark {
+        match letter as u32 {
+            0x3001 | 0x3002 | 0xff0c | 0xff0e => self.dot,
+            0xff1a => self.colon,
+            0xff1b => self.semicolon,
+            0x201c | 0x2018 if self.quotes_fullwidth => Mark::Open,
+            0x201d | 0x2019 if self.quotes_fullwidth => Mark::Close,
+            _ => mark_of(letter),
+        }
+    }
+}
+
+/// The kind of mark some glyphs set down a column all are, by where their ink lies in their em:
+/// in its top half, a closing mark; in its bottom half, an opening one; in its middle half, a
+/// middle one. `Other` where they differ in kind or advance (glyph 0 aside).
+fn kind_of(font: &FontFile, glyphs: &[crate::shaping::Laid]) -> Mark {
+    let mut drawn = glyphs.iter().filter(|laid| laid.glyph != 0);
+    let Some(first) = drawn.next() else { return Mark::Other };
+    let half = first.advance as f32 / 2.0;
+    let kind = |laid: &crate::shaping::Laid| {
+        // (Down from the pen: the glyph's origin is `offset` up from it.)
+        let [_, low, _, high] = font.sketch(laid.glyph, Placing([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])).reach;
+        let (top, bottom) = (-(laid.offset[1] as f32) - high, -(laid.offset[1] as f32) - low);
+        match () {
+            _ if bottom <= half => Mark::Close,
+            _ if top >= half => Mark::Open,
+            _ if bottom - top <= half && top >= half / 2.0 => Mark::Middle,
+            _ => Mark::Other,
+        }
+    };
+    let own = kind(first);
+    match drawn.all(|laid| laid.advance == first.advance && kind(laid) == own) {
+        true => own,
+        false => Mark::Other,
+    }
+}
+
+/// The kind of mark a character is in any font: full stops, commas and quotation marks as a
+/// Japanese font has them.
 fn mark_of(letter: char) -> Mark {
     match letter as u32 {
         0x3008 | 0x300a | 0x300c | 0x300e | 0x3010 | 0x3014 | 0x3016 | 0x3018 | 0x301a | 0x301d | 0xff08 | 0xff3b | 0xff5b | 0xff5f => Mark::Open,
@@ -453,7 +522,7 @@ impl Laid {
     /// beside other punctuation (see the module's notes): its start for an opening bracket, its
     /// end for a closing mark.
     fn mark_cuts(&mut self) {
-        let marks: Vec<Mark> = firsts(&self.text, &self.steps).into_iter().map(mark_of).collect();
+        let marks: Vec<Mark> = self.steps.iter().map(|step| step.mark).collect();
         for at in 0..self.steps.len() {
             let (before, after) = (at.checked_sub(1).map_or(Mark::Other, |before| marks[before]), marks.get(at + 1).copied().unwrap_or(Mark::Other));
             let start = marks[at] == Mark::Open && matches!(before, Mark::Open | Mark::Middle | Mark::Close | Mark::OpenNarrow);
@@ -476,12 +545,12 @@ impl Laid {
 impl Laid {
     /// Marks the steps a column may start at: where line breaking allows, and after a
     /// newline.
-    fn mark_chances(&mut self) {
+    fn mark_chances(&mut self, language: Language) {
         let mut chances = Vec::new();
         let mut start = 0;
         let mut first = 0;
         for paragraph in self.text.split('\n') {
-            crate::line_breaks::break_chances(paragraph, &mut chances);
+            crate::line_breaks::break_chances(paragraph, language.chinese(), &mut chances);
             let end = start + paragraph.len();
             while let Some(step) = self.steps.get_mut(first).filter(|step| step.bytes[0] as usize <= end) {
                 let at = step.bytes[0] as usize;
@@ -503,7 +572,7 @@ impl Laid {
             let long = self.steps[at].long - cut - self.steps[at].cut[1];
             let shown = !self.text[self.steps[at].bytes[0] as usize..].starts_with([' ', '\n']);
             if at > start && shown && top + long > room + 0.01 {
-                let chance = (start + 1..=at).rev().find(|n| self.steps[*n].chance).unwrap_or(at);
+                let chance = (start + 1..=at).rev().find(|n| self.steps[*n].chance).unwrap_or_else(|| self.forced_break(start, at, room));
                 self.end_column(start, chance);
                 (start, at, end) = (chance, chance, 0.0);
                 continue;
@@ -527,8 +596,20 @@ impl Laid {
     /// readings reaching past its right edge take the room the column before leaves free
     /// beyond its text's em boxes; the rest is added at its right (as Chrome does).
     fn end_column(&mut self, from: usize, to: usize) {
-        let (mut tops, mut end) = (Vec::with_capacity(to - from), 0.0);
-        let mut ends = Vec::with_capacity(to - from);
+        let (tops, long) = self.column_of(from, to);
+        let empty = self.lines.last().copied().unwrap_or(0.0);
+        let wide = (from..to).map(|at| self.lines[self.steps[at].piece as usize]).fold(if from == to { empty } else { 0.0 }, f32::max);
+        let over = (from..to).map(|at| self.steps[at].over).fold(0.0, f32::max);
+        let free = self.columns.last().map_or(0.0, |before| before.wide / 2.0 - self.em_half(before));
+        let room = (over - wide / 2.0).max(0.0);
+        let room = if room > 0.0 { (room - free).max(0.0) } else { 0.0 };
+        self.columns.push(Column { steps: [from as u32, to as u32], wide, room, tops, long });
+    }
+
+    /// Where a column of steps `from` to `to` sets each step's top, and its length to its last
+    /// shown step: its first not trimmed at its start, its last not at its end.
+    fn column_of(&self, from: usize, to: usize) -> (Vec<f32>, f32) {
+        let (mut tops, mut ends, mut end) = (Vec::with_capacity(to - from), Vec::with_capacity(to - from), 0.0);
         for at in from..to {
             let top = if at == from { 0.0 } else { end - self.overlap(at - 1) };
             let [start, cut] = self.cuts(at, from, to);
@@ -537,14 +618,14 @@ impl Laid {
             ends.push(end);
         }
         let shown = (from..to).rev().find(|at| !self.text[self.steps[*at].bytes[0] as usize..].starts_with([' ', '\n']));
-        let long = shown.map_or(0.0, |at| ends[at - from]);
-        let empty = self.lines.last().copied().unwrap_or(0.0);
-        let wide = (from..to).map(|at| self.lines[self.steps[at].piece as usize]).fold(if from == to { empty } else { 0.0 }, f32::max);
-        let over = (from..to).map(|at| self.steps[at].over).fold(0.0, f32::max);
-        let free = self.columns.last().map_or(0.0, |before| before.wide / 2.0 - self.em_half(before));
-        let room = (over - wide / 2.0).max(0.0);
-        let room = if room > 0.0 { (room - free).max(0.0) } else { 0.0 };
-        self.columns.push(Column { steps: [from as u32, to as u32], wide, room, tops, long });
+        (tops, shown.map_or(0.0, |at| ends[at - from]))
+    }
+
+    /// Where a column from step `start` breaks with no chance to: before step `at`, which does
+    /// not fit, or earlier where the step then last, no longer trimmed at its end, would not fit
+    /// either. (At least one step a column.)
+    fn forced_break(&self, start: usize, at: usize, room: f32) -> usize {
+        (start + 2..=at).rev().find(|to| self.column_of(start, *to).1 <= room + 0.01).unwrap_or(start + 1)
     }
 
     /// How far a column's text reaches either side of its middle: half its largest em, rounded
@@ -639,6 +720,88 @@ mod tests {
         // A word longer than a column breaks where it must.
         let laid = self::laid(&[("AAAAAAAAA", "", false)], 2000.0, 0);
         assert_eq!(columns(&laid), ["AAAA", "AAAA", "A"]);
+    }
+
+    #[test]
+    fn a_column_broken_where_it_must_keeps_within_its_room_after_a_trimmed_mark() {
+        // Closing brackets an em long, each trimmed half an em at its end beside the next: seven
+        // reach 3.5 em, but broken where it must, the last of a column is set whole again, so
+        // six go to the first column (five halves and a whole), not seven.
+        let mut laid = laid(&[("\u{300d}\u{300d}\u{300d}\u{300d}\u{300d}\u{300d}\u{300d}\u{300d}", "", false)], f32::INFINITY, 0);
+        laid.steps.iter_mut().for_each(|step| (step.cut, step.chance) = ([512.0; 2], false));
+        laid.mark_cuts();
+        laid.break_columns(3.5 * 1024.0);
+        assert!(laid.columns.iter().all(|column| column.long <= 3.5 * 1024.0), "{:?}", laid.columns.iter().map(|column| column.long).collect::<Vec<_>>());
+        assert_eq!(laid.columns[0].steps, [0, 6]);
+    }
+
+    #[test]
+    fn full_stops_colons_and_quotes_take_the_kind_their_font_gives_them() {
+        // As Chrome finds them: in a Japanese font, full stops close (at the em's top in a
+        // column) and colons sit in the middle; quotes are proportional, so narrow.
+        // In a font that centres them for Traditional Chinese (Noto Sans CJK does, by `locl`),
+        // full stops sit in the middle there.
+        let Some(file) = crate::vertical_text::system_font().filter(|file| crate::shaping::positions_with(file, b"vhal")) else {
+            return eprintln!("no system CJK font with vhal here: not tested");
+        };
+        let spacing = Spacing::of(&file, Language::named("ja")).expect("one glyph each");
+        assert_eq!((spacing.dot, spacing.colon, spacing.mark_of('\u{3002}'), spacing.mark_of('\u{201c}')), (Mark::Close, Mark::Middle, Mark::Close, Mark::OpenNarrow));
+        let traditional = Language::named("zh-Hant");
+        if crate::shaping::local(&file, '\u{3002}', traditional) != file.glyph('\u{3002}') {
+            assert_eq!(Spacing::of(&file, traditional).map(|spacing| spacing.dot), Some(Mark::Middle));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn punctuation_and_breaks_lie_where_chrome_sets_them_in_japanese_and_chinese() {
+        // Punctuation beside punctuation, trimmed as each font's glyphs make it; and columns
+        // three ems long, which may break before 〜 and ゠ in Chinese and Japanese. Each
+        // character's length down its column, and which column it is in.
+        let Some(browser) = crate::browser_check::browser() else { return eprintln!("no Edge or Chrome here: not compared") };
+        let lines = [("あ。」い", 1000.0), ("あ、「い", 1000.0), ("い：「う", 1000.0), ("う；「え", 1000.0), ("（。）、・「", 1000.0), ("あいう〜え", 120.0), ("あいう゠え", 120.0)];
+        let folder = std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_default()).join("Fonts");
+        let (mut compared, mut wrong) = (0, Vec::new());
+        for (file, language) in [("YuGothR.ttc", "ja"), ("msjh.ttc", "zh-Hant"), ("msyh.ttc", "zh-Hans")] {
+            let path = folder.join(file);
+            if !path.exists() {
+                continue;
+            }
+            let url = path.to_string_lossy().replace('\\', "/");
+            let mut html = format!(
+                "<!doctype html><meta charset=utf-8><style>@font-face {{ font-family: Probe; src: url('file:///{url}'); }} body {{ margin: 0; }} .probe {{ writing-mode: vertical-rl; font: 40px/60px Probe; }}</style>"
+            );
+            lines.iter().for_each(|(line, high)| html += &format!("<div class=probe lang={language} style='height: {high}px'>{line}</div>"));
+            for ((line, high), theirs) in lines.iter().zip(crate::browser_check::character_boxes(&browser, &html)) {
+                let mut text = AppFonts::new(FontFile::open(&path).expect("the font is read"));
+                let mut laid = Laid::default();
+                laid.add(line, Font::new(40.0), Color::NONE, "");
+                laid.lay(&mut text, None, Asked { language: Language::named(language), digits: 0, room: *high });
+                let ours: Vec<(usize, f32)> = laid
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(n, column)| (column.steps[0]..column.steps[1]).map(move |at| (n, at as usize, column)))
+                    .map(|(n, at, column)| {
+                        let [start, end] = laid.cuts(at, column.steps[0] as usize, column.steps[1] as usize);
+                        (n, laid.steps[at].long - start - end)
+                    })
+                    .collect();
+                // (Chrome's columns, right to left.)
+                let mut lefts: Vec<i32> = theirs.iter().map(|[left, ..]| left.round() as i32).collect();
+                lefts.sort_unstable_by(|one, other| other.cmp(one));
+                lefts.dedup();
+                let chrome: Vec<(usize, f32)> = theirs.iter().map(|[left, _, _, high]| (lefts.iter().position(|x| *x == left.round() as i32).unwrap_or(0), *high)).collect();
+                let same = ours.len() == chrome.len() && ours.iter().zip(&chrome).all(|((column, long), (their_column, their_long))| column == their_column && (long - their_long).abs() <= 1.0);
+                if !same {
+                    println!("  {file} ({language}), {line}: ours {ours:?}, Chrome's {chrome:?}");
+                    wrong.push(line);
+                }
+                compared += 1;
+            }
+        }
+        println!("{compared} lines compared with {}, {} differ", browser.display(), wrong.len());
+        assert!(wrong.is_empty(), "{} lines lie elsewhere than in Chrome", wrong.len());
     }
 
     #[test]

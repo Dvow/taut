@@ -4,86 +4,41 @@
 //! GPU draws large parts into the picture itself). A frame blits the whole picture into the swap
 //! chain's next image, inside the window's insets, the theme's background around it, and presents
 //! it naming the places that changed (`VK_KHR_incremental_present`), in step with the screen
-//! (FIFO). The blit only reorders the channels where the swap chain's images are RGBA: the pixels
+//! (FIFO). The blit only reorders the channels where the swap chain's images are BGRA: the pixels
 //! shown are the CPU's, byte for byte.
 //!
 //! - The surface is the activity's window (`VK_KHR_android_surface`). It goes with the window
 //!   (the activity paused, or gone); the device stays, and the next window gets a new surface.
-//! - Swap chains are made with no transform of their own: on a turned screen the compositor turns
-//!   the frames (and says `VK_SUBOPTIMAL_KHR`, which is no reason to make them again).
-//! - The loader (`libvulkan.so`) is opened when the window first asks for the GPU.
+//! - Swap chains take the window's own RGBA where they can, so the CPU finds the window as it
+//!   left it if the GPU is given up. They are made with no transform of their own: on a turned
+//!   screen the compositor turns the frames (and says `VK_SUBOPTIMAL_KHR`, which is no reason to
+//!   make them again).
+//! - The loader (`libvulkan.so`) is opened when the window first asks for the GPU. What X11's
+//!   path shares is `gpu_vulkan`'s.
 //!
 //! `Auto` takes a device only where it is not the CPU at work (SwiftShader).
 use crate::gpu_android::Block;
+use crate::gpu_vulkan::{Chain, Vulkan};
 use crate::vk::*;
-use std::ffi::{CStr, c_char, c_void};
-use std::ptr::{null, null_mut};
+use std::ffi::c_void;
+use std::ptr::null;
 
-functions!(Global {
-    vkCreateInstance: fn(*const VkInstanceCreateInfo, *const c_void, *mut Object) -> i32;
-    vkEnumerateInstanceExtensionProperties: fn(*const c_char, *mut u32, *mut VkExtensionProperties) -> i32;
-});
-
-functions!(Instance {
-    vkDestroyInstance: fn(Object, *const c_void);
-    vkEnumeratePhysicalDevices: fn(Object, *mut u32, *mut Object) -> i32;
-    vkGetPhysicalDeviceProperties: fn(Object, *mut VkPhysicalDeviceProperties);
-    vkGetPhysicalDeviceQueueFamilyProperties: fn(Object, *mut u32, *mut VkQueueFamilyProperties);
-    vkGetPhysicalDeviceMemoryProperties: fn(Object, *mut VkPhysicalDeviceMemoryProperties);
-    vkGetPhysicalDeviceFormatProperties: fn(Object, u32, *mut VkFormatProperties);
-    vkEnumerateDeviceExtensionProperties: fn(Object, *const c_char, *mut u32, *mut VkExtensionProperties) -> i32;
-    vkCreateDevice: fn(Object, *const VkDeviceCreateInfo, *const c_void, *mut Object) -> i32;
-    vkGetDeviceProcAddr: fn(Object, *const c_char) -> *const c_void;
+functions!(AndroidCalls {
     vkCreateAndroidSurfaceKHR: fn(Object, *const VkAndroidSurfaceCreateInfoKHR, *const c_void, *mut Handle) -> i32;
-    vkDestroySurfaceKHR: fn(Object, Handle, *const c_void);
-    vkGetPhysicalDeviceSurfaceSupportKHR: fn(Object, u32, Handle, *mut u32) -> i32;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR: fn(Object, Handle, *mut VkSurfaceCapabilitiesKHR) -> i32;
-    vkGetPhysicalDeviceSurfaceFormatsKHR: fn(Object, Handle, *mut u32, *mut VkSurfaceFormatKHR) -> i32;
+    vkGetPhysicalDeviceFormatProperties: fn(Object, u32, *mut VkFormatProperties);
 });
 
-functions!(Device {
-    vkDestroyDevice: fn(Object, *const c_void);
-    vkGetDeviceQueue: fn(Object, u32, u32, *mut Object);
-    vkDeviceWaitIdle: fn(Object) -> i32;
-    vkQueueWaitIdle: fn(Object) -> i32;
-    vkQueueSubmit: fn(Object, u32, *const VkSubmitInfo, Handle) -> i32;
-    vkCreateSwapchainKHR: fn(Object, *const VkSwapchainCreateInfoKHR, *const c_void, *mut Handle) -> i32;
-    vkDestroySwapchainKHR: fn(Object, Handle, *const c_void);
-    vkGetSwapchainImagesKHR: fn(Object, Handle, *mut u32, *mut Handle) -> i32;
-    vkAcquireNextImageKHR: fn(Object, Handle, u64, Handle, Handle, *mut u32) -> i32;
-    vkQueuePresentKHR: fn(Object, *const VkPresentInfoKHR) -> i32;
-    vkCreateBuffer: fn(Object, *const VkBufferCreateInfo, *const c_void, *mut Handle) -> i32;
-    vkDestroyBuffer: fn(Object, Handle, *const c_void);
-    vkGetBufferMemoryRequirements: fn(Object, Handle, *mut VkMemoryRequirements);
+functions!(PictureCalls {
     vkCreateImage: fn(Object, *const VkImageCreateInfo, *const c_void, *mut Handle) -> i32;
     vkDestroyImage: fn(Object, Handle, *const c_void);
     vkGetImageMemoryRequirements: fn(Object, Handle, *mut VkMemoryRequirements);
-    vkAllocateMemory: fn(Object, *const VkMemoryAllocateInfo, *const c_void, *mut Handle) -> i32;
-    vkFreeMemory: fn(Object, Handle, *const c_void);
-    vkBindBufferMemory: fn(Object, Handle, Handle, u64) -> i32;
     vkBindImageMemory: fn(Object, Handle, Handle, u64) -> i32;
-    vkMapMemory: fn(Object, Handle, u64, u64, u32, *mut *mut c_void) -> i32;
-    vkCreateCommandPool: fn(Object, *const VkCommandPoolCreateInfo, *const c_void, *mut Handle) -> i32;
-    vkDestroyCommandPool: fn(Object, Handle, *const c_void);
-    vkAllocateCommandBuffers: fn(Object, *const VkCommandBufferAllocateInfo, *mut Object) -> i32;
-    vkFreeCommandBuffers: fn(Object, Handle, u32, *const Object);
-    vkBeginCommandBuffer: fn(Object, *const VkCommandBufferBeginInfo) -> i32;
-    vkEndCommandBuffer: fn(Object) -> i32;
-    vkCmdPipelineBarrier: fn(Object, u32, u32, u32, u32, *const c_void, u32, *const c_void, u32, *const VkImageMemoryBarrier);
-    vkCmdCopyBufferToImage: fn(Object, Handle, Handle, u32, u32, *const VkBufferImageCopy);
     vkCmdClearColorImage: fn(Object, Handle, u32, *const [f32; 4], u32, *const [u32; 5]);
     vkCmdBlitImage: fn(Object, Handle, u32, Handle, u32, u32, *const VkImageBlit, u32);
-    vkCreateSemaphore: fn(Object, *const VkSemaphoreCreateInfo, *const c_void, *mut Handle) -> i32;
-    vkDestroySemaphore: fn(Object, Handle, *const c_void);
-    vkCreateFence: fn(Object, *const VkFenceCreateInfo, *const c_void, *mut Handle) -> i32;
-    vkDestroyFence: fn(Object, Handle, *const c_void);
-    vkWaitForFences: fn(Object, u32, *const Handle, u32, u64) -> i32;
-    vkResetFences: fn(Object, u32, *const Handle) -> i32;
 });
 
-/// Vulkan 1.1, as `VK_MAKE_API_VERSION` makes it.
-const VULKAN_1_1: u32 = (1 << 22) | (1 << 12);
-/// The swap chain's pixels where they are red first (the format every Android device offers).
+/// The swap chain's pixels where they are red first, as the window's are (the format every
+/// Android device offers).
 const R8G8B8A8_UNORM: u32 = 37;
 /// Formats a blit reads from, and writes to (`VK_FORMAT_FEATURE_BLIT_SRC_BIT`, `_DST_BIT`).
 const BLITS_FROM: u32 = 0x400;
@@ -94,10 +49,18 @@ const SURFACE_LOST: i32 = -1_000_000_000;
 /// for lost: ten seconds, in nanoseconds (the CPU at work draws a whole window in more than one).
 const WAITED: u64 = 10_000_000_000;
 
-/// The instance of Vulkan, with the functions it offers.
-struct Vulkan {
-    instance: Object,
-    calls: Instance,
+/// The GPU the window is shown through: one device and queue.
+pub(crate) type Gpu = crate::gpu_vulkan::Gpu<Pictures>;
+
+/// The window shown through Vulkan.
+pub(crate) type Shows = crate::gpu_vulkan::Shows<Picture>;
+
+/// What Android keeps of the GPU: the functions making surfaces and pictures and blitting them,
+/// and the kinds of the GPU's own memory (one bit each).
+pub(crate) struct Pictures {
+    surfaces: AndroidCalls,
+    calls: PictureCalls,
+    local: u32,
 }
 
 /// A device that can show the window: its queue family (one that draws, so it blits), and
@@ -108,186 +71,109 @@ struct Chosen {
     cpu: bool,
 }
 
-/// The GPU the window is shown through: one device and queue.
-pub(crate) struct Gpu {
-    vulkan: Vulkan,
-    on: Device,
-    chosen: Chosen,
-    device: Object,
-    queue: Object,
-    pool: Handle,
-    /// The kinds of memory the CPU writes and the GPU reads, and of the GPU's own: one bit each.
-    writable: u32,
-    local: u32,
-    /// Presents name the places that changed.
-    regions: bool,
-    /// The device was lost, or failed: all of it is to be let go.
-    pub(crate) lost: bool,
-    /// Where the GPU draws the window too, what it records to, and what it draws with: not yet
-    /// tried, or what that gave (see `gpu_draw`).
-    #[cfg(feature = "gpu-draw")]
-    pub(crate) drawing: crate::gpu_draw::Drawing,
-    #[cfg(feature = "gpu-draw")]
-    pub(crate) list: Box<crate::gpu_draw::DrawList>,
-    #[cfg(feature = "gpu-draw")]
-    pipeline: Option<Option<Box<crate::gpu_draw_vulkan::Pipeline>>>,
-    /// Tests: every call from now on says the device was lost.
-    #[cfg(test)]
-    faked: bool,
-}
-
-/// The window shown through Vulkan: its surface and swap chain, its pixels and picture, and what
-/// was put into them since the last frame.
-pub(crate) struct Shows {
-    surface: Handle,
-    swapchain: Handle,
-    images: Vec<Image>,
-    /// Signalled once an image is had.
-    acquired: Handle,
-    /// The pixels, `size` big, in a buffer the CPU writes (mapped at `pixels`); and the picture,
-    /// the same size on the GPU, which is `fresh` (all of it to be copied in) until first filled.
-    /// Both are `new` until all of the window is drawn into them.
-    size: [i32; 2],
-    buffer: Handle,
+/// What the window keeps besides its pixels: its picture, an image of them on the GPU, which is
+/// `fresh` (all of it to be copied in) until first filled; both are `new` until all of the window
+/// is drawn into them. The window's size, where the pixels lie in it (left, top), and the colour
+/// around them. The places put into the pixels and not yet into the picture, and those changed
+/// since the last frame (left, top, right, bottom in the pixels); everything is to be shown
+/// (`whole`), not only those.
+pub(crate) struct Picture {
+    image: Handle,
     memory: Handle,
-    pixels: *mut u32,
-    picture: Handle,
-    picture_memory: Handle,
     fresh: bool,
     new: bool,
-    /// The window's size, where the pixels lie in it (left, top), and the colour around them.
     window: [i32; 2],
     at: [i32; 2],
     background: u32,
-    /// The commands of a frame, and the fence of their last run, not yet waited for if `busy`.
-    commands: Object,
-    fence: Handle,
-    busy: bool,
-    /// The swap chain no longer fits the window: it is made again before the next frame.
-    remake: bool,
-    /// The window went: its surface is to be let go.
-    pub(crate) gone: bool,
-    /// The places put into the buffer and not yet into the picture; and those changed since
-    /// the last frame (left, top, right, bottom in the pixels).
     pending: Vec<[i32; 4]>,
     changed: Vec<[i32; 4]>,
-    /// Everything is to be shown, not only the places that changed.
     whole: bool,
+    /// The window went: its surface is to be let go.
+    gone: bool,
     /// Tests: the places the last frame named.
     #[cfg(test)]
     named: Vec<[i32; 4]>,
 }
 
-/// An image of a swap chain, and the semaphore signalled once its blit is done.
-#[derive(Clone, Copy)]
-struct Image {
-    image: Handle,
-    drawn: Handle,
+impl Default for Picture {
+    fn default() -> Picture {
+        Picture {
+            image: 0,
+            memory: 0,
+            fresh: true,
+            new: true,
+            window: [0; 2],
+            at: [0; 2],
+            background: 0xff00_0000,
+            pending: Vec::new(),
+            changed: Vec::new(),
+            whole: true,
+            gone: false,
+            #[cfg(test)]
+            named: Vec::new(),
+        }
+    }
 }
 
 impl Shows {
     /// How much of the pixels (width, height) shows in the window, from where they lie.
     fn shown(&self) -> [i32; 2] {
-        [0, 1].map(|axis| self.size[axis].min(self.window[axis] - self.at[axis]).max(0))
+        [0, 1].map(|axis| self.size[axis].min(self.system.window[axis] - self.system.at[axis]).max(0))
     }
 
     /// Whether all of the window is to be drawn (its pixels are new); asked once.
     pub(crate) fn take_whole(&mut self) -> bool {
-        std::mem::take(&mut self.new)
+        std::mem::take(&mut self.system.new)
+    }
+
+    /// Whether the window went: its surface is to be let go.
+    pub(crate) fn gone(&self) -> bool {
+        self.system.gone
     }
 }
 
-impl Vulkan {
-    /// Opens the loader and makes an instance that shows Android windows. Nothing where any of
-    /// it is missing.
-    fn open() -> Option<Vulkan> {
-        let get = loader()?;
-        // SAFETY: the instance is null or Vulkan's.
-        let find = move |instance: Object, name: &CStr| unsafe { get(instance, name.as_ptr()) };
-        let global = Global::load(&mut |name| find(null_mut(), name)).ok()?;
-        // SAFETY: Vulkan's documented enumeration.
-        let offers = |name| offered(|count, list| unsafe { (global.vkEnumerateInstanceExtensionProperties)(null(), count, list) }, name);
-        if !offers(c"VK_KHR_surface") || !offers(c"VK_KHR_android_surface") {
-            return None;
-        }
-        let instance = instance(&global, &[c"VK_KHR_surface".as_ptr(), c"VK_KHR_android_surface".as_ptr()])?;
-        let Ok(calls) = Instance::load(&mut |name| find(instance, name)) else {
-            let destroy = find(instance, c"vkDestroyInstance");
-            // SAFETY: the instance was just made, and nothing of it is used after.
-            if !destroy.is_null() {
-                unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn(Object, *const c_void)>(destroy)(instance, null()) };
-            }
-            return None;
-        };
-        Some(Vulkan { instance, calls })
-    }
-
-    /// A surface on `window` (an `ANativeWindow`); nothing where none is made.
-    fn surface(&self, window: *mut c_void) -> Option<Handle> {
-        let (asked, mut surface) = (VkAndroidSurfaceCreateInfoKHR { kind: 1_000_008_000, window, ..Default::default() }, 0);
-        // SAFETY: the window is alive (the caller's); Vulkan fills in one handle.
-        let made = unsafe { (self.calls.vkCreateAndroidSurfaceKHR)(self.instance, &asked, null(), &mut surface) };
-        (made == 0).then_some(surface)
-    }
-
-    /// The device and queue family best showing `window` (an `ANativeWindow`, alive), asked
-    /// through a surface made on it for the question: a GPU before the CPU at work; unless
-    /// `any`, only a GPU.
-    fn choose(&self, window: *mut c_void, any: bool) -> Option<Chosen> {
-        let surface = self.surface(window)?;
-        // SAFETY: Vulkan's documented enumeration.
-        let devices = listed(null_mut(), |count, list| unsafe { (self.calls.vkEnumeratePhysicalDevices)(self.instance, count, list) });
-        let usable = devices.into_iter().filter_map(|physical| self.chosen(physical, surface));
-        let chosen = usable.filter(|chosen| any || !chosen.cpu).min_by_key(|chosen| chosen.cpu);
-        // SAFETY: the surface was made here, and is not used after.
-        unsafe { (self.calls.vkDestroySurfaceKHR)(self.instance, surface, null()) };
-        chosen
-    }
-
-    /// What device `physical` is, where it can show `surface`: a queue family that draws and
-    /// presents to it, swap chains, and blits from the window's picture.
-    fn chosen(&self, physical: Object, surface: Handle) -> Option<Chosen> {
-        let calls = &self.calls;
-        // SAFETY: Vulkan's documented enumerations and questions, of the instance's device.
-        let swaps = offered(|count, list| unsafe { (calls.vkEnumerateDeviceExtensionProperties)(physical, null(), count, list) }, c"VK_KHR_swapchain");
-        let families = listed(VkQueueFamilyProperties::default(), |count, list| {
-            unsafe { (calls.vkGetPhysicalDeviceQueueFamilyProperties)(physical, count, list) };
-            0
-        });
-        let presents = |at: usize| {
-            let mut supported = 0;
-            unsafe { (calls.vkGetPhysicalDeviceSurfaceSupportKHR)(physical, at as u32, surface, &mut supported) };
-            supported != 0
-        };
-        // (Graphics: 0x1.)
-        let family = (0..families.len()).find(|at| families[*at].count > 0 && families[*at].flags & 0x1 != 0 && presents(*at)).filter(|_| swaps)? as u32;
-        let mut properties = VkPhysicalDeviceProperties::default();
-        let mut picture = VkFormatProperties::default();
-        // SAFETY: Vulkan fills in both.
-        unsafe {
-            (calls.vkGetPhysicalDeviceProperties)(physical, &mut properties);
-            (calls.vkGetPhysicalDeviceFormatProperties)(physical, B8G8R8A8_UNORM, &mut picture);
-        }
-        (picture.optimal & BLITS_FROM != 0).then_some(Chosen { physical, family, cpu: properties.device_type == 4 })
-    }
+/// A surface of `vulkan` on `window` (an `ANativeWindow`); nothing where none is made.
+fn surface(vulkan: &Vulkan, surfaces: &AndroidCalls, window: *mut c_void) -> Option<Handle> {
+    let (asked, mut surface) = (VkAndroidSurfaceCreateInfoKHR { kind: 1_000_008_000, window, ..Default::default() }, 0);
+    // SAFETY: the window is alive (the caller's); Vulkan fills in one handle.
+    let made = unsafe { (surfaces.vkCreateAndroidSurfaceKHR)(vulkan.instance, &asked, null(), &mut surface) };
+    (made == 0).then_some(surface)
 }
 
-impl Drop for Vulkan {
-    fn drop(&mut self) {
-        // SAFETY: nothing made from it is used after (surfaces and devices went first).
-        unsafe { (self.calls.vkDestroyInstance)(self.instance, null()) };
-    }
+/// Whether device `physical` blits images of `format` laid out for the GPU in the way `wanted`
+/// says (`BLITS_FROM`, `BLITS_TO`).
+fn blits(surfaces: &AndroidCalls, physical: Object, format: u32, wanted: u32) -> bool {
+    let mut properties = VkFormatProperties::default();
+    // SAFETY: Vulkan fills in the format's properties.
+    unsafe { (surfaces.vkGetPhysicalDeviceFormatProperties)(physical, format, &mut properties) };
+    properties.optimal & wanted != 0
 }
 
-/// An instance with `extensions`, of Vulkan 1.1 where the loader takes it, else 1.0.
-fn instance(global: &Global, extensions: &[*const c_char]) -> Option<Object> {
-    [VULKAN_1_1, 1 << 22].into_iter().find_map(|api| {
-        let application = VkApplicationInfo { kind: 0, api_version: api, ..Default::default() };
-        let asked = VkInstanceCreateInfo { kind: 1, application: &application, extension_count: extensions.len() as u32, extensions: extensions.as_ptr(), ..Default::default() };
-        let mut instance = null_mut();
-        // SAFETY: Vulkan's documented call; the names end in zeros.
-        (unsafe { (global.vkCreateInstance)(&asked, null(), &mut instance) } == 0).then_some(instance)
-    })
+/// The device and queue family best showing `window` (an `ANativeWindow`, alive), asked through
+/// a surface made on it for the question, and whether it is the CPU at work: a GPU before the
+/// CPU; unless `any`, only a GPU.
+fn choose(vulkan: &Vulkan, surfaces: &AndroidCalls, window: *mut c_void, any: bool) -> Option<Chosen> {
+    let surface = surface(vulkan, surfaces, window)?;
+    let usable = vulkan.devices().into_iter().filter_map(|physical| chosen(vulkan, surfaces, physical, surface));
+    let chosen = usable.filter(|chosen| any || !chosen.cpu).min_by_key(|chosen| chosen.cpu);
+    vulkan.destroy(surface);
+    chosen
+}
+
+/// What device `physical` is, where it can show `surface`: a queue family that draws and
+/// presents to it, swap chains, and blits from the window's picture.
+fn chosen(vulkan: &Vulkan, surfaces: &AndroidCalls, physical: Object, surface: Handle) -> Option<Chosen> {
+    let families = vulkan.families(physical);
+    let presents = |at: usize| {
+        let mut supported = 0;
+        // SAFETY: Vulkan's documented question, of the instance's device and the surface.
+        unsafe { (vulkan.calls.vkGetPhysicalDeviceSurfaceSupportKHR)(physical, at as u32, surface, &mut supported) };
+        supported != 0
+    };
+    // (Graphics: 0x1.)
+    let family = (0..families.len()).find(|at| families[*at].count > 0 && families[*at].flags & 0x1 != 0 && presents(*at)).filter(|_| vulkan.offers(physical, c"VK_KHR_swapchain"))? as u32;
+    let cpu = vulkan.properties(physical).device_type == 4;
+    blits(surfaces, physical, B8G8R8A8_UNORM, BLITS_FROM).then_some(Chosen { physical, family, cpu })
 }
 
 impl Gpu {
@@ -298,92 +184,22 @@ impl Gpu {
     /// # Safety
     /// `window` is an `ANativeWindow`, alive until the window is let go of (`forget`).
     pub(crate) unsafe fn open(window: *mut c_void, any: bool) -> Option<(Gpu, Shows)> {
-        let vulkan = Vulkan::open()?;
-        let chosen = vulkan.choose(window, any)?;
-        #[cfg(feature = "gpu-draw")]
-        let cpu = chosen.cpu;
-        let mut gpu = Gpu::make(vulkan, chosen)?;
+        let (vulkan, _) = Vulkan::open(&[c"VK_KHR_surface", c"VK_KHR_android_surface"])?;
+        let surfaces = AndroidCalls::load(&mut |name| vulkan.function(name)).ok()?;
+        let chosen = choose(&vulkan, &surfaces, window, any)?;
+        let mut memory = VkPhysicalDeviceMemoryProperties::default();
+        // SAFETY: Vulkan fills in the device's memory.
+        unsafe { (vulkan.calls.vkGetPhysicalDeviceMemoryProperties)(chosen.physical, &mut memory) };
+        let local = kinds(&memory, DEVICE_LOCAL);
+        let pictures = move |find: &mut dyn FnMut(&std::ffi::CStr) -> *const c_void| Some(Pictures { surfaces, calls: PictureCalls::load(find).ok()?, local });
+        let mut gpu = Gpu::make(vulkan, (chosen.physical, chosen.family), WAITED, pictures)?;
         #[cfg(feature = "gpu-draw")]
         {
-            gpu.drawing = crate::gpu_draw::Drawing::chosen(!any, !cpu, crate::platform::setting("TAUT_DRAW").as_deref());
+            gpu.drawing = crate::gpu_draw::Drawing::chosen(!any, !chosen.cpu, crate::platform::setting("TAUT_DRAW").as_deref());
         }
         // SAFETY: as the caller promises.
         let shows = unsafe { gpu.window(window) }?;
         Some((gpu, shows))
-    }
-
-    /// A device on `chosen`, with its queue and a pool of commands. Nothing where any of it
-    /// can't be made.
-    fn make(vulkan: Vulkan, chosen: Chosen) -> Option<Gpu> {
-        let (calls, physical, family) = (&vulkan.calls, chosen.physical, chosen.family);
-        // SAFETY: Vulkan's documented enumeration.
-        let regions = offered(|count, list| unsafe { (calls.vkEnumerateDeviceExtensionProperties)(physical, null(), count, list) }, c"VK_KHR_incremental_present");
-        let extensions = [c"VK_KHR_swapchain".as_ptr(), c"VK_KHR_incremental_present".as_ptr()];
-        let priority = 1.0f32;
-        let queue = VkDeviceQueueCreateInfo { kind: 2, family, count: 1, priorities: &priority, ..Default::default() };
-        let count = if regions { 2 } else { 1 };
-        let asked = VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: count, extensions: extensions.as_ptr(), ..Default::default() };
-        let (mut device, mut memory) = (null_mut(), VkPhysicalDeviceMemoryProperties::default());
-        // SAFETY: Vulkan fills in the device's memory, and makes the device; the names end in
-        // zeros.
-        unsafe {
-            (calls.vkGetPhysicalDeviceMemoryProperties)(physical, &mut memory);
-            if (calls.vkCreateDevice)(physical, &asked, null(), &mut device) != 0 {
-                return None;
-            }
-        }
-        let find = calls.vkGetDeviceProcAddr;
-        // SAFETY: the device was just made.
-        let on = Device::load(&mut |name| unsafe { find(device, name.as_ptr()) });
-        let Ok(on) = on else { return Gpu::unmade(find, device) };
-        let mut gpu = Gpu {
-            vulkan,
-            on,
-            chosen,
-            device,
-            queue: null_mut(),
-            pool: 0,
-            writable: kinds(&memory, HOST_VISIBLE_AND_COHERENT),
-            local: kinds(&memory, DEVICE_LOCAL),
-            regions,
-            lost: false,
-            #[cfg(feature = "gpu-draw")]
-            drawing: crate::gpu_draw::Drawing::Never,
-            #[cfg(feature = "gpu-draw")]
-            list: Box::default(),
-            #[cfg(feature = "gpu-draw")]
-            pipeline: None,
-            #[cfg(test)]
-            faked: false,
-        };
-        let pool = VkCommandPoolCreateInfo { kind: 39, flags: 0x2, family, ..Default::default() };
-        // SAFETY: the device's queue 0 of the family it was made with; and a pool for it.
-        let made = unsafe {
-            (gpu.on.vkGetDeviceQueue)(device, family, 0, &mut gpu.queue);
-            (gpu.on.vkCreateCommandPool)(device, &pool, null(), &mut gpu.pool)
-        };
-        (made == 0).then_some(gpu)
-    }
-
-    /// Lets go of a device whose functions could not all be found: nothing.
-    fn unmade(find: Find, device: Object) -> Option<Gpu> {
-        // SAFETY: the device was just made and is not used after.
-        let destroy = unsafe { find(device, c"vkDestroyDevice".as_ptr()) };
-        if !destroy.is_null() {
-            unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn(Object, *const c_void)>(destroy)(device, null()) };
-        }
-        None
-    }
-
-    /// Tests: the device's name, from Vulkan (as "SwiftShader Device (LLVM 10.0.0)").
-    #[cfg(test)]
-    pub(crate) fn name(&self) -> String {
-        let mut properties = VkPhysicalDeviceProperties::default();
-        // SAFETY: Vulkan fills in the properties; the name ends in a zero within its array.
-        unsafe {
-            (self.vulkan.calls.vkGetPhysicalDeviceProperties)(self.chosen.physical, &mut properties);
-            CStr::from_ptr(properties.name.as_ptr()).to_string_lossy().into_owned()
-        }
     }
 
     /// Shows `window` (an `ANativeWindow`) through the device: a surface on it, the window then
@@ -392,72 +208,15 @@ impl Gpu {
     /// # Safety
     /// As `open`.
     pub(crate) unsafe fn window(&mut self, window: *mut c_void) -> Option<Shows> {
-        let surface = self.vulkan.surface(window)?;
+        let surface = surface(&self.vulkan, &self.system.surfaces, window)?;
         let mut supported = 0;
         // SAFETY: the surface was just made; the family is the device's.
-        unsafe { (self.vulkan.calls.vkGetPhysicalDeviceSurfaceSupportKHR)(self.chosen.physical, self.chosen.family, surface, &mut supported) };
+        unsafe { (self.vulkan.calls.vkGetPhysicalDeviceSurfaceSupportKHR)(self.physical, self.family, surface, &mut supported) };
         if supported == 0 {
-            // SAFETY: the surface was just made, and is not used after.
-            unsafe { (self.vulkan.calls.vkDestroySurfaceKHR)(self.vulkan.instance, surface, null()) };
+            self.vulkan.destroy(surface);
             return None;
         }
-        self.shows(surface)
-    }
-
-    /// What shows a window through `surface` (handed over), not yet sized; nothing where it
-    /// can't be made.
-    fn shows(&mut self, surface: Handle) -> Option<Shows> {
-        let mut shows = Shows {
-            surface,
-            swapchain: 0,
-            images: Vec::new(),
-            acquired: 0,
-            size: [0; 2],
-            buffer: 0,
-            memory: 0,
-            pixels: null_mut(),
-            picture: 0,
-            picture_memory: 0,
-            fresh: true,
-            new: true,
-            window: [0; 2],
-            at: [0; 2],
-            background: 0xff00_0000,
-            commands: null_mut(),
-            fence: 0,
-            busy: false,
-            remake: false,
-            gone: false,
-            pending: Vec::new(),
-            changed: Vec::new(),
-            whole: true,
-            #[cfg(test)]
-            named: Vec::new(),
-        };
-        if self.parts(&mut shows) {
-            return Some(shows);
-        }
-        self.forget(shows);
-        None
-    }
-
-    /// Makes a window's commands, their fence and the semaphore of its acquired images. Says
-    /// whether all were made.
-    fn parts(&mut self, shows: &mut Shows) -> bool {
-        let commands = VkCommandBufferAllocateInfo { kind: 40, pool: self.pool, count: 1, ..Default::default() };
-        let fence = VkFenceCreateInfo { kind: 8, ..Default::default() };
-        // SAFETY: Vulkan's documented calls on the device, filling in one handle each.
-        let made = unsafe { [(self.on.vkAllocateCommandBuffers)(self.device, &commands, &mut shows.commands), (self.on.vkCreateFence)(self.device, &fence, null(), &mut shows.fence)] };
-        shows.acquired = self.semaphore();
-        made == [0; 2] && shows.acquired != 0
-    }
-
-    /// A new semaphore (0 where none could be made).
-    fn semaphore(&self) -> Handle {
-        let (asked, mut made) = (VkSemaphoreCreateInfo { kind: 9, ..Default::default() }, 0);
-        // SAFETY: Vulkan's documented call on the device.
-        unsafe { (self.on.vkCreateSemaphore)(self.device, &asked, null(), &mut made) };
-        made
+        self.shows(surface, Picture::default())
     }
 
     /// Gives a window its size (`window` pixels), and its pixels theirs (`size`, at `at` in the
@@ -465,48 +224,25 @@ impl Gpu {
     /// new swap chain where `window` did. Says whether it has them: where the device makes none
     /// that big, the window is better shown by the CPU.
     pub(crate) fn fit(&mut self, shows: &mut Shows, window: [i32; 2], size: [i32; 2], at: [i32; 2]) -> bool {
-        if (shows.window, shows.size, shows.at) == (window, size, at) && shows.swapchain != 0 {
+        if (shows.system.window, shows.size, shows.system.at) == (window, size, at) && shows.swapchain != 0 {
             return true;
         }
         self.idle();
-        (shows.at, shows.whole) = (at, true);
+        (shows.system.at, shows.system.whole) = (at, true);
         if (shows.size != size || shows.buffer == 0) && !self.pixels(shows, size) {
             return false;
         }
-        if shows.window == window && shows.swapchain != 0 {
+        if shows.system.window == window && shows.swapchain != 0 {
             return true;
         }
-        shows.window = window;
+        shows.system.window = window;
         self.chain(shows)
     }
 
     /// Makes a window's pixels and picture (again), `size` big. Says whether it could.
     fn pixels(&mut self, shows: &mut Shows, size: [i32; 2]) -> bool {
-        self.unbuffer(shows);
-        shows.size = size;
-        size.iter().all(|side| *side > 0) && self.buffer(shows) && self.picture(shows)
-    }
-
-    /// Makes a window's pixels: a buffer its size, in memory the CPU writes and the GPU reads,
-    /// mapped. Says whether it could.
-    fn buffer(&mut self, shows: &mut Shows) -> bool {
-        let (on, device, [width, height]) = (&self.on, self.device, shows.size);
-        let asked = VkBufferCreateInfo { kind: 12, size: width as u64 * height as u64 * 4, usage: USAGE_TRANSFER_SOURCE, ..Default::default() };
-        let mut needs = VkMemoryRequirements::default();
-        // SAFETY: Vulkan's documented calls on the device.
-        unsafe {
-            if (on.vkCreateBuffer)(device, &asked, null(), &mut shows.buffer) != 0 {
-                return false;
-            }
-            (on.vkGetBufferMemoryRequirements)(device, shows.buffer, &mut needs);
-        }
-        let Some(memory) = self.memory(needs, self.writable) else { return false };
-        shows.memory = memory;
-        let mut pixels = null_mut();
-        // SAFETY: as above; the memory is bound whole and mapped whole.
-        let made = unsafe { (on.vkBindBufferMemory)(device, shows.buffer, memory, 0) == 0 && (on.vkMapMemory)(device, memory, 0, needs.size, 0, &mut pixels) == 0 };
-        shows.pixels = pixels.cast();
-        made && !pixels.is_null()
+        self.unpicture(shows);
+        self.buffer(shows, size) && self.picture(shows)
     }
 
     /// Makes a window's picture: an image its pixels' size in the GPU's own memory, copied into
@@ -516,131 +252,64 @@ impl Gpu {
         let usage = USAGE_TRANSFER_SOURCE | USAGE_TRANSFER_DESTINATION | crate::vk::USAGE_DRAWN_INTO;
         #[cfg(not(feature = "gpu-draw"))]
         let usage = USAGE_TRANSFER_SOURCE | USAGE_TRANSFER_DESTINATION;
-        let extent = [shows.size[0] as u32, shows.size[1] as u32, 1];
+        let (calls, extent) = (&self.system.calls, [shows.size[0] as u32, shows.size[1] as u32, 1]);
         let asked = VkImageCreateInfo { kind: 14, image_type: 1, format: B8G8R8A8_UNORM, extent, mip_levels: 1, array_layers: 1, samples: 1, usage, ..Default::default() };
         let mut needs = VkMemoryRequirements::default();
         // SAFETY: Vulkan's documented calls on the device.
         unsafe {
-            if (self.on.vkCreateImage)(self.device, &asked, null(), &mut shows.picture) != 0 {
+            if (calls.vkCreateImage)(self.device, &asked, null(), &mut shows.system.image) != 0 {
                 return false;
             }
-            (self.on.vkGetImageMemoryRequirements)(self.device, shows.picture, &mut needs);
+            (calls.vkGetImageMemoryRequirements)(self.device, shows.system.image, &mut needs);
         }
-        let Some(memory) = self.memory(needs, self.local) else { return false };
-        (shows.picture_memory, shows.fresh, shows.new) = (memory, true, true);
+        let Some(memory) = self.memory(needs, self.system.local) else { return false };
+        let picture = &mut shows.system;
+        (picture.memory, picture.fresh, picture.new) = (memory, true, true);
         // SAFETY: as above; the memory is bound whole.
-        unsafe { (self.on.vkBindImageMemory)(self.device, shows.picture, memory, 0) == 0 }
+        unsafe { (calls.vkBindImageMemory)(self.device, picture.image, memory, 0) == 0 }
     }
 
-    /// Memory for something needing `needs`, of the kinds in `kinds`; nothing where none fits.
-    fn memory(&self, needs: VkMemoryRequirements, kinds: u32) -> Option<Handle> {
-        let fitting = needs.type_bits & kinds;
-        let asked = VkMemoryAllocateInfo { kind: 5, size: needs.size, type_index: fitting.trailing_zeros(), ..Default::default() };
-        let mut memory = 0;
-        // SAFETY: Vulkan's documented call on the device.
-        (fitting != 0 && unsafe { (self.on.vkAllocateMemory)(self.device, &asked, null(), &mut memory) } == 0).then_some(memory)
-    }
-
-    /// Lets go of a window's pixels and picture.
-    fn unbuffer(&mut self, shows: &mut Shows) {
+    /// Lets go of a window's picture, and of what was put into its pixels. (The queue is idle.)
+    fn unpicture(&mut self, shows: &mut Shows) {
         #[cfg(feature = "gpu-draw")]
         if let Some(pipeline) = self.pipeline.as_mut().and_then(|made| made.as_deref_mut()) {
             pipeline.forget_target();
         }
+        let picture = &mut shows.system;
         // SAFETY: nothing on the device uses them (the queue is idle); null handles are let be.
         unsafe {
-            (self.on.vkDestroyBuffer)(self.device, shows.buffer, null());
-            (self.on.vkFreeMemory)(self.device, shows.memory, null());
-            (self.on.vkDestroyImage)(self.device, shows.picture, null());
-            (self.on.vkFreeMemory)(self.device, shows.picture_memory, null());
+            (self.system.calls.vkDestroyImage)(self.device, picture.image, null());
+            (self.calls.vkFreeMemory)(self.device, picture.memory, null());
         }
-        (shows.buffer, shows.memory, shows.pixels, shows.picture, shows.picture_memory) = (0, 0, null_mut(), 0, 0);
-        (shows.pending, shows.changed) = (Vec::new(), Vec::new());
+        (picture.image, picture.memory, picture.pending, picture.changed) = (0, 0, Vec::new(), Vec::new());
     }
 
-    /// Makes a window's swap chain (again) at the window's size: images of 8-bit colour, blitted
-    /// into, opaque, presented in step with the screen. Says whether it could.
+    /// Makes a window's swap chain (again) at the window's size: images of 8-bit colour, the
+    /// window's own RGBA where the device blits into it, else BGRA; opaque. Says whether it could.
     fn chain(&mut self, shows: &mut Shows) -> bool {
-        let (calls, physical) = (&self.vulkan.calls, self.chosen.physical);
-        let mut can = VkSurfaceCapabilitiesKHR::default();
-        // SAFETY: Vulkan's documented calls on the window's surface.
-        let result = unsafe { (calls.vkGetPhysicalDeviceSurfaceCapabilitiesKHR)(physical, shows.surface, &mut can) };
-        if result != 0 {
-            shows.gone |= result == SURFACE_LOST;
-            return false;
-        }
-        // SAFETY: as above; Vulkan's documented enumeration.
-        let formats = listed(VkSurfaceFormatKHR::default(), |count, list| unsafe { (calls.vkGetPhysicalDeviceSurfaceFormatsKHR)(physical, shows.surface, count, list) });
+        let can = match self.capabilities(shows) {
+            Ok(can) => can,
+            Err(result) => {
+                shows.system.gone |= result == SURFACE_LOST;
+                return false;
+            }
+        };
+        let (surfaces, physical) = (&self.system.surfaces, self.physical);
+        let offered = self.formats(shows);
         // (sRGB's colour space is 0; alpha ignored 0x1, or as the window has it 0x8; no
         // transform 0x1.)
-        let blits_to = |format: u32| {
-            let mut properties = VkFormatProperties::default();
-            // SAFETY: Vulkan fills in the format's properties.
-            unsafe { (calls.vkGetPhysicalDeviceFormatProperties)(physical, format, &mut properties) };
-            properties.optimal & BLITS_TO != 0
-        };
-        let format = formats.into_iter().find(|offered| [R8G8B8A8_UNORM, B8G8R8A8_UNORM].contains(&offered.format) && offered.colour_space == 0 && blits_to(offered.format));
+        let takes = |format: u32| offered.iter().copied().find(|offered| offered.format == format && offered.colour_space == 0 && blits(surfaces, physical, format, BLITS_TO));
+        let format = takes(R8G8B8A8_UNORM).or_else(|| takes(B8G8R8A8_UNORM));
         let alpha = [0x1, 0x8].into_iter().find(|alpha| can.alphas & alpha != 0);
         let transform = if can.transforms & 0x1 != 0 { 0x1 } else { can.transform };
-        let extent = shows.window.map(|side| side as u32);
+        let extent = shows.system.window.map(|side| side as u32);
         let fits = extent.iter().zip(can.least.iter().zip(&can.most)).all(|(side, (least, most))| (least..=most).contains(&side));
         let (Some(format), Some(alpha)) = (format, alpha) else { return false };
-        let asked = VkSwapchainCreateInfoKHR {
-            kind: 1_000_001_000,
-            surface: shows.surface,
-            min_images: can.min_images.max(2),
-            format: format.format,
-            colour_space: format.colour_space,
-            extent,
-            layers: 1,
-            usage: USAGE_TRANSFER_DESTINATION,
-            transform,
-            alpha,
-            present_mode: 2, // FIFO
-            old: shows.swapchain,
-            ..Default::default()
-        };
-        let mut made = 0;
-        self.idle();
-        // SAFETY: Vulkan's documented call; the old chain is retired by it, and let go after.
-        let result = if can.usage & USAGE_TRANSFER_DESTINATION == 0 || !fits { -1 } else { unsafe { (self.on.vkCreateSwapchainKHR)(self.device, &asked, null(), &mut made) } };
-        self.unchain(shows);
-        shows.gone |= result == SURFACE_LOST;
-        if result != 0 {
-            return false;
-        }
-        // SAFETY: Vulkan's documented enumeration of the chain's images.
-        let images = listed(0, |count, list| unsafe { (self.on.vkGetSwapchainImagesKHR)(self.device, made, count, list) });
-        (shows.swapchain, shows.remake, shows.whole) = (made, false, true);
-        shows.images = images.into_iter().map(|image| Image { image, drawn: self.semaphore() }).collect();
-        !shows.images.is_empty() && shows.images.iter().all(|image| image.drawn != 0)
-    }
-
-    /// Lets go of a window's swap chain and the semaphores of its images.
-    fn unchain(&mut self, shows: &mut Shows) {
-        // SAFETY: nothing on the device uses them (the queue is idle); null handles are let be.
-        unsafe {
-            shows.images.drain(..).for_each(|image| (self.on.vkDestroySemaphore)(self.device, image.drawn, null()));
-            (self.on.vkDestroySwapchainKHR)(self.device, shows.swapchain, null());
-        }
-        shows.swapchain = 0;
-    }
-
-    /// Waits until the queue has done all it was given.
-    fn idle(&self) {
-        // SAFETY: Vulkan's documented call on the device's queue.
-        unsafe { (self.on.vkQueueWaitIdle)(self.queue) };
-    }
-
-    /// Waits until a window's last frame is done, if it is not known to be. Says whether it is;
-    /// if not, the device is lost.
-    fn wait(&mut self, shows: &mut Shows) -> bool {
-        // SAFETY: the fence is the device's.
-        if shows.busy && unsafe { (self.on.vkWaitForFences)(self.device, 1, &shows.fence, 1, WAITED) } != 0 {
-            self.lost = true;
-        }
-        shows.busy = false;
-        !self.lost
+        let refused = can.usage & USAGE_TRANSFER_DESTINATION == 0 || !fits;
+        let result = self.make_chain(shows, Chain { format, extent, transform, alpha, images: can.min_images.max(2) }, refused);
+        shows.system.gone |= result == SURFACE_LOST;
+        shows.system.whole |= result == 0;
+        result == 0
     }
 
     /// Puts `place` of a block of pixels (left, top, right, bottom) into the window's pixels at
@@ -653,8 +322,8 @@ impl Gpu {
             // (`cut`).
             unsafe { std::ptr::copy_nonoverlapping(from.as_ptr(), shows.pixels.add(row * wide + place[0] as usize), from.len()) };
         }
-        shows.pending.push(place);
-        shows.changed.push(place);
+        shows.system.pending.push(place);
+        shows.system.changed.push(place);
     }
 
     /// Shows the window: what was put since goes into the picture, which is blitted whole into
@@ -662,9 +331,9 @@ impl Gpu {
     /// presented naming what changed. With nothing changed, only where `again` (the system asks
     /// for the window whole). A device that fails is lost.
     pub(crate) fn show(&mut self, shows: &mut Shows, background: u32, again: bool) {
-        let fresh_background = std::mem::replace(&mut shows.background, background) != background;
-        shows.whole |= again || fresh_background;
-        if shows.changed.is_empty() && !shows.whole || !self.wait(shows) {
+        let fresh_background = std::mem::replace(&mut shows.system.background, background) != background;
+        shows.system.whole |= again || fresh_background;
+        if shows.system.changed.is_empty() && !shows.system.whole || !self.wait(shows) {
             return;
         }
         #[cfg(test)]
@@ -673,7 +342,7 @@ impl Gpu {
             return;
         }
         if shows.remake && !self.chain(shows) {
-            self.lost |= !shows.gone;
+            self.lost |= !shows.system.gone;
             return;
         }
         let Some(at) = self.acquire(shows) else { return };
@@ -686,24 +355,20 @@ impl Gpu {
     /// fits. Nothing where none came: then the places put wait for the next frame (or the
     /// window or device is lost).
     fn acquire(&mut self, shows: &mut Shows) -> Option<usize> {
-        let mut at = 0;
-        // SAFETY: Vulkan's documented call on the window's swap chain; the semaphore is free
-        // (the frame that waited for it is done).
-        let next = |gpu: &Gpu, shows: &Shows, at: &mut u32| unsafe { (gpu.on.vkAcquireNextImageKHR)(gpu.device, shows.swapchain, WAITED, shows.acquired, 0, at) };
-        let mut result = next(self, shows, &mut at);
+        let (mut result, mut at) = self.next_image(shows);
         if result == OUT_OF_DATE && self.chain(shows) {
-            result = next(self, shows, &mut at);
+            (result, at) = self.next_image(shows);
         }
         self.said(shows, result);
         let had = result == 0 || result == SUBOPTIMAL;
-        (had && (at as usize) < shows.images.len()).then_some(at as usize)
+        (had && at < shows.images.len()).then_some(at)
     }
 
     /// Takes in what a call on the swap chain said: a chain out of date is made again, a window
     /// gone or a device failing is said.
     fn said(&mut self, shows: &mut Shows, result: i32) {
         shows.remake |= result == OUT_OF_DATE;
-        shows.gone |= result == SURFACE_LOST;
+        shows.system.gone |= result == SURFACE_LOST;
         self.lost |= result < 0 && result != OUT_OF_DATE && result != SURFACE_LOST;
     }
 
@@ -711,102 +376,62 @@ impl Gpu {
     /// while new), the background is cleared in where the picture leaves room, and the picture
     /// blitted in. Says whether it was given to the queue; if not, the device is lost.
     fn record(&mut self, shows: &mut Shows, at: usize) -> bool {
-        let (on, commands, Image { image, drawn }) = (&self.on, shows.commands, shows.images[at]);
-        let begin = VkCommandBufferBeginInfo { kind: 42, flags: 0x1, ..Default::default() };
-        // SAFETY: Vulkan's documented calls; the commands are not in use (their fence was
-        // waited for).
-        unsafe {
-            (on.vkResetFences)(self.device, 1, &shows.fence);
-            (on.vkBeginCommandBuffer)(commands, &begin);
-        }
+        let (calls, commands, image) = (&self.system.calls, shows.commands, shows.images[at].image);
+        self.begin(shows);
         self.fill_picture(shows);
         let to_blit = barrier(image, LAYOUT_UNDEFINED, LAYOUT_TRANSFER_DESTINATION, 0, ACCESS_TRANSFER_WRITE);
         // (The clear and the blit both write the image: the blit waits for the clear.)
         let cleared = barrier(image, LAYOUT_TRANSFER_DESTINATION, LAYOUT_TRANSFER_DESTINATION, ACCESS_TRANSFER_WRITE, ACCESS_TRANSFER_WRITE);
         let to_show = barrier(image, LAYOUT_TRANSFER_DESTINATION, LAYOUT_PRESENT, ACCESS_TRANSFER_WRITE, 0);
-        let ([left, top], shown) = (shows.at, shows.shown());
-        let room = left > 0 || top > 0 || [left + shown[0], top + shown[1]] != shows.window;
-        let colour = [16, 8, 0, 24].map(|shift| ((shows.background >> shift) & 0xff) as f32 / 255.0);
+        let ([left, top], shown, picture) = (shows.system.at, shows.shown(), &shows.system);
+        let room = left > 0 || top > 0 || [left + shown[0], top + shown[1]] != picture.window;
+        let colour = [16, 8, 0, 24].map(|shift| ((picture.background >> shift) & 0xff) as f32 / 255.0);
         let blit = VkImageBlit {
             source_layers: LAYER,
             source_offsets: [[0, 0, 0], [shown[0], shown[1], 1]],
             destination_layers: LAYER,
             destination_offsets: [[left, top, 0], [left + shown[0], top + shown[1], 1]],
         };
-        // SAFETY: as above; the picture is laid out to be copied from (see `fill_picture`), the
-        // image to be written; the blit lies inside both (`shown`).
+        let on = &self.calls;
+        // SAFETY: Vulkan's documented calls; the commands are being recorded, the picture is laid
+        // out to be copied from (see `fill_picture`), the image to be written; the blit lies
+        // inside both (`shown`).
         let recorded = unsafe {
             (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_blit);
             if room {
-                (on.vkCmdClearColorImage)(commands, image, LAYOUT_TRANSFER_DESTINATION, &colour, 1, &WHOLE);
+                (calls.vkCmdClearColorImage)(commands, image, LAYOUT_TRANSFER_DESTINATION, &colour, 1, &WHOLE);
                 (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &cleared);
             }
             if shown.iter().all(|side| *side > 0) {
-                (on.vkCmdBlitImage)(commands, shows.picture, LAYOUT_TRANSFER_SOURCE, image, LAYOUT_TRANSFER_DESTINATION, 1, &blit, 0);
+                (calls.vkCmdBlitImage)(commands, picture.image, LAYOUT_TRANSFER_SOURCE, image, LAYOUT_TRANSFER_DESTINATION, 1, &blit, 0);
             }
             (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &to_show);
             (on.vkEndCommandBuffer)(commands)
         };
-        let stage = STAGE_TRANSFER;
-        let submit = VkSubmitInfo { kind: 4, wait_count: 1, waits: &shows.acquired, wait_stages: &stage, buffer_count: 1, buffers: &commands, signal_count: 1, signals: &drawn, ..Default::default() };
-        // SAFETY: as above.
-        let result = if recorded == 0 { unsafe { (on.vkQueueSubmit)(self.queue, 1, &submit, shows.fence) } } else { recorded };
-        shows.busy = result == 0;
-        self.lost |= result != 0;
-        result == 0
+        self.submit(shows, at, recorded)
     }
 
     /// Records the places put since copied from the window's pixels into its picture (all of
     /// it, if new), which is then laid out to be copied from.
     fn fill_picture(&self, shows: &mut Shows) {
-        let ([width, height], on, commands, picture) = (shows.size, &self.on, shows.commands, shows.picture);
-        let places = if shows.fresh { vec![[0, 0, width, height]] } else { std::mem::take(&mut shows.pending) };
-        shows.pending.clear();
-        let regions: Vec<VkBufferImageCopy> = places.into_iter().map(|place| region(place, width)).collect();
-        let (old, access) = if shows.fresh { (LAYOUT_UNDEFINED, 0) } else { (LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_READ) };
-        let to_copy = barrier(picture, old, LAYOUT_TRANSFER_DESTINATION, access, ACCESS_TRANSFER_WRITE);
-        let to_read = barrier(picture, LAYOUT_TRANSFER_DESTINATION, LAYOUT_TRANSFER_SOURCE, ACCESS_TRANSFER_WRITE, ACCESS_TRANSFER_READ);
-        shows.fresh = false;
-        if regions.is_empty() && old == LAYOUT_TRANSFER_SOURCE {
-            return;
-        }
-        // SAFETY: the commands are being recorded; the places lie in the buffer and the picture.
-        unsafe {
-            (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_copy);
-            if !regions.is_empty() {
-                (on.vkCmdCopyBufferToImage)(commands, shows.buffer, picture, LAYOUT_TRANSFER_DESTINATION, regions.len() as u32, regions.as_ptr());
-            }
-            (on.vkCmdPipelineBarrier)(commands, STAGE_TRANSFER, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_read);
-        }
+        let picture = &mut shows.system;
+        let (image, pending, fresh) = (picture.image, std::mem::take(&mut picture.pending), std::mem::replace(&mut picture.fresh, false));
+        self.fill(shows, image, pending, fresh);
     }
 
     /// Presents image `at` of a window's swap chain once blitted into, naming the places that
     /// changed (all of it after a new swap chain, picture or background).
     fn present(&mut self, shows: &mut Shows, at: usize) {
-        let [left, top] = shows.at;
-        let changed = std::mem::take(&mut shows.changed);
-        let named = !std::mem::take(&mut shows.whole) && self.regions;
+        let [left, top] = shows.system.at;
+        let changed = std::mem::take(&mut shows.system.changed);
+        let named = !std::mem::take(&mut shows.system.whole);
         let rectangles: Vec<VkRectLayerKHR> = changed.iter().map(|[l, t, r, b]| VkRectLayerKHR { offset: [l + left, t + top], extent: [(r - l) as u32, (b - t) as u32], layer: 0 }).collect();
-        let region = VkPresentRegionKHR { count: rectangles.len() as u32, rects: rectangles.as_ptr() };
-        let regions = VkPresentRegionsKHR { kind: 1_000_084_000, count: 1, regions: &region, ..Default::default() };
-        let index = at as u32;
-        let asked = VkPresentInfoKHR {
-            kind: 1_000_001_001,
-            next: if named { (&raw const regions).cast() } else { null() },
-            wait_count: 1,
-            waits: &shows.images[at].drawn,
-            count: 1,
-            swapchains: &shows.swapchain,
-            indices: &index,
-            results: null_mut(),
-        };
-        // SAFETY: Vulkan's documented call on the device's queue; everything named lives until
-        // it returns.
-        let result = unsafe { (self.on.vkQueuePresentKHR)(self.queue, &asked) };
+        let result = self.queue_present(shows, at, named.then_some(rectangles.as_slice()));
         self.said(shows, result);
         #[cfg(test)]
         {
-            shows.named = if named { changed } else { vec![[0, 0, shows.window[0] - left, shows.window[1] - top]] };
+            let window = shows.system.window;
+            shows.system.named = if named && self.regions { changed } else { vec![[0, 0, window[0] - left, window[1] - top]] };
         }
     }
 
@@ -814,19 +439,8 @@ impl Gpu {
     /// `ANativeWindow` goes.)
     pub(crate) fn forget(&mut self, mut shows: Shows) {
         self.idle();
-        self.unchain(&mut shows);
-        self.unbuffer(&mut shows);
-        let (on, device) = (&self.on, self.device);
-        // SAFETY: nothing on the device uses them (the queue is idle); null handles are let be,
-        // and a command buffer only freed where there is one.
-        unsafe {
-            (on.vkDestroySemaphore)(device, shows.acquired, null());
-            (on.vkDestroyFence)(device, shows.fence, null());
-            if !shows.commands.is_null() {
-                (on.vkFreeCommandBuffers)(device, self.pool, 1, &shows.commands);
-            }
-            (self.vulkan.calls.vkDestroySurfaceKHR)(self.vulkan.instance, shows.surface, null());
-        }
+        self.unpicture(&mut shows);
+        self.let_go(shows);
     }
 
     /// Draws a recorded paint into a window's picture, inside `place` (left, top, right,
@@ -841,71 +455,25 @@ impl Gpu {
         let drawn = made.as_mut().is_some_and(|pipeline| self.draw_with(shows, pipeline, list, place));
         self.pipeline = Some(made);
         if drawn {
-            shows.changed.push(place);
+            shows.system.changed.push(place);
         }
         drawn
-    }
-
-    /// What the device draws with; nothing where it can't be made.
-    #[cfg(feature = "gpu-draw")]
-    fn drawer(&self) -> Option<Box<crate::gpu_draw_vulkan::Pipeline>> {
-        let (find, device, mut memory) = (self.vulkan.calls.vkGetDeviceProcAddr, self.device, VkPhysicalDeviceMemoryProperties::default());
-        // SAFETY: Vulkan fills in the device's memory; the names end in zeros.
-        unsafe { (self.vulkan.calls.vkGetPhysicalDeviceMemoryProperties)(self.chosen.physical, &mut memory) };
-        crate::gpu_draw_vulkan::Pipeline::new(&mut |name| unsafe { find(device, name.as_ptr()) }, device, &memory, false)
     }
 
     /// Records and runs the paint drawn by `pipeline`, as `draw` says, and waits for it. A
     /// failure loses the device: the window's picture and pixels no longer agree.
     #[cfg(feature = "gpu-draw")]
     fn draw_with(&mut self, shows: &mut Shows, pipeline: &mut crate::gpu_draw_vulkan::Pipeline, list: &crate::gpu_draw::DrawList, place: [i32; 4]) -> bool {
-        let (commands, begin) = (shows.commands, VkCommandBufferBeginInfo { kind: 42, flags: 0x1, ..Default::default() });
-        // SAFETY: Vulkan's documented calls; the commands are not in use (their fence was
-        // waited for).
-        unsafe {
-            (self.on.vkResetFences)(self.device, 1, &shows.fence);
-            (self.on.vkBeginCommandBuffer)(commands, &begin);
-        }
+        self.begin(shows);
         self.fill_picture(shows);
         let was = crate::gpu_draw_vulkan::Was { layout: LAYOUT_TRANSFER_SOURCE, access: ACCESS_TRANSFER_READ, stage: STAGE_TRANSFER };
-        let recorded = pipeline.record(commands, shows.picture, shows.size, list, place, was, LAYOUT_TRANSFER_SOURCE);
-        let submit = VkSubmitInfo { kind: 4, buffer_count: 1, buffers: &commands, ..Default::default() };
-        // SAFETY: as above.
-        let result = unsafe { if (self.on.vkEndCommandBuffer)(commands) == 0 && recorded { (self.on.vkQueueSubmit)(self.queue, 1, &submit, shows.fence) } else { -1 } };
-        (shows.busy, self.lost) = (result == 0, self.lost || result != 0);
-        self.wait(shows)
-    }
-
-    /// Tests: whether it has drawn the window itself (see `gpu_draw`).
-    #[cfg(all(test, feature = "gpu-draw"))]
-    pub(crate) fn has_drawn(&self) -> bool {
-        matches!(self.pipeline, Some(Some(_)))
+        let recorded = pipeline.record(shows.commands, shows.system.image, shows.size, list, place, was, LAYOUT_TRANSFER_SOURCE);
+        self.run(shows, recorded)
     }
 
     /// Tests: the places the last frame named, in the pixels.
     #[cfg(test)]
     pub(crate) fn named(shows: &Shows) -> &[[i32; 4]] {
-        &shows.named
-    }
-
-    /// Tests: the device is lost, as when it is removed: the next frame says so.
-    #[cfg(test)]
-    pub(crate) fn lose(&mut self) {
-        self.faked = true;
-    }
-}
-
-impl Drop for Gpu {
-    /// Lets go of the pool and the device. (The window was let go of first; the instance goes
-    /// after.)
-    fn drop(&mut self) {
-        // SAFETY: Vulkan's documented calls; nothing of the device is used after.
-        unsafe {
-            (self.on.vkDeviceWaitIdle)(self.device);
-            #[cfg(feature = "gpu-draw")]
-            drop(self.pipeline.take());
-            (self.on.vkDestroyCommandPool)(self.device, self.pool, null());
-            (self.on.vkDestroyDevice)(self.device, null());
-        }
+        &shows.system.named
     }
 }

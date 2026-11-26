@@ -105,7 +105,7 @@ mod bidi;
 pub mod bmp;
 mod brahmic;
 mod brotli;
-#[cfg(all(test, windows, any(feature = "right-to-left", feature = "ruby")))]
+#[cfg(all(test, windows))]
 mod browser_check;
 pub mod canvas;
 mod cells;
@@ -127,6 +127,8 @@ mod date;
 mod decorations;
 mod dock;
 mod drag_drop;
+#[cfg(any(all(unix, not(any(target_vendor = "apple", target_os = "android"))), all(target_os = "android", feature = "video")))]
+mod dynamic_library;
 mod el;
 pub mod emoji;
 pub mod event;
@@ -138,6 +140,7 @@ pub mod font_file;
 mod frameless;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod freedesktop;
+mod functions;
 pub mod geom;
 pub mod gif;
 #[cfg(all(target_os = "android", feature = "gpu"))]
@@ -158,6 +161,8 @@ mod gpu_draw_opengl;
 mod gpu_draw_vulkan;
 #[cfg(all(windows, feature = "gpu-draw"))]
 mod gpu_draw_windows;
+#[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
+mod gpu_egl;
 #[cfg(all(target_os = "ios", feature = "gpu"))]
 mod gpu_ios;
 #[cfg(all(target_vendor = "apple", feature = "gpu"))]
@@ -168,6 +173,8 @@ mod gpu_opengl_android;
 mod gpu_opengl_windows;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android")), feature = "gpu"))]
 mod gpu_opengl_x11;
+#[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
+mod gpu_vulkan;
 #[cfg(all(target_os = "android", feature = "gpu"))]
 mod gpu_vulkan_android;
 #[cfg(all(windows, feature = "gpu"))]
@@ -442,7 +449,7 @@ pub use surface::{Surface, Upload};
 pub use svg::Drawing;
 pub use table::{Column, Table};
 pub use table_paste::RefusedCell;
-pub use text::{Face, Font, TextSystem};
+pub use text::{Face, Font, Paragraph, TextSystem};
 pub use text_edit::{TextCommand, TextEditState};
 pub use theme::{ContrastColors, Theme};
 pub use touch::{Stylus, Touch, TouchPhase, Zoom};

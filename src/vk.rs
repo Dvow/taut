@@ -7,7 +7,7 @@
 //! starts all zero, which leaves every pointer null, every flag off and nothing chained.
 // Every function here is `#[inline]`: only a program that calls one compiles it. (Compiled in
 // the library itself, even unused, this code moved how the rest is grouped and optimised.)
-use std::ffi::{CStr, c_char, c_void};
+use std::ffi::{c_char, c_void};
 
 /// A handle that is a number (an image, a buffer, a pipeline): 0 is none.
 pub(crate) type Handle = u64;
@@ -31,9 +31,9 @@ pub(crate) fn loader() -> Option<Find> {
     };
     #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     let found = {
-        // SAFETY: the name ends in a zero (2: `RTLD_NOW`); the library is never closed.
-        let library = unsafe { crate::x11::dlopen(c"libvulkan.so.1".as_ptr(), 2) };
-        (!library.is_null()).then(|| crate::x11::symbol(library, "vkGetInstanceProcAddr\0")).flatten().unwrap_or(std::ptr::null_mut())
+        // SAFETY: the name ends in a zero; the library is never closed.
+        let library = unsafe { crate::dynamic_library::dlopen(c"libvulkan.so.1".as_ptr(), crate::dynamic_library::NOW) };
+        (!library.is_null()).then(|| crate::dynamic_library::symbol(library, "vkGetInstanceProcAddr\0")).flatten().unwrap_or(std::ptr::null_mut())
     };
     #[cfg(target_os = "android")]
     let found = crate::android::vulkan_loader();
@@ -51,32 +51,7 @@ unsafe extern "system" {
     fn GetProcAddress(library: isize, name: *const u8) -> usize;
 }
 
-/// Declares a table of Vulkan's functions, each found by name.
-macro_rules! functions {
-    ($set:ident { $($name:ident: fn($($arg:ty),*) $(-> $out:ty)?;)* }) => {
-        /// Vulkan's functions, found by name.
-        #[allow(non_snake_case)]
-        pub(crate) struct $set {
-            $(pub(crate) $name: unsafe extern "system" fn($($arg),*) $(-> $out)?,)*
-        }
-        impl $set {
-            /// Each function, found through `find`; or the name of the first one missing.
-            #[inline]
-            pub(crate) fn load(find: &mut dyn FnMut(&std::ffi::CStr) -> *const std::ffi::c_void) -> Result<$set, &'static str> {
-                // SAFETY: each function is declared as vulkan_core.h declares it.
-                Ok($set { $($name: unsafe { std::mem::transmute::<*const std::ffi::c_void, unsafe extern "system" fn($($arg),*) $(-> $out)?>($crate::vk::found(find, concat!(stringify!($name), "\0"))?) },)* })
-            }
-        }
-    };
-}
-pub(crate) use functions;
-
-/// The function `name` (ending in a zero) as `find` gives it; or its name, if it gives none.
-#[inline]
-pub(crate) fn found(find: &mut dyn FnMut(&CStr) -> *const c_void, name: &'static str) -> Result<*const c_void, &'static str> {
-    let found = find(CStr::from_bytes_with_nul(name.as_bytes()).unwrap_or_default());
-    if found.is_null() { Err(name.trim_end_matches('\0')) } else { Ok(found) }
-}
+pub(crate) use crate::functions::functions;
 
 /// Declares structures of Vulkan's, laid out as vulkan_core.h lays them out, each all zero by
 /// default.
@@ -147,7 +122,7 @@ pub(crate) fn memory_type(properties: &VkPhysicalDeviceMemoryProperties, type_bi
 }
 
 /// The kinds of `memory` that have all of `wanted`, one bit each.
-#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(target_os = "android", feature = "gpu-draw", all(windows, feature = "hdr"))))]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple"), any(unix, feature = "gpu-draw", all(windows, feature = "hdr"))))]
 #[inline]
 pub(crate) fn kinds(memory: &VkPhysicalDeviceMemoryProperties, wanted: u32) -> u32 {
     let types = memory.types.iter().take(memory.type_count as usize).enumerate();
@@ -187,8 +162,8 @@ pub(crate) fn named(result: i32) -> &'static str {
     }
 }
 
-// Windows shown through Vulkan (feature `gpu`: `gpu_vulkan_windows`, `gpu_vulkan_x11`,
-// `gpu_vulkan_android`): the instance, devices, surfaces and swap chains.
+// Windows shown through Vulkan (feature `gpu`: `gpu_vulkan_windows`, and `gpu_vulkan` for X11
+// and Android): the instance, devices, surfaces and swap chains.
 #[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 structures! {
     VkApplicationInfo { kind: u32, next: *const c_void, name: *const c_char, version: u32, engine: *const c_char, engine_version: u32, api_version: u32, }
@@ -302,10 +277,10 @@ pub(crate) const SUBOPTIMAL: i32 = 1_000_001_003;
 /// Whether `name` is among the extensions `list` fills in.
 #[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
 #[inline]
-pub(crate) fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32, name: &CStr) -> bool {
+pub(crate) fn offered(list: impl Fn(*mut u32, *mut VkExtensionProperties) -> i32, name: &std::ffi::CStr) -> bool {
     let all = listed(VkExtensionProperties::default(), list);
     // SAFETY: each name is Vulkan's, ending in a zero within its array.
-    all.iter().any(|offered| unsafe { CStr::from_ptr(offered.name.as_ptr()) } == name)
+    all.iter().any(|offered| unsafe { std::ffi::CStr::from_ptr(offered.name.as_ptr()) } == name)
 }
 
 /// What one of Vulkan's enumerations fills in: its count first, then that many.
@@ -357,6 +332,7 @@ structures! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::functions::found;
 
     /// Each structure is as large as vulkan_core.h makes it on 64-bit systems.
     #[test]
@@ -475,7 +451,7 @@ mod tests {
         // SAFETY: with no instance, the loader gives the functions that make one.
         let made = unsafe { find(std::ptr::null_mut(), c"vkCreateInstance".as_ptr()) };
         assert!(!made.is_null());
-        let mut missing = |name: &CStr| if name == c"vkNothing" { std::ptr::null() } else { made };
+        let mut missing = |name: &std::ffi::CStr| if name == c"vkNothing" { std::ptr::null() } else { made };
         assert_eq!(found(&mut missing, "vkNothing\0"), Err("vkNothing"));
         assert_eq!(found(&mut missing, "vkCreateInstance\0"), Ok(made));
     }

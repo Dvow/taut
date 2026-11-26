@@ -491,12 +491,27 @@ pub(crate) mod tests {
 
     /// Presses a window's button, as the person would with the mouse.
     fn press(hwnd: HANDLE, saw: &Cell<Saw>) {
-        let Saw { button, scale, .. } = saw.get();
-        let (x, y) = (((button.x + button.w / 2.0) * scale) as isize, ((button.y + button.h / 2.0) * scale) as isize);
         for (msg, w) in [(0x0200, 0), (0x0201, 1), (0x0202, 0)] {
-            unsafe { PostMessageW(hwnd, msg, w, x | y << 16) };
+            unsafe { PostMessageW(hwnd, msg, w, on_button(saw)) };
         }
         pump();
+    }
+
+    /// `press`, but Windows forgets what it changed before any paint, as it does at times while
+    /// another thread presents: the window's update region is validated.
+    fn press_forgotten(hwnd: HANDLE, saw: &Cell<Saw>) {
+        for (msg, w) in [(0x0200, 0), (0x0201, 1), (0x0202, 0)] {
+            unsafe { SendMessageW(hwnd, msg, w, on_button(saw)) };
+        }
+        unsafe { ValidateRect(hwnd, std::ptr::null()) };
+        pump();
+    }
+
+    /// The middle of a window's button, as mouse messages pack a place.
+    fn on_button(saw: &Cell<Saw>) -> isize {
+        let Saw { button, scale, .. } = saw.get();
+        let (x, y) = (((button.x + button.w / 2.0) * scale) as isize, ((button.y + button.h / 2.0) * scale) as isize);
+        x | y << 16
     }
 
     /// Whether two windows show the same pixels, byte for byte.
@@ -585,6 +600,11 @@ pub(crate) mod tests {
         assert!(path == Renderer::OpenGL || (!after.2.is_empty() && small), "presented whole: {:?}", after.2);
         assert!(presented_as(&after, cpu), "the frame presented differs after a press");
         assert!(same(gpu, cpu), "the windows differ after a press: {}", differ(gpu, cpu));
+        // A press Windows forgets the places of before it paints, sending no paint: presented
+        // all the same.
+        press_forgotten(gpu, &on_gpu);
+        press(cpu, &on_cpu);
+        assert!(presented_as(&last_presented(gpu), cpu), "the frame presented differs after a press Windows forgot");
         // Resized, both are drawn again, all of them.
         for hwnd in [gpu, cpu] {
             unsafe { SetWindowPos(hwnd, 0, 0, 0, 520, 380, 0x16) };

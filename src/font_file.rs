@@ -302,6 +302,19 @@ impl FontFile {
         }
     }
 
+    /// Reads a font put together from its tables (see `listing`), never compressed: as Windows
+    /// gives a system font's. With `glyphs`, its `glyf` is left out (listed empty) and read a
+    /// glyph at a time from there.
+    #[cfg(windows)]
+    pub(crate) fn assembled(file: Vec<u8>, glyphs: Option<(usize, Box<TablePart>)>) -> Option<FontFile> {
+        let mut font = FontFile::of(Held::Read(file), 0)?;
+        if let (Shapes::Points(points), Some((long, read))) = (&mut font.shapes, glyphs) {
+            points.fetched = Some(Box::new(Fetched::new(long, font.glyphs, read)));
+            font.measure();
+        }
+        Some(font)
+    }
+
     /// The `nth` font of a collection (from 0). `None` past the last, or for a single-font file
     /// and `nth` other than 0. (See also `named`, which finds one by name.)
     pub fn nth(self, nth: usize) -> Option<FontFile> {
@@ -328,7 +341,13 @@ impl FontFile {
         // multi-character sequences.
         let pictures = Pictures::read(all, [b"COLR", b"CPAL", b"CBLC", b"CBDT", b"sbix", b"SVG "].map(&table));
         let shapes = match (table(b"glyf"), table(b"CFF ").or_else(|| table(b"CFF2"))) {
-            (Some(glyf), _) => Shapes::Points(Points { glyf, loca: table(b"loca")?, long: head.i16(50)? != 0 }),
+            (Some(glyf), _) => Shapes::Points(Points {
+                glyf,
+                loca: table(b"loca")?,
+                long: head.i16(50)? != 0,
+                #[cfg(windows)]
+                fetched: None,
+            }),
             (None, Some(programs)) if cfg!(feature = "cff") => Shapes::Programs(crate::cff::Programs::read(all, programs)?),
             (None, Some(_)) => return None,
             (None, None) => pictures.any().then_some(Shapes::None)?,
@@ -470,13 +489,23 @@ impl FontFile {
         width + self.varied.as_ref().map_or(0.0, |varied| varied.wider(Bytes(&self.file), glyph, self.points(glyph)))
     }
 
+    /// Its line's height in font units as HarfBuzz takes it for vertical text without vertical
+    /// metrics: the typographic ascender and descender (`OS/2`) where the font says to use them
+    /// (`USE_TYPO_METRICS`), else `hhea`'s.
+    fn line_height(&self) -> i32 {
+        let all = Bytes(&self.file);
+        let os2 = listed(all, self.start, b"OS/2").map_or(Bytes(&[]), |table| all.within(&table));
+        let typo = os2.u16(62).filter(|selection| selection & 0x80 != 0).and(os2.i16(68).zip(os2.i16(70)));
+        typo.map_or((self.ascent + self.descent) as i32, |(up, down)| up as i32 - down as i32)
+    }
+
     /// A glyph's vertical layout in font units, as HarfBuzz does: its vertical advance (from
     /// `vmtx`, else the line height), and its origin's offset left of and below the pen. Left
     /// by half its width, centring it in the column; down by its vertical origin, from `VORG`,
     /// else `vmtx` (its top plus top side bearing), else centring its box in the line height.
     pub(crate) fn downward(&self, glyph: u16) -> (i32, [i32; 2]) {
         let all = Bytes(&self.file);
-        let line = (self.ascent + self.descent) as i32;
+        let line = self.line_height();
         let (heights, origins) = (all.within(&self.heights), all.within(&self.origins));
         let listed = (glyph as usize).min(self.tall.saturating_sub(1));
         let advance = if heights.0.is_empty() { line } else { heights.u16(listed * 4).unwrap_or(0) as i32 };
@@ -1408,20 +1437,64 @@ struct Part {
     laid: Option<[usize; 2]>,
 }
 
+/// Reads part of a table of a font the system holds: `long` bytes from byte `at` of the table
+/// named. `None` where it can't.
+#[cfg(windows)]
+pub(crate) type TablePart = dyn Fn(&[u8; 4], usize, usize) -> Option<Vec<u8>> + Send + Sync + std::panic::RefUnwindSafe + std::panic::UnwindSafe;
+
+/// A system font's `glyf`, read a glyph at a time as drawn and kept once read: an East Asian
+/// font's glyphs are most of its 10 to 20 MB, and a page draws a few hundred.
+#[cfg(windows)]
+pub(crate) struct Fetched {
+    read: Box<TablePart>,
+    /// `glyf`'s length.
+    long: usize,
+    /// The glyphs read, in pages of 256, each made when first needed.
+    pages: Vec<std::sync::OnceLock<Box<FetchedPage>>>,
+}
+
+/// 256 glyphs' bytes, each read when first asked for.
+#[cfg(windows)]
+type FetchedPage = [std::sync::OnceLock<Box<[u8]>>; 256];
+
+#[cfg(windows)]
+impl Fetched {
+    /// A `glyf` `long` bytes long, of `count` glyphs, read by `read`.
+    pub fn new(long: usize, count: u16, read: Box<TablePart>) -> Fetched {
+        Fetched { read, long, pages: (0..usize::from(count).div_ceil(256)).map(|_| std::sync::OnceLock::new()).collect() }
+    }
+
+    /// Glyph `glyph`'s bytes, at `held` in `glyf`: read from the system if not yet. A glyph
+    /// the system won't give is empty, so blank.
+    fn glyph(&self, glyph: usize, held: Range<usize>) -> Option<&[u8]> {
+        (held.start <= held.end && held.end <= self.long).then_some(())?;
+        let page = self.pages.get(glyph / 256)?.get_or_init(|| Box::new(std::array::from_fn(|_| std::sync::OnceLock::new())));
+        Some(page[glyph % 256].get_or_init(|| (self.read)(b"glyf", held.start, held.len()).unwrap_or_default().into_boxed_slice()))
+    }
+}
+
 /// A TrueType font's outline tables: `glyf`, and `loca`, giving each glyph's offset in it, as
-/// 32-bit values (`long`) or 16-bit halves.
+/// 32-bit values (`long`) or 16-bit halves. On Windows, `glyf` may be the system's, read a glyph
+/// at a time (`fetched`).
 struct Points {
     glyf: Range<usize>,
     loca: Range<usize>,
     long: bool,
+    #[cfg(windows)]
+    fetched: Option<Box<Fetched>>,
 }
 
 impl Points {
     /// A glyph's bytes: they end where the next glyph's start.
-    fn bytes<'a>(&self, all: Bytes<'a>, glyph: u16) -> Option<Bytes<'a>> {
+    fn bytes<'a>(&'a self, all: Bytes<'a>, glyph: u16) -> Option<Bytes<'a>> {
         let (glyf, loca, glyph) = (all.within(&self.glyf), all.within(&self.loca), glyph as usize);
         let start = |glyph: usize| if self.long { loca.u32(glyph * 4).map(|at| at as usize) } else { loca.u16(glyph * 2).map(|at| at as usize * 2) };
-        glyf.0.get(start(glyph)?..start(glyph + 1)?).map(Bytes)
+        let held = start(glyph)?..start(glyph + 1)?;
+        #[cfg(windows)]
+        if let Some(fetched) = &self.fetched {
+            return fetched.glyph(glyph, held).map(Bytes);
+        }
+        glyf.0.get(held).map(Bytes)
     }
 
     /// Draws a glyph into a sketch. A glyph may be composed of others, recursively: pending

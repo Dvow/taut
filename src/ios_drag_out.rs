@@ -1,4 +1,4 @@
-//! Dragging out of the window into another app, on iOS: a `UIDragInteraction` on the library's
+//! Dragging out of a window into another app, on iOS: a `UIDragInteraction` on each window's
 //! view. Handed to the window the first time an app hands something out
 //! (`platform::enable_drag_out`), so a program that never does carries none of it.
 //!
@@ -9,7 +9,7 @@
 //! (copied, moved, or nothing).
 use crate::drag_drop::{DragData, DropEffect};
 use crate::geom::Rect;
-use crate::ios::{Heard, heard};
+use crate::ios::{Heard, heard_in};
 use crate::macos_sys::*;
 use crate::ui::Ui;
 use std::cell::{Cell, RefCell};
@@ -24,23 +24,37 @@ thread_local! {
     /// and where the box is, on the page.
     static ITEMS: RefCell<Vec<Obj>> = const { RefCell::new(Vec::new()) };
     static LIFTED: Cell<Option<Rect>> = const { Cell::new(None) };
+    static DELEGATE: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// Hands the window its drag-out code: the view lifts drags from now on.
+/// Hands the window its drag-out code: each window's view lifts drags from now on.
 pub(crate) fn enable() {
     if crate::ios::DRAG_OUT.get().is_some() {
         return;
     }
     crate::ios::DRAG_OUT.set(Some(follow));
-    // SAFETY: an interaction made for a delegate of the library's (kept for good), enabled (an
-    // iPhone's are not by themselves), handed to the library's view, which keeps it.
+    crate::ios::on_every_view(lift_drags);
+}
+
+/// Has a view lift drags.
+fn lift_drags(view: Obj) {
+    // SAFETY: an interaction made for the delegate (made once, kept for good), enabled (an
+    // iPhone's are not by themselves), handed to the view, which keeps it.
     unsafe {
-        let delegate: Obj = send(delegate_class(), c"new", ());
-        let interaction: Obj = send(send::<Obj>(class(c"UIDragInteraction"), c"alloc", ()), c"initWithDelegate:", (delegate,));
+        let interaction: Obj = send(send::<Obj>(class(c"UIDragInteraction"), c"alloc", ()), c"initWithDelegate:", (delegate(),));
         send::<()>(interaction, c"setEnabled:", (1 as Bool,));
-        send::<()>(crate::ios::view(), c"addInteraction:", (interaction,));
+        send::<()>(view, c"addInteraction:", (interaction,));
         send::<()>(interaction, c"release", ());
     }
+}
+
+/// The interactions' delegate, made the first time.
+fn delegate() -> Obj {
+    if DELEGATE.get().is_null() {
+        // SAFETY: an object of the library's class, kept for good.
+        DELEGATE.set(unsafe { send(delegate_class(), c"new", ()) });
+    }
+    DELEGATE.get()
 }
 
 /// The delegate's class.
@@ -53,9 +67,10 @@ fn delegate_class() -> Obj {
     made_class(c"TautDragOut", c"NSObject", &methods, &[c"UIDragInteractionDelegate"])
 }
 
-/// After a run: what the lifted box handed out becomes the drag's items. What leaves the window
-/// otherwise (a pointer dragging past its edge) cannot go: the system starts no drag for it.
-fn follow(ui: &mut Ui) {
+/// After a run of a window: what the lifted box handed out becomes the drag's items. What leaves
+/// the window otherwise (a pointer dragging past its edge) cannot go: the system starts no drag
+/// for it.
+fn follow(ui: &mut Ui, _: Obj) {
     let lifted = std::mem::take(&mut ui.crossing.lift) != 0;
     let Some(what) = ui.take_drag_out() else { return };
     let items = if lifted { items(what) } else { Vec::new() };
@@ -109,16 +124,17 @@ fn drag_item(provider: Obj) -> Obj {
 
 /// The system lifts a drag where the finger is: the box there that hands something out runs
 /// once as the one lifted, and what it hands out is the drag's. None where no box does.
-extern "C" fn items_to_lift(_: Obj, _: Sel, _: Obj, session: Obj) -> Obj {
-    let at = crate::ios::place_of(crate::ios::view(), session);
-    let lifted = crate::ios::with_ui(|ui| {
+extern "C" fn items_to_lift(_: Obj, _: Sel, interaction: Obj, session: Obj) -> Obj {
+    let view = crate::ios::view_of(interaction);
+    let at = crate::ios::place_of(view, session);
+    let lifted = crate::ios::with_ui_of(view, |ui| {
         let (id, rect) = ui.crossing.offers.iter().rev().find(|(_, rect)| rect.contains(at)).copied()?;
         ui.crossing.lift = id;
         Some(rect)
     });
     LIFTED.set(lifted.flatten());
     if LIFTED.get().is_some() {
-        heard(Heard::Other(Box::new(|_| true)));
+        heard_in(view, Heard::Other(Box::new(|_| true)));
         crate::ios::turn();
     }
     let items = ITEMS.take();
@@ -128,9 +144,9 @@ extern "C" fn items_to_lift(_: Obj, _: Sel, _: Obj, session: Obj) -> Obj {
 }
 
 /// What lifts: the box, as a picture of the view where it is.
-extern "C" fn lifted_preview(_: Obj, _: Sel, _: Obj, _: Obj, _: Obj) -> Obj {
-    let (Some(lifted), view) = (LIFTED.get(), crate::ios::view()) else { return std::ptr::null_mut() };
-    let origin = crate::ios::origin();
+extern "C" fn lifted_preview(_: Obj, _: Sel, interaction: Obj, _: Obj, _: Obj) -> Obj {
+    let (Some(lifted), view) = (LIFTED.get(), crate::ios::view_of(interaction)) else { return std::ptr::null_mut() };
+    let origin = crate::ios::origin_of(view);
     let area = NSRect::new(f64::from(lifted.x) + origin.x, f64::from(lifted.y) + origin.y, f64::from(lifted.w), f64::from(lifted.h));
     let middle = NSPoint { x: area.origin.x + area.size.width / 2.0, y: area.origin.y + area.size.height / 2.0 };
     // SAFETY: a picture of part of the view, shown where it was, in a preview handed back
@@ -146,15 +162,18 @@ extern "C" fn lifted_preview(_: Obj, _: Sel, _: Obj, _: Obj, _: Obj) -> Obj {
 }
 
 /// The drag ended: the box's app hears what became of it.
-extern "C" fn ended(_: Obj, _: Sel, _: Obj, _: Obj, operation: isize) {
+extern "C" fn ended(_: Obj, _: Sel, interaction: Obj, _: Obj, operation: isize) {
     let taken = match operation {
         MOVE => Some(DropEffect::Moved),
         COPY => Some(DropEffect::Copied),
         _ => None,
     };
     LIFTED.set(None);
-    heard(Heard::Other(Box::new(move |ui: &mut Ui| {
-        ui.set_drop_effect(taken);
-        true
-    })));
+    heard_in(
+        crate::ios::view_of(interaction),
+        Heard::Other(Box::new(move |ui: &mut Ui| {
+            ui.set_drop_effect(taken);
+            true
+        })),
+    );
 }

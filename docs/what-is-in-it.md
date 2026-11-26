@@ -113,8 +113,10 @@ Popovers anchored to their button.
 - **Emoji** (`emoji`): colour emoji in all text, sequences as one glyph and one cursor step;
   from the system's font or the app's. `ui.emoji_in_full()` adds `COLR` v1 and SVG glyphs
   (about 30 KB with fonts already read; 360 KB in the smallest program).
-- **Right to left** (`right-to-left`): full Unicode bidi (UAX #9), Arabic and Syriac joining,
-  marks placed as HarfBuzz does, visual cursor, split where directions meet.
+- **Right to left** (`right-to-left`): full Unicode bidi (UAX #9), each paragraph ordered whole
+  (a wrapped line's numbers and punctuation as unwrapped: 1,251,592 wrapped lines of Unicode's
+  tests), Arabic and Syriac joining, marks placed as HarfBuzz does, visual cursor, split where
+  directions meet.
 - **Indic and South-East Asian** (`brahmic`): all of HarfBuzz's Indic and Universal Shaping
   Engine scripts; grapheme clusters kept whole by cursor and line breaks. Matches HarfBuzz on
   263,205 words in 46 fonts. Thai, Lao, Khmer and Burmese lines break between words: Uniscribe
@@ -123,21 +125,24 @@ Popovers anchored to their button.
 - **Shaped app fonts** (`shaping`): ligatures, contextual forms, stacked marks, kerning beyond
   pairs, as on pages, in whole pixels; matches HarfBuzz on 1,657 word-font pairs. The system's
   text in the window's language forms (`locl`), also in lines with marks or letters of fallback
-  fonts, and on macOS and iOS.
+  fonts, and on macOS and iOS: such lines are shaped here and drawn by the system, glyph by
+  glyph (GDI, FreeType, CoreText).
 - **Shaping:** script and language features (`Language::named("sr")`), variation selectors,
   fractions, random alternates, Syriac stretching, variable-font feature variations: matches
   HarfBuzz 12.3.2 and 14.5 on 13,066 words in 77 fonts. Mark composition and decomposition:
   matches HarfBuzz 14.5 on 428,444 word-font pairs. Marks in fonts without `GPOS` placed by
   combining class, as HarfBuzz's fallback: matches HarfBuzz 12.3.2 and 14.5 on 1,269 word-font
-  pairs.
+  pairs across, and 197 down a column.
 - **Vertical text**: labels, paragraphs and rich text in columns right to left
   (`ui.vertical_label`, `ui.vertical_paragraph`, `ui.vertical_rich`), breaking as CJK line breaking
   (UAX #14, kinsoku) allows; text boxes (`ui.vertical_text_box`, `ui.vertical_text_area`) with
   cursor, selection, keys along and across columns, pointer, input methods at the cursor, clipboard
   and undo, read by column with each character's place. UAX #50 orientation, `vert` forms,
   `vmtx`/`VORG` (matches HarfBuzz in seven CJK fonts); tate-chu-yoko (`ui.upright_digits`;
-  `Span::upright` with `ruby`); fullwidth punctuation trimmed beside punctuation, as Chrome does.
-  Matches Chrome within a pixel on 108 clusters in Yu Gothic.
+  `Span::upright` with `ruby`); fullwidth punctuation trimmed beside punctuation, each mark of the
+  kind its glyph in the font shows, and 〜 and ゠ starting a line in Chinese, as Chrome does.
+  Matches Chrome within a pixel on 108 clusters in Yu Gothic, and on 21 lines of punctuation and
+  breaks in Yu Gothic, Microsoft JhengHei and Microsoft YaHei.
 - **Ruby** (`Span::ruby`, feature `ruby`): readings over rich text and beside vertical text,
   spread and reaching over neighbours as CSS Ruby and JLREQ have it; within a pixel of Chrome.
   Readers hear each reading after its base, in brackets.
@@ -174,9 +179,11 @@ Popovers anchored to their button.
   Windows decodes on the GPU (DXVA) what the GPU decodes (checked: H.264, HEVC, VP9).
 - SVG: clip paths, masks, patterns, markers, symbols; on request, `shape-rendering`, seamless
   clip paths and masks, text (on paths too; shaped with `shaping`), filters (every primitive,
-  lighting and `BackgroundImage` included; about 90 KB), pictures and nested SVG (in the file,
-  or through the app's loader), and SMIL animation as frames. Drawing cost is bounded by file
-  length.
+  lighting, `BackgroundImage`, paint inputs and kernel units included; about 90 KB), pictures and
+  nested SVG (in the file, or through the app's loader). SMIL animation, motion along paths
+  included: as frames, or playing in a window (`AnimatedDrawing`), where the pointer and keys
+  begin and end what waits for them. Drawing cost is bounded by file length. Windows' system
+  fonts are read a glyph at a time (a page of CJK text peaks at 6 MB, not 51).
 - 3D meshes: filled, lit, coloured or outlined, with depth; all CPU cores, only on change; a
   million triangles in about 14 ms at 1920×1080.
 - PDF: pages up to 200 inches, shapes, searchable shaped text with subset fonts (as their
@@ -216,9 +223,9 @@ Popovers anchored to their button.
   has a save picker, else a download); drops in and drags out; notifications; printing; one
   running copy across tabs; WebGL2 (`gpu`, `gpu-draw`). A frame only when something changed.
 - Open files and links with the default program.
-- **iOS and iPadOS** (UIKit): one window filling its scene, the safe area and keyboard kept
-  clear; rotation, Split View and Stage Manager sizes; dark mode, Dynamic Type, more contrast,
-  less motion; fingers, Apple Pencil, trackpad and mouse, hardware keyboards, input methods, the
+- **iOS and iPadOS** (UIKit): a window filling its scene, the safe area and keyboard kept
+  clear; on iPad each second window a scene of its own; rotation, Split View and Stage Manager
+  sizes; dark mode, Dynamic Type, more contrast, less motion; fingers, Apple Pencil, trackpad and mouse, hardware keyboards, input methods, the
   system's keyboard reading text boxes (corrections, predictions, capitals) and its edit menu;
   the document picker as the system file dialog (several files, folders, saving); files opened
   in the system's preview; files, pictures and text dropped in; drag out; files on the
@@ -243,7 +250,8 @@ Popovers anchored to their button.
   bilinearly, shown by the screen's headroom as their metadata says. Direct3D 11 and 12,
   Vulkan and OpenGL (a float pixel format) present in scRGB (Vulkan in HDR10 where the GPU has
   no scRGB); Wayland hands over PQ (`wp_color_manager_v1`); macOS shows EDR through Metal.
-  The screen's SDR white and peak (macOS: EDR headroom) followed. The rest stays at SDR white;
+  The screen's SDR white and peak (macOS: EDR headroom) followed, Vulkan's HDR metadata too. The
+  rest stays at SDR white;
   SDR screens get the same pixels.
 
 ## Input and accessibility

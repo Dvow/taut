@@ -190,6 +190,8 @@ impl Ui {
     fn stroke_vertical(&mut self, text: &mut String, stroke: &Stroke, many: bool, shown: &mut Shown, edited: &mut Edited) -> bool {
         match stroke {
             Stroke::Text(typed) => self.edit.insert(text, typed, many, true),
+            #[cfg(any(target_os = "android", test))]
+            Stroke::DeleteAround(around) => self.edit.delete_around(text, *around),
             #[cfg(target_os = "ios")]
             Stroke::Replace(done) => self.edit.keyboard(text, done, many),
             Stroke::Key(_, mods) if mods.alt => return false,

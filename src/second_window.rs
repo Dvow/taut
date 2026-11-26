@@ -348,6 +348,16 @@ impl Ui {
     }
 }
 
+/// For the window code (macOS and iOS): runs work in the interface of a window, the first's
+/// (`None`) or a second one's. None for a second window that does not exist.
+#[cfg(target_vendor = "apple")]
+pub(crate) fn within<T>(first: &mut Ui, known: Option<Id>, work: impl FnOnce(&mut Ui) -> T) -> Option<T> {
+    match known {
+        Some(known) => first.in_window(known, work),
+        None => Some(work(first)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,8 +4,8 @@
 //! seek at that rate, the pitch kept by `scaletempo` where it is installed. A system without
 //! GStreamer, or without `playbin`, is told so.
 
+use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
-use crate::x11::{dlclose, dlopen, library, symbol};
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::ptr::null_mut;
 use std::sync::OnceLock;

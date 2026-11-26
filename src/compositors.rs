@@ -23,10 +23,11 @@
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) mod tests {
     use crate::atspi::{ANSWER, Bus, FAILED, NEWS, PROPERTIES, Pack, Value};
+    use crate::dynamic_library::library;
     use crate::geom::{Point, pt};
     use crate::touch::TouchPhase;
     use crate::wayland_wire::{Arg, Interface, Message, Shared, Wire};
-    use crate::x11::{PollFd, dlclose, dlopen, library, poll, symbol};
+    use crate::x11::{PollFd, poll};
     use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void};
     use std::os::fd::AsRawFd;
     use std::time::{Duration, Instant};

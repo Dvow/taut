@@ -285,18 +285,6 @@ impl Drop for Pipeline {
     }
 }
 
-/// An OpenGL function of the current WGL context by name: `wglGetProcAddress`'s, or for those
-/// of OpenGL 1.1 opengl32.dll's own; null where neither has it.
-pub(crate) fn wgl_function(name: &CStr) -> *const c_void {
-    let library = system_library("opengl32.dll");
-    let find = function_in(library, c"wglGetProcAddress");
-    // SAFETY: `wglGetProcAddress` as wingdi.h declares it; the name ends in a zero. Some drivers
-    // say 1, 2, 3 or -1 for none.
-    let found = if find == 0 { 0 } else { unsafe { std::mem::transmute::<usize, unsafe extern "system" fn(*const c_char) -> usize>(find)(name.as_ptr()) } };
-    let found = if matches!(found, 0..=3 | usize::MAX) { function_in(library, name) } else { found };
-    found as *const c_void
-}
-
 /// The strip GDI draws a window's text into: its DC, and its pixels, `width` a row, `rows`
 /// rows.
 pub(crate) struct Strip {

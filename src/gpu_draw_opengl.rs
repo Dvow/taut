@@ -11,81 +11,54 @@
 //! - OpenGL 3.3 blends GDI's runs per channel (dual-source blending); OpenGL ES has no GDI runs.
 //! - What it changes in the context it puts back: the program, framebuffer, vertex array,
 //!   blending and the texture of unit 0. What it makes goes with the context.
+use crate::functions::functions;
 use crate::gpu_draw::{DrawList, Quad, SHADING, SIDE};
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::ptr::null;
 
-/// Declares the OpenGL functions drawing calls, and how they are found.
-macro_rules! functions {
-    ($($name:ident($($argument:ty),*) $(-> $result:ty)?;)*) => {
-        /// The OpenGL functions drawing calls, as found by the context's loader.
-        #[allow(non_snake_case)] // (OpenGL's own names.)
-        pub(crate) struct Gl {
-            $($name: unsafe extern "system" fn($($argument),*) $(-> $result)?,)*
-        }
-        impl Gl {
-            /// Each function, by name from `find`; nothing where one is missing.
-            pub(crate) fn load(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Option<Gl> {
-                // SAFETY: each is declared as gl3.h declares it.
-                Some(Gl { $($name: unsafe { found(find, concat!(stringify!($name), "\0"))? },)* })
-            }
-        }
-    };
-}
-
-/// A function by its name (ending in a zero) from `find`, as `F`; nothing where it has none.
-///
-/// # Safety
-/// `F` is the function's type: a function pointer.
-unsafe fn found<F: Copy>(find: &mut dyn FnMut(&CStr) -> *const c_void, name: &str) -> Option<F> {
-    let found = find(CStr::from_bytes_with_nul(name.as_bytes()).ok()?);
-    // SAFETY: as the caller promises; a function pointer is one pointer-sized value.
-    (!found.is_null()).then(|| unsafe { std::mem::transmute_copy::<*const c_void, F>(&found) })
-}
-
-functions! {
-    glGetError() -> c_uint;
-    glGetIntegerv(c_uint, *mut c_int);
-    glEnable(c_uint);
-    glDisable(c_uint);
-    glBlendFuncSeparate(c_uint, c_uint, c_uint, c_uint);
-    glViewport(c_int, c_int, c_int, c_int);
-    glScissor(c_int, c_int, c_int, c_int);
-    glActiveTexture(c_uint);
-    glGenTextures(c_int, *mut c_uint);
-    glBindTexture(c_uint, c_uint);
-    glTexParameteri(c_uint, c_uint, c_int);
-    glTexImage2D(c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, *const c_void);
-    glTexSubImage2D(c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, *const c_void);
-    glPixelStorei(c_uint, c_int);
-    glGenFramebuffers(c_int, *mut c_uint);
-    glBindFramebuffer(c_uint, c_uint);
-    glFramebufferTexture2D(c_uint, c_uint, c_uint, c_uint, c_int);
-    glCheckFramebufferStatus(c_uint) -> c_uint;
-    glGenBuffers(c_int, *mut c_uint);
-    glBindBuffer(c_uint, c_uint);
-    glBufferData(c_uint, isize, *const c_void, c_uint);
-    glBufferSubData(c_uint, isize, isize, *const c_void);
-    glGenVertexArrays(c_int, *mut c_uint);
-    glBindVertexArray(c_uint);
-    glEnableVertexAttribArray(c_uint);
-    glVertexAttribPointer(c_uint, c_int, c_uint, u8, c_int, *const c_void);
-    glVertexAttribDivisor(c_uint, c_uint);
-    glDrawArraysInstanced(c_uint, c_int, c_int, c_int);
-    glCreateShader(c_uint) -> c_uint;
-    glShaderSource(c_uint, c_int, *const *const c_char, *const c_int);
-    glCompileShader(c_uint);
-    glGetShaderiv(c_uint, c_uint, *mut c_int);
-    glDeleteShader(c_uint);
-    glCreateProgram() -> c_uint;
-    glAttachShader(c_uint, c_uint);
-    glLinkProgram(c_uint);
-    glGetProgramiv(c_uint, c_uint, *mut c_int);
-    glDeleteProgram(c_uint);
-    glUseProgram(c_uint);
-    glGetUniformLocation(c_uint, *const c_char) -> c_int;
-    glUniform1i(c_int, c_int);
-}
+functions!(Gl {
+    glGetError: fn() -> c_uint;
+    glGetIntegerv: fn(c_uint, *mut c_int);
+    glEnable: fn(c_uint);
+    glDisable: fn(c_uint);
+    glBlendFuncSeparate: fn(c_uint, c_uint, c_uint, c_uint);
+    glViewport: fn(c_int, c_int, c_int, c_int);
+    glScissor: fn(c_int, c_int, c_int, c_int);
+    glActiveTexture: fn(c_uint);
+    glGenTextures: fn(c_int, *mut c_uint);
+    glBindTexture: fn(c_uint, c_uint);
+    glTexParameteri: fn(c_uint, c_uint, c_int);
+    glTexImage2D: fn(c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, *const c_void);
+    glTexSubImage2D: fn(c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, *const c_void);
+    glPixelStorei: fn(c_uint, c_int);
+    glGenFramebuffers: fn(c_int, *mut c_uint);
+    glBindFramebuffer: fn(c_uint, c_uint);
+    glFramebufferTexture2D: fn(c_uint, c_uint, c_uint, c_uint, c_int);
+    glCheckFramebufferStatus: fn(c_uint) -> c_uint;
+    glGenBuffers: fn(c_int, *mut c_uint);
+    glBindBuffer: fn(c_uint, c_uint);
+    glBufferData: fn(c_uint, isize, *const c_void, c_uint);
+    glBufferSubData: fn(c_uint, isize, isize, *const c_void);
+    glGenVertexArrays: fn(c_int, *mut c_uint);
+    glBindVertexArray: fn(c_uint);
+    glEnableVertexAttribArray: fn(c_uint);
+    glVertexAttribPointer: fn(c_uint, c_int, c_uint, u8, c_int, *const c_void);
+    glVertexAttribDivisor: fn(c_uint, c_uint);
+    glDrawArraysInstanced: fn(c_uint, c_int, c_int, c_int);
+    glCreateShader: fn(c_uint) -> c_uint;
+    glShaderSource: fn(c_uint, c_int, *const *const c_char, *const c_int);
+    glCompileShader: fn(c_uint);
+    glGetShaderiv: fn(c_uint, c_uint, *mut c_int);
+    glDeleteShader: fn(c_uint);
+    glCreateProgram: fn() -> c_uint;
+    glAttachShader: fn(c_uint, c_uint);
+    glLinkProgram: fn(c_uint);
+    glGetProgramiv: fn(c_uint, c_uint, *mut c_int);
+    glDeleteProgram: fn(c_uint);
+    glUseProgram: fn(c_uint);
+    glGetUniformLocation: fn(c_uint, *const c_char) -> c_int;
+    glUniform1i: fn(c_int, c_int);
+});
 
 // From OpenGL's headers (gl3.h, glext.h).
 const TEXTURE_2D: c_uint = 0x0DE1;
@@ -213,7 +186,7 @@ impl Pipeline {
     /// or with `desktop` OpenGL 3.3 core (WGL's: windows' textures red first, GDI's runs blended
     /// per channel). Nothing where any part can't be made.
     pub(crate) fn new(find: &mut dyn FnMut(&CStr) -> *const c_void, desktop: bool) -> Option<Pipeline> {
-        let gl = Gl::load(find)?;
+        let gl = Gl::load(find).ok()?;
         let head = if desktop { "#version 330 core\n#define DUAL\n" } else { "#version 300 es\nprecision highp float;\nprecision highp int;\n" };
         let corner = format!("{head}{CORNER}\0");
         let pixel = format!("{head}{TEXTURES}{SHADING}{PIXEL}\0");

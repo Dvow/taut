@@ -612,6 +612,7 @@ pub(crate) const CLASSES: [Class; 3] = [
             ("setComposingText", "(Ljava/lang/CharSequence;I)Z"),
             ("finishComposingText", "()Z"),
             ("deleteSurroundingText", "(II)Z"),
+            ("deleteSurroundingTextInCodePoints", "(II)Z"),
             ("performEditorAction", "(I)Z"),
         ],
     },

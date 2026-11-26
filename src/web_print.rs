@@ -72,9 +72,9 @@ fn uses_letter() -> bool {
 fn hand_page(paper: &Paper, page: usize) {
     let size = paper.size(page);
     let (width, mut pixels) = paper.render_page(page, SCALE);
+    // 0xAARRGGBB becomes the bytes red, green, blue, alpha.
     for pixel in &mut pixels {
-        let [blue, green, red, alpha] = pixel.to_le_bytes();
-        *pixel = u32::from_le_bytes([red, green, blue, alpha]);
+        *pixel = pixel.swap_bytes().rotate_right(8);
     }
     let height = pixels.len() / width.max(1);
     // SAFETY: four bytes a pixel, read at once.

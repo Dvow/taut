@@ -27,20 +27,30 @@
 //! app switcher) and the renderer are used. The CPU draws and Core Animation shows; with the
 //! feature `gpu`, Metal shows (`gpu_ios`).
 //!
+//! On iPad each second window is a scene of its own: asked for as the app first describes it
+//! (`requestSceneSessionActivation` with an activity naming the window), shown as it connects,
+//! closed as the app stops describing it. The person closing its scene is a close request
+//! ([`Ui::close_requested`]). A scene the person opens from the system has nothing to show and
+//! closes. What UIKit says of a view goes to its window (`heard_in`); the keyboard, typing and
+//! dialogs are the window in front's (the key window: `view`, `heard`). An iPhone shows one
+//! scene: second windows do nothing there.
+//!
 //! The app hears the program go to the background as its window minimized
 //! ([`Event::Minimized`], [`Ui::window_minimized`]): the moment to save its state. The system's
 //! file dialog, drops and files opened are `ios_files`'; dragging out is `ios_drag_out`'s;
 //! notifications are the user notification centre's (`macos_notifications`). Each is handed
-//! to the window the first time an app asks for it. Tray icons, global hotkeys and second
-//! windows have no iOS equivalent: they do nothing.
+//! to the window the first time an app asks for it. Tray icons and global hotkeys have no iOS
+//! equivalent: they do nothing.
 use crate::color::Color;
 use crate::core_text::SystemText;
 use crate::event::{Button, Cursor, Event, Key, Mods};
 use crate::geom::{Point, Rect, Size, pt};
+use crate::id::Id;
 use crate::macos_sys::*;
 use crate::platform::{Clipboard, PicturesAndFiles, Window};
 use crate::preferences::Preferences;
 use crate::screens::Screen;
+use crate::second_window::{WindowKind, within};
 use crate::surface::Surface;
 use crate::theme::ContrastColors;
 #[cfg(feature = "touch")]
@@ -80,6 +90,7 @@ unsafe extern "C" {
     static UIKeyboardWillChangeFrameNotification: Obj;
     static UIKeyboardWillHideNotification: Obj;
     static UIKeyboardFrameEndUserInfoKey: Obj;
+    static UIWindowDidBecomeKeyNotification: Obj;
 }
 
 // The main queue (`dispatch_get_main_queue()` is this object's address), in the system library.
@@ -133,6 +144,25 @@ pub(crate) enum Heard {
     Ending,
     /// Something only a part knows of (a reader's request).
     Other(Box<dyn FnOnce(&mut Ui) -> bool>),
+    /// A scene connected after the first (iPad): its window and session, and the second window it
+    /// was asked for, if any.
+    SceneConnected(Obj, Obj, Option<Id>),
+    /// A scene went (the person closed it, or the app): its session, and its window.
+    SceneGone(Obj, Obj),
+}
+
+/// What UIKit's calls ask of a window while a turn may be running: its window, view and
+/// controller, where the page lies in the view, whether the page is dark, the pointer's shape
+/// over it, and which window it is (none: the first).
+#[derive(Clone, Copy)]
+struct Seen {
+    window: Obj,
+    view: Obj,
+    controller: Obj,
+    origin: NSPoint,
+    dark: bool,
+    cursor: Cursor,
+    known: Option<Id>,
 }
 
 /// What `run` hands the window: the app's title, what is to show it, and the app.
@@ -154,31 +184,32 @@ struct Input {
 }
 
 thread_local! {
-    static HEARD: RefCell<Vec<Heard>> = const { RefCell::new(Vec::new()) };
+    /// What UIKit said, and of which window (by its view).
+    static HEARD: RefCell<Vec<(Obj, Heard)>> = const { RefCell::new(Vec::new()) };
     static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };
     /// What `run` was given, until the window opens.
     static STARTING: RefCell<Option<Starting>> = const { RefCell::new(None) };
     static INPUT: RefCell<Input> = RefCell::new(Input::default());
-    /// The scene delegate's window (UIKit asks for it).
-    static SCENE_WINDOW: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
+    /// Each scene delegate and its window (UIKit asks a delegate for its own).
+    static SCENE_WINDOWS: RefCell<Vec<(Obj, Obj)>> = const { RefCell::new(Vec::new()) };
     /// A turn is queued; the time the timer queued last fires at, and its number.
     static QUEUED: Cell<bool> = const { Cell::new(false) };
     static TIMER: Cell<(Option<Instant>, usize)> = const { Cell::new((None, 0)) };
     /// Text pasted by the system's Paste (its edit menu, the keyboard's bar): read at once, as
     /// the system allows without asking the person, and taken by the next paste.
     static PASTED: RefCell<Option<String>> = const { RefCell::new(None) };
-    /// What UIKit's calls ask while a turn may be running: the view and its controller, where
-    /// the page lies in the view, whether the page is dark, and the pointer's shape.
-    static VIEW: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
-    static CONTROLLER: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
-    static ORIGIN: Cell<NSPoint> = const { Cell::new(NSPoint { x: 0.0, y: 0.0 }) };
-    static DARK_PAGE: Cell<bool> = const { Cell::new(false) };
-    static CURSOR: Cell<Cursor> = const { Cell::new(Cursor::Arrow) };
+    /// What UIKit's calls ask of each window, the first window's first; and the view of the
+    /// window in front (the key window: the keyboard's and the dialogs').
+    static SEEN: RefCell<Vec<Seen>> = const { RefCell::new(Vec::new()) };
+    static FRONT: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
+    /// What parts handed to the window put on each view (drops, drags out, the long press in
+    /// text boxes): on every window's as it opens.
+    static VIEW_PARTS: RefCell<Vec<fn(Obj)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// What the window does after each run for a part an app asked for (see `follow_parts`); and
-/// for typing, with the page's place in the view.
-pub(crate) type AfterRun = fn(&mut Ui);
+/// What a window does after each run for a part an app asked for (see `follow_parts`), with its
+/// view; and for typing, with the front window's page's place in its view.
+pub(crate) type AfterRun = fn(&mut Ui, Obj);
 pub(crate) type Typing = fn(&mut Ui, NSRect);
 
 thread_local! {
@@ -208,31 +239,70 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 /// A wake is queued that has not run yet: another queues nothing.
 static WOKEN: AtomicBool = AtomicBool::new(false);
 
-/// Notes what UIKit said, and queues a turn.
+/// Notes what UIKit said of the window in front, and queues a turn.
 pub(crate) fn heard(what: Heard) {
-    HEARD.with_borrow_mut(|heard| heard.push(what));
+    heard_in(FRONT.get(), what);
+}
+
+/// Notes what UIKit said of the window of `view` (the front window for another view), and
+/// queues a turn.
+pub(crate) fn heard_in(view: Obj, what: Heard) {
+    HEARD.with_borrow_mut(|heard| heard.push((view, what)));
     queue_turn();
 }
 
-/// Where the page lies in the view, in points.
+/// What is kept of the window of `view`.
+fn seen(view: Obj) -> Option<Seen> {
+    SEEN.with_borrow(|seen| seen.iter().find(|seen| seen.view == view).copied())
+}
+
+/// Where the page lies in the front window's view, in points.
 pub(crate) fn origin() -> NSPoint {
-    ORIGIN.get()
+    origin_of(FRONT.get())
 }
 
-/// The library's view: null until the window opens.
+/// Where the page lies in `view`, one of the library's, in points.
+pub(crate) fn origin_of(view: Obj) -> NSPoint {
+    seen(view).map_or(NSPoint::default(), |seen| seen.origin)
+}
+
+/// The library's view in the front window: null until the window opens.
 pub(crate) fn view() -> Obj {
-    VIEW.get()
+    FRONT.get()
 }
 
-/// Does work with the window's interface, unless a turn is running (then none).
+/// The library's view an interaction (a drop's, a drag's) is on.
+pub(crate) fn view_of(interaction: Obj) -> Obj {
+    // SAFETY: an interaction answers its view.
+    unsafe { send(interaction, c"view", ()) }
+}
+
+/// Puts a part on the view of every window: those open, and each opening from now on.
+pub(crate) fn on_every_view(add: fn(Obj)) {
+    SEEN.with_borrow(|seen| seen.iter().for_each(|seen| add(seen.view)));
+    VIEW_PARTS.with_borrow_mut(|parts| parts.push(add));
+}
+
+/// Does work with the front window's interface, unless a turn is running (then none).
 pub(crate) fn with_ui<T>(work: impl FnOnce(&mut Ui) -> T) -> Option<T> {
-    HOST.with(|host| host.try_borrow_mut().ok()?.as_mut().map(|host| work(&mut host.ui)))
+    with_ui_of(FRONT.get(), work)
 }
 
-/// The view controller showing what is in front: the window's, or what it presents (a dialog
-/// over a dialog). Null until the window opens.
+/// Does work with the interface of the window of `view`, unless a turn is running (then none).
+pub(crate) fn with_ui_of<T>(view: Obj, work: impl FnOnce(&mut Ui) -> T) -> Option<T> {
+    let known = seen(view)?.known;
+    HOST.with(|host| within(&mut host.try_borrow_mut().ok()?.as_mut()?.ui, known, work))
+}
+
+/// The view controller showing what is in front of the front window: its own, or what it
+/// presents (a dialog over a dialog). Null until the window opens.
 pub(crate) fn front_controller() -> Obj {
-    let mut front = CONTROLLER.get();
+    front_controller_of(FRONT.get())
+}
+
+/// The view controller showing what is in front of the window of `view`.
+pub(crate) fn front_controller_of(view: Obj) -> Obj {
+    let mut front = seen(view).map_or(std::ptr::null_mut(), |seen| seen.controller);
     loop {
         // SAFETY: a controller answers what it presents (nil for nothing; nil answers nil).
         let over: Obj = unsafe { send(front, c"presentedViewController", ()) };
@@ -324,8 +394,9 @@ extern "C" fn woken(_: *mut c_void) {
 /// notices.
 fn delegate_class() -> Obj {
     let notice = "v@:@";
-    let methods: [(&CStr, *const c_void, &str); 10] = [
+    let methods: [(&CStr, *const c_void, &str); 11] = [
         (c"application:didFinishLaunchingWithOptions:", launched as *const c_void, "B@:@@"),
+        (c"windowBecameKey:", window_became_key as *const c_void, notice),
         (c"application:configurationForConnectingSceneSession:options:", scene_configuration as *const c_void, "@@:@@@"),
         (c"enteredBackground:", entered_background as *const c_void, notice),
         (c"enteringForeground:", entering_foreground as *const c_void, notice),
@@ -339,10 +410,11 @@ fn delegate_class() -> Obj {
     made_class(c"TautAppDelegate", c"UIResponder", &methods, &[c"UIApplicationDelegate"])
 }
 
-/// The scene delegate's class: the window, made as the scene connects.
+/// The scene delegate's class: the window, made as the scene connects; the scene going.
 fn scene_class() -> Obj {
-    let methods: [(&CStr, *const c_void, &str); 3] = [
+    let methods: [(&CStr, *const c_void, &str); 4] = [
         (c"scene:willConnectToSession:options:", scene_connected as *const c_void, "v@:@@@"),
+        (c"sceneDidDisconnect:", scene_gone as *const c_void, "v@:@"),
         (c"window", scene_window as *const c_void, "@@:"),
         (c"setWindow:", set_scene_window as *const c_void, "v@:@"),
     ];
@@ -368,6 +440,7 @@ extern "C" fn launched(delegate: Obj, _: Sel, _: Obj, _: Obj) -> Bool {
             (crate::macos_sys::NSCurrentLocaleDidChangeNotification, c"localeChanged:"),
             (UIKeyboardWillChangeFrameNotification, c"keyboardMoved:"),
             (UIKeyboardWillHideNotification, c"keyboardMoved:"),
+            (UIWindowDidBecomeKeyNotification, c"windowBecameKey:"),
         ];
         for (name, action) in notices {
             send::<()>(centre, c"addObserver:selector:name:object:", (delegate, sel(action), name, std::ptr::null_mut::<c_void>()));
@@ -395,23 +468,62 @@ extern "C" fn scene_configuration(_: Obj, _: Sel, _: Obj, session: Obj, _: Obj) 
     }
 }
 
-/// The scene connects: its window opens. (Only the first scene's: the program has one window.)
-extern "C" fn scene_connected(_: Obj, _: Sel, scene: Obj, _: Obj, _: Obj) {
-    if !SCENE_WINDOW.get().is_null() {
-        return;
-    }
-    // SAFETY: a window made for the scene, kept for good.
+/// The kind of activity a second window's scene is asked for with.
+const SECOND_WINDOW: &str = "dev.taut.window";
+
+/// A scene connects: the first opens the program's window; a later one is a second window's
+/// (iPad), the window it was asked for being in its activity.
+extern "C" fn scene_connected(delegate: Obj, _: Sel, scene: Obj, session: Obj, options: Obj) {
+    // SAFETY: a window made for the scene: the first window's is kept for good, a second
+    // window's until it closes.
     let window: Obj = unsafe { send(send::<Obj>(class(c"UIWindow"), c"alloc", ()), c"initWithWindowScene:", (scene,)) };
-    SCENE_WINDOW.set(window);
-    open(window);
+    SCENE_WINDOWS.with_borrow_mut(|windows| windows.push((delegate, window)));
+    if STARTING.with_borrow(Option::is_some) {
+        return open(window);
+    }
+    heard(Heard::SceneConnected(window, session, asked_window(options)));
 }
 
-extern "C" fn scene_window(_: Obj, _: Sel) -> Obj {
-    SCENE_WINDOW.get()
+/// The second window a scene was asked for, by the activity it connects with.
+fn asked_window(options: Obj) -> Option<Id> {
+    // SAFETY: plain questions of the options, their activities, and an activity's information.
+    unsafe {
+        let activities: Obj = send(send::<Obj>(options, c"userActivities", ()), c"allObjects", ());
+        let ours = array_items(activities).into_iter().find(|activity| rust_string(send(*activity, c"activityType", ())).as_deref() == Some(SECOND_WINDOW))?;
+        let number: Obj = send(send::<Obj>(ours, c"userInfo", ()), c"objectForKey:", (ns_string("window"),));
+        (!number.is_null()).then(|| send::<u64>(number, c"unsignedLongLongValue", ()))
+    }
 }
 
-extern "C" fn set_scene_window(_: Obj, _: Sel, window: Obj) {
-    SCENE_WINDOW.set(window);
+/// A scene went: a second window's closes, and the scene's window is let go of (in the next
+/// turn).
+extern "C" fn scene_gone(delegate: Obj, _: Sel, scene: Obj) {
+    let window = SCENE_WINDOWS.with_borrow_mut(|windows| windows.iter().position(|(of, _)| *of == delegate).map(|at| windows.remove(at).1));
+    // SAFETY: a scene answers its session.
+    let session: Obj = unsafe { send(scene, c"session", ()) };
+    if let Some(window) = window {
+        heard(Heard::SceneGone(session, window));
+    }
+}
+
+extern "C" fn scene_window(delegate: Obj, _: Sel) -> Obj {
+    SCENE_WINDOWS.with_borrow(|windows| windows.iter().find(|(of, _)| *of == delegate).map_or(std::ptr::null_mut(), |(_, window)| *window))
+}
+
+/// (UIKit may set a delegate's window: each keeps the one it made.)
+extern "C" fn set_scene_window(_: Obj, _: Sel, _: Obj) {}
+
+/// A window became the key window: the one in front, whose keyboard and dialogs these are; it
+/// has the focus, the one before loses it.
+extern "C" fn window_became_key(_: Obj, _: Sel, notice: Obj) {
+    // SAFETY: a notice answers its object: here, the window.
+    let window: Obj = unsafe { send(notice, c"object", ()) };
+    let Some(now) = SEEN.with_borrow(|seen| seen.iter().find(|seen| seen.window == window).map(|seen| seen.view)) else { return };
+    let was = FRONT.replace(now);
+    if was != now {
+        heard_in(was, Heard::Event(Event::Focused(false)));
+        heard_in(now, Heard::Event(Event::Focused(true)));
+    }
 }
 
 /// The program went to the background: the app hears it at once, as its window minimized, so
@@ -450,7 +562,7 @@ extern "C" fn locale_changed(_: Obj, _: Sel, _: Obj) {
 
 /// The keyboard moves: how much of the view's bottom it will cover.
 extern "C" fn keyboard_moved(_: Obj, _: Sel, notice: Obj) {
-    let view = VIEW.get();
+    let view = FRONT.get();
     // SAFETY: the notice's end frame, in the screen's coordinates, turned into the view's.
     let covered = unsafe {
         let name: Obj = send(notice, c"name", ());
@@ -505,8 +617,9 @@ fn controller_class() -> Obj {
 }
 
 /// Light text (1) on a dark page, dark text (3) on a light one.
-extern "C" fn status_bar_style(_: Obj, _: Sel) -> isize {
-    if DARK_PAGE.get() { 1 } else { 3 }
+extern "C" fn status_bar_style(controller: Obj, _: Sel) -> isize {
+    let dark = SEEN.with_borrow(|seen| seen.iter().any(|seen| seen.controller == controller && seen.dark));
+    if dark { 1 } else { 3 }
 }
 
 /// The library's view class: touches, presses, layout, looks, and what readers ask.
@@ -559,24 +672,24 @@ pub(crate) unsafe fn send_super<R>(to: Obj, of: &CStr, name: &CStr, args: impl A
 extern "C" fn laid_out(view: Obj, _: Sel) {
     // SAFETY: UIView's own layout first.
     unsafe { send_super::<()>(view, c"UIView", c"layoutSubviews", ()) };
-    heard(Heard::Resized);
+    heard_in(view, Heard::Resized);
     turn();
 }
 
-extern "C" fn insets_changed(_: Obj, _: Sel) {
-    heard(Heard::Resized);
+extern "C" fn insets_changed(view: Obj, _: Sel) {
+    heard_in(view, Heard::Resized);
 }
 
-extern "C" fn traits_changed(_: Obj, _: Sel, _: Obj) {
-    heard(Heard::Looks);
-    heard(Heard::Resized);
+extern "C" fn traits_changed(view: Obj, _: Sel, _: Obj) {
+    heard_in(view, Heard::Looks);
+    heard_in(view, Heard::Resized);
 }
 
 /// Where a touch (or gesture) is, in units from the page's top left.
 pub(crate) fn place_of(view: Obj, touch: Obj) -> Point {
     // SAFETY: a touch or gesture answers its place in a view.
     let at: NSPoint = unsafe { send(touch, c"locationInView:", (view,)) };
-    let origin = ORIGIN.get();
+    let origin = origin_of(view);
     pt((at.x - origin.x) as f32, (at.y - origin.y) as f32)
 }
 
@@ -630,14 +743,14 @@ fn pointer_button(event: Obj) -> Button {
 /// A trackpad's or mouse's click: the mouse.
 fn pointed(view: Obj, touch: Obj, event: Obj, phase: TouchPhase) {
     let place = place_of(view, touch);
-    heard(Heard::Event(Event::Move(place)));
+    heard_in(view, Heard::Event(Event::Move(place)));
     let held = INPUT.with_borrow(|input| input.held);
     let pressed = INPUT.with_borrow_mut(|input| match phase {
         TouchPhase::Down => Some(Event::Press(*input.pointer_button.insert(pointer_button(event)), held)),
         TouchPhase::Move => None,
         TouchPhase::Up | TouchPhase::Cancel => input.pointer_button.take().map(Event::Release),
     });
-    pressed.into_iter().for_each(|event| heard(Heard::Event(event)));
+    pressed.into_iter().for_each(|event| heard_in(view, Heard::Event(event)));
 }
 
 /// What a pencil says beyond the mouse: pressure, tilt, touching.
@@ -662,11 +775,11 @@ fn stylus_of(view: Obj, touch: Obj, touching: bool) -> Stylus {
 /// A pencil: the mouse, told first what the pencil does (with the feature `touch`).
 fn penned(view: Obj, touch: Obj, phase: TouchPhase) {
     #[cfg(feature = "touch")]
-    heard(Heard::Event(Event::Stylus(Some(stylus_of(view, touch, phase == TouchPhase::Down || phase == TouchPhase::Move)))));
-    as_mouse(place_of(view, touch), phase);
+    heard_in(view, Heard::Event(Event::Stylus(Some(stylus_of(view, touch, phase == TouchPhase::Down || phase == TouchPhase::Move)))));
+    as_mouse(view, place_of(view, touch), phase);
     #[cfg(feature = "touch")]
     if matches!(phase, TouchPhase::Up | TouchPhase::Cancel) {
-        heard(Heard::Event(Event::Stylus(None)));
+        heard_in(view, Heard::Event(Event::Stylus(None)));
     }
 }
 
@@ -675,7 +788,7 @@ fn fingered(view: Obj, touch: Obj, phase: TouchPhase) {
     let place = place_of(view, touch);
     let id = INPUT.with_borrow_mut(|input| finger_id(input, touch, phase));
     if cfg!(feature = "touch") {
-        return heard(Heard::Event(Event::Touch(crate::touch::Touch { id, position: place, phase })));
+        return heard_in(view, Heard::Event(Event::Touch(crate::touch::Touch { id, position: place, phase })));
     }
     let mouse = INPUT.with_borrow_mut(|input| {
         input.mouse = input.mouse.or((phase == TouchPhase::Down).then_some(touch));
@@ -684,7 +797,7 @@ fn fingered(view: Obj, touch: Obj, phase: TouchPhase) {
         mine
     });
     if mouse {
-        as_mouse(place, phase);
+        as_mouse(view, place, phase);
     }
 }
 
@@ -705,16 +818,16 @@ fn finger_id(input: &mut Input, touch: Obj, phase: TouchPhase) -> u32 {
     id
 }
 
-/// A finger or pencil as the mouse's left button: down where it lands, moves, up as it lifts
-/// (and leaves with it).
-fn as_mouse(place: Point, phase: TouchPhase) {
+/// A finger or pencil as the mouse's left button, in the window of `view`: down where it lands,
+/// moves, up as it lifts (and leaves with it).
+fn as_mouse(view: Obj, place: Point, phase: TouchPhase) {
     let held = INPUT.with_borrow(|input| input.held);
     let events = match phase {
         TouchPhase::Down => [Some(Event::Move(place)), Some(Event::Press(Button::Left, held))],
         TouchPhase::Move => [Some(Event::Move(place)), None],
         TouchPhase::Up | TouchPhase::Cancel => [Some(Event::Release(Button::Left)), Some(Event::Leave)],
     };
-    events.into_iter().flatten().for_each(|event| heard(Heard::Event(event)));
+    events.into_iter().flatten().for_each(|event| heard_in(view, Heard::Event(event)));
 }
 
 /// A gesture recognizer's state.
@@ -726,7 +839,7 @@ pub(crate) fn state_of(gesture: Obj) -> isize {
 /// A pointer or hovering pencil over the view: it moves; it leaves.
 extern "C" fn hovered(view: Obj, _: Sel, gesture: Obj) {
     let event = if matches!(state_of(gesture), BEGAN | CHANGED) { Event::Move(place_of(view, gesture)) } else { Event::Leave };
-    heard(Heard::Event(event));
+    heard_in(view, Heard::Event(event));
 }
 
 /// A trackpad's or wheel's scrolling: the wheel, by the distance since the last. With Command
@@ -738,10 +851,10 @@ extern "C" fn scrolled(view: Obj, _: Sel, gesture: Obj) {
     // SAFETY: a pan gesture answers its distance, which is set back to nothing.
     let by: NSPoint = unsafe { send(gesture, c"translationInView:", (view,)) };
     unsafe { send::<()>(gesture, c"setTranslation:inView:", (NSPoint::default(), view)) };
-    heard(Heard::Event(Event::Move(place_of(view, gesture))));
+    heard_in(view, Heard::Event(Event::Move(place_of(view, gesture))));
     let (right, down) = (-by.x as f32, -by.y as f32);
     let zoom = INPUT.with_borrow(|input| input.held.ctrl) && down != 0.0;
-    heard(Heard::Event(if zoom { Event::Zoom(crate::touch::wheel_zoom(-down / NOTCH)) } else { Event::Wheel(right, down) }));
+    heard_in(view, Heard::Event(if zoom { Event::Zoom(crate::touch::wheel_zoom(-down / NOTCH)) } else { Event::Wheel(right, down) }));
 }
 
 /// A trackpad's pinch: a zoom by the change since the last.
@@ -752,8 +865,8 @@ extern "C" fn pinched(view: Obj, _: Sel, gesture: Obj) {
     // SAFETY: a pinch answers its scale, which is set back to 1.
     let by = unsafe { send::<f64>(gesture, c"scale", ()) } as f32;
     unsafe { send::<()>(gesture, c"setScale:", (1.0f64,)) };
-    heard(Heard::Event(Event::Move(place_of(view, gesture))));
-    heard(Heard::Event(Event::Zoom(by.max(0.1))));
+    heard_in(view, Heard::Event(Event::Move(place_of(view, gesture))));
+    heard_in(view, Heard::Event(Event::Zoom(by.max(0.1))));
 }
 
 /// The pointer's shape: one region, the whole view.
@@ -762,8 +875,8 @@ extern "C" fn pointer_region(_: Obj, _: Sel, _: Obj, _: Obj, region: Obj) -> Obj
 }
 
 /// A text beam over text; else the system's pointer.
-extern "C" fn pointer_style(_: Obj, _: Sel, _: Obj, _: Obj) -> Obj {
-    if CURSOR.get() != Cursor::Text {
+extern "C" fn pointer_style(_: Obj, _: Sel, interaction: Obj, _: Obj) -> Obj {
+    if seen(view_of(interaction)).is_none_or(|seen| seen.cursor != Cursor::Text) {
         return std::ptr::null_mut();
     }
     // SAFETY: a beam shape of a usual length, vertical (2), in a style constrained to nothing.
@@ -841,7 +954,7 @@ pub(crate) extern "C" fn presses_began(view: Obj, _: Sel, presses: Obj, event: O
             rest.push(press);
             continue;
         };
-        if pressed(code, flags, letters) {
+        if pressed(view, code, flags, letters) {
             INPUT.with_borrow_mut(|input| input.passed.push(code));
             rest.push(press);
         }
@@ -849,15 +962,15 @@ pub(crate) extern "C" fn presses_began(view: Obj, _: Sel, presses: Obj, event: O
     pass_on(view, c"pressesBegan:withEvent:", &rest, event);
 }
 
-/// One key went down: heard as the key, or the modifiers held. Says whether the text system
-/// should have it too (it types text).
-fn pressed(code: isize, flags: isize, letters: Obj) -> bool {
+/// One key went down, in the window of `view`: heard as the key, or the modifiers held. Says
+/// whether the text system should have it too (it types text).
+fn pressed(view: Obj, code: isize, flags: isize, letters: Obj) -> bool {
     if let Some(bit) = modifier(code) {
         let held = INPUT.with_borrow_mut(|input| {
             *bit(&mut input.held) = true;
             input.held
         });
-        heard(Heard::Event(Event::ModifiersChanged(held)));
+        heard_in(view, Heard::Event(Event::ModifiersChanged(held)));
         return false;
     }
     let held = mods_of(flags);
@@ -866,7 +979,7 @@ fn pressed(code: isize, flags: isize, letters: Obj) -> bool {
         input.keys.push(code);
         input.repeating = repeats(key).then(|| (key, held, Instant::now() + REPEAT_AFTER));
     });
-    heard(Heard::Event(Event::Key(key, held)));
+    heard_in(view, Heard::Event(Event::Key(key, held)));
     if repeats(key) {
         wake_at(Instant::now() + REPEAT_AFTER);
     }
@@ -881,7 +994,7 @@ pub(crate) extern "C" fn presses_ended(view: Obj, name: Sel, presses: Obj, event
             rest.push(press);
             continue;
         };
-        released(code, letters);
+        released(view, code, letters);
         let passed = INPUT.with_borrow_mut(|input| input.passed.iter().position(|of| *of == code).map(|at| input.passed.remove(at)));
         if passed.is_some() {
             rest.push(press);
@@ -891,21 +1004,21 @@ pub(crate) extern "C" fn presses_ended(view: Obj, name: Sel, presses: Obj, event
     pass_on(view, if ended { c"pressesEnded:withEvent:" } else { c"pressesCancelled:withEvent:" }, &rest, event);
 }
 
-/// One key came up.
-fn released(code: isize, letters: Obj) {
+/// One key came up, in the window of `view`.
+fn released(view: Obj, code: isize, letters: Obj) {
     if let Some(bit) = modifier(code) {
         let held = INPUT.with_borrow_mut(|input| {
             *bit(&mut input.held) = false;
             input.held
         });
-        return heard(Heard::Event(Event::ModifiersChanged(held)));
+        return heard_in(view, Heard::Event(Event::ModifiersChanged(held)));
     }
     INPUT.with_borrow_mut(|input| {
         input.keys.retain(|held| *held != code);
         input.repeating = input.repeating.filter(|_| !input.keys.is_empty());
     });
     if let Some(key) = key_of(code, letters) {
-        heard(Heard::Event(Event::KeyUp(key)));
+        heard_in(view, Heard::Event(Event::KeyUp(key)));
     }
 }
 
@@ -940,20 +1053,36 @@ fn repeat_keys() {
     });
     let Some((event, next)) = due else { return };
     if let Some(event) = event {
-        HEARD.with_borrow_mut(|heard| heard.push(Heard::Event(event)));
+        HEARD.with_borrow_mut(|heard| heard.push((FRONT.get(), Heard::Event(event))));
     }
     wake_at(next);
 }
 
-// ---- the window ----
+// ---- the windows ----
 
-/// The window, its view and page, and the interface shown in it.
+/// The windows and the interface shown in them: the first window's, which holds the second
+/// windows' (each in a scene of its own, on iPad).
 struct Host {
     app: Box<dyn FnMut(&mut Ui)>,
     ui: Ui,
+    windows: Vec<Shown>,
+    /// What is to show each window.
+    renderer: crate::platform::Renderer,
+    /// Second windows a scene was asked for, not yet connected.
+    asked: Vec<Id>,
+    rerun: bool,
+    start: Instant,
+}
+
+/// A window: its view and page, and what its interface last asked of it.
+struct Shown {
+    /// The second window it shows (none: the first).
+    known: Option<Id>,
     window: Obj,
     view: Obj,
     controller: Obj,
+    /// Its scene's session (a second window's): what it is closed by.
+    session: Obj,
     /// The layer showing the pixels, and where it lies in the view: the safe area above the
     /// keyboard, in points.
     page: Obj,
@@ -964,62 +1093,29 @@ struct Host {
     /// The page's background, as last set.
     background: Color,
     pointer: Obj,
-    rerun: bool,
-    start: Instant,
-    /// The app's title, as last asked (shown in the app switcher on iPad).
+    /// Its title, as last asked (shown in the app switcher on iPad).
     title: String,
     /// What Metal keeps of the window (feature `gpu`).
     #[cfg(feature = "gpu")]
     screen: crate::gpu_ios::Screen,
 }
 
-/// Opens the program's window: a view controller, the view and its page, the text input view,
-/// what hears the pointer; then the interface, run once.
+/// Opens the program's window in `window` (its first scene's, or the screen's): the interface,
+/// run once.
 fn open(window: Obj) {
     let Some((title, renderer, app)) = STARTING.with_borrow_mut(Option::take) else { return };
     let Some(text) = SystemText::new() else {
         return eprintln!("taut: CoreText has no system font.");
     };
-    // SAFETY: objects of UIKit and the library's classes made and set up on the main thread;
-    // the controller keeps the view, the window the controller; the window is kept for good.
-    let (view, controller, page) = unsafe {
-        let bounds = send_rect(window, c"bounds", ());
-        let view: Obj = send(send::<Obj>(view_class(), c"alloc", ()), c"initWithFrame:", (bounds,));
-        send::<()>(view, c"setMultipleTouchEnabled:", (1 as Bool,));
-        let controller: Obj = send(send::<Obj>(controller_class(), c"alloc", ()), c"init", ());
-        send::<()>(controller, c"setView:", (view,));
-        send::<()>(view, c"release", ());
-        send::<()>(window, c"setRootViewController:", (controller,));
-        send::<()>(controller, c"release", ());
-        let page: Obj = send(class(c"CALayer"), c"layer", ());
-        send::<()>(page, c"setContentsGravity:", (kCAGravityTopLeft,));
-        send::<()>(page, c"setOpaque:", (1 as Bool,));
-        send::<()>(send::<Obj>(view, c"layer", ()), c"addSublayer:", (page,));
-        send::<()>(window, c"makeKeyAndVisible", ());
-        (view, controller, page)
-    };
-    let pointer = listen_to_pointer(view);
-    // SAFETY: the view takes the keys of a hardware keyboard.
-    unsafe { send::<Bool>(view, c"becomeFirstResponder", ()) };
+    let first = Shown::open(window, None, std::ptr::null_mut(), renderer);
     let mut ui = Ui::new(Box::new(text), Box::new(SystemClipboard));
-    ui.set_preferences(preferences(view));
+    ui.set_preferences(preferences(first.view));
     ui.set_screens(screens());
     ui.set_native_file_dialog(true);
-    #[rustfmt::skip]
-    let host = Host {
-        app, ui, window, view, controller, page, area: NSRect::default(), keyboard: 0.0, scale: 1.0, surface: Surface::default(),
-        background: Color::NONE, pointer, rerun: true, start: Instant::now(), title,
-        #[cfg(feature = "gpu")]
-        screen: crate::gpu_ios::Screen::new(renderer),
-    };
-    #[cfg(not(feature = "gpu"))]
-    let _ = renderer;
-    VIEW.set(view);
-    CONTROLLER.set(controller);
-    HOST.set(Some(host));
+    crate::ui_accessibility::listen_if_running(first.view);
+    let shown = Shown { title, ..first };
+    HOST.set(Some(Host { app, ui, windows: vec![shown], renderer, asked: Vec::new(), rerun: true, start: Instant::now() }));
     RUNNING.store(true, Ordering::SeqCst);
-    crate::ui_accessibility::listen_if_running(view);
-    heard(Heard::Resized);
     turn();
 }
 
@@ -1053,7 +1149,102 @@ fn listen_to_pointer(view: Obj) -> Obj {
     }
 }
 
-impl Host {
+/// Changes what is kept of the window of `view`.
+fn change_seen(view: Obj, change: impl FnOnce(&mut Seen)) {
+    SEEN.with_borrow_mut(|seen| seen.iter_mut().find(|seen| seen.view == view).map(change));
+}
+
+/// Whether the system shows more than one scene of an app (iPad; not iPhone).
+fn multiple_scenes() -> bool {
+    // SAFETY: a plain question of the application.
+    unsafe { send::<Bool>(send::<Obj>(class(c"UIApplication"), c"sharedApplication", ()), c"supportsMultipleScenes", ()) != 0 }
+}
+
+/// Asks the system for a scene for second window `id`, beside the scene of `beside`: it
+/// connects with an activity naming the window (`asked_window`).
+fn ask_for_scene(id: Id, title: &str, beside: Obj) {
+    // SAFETY: an activity and options made, handed to the application, and released.
+    unsafe {
+        let activity: Obj = send(send::<Obj>(class(c"NSUserActivity"), c"alloc", ()), c"initWithActivityType:", (ns_string(SECOND_WINDOW),));
+        send::<()>(activity, c"setTitle:", (ns_string(title),));
+        let number: Obj = send(class(c"NSNumber"), c"numberWithUnsignedLongLong:", (id,));
+        send::<()>(activity, c"setUserInfo:", (send::<Obj>(class(c"NSDictionary"), c"dictionaryWithObject:forKey:", (number, ns_string("window"))),));
+        let options: Obj = send(class(c"UISceneActivationRequestOptions"), c"new", ());
+        send::<()>(options, c"setRequestingScene:", (send::<Obj>(beside, c"windowScene", ()),));
+        let application: Obj = send(class(c"UIApplication"), c"sharedApplication", ());
+        let nothing = std::ptr::null_mut::<c_void>();
+        send::<()>(application, c"requestSceneSessionActivation:userActivity:options:errorHandler:", (nothing, activity, options, nothing));
+        send::<()>(options, c"release", ());
+        send::<()>(activity, c"release", ());
+    }
+}
+
+/// Brings a scene forward, by its session.
+fn bring_scene_forward(session: Obj) {
+    // SAFETY: the application activates the session's scene.
+    unsafe {
+        let application: Obj = send(class(c"UIApplication"), c"sharedApplication", ());
+        let nothing = std::ptr::null_mut::<c_void>();
+        send::<()>(application, c"requestSceneSessionActivation:userActivity:options:errorHandler:", (session, nothing, nothing, nothing));
+    }
+}
+
+/// Has the system close a scene, by its session; it goes (`scene_gone`) once closed.
+fn close_scene(session: Obj) {
+    // SAFETY: the application destroys the session (and disconnects its scene).
+    unsafe {
+        let application: Obj = send(class(c"UIApplication"), c"sharedApplication", ());
+        let nothing = std::ptr::null_mut::<c_void>();
+        send::<()>(application, c"requestSceneSessionDestruction:options:errorHandler:", (session, nothing, nothing));
+    }
+}
+
+impl Shown {
+    /// Shows a window in `window`: a view controller, the view and its page, what hears the
+    /// pointer, and the parts put on every view. It comes forward, and is measured in the next
+    /// turn.
+    fn open(window: Obj, known: Option<Id>, session: Obj, renderer: crate::platform::Renderer) -> Shown {
+        // SAFETY: objects of UIKit and the library's classes made and set up on the main thread;
+        // the controller keeps the view, the window the controller.
+        let (view, controller, page) = unsafe {
+            let bounds = send_rect(window, c"bounds", ());
+            let view: Obj = send(send::<Obj>(view_class(), c"alloc", ()), c"initWithFrame:", (bounds,));
+            send::<()>(view, c"setMultipleTouchEnabled:", (1 as Bool,));
+            let controller: Obj = send(send::<Obj>(controller_class(), c"alloc", ()), c"init", ());
+            send::<()>(controller, c"setView:", (view,));
+            send::<()>(view, c"release", ());
+            send::<()>(window, c"setRootViewController:", (controller,));
+            send::<()>(controller, c"release", ());
+            let page: Obj = send(class(c"CALayer"), c"layer", ());
+            send::<()>(page, c"setContentsGravity:", (kCAGravityTopLeft,));
+            send::<()>(page, c"setOpaque:", (1 as Bool,));
+            send::<()>(send::<Obj>(view, c"layer", ()), c"addSublayer:", (page,));
+            (view, controller, page)
+        };
+        let pointer = listen_to_pointer(view);
+        SEEN.with_borrow_mut(|seen| seen.push(Seen { window, view, controller, origin: NSPoint::default(), dark: false, cursor: Cursor::Arrow, known }));
+        if FRONT.get().is_null() {
+            FRONT.set(view);
+        }
+        VIEW_PARTS.with_borrow(|parts| parts.iter().for_each(|add| add(view)));
+        // SAFETY: the window shows and takes the keys (made key, it is the front window); the
+        // view takes the keys of a hardware keyboard.
+        unsafe {
+            send::<()>(window, c"makeKeyAndVisible", ());
+            send::<Bool>(view, c"becomeFirstResponder", ());
+        }
+        heard_in(view, Heard::Resized);
+        #[cfg(not(feature = "gpu"))]
+        let _ = renderer;
+        #[rustfmt::skip]
+        return Shown {
+            known, window, view, controller, session, page, area: NSRect::default(), keyboard: 0.0, scale: 1.0, surface: Surface::default(),
+            background: Color::NONE, pointer, title: String::new(),
+            #[cfg(feature = "gpu")]
+            screen: crate::gpu_ios::Screen::new(renderer),
+        };
+    }
+
     /// Takes in the view's size, safe area and scale now; says whether the page changed.
     fn measure(&mut self) -> bool {
         // SAFETY: plain questions of the view.
@@ -1067,111 +1258,50 @@ impl Host {
         let scale = if scale > 0.0 { scale as f32 } else { self.scale };
         let changed = (area, scale) != (self.area, self.scale);
         (self.area, self.scale) = (area, scale);
-        ORIGIN.set(area.origin);
+        change_seen(self.view, |seen| seen.origin = area.origin);
         changed
     }
 
-    /// One thing UIKit said.
-    fn take(&mut self, what: Heard) {
-        match what {
-            Heard::Event(event) => self.rerun |= self.ui.event(event),
-            Heard::Resized => self.rerun |= self.measure(),
-            Heard::Looks => self.rerun |= self.ui.set_preferences(preferences(self.view)) | self.ui.set_screens(screens()),
-            Heard::Locale => {
-                crate::locale::changed();
-                self.rerun = true;
-            }
-            Heard::Keyboard(covered) => {
-                self.keyboard = covered;
-                self.rerun |= self.measure();
-            }
-            Heard::Background(away) => {
-                #[cfg(feature = "gpu")]
-                self.screen.set_away(away);
-                self.rerun |= self.ui.event(Event::Minimized(away));
-            }
-            Heard::Active(on) => self.rerun |= self.ui.event(Event::Focused(on)),
-            Heard::Ending => {
-                self.ui.request_close();
-                self.rerun = true;
-            }
-            Heard::Other(work) => self.rerun |= work(&mut self.ui),
-        }
+    /// The page's size, in points.
+    fn size(&self) -> Size {
+        Size { w: self.area.size.width as f32, h: self.area.size.height as f32 }
     }
 
-    /// Runs the interface, then does what it asks of the window.
-    fn describe(&mut self) {
-        self.ui.resize(Size { w: self.area.size.width as f32, h: self.area.size.height as f32 }, self.scale);
-        self.ui.run(&mut self.app);
-        self.rerun = false;
-        if self.ui.take_closing() == Some(Ok(())) || self.ui.quitting() {
-            // SAFETY: the program ends, as the app asked.
-            unsafe { exit(0) }
-        }
-        self.follow();
-        if let Some(typing) = TYPING.get() {
-            typing(&mut self.ui, self.area);
-        }
-        self.follow_parts();
-        if self.ui.listening {
-            crate::ui_accessibility::keep(self.view, (self.area.origin.x, self.area.origin.y), &self.ui);
-        }
-    }
-
-    /// Does what the interface asks of the window: a title, a pointer shape, the page's
+    /// Does what the interface asked of the window: a title, a pointer shape, the page's
     /// background and the status bar's text.
-    fn follow(&mut self) {
-        if let Some(title) = self.ui.take_title() {
-            // SAFETY: a window answers its scene (nil without scenes); a scene takes a title.
-            unsafe { send::<()>(send::<Obj>(self.window, c"windowScene", ()), c"setTitle:", (ns_string(&title),)) };
-            self.title = title;
+    fn follow(&mut self, title: Option<String>, cursor: Cursor, background: Color) {
+        if let Some(title) = title {
+            self.set_title(title);
         }
-        let cursor = self.ui.cursor();
-        if CURSOR.replace(cursor) != cursor && !self.pointer.is_null() {
+        let mut was = cursor;
+        change_seen(self.view, |seen| was = std::mem::replace(&mut seen.cursor, cursor));
+        if was != cursor && !self.pointer.is_null() {
             // SAFETY: the interaction asks its delegate for the style again.
             unsafe { send::<()>(self.pointer, c"invalidate", ()) };
         }
-        let background = self.ui.theme.bg.solid();
         if std::mem::replace(&mut self.background, background) != background {
             self.paint_background(background);
         }
     }
 
-    /// Does what the interface asks of the parts handed to the window: the system's file
-    /// dialog, drops, dragging out, notifications.
-    fn follow_parts(&mut self) {
-        for part in [FILE_DIALOG.get(), DROPS.get(), DRAG_OUT.get()].into_iter().flatten() {
-            part(&mut self.ui);
-        }
-        if let Some(show) = NOTIFICATIONS.get() {
-            show();
-        }
+    /// Names its scene (shown in the app switcher on iPad).
+    fn set_title(&mut self, title: String) {
+        // SAFETY: a window answers its scene (nil without scenes); a scene takes a title.
+        unsafe { send::<()>(send::<Obj>(self.window, c"windowScene", ()), c"setTitle:", (ns_string(&title),)) };
+        self.title = title;
     }
 
     /// The view's background, around the page; the status bar's text dark or light on it.
     fn paint_background(&mut self, background: Color) {
         let channel = |shift: u32| f64::from((background.0 >> shift) & 0xff) / 255.0;
         let (red, green, blue) = (channel(16), channel(8), channel(0));
-        DARK_PAGE.set(0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5);
+        let dark = 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5;
+        change_seen(self.view, |seen| seen.dark = dark);
         // SAFETY: a colour made and handed to the view, which keeps it.
         unsafe {
             let color: Obj = send(class(c"UIColor"), c"colorWithRed:green:blue:alpha:", (red, green, blue, 1.0f64));
             send::<()>(self.view, c"setBackgroundColor:", (color,));
             send::<()>(self.controller, c"setNeedsStatusBarAppearanceUpdate", ());
-        }
-    }
-
-    /// Draws what changed and shows it: through Metal (feature `gpu`), else by handing the
-    /// pixels to the page.
-    fn draw(&mut self) {
-        #[cfg(feature = "gpu")]
-        if self.through_gpu() {
-            return;
-        }
-        let changed = self.surface.update(&mut self.ui);
-        self.ui.changed();
-        if !changed.is_empty() {
-            self.present();
         }
     }
 
@@ -1201,39 +1331,247 @@ impl Host {
         }
     }
 
+    /// A second window's view is gone: nothing more is kept of it, and the first window is in
+    /// front where this one was. (Its window is let go of as its scene goes.)
+    fn close(self) {
+        SEEN.with_borrow_mut(|seen| seen.retain(|seen| seen.view != self.view));
+        crate::ui_accessibility::forget(self.view);
+        if FRONT.get() == self.view {
+            FRONT.set(SEEN.with_borrow(|seen| seen.first().map_or(std::ptr::null_mut(), |first| first.view)));
+        }
+    }
+}
+
+impl Host {
+    /// The window in front.
+    fn front(&self) -> usize {
+        self.windows.iter().position(|shown| shown.view == FRONT.get()).unwrap_or(0)
+    }
+
+    /// One thing UIKit said of the window of `view` (or of the front window).
+    fn take(&mut self, view: Obj, what: Heard) {
+        let at = self.windows.iter().position(|shown| shown.view == view).unwrap_or_else(|| self.front());
+        match what {
+            Heard::Event(event) => self.hear(at, event),
+            Heard::Resized => self.rerun |= self.windows[at].measure(),
+            Heard::Looks => self.rerun |= self.ui.set_preferences(preferences(self.windows[0].view)) | self.ui.set_screens(screens()),
+            Heard::Locale => {
+                crate::locale::changed();
+                self.rerun = true;
+            }
+            Heard::Keyboard(covered) => {
+                self.windows[at].keyboard = covered;
+                self.rerun |= self.windows[at].measure();
+            }
+            Heard::Background(away) => self.background_changed(away),
+            Heard::Active(on) => self.hear(at, Event::Focused(on)),
+            Heard::Ending => {
+                self.ui.request_close();
+                self.rerun = true;
+            }
+            Heard::Other(work) => self.rerun |= within(&mut self.ui, self.windows[at].known, work) == Some(true),
+            Heard::SceneConnected(window, session, known) => self.connected(window, session, known),
+            Heard::SceneGone(session, window) => self.gone(session, window),
+        }
+    }
+
+    /// Passes what the person did in a window to its interface, noting whether it must run. A
+    /// window a dialog keeps from input hears none; a press on it brings the dialog forward.
+    fn hear(&mut self, at: usize, event: Event) {
+        let blocked = self.ui.window_blocked(self.windows[at].known.unwrap_or(0));
+        if blocked && !matches!(event, Event::Focused(_) | Event::Minimized(_) | Event::Leave) {
+            let dialog = |shown: &&Shown| shown.known.and_then(|id| self.ui.window_opening(id)).is_some_and(|opening| opening.kind == WindowKind::Dialog);
+            if let (Event::Press(..), Some(dialog)) = (&event, self.windows.iter().rev().find(dialog)) {
+                bring_scene_forward(dialog.session);
+            }
+            return;
+        }
+        self.rerun |= within(&mut self.ui, self.windows[at].known, |ui| ui.event(event)) == Some(true);
+    }
+
+    /// The program went to the background, or came back: every window's interface hears it as
+    /// its window minimized, or restored.
+    fn background_changed(&mut self, away: bool) {
+        for shown in &mut self.windows {
+            #[cfg(feature = "gpu")]
+            shown.screen.set_away(away);
+            self.rerun |= within(&mut self.ui, shown.known, |ui| ui.event(Event::Minimized(away))) == Some(true);
+        }
+    }
+
+    /// A scene connected: a second window asked for, still described and not shown, shows in
+    /// it. Another (one the person made, or one the system brought back from an earlier run)
+    /// has nothing to show, and closes.
+    fn connected(&mut self, window: Obj, session: Obj, known: Option<Id>) {
+        let described = |id: &Id| self.ui.windows().any(|(of, ..)| of == *id) && self.windows.iter().all(|shown| shown.known != Some(*id));
+        let Some(id) = known.filter(described) else { return close_scene(session) };
+        self.asked.retain(|asked| *asked != id);
+        if self.ui.listening {
+            self.ui.in_window(id, |ui| ui.set_screen_reader(true));
+        }
+        let mut shown = Shown::open(window, Some(id), session, self.renderer);
+        shown.measure();
+        if let Some((_, title, _)) = self.ui.windows().find(|(of, ..)| *of == id) {
+            shown.set_title(title.to_string());
+        }
+        self.windows.push(shown);
+        self.rerun = true;
+    }
+
+    /// A scene went: a second window's interface hears its window was closed (if its app keeps
+    /// it, a scene is asked for again). The scene's window is let go of, unless it is the
+    /// first's, kept for good.
+    fn gone(&mut self, session: Obj, window: Obj) {
+        if let Some(at) = self.windows.iter().skip(1).position(|shown| shown.session == session).map(|at| at + 1) {
+            let known = self.windows[at].known;
+            self.rerun |= known.and_then(|id| self.ui.in_window(id, Ui::request_close)).is_some();
+            self.windows.remove(at).close();
+        }
+        if window != self.windows[0].window {
+            // SAFETY: the window made as the scene connected, released once, after it went.
+            unsafe { send::<()>(window, c"release", ()) };
+        }
+    }
+
+    /// Runs the interface, then does what it asks of the windows.
+    fn describe(&mut self) {
+        for shown in &self.windows {
+            within(&mut self.ui, shown.known, |ui| ui.resize(shown.size(), shown.scale));
+        }
+        self.ui.run(&mut self.app);
+        self.rerun = false;
+        if self.ui.take_closing() == Some(Ok(())) || self.ui.quitting() {
+            // SAFETY: the program ends, as the app asked.
+            unsafe { exit(0) }
+        }
+        self.keep_up();
+        (0..self.windows.len()).for_each(|at| self.follow(at));
+        if let Some(typing) = TYPING.get() {
+            let front = &self.windows[self.front()];
+            within(&mut self.ui, front.known, |ui| typing(ui, front.area));
+        }
+        (0..self.windows.len()).for_each(|at| self.follow_parts(at));
+        if let Some(show) = NOTIFICATIONS.get() {
+            show();
+        }
+        if self.ui.listening {
+            self.tell_readers();
+        }
+    }
+
+    /// Closes the scenes of second windows the app stopped describing, and asks for a scene for
+    /// each one described the first time (where the system shows more than one).
+    fn keep_up(&mut self) {
+        for at in (1..self.windows.len()).rev() {
+            if !self.ui.windows().any(|(id, ..)| Some(id) == self.windows[at].known) {
+                close_scene(self.windows[at].session);
+                self.windows.remove(at).close();
+            }
+        }
+        self.asked.retain(|id| self.ui.windows().any(|(of, ..)| of == *id));
+        if !multiple_scenes() {
+            return;
+        }
+        let shown = |id: &Id| self.asked.contains(id) || self.windows.iter().any(|shown| shown.known == Some(*id));
+        let new: Vec<(Id, String)> = self.ui.windows().filter(|(id, ..)| !shown(id)).map(|(id, title, _)| (id, title.to_string())).collect();
+        for (id, title) in new {
+            ask_for_scene(id, &title, self.windows[0].window);
+            self.asked.push(id);
+        }
+    }
+
+    /// Does what a window's interface asks of the window.
+    fn follow(&mut self, at: usize) {
+        let asks = |ui: &mut Ui| (ui.take_title(), ui.cursor(), ui.theme.bg.solid());
+        if let Some((title, cursor, background)) = within(&mut self.ui, self.windows[at].known, asks) {
+            self.windows[at].follow(title, cursor, background);
+        }
+    }
+
+    /// Does what a window's interface asks of the parts handed to the window: the system's file
+    /// dialog, drops, dragging out.
+    fn follow_parts(&mut self, at: usize) {
+        let view = self.windows[at].view;
+        for part in [FILE_DIALOG.get(), DROPS.get(), DRAG_OUT.get()].into_iter().flatten() {
+            within(&mut self.ui, self.windows[at].known, |ui| part(ui, view));
+        }
+    }
+
+    /// Once a reader asked: each window's interface tells. Says whether that is news, for the
+    /// interface to run.
+    fn listen(&mut self) -> bool {
+        let mut news = false;
+        for shown in &self.windows {
+            news |= within(&mut self.ui, shown.known, crate::ui_accessibility::listen) == Some(true);
+        }
+        news
+    }
+
+    /// After a run a reader reads: each window's elements follow its nodes.
+    fn tell_readers(&mut self) {
+        for shown in &self.windows {
+            let origin = (shown.area.origin.x, shown.area.origin.y);
+            within(&mut self.ui, shown.known, |ui| crate::ui_accessibility::keep(shown.view, origin, ui));
+        }
+    }
+
+    /// Draws what changed in a window and shows it: through Metal (feature `gpu`), else by
+    /// handing the pixels to its page.
+    fn draw(&mut self, at: usize) {
+        #[cfg(feature = "gpu")]
+        if self.through_gpu(at) {
+            return;
+        }
+        let shown = &mut self.windows[at];
+        let surface = &mut shown.surface;
+        let changed = within(&mut self.ui, shown.known, |ui| {
+            let changed = surface.update(ui);
+            ui.changed();
+            changed
+        });
+        if changed.is_some_and(|changed| !changed.is_empty()) {
+            shown.present();
+        }
+    }
+
     /// One turn: takes in what happened, runs the interface if needed, draws what changed, and
     /// has the timer bring the next turn the interface asks for.
     fn turn(&mut self) {
         self.ui.set_time(self.start.elapsed());
         self.rerun |= self.ui.wake_in() == Some(Duration::ZERO);
-        for what in HEARD.with_borrow_mut(std::mem::take) {
-            self.take(what);
+        for (view, what) in HEARD.with_borrow_mut(std::mem::take) {
+            self.take(view, what);
         }
-        self.rerun |= crate::ui_accessibility::listen(&mut self.ui);
+        self.rerun |= self.listen();
         if self.rerun {
             self.describe();
         }
-        self.draw();
+        (0..self.windows.len()).for_each(|at| self.draw(at));
         if let Some(wait) = self.ui.wake_in() {
             wake_at(Instant::now() + wait);
         }
     }
 }
 
-/// The window shown through Metal (feature `gpu`).
+/// The windows shown through Metal (feature `gpu`).
 #[cfg(feature = "gpu")]
 impl Host {
-    /// Draws what changed through Metal, where it shows the window. Says whether it did; if
-    /// not, the CPU is to (all of the window, where Metal stopped showing it).
-    fn through_gpu(&mut self) -> bool {
+    /// Draws what changed in a window through Metal, where it shows the window. Says whether it
+    /// did; if not, the CPU is to (all of the window, where Metal stopped showing it).
+    fn through_gpu(&mut self, at: usize) -> bool {
+        let shown = &mut self.windows[at];
         // SAFETY: a view answers its layer.
-        let under: Obj = unsafe { send(self.view, c"layer", ()) };
-        let shown = self.screen.draw(&mut self.ui, &mut self.surface, under, self.area, self.scale);
-        self.ui.renderer = self.screen.renderer();
-        if shown == crate::platform::ShownBy::CpuAfresh {
-            self.surface = Surface::default();
+        let under: Obj = unsafe { send(shown.view, c"layer", ()) };
+        let (screen, surface, area, scale) = (&mut shown.screen, &mut shown.surface, shown.area, shown.scale);
+        let drawn = within(&mut self.ui, shown.known, |ui| {
+            let drawn = screen.draw(ui, surface, under, area, scale);
+            ui.renderer = screen.renderer();
+            drawn
+        });
+        if drawn == Some(crate::platform::ShownBy::CpuAfresh) {
+            shown.surface = Surface::default();
         }
-        shown == crate::platform::ShownBy::Gpu
+        drawn == Some(crate::platform::ShownBy::Gpu)
     }
 }
 

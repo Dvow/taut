@@ -9,59 +9,41 @@
 //!   offset back, times SDR white (1.0 on an SDR screen, which shows it as before). The gains
 //!   are a texture (`RGBA16F`) their changed part goes up to.
 //! - The shaders are GLSL 3.30, compiled by the driver.
+use crate::functions::functions;
 use crate::hdr::Gains;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::ptr::null;
 
-/// Declares the OpenGL functions the pass calls, and how they are found.
-macro_rules! functions {
-    ($($name:ident($($argument:ty),*) $(-> $result:ty)?;)*) => {
-        /// The OpenGL functions the pass calls, as found by the context's loader.
-        #[allow(non_snake_case)] // (OpenGL's own names.)
-        struct Gl {
-            $($name: unsafe extern "system" fn($($argument),*) $(-> $result)?,)*
-        }
-        impl Gl {
-            /// Each function, by name from `find`; nothing where one is missing.
-            fn load(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Option<Gl> {
-                let mut found = |name: &str| Some(find(CStr::from_bytes_with_nul(name.as_bytes()).ok()?)).filter(|found| !found.is_null());
-                // SAFETY: each is declared as glcorearb.h declares it.
-                Some(Gl { $($name: unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn($($argument),*) $(-> $result)?>(found(concat!(stringify!($name), "\0"))?) },)* })
-            }
-        }
-    };
-}
-
-functions! {
-    glViewport(c_int, c_int, c_int, c_int);
-    glActiveTexture(c_uint);
-    glGenTextures(c_int, *mut c_uint);
-    glDeleteTextures(c_int, *const c_uint);
-    glBindTexture(c_uint, c_uint);
-    glTexParameteri(c_uint, c_uint, c_int);
-    glTexImage2D(c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, *const c_void);
-    glTexSubImage2D(c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, *const c_void);
-    glPixelStorei(c_uint, c_int);
-    glBindFramebuffer(c_uint, c_uint);
-    glGenVertexArrays(c_int, *mut c_uint);
-    glDeleteVertexArrays(c_int, *const c_uint);
-    glBindVertexArray(c_uint);
-    glDrawArrays(c_uint, c_int, c_int);
-    glCreateShader(c_uint) -> c_uint;
-    glShaderSource(c_uint, c_int, *const *const c_char, *const c_int);
-    glCompileShader(c_uint);
-    glGetShaderiv(c_uint, c_uint, *mut c_int);
-    glDeleteShader(c_uint);
-    glCreateProgram() -> c_uint;
-    glAttachShader(c_uint, c_uint);
-    glLinkProgram(c_uint);
-    glGetProgramiv(c_uint, c_uint, *mut c_int);
-    glDeleteProgram(c_uint);
-    glUseProgram(c_uint);
-    glGetUniformLocation(c_uint, *const c_char) -> c_int;
-    glUniform1i(c_int, c_int);
-    glUniform4f(c_int, f32, f32, f32, f32);
-}
+functions!(Gl {
+    glViewport: fn(c_int, c_int, c_int, c_int);
+    glActiveTexture: fn(c_uint);
+    glGenTextures: fn(c_int, *mut c_uint);
+    glDeleteTextures: fn(c_int, *const c_uint);
+    glBindTexture: fn(c_uint, c_uint);
+    glTexParameteri: fn(c_uint, c_uint, c_int);
+    glTexImage2D: fn(c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, *const c_void);
+    glTexSubImage2D: fn(c_uint, c_int, c_int, c_int, c_int, c_int, c_uint, c_uint, *const c_void);
+    glPixelStorei: fn(c_uint, c_int);
+    glBindFramebuffer: fn(c_uint, c_uint);
+    glGenVertexArrays: fn(c_int, *mut c_uint);
+    glDeleteVertexArrays: fn(c_int, *const c_uint);
+    glBindVertexArray: fn(c_uint);
+    glDrawArrays: fn(c_uint, c_int, c_int);
+    glCreateShader: fn(c_uint) -> c_uint;
+    glShaderSource: fn(c_uint, c_int, *const *const c_char, *const c_int);
+    glCompileShader: fn(c_uint);
+    glGetShaderiv: fn(c_uint, c_uint, *mut c_int);
+    glDeleteShader: fn(c_uint);
+    glCreateProgram: fn() -> c_uint;
+    glAttachShader: fn(c_uint, c_uint);
+    glLinkProgram: fn(c_uint);
+    glGetProgramiv: fn(c_uint, c_uint, *mut c_int);
+    glDeleteProgram: fn(c_uint);
+    glUseProgram: fn(c_uint);
+    glGetUniformLocation: fn(c_uint, *const c_char) -> c_int;
+    glUniform1i: fn(c_int, c_int);
+    glUniform4f: fn(c_int, f32, f32, f32, f32);
+});
 
 // From glcorearb.h.
 const TEXTURE_2D: c_uint = 0x0DE1;
@@ -125,7 +107,7 @@ impl Pass {
     /// The pass in the current context, its functions found by `find`; nothing where it can't
     /// be made.
     pub(crate) fn new(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Option<Pass> {
-        let gl = Gl::load(find)?;
+        let gl = Gl::load(find).ok()?;
         let mut pass = Pass { gl, program: 0, light: -1, vertices: 0, gains: 0, size: [0; 2] };
         pass.program = pass.program();
         if pass.program == 0 {

@@ -90,6 +90,11 @@ impl Language {
     pub(crate) fn systems(&self) -> impl Iterator<Item = &[u8; 4]> {
         self.systems.iter().take_while(|system| **system != [0; 4])
     }
+
+    /// Whether it is Chinese, of any kind.
+    pub(crate) fn chinese(&self) -> bool {
+        self.systems().next().is_some_and(|tag| tag.starts_with(b"ZH"))
+    }
 }
 
 /// Chinese languages, which a following script or region makes more precise, and their OpenType

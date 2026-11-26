@@ -301,6 +301,8 @@ pub(crate) mod sys {
         pub fn ShutdownBlockReasonDestroy(hwnd: HANDLE) -> i32;
         pub fn SetWindowPos(hwnd: HANDLE, after: HANDLE, x: i32, y: i32, w: i32, h: i32, flags: u32) -> i32;
         pub fn InvalidateRect(hwnd: HANDLE, area: *const RECT, erase: i32) -> i32;
+        #[cfg(feature = "gpu")]
+        pub fn ValidateRect(hwnd: HANDLE, area: *const RECT) -> i32;
         pub fn UpdateLayeredWindowIndirect(hwnd: HANDLE, how: *const Layered) -> i32;
 
         pub fn GetUpdateRgn(hwnd: HANDLE, region: HANDLE, erase: i32) -> i32;
@@ -618,6 +620,20 @@ impl Fonts {
         false
     }
 
+    /// The font glyphs shaped for a line's forms are drawn in (see `TextSystem::draw_glyphs`):
+    /// the face drawing `letter`, at full size, if GDI gives the letter glyph `own` there as the
+    /// file shaped with does.
+    #[cfg(feature = "shaping")]
+    fn shaped_in(&mut self, font: Font, scale: f32, (letter, own): (char, u16)) -> Option<Font> {
+        let face = Font { face: crate::system_fonts::full_size(crate::system_fonts::face_for(font.face, letter)), ..font };
+        let (handle, _) = self.font(face, scale);
+        let (mut unit, mut glyph) = ([0u16; 2], 0u16);
+        let units = letter.encode_utf16(&mut unit);
+        // SAFETY: one UTF-16 unit in, one glyph out.
+        let found = units.len() == 1 && unsafe { SelectObject(self.dc, handle) != 0 && GetGlyphIndicesW(self.dc, units.as_ptr(), 1, &mut glyph, 1) == 1 };
+        (found && glyph == own).then_some(face)
+    }
+
     /// The system font for this face at this pixel size, made on first use. (Used at once,
     /// before another is asked for: past `MADE` fonts all are freed and remade on demand, since
     /// Windows allows some ten thousand GDI objects per process, and a pan-and-zoom view zoomed
@@ -750,6 +766,30 @@ impl TextSystem for GdiText {
         }
         self.fonts.pieces = pieces;
     }
+
+    /// Each glyph drawn by GDI on its own, its cell's top `tmAscent` above its place on the
+    /// baseline.
+    #[cfg(feature = "shaping")]
+    fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, letter: (char, u16), glyphs: &[(u16, [f32; 2])], [x, line]: [i32; 2], color: Color) -> bool {
+        let scale = canvas.scale();
+        let Some(face) = self.fonts.shaped_in(font, scale, letter) else { return false };
+        let (handle, metrics) = self.fonts.font(face, scale);
+        let ascent = (metrics.ascent * scale).round() as i32;
+        for (id, [right, down]) in glyphs {
+            let at = [x + right.round() as i32, line + down.round() as i32 - ascent];
+            self.write(
+                canvas,
+                handle,
+                #[cfg(feature = "gpu-draw")]
+                face,
+                (&[*id], true),
+                at,
+                color,
+                [i32::MIN, i32::MAX],
+            );
+        }
+        true
+    }
 }
 
 impl GdiText {
@@ -764,15 +804,33 @@ impl GdiText {
         let glyphs = self.fonts.in_forms(handle, font.face, text);
         #[cfg(not(feature = "shaping"))]
         let glyphs = false;
-        let (dc, units) = (self.strip.dc, &self.fonts.utf16);
+        let at = [(x * scale).round() as i32, (y * scale).round() as i32];
+        self.write(
+            canvas,
+            handle,
+            #[cfg(feature = "gpu-draw")]
+            font,
+            (&self.fonts.utf16, glyphs),
+            at,
+            color,
+            rows,
+        );
+    }
+
+    /// Has GDI draw UTF-16 units, or glyphs (`true`), in GDI font `handle` (`font`) with their
+    /// top left at `at` in pixels, within pixel rows `rows`.
+    #[allow(clippy::too_many_arguments)]
+    fn write(&self, canvas: &mut Canvas, handle: HANDLE, #[cfg(feature = "gpu-draw")] font: Font, (units, glyphs): (&[u16], bool), [x, y]: [i32; 2], color: Color, rows: [i32; 2]) {
+        let dc = self.strip.dc;
         let (origin, [left, top, right, bottom]) = (canvas.origin(), canvas.clip_pixels());
         let clip = [left, top.max(rows[0]), right, bottom.min(rows[1])];
         let ink = color.0;
         #[cfg(feature = "gpu-draw")]
+        let px = (font.size * canvas.scale()).round() as i32;
+        #[cfg(feature = "gpu-draw")]
         if let Some(list) = canvas.list() {
             let strip = crate::gpu_draw_windows::Strip { dc, pixels: self.strip.pixels.get(), width: self.strip.width.get(), rows: self.strip.rows.get() };
-            let at = [(x * scale).round() as i32, (y * scale).round() as i32];
-            return crate::gpu_draw_windows::run(list, &strip, handle, font, (font.size * scale).round() as i32, (units, glyphs), at, color, clip);
+            return crate::gpu_draw_windows::run(list, &strip, handle, font, px, (units, glyphs), [x, y], color, clip);
         }
         // SAFETY: the canvas is this strip, so Windows writes into the same pixels; the DC is
         // restored after.
@@ -784,8 +842,8 @@ impl GdiText {
             SetBkMode(dc, 1);
             SetTextColor(dc, (ink >> 16 & 0xff) | (ink & 0xff00) | (ink & 0xff) << 16);
             match glyphs {
-                true => ExtTextOutW(dc, (x * scale).round() as i32, (y * scale).round() as i32, 0x10, std::ptr::null(), units.as_ptr(), units.len() as u32, std::ptr::null()),
-                false => TextOutW(dc, (x * scale).round() as i32, (y * scale).round() as i32, units.as_ptr(), units.len() as i32),
+                true => ExtTextOutW(dc, x, y, 0x10, std::ptr::null(), units.as_ptr(), units.len() as u32, std::ptr::null()),
+                false => TextOutW(dc, x, y, units.as_ptr(), units.len() as i32),
             };
             RestoreDC(dc, saved);
             GdiFlush();
@@ -828,12 +886,15 @@ impl SystemText {
         (dc != 0).then(|| SystemText { fonts: Fonts::new(dc), glyphs: HashMap::new() })
     }
 
-    /// A character's glyph picture; with `shaping`, that of glyph `form` where not 0.
+    /// A character's glyph picture; with `shaping`, that of glyph `form` where not 0, or where
+    /// `letter` is `'\0'` (any glyph by id).
     fn glyph(&mut self, font: Font, scale: f32, letter: char, #[cfg(feature = "shaping")] form: u16) -> &Glyph {
         let ((handle, _), px, dc) = (self.fonts.font(font, scale), (font.size * scale).round() as i32, self.fonts.dc);
         // (A glyph is asked for by its id with `GGO_GLYPH_INDEX`, 0x80.)
         #[cfg(feature = "shaping")]
-        let (key, code, how) = ((font.face, px, letter, form), if form == 0 { letter as u32 } else { form as u32 }, if form == 0 { 6 } else { 6 | 0x80 });
+        let by_id = form != 0 || letter == '\0';
+        #[cfg(feature = "shaping")]
+        let (key, code, how) = ((font.face, px, letter, form), if by_id { form as u32 } else { letter as u32 }, if by_id { 6 | 0x80 } else { 6 });
         #[cfg(not(feature = "shaping"))]
         let (key, code, how) = ((font.face, px, letter), letter as u32, 6);
         // Past `GLYPHS` pictures all are dropped and remade on demand.
@@ -914,6 +975,17 @@ impl TextSystem for SystemText {
             canvas.cover(pen + glyph.left, line - top, glyph.width, cover, color);
             pen += glyph.advance;
         }
+    }
+
+    #[cfg(feature = "shaping")]
+    fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, (letter, own): (char, u16), glyphs: &[(u16, [f32; 2])], [x, line]: [i32; 2], color: Color) -> bool {
+        let scale = canvas.scale();
+        let Some(face) = self.fonts.shaped_in(font, scale, (letter, own)) else { return false };
+        for (id, [right, down]) in glyphs {
+            let glyph = self.glyph(face, scale, '\0', *id);
+            canvas.cover(x + right.round() as i32 + glyph.left, line + down.round() as i32 - glyph.top, glyph.width, &glyph.cover, color);
+        }
+        true
     }
 }
 
@@ -1129,6 +1201,11 @@ struct Open {
     shown: Option<crate::gpu_windows::Shown>,
     #[cfg(feature = "gpu")]
     cloaked: bool,
+    /// While a GPU path shows it, the places that changed and are not drawn yet, in pixels:
+    /// drawn on `WM_DRAW`. (Windows drops them from the window's update region at times, as seen
+    /// while another thread of the program painted, and then sends no paint.)
+    #[cfg(feature = "gpu")]
+    undrawn: Vec<RECT>,
 }
 
 /// The full picture of a see-through (layered) window, which Windows shows it from: not drawn
@@ -1421,6 +1498,8 @@ impl Open {
                 shown: None,
                 #[cfg(feature = "gpu")]
                 cloaked: false,
+                #[cfg(feature = "gpu")]
+                undrawn: Vec::new(),
             };
             made.frame(true); // themes are dark until an app says otherwise
             Some(made)
@@ -1573,14 +1652,23 @@ impl Open {
         }
     }
 
-    /// Asks Windows to repaint this part of the window.
-    fn invalidate(&self, part: Rect) {
+    /// Asks Windows to repaint this part of the window. While a GPU path shows it, the part is
+    /// also kept as undrawn, and `WM_DRAW` asked for once.
+    fn invalidate(&mut self, part: Rect) {
         if part.is_empty() {
             return;
         }
         let area = pixels_of(part, self.scale);
         // SAFETY: the window is alive; the rectangle is read during the call.
         unsafe { InvalidateRect(self.hwnd, &area, 0) };
+        #[cfg(feature = "gpu")]
+        if self.shown.is_some() {
+            if self.undrawn.is_empty() {
+                // SAFETY: posts to a live window.
+                unsafe { PostMessageW(self.hwnd, WM_DRAW, 0, 0) };
+            }
+            self.undrawn.push(area);
+        }
     }
 
     /// Makes the window accept dropped files, from the first time the app asks about files in
@@ -2199,6 +2287,11 @@ impl State {
 #[cfg(feature = "gpu")]
 const WM_GPU: u32 = 0x8010;
 
+/// "Draw what changed": posted when a window a GPU path shows gets its first undrawn place
+/// (`Open::invalidate`).
+#[cfg(feature = "gpu")]
+const WM_DRAW: u32 = 0x8011;
+
 /// The GPU paths (`gpu_windows`): the device, what shows each window, uploads, presents, and a
 /// lost device.
 #[cfg(feature = "gpu")]
@@ -2267,6 +2360,29 @@ impl State {
         }
         self.windows[at].shown = shown;
         self.in_window(at, |ui, _| ui.renderer = renderer);
+    }
+
+    /// Draws window `at`'s undrawn places into its texture and presents them, without Windows'
+    /// update region. They are validated first, so no paint draws them again, but one a lost
+    /// device asks for. (More than eight: the rectangle around them, as a paint.)
+    fn draw_undrawn(&mut self, at: usize) {
+        let (wide, high) = (self.windows[at].wide, self.windows[at].high);
+        let inside = |part: RECT| RECT { left: part.left.max(0), top: part.top.max(0), right: part.right.min(wide), bottom: part.bottom.min(high) };
+        let mut parts: Vec<RECT> = std::mem::take(&mut self.windows[at].undrawn).into_iter().map(inside).filter(|part| part.left < part.right && part.top < part.bottom).collect();
+        if parts.is_empty() || self.windows[at].shown.is_none() {
+            return;
+        }
+        if parts.len() > 8 {
+            let around = |all: RECT, part: &RECT| RECT { left: all.left.min(part.left), top: all.top.min(part.top), right: all.right.max(part.right), bottom: all.bottom.max(part.bottom) };
+            parts = vec![parts.iter().fold(parts[0], around)];
+        }
+        let hwnd = self.windows[at].hwnd;
+        // SAFETY: the window is alive; each rectangle is read during its call.
+        parts.iter().for_each(|part| _ = unsafe { ValidateRect(hwnd, part) });
+        self.strip.fit(self.windows.iter().map(|window| window.wide).max().unwrap_or(0));
+        parts.iter().for_each(|part| self.draw(at, 0, *part));
+        self.present(at, &parts);
+        self.uncloak(at);
     }
 
     /// Draws all of window `at` into its texture and presents it, now.
@@ -2372,6 +2488,10 @@ impl State {
 }
 
 fn mods() -> Mods {
+    #[cfg(test)]
+    if let Some(held) = tests::HELD.get() {
+        return held;
+    }
     // SAFETY: asks which keys are down (Shift, Control, Alt).
     let down = |key: i32| unsafe { GetKeyState(key) } < 0;
     Mods { shift: down(0x10), ctrl: down(0x11), alt: down(0x12) }
@@ -2750,6 +2870,8 @@ unsafe fn answer(hwnd: HANDLE, msg: u32, w: usize, l: isize) -> Option<isize> {
         WM_ERASEBKGND => return Some(1),
         #[cfg(feature = "gpu")]
         WM_GPU => state.gpu_came(),
+        #[cfg(feature = "gpu")]
+        WM_DRAW => state.draw_undrawn(at),
         WM_NCHITTEST if state.windows[at].asks_hit_test => return state.hit_test(at, l),
         WM_SIZE => state.resized(at),
         WM_MOVE => state.moved(at),
@@ -3684,8 +3806,10 @@ pub(crate) mod tests {
         let code = unsafe {
             let desktop = CreateDesktopW(wide(&name).as_ptr(), std::ptr::null(), std::ptr::null(), 0, 0x1000_0000, std::ptr::null());
             assert!(desktop != 0 && CreateProcessW(std::ptr::null(), line.as_mut_ptr(), 0, 0, 0, 0x0800_0000, 0, 0, &start, &mut made) != 0, "the test could not be started on a desktop of its own");
-            // Two minutes is far more than it takes; whatever still runs then is ended.
-            let (timed_out, mut code) = (WaitForSingleObject(made[0], 120_000) != 0, 1);
+            // Ten minutes is far more than it takes, even with software GPUs on a busy computer
+            // (seven times slower than alone, past two minutes); whatever still runs then is
+            // ended.
+            let (timed_out, mut code) = (WaitForSingleObject(made[0], 600_000) != 0, 1);
             TerminateProcess(made[0], 1);
             GetExitCodeProcess(made[0], &mut code);
             [made[0], made[1]].iter().for_each(|handle| _ = CloseHandle(*handle));
@@ -3772,6 +3896,44 @@ pub(crate) mod tests {
         };
         let [own, plain, russian] = [Language::named("sr"), Language::NONE, Language::named("ru")].map(drawn);
         assert!(own.0 != plain.0 && plain == russian && own.1 > 0.0);
+    }
+
+    /// Glyphs drawn by id (`TextSystem::draw_glyphs`, for lines shaped for their forms) are the
+    /// system's own: a Serbian word's forms in Bahnschrift, each put where GDI puts its letter,
+    /// come out as GDI draws the word, in a window and on a surface.
+    #[cfg(feature = "shaping")]
+    #[test]
+    fn glyphs_drawn_by_id_are_the_systems_own() {
+        use crate::scripts::Language;
+        let (face, language, word) = (Face::named("Bahnschrift"), Language::named("sr"), "\u{431}\u{433}\u{434}\u{43f}\u{442}");
+        let Some(file) = crate::system_fonts::file_for(face, 'a').filter(|file| crate::shaping::local(file, '\u{431}', language) != file.glyph('\u{431}')) else {
+            return eprintln!("no Bahnschrift with Serbian forms here: not tested");
+        };
+        let font = Font { face, ..Font::new(24.0) };
+        let forms: Vec<u16> = word.chars().map(|letter| crate::shaping::local(&file, letter, language)).collect();
+        // SAFETY: a memory DC of the test's own.
+        let strip = Rc::new(Strip { dc: unsafe { CreateCompatibleDC(0) }, bitmap: Cell::new(0), pixels: Cell::new(std::ptr::null_mut()), width: Cell::new(0), rows: Cell::new(0) });
+        strip.fit(200);
+        let (width, rows) = (strip.width.get() as usize, strip.rows.get() as usize);
+        let blank = || {
+            // SAFETY: the strip holds `rows` rows of `width` pixels, and nothing else uses them.
+            let pixels = unsafe { std::slice::from_raw_parts_mut(strip.pixels.get(), width * rows) };
+            pixels.fill(0xff00_0000);
+            pixels
+        };
+        let texts: [Box<dyn TextSystem>; 2] = [Box::new(GdiText { strip: strip.clone(), fonts: Fonts::new(strip.dc) }), Box::new(SystemText::new().unwrap())];
+        for mut text in texts {
+            text.set_language(language);
+            let (mut stops, ascent) = (Vec::new(), text.metrics(font, 1.0).ascent.round() as i32);
+            text.measure(word, font, 1.0, Some(&mut stops));
+            let placed: Vec<(u16, [f32; 2])> = forms.iter().enumerate().map(|(n, form)| (*form, [if n == 0 { 0.0 } else { stops[n - 1] }, 0.0])).collect();
+            let pixels = blank();
+            text.draw(&mut Canvas::new(pixels, width, rows, (0, 0), 1.0), word, 2.0, 2.0, font, Color::WHITE);
+            let whole = pixels.to_vec();
+            let pixels = blank();
+            let drew = text.draw_glyphs(&mut Canvas::new(pixels, width, rows, (0, 0), 1.0), font, ('\u{431}', file.glyph('\u{431}')), &placed, [2, 2 + ascent], Color::WHITE);
+            assert!(drew && *pixels == whole[..] && whole.iter().any(|pixel| *pixel != 0xff00_0000));
+        }
     }
 
     /// Text measured and drawn at every size a pan-and-zoom view zooms through keeps at most
@@ -4406,6 +4568,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn keys_the_person_at_the_computer_holds_do_not_reach_a_tests_window() {
+        keys_up();
+        let seen = Rc::new(RefCell::new(Seen::default()));
+        let (hwnd, ole) = window(&seen);
+        // Shift held as Windows hands it to the thread mid-test, from the real keyboard.
+        let mut held = [0u8; 256];
+        (held[0x10], held[0xA0]) = (0x80, 0x80);
+        unsafe { SetKeyboardState(&held) };
+        unsafe { (window_proc(hwnd, WM_KEYDOWN, 9, 0), window_proc(hwnd, WM_KEYDOWN, 9, 0)) };
+        assert!(state(hwnd).ui.ime_area().is_some(), "Tab twice is Tab, not Shift+Tab: focus on the text box");
+        close((hwnd, ole));
+    }
+
+    #[test]
     fn the_typing_window_follows_the_text_cursor() {
         keys_up();
         assert_eq!(cursor_pixels(rect(10.4, 20.0, 1.0, 17.0), 1.5), RECT { left: 16, top: 30, right: 17, bottom: 56 });
@@ -4703,13 +4879,20 @@ pub(crate) mod tests {
         let scale = kept(hwnd).scale;
         ((at.y * scale) as isize) << 16 | (at.x * scale) as isize
     }
-    /// Dispatches every waiting message to its window, as `run`'s loop does. Says whether the
-    /// loop was told to end (`WM_QUIT`, 18). Makes this thread see every key as up, whatever
-    /// the user holds meanwhile: a test pressing Tab means Tab, not Shift+Tab. (A thread has
-    /// its own keyboard state, which is all this changes.)
+    /// Makes this thread's windows take every key as up, whatever the person at the computer
+    /// holds meanwhile: a test pressing Tab means Tab, not Shift+Tab. (Windows hands a thread
+    /// the keyboard's state again as it handles messages, so a thread's own state, set here
+    /// too for the system's own menus, does not hold.)
     fn keys_up() {
+        HELD.set(Some(Mods::NONE));
         // SAFETY: the keyboard state is 256 bytes, one per key.
         unsafe { SetKeyboardState(&[0; 256]) };
+    }
+
+    thread_local! {
+        /// The modifiers this thread's windows take as held, in place of the keyboard's (see
+        /// `keys_up`).
+        pub(super) static HELD: Cell<Option<Mods>> = const { Cell::new(None) };
     }
 
     /// Whether this test program has the GPU path: the name of the function that makes
@@ -4729,6 +4912,8 @@ pub(crate) mod tests {
         assert!(!has_device_creation());
     }
 
+    /// Dispatches every waiting message to its window, as `run`'s loop does. Says whether the
+    /// loop was told to end (`WM_QUIT`, 18).
     pub(crate) fn pump() -> bool {
         let (mut msg, mut end) = (MSG::default(), false);
         while unsafe { PeekMessageW(&mut msg, 0, 0, 0, 1) } != 0 {
@@ -5233,13 +5418,18 @@ pub(crate) mod tests {
         unsafe { DestroyWindow(hwnd) };
     }
 
-    /// A window's update rectangles, as its paint finds them.
+    /// What a window draws next: its update rectangles, as its paint finds them; and while a GPU
+    /// path shows it, its undrawn places, which `WM_DRAW` draws.
     fn wanted(hwnd: HANDLE) -> Vec<RECT> {
         let stale = kept(hwnd).stale();
         let mut around = RECT::default();
         unsafe { GetUpdateRect(hwnd, &mut around, 0) };
         let parts = stale.parts.get(..stale.header[2] as usize).filter(|parts| !parts.is_empty()).unwrap_or(std::slice::from_ref(&around));
-        parts.iter().filter(|part| part.right > part.left && part.bottom > part.top).copied().collect()
+        #[cfg(feature = "gpu")]
+        let parts = [parts, &kept(hwnd).undrawn[..]].concat();
+        let (wide, high) = inside(hwnd);
+        let within = |part: &RECT| RECT { left: part.left.max(0), top: part.top.max(0), right: part.right.min(wide), bottom: part.bottom.min(high) };
+        parts.iter().map(within).filter(|part| part.right > part.left && part.bottom > part.top).collect()
     }
 
     #[test]
@@ -5306,6 +5496,10 @@ pub(crate) mod tests {
                 unsafe { window_proc(hwnd, WM_WAKE, 0, 0) };
             }
             shown.draw(hwnd, &wanted(hwnd));
+            #[cfg(feature = "gpu")]
+            unsafe {
+                window_proc(hwnd, WM_DRAW, 0, 0)
+            };
             unsafe { window_proc(hwnd, WM_PAINT, 0, 0) };
         };
         // How many shown pixels differ from a full redraw.

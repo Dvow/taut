@@ -27,7 +27,7 @@
 use crate::accessibility::{AccessNode, Role};
 use crate::geom::Rect;
 use crate::id::Id;
-use crate::ios::{Heard, heard};
+use crate::ios::{Heard, heard, heard_in};
 use crate::macos_sys::*;
 use crate::ui::Ui;
 use std::cell::{Cell, RefCell};
@@ -72,7 +72,8 @@ pub(crate) struct Told {
 }
 
 thread_local! {
-    static TOLD: RefCell<Option<Told>> = const { RefCell::new(None) };
+    /// What each window tells, by its view.
+    static TOLD: RefCell<Vec<Told>> = const { RefCell::new(Vec::new()) };
     /// A reader has asked something: the window tells from now on.
     static LISTENING: Cell<bool> = const { Cell::new(false) };
 }
@@ -144,9 +145,9 @@ fn asked() {
 }
 
 /// The view's elements, in reading order: those not in a table, and each table.
-extern "C" fn view_elements(_: Obj, _: Sel) -> Obj {
+extern "C" fn view_elements(view: Obj, _: Sel) -> Obj {
     asked();
-    let elements = TOLD.with_borrow(|told| told.as_ref().map(|told| told.elements_within(None)));
+    let elements = TOLD.with_borrow(|windows| windows.iter().find(|told| told.view == view).map(|told| told.elements_within(None)));
     ns_array(&elements.unwrap_or_default())
 }
 
@@ -185,9 +186,8 @@ fn has_element(node: &AccessNode) -> bool {
 
 /// Works with an element's node (and where it is among the nodes).
 pub(crate) fn with_node<T>(element: Obj, work: impl FnOnce(&Told, usize, &AccessNode) -> T) -> Option<T> {
-    TOLD.with_borrow(|told| {
-        let told = told.as_ref()?;
-        let at = *told.node_of.get(&(element as usize))?;
+    TOLD.with_borrow(|windows| {
+        let (told, at) = windows.iter().find_map(|told| Some((told, *told.node_of.get(&(element as usize))?)))?;
         told.nodes.get(at).map(|node| work(told, at, node))
     })
 }
@@ -291,13 +291,16 @@ impl Told {
     }
 }
 
-/// Has the window do something to an element's node in the next turn: what a reader asked.
+/// Has the element's window do something to its node in the next turn: what a reader asked.
 pub(crate) fn act(element: Obj, deed: impl FnOnce(&mut Ui, Id) + 'static) -> Bool {
-    let Some(id) = with_node(element, |_, _, node| node.id) else { return 0 };
-    heard(Heard::Other(Box::new(move |ui: &mut Ui| {
-        deed(ui, id);
-        true
-    })));
+    let Some((view, id)) = with_node(element, |told, _, node| (told.view, node.id)) else { return 0 };
+    heard_in(
+        view,
+        Heard::Other(Box::new(move |ui: &mut Ui| {
+            deed(ui, id);
+            true
+        })),
+    );
     1
 }
 
@@ -417,8 +420,12 @@ fn first_cell_in_view(told: &Told, table: usize) -> Option<Obj> {
 pub(crate) fn keep(view: Obj, origin: (f64, f64), ui: &Ui) {
     let (version, moved_from) = (ui.access_version(), ui.access_moved_from());
     let nodes = ui.access_nodes();
-    let changed = TOLD.with_borrow_mut(|told| {
-        let told = told.get_or_insert_with(|| Told { view, origin, version: 0, nodes: Vec::new(), elements: Vec::new(), by_id: HashMap::new(), node_of: HashMap::new() });
+    let changed = TOLD.with_borrow_mut(|windows| {
+        let at = windows.iter().position(|told| told.view == view).unwrap_or_else(|| {
+            windows.push(Told { view, origin, version: 0, nodes: Vec::new(), elements: Vec::new(), by_id: HashMap::new(), node_of: HashMap::new() });
+            windows.len() - 1
+        });
+        let told = &mut windows[at];
         told.origin = origin;
         let was = std::mem::replace(&mut told.version, version);
         if moved_from == Some(was) && told.nodes.len() == nodes.len() {
@@ -435,6 +442,12 @@ pub(crate) fn keep(view: Obj, origin: (f64, f64), ui: &Ui) {
         // SAFETY: the reader is handed a string to say.
         unsafe { UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, ns_string(text)) };
     }
+}
+
+/// A window closed: its elements are let go of.
+pub(crate) fn forget(view: Obj) {
+    let gone = TOLD.with_borrow_mut(|windows| windows.iter().position(|told| told.view == view).map(|at| windows.remove(at)));
+    gone.into_iter().flat_map(|told| told.by_id.into_values()).for_each(let_go);
 }
 
 /// The elements made to match the nodes: kept by id, made for new ones, the rest let go of.

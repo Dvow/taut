@@ -385,6 +385,10 @@ impl TextSystem for Emoji {
         self.text.file(face, letter)
     }
 
+    fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, letter: (char, u16), glyphs: &[(u16, [f32; 2])], pen: [i32; 2], color: Color) -> bool {
+        self.text.draw_glyphs(canvas, font, letter, glyphs, pen, color)
+    }
+
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
         let scale = canvas.scale();
         if plain(text) || !self.cut(text, font.size * scale) {

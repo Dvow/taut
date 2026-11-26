@@ -451,6 +451,9 @@ pub(crate) struct Shown {
     kind: Option<crate::hdr_vulkan::Kind>,
     #[cfg(feature = "hdr")]
     pass: Option<Option<Box<crate::hdr_vulkan::Pass>>>,
+    /// The screen the swap chain's HDR metadata was last set from (none since it was made).
+    #[cfg(feature = "hdr")]
+    described: Option<crate::hdr::Screen>,
     #[cfg(test)]
     hwnd: HANDLE,
 }
@@ -484,6 +487,8 @@ impl Shown {
             kind: None,
             #[cfg(feature = "hdr")]
             pass: None,
+            #[cfg(feature = "hdr")]
+            described: None,
             #[cfg(test)]
             hwnd,
         };
@@ -566,6 +571,10 @@ impl Shown {
             (calls.vkGetSwapchainImagesKHR)(self.owner.device, chain, &mut count, made.as_mut_ptr());
         }
         (self.chain, self.images, self.extent, self.usage) = (chain, made[..count.min(16) as usize].to_vec(), extent, usage);
+        #[cfg(feature = "hdr")]
+        {
+            self.described = None;
+        }
         self.lit_targets(device)
     }
 
@@ -585,15 +594,27 @@ impl Shown {
         }
     }
 
-    /// Readies the HDR pass for the swap chain just made, while presented in HDR, and sets its
-    /// HDR metadata. Says whether that worked (it does where there is nothing to do).
+    /// Readies the HDR pass for the swap chain just made, while presented in HDR. Says whether
+    /// that worked (it does where there is nothing to do).
     #[cfg(feature = "hdr")]
-    fn lit_targets(&mut self, device: &Device) -> bool {
+    fn lit_targets(&mut self, _: &Device) -> bool {
         let (Some(Some(pass)), Some(kind)) = (self.pass.as_mut(), self.kind.filter(|_| self.hdr.on)) else { return true };
-        if let Some(metadata) = &device.metadata {
-            crate::hdr_vulkan::describe(metadata, self.owner.device, self.chain, self.hdr.screen);
-        }
         pass.target(&self.images, kind.format, self.extent)
+    }
+
+    /// Sets the swap chain's HDR metadata from the window's screen while presented in HDR,
+    /// where the device sets it: after the swap chain is made, and when the screen's HDR, SDR
+    /// white or peak changes.
+    #[cfg(feature = "hdr")]
+    fn describe(&mut self, device: &Device) {
+        let Some(metadata) = device.metadata.as_ref().filter(|_| self.hdr.on && self.chain != 0) else { return };
+        if self.described == Some(self.hdr.screen) {
+            return;
+        }
+        crate::hdr_vulkan::describe(metadata, self.owner.device, self.chain, self.hdr.screen);
+        self.described = Some(self.hdr.screen);
+        #[cfg(test)]
+        tests::DESCRIBED.set(Some(self.hdr.screen));
     }
 
     #[cfg(not(feature = "hdr"))]
@@ -700,6 +721,8 @@ impl Shown {
         if !self.go_hdr(device) {
             return false;
         }
+        #[cfg(feature = "hdr")]
+        self.describe(device);
         match self.present_once(device, inside(dirty, self.size)) {
             Some(true) => true,
             Some(false) => self.chained(device, self.size) && self.present_once(device, &[]) == Some(true),
@@ -867,6 +890,9 @@ pub(crate) mod tests {
     }
 
     thread_local! {
+        /// The screen a swap chain's HDR metadata was last set from, on this thread.
+        #[cfg(feature = "hdr")]
+        pub(crate) static DESCRIBED: Cell<Option<crate::hdr::Screen>> = const { Cell::new(None) };
         /// The buffer a present's image is copied into, while a test keeps them: it, its memory,
         /// where the CPU sees it.
         static KEEP: Cell<Option<(Handle, Handle, *mut u8)>> = const { Cell::new(None) };

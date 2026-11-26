@@ -28,7 +28,7 @@ use crate::color::Color;
 use crate::font_file::FontFile;
 use crate::scripts::Language;
 use crate::shaping::{Laid, Plan, Script};
-use crate::text::{Face, Font, Metrics, TextSystem};
+use crate::text::{Face, Font, Metrics, Paragraph, TextSystem};
 use std::ops::Range;
 
 /// A character's bidi class.
@@ -313,9 +313,42 @@ pub(crate) struct Order {
     /// found.
     brackets: Vec<(char, usize)>,
     found: Vec<(usize, usize)>,
+    /// The paragraph last resolved whole, with its direction, and its characters' levels then:
+    /// its lines are asked for one after another.
+    paragraph: (String, bool),
+    paragraph_levels: Vec<u8>,
 }
 
 impl Order {
+    /// Resolves the levels of a line of a paragraph (see [`Paragraph`]): of the paragraph as a
+    /// whole (kept for its next line), then the line's end reset (rule L1). Leaves the line's in
+    /// `levels`.
+    pub fn of_line(&mut self, line: &str, paragraph: Paragraph) {
+        let Paragraph { leftward, before, after } = paragraph;
+        if !self.holds(line, paragraph) {
+            let Order { letters, written, paragraph: (whole, direction), .. } = self;
+            *whole = [before, line, after].concat();
+            *direction = leftward;
+            *letters = whole.chars().collect();
+            *written = letters.iter().map(|letter| kind(*letter)).collect();
+            self.resolve(Some(leftward));
+            self.paragraph_levels.clone_from(&self.levels);
+        }
+        let skip = before.chars().count();
+        self.levels.clear();
+        self.levels.extend(self.paragraph_levels.iter().skip(skip).take(line.chars().count()));
+        self.written.clear();
+        self.written.extend(line.chars().map(kind));
+        self.line_end(leftward as u8);
+    }
+
+    /// Whether the paragraph last resolved is this line's.
+    fn holds(&self, line: &str, Paragraph { leftward, before, after }: Paragraph) -> bool {
+        let (whole, direction) = (&self.paragraph.0, self.paragraph.1);
+        let long = whole.len() == before.len() + line.len() + after.len();
+        direction == leftward && long && whole.starts_with(before) && whole[before.len()..].starts_with(line) && whole.ends_with(after)
+    }
+
     /// Resolves every character's level in a line: of a right-to-left paragraph (`Some(true)`),
     /// left-to-right, or by its first strong letter. Returns the paragraph level, leaving the
     /// characters' in `levels`.
@@ -558,9 +591,8 @@ impl Order {
         }
     }
 
-    /// Gives removed characters the level of the one before; and resets trailing whitespace and
-    /// whitespace before a tab to the paragraph level, with boundary neutrals among it (rule
-    /// L1).
+    /// Gives removed characters the level of the one before; and resets the line's end (see
+    /// `line_end`).
     fn untouched(&mut self, paragraph: u8) {
         let Order { written, levels, .. } = self;
         for at in 0..written.len() {
@@ -568,6 +600,13 @@ impl Order {
                 levels[at] = if at == 0 { paragraph } else { levels[at - 1] };
             }
         }
+        self.line_end(paragraph);
+    }
+
+    /// Resets trailing whitespace and whitespace before a tab to the paragraph level, with
+    /// boundary neutrals among it (rule L1).
+    fn line_end(&mut self, paragraph: u8) {
+        let Order { written, levels, .. } = self;
         let mut trailing = true;
         for at in (0..written.len()).rev() {
             let kind = written[at];
@@ -790,13 +829,20 @@ struct Piece {
     wide: f32,
 }
 
-/// A shaped and rasterized run: its width, each character's position (from its left edge, in
-/// pixels), and once drawn, its coverage bitmap with its offset from the pen on the line.
+/// A shaped run: its width, each character's position (from its left edge, in pixels), its
+/// glyphs with their places (in pixels right of and below the pen); and once rasterized here,
+/// its coverage bitmap with its offset from the pen on the line.
 struct Shaped {
     wide: f32,
     edges: Vec<[f32; 2]>,
+    glyphs: Vec<(u16, [f32; 2])>,
     drawn: Option<([i32; 2], usize, Vec<u8>)>,
 }
+
+/// Whether runs other than those shaped for their forms are drawn here (Hebrew, Arabic, Indic
+/// and Southeast Asian scripts), rasterized from their fonts. Runs shaped for their forms in
+/// the system's fonts are drawn by the system, glyph by glyph.
+const RASTERIZED: bool = cfg!(any(feature = "right-to-left", feature = "brahmic"));
 
 /// A text system wrapping another, which draws all left-to-right text, that shows text in
 /// display order. A line without right-to-left letters (judged by its bytes) passes straight
@@ -895,16 +941,20 @@ impl BidiText {
         false
     }
 
-    /// Splits a line into pieces in display order, each with its width. Returns the line's
-    /// width in pixels. With `edges`, also each character's position (from the line's left, in
-    /// pixels): what a cursor needs.
-    fn lay(&mut self, text: &str, font: Font, scale: f32, leftward: Option<bool>, mut edges: Option<&mut Vec<[f32; 2]>>) -> f32 {
+    /// Splits a line into pieces in display order, each with its width: as it shows in its
+    /// paragraph, or as a paragraph of its own. Returns the line's width in pixels. With
+    /// `edges`, also each character's position (from the line's left, in pixels): what a cursor
+    /// needs.
+    fn lay(&mut self, text: &str, font: Font, scale: f32, paragraph: Option<Paragraph>, mut edges: Option<&mut Vec<[f32; 2]>>) -> f32 {
         if self.cache_bytes > CACHE_LIMIT {
             (self.shaped, self.cache_bytes) = (Vec::new(), 0);
         }
         // (Without `right-to-left` a line shows as typed: one run.)
         if cfg!(feature = "right-to-left") {
-            self.order.of(text, leftward);
+            match paragraph {
+                Some(paragraph) => self.order.of_line(text, paragraph),
+                None => _ = self.order.of(text, None),
+            }
             self.order.shown(text, &mut self.stretches);
         } else {
             self.stretches = vec![(0..text.len(), 0)];
@@ -1047,8 +1097,8 @@ impl BidiText {
         }
         // (The file is looked up again: its borrow ends where the plan is made. Scripts
         // `brahmic.rs` shapes go their own way, left to right as are scripts shaped only for
-        // their forms; the rest here are right-to-left.)
-        let (leftward, language) = (!matches!(script, Script::Brahmic(_) | Script::Plain(_)), self.language);
+        // their forms; the rest here, only with `right-to-left`, are right-to-left.)
+        let (leftward, language) = (cfg!(feature = "right-to-left") && !matches!(script, Script::Brahmic(_) | Script::Plain(_)), self.language);
         if !self.plans.iter().any(|(of, known, _)| *of == serial && *known == script) {
             let plan = Plan::of(self.file(face, script, letter)?, script, leftward, language);
             self.plans.push((serial, script, plan));
@@ -1062,8 +1112,8 @@ impl BidiText {
         let total = file.shape(plan, run, glyphs);
         let unit = file.unit(pixels);
         let edges = if leftward { edges_of(glyphs, run, unit) } else { syllable_edges(glyphs, run, unit) };
-        let shaped = Shaped { wide: (total as f32 * unit).round(), edges, drawn: None };
-        self.cache_bytes += run.len() + shaped.edges.len() * 8 + size_of::<(u32, u32, Box<str>, Shaped)>();
+        let shaped = Shaped { wide: (total as f32 * unit).round(), edges, glyphs: placed(glyphs, unit), drawn: None };
+        self.cache_bytes += run.len() + shaped.edges.len() * 8 + shaped.glyphs.len() * 12 + size_of::<(u32, u32, Box<str>, Shaped)>();
         self.shaped.insert(at, (serial, pixels.to_bits(), run.into(), shaped));
         // (Runs of this line cached after it are one further on now.)
         for piece in &mut self.pieces {
@@ -1116,40 +1166,49 @@ impl BidiText {
         let count = self.stops.len();
         for m in 0..count {
             let [left, right] = [if m == 0 { 0.0 } else { self.stops[m - 1] * scale }, self.stops[m] * scale];
-            let own = if let Way::Turned(..) = way { turned_back(&text[bytes.clone()], m) } else { m };
+            let own = if cfg!(feature = "right-to-left") && matches!(way, Way::Turned(..)) { turned_back(&text[bytes.clone()], m) } else { m };
             edges[first + own] = [pen + left, pen + right];
         }
         wide
     }
 
-    /// Draws a line, its pieces left to right, from (`x`, `y`).
-    fn write(&mut self, canvas: &mut Canvas, text: &str, [x, y]: [f32; 2], font: Font, color: Color, leftward: Option<bool>) {
+    /// Draws a line, its pieces left to right, from (`x`, `y`): as it shows in its paragraph,
+    /// or as a paragraph of its own.
+    fn write(&mut self, canvas: &mut Canvas, text: &str, [x, y]: [f32; 2], font: Font, color: Color, paragraph: Option<Paragraph>) {
         let scale = canvas.scale();
-        self.lay(text, font, scale, leftward, None);
+        self.lay(text, font, scale, paragraph, None);
         let ascent = self.text.metrics(font, scale).ascent;
         let (left, line) = ((x * scale).round(), ((y * scale).round() + (ascent * scale).round()) as i32);
         let mut pen = 0.0;
         for n in 0..self.pieces.len() {
             let Piece { bytes, way, wide } = self.pieces[n].clone();
+            let from = (left + pen) / scale;
             match way {
-                Way::Ahead => self.text.draw(canvas, &text[bytes], (left + pen) / scale, y, font, color),
-                Way::Turned(start, end) => self.text.draw(canvas, &self.turned[start..end], (left + pen) / scale, y, font, color),
-                Way::Shaped(at) => self.lay_run(canvas, text, bytes, at, font, [(left + pen) as i32, line], color),
+                Way::Ahead => self.text.draw(canvas, &text[bytes], from, y, font, color),
+                Way::Turned(start, end) => self.text.draw(canvas, &self.turned[start..end], from, y, font, color),
+                Way::Shaped(at) => self.lay_run(canvas, &text[bytes], at, font, [from, y], [(left + pen) as i32, line], color),
             }
             pen += wide;
         }
     }
 
-    /// Draws a shaped run with its pen at `x` on line `line`, in pixels, rasterizing it first
-    /// if never done: from the font it was shaped with.
+    /// Draws a shaped run with its pen at (`x`, `line`) in pixels, its top left at (`from`, `y`)
+    /// in units. One shaped for its forms goes to the system, glyph by glyph (where it draws no
+    /// glyphs by id, as plain characters); any other is rasterized here once, from the font it
+    /// was shaped with.
     #[allow(clippy::too_many_arguments)]
-    fn lay_run(&mut self, canvas: &mut Canvas, text: &str, bytes: Range<usize>, at: usize, font: Font, [x, line]: [i32; 2], color: Color) {
-        let pixels = font.size * canvas.scale();
+    fn lay_run(&mut self, canvas: &mut Canvas, run: &str, at: usize, font: Font, [from, y]: [f32; 2], [x, line]: [i32; 2], color: Color) {
+        let script = run.chars().find_map(Script::of).unwrap_or(Script::None);
+        let letter = run.chars().find(|letter| Script::of(*letter) == Some(script)).unwrap_or(' ');
+        if !RASTERIZED || matches!(script, Script::Plain(_)) {
+            let own = self.file(font.face, script, letter).map_or(0, |file| file.glyph(letter));
+            if !self.text.draw_glyphs(canvas, font, (letter, own), &self.shaped[at].3.glyphs, [x, line], color) {
+                self.text.draw(canvas, run, from, y, font, color);
+            }
+            return;
+        }
         if self.shaped[at].3.drawn.is_none() {
-            let run = &text[bytes];
-            let script = run.chars().find_map(Script::of).unwrap_or(Script::None);
-            let letter = run.chars().find(|letter| Script::of(*letter) == Some(script)).unwrap_or(' ');
-            let Some(block) = self.picture(font.face, script, letter, run, pixels) else { return };
+            let Some(block) = self.picture(font.face, script, letter, at, font.size * canvas.scale()) else { return };
             self.cache_bytes += block.2.len();
             self.shaped[at].3.drawn = Some(block);
         }
@@ -1159,26 +1218,31 @@ impl BidiText {
         }
     }
 
-    /// Rasterizes a run's glyphs into one coverage bitmap, overlaid, and its offset from the
-    /// pen on the line.
-    fn picture(&mut self, face: Face, script: Script, letter: char, run: &str, pixels: f32) -> Option<([i32; 2], usize, Vec<u8>)> {
-        let serial = self.file(face, script, letter)?.serial();
-        let BidiText { text, fonts, plans, glyphs, .. } = self;
-        let plan = &plans.iter().find(|(of, known, _)| *of == serial && *known == script)?.2;
+    /// Rasterizes cached run `at`'s glyphs into one coverage bitmap, overlaid, and its offset
+    /// from the pen on the line.
+    fn picture(&mut self, face: Face, script: Script, letter: char, at: usize, pixels: f32) -> Option<([i32; 2], usize, Vec<u8>)> {
+        self.file(face, script, letter)?;
+        let BidiText { text, fonts, shaped, .. } = self;
         let file = match text.file(face, letter) {
             Some(file) => file,
             None => fonts.iter().find(|(known, of, _)| *known == face && *of == script)?.2.as_ref()?,
         };
-        file.shape(plan, run, glyphs);
         let unit = file.unit(pixels);
-        let mut pen = 0.0;
-        let mut parts = Vec::with_capacity(glyphs.len());
-        for laid in glyphs.iter() {
-            parts.push(file.cover(laid.glyph, unit, [(pen + laid.offset[0] as f32) * unit, laid.offset[1] as f32 * unit]));
-            pen += laid.advance as f32;
-        }
+        let parts: Vec<_> = shaped[at].3.glyphs.iter().map(|(glyph, [x, y])| file.cover(*glyph, unit, [*x, -*y])).collect();
         Some(covered_all(&parts))
     }
+}
+
+/// Shaped glyphs' places, in pixels right of and below the run's pen, at `unit` pixels per
+/// font unit.
+fn placed(glyphs: &[Laid], unit: f32) -> Vec<(u16, [f32; 2])> {
+    let mut pen = 0.0;
+    let place = |laid: &Laid| {
+        let at = [(pen + laid.offset[0] as f32) * unit, -laid.offset[1] as f32 * unit];
+        pen += laid.advance as f32;
+        (laid.glyph, at)
+    };
+    glyphs.iter().map(place).collect()
 }
 
 /// Each character's position in a shaped run, from its left edge in pixels (its glyphs in
@@ -1423,23 +1487,23 @@ impl TextSystem for BidiText {
         }
     }
 
-    fn places(&mut self, text: &str, font: Font, scale: f32, leftward: bool, places: &mut Vec<[f32; 2]>) -> f32 {
-        if !leftward && self.passes(text, font.face) {
+    fn places(&mut self, text: &str, font: Font, scale: f32, paragraph: Paragraph<'_>, places: &mut Vec<[f32; 2]>) -> f32 {
+        if paragraph.plain(text) && !self.forms_here(font.face, text) {
             places.clear();
             self.stops.clear();
             let wide = self.text.measure(text, font, scale, Some(&mut self.stops));
             places.extend(self.stops.iter().enumerate().map(|(n, stop)| [if n == 0 { 0.0 } else { self.stops[n - 1] }, *stop]));
             return wide;
         }
-        let wide = self.lay(text, font, scale, Some(leftward), Some(places));
+        let wide = self.lay(text, font, scale, Some(paragraph), Some(places));
         places.iter_mut().for_each(|edge| *edge = edge.map(|x| x / scale));
         wide / scale
     }
 
-    fn draw_line(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color, leftward: bool) {
-        match !leftward && self.passes(text, font.face) {
+    fn draw_line(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color, paragraph: Paragraph<'_>) {
+        match paragraph.plain(text) && !self.forms_here(font.face, text) {
             true => self.text.draw(canvas, text, x, y, font, color),
-            false => self.write(canvas, text, [x, y], font, color, Some(leftward)),
+            false => self.write(canvas, text, [x, y], font, color, Some(paragraph)),
         }
     }
 
@@ -1575,7 +1639,7 @@ pub(crate) mod tests {
             let wide = ordered.measure(text, font, scale, None);
             let x = if leftward { width as f32 / scale - 4.0 - wide } else { 4.0 };
             let mut row = vec![0xffff_ffffu32; width * line];
-            ordered.draw_line(&mut Canvas::new(&mut row, width, line, (0, 0), scale), text, x, 1.0, font, Color::BLACK, leftward);
+            ordered.draw_line(&mut Canvas::new(&mut row, width, line, (0, 0), scale), text, x, 1.0, font, Color::BLACK, Paragraph::whole(leftward));
             // Every line is drawn within its measured width, and what its font's outlines reach
             // past their advances.
             let inked: Vec<usize> = row.iter().enumerate().filter(|(_, pixel)| **pixel != 0xffff_ffff).map(|(at, _)| at % width).collect();
@@ -1661,9 +1725,9 @@ pub(crate) mod tests {
             shaped += 1;
             let (mut stops, mut places) = (Vec::new(), Vec::new());
             let wide = ordered.measure(text, font, scale, Some(&mut stops));
-            ordered.places(text, font, scale, false, &mut places);
+            ordered.places(text, font, scale, Paragraph::whole(false), &mut places);
             let mut row = vec![0xffff_ffffu32; width * line];
-            ordered.draw_line(&mut Canvas::new(&mut row, width, line, (0, 0), scale), text, 4.0, 4.0, font, Color::BLACK, false);
+            ordered.draw_line(&mut Canvas::new(&mut row, width, line, (0, 0), scale), text, 4.0, 4.0, font, Color::BLACK, Paragraph::whole(false));
             let inked: Vec<usize> = row.iter().enumerate().filter(|(_, pixel)| **pixel != 0xffff_ffff).map(|(at, _)| at % width).collect();
             let (left, right) = (inked.iter().min().copied().unwrap_or(0) as f32 / scale, inked.iter().max().copied().unwrap_or(0) as f32 / scale);
             assert!(!inked.is_empty() && left >= 4.0 - 3.0 && right <= 4.0 + wide + 3.0, "{text:?}: ink from {left} to {right}, measured from 4 to {}", 4.0 + wide);
@@ -1819,7 +1883,7 @@ pub(crate) mod tests {
         let typed = vec![[0.0, 7.0], [7.0, 17.0], [17.0, 21.0], [21.0, 33.0], [33.0, 45.0]];
         for leftward in [false, true] {
             let mut places = Vec::new();
-            assert_eq!((ui.text.places(text, font, 1.0, leftward, &mut places), places), (45.0, typed.clone()));
+            assert_eq!((ui.text.places(text, font, 1.0, Paragraph::whole(leftward), &mut places), places), (45.0, typed.clone()));
         }
         let mut stops = Vec::new();
         assert_eq!((ui.text.measure(text, font, 1.0, Some(&mut stops)), stops), (45.0, vec![7.0, 17.0, 21.0, 33.0, 45.0]));
@@ -1832,7 +1896,7 @@ pub(crate) mod tests {
         let font = Font::new(16.0);
         let places = |ordered: &mut BidiText, text: &str, leftward: bool| {
             let mut places = Vec::new();
-            let wide = ordered.places(text, font, 1.0, leftward, &mut places);
+            let wide = ordered.places(text, font, 1.0, Paragraph::whole(leftward), &mut places);
             (wide, places)
         };
         // Alef and gimel, a space and two Latin letters. In a left-to-right paragraph the
@@ -1859,6 +1923,30 @@ pub(crate) mod tests {
             assert_eq!(ordered.measure(text, font, 1.0, Some(&mut stops.0)), alone.measure(text, font, 1.0, Some(&mut stops.1)));
             assert_eq!(stops.0, stops.1);
         }
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn numbers_after_a_wrap_take_the_direction_of_the_text_before_it() {
+        // "ab אב 12 34 cd" in a left-to-right paragraph, wrapped after the Hebrew. Unwrapped,
+        // the numbers follow Hebrew, so they read right to left as a group: 34 shows before 12.
+        // The second line alone would show them as typed.
+        let (mut ordered, font) = (hebrew(), Font::new(16.0));
+        let (whole, line) = ("ab \u{5d0}\u{5d1} 12 34 cd", "12 34 cd");
+        let before = &whole[..whole.len() - line.len()];
+        let left_of = |places: &[[f32; 2]], one: usize, other: usize| places[one][0] < places[other][0];
+        let mut places = Vec::new();
+        ordered.places(line, font, 1.0, Paragraph { leftward: false, before, after: "" }, &mut places);
+        assert!(left_of(&places, 3, 0), "wrapped: {places:?}");
+        ordered.places(line, font, 1.0, Paragraph::whole(false), &mut places);
+        assert!(left_of(&places, 0, 3), "alone: {places:?}");
+        // And it is drawn so.
+        let mut drawn = |paragraph: Paragraph| {
+            let mut pixels = vec![0u32; 200 * 20];
+            ordered.draw_line(&mut Canvas::new(&mut pixels, 200, 20, (0, 0), 1.0), line, 0.0, 0.0, font, Color::WHITE, paragraph);
+            pixels
+        };
+        assert_ne!(drawn(Paragraph { leftward: false, before, after: "" }), drawn(Paragraph::whole(false)));
     }
 
     #[test]
@@ -1963,23 +2051,104 @@ pub(crate) mod tests {
         assert!(wrong.is_empty(), "{} of {cases} wrong:\n{}", wrong.len(), wrong[..wrong.len().min(20)].join("\n"));
     }
 
+    #[test]
+    fn every_case_of_unicodes_test_of_characters_wrapped_anywhere_keeps_its_paragraphs_levels() {
+        // Each case broken into two lines at every character: each line's levels are those
+        // Unicode gives the whole paragraph, but for whitespace (and isolate and formatting
+        // characters) ending the line, which takes the paragraph's level (rule L1).
+        let Some(folder) = unicode() else { return };
+        let text = std::fs::read_to_string(folder.join("BidiCharacterTest.txt")).unwrap();
+        let (exact, mut order, mut lines, mut wrong) = (listed(&folder), Order::default(), 0, Vec::new());
+        let ends_line = |kind: Kind| matches!(kind, Kind::Space | Kind::PopIsolate) || isolates(kind) || removed(kind);
+        for line in text.lines().filter(|line| !line.is_empty() && !line.starts_with('#')) {
+            let fields: Vec<&str> = line.split(';').collect();
+            let letters: Vec<char> = fields[0].split_whitespace().map(|code| char::from_u32(u32::from_str_radix(code, 16).unwrap()).unwrap()).collect();
+            // (Only where the classes kept here are Unicode's: see the test above.)
+            if letters.iter().any(|letter| kind(*letter) != exact[*letter as usize]) {
+                continue;
+            }
+            let (paragraph, levels): (u8, Vec<&str>) = (fields[2].parse().unwrap(), fields[3].split_whitespace().collect());
+            let whole: String = letters.iter().collect();
+            for cut in whole.char_indices().map(|(at, _)| at).skip(1) {
+                for (from, to) in [(0, cut), (cut, whole.len())] {
+                    let (first, count) = (whole[..from].chars().count(), whole[from..to].chars().count());
+                    order.of_line(&whole[from..to], Paragraph { leftward: paragraph == 1, before: &whole[..from], after: &whole[to..] });
+                    let mut expected: Vec<&str> = levels[first..first + count].to_vec();
+                    let trailing = letters[first..first + count].iter().rev().take_while(|letter| ends_line(kind(**letter))).count();
+                    expected[count - trailing..].iter_mut().filter(|level| **level != "x").for_each(|level| *level = if paragraph == 1 { "1" } else { "0" });
+                    let got = order.levels.iter().map(|level| level.to_string());
+                    lines += 1;
+                    if !got.zip(&expected).all(|(got, expected)| *expected == "x" || got == *expected) {
+                        wrong.push(format!("{} cut at {cut}: {:?}, not {expected:?}", fields[0], order.levels));
+                    }
+                }
+            }
+        }
+        println!("{lines} lines, {} wrong", wrong.len());
+        assert!(wrong.is_empty(), "{} of {lines} lines wrong:\n{}", wrong.len(), wrong[..wrong.len().min(20)].join("\n"));
+    }
+
     /// The glyphs of the runs a line is shaped in here, as drawn.
     #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
     fn shaped_glyphs(text: &mut BidiText, line: &str, font: Font) -> Vec<u16> {
         text.lay(line, font, 1.0, None, None);
-        let mut all = Vec::new();
-        for piece in text.pieces.clone() {
-            let Way::Shaped(_) = piece.way else { continue };
-            let run = &line[piece.bytes];
-            let script = run.chars().find_map(Script::of).unwrap_or(Script::None);
-            let letter = run.chars().find(|letter| Script::of(*letter) == Some(script)).unwrap_or(' ');
-            let serial = text.file(font.face, script, letter).unwrap().serial();
-            let plan = &text.plans.iter().find(|(of, known, _)| *of == serial && *known == script).unwrap().2;
-            let file = text.fonts.iter().find(|(known, of, _)| *known == font.face && *of == script).unwrap().2.as_ref().unwrap();
-            file.shape(plan, run, &mut text.glyphs);
-            all.extend(text.glyphs.iter().map(|laid| laid.glyph));
+        let runs = text.pieces.iter().filter_map(|piece| if let Way::Shaped(at) = piece.way { Some(at) } else { None });
+        runs.flat_map(|at| text.shaped[at].3.glyphs.iter().map(|(glyph, _)| *glyph)).collect()
+    }
+
+    /// A text system that counts the runs it is asked to draw glyph by glyph, and those it drew.
+    #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+    struct Counted(Box<dyn TextSystem>, std::rc::Rc<std::cell::Cell<[usize; 2]>>);
+
+    #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+    impl TextSystem for Counted {
+        fn metrics(&mut self, font: Font, scale: f32) -> Metrics {
+            self.0.metrics(font, scale)
         }
-        all
+        fn measure(&mut self, text: &str, font: Font, scale: f32, stops: Option<&mut Vec<f32>>) -> f32 {
+            self.0.measure(text, font, scale, stops)
+        }
+        fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
+            self.0.draw(canvas, text, x, y, font, color)
+        }
+        fn set_language(&mut self, language: Language) {
+            self.0.set_language(language)
+        }
+        fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, letter: (char, u16), glyphs: &[(u16, [f32; 2])], pen: [i32; 2], color: Color) -> bool {
+            let drew = self.0.draw_glyphs(canvas, font, letter, glyphs, pen, color);
+            let [asked, drawn] = self.1.get();
+            self.1.set([asked + 1, drawn + drew as usize]);
+            drew
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+    fn a_line_shaped_for_its_forms_is_drawn_by_the_system_glyph_by_glyph() {
+        // A word with a mark on its first letter, which takes a form in the language: the
+        // system's text alone would leave it without its forms, so it is shaped here, and its
+        // glyphs go back to the system. (Fonts known to have such forms first, then any the
+        // system has.)
+        let words = [("sr", "\u{431}\u{301}\u{433}\u{434}\u{43f}\u{442}"), ("ro", "\u{15f}\u{301}\u{163}"), ("zh-Hant", "\u{76f4}\u{301}\u{9aa8}"), ("ja", "\u{76f4}\u{301}\u{9aa8}")];
+        let known = ["Bahnschrift", "DejaVu Sans", "Noto Sans", "Arial"].map(String::from);
+        let families = known.into_iter().chain(crate::system_fonts::families());
+        for (family, (name, line)) in families.flat_map(|family| words.map(|word| (family.clone(), word))) {
+            let (font, language, first) = (Font { face: Face::named(&family), ..Font::new(24.0) }, Language::named(name), line.chars().next().unwrap_or(' '));
+            let Some(file) = crate::system_fonts::file_for(font.face, first) else { continue };
+            if file.glyph(first) == 0 || crate::shaping::local(&file, first, language) == file.glyph(first) {
+                continue;
+            }
+            let counts = std::rc::Rc::new(std::cell::Cell::new([0, 0]));
+            let mut text = BidiText::around(Box::new(Counted(Box::new(crate::platform::SystemText::new().expect("the system's text")), counts.clone())));
+            text.set_language(language);
+            let mut pixels = vec![0u32; 200 * 50];
+            text.draw(&mut Canvas::new(&mut pixels, 200, 50, (0, 0), 1.0), line, 2.0, 2.0, font, Color::WHITE);
+            assert_eq!(counts.get(), [1, 1], "{family}: runs asked to be drawn glyph by glyph, and drawn so");
+            assert!(pixels.iter().any(|pixel| *pixel != 0), "{family}: nothing drawn");
+            println!("{family}, {name}: {line} drawn glyph by glyph");
+            return;
+        }
+        eprintln!("no system font with forms for these languages: not tested");
     }
 
     #[test]

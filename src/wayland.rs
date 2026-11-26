@@ -499,6 +499,10 @@ impl TextSystem for SharedText {
     fn set_language(&mut self, language: crate::scripts::Language) {
         self.0.borrow_mut().set_language(language)
     }
+    #[cfg(feature = "shaping")]
+    fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, letter: (char, u16), glyphs: &[(u16, [f32; 2])], pen: [i32; 2], color: Color) -> bool {
+        self.0.borrow_mut().draw_glyphs(canvas, font, letter, glyphs, pen, color)
+    }
 }
 
 /// A `wl_shm` buffer of pixels, so many wide and high. The compositor holds it from commit

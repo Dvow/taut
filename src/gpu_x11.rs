@@ -8,8 +8,8 @@
 //! | `Gpu`, `OpenGL`, `Direct3D11`, `Direct3D12` | OpenGL, then Vulkan |
 //! | `Vulkan` | Vulkan, then OpenGL |
 //! | `Cpu` | none |
+use crate::dynamic_library::library;
 use crate::platform::Renderer;
-use crate::x11::{dlclose, dlopen, library, symbol};
 use std::ffi::{c_char, c_int, c_ulong, c_void};
 
 /// The frames whose places a window keeps, for back buffers that old.

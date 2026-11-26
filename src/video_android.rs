@@ -6,6 +6,7 @@
 //! (addresses only in an app, where Android's network stack is).
 
 use crate::color::Color;
+use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Tracks, VideoError, VideoSource};
 use crate::video_captions::Cue;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
@@ -19,51 +20,14 @@ use std::time::{Duration, Instant};
 type Object = *mut c_void;
 
 unsafe extern "C" {
-    fn dlopen(name: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(library: *mut c_void, name: *const c_char) -> *mut c_void;
     fn clock_gettime(clock: c_int, time: *mut [c_long; 2]) -> c_int;
 }
 
-/// Declares the functions taken from a library, each found by its own name when the library is
-/// first asked for; none where it or one of them is missing.
-macro_rules! library {
-    ($name:ident, $file:literal, { $(fn $f:ident($($t:ty),*) $(-> $r:ty)?;)* }) => {
-        #[allow(non_snake_case)]
-        struct $name { $($f: unsafe extern "C" fn($($t),*) $(-> $r)?,)* }
-        impl $name {
-            /// The library's functions, opened once and kept for the program's life.
-            fn get() -> Option<&'static $name> {
-                static OPENED: OnceLock<Option<$name>> = OnceLock::new();
-                OPENED.get_or_init($name::open).as_ref()
-            }
-            fn open() -> Option<$name> {
-                let library = open_library($file)?;
-                // SAFETY: each function is declared as its header declares it.
-                unsafe { Some($name { $($f: function(library, concat!(stringify!($f), "\0"))?,)* }) }
-            }
-        }
-    };
-}
+/// The NDK's media and sound libraries, opened once and kept for the program's life.
+static MEDIA: OnceLock<Option<Media>> = OnceLock::new();
+static AUDIO: OnceLock<Option<Audio>> = OnceLock::new();
 
-/// A system library, opened for good.
-fn open_library(name: &CStr) -> Option<*mut c_void> {
-    // SAFETY: a name ending in a zero; 2 is `RTLD_NOW`.
-    let library = unsafe { dlopen(name.as_ptr(), 2) };
-    (!library.is_null()).then_some(library)
-}
-
-/// A library's function by name (ending in a zero), as type `F`.
-///
-/// # Safety
-/// `F` is the function's type, as its header declares it.
-unsafe fn function<F: Copy>(library: *mut c_void, name: &str) -> Option<F> {
-    // SAFETY: an open library, a name ending in a zero.
-    let found = unsafe { dlsym(library, name.as_ptr().cast()) };
-    // SAFETY: as the caller promises; a function pointer is one pointer, as `F` is.
-    (!found.is_null()).then(|| unsafe { std::mem::transmute_copy(&found) })
-}
-
-library!(Media, c"libmediandk.so", {
+library!(Media, ["libmediandk.so"], {
     fn AMediaExtractor_new() -> Object;
     fn AMediaExtractor_delete(Object) -> i32;
     fn AMediaExtractor_setDataSourceFd(Object, c_int, i64, i64) -> i32;
@@ -112,7 +76,7 @@ library!(Media, c"libmediandk.so", {
     fn AImage_getPlaneData(Object, i32, *mut *mut u8, *mut i32) -> i32;
 });
 
-library!(Audio, c"libaaudio.so", {
+library!(Audio, ["libaaudio.so"], {
     fn AAudio_createStreamBuilder(*mut Object) -> i32;
     fn AAudioStreamBuilder_setFormat(Object, i32);
     fn AAudioStreamBuilder_setChannelCount(Object, i32);
@@ -209,6 +173,10 @@ impl Contents {
 }
 
 /// An extractor of a source, and the decoder of one of its tracks.
+/// (Tests: how many times a decoder's output format was read.)
+#[cfg(test)]
+pub(crate) static FORMAT_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 struct Track {
     media: &'static Media,
     extractor: Object,
@@ -218,6 +186,8 @@ struct Track {
     fed: bool,
     /// The decoder has given output: it may be flushed.
     output_began: bool,
+    /// The decoder's output format changed since `format_changed` was last asked.
+    new_format: bool,
 }
 
 // SAFETY: the NDK's extractors and decoders may be used from any thread; a track is used by
@@ -232,7 +202,7 @@ impl Track {
         if extractor.is_null() {
             return Err("no extractor".into());
         }
-        let mut track = Track { media, extractor, held: Held::default(), codec: null_mut(), fed: false, output_began: false };
+        let mut track = Track { media, extractor, held: Held::default(), codec: null_mut(), fed: false, output_began: false, new_format: false };
         track.held = open_source(media, extractor, origin)?;
         Ok((track, contents(media, extractor)))
     }
@@ -301,9 +271,10 @@ impl Track {
         // SAFETY: a started decoder, writing the info.
         let at = unsafe { (self.media.AMediaCodec_dequeueOutputBuffer)(self.codec, &mut info, micros(wait)) };
         self.output_began |= at != TRY_AGAIN_LATER;
+        self.new_format |= at == OUTPUT_FORMAT_CHANGED;
         match at {
             0.. => Ok(Some((at as usize, info))),
-            // (A new format or new buffers are read when used.)
+            // (New buffers are read when used.)
             TRY_AGAIN_LATER | OUTPUT_FORMAT_CHANGED | OUTPUT_BUFFERS_CHANGED => Ok(None),
             failed => Err(format!("the decoder failed ({failed})")),
         }
@@ -329,15 +300,22 @@ impl Track {
         unsafe { (self.media.AMediaCodec_releaseOutputBuffer)(self.codec, at, show) };
     }
 
-    /// A number of the decoder's output format.
-    fn output_number(&self, key: &CStr) -> Option<i32> {
+    /// Whether the decoder's output format changed since this was last asked.
+    fn format_changed(&mut self) -> bool {
+        std::mem::take(&mut self.new_format)
+    }
+
+    /// Numbers of the decoder's output format, read at once.
+    fn output_numbers<const N: usize>(&self, keys: [&CStr; N]) -> [Option<i32>; N] {
+        #[cfg(test)]
+        FORMAT_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // SAFETY: a started decoder; its format is deleted once read.
         unsafe {
             let format = (self.media.AMediaCodec_getOutputFormat)(self.codec);
             if format.is_null() {
-                return None;
+                return [None; N];
             }
-            let found = number(self.media, format, key);
+            let found = keys.map(|key| number(self.media, format, key));
             (self.media.AMediaFormat_delete)(format);
             found
         }
@@ -599,7 +577,7 @@ pub(crate) struct Player {
 
 impl Player {
     pub(crate) fn open(source: VideoSource, sound: bool) -> Result<Player, VideoError> {
-        let media = Media::get().ok_or_else(|| VideoError::NoPlayer("the NDK's media library is missing".into()))?;
+        let media = MEDIA.get_or_init(Media::open).as_ref().ok_or_else(|| VideoError::NoPlayer("the NDK's media library is missing".into()))?;
         let origin = match source {
             VideoSource::File(path) => Origin::File(path),
             VideoSource::Url(url) => Origin::Address(CString::new(url).map_err(|_| VideoError::Refused("an address with a zero in it".into()))?),
@@ -888,6 +866,9 @@ struct Pictures {
     next: Option<(usize, Duration)>,
     /// The decoder gave its last frame.
     drained: bool,
+    /// How its frames become RGB, as the decoder's output format says: read again when that
+    /// changes.
+    colours: Option<Colours>,
 }
 
 impl Pictures {
@@ -897,7 +878,7 @@ impl Pictures {
         let Some((at, mime, size)) = video else { return Ok(None) };
         let reader = Reader::new(track.media, size)?;
         track.decode(at, &mime, reader.window)?;
-        Ok(Some(Pictures { track, reader, seeks: 0, target: Some(Duration::ZERO), before: None, next: None, drained: false }))
+        Ok(Some(Pictures { track, reader, seeks: 0, target: Some(Duration::ZERO), before: None, next: None, drained: false, colours: None }))
     }
 
     /// One step: follows a seek, decodes, shows a frame that is due. Whether all is shown.
@@ -973,7 +954,10 @@ impl Pictures {
     /// came meanwhile.
     fn show(&mut self, (at, time): (usize, Duration), shared: &Shared) {
         self.track.release(at, true);
-        let colours = Colours::of(&self.track);
+        if self.track.format_changed() {
+            self.colours = None;
+        }
+        let colours = *self.colours.get_or_insert_with(|| Colours::of(&self.track));
         let Some((width, pixels)) = self.reader.take(time, colours) else { return };
         let mut state = shared.lock();
         if state.seeks == self.seeks {
@@ -1099,15 +1083,15 @@ impl Colours {
     /// As the decoder's output format says (`color-standard`, `color-range`); else BT.601 below
     /// 720 lines and BT.709 from there, limited range.
     fn of(track: &Track) -> Colours {
-        let height = track.output_number(c"height").unwrap_or(0);
-        let (kr, kb) = match track.output_number(c"color-standard") {
+        let [height, standard, range] = track.output_numbers([c"height", c"color-standard", c"color-range"]);
+        let (kr, kb) = match standard {
             Some(1) => (0.2126, 0.0722),
             Some(6) => (0.2627, 0.0593),
             Some(2 | 4) => (0.299, 0.114),
-            _ if height >= 720 => (0.2126, 0.0722),
+            _ if height.unwrap_or(0) >= 720 => (0.2126, 0.0722),
             _ => (0.299, 0.114),
         };
-        let full = track.output_number(c"color-range") == Some(1);
+        let full = range == Some(1);
         let (luma, chroma) = if full { (1.0, 1.0) } else { (255.0 / 219.0, 255.0 / 224.0) };
         let (fixed, kg) = (|value: f32| (value * 16384.0).round() as i32, 1.0 - kr - kb);
         Colours {
@@ -1134,7 +1118,7 @@ impl Colours {
 /// it is, stretched to its speed; moves the clock to the sound's own as it is heard. Where there
 /// is no AAudio, no stream or no decoder, the video plays on without sound.
 fn sound_thread(media: &'static Media, origin: &Origin, shared: &Shared) {
-    let opened = Audio::get().ok_or_else(String::new).and_then(|audio| Speaker::open(audio, media, origin, shared.asked().sound_track));
+    let opened = AUDIO.get_or_init(Audio::open).as_ref().ok_or_else(String::new).and_then(|audio| Speaker::open(audio, media, origin, shared.asked().sound_track));
     let played = opened.and_then(|mut speaker| speaker.play(shared));
     if played.is_err() {
         shared.lock().sound_done = true;
@@ -1162,6 +1146,9 @@ struct Speaker {
     /// The speed it plays at, and its stretch (made with the stream).
     speed: f64,
     stretch: Option<Stretch>,
+    /// The decoder gives float samples (else 16-bit ones), as its output format says: read
+    /// again when that changes.
+    float: Option<bool>,
 }
 
 /// An AAudio stream: its rate and channels, and whether it plays.
@@ -1179,7 +1166,21 @@ impl Speaker {
         let (mut track, contents) = Track::read(media, origin)?;
         let found = contents.sound.get(nth).or(contents.sound.first()).ok_or_else(String::new)?;
         track.decode(found.at, &found.mime, null_mut())?;
-        Ok(Speaker { audio, media, origin: origin.clone(), sound_track: nth, track, stream: None, seeks: 0, skip_to: Duration::ZERO, waiting: Vec::new(), heard_from: None, speed: 1.0, stretch: None })
+        Ok(Speaker {
+            audio,
+            media,
+            origin: origin.clone(),
+            sound_track: nth,
+            track,
+            stream: None,
+            seeks: 0,
+            skip_to: Duration::ZERO,
+            waiting: Vec::new(),
+            heard_from: None,
+            speed: 1.0,
+            stretch: None,
+            float: None,
+        })
     }
 
     /// Plays until the player is dropped; an error where no stream opens.
@@ -1250,7 +1251,10 @@ impl Speaker {
             self.stream = Some(stream);
         }
         let time = Duration::from_micros(info.time_us.max(0) as u64);
-        let float = self.track.output_number(c"pcm-encoding") == Some(PCM_FLOAT);
+        if self.track.format_changed() {
+            self.float = None;
+        }
+        let float = *self.float.get_or_insert_with(|| self.track.output_numbers([c"pcm-encoding"]) == [Some(PCM_FLOAT)]);
         let samples = samples(self.track.bytes(at, &info), float);
         self.track.release(at, false);
         let (Some(stream), Some(stretch)) = (&self.stream, &mut self.stretch) else { return Ok(()) };
@@ -1358,8 +1362,7 @@ impl Stretch {
 impl Stream {
     /// A stream for the decoder's output: 16-bit, its rate and channels, for films.
     fn open(audio: &'static Audio, track: &Track) -> Option<Stream> {
-        let rate = track.output_number(c"sample-rate")?;
-        let channels = track.output_number(c"channel-count")?;
+        let [Some(rate), Some(channels)] = track.output_numbers([c"sample-rate", c"channel-count"]) else { return None };
         let (mut builder, mut stream) = (null_mut(), null_mut());
         // SAFETY: a new builder, deleted once it made the stream, which is closed with this.
         unsafe {

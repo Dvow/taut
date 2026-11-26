@@ -7,7 +7,7 @@ use crate::layout::{Align, BAR, Content, FROZEN, Flow, Tree, fade_key};
 use crate::path::Path;
 use crate::scene::Scenes;
 use crate::slots::Slots;
-use crate::text::{Decoration, Font, Line, TextSystem};
+use crate::text::{Decoration, Font, Line, Paragraph, TextSystem};
 use crate::theme::Theme;
 use crate::ui::{Icon, Stored};
 use crate::visible_boxes::{Fade, VisibleBox};
@@ -520,16 +520,17 @@ impl Painter<'_> {
             if y >= visible.bottom() || y + place.line_height <= visible.y {
                 continue;
             }
-            // A line runs in its paragraph's direction (the paragraph starts after the last
-            // line end before it); a right-to-left line starts at the right.
-            let paragraph = tree.strings[start as usize..line.start].rfind('\n').map_or(start as usize, |at| start as usize + at + 1);
-            let leftward = crate::bidi::leftward(&tree.strings[paragraph..end as usize]);
+            // A line runs in its paragraph's direction (see `Paragraph`); a right-to-left line
+            // starts at the right.
+            let (own, first) = (&tree.strings[start as usize..end as usize], start as usize);
+            let paragraph = Paragraph::of(own, line.start - first..line.end - first);
+            let leftward = paragraph.leftward;
             let x = inside.x + ((inside.w - line.width).max(0.0) * if leftward { 1.0 - before } else { before }).round();
             // The line's selected part (several pieces where it runs both ways), and where the
             // cursor shows on it.
             let (mut selected, text) = (Vec::new(), &tree.strings[line.start..line.end]);
             let at = marked.filter(|_| spec.caret && cursor_line == Some(i)).map(|(.., at)| at);
-            let cursor = marked.and_then(|(from, to, _)| crate::text::marks(self.text, text, line.start, line.width, font, scale, leftward, [from, to], at, self.after, &mut selected));
+            let cursor = marked.and_then(|(from, to, _)| crate::text::marks(self.text, text, line.start, line.width, font, scale, paragraph, [from, to], at, self.after, &mut selected));
             for [left, right] in selected {
                 canvas.rect(rect(x + left, y, right - left, place.line_height), self.theme.accent.with_alpha(0.35));
             }
@@ -538,7 +539,8 @@ impl Painter<'_> {
             let room = inside.x + inside.w;
             let ends = cut.map(|(_, wide)| if leftward { (room - wide, room - wide - self.text.measure("…", font, scale, None)) } else { (x, x + wide) });
             let from = ends.map_or(x, |(from, _)| from);
-            self.text.draw_line(canvas, &tree.strings[line.start..cut.map_or(line.end, |(end, _)| end)], from, y - place.lift, font, color, leftward);
+            let shown = cut.map_or(line.end, |(end, _)| end);
+            self.text.draw_line(canvas, &tree.strings[line.start..shown], from, y - place.lift, font, color, Paragraph::of(own, line.start - first..shown - first));
             if let Some((_, dots)) = ends {
                 self.text.draw(canvas, "…", dots, y - place.lift, font, color);
             }

@@ -112,6 +112,46 @@ impl Metrics {
     }
 }
 
+/// The paragraph a line of wrapped text lies in: its direction, and its text before and after
+/// the line. The Unicode Bidirectional Algorithm orders a paragraph as a whole, so numbers,
+/// punctuation and spaces at a line's ends take the direction they would unwrapped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Paragraph<'a> {
+    /// Whether it runs right to left.
+    pub leftward: bool,
+    /// Its text before the line.
+    pub before: &'a str,
+    /// Its text after the line.
+    pub after: &'a str,
+}
+
+impl<'a> Paragraph<'a> {
+    /// A line that is a whole paragraph, running right to left (`leftward`) or left to right.
+    pub const fn whole(leftward: bool) -> Self {
+        Paragraph { leftward, before: "", after: "" }
+    }
+
+    /// The paragraph of bytes `line` of `text`: from the line break before it to the one after
+    /// it, right to left where its first strong letter is. (Without the feature
+    /// `right-to-left`, every line is a paragraph of its own, left to right.)
+    pub fn of(text: &'a str, line: std::ops::Range<usize>) -> Self {
+        if !cfg!(feature = "right-to-left") {
+            return Paragraph::whole(false);
+        }
+        let start = text[..line.start].rfind('\n').map_or(0, |at| at + 1);
+        let end = text[line.end..].find('\n').map_or(text.len(), |at| line.end + at);
+        Paragraph { leftward: crate::bidi::leftward(&text[start..]), before: &text[start..line.start], after: &text[line.end..end] }
+    }
+
+    /// Whether a line of it shows as typed: the paragraph runs left to right, and no character
+    /// in it is drawn otherwise (see `bidi::plain`). (Without `right-to-left`, every paragraph
+    /// runs left to right.)
+    pub(crate) fn plain(&self, line: &str) -> bool {
+        let ahead = !cfg!(feature = "right-to-left") || !self.leftward;
+        ahead && crate::bidi::plain(line) && crate::bidi::plain(self.before) && crate::bidi::plain(self.after)
+    }
+}
+
 /// The system's text engine. Everything is in units; `scale` is pixels per unit.
 pub trait TextSystem {
     /// This font's vertical metrics at this scale.
@@ -123,23 +163,23 @@ pub trait TextSystem {
     /// Draws one line of text with its top-left at (`x`, `y`).
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color);
     /// Each character's visible left and right edges, from the line's left (one pair per
-    /// `char`), in a right-to-left (`leftward`) or left-to-right paragraph; and the line's
-    /// width. What cursor and selection are drawn by. (By default: each character after the
-    /// previous, as `measure` has them.)
-    fn places(&mut self, text: &str, font: Font, scale: f32, leftward: bool, places: &mut Vec<[f32; 2]>) -> f32 {
-        let _ = leftward;
+    /// `char`), as the line shows in its paragraph; and the line's width. What cursor and
+    /// selection are drawn by. (By default: each character after the previous, as `measure`
+    /// has them.)
+    fn places(&mut self, text: &str, font: Font, scale: f32, paragraph: Paragraph<'_>, places: &mut Vec<[f32; 2]>) -> f32 {
+        let _ = paragraph;
         let mut stops = Vec::new();
         let wide = self.measure(text, font, scale, Some(&mut stops));
         places.clear();
         places.extend(stops.iter().enumerate().map(|(n, stop)| [if n == 0 { 0.0 } else { stops[n - 1] }, *stop]));
         wide
     }
-    /// Draws one line of a right-to-left (`leftward`) or left-to-right paragraph: a line other
-    /// than its paragraph's first takes the paragraph's direction, whatever its own first
-    /// letter. (By default: as `draw`.)
+    /// Draws one line of a paragraph, ordered as the paragraph orders it: a line other than its
+    /// paragraph's first takes the paragraph's direction, whatever its own first letter. (By
+    /// default: as `draw`.)
     #[allow(clippy::too_many_arguments)]
-    fn draw_line(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color, leftward: bool) {
-        let _ = leftward;
+    fn draw_line(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color, paragraph: Paragraph<'_>) {
+        let _ = paragraph;
         self.draw(canvas, text, x, y, font, color);
     }
     /// The font file used for a character in a face, where the library reads it (an app font):
@@ -147,6 +187,16 @@ pub trait TextSystem {
     fn file(&mut self, face: Face, letter: char) -> Option<&crate::font_file::FontFile> {
         let _ = (face, letter);
         None
+    }
+    /// Draws glyphs by id from the system font that draws `letter.0` in `font`'s face, at
+    /// `font.size` (not fitted to the face's line): each glyph at its place, in pixels right of
+    /// and below the pen at `pen`, on the baseline. Text shaped for its language's forms in the
+    /// system's fonts is drawn so. `letter.1` is its glyph in the font shaped with. Whether it
+    /// drew them: not where this system draws no glyphs by id, nor where its font gives the
+    /// letter another glyph (another font). (By default: no.)
+    fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, letter: (char, u16), glyphs: &[(u16, [f32; 2])], pen: [i32; 2], color: Color) -> bool {
+        let _ = (canvas, font, letter, glyphs, pen, color);
+        false
     }
     /// The language of text drawn from now on, for its localized glyph forms (see
     /// [`Language`](crate::Language)): the window's as the app sets it, or the system's. (By
@@ -594,9 +644,9 @@ pub(crate) fn caret(clusters: &[ShownCluster], at: usize, after: bool) -> f32 {
 /// `marked`); and where the cursor shows, if on this line: as `caret` says (`after`), and
 /// where it shows the other way. Those two differ where directions meet, and a split cursor
 /// shows at both. The line is `line`, `wide` units wide, starting at byte `start` of its
-/// text, in a right-to-left (`leftward`) paragraph or not. The selection is bytes `from` to
-/// `to`: one continuing past the line's end includes room for the line break, on the
-/// paragraph's ending side. The cursor is at byte `at`.
+/// text, in `paragraph`. The selection is bytes `from` to `to`: one continuing past the
+/// line's end includes room for the line break, on the paragraph's ending side. The cursor is
+/// at byte `at`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn marks(
     text: &mut dyn TextSystem,
@@ -605,7 +655,7 @@ pub(crate) fn marks(
     wide: f32,
     font: Font,
     scale: f32,
-    leftward: bool,
+    paragraph: Paragraph<'_>,
     [from, to]: [usize; 2],
     at: Option<usize>,
     after: bool,
@@ -614,8 +664,9 @@ pub(crate) fn marks(
     marked.clear();
     let end = start + line.len();
     let selected = from < to && from <= end && to > start;
-    // Text without right-to-left characters: each character after the previous, as measured.
-    if crate::bidi::plain(line) && !leftward {
+    let leftward = paragraph.leftward;
+    // A line shown as typed: each character after the previous, as measured.
+    if paragraph.plain(line) {
         let mut width = |to: usize| text.measure(&line[..to.saturating_sub(start).min(line.len())], font, scale, None);
         if selected {
             let right = if to > end { wide + 4.0 } else { width(to) };
@@ -624,7 +675,7 @@ pub(crate) fn marks(
         return at.map(width).map(alone);
     }
     let mut places = Vec::new();
-    text.places(line, font, scale, leftward, &mut places);
+    text.places(line, font, scale, paragraph, &mut places);
     let clusters = shown_clusters(line, start, &places, leftward);
     if selected {
         let mut spans: Vec<[f32; 2]> = clusters.iter().filter(|one| one.bytes.start >= from && one.bytes.end <= to).map(|one| one.edges).collect();

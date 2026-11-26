@@ -170,6 +170,10 @@ pub struct SystemText {
     /// Each face's font, by face number and size in pixels.
     fonts: HashMap<(u32, u32), Owned>,
     glyphs: HashMap<(u32, u32, char), Glyph>,
+    /// Glyphs drawn by id (see `TextSystem::draw_glyphs`), by face, size, the letter whose font
+    /// they are from, and glyph.
+    #[cfg(feature = "shaping")]
+    by_id: HashMap<(u32, u32, char, u16), Glyph>,
 }
 
 impl std::fmt::Debug for SystemText {
@@ -182,7 +186,12 @@ impl std::fmt::Debug for SystemText {
 impl SystemText {
     /// The system's text, as CoreText draws it. (Always there on macOS.)
     pub fn new() -> Option<Self> {
-        let text = SystemText { fonts: HashMap::new(), glyphs: HashMap::new() };
+        let text = SystemText {
+            fonts: HashMap::new(),
+            glyphs: HashMap::new(),
+            #[cfg(feature = "shaping")]
+            by_id: HashMap::new(),
+        };
         // SAFETY: CoreText's system font, +1, released at once.
         let system = Owned(unsafe { CTFontCreateUIFontForLanguage(SYSTEM, 12.0, std::ptr::null()) });
         (!system.0.is_null()).then_some(text)
@@ -249,6 +258,24 @@ impl TextSystem for SystemText {
             canvas.cover(pen as i32 + glyph.left, line - glyph.top, glyph.width, &glyph.cover, color);
             pen += glyph.advance;
         }
+    }
+
+    #[cfg(feature = "shaping")]
+    fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, (letter, own): (char, u16), glyphs: &[(u16, [f32; 2])], [x, line]: [i32; 2], color: Color) -> bool {
+        let key = self.face(font, canvas.scale());
+        let face = self.fonts[&key].0;
+        // The face's font, or the one CoreText draws the letter in where it lacks it.
+        let drawing = match glyph_in(face, letter) {
+            Some(glyph) => (glyph == own).then_some(None),
+            None => fallback(face, letter).filter(|(_, glyph)| *glyph == own).map(|(other, _)| Some(other)),
+        };
+        let Some(other) = drawing else { return false };
+        let from = other.as_ref().map_or(face, |other| other.0);
+        for (id, [right, down]) in glyphs {
+            let glyph = self.by_id.entry((key.0, key.1, letter, *id)).or_insert_with(|| drawn(from, *id));
+            canvas.cover(x + right.round() as i32 + glyph.left, line + down.round() as i32 - glyph.top, glyph.width, &glyph.cover, color);
+        }
+        true
     }
 }
 

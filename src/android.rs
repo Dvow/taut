@@ -776,9 +776,6 @@ struct Host<App> {
 impl<App: FnMut(&mut Ui)> Turns for Host<App> {
     fn turn(&mut self) -> Option<Duration> {
         self.ui.set_time(self.start.elapsed());
-        // (The window can show the system's file dialog: set here, not as the interface is
-        // made, which costs every program kilobytes.)
-        self.ui.set_native_file_dialog(true);
         self.rerun |= self.ui.wake_in() == Some(Duration::ZERO);
         for what in HEARD.with_borrow_mut(std::mem::take) {
             self.take(what);
@@ -1025,7 +1022,8 @@ pub fn run(window: Window, app: impl FnMut(&mut Ui) + 'static) {
         Some(text) => Box::new(text),
         None => Box::new(crate::text::BuiltInFont),
     };
-    let ui = Ui::new(text, Box::new(SystemClipboard));
+    let mut ui = Ui::new(text, Box::new(SystemClipboard));
+    ui.set_native_file_dialog(true);
     #[rustfmt::skip]
     let host = Host {
         app, ui, surface: Surface::default(), rerun: true, done: false, whole: true, start: Instant::now(), pixels: [0, 0], typed_in: None, pressed: false, composed: None,

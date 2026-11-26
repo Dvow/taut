@@ -306,7 +306,8 @@ pub(crate) fn file_for(_face: Face, _letter: char) -> Option<crate::font_file::F
 /// The same on Windows, where GDI provides a font's tables (see `tables`). (The CSS generic
 /// families map to the fonts Windows browsers use for them.) Of the families `asked` names, the
 /// first installed; at a weight a family ships as a separately named family ("Segoe UI
-/// Semibold"), that one, if installed: GDI would synthesize it from the regular.
+/// Semibold"), that one, if installed: GDI would synthesize it from the regular. Its glyphs
+/// are read from GDI as they are drawn (see `font_file::Fetched`).
 #[cfg(windows)]
 pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::FontFile> {
     let asked = asked(face_for(face, letter));
@@ -318,16 +319,48 @@ pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::Fon
         "fantasy" => "Impact".to_string(),
         _ => name.clone(),
     };
-    let tried = asked.names.iter().map(general).flat_map(|name| [weighted(&name, asked.weight).map(|named| (named, 400)), Some((name, asked.weight))].into_iter().flatten());
-    // SAFETY: each font is created and selected into a program-owned DC, its tables read where
-    // it is the one selected (see `tables`), and the fonts and DC are released.
-    let file = unsafe {
-        let dc = CreateCompatibleDC(0);
-        let file = tried.into_iter().find_map(|(name, weight)| named_tables(dc, &name, weight, asked.italic));
-        DeleteDC(dc);
-        file
-    };
-    crate::font_file::FontFile::read(file?)
+    let mut tried = asked.names.iter().map(general).flat_map(|name| [weighted(&name, asked.weight).map(|named| (named, 400)), Some((name, asked.weight))].into_iter().flatten());
+    // SAFETY: a program-owned DC, freed with `selected`.
+    let mut selected = Selected { dc: unsafe { CreateCompatibleDC(0) }, font: 0, one_at_a_time: Mutex::new(()) };
+    // SAFETY: each font is created and selected into that DC; one not installed is released.
+    selected.font = tried.find_map(|(name, weight)| unsafe { named(selected.dc, &name, weight, asked.italic) })?;
+    let (file, glyphs) = tables(selected.dc)?;
+    let read: Box<crate::font_file::TablePart> = Box::new(move |table, at, long| selected.read(table, at, long));
+    crate::font_file::FontFile::assembled(file, (glyphs > 0).then_some((glyphs, read)))
+}
+
+/// A system font selected into a DC of its own, its tables read as asked, by one thread at a
+/// time. Both are freed with it.
+#[cfg(windows)]
+struct Selected {
+    dc: isize,
+    font: isize,
+    one_at_a_time: Mutex<()>,
+}
+
+#[cfg(windows)]
+impl Selected {
+    /// `long` bytes from byte `at` of a table of the font.
+    fn read(&self, table: &[u8; 4], at: usize, long: usize) -> Option<Vec<u8>> {
+        let _alone = held(&self.one_at_a_time);
+        let mut part = vec![0u8; long];
+        // SAFETY: Windows writes at most the room it is told of.
+        let read = long == 0 || unsafe { GetFontData(self.dc, u32::from_le_bytes(*table), at as u32, part.as_mut_ptr(), long as u32) } as usize == long;
+        read.then_some(part)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Selected {
+    fn drop(&mut self) {
+        // SAFETY: the DC and font are this one's; the font is deselected (13, `SYSTEM_FONT`)
+        // before it is deleted.
+        unsafe {
+            SelectObject(self.dc, GetStockObject(13));
+            DeleteObject(self.font);
+            DeleteDC(self.dc);
+        }
+    }
 }
 
 /// The GDI family name a family uses for a weight it ships separately: the weight's name after
@@ -348,34 +381,35 @@ fn weighted(name: &str, weight: i32) -> Option<String> {
     Some(format!("{name} {style}"))
 }
 
-/// The tables of a family's font at a weight, selected into a DC: if installed. (If not, GDI
-/// substitutes another.)
+/// A family's font at a weight, selected into a DC: if installed. (If not, GDI substitutes
+/// another, which is released.)
 ///
 /// # Safety
 /// `dc` is a program-owned device context.
 #[cfg(windows)]
-unsafe fn named_tables(dc: isize, name: &str, weight: i32, italic: bool) -> Option<Vec<u8>> {
+unsafe fn named(dc: isize, name: &str, weight: i32, italic: bool) -> Option<isize> {
     let mut put = [0u16; 64];
-    // SAFETY: as the caller promises; the font is released, and GDI writes at most the name
-    // buffer's length.
+    // SAFETY: as the caller promises; GDI writes at most the name buffer's length.
     unsafe {
         let font = CreateFontW(-MEASURED, 0, 0, 0, weight, italic as u32, 0, 0, 1, 0, 0, 0, 0, wide(name).as_ptr());
         let before = SelectObject(dc, font);
         let long = GetTextFaceW(dc, put.len() as i32, put.as_mut_ptr()).clamp(0, put.len() as i32) as usize;
-        let same = String::from_utf16_lossy(&put[..long]).trim_end_matches('\0').eq_ignore_ascii_case(name);
-        let file = if same { tables(dc) } else { None };
+        if String::from_utf16_lossy(&put[..long]).trim_end_matches('\0').eq_ignore_ascii_case(name) {
+            return Some(font);
+        }
         SelectObject(dc, before);
         DeleteObject(font);
-        file
+        None
     }
 }
 
 /// The DC's font as a standalone font file of the tables read (`font_file::taken`), each
 /// fetched by tag: for a font in a collection, not the others (the whole collection makes an
-/// East Asian font half as large again). `None` if Windows provides no tables, or the directory
+/// East Asian font half as large again). `glyf` is listed empty, to be read a glyph at a time:
+/// its length comes with the file. `None` if Windows provides no tables, or the directory
 /// claims more than the file holds.
 #[cfg(windows)]
-fn tables(dc: isize) -> Option<Vec<u8>> {
+fn tables(dc: isize) -> Option<(Vec<u8>, usize)> {
     // SAFETY: Windows writes at most the room it is told of.
     let read = |table: &[u8; 4], from: usize, into: &mut [u8]| unsafe { GetFontData(dc, u32::from_le_bytes(*table), from as u32, into.as_mut_ptr(), into.len() as u32) } as usize == into.len();
     // The table directory: 12 bytes, then 16 per table, tag first and length last. (Table 0 is
@@ -393,14 +427,16 @@ fn tables(dc: isize) -> Option<Vec<u8>> {
     if whole.iter().all(|whole| *whole == u32::MAX || all > *whole as usize) {
         return None;
     }
-    let mut file = crate::font_file::listing(&head[..4], tables.iter().copied());
-    file.reserve_exact(all);
-    for (name, long) in tables {
+    let glyphs = long(b"glyf").unwrap_or(0);
+    let kept = tables.iter().map(|(name, long)| (*name, if *name == b"glyf" { 0 } else { *long }));
+    let mut file = crate::font_file::listing(&head[..4], kept.clone());
+    file.reserve_exact(all - glyphs);
+    for (name, long) in kept {
         let at = file.len();
         file.resize(at + long, 0);
-        read(name, 0, &mut file[at..]).then_some(())?;
+        (long == 0 || read(name, 0, &mut file[at..])).then_some(())?;
     }
-    Some(file)
+    Some((file, glyphs))
 }
 
 // ---- Linux: what Fontconfig is asked ----
@@ -501,6 +537,17 @@ pub(crate) fn face_for(face: Face, letter: char) -> Face {
     }
     let mut learned = held(&LEARNED);
     learned.get_or_insert_with(Learned::new).face_for(face, &[letter])
+}
+
+/// The same face at the size asked for: for a fallback face (see `face_for`), not fitted to the
+/// line of the face it stands in for.
+#[cfg(all(windows, feature = "shaping"))]
+pub(crate) fn full_size(face: Face) -> Face {
+    let kept = kept(face);
+    if kept.scale == 1.0 {
+        return face;
+    }
+    keep(Kept { scale: 1.0, ..kept })
 }
 
 /// Splits a line into runs by drawing face, where the face's font lacks some characters: each
@@ -1077,6 +1124,27 @@ impl Learned {
 mod tests {
     use super::*;
 
+    /// A system font's glyphs, read from GDI one at a time as drawn, are the font's own: each
+    /// outline as from the whole file Windows has, with only the glyphs drawn read.
+    #[cfg(windows)]
+    #[test]
+    fn a_system_fonts_glyphs_are_read_as_drawn() {
+        let letters = ['a', 'Q', '\u{e9}', '\u{431}', '\u{65e5}', '\u{672c}', '\u{d55c}'];
+        let windows = std::path::PathBuf::from(std::env::var_os("WINDIR").expect("Windows' folder")).join("Fonts");
+        let mut held = 0;
+        for (face, file) in [(Face::Regular, "segoeui.ttf"), (Face::named("Yu Gothic"), "YuGothR.ttc"), (Face::named("Malgun Gothic"), "malgun.ttf")] {
+            let (Some(fetched), Some(whole)) = (file_for(face, 'a'), crate::font_file::FontFile::open(windows.join(file))) else { continue };
+            for letter in letters.iter().copied().filter(|letter| whole.glyph(*letter) != 0) {
+                assert_eq!(fetched.glyph(letter), whole.glyph(letter), "{file}: {letter}");
+                assert!(!fetched.outline(letter, 32.0).steps().is_empty(), "{file}: {letter}");
+                assert_eq!(fetched.outline(letter, 32.0), whole.outline(letter, 32.0), "{file}: {letter}");
+            }
+            assert!(fetched.bytes().0.len() * 2 < whole.bytes().0.len(), "{file}: {} of {} bytes held", fetched.bytes().0.len(), whole.bytes().0.len());
+            held += 1;
+        }
+        assert!(held > 0, "no font of these here");
+    }
+
     #[test]
     fn a_style_is_read_from_its_name() {
         let read = |name: &str| (style_named(name).weight, style_named(name).italic);
@@ -1329,7 +1397,9 @@ mod on_windows {
             super::pieces(&text, Face::Regular, &mut pieces);
         }
         let again = start.elapsed();
-        assert!(once.as_secs_f32() < 2.0 && again.as_secs_f32() < 0.1, "the first time {once:?}, ten times more {again:?}");
+        // (Ten more took 50 s before. Idle they take some 20 ms; a busy computer, several times
+        // that: the bound is far from both.)
+        assert!(once.as_secs_f32() < 2.0 && again.as_secs_f32() < 1.0, "the first time {once:?}, ten times more {again:?}");
     }
 
     /// The single full scan finds, for any character, the font a search for that character

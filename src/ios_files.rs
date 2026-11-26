@@ -13,7 +13,7 @@
 use crate::event::Event;
 use crate::file_dialog::FileDialogRequest;
 use crate::geom::Point;
-use crate::ios::{Heard, heard};
+use crate::ios::{Heard, heard_in, place_of, view_of};
 use crate::macos_sys::*;
 use crate::ui::Ui;
 use std::cell::{Cell, RefCell};
@@ -29,9 +29,9 @@ thread_local! {
     /// Every file the system's dialog answered with last; the file being saved, while asked.
     static PICKED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
     static SAVING: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-    /// What the app takes dropped, files and text, as of its last run; and what is over the
-    /// window now (files or text), if anything.
-    static TAKES: Cell<(bool, bool)> = const { Cell::new((false, false)) };
+    /// What each window's app takes dropped, files and text, as of its last run (by its view);
+    /// and what is over a window now (files or text), if anything.
+    static TAKES: RefCell<Vec<(Obj, (bool, bool))>> = const { RefCell::new(Vec::new()) };
     static OVER: Cell<Option<bool>> = const { Cell::new(None) };
     /// The delegates (made once), the file being opened, and how many folders were made for
     /// files coming in.
@@ -40,6 +40,8 @@ thread_local! {
     static OPENER: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
     static OPENING: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
     static FOLDERS: Cell<u32> = const { Cell::new(0) };
+    /// The view of the window whose app asked for the system's file dialog last.
+    static ASKED_BY: Cell<Obj> = const { Cell::new(std::ptr::null_mut()) };
 }
 
 /// An object of a class of the library's, made the first time and kept in `kept`.
@@ -115,9 +117,11 @@ pub(crate) fn hand_file_dialog() {
     crate::ios::FILE_DIALOG.set(Some(ask_if_asked));
 }
 
-/// After a run: shows the system's dialog if the app just asked for it.
-fn ask_if_asked(ui: &mut Ui) {
+/// After a run of the window of `view`: shows the system's dialog over it if its app just asked
+/// for it; the answer goes to that window.
+fn ask_if_asked(ui: &mut Ui, view: Obj) {
     if let Some(asked) = ui.take_file_dialog_request() {
+        ASKED_BY.set(view);
         ask(&asked);
     }
 }
@@ -134,7 +138,8 @@ fn picker_class() -> Obj {
     made_class(c"TautFilePicker", c"NSObject", &methods, &[c"UIDocumentPickerDelegate"])
 }
 
-/// Shows the system's dialog over what is in front: to open files or a folder, or to save.
+/// Shows the system's dialog over what is in front of the window that asked: to open files or a
+/// folder, or to save.
 fn ask(request: &FileDialogRequest) {
     let _pool = Pool::new();
     let picker = if request.saving { exporting(request) } else { opening(request) };
@@ -149,7 +154,7 @@ fn ask(request: &FileDialogRequest) {
         if request.folder.is_dir() {
             send::<()>(picker, c"setDirectoryURL:", (file_address(&request.folder),));
         }
-        send::<()>(crate::ios::front_controller(), c"presentViewController:animated:completion:", (picker, 1 as Bool, std::ptr::null_mut::<c_void>()));
+        send::<()>(crate::ios::front_controller_of(ASKED_BY.get()), c"presentViewController:animated:completion:", (picker, 1 as Bool, std::ptr::null_mut::<c_void>()));
         send::<()>(picker, c"release", ());
     }
 }
@@ -240,32 +245,44 @@ fn put_away(picker: Obj) {
 fn answered(files: Vec<PathBuf>) {
     let first = files.first().cloned();
     PICKED.set(files);
-    heard(Heard::Other(Box::new(move |ui: &mut Ui| {
-        ui.file_dialog_answered(first);
-        true
-    })));
+    heard_in(
+        ASKED_BY.get(),
+        Heard::Other(Box::new(move |ui: &mut Ui| {
+            ui.file_dialog_answered(first);
+            true
+        })),
+    );
 }
 
 // ---- drops ----
 
-/// Hands the window its drop handling: the view takes drops from now on.
+/// Hands the window its drop handling: each window's view takes drops from now on.
 pub(crate) fn hand_drops() {
     if crate::ios::DROPS.get().is_some() {
         return;
     }
     crate::ios::DROPS.set(Some(note_takes));
-    // SAFETY: an interaction made for the drop delegate (kept for good), handed to the
-    // library's view, which keeps it.
+    crate::ios::on_every_view(take_drops);
+}
+
+/// Has a view take drops.
+fn take_drops(view: Obj) {
+    // SAFETY: an interaction made for the drop delegate (kept for good), handed to the view,
+    // which keeps it.
     unsafe {
         let interaction: Obj = send(send::<Obj>(class(c"UIDropInteraction"), c"alloc", ()), c"initWithDelegate:", (made_once(&DROPS, drops_class),));
-        send::<()>(crate::ios::view(), c"addInteraction:", (interaction,));
+        send::<()>(view, c"addInteraction:", (interaction,));
         send::<()>(interaction, c"release", ());
     }
 }
 
-/// After a run: what the app takes dropped.
-fn note_takes(ui: &mut Ui) {
-    TAKES.set((ui.takes_files.get(), ui.crossing.takes_text.get()));
+/// After a run of the window of `view`: what its app takes dropped.
+fn note_takes(ui: &mut Ui, view: Obj) {
+    let takes = (ui.takes_files.get(), ui.crossing.takes_text.get());
+    TAKES.with_borrow_mut(|known| match known.iter_mut().find(|(of, _)| *of == view) {
+        Some((_, kept)) => *kept = takes,
+        None => known.push((view, takes)),
+    });
 }
 
 /// The drop delegate's class.
@@ -294,10 +311,10 @@ fn gives_text(provider: Obj) -> bool {
     unsafe { send::<Bool>(provider, c"canLoadObjectOfClass:", (class(c"NSString"),)) != 0 }
 }
 
-/// What a drag carries that the app takes: files (true) or text (false). Nothing where it
-/// takes neither of what is offered.
-fn carried(session: Obj) -> Option<bool> {
-    let (files, text) = TAKES.get();
+/// What a drag over `view` carries that its window's app takes: files (true) or text (false).
+/// Nothing where it takes neither of what is offered.
+fn carried(view: Obj, session: Obj) -> Option<bool> {
+    let (files, text) = TAKES.with_borrow(|known| known.iter().find(|(of, _)| *of == view).map_or((false, false), |(_, takes)| *takes));
     let providers = providers(session);
     match () {
         _ if files && providers.iter().any(|provider| file_type(*provider).is_some()) => Some(true),
@@ -306,34 +323,31 @@ fn carried(session: Obj) -> Option<bool> {
     }
 }
 
-/// Where a drag is over the page.
-fn place_of(session: Obj) -> Point {
-    crate::ios::place_of(crate::ios::view(), session)
-}
-
-/// The interface hears files or text come over the window, or go.
-fn hover(what: bool, over: bool) {
+/// The interface of the window of `view` hears files or text come over it, or go.
+fn hover(view: Obj, what: bool, over: bool) {
     OVER.set(over.then_some(what));
-    heard(Heard::Event(if what { Event::FilesHovered(over) } else { Event::TextHovered(over) }));
+    heard_in(view, Heard::Event(if what { Event::FilesHovered(over) } else { Event::TextHovered(over) }));
 }
 
-extern "C" fn can_take(_: Obj, _: Sel, _: Obj, session: Obj) -> Bool {
-    Bool::from(carried(session).is_some())
+extern "C" fn can_take(_: Obj, _: Sel, interaction: Obj, session: Obj) -> Bool {
+    Bool::from(carried(view_of(interaction), session).is_some())
 }
 
 /// A drag came over the window: the interface hears it, and where.
-extern "C" fn entered(_: Obj, _: Sel, _: Obj, session: Obj) {
-    if let Some(files) = carried(session) {
-        hover(files, true);
-        heard(Heard::Event(Event::Move(place_of(session))));
+extern "C" fn entered(_: Obj, _: Sel, interaction: Obj, session: Obj) {
+    let view = view_of(interaction);
+    if let Some(files) = carried(view, session) {
+        hover(view, files, true);
+        heard_in(view, Heard::Event(Event::Move(place_of(view, session))));
     }
 }
 
 /// The drag moved: copied if the app takes what it carries.
-extern "C" fn moved(_: Obj, _: Sel, _: Obj, session: Obj) -> Obj {
-    let taken = carried(session).is_some();
+extern "C" fn moved(_: Obj, _: Sel, interaction: Obj, session: Obj) -> Obj {
+    let view = view_of(interaction);
+    let taken = carried(view, session).is_some();
     if taken {
-        heard(Heard::Event(Event::Move(place_of(session))));
+        heard_in(view, Heard::Event(Event::Move(place_of(view, session))));
     }
     // SAFETY: a proposal made and handed back autoreleased.
     unsafe {
@@ -344,19 +358,21 @@ extern "C" fn moved(_: Obj, _: Sel, _: Obj, session: Obj) -> Obj {
 }
 
 /// The drag left the window, or ended over it without a drop.
-extern "C" fn exited(_: Obj, _: Sel, _: Obj, _: Obj) {
+extern "C" fn exited(_: Obj, _: Sel, interaction: Obj, _: Obj) {
+    let view = view_of(interaction);
     if let Some(files) = OVER.get() {
-        hover(files, false);
-        heard(Heard::Event(Event::Leave));
+        hover(view, files, false);
+        heard_in(view, Heard::Event(Event::Leave));
     }
 }
 
 /// The drag was let go over the window: what it carries comes, then the interface gets it
 /// where it was let go.
-extern "C" fn dropped(_: Obj, _: Sel, _: Obj, session: Obj) {
-    let Some(files) = carried(session) else { return };
-    hover(files, false);
-    let at = place_of(session);
+extern "C" fn dropped(_: Obj, _: Sel, interaction: Obj, session: Obj) {
+    let view = view_of(interaction);
+    let Some(files) = carried(view, session) else { return };
+    hover(view, files, false);
+    let at = Landed { view: view as usize, at: place_of(view, session) };
     if files {
         land_files(&providers(session), at);
     } else {
@@ -364,12 +380,20 @@ extern "C" fn dropped(_: Obj, _: Sel, _: Obj, session: Obj) {
     }
 }
 
+/// Where a drop was let go: the view (its address: the drop's items come on other threads),
+/// and the place on its page.
+#[derive(Clone, Copy)]
+struct Landed {
+    view: usize,
+    at: Point,
+}
+
 /// What comes from a drop as it arrives, on threads of the system's: each item's (none for
 /// one that failed), how many are still to come, and where the drop was.
 struct Landing<T> {
     arrived: Vec<Option<T>>,
     left: usize,
-    at: Point,
+    at: Landed,
     /// What the app gets once all have come.
     deliver: fn(Vec<T>) -> Event,
 }
@@ -389,21 +413,21 @@ fn arrive<T: Send + 'static>(arriving: Arriving<T>, value: Option<T>) {
     if landing.left > 0 {
         return;
     }
-    let (at, deliver, arrived) = (landing.at, landing.deliver, std::mem::take(&mut landing.arrived));
+    let (Landed { view, at }, deliver, arrived) = (landing.at, landing.deliver, std::mem::take(&mut landing.arrived));
     crate::ios::on_main(Box::new(move || {
-        heard(Heard::Event(Event::Move(at)));
-        heard(Heard::Event(deliver(arrived.into_iter().flatten().collect())));
-        crate::ios::on_main(Box::new(|| heard(Heard::Event(Event::Leave))));
+        heard_in(view as Obj, Heard::Event(Event::Move(at)));
+        heard_in(view as Obj, Heard::Event(deliver(arrived.into_iter().flatten().collect())));
+        crate::ios::on_main(Box::new(move || heard_in(view as Obj, Heard::Event(Event::Leave))));
     }));
 }
 
 /// Starts a landing of `count` items.
-fn landing<T>(count: usize, at: Point, deliver: fn(Vec<T>) -> Event) -> Arc<Mutex<Landing<T>>> {
+fn landing<T>(count: usize, at: Landed, deliver: fn(Vec<T>) -> Event) -> Arc<Mutex<Landing<T>>> {
     Arc::new(Mutex::new(Landing { arrived: (0..count).map(|_| None).collect(), left: count, at, deliver }))
 }
 
 /// Files and pictures dropped: each copied into a folder of the program's as it arrives.
-fn land_files(providers: &[Obj], at: Point) {
+fn land_files(providers: &[Obj], at: Landed) {
     let files: Vec<(Obj, Obj)> = providers.iter().filter_map(|provider| Some((*provider, file_type(*provider)?))).collect();
     let (landing, folder) = (landing(files.len(), at, Event::FilesDropped), fresh_folder("taut-drops"));
     for (nth, (provider, kind)) in files.into_iter().enumerate() {
@@ -423,7 +447,7 @@ fn completion<T: 'static>(invoke: *const c_void, held: T) -> *const Completion<T
 }
 
 /// Text dropped: each item's, a line each.
-fn land_text(providers: &[Obj], at: Point) {
+fn land_text(providers: &[Obj], at: Landed) {
     let texts: Vec<Obj> = providers.iter().copied().filter(|provider| gives_text(*provider)).collect();
     let landing = landing(texts.len(), at, |texts: Vec<String>| Event::TextDropped(texts.join("\n")));
     for (nth, provider) in texts.into_iter().enumerate() {

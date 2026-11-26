@@ -291,7 +291,7 @@ mod simulator {
     /// Runs the app and waits for its verdict: what it said, or why it failed.
     fn checked() -> Result<String, String> {
         let app = app()?;
-        let device = ios_bundle::newest_iphone()?;
+        let device = ios_bundle::newest_simulator("iPhone")?;
         ios_bundle::boot(&device)?;
         ios_bundle::ran(Command::new("xcrun").args(["simctl", "install", &device]).arg(&app))?;
         let (out, err) = (built().join("video_check.out"), built().join("video_check.err"));

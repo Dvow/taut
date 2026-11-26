@@ -73,6 +73,21 @@ mod host {
         run(adb, &["shell", command])
     }
 
+    /// The emulator's file `path`, whole, by `pull` (30 tries at most). (What `exec-out` prints
+    /// can end early and still exit 0.)
+    fn read(adb: &Path, path: &str) -> Vec<u8> {
+        let copy = std::env::temp_dir().join(format!("taut-adb-{}", std::process::id()));
+        for _ in 0..30 {
+            if Command::new(adb).args(["pull", path, &copy.to_string_lossy()]).output().is_ok_and(|done| done.status.success()) {
+                break;
+            }
+            settle(1);
+        }
+        let bytes = std::fs::read(&copy).unwrap_or_default();
+        let _ = std::fs::remove_file(copy);
+        bytes
+    }
+
     fn settle(seconds: u64) {
         std::thread::sleep(Duration::from_secs(seconds));
     }
@@ -85,7 +100,8 @@ mod host {
     /// The screen inside the window's insets (as the app last logged them), as `0xAARRGGBB`, and
     /// its width; the whole screen kept in `out` as `name`.
     fn screen(adb: &Path, out: &Path, name: &str) -> (usize, Vec<u32>) {
-        let png = Command::new(adb).args(["exec-out", "screencap", "-p"]).output().map(|done| done.stdout).unwrap_or_default();
+        shell(adb, "screencap -p /sdcard/taut-gpu.png");
+        let png = read(adb, "/sdcard/taut-gpu.png");
         let _ = std::fs::write(out.join(format!("{name}.png")), &png);
         let (width, pixels) = taut::png::decode(&png).unwrap_or_default();
         let log = run(adb, &["logcat", "-d", "-s", "taut:I"]);
@@ -100,7 +116,7 @@ mod host {
     /// The centre of the gallery's tick box, as `uiautomator` reads the window.
     fn tick_box(adb: &Path) -> Option<[i32; 2]> {
         shell(adb, "uiautomator dump /sdcard/taut-gpu.xml");
-        let xml = run(adb, &["exec-out", "cat", "/sdcard/taut-gpu.xml"]);
+        let xml = String::from_utf8_lossy(&read(adb, "/sdcard/taut-gpu.xml")).into_owned();
         let node = xml.split("<node ").find(|node| node.contains("class=\"android.widget.CheckBox\""))?;
         let bounds = node.split("bounds=\"").nth(1)?.split('"').next()?;
         let corners: Vec<i32> = bounds.split(|c: char| !c.is_ascii_digit()).filter_map(|part| part.parse().ok()).collect();

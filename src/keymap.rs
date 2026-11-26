@@ -2,8 +2,9 @@
 //! text, then only key codes and modifier state; libxkbcommon (on every Wayland desktop, loaded
 //! by name with the first window) interprets them. Dead keys and compose sequences use the
 //! user's language's compose table.
+use crate::dynamic_library::library;
 use crate::event::{Key, Mods};
-use crate::x11::{dlclose, dlopen, key, library, symbol};
+use crate::x11::key;
 use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
 use std::time::Duration;
 
@@ -283,8 +284,8 @@ mod tests {
     fn logging_only<T>(keyboard: &mut Keyboard, level: c_int, read: impl FnOnce(&mut Keyboard) -> T) -> T {
         type Get = unsafe extern "C" fn(*mut c_void) -> c_int;
         type Set = unsafe extern "C" fn(*mut c_void, c_int);
-        let lib = keyboard.xkb.lib;
-        let (Some(get), Some(set)) = (symbol(lib, "xkb_context_get_log_level\0"), symbol(lib, "xkb_context_set_log_level\0")) else { return read(keyboard) };
+        let xkb = &keyboard.xkb.library;
+        let (Some(get), Some(set)) = (xkb.symbol("xkb_context_get_log_level\0"), xkb.symbol("xkb_context_set_log_level\0")) else { return read(keyboard) };
         // SAFETY: both are libxkbcommon's functions, declared as it documents them, and called
         // on the keyboard's own context, which outlives this.
         let (get, set) = unsafe { (std::mem::transmute::<*mut c_void, Get>(get), std::mem::transmute::<*mut c_void, Set>(set)) };

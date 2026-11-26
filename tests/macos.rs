@@ -328,6 +328,12 @@ mod mac {
         button.rect
     }
 
+    /// The counter as an app describes it, from no presses: to be drawn afresh.
+    fn counted() -> impl FnMut(&mut Ui) {
+        let mut count = 0;
+        move |ui| _ = counter(&mut count, ui)
+    }
+
     /// Whether the GPU may draw parts of windows too (`gpu-draw`, unless `TAUT_DRAW=cpu`): edges
     /// may then differ by a few levels.
     fn drawn_by_gpu() -> bool {
@@ -380,8 +386,30 @@ mod mac {
         steps.check((width, height) == (fresh.width, fresh.height), || format!("{name}: the screen shows {width} by {height}, afresh {} by {}", fresh.width, fresh.height));
         let (count, most) = differ_but_corners(&pixels, &fresh.pixels, width, (24.0 * ui.scale()) as usize);
         println!("    {name}, through {:?}: {count} pixels differ from afresh on the screen, by up to {most}", ui.renderer());
-        let fine = if drawn_by_gpu() { most <= 4 } else { count == 0 };
-        steps.check(fine, || format!("{name}: through {:?}, {count} pixels differ from the interface drawn afresh, by up to {most}", ui.renderer()));
+        steps.check(alike(count, most), || format!("{name}: through {:?}, {count} pixels differ from the interface drawn afresh, by up to {most}", ui.renderer()));
+    }
+
+    /// Whether pictures of the screen and of the interface drawn afresh that differ so are
+    /// alike: the same, or within a few levels where the GPU draws too.
+    fn alike(count: usize, most: u32) -> bool {
+        if drawn_by_gpu() { most <= 4 } else { count == 0 }
+    }
+
+    /// Whether the screen has caught up with a window Metal shows: it shows the interface drawn
+    /// afresh, or the step waited three seconds for it (then `compare` says how it differs). A
+    /// frame Metal presents reaches the screen a moment later, on a busy runner over 100 ms.
+    /// (The CPU's picture is the window's at once.)
+    fn caught_up(steps: &Steps, ui: &Ui, window: Obj, events: &[Event], describe: impl FnMut(&mut Ui)) -> bool {
+        if ui.renderer() == Renderer::Cpu || steps.waited(3000) {
+            return true;
+        }
+        let Some((width, pixels)) = on_screen(window) else { return false };
+        let fresh = afresh(ui.size(), ui.scale(), events, describe);
+        if pixels.len() != fresh.pixels.len() {
+            return false;
+        }
+        let (count, most) = differ_but_corners(&pixels, &fresh.pixels, width, (24.0 * ui.scale()) as usize);
+        alike(count, most)
     }
 
     /// A window opens with what the library draws; a click posted as a person's presses its
@@ -392,19 +420,18 @@ mod mac {
         check(window, move |steps, ui| {
             let button = counter(&mut count, ui);
             let middle = pt(button.x + button.w / 2.0, button.y + button.h / 2.0);
+            let clicked = [Event::Move(middle), Event::Press(taut::Button::Left, Mods::NONE), Event::Release(taut::Button::Left)];
             let Some(window) = window_titled("Counter") else { return };
             match steps.step {
-                0 if steps.waited(500) => {
-                    compare(steps, ui, window, "first", &[], |ui| _ = counter(&mut 0, ui));
+                0 if steps.waited(500) && caught_up(steps, ui, window, &[], counted()) => {
+                    compare(steps, ui, window, "first", &[], counted());
                     post_mouse(window, middle, 1);
                     post_mouse(window, middle, 2);
                     steps.next();
                 }
                 1 if count == 1 => steps.next(),
-                2 if steps.waited(500) => {
-                    let events = [Event::Move(middle), Event::Press(taut::Button::Left, Mods::NONE), Event::Release(taut::Button::Left)];
-                    let mut fresh = 0;
-                    compare(steps, ui, window, "clicked", &events, |ui| _ = counter(&mut fresh, ui));
+                2 if steps.waited(500) && caught_up(steps, ui, window, &clicked, counted()) => {
+                    compare(steps, ui, window, "clicked", &clicked, counted());
                     steps.check(count == 1, || format!("one click counted {count}"));
                     steps.done = true;
                 }
@@ -621,7 +648,7 @@ mod mac {
                     steps.next();
                 }
                 // Once the size has stayed the same a while: the drag is over.
-                1 if ui.size().w >= 380.0 && settled.elapsed() > Duration::from_millis(800) && steps.waited(1500) => {
+                1 if ui.size().w >= 380.0 && settled.elapsed() > Duration::from_millis(800) && steps.waited(1500) && caught_up(steps, ui, window, &[], lines) => {
                     compare(steps, ui, window, "dragged", &[], lines);
                     steps.next();
                     steps.done = true;
@@ -652,16 +679,17 @@ mod mac {
         let failed = check(window, move |steps, ui| {
             let button = counter(&mut count, ui);
             let middle = pt(button.x + button.w / 2.0, button.y + button.h / 2.0);
+            let clicked = [Event::Move(middle), Event::Press(taut::Button::Left, Mods::NONE), Event::Release(taut::Button::Left)];
             let Some(window) = window_titled("Shown") else { return };
             match steps.step {
-                0 if ui.renderer() == shown_by(renderer) && steps.waited(500) => {
+                0 if ui.renderer() == shown_by(renderer) && steps.waited(500) && caught_up(steps, ui, window, &[], counted()) => {
                     kept.borrow_mut().extend(on_screen(window));
                     post_mouse(window, middle, 1);
                     post_mouse(window, middle, 2);
                     steps.next();
                 }
                 1 if count == 1 => steps.next(),
-                2 if steps.waited(500) => {
+                2 if steps.waited(500) && caught_up(steps, ui, window, &clicked, counted()) => {
                     kept.borrow_mut().extend(on_screen(window));
                     steps.check(ui.renderer() == shown_by(renderer), || format!("{renderer:?}: shown by {:?}", ui.renderer()));
                     steps.done = true;
@@ -719,7 +747,7 @@ mod mac {
                     send::<()>(window, c"setContentSize:", (NSSize { width: 420.0, height: 260.0 },));
                     steps.next();
                 }
-                1 if steps.waited(500) => {
+                1 if steps.waited(500) && caught_up(steps, ui, window, &[], lines) => {
                     steps.check(ui.size() == Size { w: 420.0, h: 260.0 }, || format!("resized to 420 by 260, it is {:?}", ui.size()));
                     compare(steps, ui, window, "resized", &[], lines);
                     steps.done = true;

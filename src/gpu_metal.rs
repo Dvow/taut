@@ -222,8 +222,8 @@ impl Shows {
         self.texture
     }
 
-    /// Whether it is presented in EDR.
-    #[cfg(all(target_os = "macos", feature = "hdr"))]
+    /// Tests: whether it is presented in EDR.
+    #[cfg(all(test, target_os = "macos", feature = "hdr"))]
     pub(crate) fn in_edr(&self) -> bool {
         self.lit.on
     }

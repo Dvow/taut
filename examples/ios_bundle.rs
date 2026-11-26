@@ -16,9 +16,10 @@
 //! `--id` sets, `dev.taut.<example>` by default). Install it with Xcode's Devices window or
 //! `xcrun devicectl device install app`.
 //!
-//! What the bundle needs, beside the program, is all in `Info.plist` (see `info_plist`): one
-//! scene, every orientation, a launch screen (without one iOS shows the app letterboxed, at an
-//! old phone's size), and pointer events from a trackpad or mouse.
+//! What the bundle needs, beside the program, is all in `Info.plist` (see `info_plist`): scenes,
+//! more than one on iPad (each second window is one, asked for with the activity
+//! `dev.taut.window`), every orientation, a launch screen (without one iOS shows the app
+//! letterboxed, at an old phone's size), and pointer events from a trackpad or mouse.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -71,7 +72,8 @@ pub fn info_plist(name: &str, id: &str, device: bool) -> String {
   <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
   <key>UILaunchScreen</key><dict/>
   <key>UIApplicationSupportsIndirectInputEvents</key><true/>
-  <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
+  <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><true/></dict>
+  <key>NSUserActivityTypes</key><array><string>dev.taut.window</string></array>
   <key>UISupportedInterfaceOrientations</key>{orientations}
   <key>UISupportedInterfaceOrientations~ipad</key>{orientations}
 </dict>
@@ -115,10 +117,11 @@ pub fn sign_for_device(app: &Path, identity: &str, profile: &Path) -> Result<(),
     ran(Command::new("codesign").args(["--force", "--sign", identity, "--entitlements"]).arg(&claimed).arg(app)).map(drop)
 }
 
-/// The newest iPhone simulator: its id. (The last iOS runtime listed is the newest.)
-pub fn newest_iphone() -> Result<String, String> {
+/// The newest simulator of a kind (`iPhone`, `iPad`): its id. (The last iOS runtime listed is
+/// the newest.)
+pub fn newest_simulator(kind: &str) -> Result<String, String> {
     let listed = ran(Command::new("xcrun").args(["simctl", "list", "devices", "available"]))?;
-    // Each runtime's first iPhone, the last runtime's kept.
+    // Each runtime's first of the kind, the last runtime's kept.
     let (mut found, mut section): (Option<String>, Option<String>) = (None, None);
     for line in listed.lines() {
         if line.starts_with("--") {
@@ -126,13 +129,13 @@ pub fn newest_iphone() -> Result<String, String> {
             section = line.contains("iOS").then(String::new);
             continue;
         }
-        let id = line.trim().strip_prefix("iPhone").and_then(|rest| rest.split(['(', ')']).map(str::trim).find(|piece| piece.len() == 36 && piece.matches('-').count() == 4));
+        let id = line.trim().strip_prefix(kind).and_then(|rest| rest.split(['(', ')']).map(str::trim).find(|piece| piece.len() == 36 && piece.matches('-').count() == 4));
         if let (Some(id), Some(first)) = (id, section.as_mut().filter(|first| first.is_empty())) {
             *first = id.to_owned();
         }
     }
     let found = section.filter(|first| !first.is_empty()).or(found);
-    found.ok_or_else(|| format!("no iPhone simulator in:\n{listed}"))
+    found.ok_or_else(|| format!("no {kind} simulator in:\n{listed}"))
 }
 
 /// Boots a simulator, unless it is booted, and waits until it is ready.
@@ -166,7 +169,7 @@ pub fn build(asked: &Asked, built: &Path) -> Result<PathBuf, String> {
 
 /// Installs a bundle in the newest iPhone simulator and starts it, its output here.
 pub fn run_in_simulator(app: &Path, id: &str) -> Result<(), String> {
-    let device = newest_iphone()?;
+    let device = newest_simulator("iPhone")?;
     boot(&device)?;
     _ = Command::new("open").args(["-a", "Simulator"]).status();
     ran(Command::new("xcrun").args(["simctl", "install", &device]).arg(app))?;

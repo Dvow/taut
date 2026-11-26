@@ -336,6 +336,18 @@ impl Out {
         }
         self.bytes.push(value as u8);
     }
+    /// Text as a DEX file keeps it (modified UTF-8): a letter beyond U+FFFF as its two UTF-16
+    /// halves, three bytes each; a zero as two bytes, never one.
+    #[cfg(not(target_os = "android"))]
+    fn modified_utf8(&mut self, text: &str) {
+        for unit in text.encode_utf16() {
+            match unit {
+                1..0x80 => self.bytes.push(unit as u8),
+                0..0x800 => self.bytes.extend([0xc0 | (unit >> 6) as u8, 0x80 | (unit & 0x3f) as u8]),
+                _ => self.bytes.extend([0xe0 | (unit >> 12) as u8, 0x80 | (unit >> 6 & 0x3f) as u8, 0x80 | (unit & 0x3f) as u8]),
+            }
+        }
+    }
     fn align(&mut self) {
         while !self.bytes.len().is_multiple_of(4) {
             self.bytes.push(0);
@@ -456,6 +468,10 @@ fn data(out: &mut Out, pools: &Pools, classes: &[Class]) -> Placed {
     for text in &pools.strings {
         placed.strings.push(out.at());
         out.uleb(text.encode_utf16().count() as u32);
+        // (The classes made on Android are named in ASCII, the same in modified UTF-8.)
+        #[cfg(not(target_os = "android"))]
+        out.modified_utf8(text);
+        #[cfg(target_os = "android")]
         out.bytes.extend(text.as_bytes());
         out.bytes.push(0);
     }
@@ -891,6 +907,14 @@ mod tests {
         assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
         assert_eq!(hex(&sha1(&[b'a'; 1000])), "291e9a6c66994949b57ba5e650361e98fc36b1ba");
         assert_eq!(adler32(b"Wikipedia"), 0x11E6_0398);
+    }
+
+    #[test]
+    fn strings_are_written_in_modified_utf8() {
+        let mut out = Out::default();
+        out.modified_utf8("a\0é😀");
+        // A zero in two bytes; the emoji's halves, U+D83D and U+DE00, in three each.
+        assert_eq!(out.bytes, [0x61, 0xc0, 0x80, 0xc3, 0xa9, 0xed, 0xa0, 0xbd, 0xed, 0xb8, 0x80]);
     }
 
     #[test]

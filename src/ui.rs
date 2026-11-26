@@ -193,6 +193,9 @@ pub struct Response {
 pub(crate) enum Stroke {
     Key(Key, Mods),
     Text(String),
+    /// What an input method deleted around the focused box's selection (Android).
+    #[cfg(any(target_os = "android", test))]
+    DeleteAround(crate::text_edit::DeleteAround),
     /// What the system's keyboard did to the focused text box (iOS).
     #[cfg(target_os = "ios")]
     Replace(Box<crate::text_edit::Replace>),
@@ -1707,10 +1710,10 @@ impl Ui {
         let Some(line) = lines.get(row) else { return };
         // (A line runs the way its paragraph does; a right-to-left one starts at the right, as
         // `Painter::words` draws it.)
-        let paragraph = self.tree.strings[start..line.start].rfind('\n').map_or(start, |at| start + at + 1);
-        let leftward = crate::bidi::leftward(&self.tree.strings[paragraph..end as usize]);
+        let paragraph = crate::text::Paragraph::of(&self.tree.strings[start..end as usize], line.start - start..line.end - start);
+        let leftward = paragraph.leftward;
         let (text, after) = (&self.tree.strings[line.start..line.end], self.edit.after);
-        let carets = crate::text::marks(self.text.as_mut(), text, line.start, line.width, font, self.scale, leftward, [0; 2], Some(cursor), after, &mut Vec::new()).unwrap_or_default();
+        let carets = crate::text::marks(self.text.as_mut(), text, line.start, line.width, font, self.scale, paragraph, [0; 2], Some(cursor), after, &mut Vec::new()).unwrap_or_default();
         #[cfg(feature = "right-to-left")]
         let [x, other] = carets;
         #[cfg(not(feature = "right-to-left"))]

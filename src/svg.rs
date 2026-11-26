@@ -41,21 +41,22 @@
 //! - with [`enable_images`]: `<image>` with a `data:` URL of a PNG, JPEG, GIF, WebP, BMP, ICO
 //!   or SVG, fitted by `preserveAspectRatio`; by path or URL through the app's loader
 //!   ([`enable_images_from`])
-//! - with [`decode_at`] and [`encode_animation`]: `<animate>`, `<set>`, `<animateTransform>`
-//!   (see `svg_animation.rs`)
+//! - with [`AnimatedDrawing`], [`decode_at`] and [`encode_animation`]: `<animate>`, `<set>`,
+//!   `<animateTransform>`, `<animateMotion>`, timed or (in a window) begun and ended by the
+//!   pointer and keys (see `svg_animation.rs`)
 //!
 //! Images and `feImage` elements bring drawings of their own: each is read once the file's
 //! own walk is done, into the same lists, and its items put where it was met (so nothing
 //! reads recursively). Four deep at most, all within the outermost file's budget.
 //!
-//! Not read: `FillPaint` and `StrokePaint` inputs (nothing), `kernelUnitLength` (one pixel),
-//! `animateMotion`, animations begun by events; glyphs are drawn without filters. Style rules by
-//! position among siblings match nothing, and rules apply in source order. A clip path's own
-//! clip path, `mask-type`, and marker clipping are ignored. Text is not rotated per letter;
-//! unshaped (without `shaping`) it has no joining or right-to-left order; it uses the
-//! family's font or the system's fallback. A gradient focus outside its circle is moved onto
-//! it; a subpath starting where the previous unclosed one ended continues it; `em` is 16
-//! units; percentages refer to the root viewport, also in nested ones.
+//! Not read: a pattern as a `FillPaint` or `StrokePaint` input (nothing); glyphs are drawn
+//! without filters. Style rules by position among siblings match nothing, and rules apply in
+//! source order. A clip path's own clip path, `mask-type`, and marker clipping are ignored.
+//! Text is not rotated per letter; unshaped (without `shaping`) it has no joining or
+//! right-to-left order; it uses the family's font or the system's fallback. A gradient focus
+//! outside its circle is moved onto it; a subpath starting where the previous unclosed one
+//! ended continues it; `em` is 16 units; percentages refer to the root viewport, also in nested
+//! ones.
 //!
 //! Deliberate differences from librsvg: a blur with deviation under two pixels integrates the
 //! Gaussian over each pixel (librsvg samples further out, so its small blurs come out
@@ -64,7 +65,9 @@
 //! works there, as browsers take it (librsvg takes its sRGB values as linear); a crisp shape
 //! paints a pixel more than half covered (librsvg one whose sampling point it covers: they
 //! differ on a few pixels of a curve); text paths are drawn (librsvg draws none); a picture's
-//! edges are cut sharp (librsvg fades them over one of its pixels).
+//! edges are cut sharp (librsvg fades them over one of its pixels); a convolution keeping alpha
+//! on a grid of kernel units resamples premultiplied colours (librsvg resamples plain ones as if
+//! premultiplied, which tints the last cells a region fills in part).
 //!
 //! Cost is bounded by what a file of its length could cost written out, however often it reuses
 //! elements: shapes, outline segments and reading steps (elements, attributes, style rules
@@ -99,6 +102,8 @@ use crate::text::Face;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+pub use crate::svg_animation::AnimatedDrawing;
 
 /// A drawing the interface keeps, to show wherever asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -277,7 +282,7 @@ pub fn decode(svg: &str, width: usize, height: usize) -> Option<(usize, Vec<u32>
 /// `seconds` after it begins, as [`decode`] draws it. A file with no animation is as `decode`
 /// draws it at any time.
 pub fn decode_at(svg: &str, width: usize, height: usize, seconds: f32) -> Option<(usize, Vec<u32>)> {
-    decode(&crate::svg_animation::Timeline::read(svg).frame(seconds), width, height)
+    decode(&crate::svg_animation::Timeline::read(svg).frame_at(seconds), width, height)
 }
 
 /// Encodes an SVG file's SMIL animation as an animated PNG of `width` by `height` pixels, to
@@ -448,7 +453,7 @@ pub(crate) struct File<'a> {
     pub(crate) text: &'a str,
     pub(crate) elements: Vec<Element<'a>>,
     attributes: Vec<(&'a str, &'a str)>,
-    named: HashMap<&'a str, usize>,
+    pub(crate) named: HashMap<&'a str, usize>,
     rules: Vec<(&'a str, &'a str)>,
     /// The character data of text elements and their pieces, by innermost element.
     words: Vec<(usize, &'a str)>,
@@ -542,7 +547,7 @@ impl<'a> File<'a> {
     }
 
     /// The element's children, in order (not deeper descendants).
-    fn inside(&self, at: usize) -> impl Iterator<Item = usize> + '_ {
+    pub(crate) fn inside(&self, at: usize) -> impl Iterator<Item = usize> + '_ {
         let end = self.elements[at].end;
         std::iter::successors(Some(at + 1).filter(|first| *first < end), move |child| Some(self.elements[*child].end).filter(|next| *next < end))
     }
@@ -963,14 +968,43 @@ struct Picture {
     wide: usize,
 }
 
-/// What a drawing holds besides shapes, if any: its filters and images, and the drawings
-/// waiting to be read once the file's own is (see `Reading::read_later`).
+/// What a drawing holds besides shapes, if any: its filters and images, the drawings waiting to
+/// be read once the file's own is (see `Reading::read_later`), and where in a window it was
+/// last shown, where noted (see `ParsedDrawing::show_noted`).
 #[derive(Default)]
 struct More {
     filters: Vec<Filter>,
     pictures: Vec<Picture>,
     later: Vec<Later>,
+    shown: Option<Rect>,
 }
+
+/// What lies where in a drawing, to find the element under the pointer: each shape kept for an
+/// element, in drawing order, and the `<use>` elements that brought them (each shape's range of
+/// them, innermost first).
+#[derive(Default)]
+pub(crate) struct Hits {
+    shapes: Vec<Hit>,
+    uses: Vec<u32>,
+}
+
+/// A shape of an element as it takes the pointer: its outline (which kept one) and transform,
+/// whether its fill counts (with its rule), its stroke's width (0: none), and how far it reaches
+/// (left, top, right, bottom in drawing units, its stroke included).
+#[derive(Clone, Copy)]
+struct Hit {
+    element: u32,
+    uses: [u32; 2],
+    path: u32,
+    table: Table,
+    filled: bool,
+    even_odd: bool,
+    stroke: f32,
+    reach: [f32; 4],
+}
+
+/// Notes the shapes a reading kept for an element (see `Reading::note_hits`).
+type Noting<'a> = for<'b> fn(&'b mut Reading<'a>, usize, usize, &[Walk]);
 
 /// What an image element holds, as read (see `Reading::picture_of`): a kept picture (which), an
 /// SVG file's text to read once the file's own is, or nothing to show.
@@ -1082,6 +1116,10 @@ struct Reading<'a> {
     /// waiting once the walk is done, where any wait.
     depth: u8,
     later: Option<fn(&mut Reading<'a>)>,
+    /// What notes the shapes kept for each element, where asked (see `ParsedDrawing::read_with_hits`),
+    /// and what it noted.
+    noting: Option<Noting<'a>>,
+    hits: Hits,
 }
 
 /// A text piece (the text element itself, a `<tspan>` or a `<textPath>`) while its letters are
@@ -1101,14 +1139,14 @@ struct Piece {
 /// A text path laid flat: its segments, each with how far along the path it starts, and the
 /// path's length. A glyph is placed by a search, not a walk of the whole path.
 #[derive(Default)]
-struct Track {
+pub(crate) struct Track {
     segments: Vec<(Point, Point, f32)>,
-    length: f32,
+    pub(crate) length: f32,
 }
 
 impl Track {
     /// A path's segments, its curves flattened to within a 16,384th of its size.
-    fn of(path: &Path) -> Track {
+    pub(crate) fn of(path: &Path) -> Track {
         let Rect { w, h, .. } = path.bounds();
         let mut track = Track::default();
         path.flatten(1.0, pt(0.0, 0.0), (w.max(h) / 256.0).max(1e-6), |a, b| {
@@ -1123,7 +1161,7 @@ impl Track {
 
     /// The point `along` the path, and its direction there (cosine, sine): the start before
     /// it, the end past it. Nothing for an empty track.
-    fn point_at(&self, along: f32) -> Option<(Point, [f32; 2])> {
+    pub(crate) fn point_at(&self, along: f32) -> Option<(Point, [f32; 2])> {
         let at = self.segments.partition_point(|(.., from)| *from <= along).saturating_sub(1);
         let (a, b, from) = *self.segments.get(at)?;
         let long = (b.x - a.x).hypot(b.y - a.y);
@@ -1158,7 +1196,7 @@ struct Line {
 
 /// How a filter's steps are read (see `Reading::step`): lengths in bounding-box fractions
 /// (`in_box`) of the box (left, top, width, height), else in units; the filter region; the
-/// results made so far, by name; and what its `feImage` steps draw.
+/// results made so far, by name; and the images its steps take (see `Imaged`).
 struct Primitives<'a> {
     in_box: bool,
     square: [f32; 4],
@@ -1167,12 +1205,26 @@ struct Primitives<'a> {
     images: Vec<Imaged>,
 }
 
-/// What a `feImage` step draws: an element of the file, with the transform from its units to
-/// the filter's; or what its own `href` names (by its element), in its box (left, top, width,
-/// height in the filter's units).
+impl Primitives<'_> {
+    /// Which of the images is the element's fill (`which` 0) or stroke (1) paint: one, however
+    /// many steps take it.
+    fn paint(&mut self, which: usize) -> usize {
+        let found = self.images.iter().position(|image| matches!(image, Imaged::Paint(paint) if *paint == which));
+        found.unwrap_or_else(|| {
+            self.images.push(Imaged::Paint(which));
+            self.images.len() - 1
+        })
+    }
+}
+
+/// An image a filter's steps take: what a `feImage` step draws (an element of the file, with
+/// the transform from its units to the filter's; or what its own `href` names, by its element,
+/// in its box: left, top, width, height in the filter's units); or the element's fill (0) or
+/// stroke (1) paint (`FillPaint`, `StrokePaint`).
 enum Imaged {
     Element(usize, Table),
     Href(usize, [f32; 4]),
+    Paint(usize),
 }
 
 /// A range of elements being walked.
@@ -1258,6 +1310,49 @@ impl ParsedDrawing {
     /// Reads a file, or with `glyph` the glyph part of it (see `glyph`).
     fn read_part(text: &str, glyph: Option<(&str, f32)>) -> Option<ParsedDrawing> {
         Reading::of(text, glyph).map(|reading| reading.parsed)
+    }
+
+    /// Reads a file, noting what lies where in it (see `element_at`).
+    pub(crate) fn read_with_hits(text: &str) -> Option<(ParsedDrawing, Hits)> {
+        Reading::noted(text).map(|reading| (reading.parsed, reading.hits))
+    }
+
+    /// Shows the drawing as `show` does, noting where (see `element_at`).
+    pub(crate) fn show_noted(&mut self, within: Rect, current_color: Color, canvas: &mut Canvas) {
+        self.note(within);
+        self.show(within, current_color, canvas);
+    }
+
+    /// Notes where in a window the drawing shows.
+    pub(crate) fn note(&mut self, within: Rect) {
+        self.more().shown = Some(within);
+    }
+
+    /// Where in a window the drawing last showed, where noted.
+    pub(crate) fn noted(&self) -> Option<Rect> {
+        self.held()?.shown
+    }
+
+    /// The element whose shape lies at point `at` of the window (where the drawing was last
+    /// noted showing), topmost first, of those `takes` says take the pointer (given an element
+    /// and the `<use>` elements that brought it): it, and those `<use>` elements. A shape takes
+    /// the pointer where its fill or stroke would paint, clips and masks aside.
+    pub(crate) fn element_at<'h>(&self, hits: &'h Hits, at: Point, takes: impl Fn(usize, &[u32]) -> bool) -> Option<(usize, &'h [u32])> {
+        let within = self.noted()?;
+        let back = undone(&both(&[1.0, 0.0, 0.0, 1.0, within.x, within.y], &self.fit([within.w, within.h])))?;
+        let point = through(&back, at);
+        let uses = |hit: &Hit| &hits.uses[hit.uses[0] as usize..hit.uses[1] as usize];
+        let near = |hit: &&Hit| point.x >= hit.reach[0] && point.y >= hit.reach[1] && point.x <= hit.reach[2] && point.y <= hit.reach[3];
+        let hit = hits.shapes.iter().rev().filter(near).find(|hit| self.lies_in(hit, point) && takes(hit.element as usize, uses(hit)))?;
+        Some((hit.element as usize, uses(hit)))
+    }
+
+    /// Whether a point (in drawing units) lies in a shape's fill, where it is filled, or within
+    /// its stroke.
+    fn lies_in(&self, hit: &Hit, point: Point) -> bool {
+        let (Some(back), Some(path)) = (undone(&hit.table), self.paths.get(hit.path as usize)) else { return false };
+        let inner = through(&back, point);
+        (hit.filled && inside(path, inner, hit.even_odd)) || (hit.stroke > 0.0 && path.distance(inner) <= hit.stroke / 2.0)
     }
 
     /// What it holds besides shapes, if any.
@@ -1732,14 +1827,25 @@ impl<'a> Reading<'a> {
     /// Reads a file, or with `glyph` its glyph part (see `ParsedDrawing::glyph`): what is kept
     /// and its drawing cost. Nothing if it holds no drawing.
     fn of(text: &'a str, glyph: Option<(&str, f32)>) -> Option<Reading<'a>> {
-        let (mut reading, start) = Reading::prepared(text, glyph)?;
+        Reading::prepared(text, glyph).map(|(reading, start)| reading.walked(start))
+    }
+
+    /// Reads a file noting what lies where in it (see `ParsedDrawing::read_with_hits`).
+    fn noted(text: &'a str) -> Option<Reading<'a>> {
+        let (mut reading, start) = Reading::prepared(text, None)?;
+        reading.noting = Some(Reading::note_hits);
+        Some(reading.walked(start))
+    }
+
+    /// Walks a prepared file from element `start`, then reads the drawings it brings.
+    fn walked(mut self, start: usize) -> Reading<'a> {
         // (A drawing unit is this share of the picture: its view is all of it.)
-        let [.., wide, high] = reading.parsed.view;
-        reading.walk(start, Style { share: [1.0 / (wide * high), 1.0], ..Style::default() });
-        if let Some(read_later) = reading.later {
-            read_later(&mut reading);
+        let [.., wide, high] = self.parsed.view;
+        self.walk(start, Style { share: [1.0 / (wide * high), 1.0], ..Style::default() });
+        if let Some(read_later) = self.later {
+            read_later(&mut self);
         }
-        Some(reading)
+        self
     }
 
     /// A file parsed, with its size, view and fit, ready to walk; and where the walk starts.
@@ -1811,6 +1917,8 @@ impl<'a> Reading<'a> {
             filtering,
             depth: 0,
             later: None,
+            noting: None,
+            hits: Hits::default(),
         }
     }
 
@@ -1976,7 +2084,41 @@ impl<'a> Reading<'a> {
             walks.push(Walk { tiled: Some((at, tiles)), ..again });
             return walks.extend(drawings);
         }
+        let first = self.parsed.items.len();
         walks.extend(self.shape(at, name, style, tiled.unwrap_or([None; 2])));
+        if let Some(note) = self.noting {
+            note(self, at, first, walks);
+        }
+    }
+
+    /// Notes the shapes kept for element `at` from item `first` on (see `Hits`), with the
+    /// `<use>` elements that brought it, where `walks` are none of a clip path, mask, pattern
+    /// or marker: what is drawn of the file itself.
+    fn note_hits(&mut self, at: usize, first: usize, walks: &[Walk]) {
+        let named = |walk: &Walk| walk.used.map(|used| self.file.elements[used].name);
+        if walks.iter().any(|walk| walk.keep.is_some() || walk.style.clipping || matches!(named(walk), Some("pattern" | "marker"))) {
+            return;
+        }
+        let from = self.hits.uses.len() as u32;
+        for (n, walk) in walks.iter().enumerate().skip(1).rev() {
+            let Some(brought) = walk.used else { continue };
+            self.hits.uses.extend(self.user(brought, walks[n - 1].at).map(|user| user as u32));
+        }
+        let uses = [from, self.hits.uses.len() as u32];
+        for item in &self.parsed.items[first.min(self.parsed.items.len())..] {
+            let Item::Shape(shape) = item else { continue };
+            let stroke = if shape.line == Ink::None { 0.0 } else { self.parsed.pens[shape.pen as usize].width };
+            let (path, table, filled, even_odd) = (shape.path, shape.table, shape.fill != Ink::None, shape.even_odd);
+            let reach = reach_of(&self.parsed.paths[path as usize], &table, stroke);
+            self.hits.shapes.push(Hit { element: at as u32, uses, path, table, filled, even_odd, stroke, reach });
+        }
+    }
+
+    /// The `<use>` element that brought `brought`, the walk around it being past it at `after`:
+    /// the last `<use>` before then that ends there and names it.
+    fn user(&self, brought: usize, after: usize) -> Option<usize> {
+        let elements = &self.file.elements;
+        (0..after.min(elements.len())).rev().find(|at| elements[*at].name == "use" && elements[*at].end == after && self.file.linked(*at) == Some(brought))
     }
 
     /// Continues a shape's markers (the top walk goes through them): begins the next one's
@@ -2082,8 +2224,9 @@ impl<'a> Reading<'a> {
         }
     }
 
-    /// Begins the block a `feImage` step's image is drawn on for a filter applied to what `walk`
-    /// drew: an element of the file, read once the file's own is; or a picture in its box.
+    /// Begins the block a filter's image is drawn on, for a filter applied to what `walk` drew: a
+    /// `feImage` step's element, read once the file's own is, or its picture in its box; or the
+    /// element's fill or stroke paint over the filter region.
     fn image_block(&mut self, image: Imaged, filter: &Filter, walk: &Walk) {
         self.begin(&walk.style);
         let style = Style { table: filter.table, share: walk.style.share, ..Style::default() };
@@ -2094,7 +2237,24 @@ impl<'a> Reading<'a> {
             }
             (Imaged::Href(at, place), Some(picture)) => picture(self, at, &style, Some(place)),
             (Imaged::Href(..), None) => {}
+            (Imaged::Paint(which), _) => self.paint_block(which, filter, walk),
         }
+    }
+
+    /// Fills the filter region of a filter applied to what `walk` drew with the element's fill
+    /// (`which` 0) or stroke (1) paint, at its opacity, as librsvg does (more than the region:
+    /// the filter cuts it): a gradient in units of the element's bounding box fits that box. (A
+    /// pattern paints nothing.)
+    fn paint_block(&mut self, which: usize, filter: &Filter, walk: &Walk) {
+        let own = walk.own.map_or(walk.style, |at| self.styled(at, &walk.style));
+        let square = self.box_of(walk);
+        let fitted = self.kept_path(rect([square[4], square[5], square[0], square[3]], [None; 2]));
+        let fill = self.ink(own.paints[which], own.solid[which] * own.faded, own.ink, fitted, None);
+        // Half as large again each way: the region's pixels, rounded out, are covered whole.
+        let [x, y, w, h] = filter.region.map(|side| side as f32);
+        let path = self.kept_path(rect([x - w / 2.0, y - h / 2.0, 2.0 * w, 2.0 * h], [None; 2]));
+        let pen = self.pen(&own);
+        self.parsed.items.push(Item::Shape(Shape { path, table: filter.table, fill, even_odd: false, line: Ink::None, pen, boxed: None, crisp: false }));
     }
 
     /// A filter element applied to what a walk drew, whose bounding box is `square` (the
@@ -2138,9 +2298,11 @@ impl<'a> Reading<'a> {
     fn step(&mut self, at: usize, around: &Style, made: usize, read: &mut Primitives<'a>) -> Option<svg_filters::Step> {
         let style = self.styled(at, around);
         let (file, [.., wide, high]) = (&self.file, self.parsed.view);
-        let ([bx, by, bw, bh], in_box, results) = (read.square, read.in_box, &read.results);
         let attr = |name: &str| file.attribute(at, name);
-        let input = |name: &str| input_of(attr(name).map(str::trim), results, made);
+        let inputs = [input_of(attr("in").map(str::trim), read, made), input_of(attr("in2").map(str::trim), read, made)];
+        let nodes = file.inside(at).filter(|node| file.elements[*node].name == "feMergeNode");
+        let merged: Vec<Input> = nodes.map(|node| input_of(file.attribute(node, "in").map(str::trim), read, made)).collect();
+        let ([bx, by, bw, bh], in_box) = (read.square, read.in_box);
         // Lengths and subregion: in bounding-box fractions, or units.
         let scaled = |[x, y]: [f32; 2]| if in_box { [x * bw, y * bh] } else { [x, y] };
         let pair = |name: &str, fallback: f32| {
@@ -2158,13 +2320,12 @@ impl<'a> Reading<'a> {
             _ => style.ink.unwrap_or(Color::BLACK),
         };
         let flood = flood.with_alpha(style.flood.1);
+        let unit = kernel_unit(attr("kernelUnitLength"), if in_box { [bw, bh] } else { [1.0; 2] });
         let kind = match file.elements[at].name {
             "feGaussianBlur" => Kind::Blur(scaled(pair("stdDeviation", 0.0)).map(|deviation| deviation.max(0.0))),
             "feOffset" => Kind::Offset(scaled([one("dx", 0.0), one("dy", 0.0)])),
             "feFlood" => Kind::Flood(flood),
-            "feMerge" => {
-                Kind::Merge(file.inside(at).filter(|node| file.elements[*node].name == "feMergeNode").map(|node| input_of(file.attribute(node, "in").map(str::trim), results, made)).collect())
-            }
+            "feMerge" => Kind::Merge(merged),
             "feComposite" => Kind::Composite(operator(attr("operator").unwrap_or("over").trim(), [one("k1", 0.0), one("k2", 0.0), one("k3", 0.0), one("k4", 0.0)])),
             "feBlend" => Kind::Blend(Mode::named(attr("mode").unwrap_or("normal").trim()).unwrap_or(Mode::Normal)),
             "feColorMatrix" => Kind::Matrix(matrix(attr("type").unwrap_or("matrix").trim(), attr("values"))?),
@@ -2182,15 +2343,15 @@ impl<'a> Reading<'a> {
                 read.images.push(self.imaged(at, read, place)?);
                 Kind::Image(read.images.len() - 1)
             }
-            "feDiffuseLighting" | "feSpecularLighting" => Kind::Light(Box::new(self.lighting(at, &style, read)?)),
-            "feConvolveMatrix" => Kind::Convolve(Box::new(self.convolution(at)?)),
+            "feDiffuseLighting" | "feSpecularLighting" => Kind::Light(Box::new(self.lighting(at, &style, read, unit)?)),
+            "feConvolveMatrix" => Kind::Convolve(Box::new(self.convolution(at, unit)?)),
             "feDisplacementMap" => {
                 let channel = |name: &str| ["R", "G", "B", "A"].iter().position(|channel| Some(*channel) == attr(name).map(str::trim));
                 Kind::Displace(scaled([one("scale", 0.0); 2]), [channel("xChannelSelector").unwrap_or(3), channel("yChannelSelector").unwrap_or(3)])
             }
             _ => return None,
         };
-        Some(svg_filters::Step { kind, inputs: [input("in"), input("in2")], place, space: style.space })
+        Some(svg_filters::Step { kind, inputs, place, space: style.space })
     }
 
     /// What a `feImage` step draws (see `Imaged`): its subregion is `place` where given, else
@@ -2207,9 +2368,9 @@ impl<'a> Reading<'a> {
     }
 
     /// A lighting step's light as its element and its first light child say (lengths and
-    /// positions as `read` takes them). Nothing without a light, or with a specular exponent
-    /// outside 1 to 128.
-    fn lighting(&self, at: usize, style: &Style, read: &Primitives<'a>) -> Option<Lighting> {
+    /// positions as `read` takes them), with its kernel unit (see `kernel_unit`). Nothing without
+    /// a light, or with a specular exponent outside 1 to 128.
+    fn lighting(&self, at: usize, style: &Style, read: &Primitives<'a>, unit: Option<[f32; 2]>) -> Option<Lighting> {
         let one = |at: usize, name: &str, fallback: f32| self.file.attribute(at, name).and_then(number).map_or(fallback, |(number, _)| number);
         let lights = ["feDistantLight", "fePointLight", "feSpotLight"];
         let light = self.file.inside(at).find(|child| lights.contains(&self.file.elements[*child].name))?;
@@ -2237,12 +2398,13 @@ impl<'a> Reading<'a> {
             Some(Paint::CurrentColor) => style.ink.unwrap_or(Color::BLACK),
             _ => Color::WHITE,
         };
-        Some(Lighting { specular, surface: one(at, "surfaceScale", 1.0), constant, exponent, color, source })
+        Some(Lighting { specular, surface: one(at, "surfaceScale", 1.0), constant, exponent, color, source, unit })
     }
 
-    /// A convolution step as its element says. Nothing where the kernel's order is no positive
-    /// whole number, its values are not as many as it has places, or the target lies outside.
-    fn convolution(&self, at: usize) -> Option<Convolution> {
+    /// A convolution step as its element says, with its kernel unit (see `kernel_unit`). Nothing
+    /// where the kernel's order is no positive whole number, its values are not as many as it
+    /// has places, or the target lies outside.
+    fn convolution(&self, at: usize, unit: Option<[f32; 2]>) -> Option<Convolution> {
         let attr = |name: &str| self.file.attribute(at, name);
         let stated: Vec<f32> = attr("order").map(|text| numbers(text).take(2).collect()).unwrap_or_default();
         let order = [stated.first().copied().unwrap_or(3.0), stated.get(1).or(stated.first()).copied().unwrap_or(3.0)];
@@ -2260,7 +2422,7 @@ impl<'a> Reading<'a> {
             _ => Edge::Duplicate,
         };
         let bias = attr("bias").and_then(number).map_or(0.0, |(bias, _)| bias);
-        Some(Convolution { order, kernel, divisor, bias, target, edge, keep_alpha: attr("preserveAlpha").map(str::trim) == Some("true") })
+        Some(Convolution { order, kernel, divisor, bias, target, edge, keep_alpha: attr("preserveAlpha").map(str::trim) == Some("true"), unit })
     }
 
     /// A box clip's box (left, top, width, height), with the transform from its units to
@@ -3494,9 +3656,10 @@ fn angle(text: &str) -> Option<f32> {
 }
 
 /// A filter step's input per its `in` (none where unstated), after `made` steps named by
-/// `results`: by default, or where it names what nothing made, the previous step's result
-/// (`SourceGraphic` for the first).
-fn input_of(named: Option<&str>, results: &[(&str, usize)], made: usize) -> Input {
+/// `read.results`: by default, or where it names what nothing made, the previous step's result
+/// (`SourceGraphic` for the first). A paint input is one of the filter's images (see
+/// `Primitives::paint`).
+fn input_of(named: Option<&str>, read: &mut Primitives, made: usize) -> Input {
     let fallback = if made > 0 { Input::Made(made - 1) } else { Input::Source };
     match named {
         None => fallback,
@@ -3504,10 +3667,23 @@ fn input_of(named: Option<&str>, results: &[(&str, usize)], made: usize) -> Inpu
         Some("SourceAlpha") => Input::Alpha,
         Some("BackgroundImage") => Input::Background,
         Some("BackgroundAlpha") => Input::BackgroundAlpha,
-        // Paint inputs are not read.
-        Some("FillPaint" | "StrokePaint") => Input::Clear,
-        Some(name) => results.iter().rev().find(|(result, _)| *result == name).map_or(fallback, |(_, at)| Input::Made(*at)),
+        Some("FillPaint") => Input::Image(read.paint(0)),
+        Some("StrokePaint") => Input::Image(read.paint(1)),
+        Some(name) => read.results.iter().rev().find(|(result, _)| *result == name).map_or(fallback, |(_, at)| Input::Made(*at)),
     }
+}
+
+/// A step's `kernelUnitLength`: one or two positive numbers (across, down), in its units, or in
+/// bounding-box fractions where `scale` is the box's width and height. Nothing where it gives
+/// none (librsvg ignores the attribute then too).
+fn kernel_unit(text: Option<&str>, scale: [f32; 2]) -> Option<[f32; 2]> {
+    let stated: Vec<f32> = numbers(text?).take(3).collect();
+    let [x, y] = match stated[..] {
+        [x] => [x, x],
+        [x, y] => [x, y],
+        _ => return None,
+    };
+    (x > 0.0 && y > 0.0).then_some([x * scale[0], y * scale[1]])
 }
 
 /// A composite step's operator, with its four `arithmetic` coefficients. (Over, for an unknown
@@ -3571,6 +3747,31 @@ fn ellipse([x, y]: [f32; 2], [rx, ry]: [f32; 2]) -> Path {
         return Path::new();
     }
     Path::svg(&format!("M{} {y}A{rx} {ry} 0 1 1 {} {y}A{rx} {ry} 0 1 1 {} {y}z", x + rx, x - rx, x + rx))
+}
+
+/// How far an outline reaches through a transform, with a stroke `stroke` wide (its units): left,
+/// top, right, bottom. (Past everything, for an empty outline.)
+fn reach_of(path: &Path, table: &Table, stroke: f32) -> [f32; 4] {
+    let [left, top, wide, high] = bounds(path);
+    let out = stroke / 2.0;
+    let corners = [pt(left - out, top - out), pt(left + wide + out, top - out), pt(left - out, top + high + out), pt(left + wide + out, top + high + out)];
+    let corners = corners.map(|corner| through(table, corner));
+    let least = corners.iter().fold([f32::MAX; 2], |least, p| [least[0].min(p.x), least[1].min(p.y)]);
+    let most = corners.iter().fold([f32::MIN; 2], |most, p| [most[0].max(p.x), most[1].max(p.y)]);
+    [least[0], least[1], most[0], most[1]]
+}
+
+/// Whether a point lies inside an outline, by the even-odd rule or the nonzero one (an open
+/// subpath closed by a line, as filling closes it).
+fn inside(path: &Path, p: Point, even_odd: bool) -> bool {
+    let Rect { w, h, .. } = path.bounds();
+    let mut round = 0;
+    path.flatten_closed(1.0, pt(0.0, 0.0), (w.max(h) / 1024.0).max(1e-6), |a, b| {
+        if (a.y <= p.y) != (b.y <= p.y) && a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) > p.x {
+            round += if b.y > a.y { 1 } else { -1 };
+        }
+    });
+    if even_odd { round % 2 != 0 } else { round != 0 }
 }
 
 /// A shape's bounding box: left, top, width, height. Of a curve, how far it really reaches, not
@@ -4910,6 +5111,51 @@ mod tests {
         }
     }
 
+    // Rows 20 of what librsvg 2.62 draws of the same files (`rsvg-convert` on Garuda, 40 pixels).
+    const UNIT_CONVOLVED: &str = ". . . . . 78008800 68008900 50008900 30008a00 1a3b803b 0f886688 14cc00cc 2bca00ca 4bc900c9 \
+        75cb00cb 9dcb00cb c3cc00cc dfcc00cc f0cc00cc f9cc00cc f9cc00cc f0cc00cc dfcc00cc c3cc00cc 9dcb00cb 74cc00cc 4acb00cb \
+        2ace00ce 14cc00cc 0e926d92 1a3b803b 30008a00 50008900 67008800 77008700 . . . . .";
+    const UNIT_LIT: &str = ". . . . . . a9565656 ff565656 ff737373 ff8a8a8a ff9e9e9e ffb9b9b9 ffd0d0d0 ffe4e4e4 ffe7e7e7 \
+        ffeaeaea ffededed ffebebeb ffe9e9e9 ffe6e6e6 ffe3e3e3 ffe0e0e0 ffdcdcdc ffcecece ffbebebe ffadadad ff919191 ff696969 \
+        ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 . . . . . .";
+    const FILL_PAINT: &str = ". . f3fb0000 fff4000d ffed0016 ffe60016 ffdf0022 ffd80026 ffd1002e ffca0035 ffc3003d ffbc0042 \
+        ffb50049 ffae0051 ffa60058 ff9f0060 ff980068 ff91006e ff8a0075 ff83007c ff7c0083 f175008a f26e0091 ff680098 ff60009f \
+        ff5800a6 ff5100ae ff4900b5 ff4200bc ff3d00c3 ff3500ca ff2e00d1 ff2600d8 ff2200df ff1600e6 ff1600ed ff0d00f4 f10000fb . .";
+    const STROKE_PAINT: &str = ". . . . . . . 8000a900 8000a900 c000a900 ff005500 ff000000 ff000000 ff000000 ff000000 ff000000 \
+        ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 ff000000 \
+        ff005500 c000a900 8000a900 8000a900 . . . . . . .";
+
+    #[test]
+    fn a_kernel_unit_runs_convolution_and_lighting_on_a_coarser_grid_as_librsvg_does() {
+        enable_filters();
+        let convolved = r##"<filter id="e" x="0" y="0" width="1" height="1"><feConvolveMatrix order="3" kernelMatrix="1 2 1 2 4 2 1 2 1" kernelUnitLength="2 4"/></filter><g filter="url(#e)"><rect x="5" y="5" width="30" height="30" fill="none" stroke="#080" stroke-width="4"/><path d="M10 32 L20 8 L30 32 Z" fill="#c0c"/></g>"##;
+        let row = row_of(convolved, 20);
+        assert!(near(&row, &written(UNIT_CONVOLVED), 3), "{row:x?}");
+        let lit = r##"<filter id="e" x="0" y="0" width="1" height="1"><feGaussianBlur in="SourceAlpha" stdDeviation="3"/><feDiffuseLighting surfaceScale="4" kernelUnitLength="3" lighting-color="white"><fePointLight x="10" y="10" z="20"/></feDiffuseLighting></filter><circle cx="20" cy="20" r="14" filter="url(#e)"/>"##;
+        let row = row_of(lit, 20);
+        assert!(near(&row, &written(UNIT_LIT), 3), "{row:x?}");
+        // A unit of one pixel, or none, or one of no size: as without.
+        for unit in [r#"kernelUnitLength="1""#, r#"kernelUnitLength="0 2""#, r#"kernelUnitLength="-1""#] {
+            assert_eq!(row_of(&convolved.replace(r#"kernelUnitLength="2 4""#, unit), 20), row_of(&convolved.replace(r#" kernelUnitLength="2 4""#, ""), 20), "{unit}");
+        }
+    }
+
+    #[test]
+    fn paint_inputs_fill_the_filter_region_with_the_element_s_paint_as_librsvg_does() {
+        enable_filters();
+        // A gradient in units of the group's box, kept where the group is.
+        let filled = r##"<linearGradient id="g"><stop offset="0" stop-color="#f00"/><stop offset="1" stop-color="#00f"/></linearGradient><filter id="e" x="0" y="0" width="1" height="1"><feComposite in="FillPaint" in2="SourceAlpha" operator="in"/></filter><g fill="url(#g)" filter="url(#e)"><circle cx="12" cy="20" r="10"/><circle cx="30" cy="20" r="8"/></g>"##;
+        let row = row_of(filled, 20);
+        assert!(near(&row, &written(FILL_PAINT), 10), "{row:x?}");
+        // A colour at its opacity, over the whole region (10% more than the box each way).
+        let stroked = r##"<filter id="e"><feMerge><feMergeNode in="StrokePaint"/><feMergeNode in="SourceGraphic"/></feMerge></filter><rect x="10" y="10" width="20" height="20" fill="#000" stroke="#0a0" stroke-opacity="0.5" stroke-width="2" filter="url(#e)"/>"##;
+        let row = row_of(stroked, 20);
+        assert!(near(&row, &written(STROKE_PAINT), 2), "{row:x?}");
+        // No paint, nothing.
+        let unpainted = stroked.replace(r##" stroke="#0a0""##, "");
+        assert_eq!(row_of(&unpainted, 20)[7], 0);
+    }
+
     #[test]
     fn a_map_moves_pixels_as_librsvg_moves_them() {
         enable_filters();
@@ -5077,6 +5323,23 @@ mod tests {
             );
             assert!(decode(&text, 24, 24).is_some(), "{a} and {b}");
         }
+    }
+
+    #[test]
+    fn kernel_units_and_paint_inputs_of_numbers_beyond_all_measure_stop_nothing() {
+        enable_filters();
+        let wild = ["1e40", "-1e38", "1e-38", "NaN", "inf", "0", "-0", "1e20", "16777217", "0.5"];
+        for (a, b) in wild.iter().flat_map(|a| wild.iter().map(move |b| (*a, *b))) {
+            let text = format!(
+                r##"<svg viewBox="0 0 100 100"><linearGradient id="g" x2="{a}"><stop offset="{b}" stop-color="red"/><stop offset="1"/></linearGradient><filter id="f" x="{a}" width="{b}" primitiveUnits="objectBoundingBox"><feConvolveMatrix kernelMatrix="{a} 1 {b} 1 {a} 1 {b} 1 {a}" kernelUnitLength="{a} {b}" preserveAlpha="true"/>
+                <feDiffuseLighting kernelUnitLength="{b} {a}" surfaceScale="{a}"><fePointLight x="{a}" y="{b}" z="{a}"/></feDiffuseLighting><feComposite in="FillPaint" in2="StrokePaint" operator="arithmetic" k1="{a}" k2="{b}"/></filter>
+                <rect x="{a}" width="{b}" height="50" fill="url(#g)" stroke="#0a0" stroke-opacity="{a}" filter="url(#f)" transform="scale({a} {b})"/></svg>"##
+            );
+            assert!(decode(&text, 24, 24).is_some(), "{a} and {b}");
+        }
+        // A kernel value past what a number holds (found by fuzzing).
+        let huge = r##"<svg viewBox="0 0 40 40"><filter id="e" x="0" y="0" width="1" height="1"><feConvolveMatrix order="3" kernelMatrix="1 2 1 2 340282366920938463463374607431768211456 2 1 2 1" kernelUnitLength="2 4"/></filter><rect x="5" y="5" width="30" height="30" fill="#080" filter="url(#e)"/></svg>"##;
+        assert!(decode(huge, 40, 40).is_some());
     }
 
     #[test]

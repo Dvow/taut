@@ -498,7 +498,8 @@ mod tests {
             let bytes = std::fs::read(fonts.join(name)).unwrap_or_default();
             eprintln!("{name}: {} bytes, starts {:02x?}, read {}", bytes.len(), &bytes[..bytes.len().min(8)], FontFile::read(bytes.clone()).is_some());
         }
-        let list = ["/system/etc/font_fallback.xml", "/system/etc/fonts.xml"].iter().find_map(|list| Some(adb(&["exec-out", "cat", list])).filter(|text| text.starts_with(b"<?xml")));
+        // (The newer list where the system has it.)
+        let list = ["/system/etc/font_fallback.xml", "/system/etc/fonts.xml"].into_iter().find(|list| shell(&format!("test -f {list} && echo here")).contains("here")).map(read);
         let text = SystemText::in_folder(&fonts, &String::from_utf8_lossy(&list.unwrap_or_default())).expect("the emulator's Roboto");
         let mut ui = Ui::new(Box::new(text), Box::new(LocalClipboard::default()));
         let inner = [said.size[0] - said.insets[0] - said.insets[2], said.size[1] - said.insets[1] - said.insets[3]];
@@ -634,7 +635,7 @@ mod tests {
         }
         let log = String::from_utf8_lossy(&adb(&["logcat", "-d"])).into_owned();
         let _ = std::fs::write(out.join("logcat.txt"), &log);
-        assert!(!log.contains("FATAL EXCEPTION") && !log.contains("Fatal signal"), "the app crashed: see logcat.txt");
+        assert!(!crashed(&["taut.example.gallery"]), "the app crashed: see logcat.txt");
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     }
 }

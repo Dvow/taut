@@ -11,20 +11,19 @@
 //! before the first of the other); the cursor remembers which (`after`), as the arrow or
 //! pointer put it, and after typing it stands after what was typed.
 use crate::accessibility::Role;
-use crate::bidi::plain;
 use crate::event::{Cursor, Key, Mods};
 use crate::geom::Point;
 use crate::id::Id;
 use crate::layout::{Align, Flow, Length};
 use crate::platform::Clipboard;
-use crate::text::{Font, Line, ShownCluster, caret, cluster, cluster_before, shown_clusters};
+use crate::text::{Font, Line, Paragraph, ShownCluster, caret, cluster, cluster_before, shown_clusters};
 use crate::ui::{Response, Stroke, Ui};
 use std::ops::Range;
 use std::time::Duration;
 
-/// Gives each character's left and right edge on one line (from the piece's left), in an RTL
-/// paragraph or not, and returns the piece's width.
-type Places<'a> = &'a mut dyn FnMut(&str, bool, &mut Vec<[f32; 2]>) -> f32;
+/// Gives each character's left and right edge on one line (from the piece's left), as it shows
+/// in its paragraph, and returns the piece's width.
+type Places<'a> = &'a mut dyn FnMut(&str, Paragraph, &mut Vec<[f32; 2]>) -> f32;
 
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(530);
@@ -166,6 +165,41 @@ pub(crate) struct Replace {
     pub selection: [usize; 2],
 }
 
+/// What an input method deletes around the selection (Android's `deleteSurroundingText`): so
+/// many characters before it and after it, counted in UTF-16 units, or in code points. A count
+/// ending inside a character takes all of it.
+#[cfg(any(target_os = "android", test))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct DeleteAround {
+    pub before: usize,
+    pub after: usize,
+    pub in_code_points: bool,
+}
+
+#[cfg(any(target_os = "android", test))]
+impl DeleteAround {
+    /// The bytes it deletes with `selected`: from before the selection to after it.
+    pub(crate) fn range(self, text: &str, selected: Range<usize>) -> Range<usize> {
+        let before = self.bytes(text[..selected.start].chars().rev(), self.before);
+        let after = self.bytes(text[selected.end..].chars(), self.after);
+        selected.start - before..selected.end + after
+    }
+
+    /// How many bytes of `chars` (going away from the selection) `count` covers: whole
+    /// characters, as far as there are any.
+    fn bytes(self, chars: impl Iterator<Item = char>, count: usize) -> usize {
+        let size = |letter: char| if self.in_code_points { 1 } else { letter.len_utf16() };
+        let taken = chars.scan(0, |counted, letter| {
+            if *counted >= count {
+                return None;
+            }
+            *counted += size(letter);
+            Some(letter.len_utf8())
+        });
+        taken.sum()
+    }
+}
+
 impl Edit {
     fn new(id: Id, cursor: usize) -> Self {
         Edit { id, cursor, anchor: cursor, ..Default::default() }
@@ -257,6 +291,20 @@ impl Edit {
         (self.anchor, self.cursor, self.after) = (snap(text, selection[0]), snap(text, selection[1]), false);
     }
 
+    /// Deletes what an input method asks around the selection, which stays (Android).
+    #[cfg(any(target_os = "android", test))]
+    pub(crate) fn delete_around(&mut self, text: &mut String, around: DeleteAround) {
+        let selected = self.selection();
+        let range = around.range(text, selected.clone());
+        if range == selected {
+            return;
+        }
+        let (kept, anchor_first) = (text[selected].to_string(), self.anchor <= self.cursor);
+        self.replace(text, range.clone(), &kept, false);
+        let [from, to] = [range.start, range.start + kept.len()];
+        (self.anchor, self.cursor) = if anchor_first { (from, to) } else { (to, from) };
+    }
+
     /// Undoes the last change, or (`again`) redoes the last undone one.
     fn undo(&mut self, text: &mut String, again: bool) {
         let at = if again { self.changes.len() - self.undone } else { self.changes.len().wrapping_sub(self.undone + 1) };
@@ -295,18 +343,18 @@ impl Edit {
     /// grapheme clusters; and whether it shows at the next character's edge.
     fn offset_in(&mut self, text: &str, row: usize, x: f32, places: Places) -> (usize, bool) {
         let span = self.span(text, row);
-        let leftward = self.leftward(text, span.start);
-        let x = x - self.indent(row, leftward);
-        if !leftward && (self.secret || plain(&text[span.clone()])) {
+        let paragraph = self.paragraph(text, span.clone());
+        let x = x - self.indent(row, paragraph.leftward);
+        if self.secret || paragraph.plain(&text[span.clone()]) {
             return (self.ahead_offset(text, span, x, places), false);
         }
-        let clusters = self.clusters(text, span.clone(), leftward, places);
+        let clusters = self.clusters(text, span.clone(), paragraph, places);
         nearest(&clusters, x).unwrap_or((span.start, false))
     }
 
     /// The same, in a line that runs one way only.
     fn ahead_offset(&mut self, text: &str, span: Range<usize>, x: f32, places: Places) -> usize {
-        places(&text[span.clone()], false, &mut self.places);
+        places(&text[span.clone()], Paragraph::whole(false), &mut self.places);
         // `places` has each `char`'s edges; a multi-`char` cluster ends with its last.
         let (mut at, mut ended, mut left) = (span.start, 0, 0.0);
         while at < span.end {
@@ -334,19 +382,25 @@ impl Edit {
         !self.secret && crate::bidi::leftward(&text[start..])
     }
 
-    /// The characters of byte range `span` (one line), as shown.
-    fn clusters(&mut self, text: &str, span: Range<usize>, leftward: bool, places: Places) -> Vec<ShownCluster> {
-        places(&text[span.clone()], leftward, &mut self.places);
-        shown_clusters(&text[span.clone()], span.start, &self.places, leftward)
+    /// The paragraph of byte range `span` (one line), as `Paragraph::of` finds it. (A password
+    /// box shows dots, which run left to right.)
+    fn paragraph<'a>(&self, text: &'a str, span: Range<usize>) -> Paragraph<'a> {
+        if self.secret { Paragraph::whole(false) } else { Paragraph::of(text, span) }
+    }
+
+    /// The characters of byte range `span` (one line of `paragraph`), as shown.
+    fn clusters(&mut self, text: &str, span: Range<usize>, paragraph: Paragraph, places: Places) -> Vec<ShownCluster> {
+        places(&text[span.clone()], paragraph, &mut self.places);
+        shown_clusters(&text[span.clone()], span.start, &self.places, paragraph.leftward)
     }
 
     /// The x where the cursor at byte `at` shows on its line, from the line's left.
     fn caret_in(&mut self, text: &str, span: Range<usize>, at: usize, places: Places) -> f32 {
-        let leftward = self.leftward(text, span.start);
-        if !leftward && (self.secret || plain(&text[span.clone()])) {
-            return places(&text[span.start..at.clamp(span.start, span.end)], false, &mut self.places);
+        let paragraph = self.paragraph(text, span.clone());
+        if self.secret || paragraph.plain(&text[span.clone()]) {
+            return places(&text[span.start..at.clamp(span.start, span.end)], Paragraph::whole(false), &mut self.places);
         }
-        let clusters = self.clusters(text, span, leftward, places);
+        let clusters = self.clusters(text, span, paragraph, places);
         caret(&clusters, at, self.after)
     }
 
@@ -355,12 +409,12 @@ impl Edit {
     /// direction.
     fn beside(&mut self, text: &str, at: usize, right: bool, places: Places) -> (usize, bool) {
         let (row, span) = self.row(text, at);
-        let leftward = self.leftward(text, span.start);
-        let forward = right != leftward;
-        if !leftward && (self.secret || plain(&text[span.clone()])) {
+        let paragraph = self.paragraph(text, span.clone());
+        let forward = right != paragraph.leftward;
+        if self.secret || paragraph.plain(&text[span.clone()]) {
             return (step(text, at, forward), false);
         }
-        let clusters = self.clusters(text, span, leftward, places);
+        let clusters = self.clusters(text, span, paragraph, places);
         if let Some(place) = past(&clusters, caret(&clusters, at, self.after), right) {
             return place;
         }
@@ -705,9 +759,9 @@ impl Ui {
         let Ui { edit, input, text: system, clipboard, scale, now, again, select_all, asks, .. } = self;
         // A password is as wide as its dots: those are measured.
         let mut dots = String::new();
-        let places: Places = &mut |piece, leftward, places| {
+        let places: Places = &mut |piece, paragraph, places| {
             dots.extend(piece.chars().filter(|_| secret).map(|_| DOT));
-            let wide = system.places(if secret { &dots } else { piece }, font, *scale, leftward, places);
+            let wide = system.places(if secret { &dots } else { piece }, font, *scale, paragraph, places);
             dots.clear();
             wide
         };
@@ -724,6 +778,11 @@ impl Ui {
             Stroke::Key(key, mods) => !edit.key(text, *key, *mods, many, places, clipboard.as_mut()),
             Stroke::Text(typed) => {
                 edit.insert(text, typed, many, true);
+                false
+            }
+            #[cfg(any(target_os = "android", test))]
+            Stroke::DeleteAround(around) => {
+                edit.delete_around(text, *around);
                 false
             }
             #[cfg(target_os = "ios")]
@@ -794,7 +853,7 @@ mod tests {
             Typing(text.into(), Edit::new(1, text.len()), LocalClipboard::default())
         }
         fn key(&mut self, key: Key, mods: Mods) -> &mut Self {
-            let places: Places = &mut |piece, leftward, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, leftward, places);
+            let places: Places = &mut |piece, paragraph, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, paragraph, places);
             assert!(self.1.key(&mut self.0, key, mods, true, places, &mut self.2), "{key:?} was not used");
             self
         }
@@ -804,6 +863,12 @@ mod tests {
         }
         fn typed(&mut self, text: &str) -> &mut Self {
             self.1.insert(&mut self.0, text, true, true);
+            self
+        }
+        /// An input method deletes `before` and `after` the selection, in UTF-16 units or code
+        /// points.
+        fn delete_around(&mut self, before: usize, after: usize, in_code_points: bool) -> &mut Self {
+            self.1.delete_around(&mut self.0, DeleteAround { before, after, in_code_points });
             self
         }
         /// The text, with `|` at the cursor and `[` `]` around the selection.
@@ -833,6 +898,55 @@ mod tests {
     }
 
     #[test]
+    fn an_input_method_deletes_whole_emoji_counted_in_utf16_units() {
+        // An emoji is two units: both go, and nothing before it.
+        assert_eq!(Typing::new("a😀").delete_around(2, 0, false).shown(), "a|");
+        // Half of one takes it whole.
+        assert_eq!(Typing::new("a😀").delete_around(1, 0, false).shown(), "a|");
+        assert_eq!(Typing::new("a😀b😀").keys(&[Key::Left, Key::Left]).delete_around(1, 3, false).shown(), "a|");
+        // In code points, an emoji is one.
+        assert_eq!(Typing::new("😀😀").delete_around(1, 0, true).shown(), "😀|");
+    }
+
+    #[test]
+    fn an_input_method_deletes_a_combining_mark_without_its_letter() {
+        // "e" and a combining acute: one character on screen, two units and two code points.
+        let accented = "xe\u{301}";
+        assert_eq!(Typing::new(accented).delete_around(1, 0, false).shown(), "xe|");
+        assert_eq!(Typing::new(accented).delete_around(2, 0, true).shown(), "x|");
+        // More than there is deletes what there is.
+        assert_eq!(Typing::new(accented).delete_around(9, 9, false).shown(), "|");
+    }
+
+    #[test]
+    fn a_focused_box_flat_or_vertical_deletes_what_an_input_method_asks_in_its_run() {
+        for vertical in [false, true] {
+            let mut trial = crate::testing::Trial::new(String::from("a😀"), move |text: &mut String, ui| {
+                let edit = if vertical { ui.vertical_text_box(text, "") } else { ui.text_box(text, "") };
+                if ui.focus() == 0 {
+                    ui.set_focus(edit.id);
+                }
+            });
+            trial.run();
+            trial.ui.input.strokes.push(Stroke::Key(Key::End, Mods::CTRL));
+            trial.ui.input.strokes.push(Stroke::DeleteAround(DeleteAround { before: 2, after: 0, in_code_points: false }));
+            trial.run();
+            assert_eq!(trial.app, "a", "vertical: {vertical}");
+        }
+    }
+
+    #[test]
+    fn an_input_method_deletes_around_the_selection_which_stays_and_undoes_at_once() {
+        let mut t = Typing::new("abcdef");
+        t.keys(&[Key::Left, Key::Left]).key(Key::Left, Mods::SHIFT).key(Key::Left, Mods::SHIFT);
+        assert_eq!(t.delete_around(1, 1, false).shown(), "a[cd]f");
+        assert_eq!(t.1.cursor, 1, "the cursor stays at the selection's start, where it was");
+        t.key(Key::Char('z'), Mods::CTRL);
+        assert_eq!(t.shown(), "ab[cd]ef");
+        assert_eq!(Typing::new("abc").delete_around(0, 0, false).1.changes.len(), 0, "nothing deleted, nothing to undo");
+    }
+
+    #[test]
     fn the_cursor_moves_by_character_word_and_line() {
         let mut t = Typing::new("one two\nthree");
         t.key(Key::Home, Mods::NONE);
@@ -850,7 +964,7 @@ mod tests {
     #[test]
     fn up_and_down_in_one_line_go_to_its_start_and_its_end() {
         let mut t = Typing::new("one two");
-        let places: Places = &mut |piece, leftward, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, leftward, places);
+        let places: Places = &mut |piece, paragraph, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, paragraph, places);
         assert!(t.1.key(&mut t.0, Key::Up, Mods::NONE, false, places, &mut t.2));
         assert_eq!(t.shown(), "|one two");
         assert!(t.1.key(&mut t.0, Key::Down, Mods::SHIFT, false, places, &mut t.2));
@@ -921,7 +1035,7 @@ mod tests {
         assert_eq!(t.shown(), ["cafe\u{301} ", hand, " x", key, "|"].concat());
         // Every `char` is 6 wide here, so the hand is two: 12 wide, from 36 to 48. A click on
         // its left half places the cursor before it, on its right half after.
-        let places: Places = &mut |piece, leftward, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, leftward, places);
+        let places: Places = &mut |piece, paragraph, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, paragraph, places);
         t.1.laid_out(&[Line { start: 0, end: t.0.len(), width: 0.0 }], 0, Point::default(), 10.0, 0.0);
         for (x, shown) in [(40.0, ["cafe\u{301} |", hand, " x", key].concat()), (44.0, ["cafe\u{301} ", hand, "| x", key].concat()), (500.0, ["cafe\u{301} ", hand, " x", key, "|"].concat())] {
             t.1.anchor_set = false;
@@ -951,20 +1065,20 @@ mod tests {
         }
         fn key(&mut self, key: Key, mods: Mods) -> (usize, bool, f32) {
             let Both(text, edit, clipboard, writer) = self;
-            let places: Places = &mut |piece, leftward, places| writer.places(piece, Font::new(16.0), 1.0, leftward, places);
+            let places: Places = &mut |piece, paragraph, places| writer.places(piece, Font::new(16.0), 1.0, paragraph, places);
             assert!(edit.key(text, key, mods, true, places, clipboard), "{key:?} was not used");
             self.at()
         }
         /// The cursor: its byte, whether it shows at the next character, and its x.
         fn at(&mut self) -> (usize, bool, f32) {
             let Both(text, edit, _, writer) = self;
-            let places: Places = &mut |piece, leftward, places| writer.places(piece, Font::new(16.0), 1.0, leftward, places);
+            let places: Places = &mut |piece, paragraph, places| writer.places(piece, Font::new(16.0), 1.0, paragraph, places);
             let x = edit.caret_in(text, 0..text.len(), edit.cursor, places);
             (edit.cursor, edit.after, x)
         }
         fn press(&mut self, x: f32, clicks: u8) -> (usize, bool, f32) {
             let Both(text, edit, _, writer) = self;
-            let places: Places = &mut |piece, leftward, places| writer.places(piece, Font::new(16.0), 1.0, leftward, places);
+            let places: Places = &mut |piece, paragraph, places| writer.places(piece, Font::new(16.0), 1.0, paragraph, places);
             edit.anchor_set = false;
             edit.point(text, Point { x, y: 4.0 }, clicks, places);
             self.at()
@@ -1032,20 +1146,20 @@ mod tests {
         let mut writer = crate::bidi::tests::hebrew();
         let text = "xy \u{5d0}\u{5d2}";
         let mut marked = Vec::new();
-        let at = crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, false, [1, 5], Some(5), true, &mut marked);
+        let at = crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, Paragraph::whole(false), [1, 5], Some(5), true, &mut marked);
         assert_eq!((at, marked.clone()), (Some([38.0; 2]), vec![[12.0, 28.0], [38.0, 45.0]]));
         // A selection continuing past the line covers the line end's room: at its right in an
         // LTR paragraph, at its left in an RTL one.
-        let at = crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, false, [3, 9], None, false, &mut marked);
+        let at = crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, Paragraph::whole(false), [3, 9], None, false, &mut marked);
         assert_eq!((at, marked.clone()), (None, vec![[28.0, 49.0]]));
-        crate::text::marks(&mut writer, "\u{5d0}\u{5d2}", 0, 17.0, Font::new(16.0), 1.0, true, [0, 9], None, false, &mut marked);
+        crate::text::marks(&mut writer, "\u{5d0}\u{5d2}", 0, 17.0, Font::new(16.0), 1.0, Paragraph::whole(true), [0, 9], None, false, &mut marked);
         assert_eq!(marked, [[-4.0, 17.0]]);
         // Text with nothing RTL behaves as before.
-        crate::text::marks(&mut writer, "abc", 0, 36.0, Font::new(16.0), 1.0, false, [1, 2], None, false, &mut marked);
+        crate::text::marks(&mut writer, "abc", 0, 36.0, Font::new(16.0), 1.0, Paragraph::whole(false), [1, 2], None, false, &mut marked);
         assert_eq!(marked, [[12.0, 24.0]]);
         // Between the space and the alef directions meet: the cursor shows at the alef (its
         // right) and at the space (its right), the one it stands by first.
-        let mut at = |after: bool| crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, false, [3, 3], Some(3), after, &mut Vec::new());
+        let mut at = |after: bool| crate::text::marks(&mut writer, text, 0, 45.0, Font::new(16.0), 1.0, Paragraph::whole(false), [3, 3], Some(3), after, &mut Vec::new());
         assert_eq!([at(true), at(false)], [Some([45.0, 28.0]), Some([28.0, 45.0])]);
     }
 
@@ -1131,7 +1245,7 @@ mod tests {
     #[test]
     fn the_pointer_puts_the_cursor_and_selects() {
         let mut t = Typing::new("fix the arc");
-        let places: Places = &mut |piece, leftward, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, leftward, places);
+        let places: Places = &mut |piece, paragraph, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, paragraph, places);
         t.1.laid_out(&[Line { start: 0, end: 11, width: 66.0 }], 0, Point { x: 10.0, y: 20.0 }, 10.0, 0.0);
         // Letters are 6 wide, so 37 units in is nearest the gap after the sixth letter.
         t.1.anchor_set = false;
@@ -1151,7 +1265,7 @@ mod tests {
         // No words: Ctrl+arrow goes all the way, a double click selects everything.
         t.key(Key::Left, Mods::CTRL);
         assert_eq!(t.shown(), "|open sesame");
-        let places: Places = &mut |piece, leftward, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, leftward, places);
+        let places: Places = &mut |piece, paragraph, places| BuiltInFont.places(piece, Font::new(8.0), 1.0, paragraph, places);
         // It was laid out as its dots, three bytes each.
         t.1.laid_out(&[Line { start: 0, end: 33, width: 66.0 }], 0, Point::default(), 10.0, 0.0);
         t.1.anchor_set = false;

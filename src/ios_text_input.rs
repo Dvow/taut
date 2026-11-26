@@ -194,9 +194,8 @@ pub(crate) fn hand_typing() {
         return;
     }
     crate::ios::TYPING.set(Some(follow));
-    let view = crate::ios::view();
-    open(view);
-    hold_in_text_boxes(view);
+    open(crate::ios::view());
+    hold_in_text_boxes();
 }
 
 /// Makes the input view, inside the library's view: clear, touched by nothing.
@@ -280,13 +279,28 @@ fn focused(ui: &Ui) -> Focused {
     }
 }
 
-/// After a run: the input view takes the keyboard while a text box has focus, and gives it back
-/// to the library's view after; it lies over the page (`area`, in the view). Its document
-/// follows the box, and the keyboard hears what the app changed. A password box, and another
-/// kind of box, start the keyboard afresh.
+/// After a run of the front window: the input view takes the keyboard while a text box has
+/// focus, and gives it back to the library's view after; it lies over the page (`area`, in the
+/// view), moved into the front window's view where another window came to the front. Its
+/// document follows the box, and the keyboard hears what the app changed. A password box,
+/// another kind of box, and another window, start the keyboard afresh.
 pub(crate) fn follow(ui: &mut Ui, area: NSRect) {
-    // SAFETY: the input view lies over the page.
-    unsafe { send::<()>(INPUT.get(), c"setFrame:", (area,)) };
+    let (input, view) = (INPUT.get(), crate::ios::view());
+    // SAFETY: the input view, and what is composed, move into the front window's view; the
+    // input view lies over its page.
+    unsafe {
+        if send::<Obj>(input, c"superview", ()) != view {
+            // (Moved, it no longer has the keyboard: it starts afresh below.)
+            let label = DOCUMENT.with_borrow_mut(|document| {
+                document.editing = false;
+                document.label
+            });
+            for moved in [input, label].into_iter().filter(|moved| !moved.is_null()) {
+                send::<()>(view, c"addSubview:", (moved,));
+            }
+        }
+        send::<()>(input, c"setFrame:", (area,));
+    }
     let now = focused(ui);
     let (cursor, secret) = (ui.ime_area(), ui.password_focused());
     let editing = cursor.is_some();
@@ -825,10 +839,10 @@ impl LaidOut {
     fn marks(&self, ui: &mut Ui, row: usize, selection: [usize; 2], cursor: Option<usize>, pieces: &mut Vec<[f32; 2]>) -> Option<f32> {
         let line = *self.lines.get(row)?;
         let Ui { tree, text, scale, edit, .. } = ui;
-        let paragraph = tree.strings[self.start..line.start].rfind('\n').map_or(self.start, |at| self.start + at + 1);
-        let leftward = crate::bidi::leftward(&tree.strings[paragraph..self.end]);
+        let paragraph = crate::text::Paragraph::of(&tree.strings[self.start..self.end], line.start - self.start..line.end - self.start);
+        let leftward = paragraph.leftward;
         let words = &tree.strings[line.start..line.end];
-        let carets = crate::text::marks(text.as_mut(), words, line.start, line.width, self.font, *scale, leftward, selection, cursor, edit.after, pieces);
+        let carets = crate::text::marks(text.as_mut(), words, line.start, line.width, self.font, *scale, paragraph, selection, cursor, edit.after, pieces);
         let shift = ((self.inside.w - line.width).max(0.0) * if leftward { 1.0 - self.side } else { self.side }).round();
         pieces.iter_mut().for_each(|piece| *piece = piece.map(|x| x + shift));
         Some(carets.map_or(shift, |carets| stands(carets) + shift))
@@ -1085,12 +1099,17 @@ fn long_press_class() -> Obj {
     made_class(c"TautLongPress", c"UILongPressGestureRecognizer", &[], &[])
 }
 
-/// A long press on the text box being typed in shows the system's edit menu: the view learns to
+/// A long press on the text box being typed in shows the system's edit menu: the views learn to
 /// hear it, and to let it begin only there.
-fn hold_in_text_boxes(view: Obj) {
+fn hold_in_text_boxes() {
     let methods: [(&CStr, *const c_void, String); 2] = [(c"held:", held as *const c_void, "v@:@".into()), (c"gestureRecognizerShouldBegin:", may_begin as *const c_void, format!("{BOOL}@:@"))];
     let listed: Vec<(&CStr, *const c_void, &str)> = methods.iter().map(|(name, imp, types)| (*name, *imp, types.as_str())).collect();
     add_methods(crate::ios::view_class(), &listed);
+    crate::ios::on_every_view(hear_long_presses);
+}
+
+/// Has a view hear long presses.
+fn hear_long_presses(view: Obj) {
     // SAFETY: a recognizer made with the view as its target, handed to the view, which keeps it.
     unsafe {
         let gesture: Obj = send(send::<Obj>(long_press_class(), c"alloc", ()), c"initWithTarget:action:", (view, sel(c"held:")));
@@ -1117,7 +1136,7 @@ extern "C" fn may_begin(view: Obj, _: Sel, gesture: Obj) -> Bool {
     }
     let at = crate::ios::place_of(view, gesture);
     let typing_here = |ui: &mut Ui| ui.ime_area().is_some() && ui.input.down[0] && ui.visible_boxes.rects.get(&ui.focus()).is_some_and(|rect| rect.contains(at));
-    Bool::from(crate::ios::with_ui(typing_here).unwrap_or(false))
+    Bool::from(crate::ios::with_ui_of(view, typing_here).unwrap_or(false))
 }
 
 // ---- what is composed, shown ----

@@ -4,8 +4,8 @@
 //! vertical text: Unicode's line breaking (UAX #14) for the classes such text holds. A line
 //! breaks between ideographs and kana, never before closing punctuation, iteration marks or
 //! ellipses, nor after opening brackets (kinsoku); Latin words and numbers break only at
-//! spaces. Small kana and the long vowel mark may start a line, as CSS `line-break: normal`
-//! has it (Chrome's default).
+//! spaces. Small kana and the long vowel mark may start a line, and in Chinese text 〜 and ゠,
+//! as Chrome breaks it (CSS `line-break: normal`).
 //!
 //! **Thai, Lao, Khmer and Burmese** (Unicode line breaking's "complex context"). Word
 //! boundaries there need a dictionary per language. A line breaks between words, as:
@@ -84,15 +84,18 @@ pub(crate) fn break_class(letter: char) -> BreakClass {
 }
 
 /// Whether a line may break before character `after`, the last character before it that was
-/// no space being `before`, with spaces between them or not.
-fn may_break(before: char, spaced: bool, after: char) -> bool {
+/// no space being `before`, with spaces between them or not. In Chinese text (`chinese`), 〜
+/// and ゠ may start a line, as Chrome has it (not in Japanese).
+fn may_break(before: char, spaced: bool, after: char, chinese: bool) -> bool {
     use BreakClass::*;
     // (Brackets that are not East Asian: fullwidth and CJK ones lie from U+2E80.)
     let narrow = |letter: char| (letter as u32) < 0x2e80;
-    match (break_class(before), spaced, break_class(after)) {
+    let starts = chinese && matches!(after, '\u{301c}' | '\u{30a0}');
+    match (break_class(before), spaced, if starts { Ideograph } else { break_class(after) }) {
         (_, _, Space) => false,                                                          // LB7
         (ZeroWidth, ..) => true,                                                         // LB8
-        (Glue, false, _) | (_, false, Glue) => false,                                    // LB11, LB12
+        (Glue, false, _) => false,                                                       // LB11, LB12
+        (class, false, Glue) if class != After => false,                                 // LB12a
         (_, _, Close) => false,                                                          // LB13
         (Open, ..) => false,                                                             // LB14
         (Quote, _, Open) => false,                                                       // LB15
@@ -111,13 +114,14 @@ fn may_break(before: char, spaced: bool, after: char) -> bool {
 }
 
 /// The byte offsets in `text` (one paragraph, without its line end) where a line may break:
-/// between grapheme clusters, each taking the class of its first character.
-pub(crate) fn break_chances(text: &str, chances: &mut Vec<usize>) {
+/// between grapheme clusters, each taking the class of its first character; in Chinese text
+/// (`chinese`) as `may_break` says.
+pub(crate) fn break_chances(text: &str, chinese: bool, chances: &mut Vec<usize>) {
     chances.clear();
     let (mut at, mut before, mut spaced) = (0, None, false);
     while at < text.len() {
         let letter = text[at..].chars().next().unwrap_or(' ');
-        if before.is_some_and(|before| may_break(before, spaced, letter)) {
+        if before.is_some_and(|before| may_break(before, spaced, letter, chinese)) {
             chances.push(at);
         }
         match break_class(letter) {
@@ -313,15 +317,31 @@ mod tests {
     /// Where `text` may break.
     fn chances(text: &str) -> Vec<usize> {
         let mut found = Vec::new();
-        break_chances(text, &mut found);
+        break_chances(text, false, &mut found);
+        found
+    }
+
+    /// The same, in Chinese text.
+    fn chances_in_chinese(text: &str) -> Vec<usize> {
+        let mut found = Vec::new();
+        break_chances(text, true, &mut found);
         found
     }
 
     #[test]
     fn cjk_text_breaks_between_ideographs_but_not_before_closing_marks_or_after_opening_ones() {
         assert_eq!(chances("あい。「う」"), [3, 9]);
-        // Small kana and the long vowel mark may start a line, as CSS `line-break: normal` has it.
+        // Small kana and the long vowel mark may start a line, as CSS `line-break: normal` has it;
+        // in Chinese text so may 〜 and ゠ (not an iteration mark), as Chrome has it.
         assert_eq!(chances("ちょっとー"), [3, 6, 9, 12]);
+        assert_eq!((chances_in_chinese("あ〜い゠う々"), chances("あ〜い゠う々")), (vec![3, 6, 9, 12], vec![6, 12]));
+    }
+
+    #[test]
+    fn a_no_break_space_keeps_to_what_is_before_it_except_a_space_or_hyphen() {
+        // LB12a: "a b" with a no-break space never breaks; after a hyphen it may.
+        assert_eq!(chances("a\u{a0}b"), []);
+        assert_eq!(chances("a-\u{a0}b"), [2]);
     }
 
     #[test]
@@ -350,7 +370,6 @@ mod tests {
         // Windows' dictionary: without it nothing is found, which is fine.)
         let found = words("\u{e20}\u{e32}\u{e29}\u{e32}\u{e44}\u{e17}\u{e22}");
         assert!(found.is_empty() || found == [4], "{found:?}");
-        println!("Windows breaks ภาษาไทย before {found:?}");
     }
 
     #[test]

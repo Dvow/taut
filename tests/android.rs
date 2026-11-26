@@ -545,6 +545,20 @@ mod host {
         adb(&["shell", command])
     }
 
+    /// The emulator's file `path`, whole, by `pull`, again until it comes so. (What `exec-out`
+    /// prints can end early and still exit 0.)
+    fn read(path: &str) -> String {
+        let copy = std::env::temp_dir().join(format!("taut-adb-{}", std::process::id()));
+        let since = Instant::now();
+        while !adb_said(&["pull", path, &copy.to_string_lossy()]).1.contains("1 file pulled") {
+            assert!(since.elapsed() < OUT_OF_REACH, "{path} was not copied");
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let text = std::fs::read_to_string(&copy).unwrap_or_default();
+        let _ = std::fs::remove_file(copy);
+        text
+    }
+
     /// One node of a \`uiautomator dump\`: class, text, focused, scrollable, bounds.
     #[derive(Clone, Debug, Default)]
     struct Node {
@@ -561,10 +575,15 @@ mod host {
         value.replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     }
 
-    /// The window as another program reads it; the dump kept in \`out\`.
+    /// The window as another program reads it; the dump kept in `out`. A dump that failed is
+    /// asked again: on a busy emulator `uiautomator` itself can fail to connect to the system.
     fn dump(out: &Path, name: &str) -> Vec<Node> {
-        shell("uiautomator dump /sdcard/taut-ui.xml");
-        let xml = adb(&["exec-out", "cat", "/sdcard/taut-ui.xml"]);
+        let since = Instant::now();
+        while !shell("rm -f /sdcard/taut-ui.xml; uiautomator dump /sdcard/taut-ui.xml 2>&1").contains("dumped to") {
+            assert!(since.elapsed() < OUT_OF_REACH, "uiautomator dumped nothing");
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let xml = read("/sdcard/taut-ui.xml");
         let _ = std::fs::write(out.join(format!("{name}.xml")), &xml);
         let node = |tag: &str| {
             let corners: Vec<i32> = attribute(tag, "bounds").split(|c: char| !c.is_ascii_digit()).filter_map(|part| part.parse().ok()).collect();
@@ -639,7 +658,8 @@ mod host {
     fn finish(out: &Path, failed: Vec<String>) {
         let log = adb(&["logcat", "-d"]);
         let _ = std::fs::write(out.join("logcat.txt"), &log);
-        if log.contains("FATAL EXCEPTION") || log.contains("Fatal signal") {
+        // (The crash buffer names the process: `uiautomator` stopping on its own is no crash of the app.)
+        if adb(&["logcat", "-d", "-b", "crash"]).contains(PACKAGE) {
             eprintln!("the app crashed: see logcat.txt");
             std::process::exit(1);
         }

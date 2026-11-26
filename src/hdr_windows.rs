@@ -263,17 +263,20 @@ impl Hdr {
 
 /// Takes in what lights a window `hwnd`, `size` pixels, shown by `shown`, after a run: its
 /// screen read again where needed, its gains drawn again where they changed, and that part (or
-/// all, where it goes in or out of scRGB) to be painted and presented. Says whether the
-/// window's headroom changed: its app is to run again.
+/// all, where it goes in or out of scRGB, or its screen changed while it is lit) to be painted
+/// and presented. Says whether the window's headroom changed: its app is to run again.
 pub(crate) fn light(hwnd: HANDLE, shown: Option<&mut Shown>, size: [i32; 2], ui: &mut Ui) -> bool {
     let Some(hdr) = shown.and_then(Shown::hdr) else { return ui.set_screen(Screen::SDR) };
+    let screen = hdr.screen;
     hdr.follow(hwnd);
     let news = ui.set_screen(hdr.screen);
     let (glows, was) = (if hdr.screen.hdr { ui.glows() } else { Vec::new() }, hdr.wanted());
-    if let Some([left, top, right, bottom]) = hdr.gains.take(glows, size, &ui.light.maps) {
-        let part = RECT { left, top, right, bottom };
+    let part = hdr.gains.take(glows, size, &ui.light.maps).map(|[left, top, right, bottom]| RECT { left, top, right, bottom });
+    // (Lit, its light and HDR metadata are its screen's: shown again whole when that changes.)
+    let whole = was != hdr.wanted() || (was && hdr.screen != screen);
+    if whole || part.is_some() {
         // SAFETY: the window is alive; the rectangle outlives the call.
-        unsafe { InvalidateRect(hwnd, if was != hdr.wanted() { null() } else { &part }, 0) };
+        unsafe { InvalidateRect(hwnd, part.as_ref().filter(|_| !whole).map_or(null(), |part| part), 0) };
     }
     news
 }
@@ -836,6 +839,22 @@ pub(crate) mod tests {
         KEPT.with_borrow(|kept| kept.last().cloned()).expect("no scRGB frame presented")
     }
 
+    /// What the window shows once it shows `want`, five seconds at most: a GPU's frame goes to
+    /// the screen after the messages that drew it, later on a busy computer. (The last picture
+    /// where it never does.)
+    fn showing(hwnd: HANDLE, want: &[u32]) -> Vec<u32> {
+        let since = std::time::Instant::now();
+        loop {
+            let (shown, _) = crate::windows::tests::picture(hwnd);
+            let same = shown.len() == want.len() && shown.iter().zip(want).all(|(a, b)| a & 0xff_ffff == b & 0xff_ffff);
+            if same || since.elapsed() > std::time::Duration::from_secs(5) {
+                return shown;
+            }
+            pump();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     /// Whether `value` is within `part` of `wanted` (16-bit floats keep three digits: a part in
     /// 500; HDR10's 10 bits of PQ, a part in 50).
     fn near(value: f32, wanted: f32, part: f32) -> bool {
@@ -905,6 +924,9 @@ pub(crate) mod tests {
             let got = at(10.5 + step as f32, 62.0);
             assert!((got[0] - step as f32 / 4.0 * white).abs() <= white * part.max(0.01), "{path:?}: the picture at {step}: {got:?}");
         }
+        if path == Renderer::Vulkan {
+            metadata_follows_the_screen(hwnd, hdr);
+        }
         // The screen goes SDR: the frame is the CPU's again.
         FAKED.set(Some((Screen::SDR, Screen::SDR)));
         screens_changed();
@@ -923,7 +945,7 @@ pub(crate) mod tests {
             assert!(worst <= 1.0 / 1024.0, "{path:?}: an SDR screen gets the CPU's pixels, linear (apart by {worst})");
         } else {
             assert_eq!(KEPT.with_borrow(|kept| kept.len()), before, "{path:?}: no scRGB frame on an SDR screen");
-            let (shown, _) = crate::windows::tests::picture(hwnd);
+            let shown = showing(hwnd, &surface.pixels);
             let differ = shown.iter().zip(&surface.pixels).filter(|(a, b)| *a & 0xff_ffff != *b & 0xff_ffff).count();
             assert!(shown.len() == surface.pixels.len() && differ == 0, "{path:?}: an SDR screen shows the CPU's pixels ({differ} differ)");
         }
@@ -956,6 +978,25 @@ pub(crate) mod tests {
         fake(Faked::default());
         FAKED.set(None);
         AN_HDR_SCREEN.store(false, Ordering::Relaxed);
+    }
+
+    /// Vulkan, on `hdr`: the swap chain's HDR metadata is set again when the screen's SDR white
+    /// changes, then when it changes back (where the device sets metadata).
+    fn metadata_follows_the_screen(hwnd: HANDLE, hdr: Screen) {
+        let described = || crate::gpu_vulkan_windows::tests::DESCRIBED.get();
+        if described().is_none() {
+            return println!("Vulkan: no VK_EXT_hdr_metadata, nothing to check");
+        }
+        assert_eq!(described(), Some(hdr), "Vulkan: the metadata of the screen");
+        for screen in [Screen { white: 300.0, ..hdr }, hdr] {
+            FAKED.set(Some((screen, Screen::SDR)));
+            screens_changed();
+            for _ in 0..2 {
+                unsafe { PostMessageW(hwnd, 0x8001, 0, 0) };
+                pump();
+            }
+            assert_eq!(described(), Some(screen), "Vulkan: the metadata follows the screen");
+        }
     }
 
     #[test]

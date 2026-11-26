@@ -21,11 +21,13 @@
 //! one pixel further out, which makes its small blurs narrower than stated.) Morphology uses
 //! van Herk / Gil-Werman, also constant cost per pixel at any radius.
 //!
-//! `feImage` draws its element or picture on a block of its own just before the filter runs
-//! (see `svg.rs`); the filter takes those blocks off the top. `BackgroundImage` is everything
-//! drawn under the element so far on blocks of its size, composited, as `enable-background:
-//! new` on the root would make it. Lighting follows the spec's normals and light vectors per
-//! pixel (`kernelUnitLength` is one pixel); convolution and displacement follow it too.
+//! `feImage` draws its element or picture on a block of its own just before the filter runs, and
+//! `FillPaint` and `StrokePaint` the element's paint (see `svg.rs`); the filter takes those blocks
+//! off the top. `BackgroundImage` is everything drawn under the element so far on blocks of its
+//! size, composited, as `enable-background: new` on the root would make it. Lighting follows the
+//! spec's normals and light vectors per pixel; convolution and displacement follow it too. With
+//! `kernelUnitLength`, lighting and convolution run on a grid of kernel units, as librsvg does
+//! (see `Room::on_grid`).
 use crate::color::Color;
 use crate::svg::{Block, Table};
 
@@ -73,8 +75,8 @@ pub(crate) enum Input {
     Background,
     /// `BackgroundAlpha`: its alpha, in black;
     BackgroundAlpha,
-    /// or nothing (the paint inputs, not read).
-    Clear,
+    /// or one of the filter's images (an element's fill or stroke paint, see `svg.rs`).
+    Image(usize),
 }
 
 /// A primitive's colour space.
@@ -127,7 +129,8 @@ pub(crate) enum Kind {
 }
 
 /// A lighting step: specular (else diffuse), surface scale, its constant (`diffuseConstant` or
-/// `specularConstant`), specular exponent, light colour, and the light.
+/// `specularConstant`), specular exponent, light colour, the light, and its kernel unit where
+/// given (`kernelUnitLength`, see `Room::on_grid`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Lighting {
     pub(crate) specular: bool,
@@ -136,6 +139,7 @@ pub(crate) struct Lighting {
     pub(crate) exponent: f32,
     pub(crate) color: Color,
     pub(crate) source: Source,
+    pub(crate) unit: Option<[f32; 2]>,
 }
 
 /// A light, its positions in units (depth as the filter units say it).
@@ -151,7 +155,8 @@ pub(crate) enum Source {
 }
 
 /// A convolution step: kernel columns and rows, the kernel (row by row), divisor, bias, the
-/// target pixel (column, row), how pixels past the edges are taken, and whether alpha is kept.
+/// target pixel (column, row), how pixels past the edges are taken, whether alpha is kept, and
+/// its kernel unit where given (`kernelUnitLength`, see `Room::on_grid`).
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Convolution {
     pub(crate) order: [usize; 2],
@@ -161,6 +166,7 @@ pub(crate) struct Convolution {
     pub(crate) target: [usize; 2],
     pub(crate) edge: Edge,
     pub(crate) keep_alpha: bool,
+    pub(crate) unit: Option<[f32; 2]>,
 }
 
 /// What a convolution takes for a pixel past the edge of its input: the nearest edge pixel,
@@ -303,8 +309,8 @@ pub(crate) fn weight(kind: &Kind) -> f32 {
         Kind::Noise(noise) => 7.0 + 11.0 * noise.octaves as f32,
         Kind::Image(_) => 4.0,
         Kind::Displace(..) => 14.0,
-        Kind::Light(_) => 40.0,
-        Kind::Convolve(convolution) => 6.0 + 2.0 * convolution.kernel.len() as f32,
+        Kind::Light(lighting) => 40.0 + if lighting.unit.is_some() { GRID } else { 0.0 },
+        Kind::Convolve(convolution) => 6.0 + 2.0 * convolution.kernel.len() as f32 + if convolution.unit.is_some() { GRID } else { 0.0 },
     }
 }
 
@@ -322,6 +328,10 @@ const BEHIND: usize = 8;
 /// A filter's cost besides its primitives, as `weight` counts: taking its region from the layer
 /// and back, and converting to linear light and back.
 pub(crate) const FIXED: f32 = 4.0;
+
+/// What resampling a step's input onto a grid of kernel units and its result back costs, as
+/// `weight` counts (see `Room::on_grid`).
+const GRID: f32 = 8.0;
 
 /// The most turbulence octaves: more change nothing 8 bits can show.
 pub(crate) const OCTAVES: u32 = 12;
@@ -399,13 +409,15 @@ struct Picture {
 }
 
 /// Where a filter works: its part of the layer (left and top there, width and height in
-/// pixels); the region within that part, in fractional pixels (left, top, right, bottom); and
-/// the transform from filter units to its pixels, and back.
+/// pixels), and where that part's corner lies in the whole picture; the region within that part,
+/// in fractional pixels (left, top, right, bottom); and the transform from filter units to its
+/// pixels, and back.
 struct Room {
     left: usize,
     top: usize,
     wide: usize,
     high: usize,
+    corner: [f64; 2],
     region: [f64; 4],
     table: Exact,
     back: Exact,
@@ -464,7 +476,8 @@ impl Room {
         let ([left, upper], [right, lower]) = ([l.floor() as usize, t.floor() as usize], [(r.ceil() as usize).min(wide), (b.ceil() as usize).min(high)]);
         let table = both(&[1.0, 0.0, 0.0, 1.0, -(left as f64), -(upper as f64)], &table);
         let region = [l - left as f64, t - upper as f64, r - left as f64, b - upper as f64];
-        Some(Room { left, top: upper, wide: right - left, high: lower - upper, region, back: undone(&table)?, table })
+        let corner = [left as f64, f64::from(top) + upper as f64];
+        Some(Room { left, top: upper, wide: right - left, high: lower - upper, corner, region, back: undone(&table)?, table })
     }
 
     /// The filter's part of a layer, as an image in sRGB.
@@ -531,8 +544,8 @@ impl Room {
             Kind::Tile => tiled(take(0), part, wide),
             Kind::Noise(noise) => self.noise(noise, part, wanted.unwrap_or(false)),
             Kind::Image(image) => light.taken(taken.images.get(*image).cloned().unwrap_or_else(|| self.clear()), wanted.unwrap_or(false)),
-            Kind::Light(lighting) => self.lit(lighting, &take(0), part, wanted.unwrap_or(false), light),
-            Kind::Convolve(convolution) => convolved(take(0), convolution, part, wide),
+            Kind::Light(lighting) => self.on_grid(lighting.unit, take(0), part, |input, (wide, part), place| self.lit(lighting, &input, (wide, part), place, (wanted.unwrap_or(false), light))),
+            Kind::Convolve(convolution) => self.on_grid(convolution.unit, take(0), part, |input, (wide, part), _| convolved(input, convolution, part, wide)),
             // The image moved is taken as it is; the map in the step's colour space.
             Kind::Displace(by, channels) => {
                 let moved = self.input(step.inputs[0], source, (made, taken), None, light);
@@ -588,7 +601,7 @@ impl Room {
             Input::Made(n) => made.get(n).cloned().unwrap_or_else(|| self.clear()),
             Input::Background => behind(),
             Input::BackgroundAlpha => alpha(&behind()),
-            Input::Clear => self.clear(),
+            Input::Image(image) => taken.images.get(image).cloned().unwrap_or_else(|| self.clear()),
         };
         match wanted {
             Some(linear) => light.taken(picture, linear),
@@ -611,19 +624,47 @@ impl Room {
         Picture { pixels, linear, part }
     }
 
-    /// A lighting step over a subregion, the input's alpha as the surface's height: in linear
-    /// light or not. Diffuse light is opaque; specular light as solid as its brightest channel.
-    fn lit(&self, lighting: &Lighting, input: &Picture, part: [usize; 4], linear: bool, light: &Light) -> Picture {
+    /// A lighting step over a subregion of an input `wide` pixels per row, the input's alpha as
+    /// the surface's height: in linear light or not. Its pixels lie in the room as `place` says
+    /// (scale across and down, then shift: see `on_grid`). Diffuse light is opaque; specular
+    /// light as solid as its brightest channel.
+    fn lit(&self, lighting: &Lighting, input: &Picture, (wide, part): (usize, [usize; 4]), place: [f32; 4], (linear, light): (bool, &Light)) -> Picture {
         let [_, red, green, blue] = four(lighting.color.0);
         let color = [red, green, blue].map(|c| if linear { light.linear[c as usize] as f32 } else { c as f32 } / 255.0);
         let source = self.placed(&lighting.source);
-        let mut pixels = vec![0; self.wide * self.high];
+        let mut pixels = vec![0; input.pixels.len()];
         for y in part[1]..part[3] {
             for x in part[0]..part[2] {
-                pixels[y * self.wide + x] = lit_pixel(lighting, &source, color, (&input.pixels, self.wide, part), [x, y]);
+                pixels[y * wide + x] = lit_pixel(lighting, &source, color, (&input.pixels, wide, part), ([x, y], place));
             }
         }
         Picture { pixels, linear, part }
+    }
+
+    /// Runs a step on its input as if on a grid of `unit` (in filter units) per pixel, as
+    /// `kernelUnitLength` asks and librsvg does it: the input resampled onto the grid (cells
+    /// laid from the picture's corner), the step run there (given the grid's picture, its width
+    /// and part, and its pixels' place in the room: see `lit`), and the result resampled back
+    /// within `part`. A cell finer than a pixel is taken as one pixel. Without a unit, the step
+    /// runs on the input as it is.
+    fn on_grid(&self, unit: Option<[f32; 2]>, input: Picture, part: [usize; 4], step: impl Fn(Picture, (usize, [usize; 4]), [f32; 4]) -> Picture) -> Picture {
+        let t = self.table;
+        let size = unit.map(|[dx, dy]| [(t[0] * f64::from(dx) + t[2] * f64::from(dy)).abs(), (t[1] * f64::from(dx) + t[3] * f64::from(dy)).abs()]);
+        let Some(size) = size.filter(|size| size.iter().all(|side| side.is_finite())).map(|size| size.map(|side| side.clamp(1.0, self.wide.max(self.high).max(1) as f64))) else {
+            return step(input, (self.wide, part), [1.0, 1.0, 0.0, 0.0]);
+        };
+        let ([wide, high], phase) = ([self.wide, self.high], [self.corner[0].rem_euclid(size[0]), self.corner[1].rem_euclid(size[1])]);
+        let cells: [usize; 2] = std::array::from_fn(|axis| ((([wide, high][axis] as f64) + phase[axis]) / size[axis]).ceil() as usize);
+        // Each cell covers so many pixels; each pixel, a share of a cell.
+        let onto: [Taps; 2] = std::array::from_fn(|axis| taps(cells[axis], [wide, high][axis], |cell| (cell as f64 * size[axis] - phase[axis], (cell + 1) as f64 * size[axis] - phase[axis])));
+        let back: [Taps; 2] = std::array::from_fn(|axis| taps([wide, high][axis], cells[axis], |at| ((at as f64 + phase[axis]) / size[axis], (at as f64 + 1.0 + phase[axis]) / size[axis])));
+        let low = |at: usize, axis: usize| ((at as f64 + phase[axis]) / size[axis]).floor() as usize;
+        let high_of = |at: usize, axis: usize| (((at as f64 + phase[axis]) / size[axis]).ceil() as usize).min(cells[axis]);
+        let grid_part = [low(part[0], 0), low(part[1], 1), high_of(part[2], 0), high_of(part[3], 1)];
+        let grid = Picture { pixels: resampled(&input.pixels, wide, &onto), linear: input.linear, part: grid_part };
+        let place = [size[0] as f32, size[1] as f32, -phase[0] as f32, -phase[1] as f32];
+        let done = step(grid, (cells[0], grid_part), place);
+        clear_outside(Picture { pixels: resampled(&done.pixels, cells[0], &back), linear: done.linear, part }, part, wide)
     }
 
     /// A light with its positions in the room's pixels. (Depths are scaled as lengths are, by
@@ -643,12 +684,13 @@ impl Room {
 }
 
 /// One pixel of a lighting step (see `Room::lit`): the light from `source` (in pixels), of
-/// `color`, on the surface the input's alpha makes (`wide` per row, the subregion `part`).
-fn lit_pixel(lighting: &Lighting, source: &Source, color: [f32; 3], (pixels, wide, part): (&[u32], usize, [usize; 4]), [x, y]: [usize; 2]) -> u32 {
+/// `color`, on the surface the input's alpha makes (`wide` per row, the subregion `part`), at
+/// pixel `[x, y]`, which lies in the room as `place` says.
+fn lit_pixel(lighting: &Lighting, source: &Source, color: [f32; 3], (pixels, wide, part): (&[u32], usize, [usize; 4]), ([x, y], place): ([usize; 2], [f32; 4])) -> u32 {
     let height = |x: usize, y: usize| (pixels[y * wide + x] >> 24) as f32 / 255.0;
     let [nx, ny] = [true, false].map(|across| -lighting.surface * slope(&height, [x, y], part, across));
     let normal = unit([nx, ny, 1.0]);
-    let surface = [x as f32, y as f32, lighting.surface * height(x, y)];
+    let surface = [x as f32 * place[0] + place[2], y as f32 * place[1] + place[3], lighting.surface * height(x, y)];
     // The direction to the light, and how much of its colour reaches here.
     let (to_light, share) = match *source {
         Source::Distant([azimuth, elevation]) => {
@@ -747,7 +789,8 @@ fn convolved_pixel(pixels: &[u32], (wide, [l, t, r, b]): (usize, [usize; 4]), [x
         }
     }
     let level = |part: f32| (part * 255.0 + 0.5) as u32;
-    let [a, r, g, b] = sum.map(|sum| sum / convolution.divisor);
+    // (Values beyond measure can sum to no number: nothing then.)
+    let [a, r, g, b] = sum.map(|sum| sum / convolution.divisor).map(|part| if part.is_nan() { 0.0 } else { part });
     if convolution.keep_alpha {
         let [r, g, b] = [r, g, b].map(|c| (c + convolution.bias).clamp(0.0, 1.0));
         let a = (pixels[y * wide + x] >> 24) as f32 / 255.0;
@@ -781,6 +824,57 @@ fn displaced(moved: Picture, map: &Picture, part: [usize; 4], wide: usize, scale
         }
     }
     Picture { pixels, ..moved }
+}
+
+/// For each pixel of a resampled line, the pixels of the line it takes and their weights.
+type Taps = Vec<Vec<(usize, f32)>>;
+
+/// How each of `count` new pixels takes those of a line `long` pixels (see `resampled`), the
+/// nth covering `span(n)` of it (from, to, in its pixels): covering a pixel or more, the mean of
+/// those it covers (by how much of each), else the two nearest pixel middles blended (as cairo
+/// resamples). Nothing from outside the line.
+fn taps(count: usize, long: usize, span: impl Fn(usize) -> (f64, f64)) -> Taps {
+    (0..count)
+        .map(|n| {
+            let (from, to) = span(n);
+            if to - from >= 1.0 { covered(from, to, long) } else { nearest((from + to) / 2.0 - 0.5, long) }
+        })
+        .collect()
+}
+
+/// The pixels of a line `long` pixels that `from` to `to` covers, each weighed by how much of
+/// the span it is.
+fn covered(from: f64, to: f64, long: usize) -> Vec<(usize, f32)> {
+    let (first, last) = (from.floor().max(0.0) as usize, to.ceil().clamp(0.0, long as f64) as usize);
+    (first..last).map(|at| (at, ((to.min(at as f64 + 1.0) - from.max(at as f64)) / (to - from)) as f32)).filter(|(_, weight)| *weight > 0.0).collect()
+}
+
+/// The two pixels of a line `long` pixels around place `at` (pixel middles at whole numbers),
+/// each weighed by how near.
+fn nearest(at: f64, long: usize) -> Vec<(usize, f32)> {
+    let low = at.floor();
+    let share = (at - low) as f32;
+    let inside = |(at, weight): &(f64, f32)| *at >= 0.0 && *at < long as f64 && *weight > 0.0;
+    [(low, 1.0 - share), (low + 1.0, share)].into_iter().filter(inside).map(|(at, weight)| (at as usize, weight)).collect()
+}
+
+/// A picture `wide` pixels per row resampled: each new column and row from the old ones as
+/// `taps` say (across, then down), channel by channel on premultiplied colours.
+fn resampled(pixels: &[u32], wide: usize, [across, down]: &[Taps; 2]) -> Vec<u32> {
+    let high = pixels.len() / wide.max(1);
+    let mix = |taken: &mut dyn Iterator<Item = ([f32; 4], f32)>| taken.fold([0.0f32; 4], |sum, (parts, weight)| std::array::from_fn(|n| sum[n] + parts[n] * weight));
+    let mut rows: Vec<[f32; 4]> = Vec::with_capacity(across.len() * high);
+    for row in pixels.chunks_exact(wide.max(1)) {
+        rows.extend(across.iter().map(|taps| mix(&mut taps.iter().map(|(at, weight)| (four(row[*at]).map(|part| part as f32), *weight)))));
+    }
+    let mut out = Vec::with_capacity(across.len() * down.len());
+    for taps in down {
+        for x in 0..across.len() {
+            let [a, r, g, b] = mix(&mut taps.iter().map(|(y, weight)| (rows[y * across.len() + x], *weight))).map(|part| (part + 0.5).clamp(0.0, 255.0) as u32);
+            out.push(pixel([a, r.min(a), g.min(a), b.min(a)]));
+        }
+    }
+    out
 }
 
 /// An affine transform (see `svg::Table`) in double precision.

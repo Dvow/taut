@@ -25,6 +25,7 @@ use crate::atspi::{Bus, Message, Readers};
 use crate::canvas::Canvas;
 use crate::color::Color;
 use crate::drag_drop::{DragData, DropEffect};
+use crate::dynamic_library::library;
 use crate::event::{Button, Cursor, Event, Key, Mods};
 use crate::file_dialog::FileDialogRequest;
 use crate::frameless::HitTest;
@@ -49,9 +50,6 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 unsafe extern "C" {
-    pub(crate) fn dlopen(name: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(lib: *mut c_void, name: *const c_char) -> *mut c_void;
-    pub(crate) fn dlclose(lib: *mut c_void) -> c_int;
     fn setlocale(category: c_int, locale: *const c_char) -> *mut c_char;
     pub(crate) fn pipe(ends: *mut c_int) -> c_int;
     pub(crate) fn poll(fds: *mut PollFd, count: c_ulong, timeout: c_int) -> c_int;
@@ -64,41 +62,6 @@ pub(crate) struct PollFd {
     pub(crate) fd: c_int,
     pub(crate) events: c_short,
     pub(crate) revents: c_short,
-}
-
-/// Declares a system library as functions found by name when it is opened.
-macro_rules! library {
-    ($name:ident, [$($file:literal),+], { $(fn $f:ident $args:tt $(-> $r:ty)?;)* }) => {
-        #[allow(non_snake_case)]
-        struct $name { lib: *mut c_void, $($f: library!(@fn $args $(-> $r)?),)* }
-        impl $name {
-            fn open() -> Option<Self> {
-                // SAFETY: each name ends in a zero, and each function is declared as its
-                // library documents it.
-                let lib = [$(concat!($file, "\0")),+].iter().map(|n| unsafe { dlopen(n.as_ptr().cast(), 2) }).find(|l| !l.is_null())?;
-                Some($name { lib, $($f: unsafe { std::mem::transmute::<*mut c_void, library!(@fn $args $(-> $r)?)>(symbol(lib, concat!(stringify!($f), "\0"))?) },)* })
-            }
-        }
-        impl Drop for $name {
-            fn drop(&mut self) {
-                // SAFETY: the library was opened above, and none of its functions is called
-                // after this.
-                unsafe { dlclose(self.lib) };
-            }
-        }
-    };
-    // One function's type; "..." stands for variadic arguments.
-    (@fn ($($t:ty),*) $(-> $r:ty)?) => { unsafe extern "C" fn($($t),*) $(-> $r)? };
-    (@fn ($($t:ty),*, ...) $(-> $r:ty)?) => { unsafe extern "C" fn($($t),*, ...) $(-> $r)? };
-}
-// Wayland's side opens its libraries the same way.
-pub(crate) use library;
-
-/// One of a library's functions by name (ending in a zero).
-pub(crate) fn symbol(lib: *mut c_void, name: &str) -> Option<*mut c_void> {
-    // SAFETY: the library is open, and the name ends in a zero.
-    let found = unsafe { dlsym(lib, name.as_ptr().cast()) };
-    (!found.is_null()).then_some(found)
 }
 
 type Display = *mut c_void;
@@ -652,10 +615,26 @@ impl Fonts {
     /// The font is open and sized.
     unsafe fn load_glyph(&self, font: *mut FaceRec, glyph: u16) -> bool {
         type Load = unsafe extern "C" fn(*mut FaceRec, c_uint, c_int) -> c_int;
-        let Some(load) = symbol(self.ft.lib, "FT_Load_Glyph\0") else { return true };
+        let Some(load) = self.ft.library.symbol("FT_Load_Glyph\0") else { return true };
         // SAFETY: the function is FreeType's, declared as it documents it; the font is as the
         // caller promises.
         unsafe { std::mem::transmute::<*mut c_void, Load>(load)(font, glyph as c_uint, 4 | 8) != 0 }
+    }
+
+    /// The open font drawing a character of `face` (font `at`, or its fallback), if its glyph
+    /// for the character is `own`: the font text shaped with that glyph was shaped in.
+    fn shaped_in(&mut self, face: Face, at: usize, (letter, own): (char, u16)) -> Option<usize> {
+        let from = if self.has(at, letter) { at } else { self.stand_in(face, letter)? };
+        // SAFETY: the font is open, and stays so while this lives.
+        let glyph = unsafe { (self.ft.FT_Get_Char_Index)(self.open[from].face, letter as c_ulong) };
+        (glyph == c_uint::from(own)).then_some(from)
+    }
+
+    /// Glyph `glyph` of font `at`, `px` pixels high.
+    fn draw_glyph(&mut self, at: usize, px: u32, glyph: u16) -> Glyph {
+        let font = self.sized(at, px);
+        // SAFETY: the font is open and sized; FreeType renders into its slot, read at once.
+        unsafe { rendered(font, self.load_glyph(font, glyph), px) }
     }
 }
 
@@ -691,9 +670,12 @@ pub struct SystemText {
     /// The open font each face uses.
     faces: HashMap<Face, usize>,
     glyphs: HashMap<Pictured, Glyph>,
-    /// The language's forms in these fonts (see `system_forms`).
+    /// The language's forms in these fonts (see `system_forms`); and glyphs drawn by id (see
+    /// `TextSystem::draw_glyphs`), by open font, pixel size and glyph.
     #[cfg(feature = "shaping")]
     forms: crate::system_forms::Forms,
+    #[cfg(feature = "shaping")]
+    by_id: HashMap<(usize, u32, u16), Glyph>,
 }
 
 /// A glyph's key: face, size, character; and with `shaping`, the glyph of its language form (0
@@ -724,6 +706,8 @@ impl SystemText {
             glyphs: HashMap::new(),
             #[cfg(feature = "shaping")]
             forms: crate::system_forms::Forms::new(),
+            #[cfg(feature = "shaping")]
+            by_id: HashMap::new(),
         };
         text.open(Face::Regular).then_some(text)
     }
@@ -827,6 +811,18 @@ impl TextSystem for SystemText {
             canvas.cover(pen as i32 + g.left, top - g.top, g.width, &g.cover, color);
             pen += g.advance;
         }
+    }
+
+    #[cfg(feature = "shaping")]
+    fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, letter: (char, u16), glyphs: &[(u16, [f32; 2])], [x, line]: [i32; 2], color: Color) -> bool {
+        let (which, at, px) = self.face(font, canvas.scale());
+        let Some(from) = self.fonts.shaped_in(which, at, letter) else { return false };
+        for (id, [right, down]) in glyphs {
+            let fonts = &mut self.fonts;
+            let g = self.by_id.entry((from, px, *id)).or_insert_with(|| fonts.draw_glyph(from, px, *id));
+            canvas.cover(x + right.round() as i32 + g.left, line + down.round() as i32 - g.top, g.width, &g.cover, color);
+        }
+        true
     }
 }
 
@@ -3873,28 +3869,44 @@ pub(crate) fn pipe_ends() -> [c_int; 2] {
 }
 
 /// Opens the input method the locale `modifiers` name (none: the person's own). Xlib's input
-/// methods follow `LC_CTYPE` at open: it is set to the person's (from the environment) for
-/// that, and restored right after, since a host program may have set its own and its other
-/// threads follow it. (Null where X has no method for it.)
+/// methods follow `LC_CTYPE` at open: it is the person's (from the environment) for that.
+/// (Null where X has no method for it.)
 ///
 /// # Safety
-/// `display` is open. Nothing else in the program changes the locale meanwhile (`setlocale` is
-/// not thread-safe): done as a window opens, or the first time a password box is typed into,
-/// and only for that long.
+/// `display` is open.
 unsafe fn open_method(x: &Xlib, display: Display, modifiers: &CStr) -> *mut c_void {
-    // SAFETY: as the caller promises; the locale is read and copied before it changes.
-    unsafe {
-        let was = setlocale(0, null());
-        let was = (!was.is_null()).then(|| CStr::from_ptr(was).to_owned());
-        setlocale(0, c"".as_ptr());
+    // SAFETY: Xlib's documented calls on an open display; the names end in zeros.
+    in_locale(c"", || unsafe {
         (x.XSetLocaleModifiers)(modifiers.as_ptr());
         let method = (x.XOpenIM)(display, null_mut(), null_mut(), null_mut());
         (x.XSetLocaleModifiers)(c"".as_ptr());
-        if let Some(was) = was {
-            setlocale(0, was.as_ptr());
-        }
         method
+    })
+}
+
+/// Held while the program's `LC_CTYPE` is changed for a moment. Windows open on several threads
+/// at once: unheld, one thread copied another's passing locale and put that back for good.
+static LOCALE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Runs `then` with `LC_CTYPE` set to `name` (empty: the person's, from the environment), then
+/// puts the program's back: a host program may have set its own, and its other threads follow
+/// it. (`setlocale` is not thread-safe: the library's own changes take turns; the host's own
+/// must not come meanwhile.)
+fn in_locale<T>(name: &CStr, then: impl FnOnce() -> T) -> T {
+    let _turn = LOCALE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: the locale is read and copied before it changes; the names end in zeros.
+    let was = unsafe {
+        let was = setlocale(0, null());
+        let was = (!was.is_null()).then(|| CStr::from_ptr(was).to_owned());
+        setlocale(0, name.as_ptr());
+        was
+    };
+    let done = then();
+    if let Some(was) = was {
+        // SAFETY: a name `setlocale` gave.
+        unsafe { setlocale(0, was.as_ptr()) };
     }
+    done
 }
 
 /// Asks the window to run its interface again; can be sent from any thread. (An app learning
@@ -6790,12 +6802,30 @@ pub(crate) mod tests {
     #[test]
     #[ignore = "needs a display of its own (xvfb-run)"]
     fn the_programs_letters_are_set_as_they_were_once_its_window_is_open() {
-        let set = || unsafe { CStr::from_ptr(setlocale(0, null())).to_owned() };
-        let before = set();
+        let before = program_locale();
         let Some((_alone, mut host)) = host(Window { title: "taut letters", width: 120.0, height: 80.0, ..Default::default() }, |ui: &mut Ui| _ = ui.label("Ünïcode")) else { return };
         lets(&mut host, 20);
-        assert_eq!(set(), before);
+        assert_eq!(program_locale(), before);
         assert!(!host.method.is_null() || std::env::var("LANG").is_err(), "an input method was opened");
+    }
+
+    /// The program's `LC_CTYPE`, read between the library's changes of it (other tests open
+    /// windows meanwhile).
+    fn program_locale() -> CString {
+        let _turn = LOCALE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        unsafe { CStr::from_ptr(setlocale(0, null())).to_owned() }
+    }
+
+    /// Windows opening on many threads at once leave the program's locale as it was. (Each
+    /// changes it for a moment; unheld, one put back another's passing locale for good.)
+    #[test]
+    fn the_locale_is_put_back_when_windows_open_on_many_threads_at_once() {
+        let before = program_locale();
+        let threads: Vec<_> = (0..8).map(|_| std::thread::spawn(|| (0..500).for_each(|_| in_locale(c"C.UTF-8", || std::hint::black_box(()))))).collect();
+        threads.into_iter().for_each(|thread| thread.join().unwrap());
+        assert_eq!(program_locale(), before);
+        let passing = in_locale(c"C.UTF-8", || unsafe { CStr::from_ptr(setlocale(0, null())).to_owned() });
+        assert_eq!((passing.as_c_str(), program_locale()), (c"C.UTF-8", before), "set for the moment, then put back");
     }
 
     /// `XWindowAttributes`: only `map_state` is read (0 unmapped, 2 viewable).

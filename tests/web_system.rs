@@ -100,12 +100,17 @@ mod page {
             parts.printing = Some(taut::print(two_pages(), "Web checks"));
             parts.said[PRINTED] = "Printing: the dialog is up".into();
         }
+        if ui.button("Print nothing").clicked {
+            parts.printing = Some(taut::print(Paper::new(), "No pages"));
+            parts.said[PRINTED] = "Printing: nothing asked".into();
+        }
         parts.fonts |= ui.button("Fonts").clicked;
         ui.close();
         if parts.fonts {
             ui.label(&format!("Fonts: {} families", taut::system_fonts::families().len()));
         }
         drags(parts, ui);
+        ui.label(if ui.pointer().is_some() { "Pointer: in" } else { "Pointer: out" });
         for said in &parts.said {
             ui.label(said);
         }
@@ -276,18 +281,21 @@ window.page = await start("page.wasm", { element: document.getElementById("app")
         };
         let folder = work(&program);
         let server = Server::start(&folder);
-        let mut browser = Browser::start(&browser, &folder.join("profile"));
+        // (A profile of this run's own: a browser of an earlier run lingers a while after it
+        // is ended, its profile not removed, and its old port file would be read.)
+        let mut browser = Browser::start(&browser, &folder.join(format!("profile {}", std::process::id())));
         let address = format!("http://127.0.0.1:{}/", server.port);
-        browser.grant(&address, &["clipboardReadWrite", "clipboardSanitizedWrite", "notifications", "localFonts"]);
+        browser.grant(&address, &["clipboardReadWrite", "clipboardSanitizedWrite", "notifications"]);
         let mut tab = Tab::open(&mut browser, &format!("{address}?tab=first"));
         later_tab(&mut tab, &address);
         files(&mut tab, &folder);
         clipboard(&mut tab);
         notification(&mut tab);
         printing(&mut tab);
-        fonts(&mut tab);
+        fonts(&mut tab, &address);
         drops(&mut tab, &folder);
         drags(&mut tab);
+        drag_leaves(&mut tab);
         let errors = tab.eval("JSON.stringify(window.errors)");
         assert_eq!(errors.text(), "[]", "the page said nothing wrong");
         webgl(&mut tab, &address);
@@ -601,15 +609,26 @@ window.page = await start("page.wasm", { element: document.getElementById("app")
         assert!(text.matches("/Subtype /Image").count() >= 2, "each sheet a picture");
         tab.eval("dispatchEvent(new Event('afterprint')); true");
         assert_eq!(tab.said("Printing:", "sent"), "Printing: sent");
+        // No pages: it can't print.
+        tab.click("Print nothing");
+        assert_eq!(tab.said("Printing:", "unable"), "Printing: unable");
     }
 
-    /// The person's fonts, as the browser lists them (granted), where it can list them.
-    fn fonts(tab: &mut Tab) {
-        tab.click("Fonts");
+    /// The person's fonts, as the browser lists them, where it can list them: refused (the page
+    /// hears it, and asks again at the next press), then granted.
+    fn fonts(tab: &mut Tab, address: &str) {
         if tab.eval("typeof queryLocalFonts === 'function'") != Json::Bool(true) {
+            tab.click("Fonts");
             assert_eq!(tab.said("Fonts:", ""), "Fonts: 0 families", "none listed where the browser lists none");
             return;
         }
+        tab.browser.set_permission(address, "local-fonts", "denied");
+        tab.eval("window.heardLog = []; const told = page.heard.bind(page); page.heard = (what, ...rest) => (heardLog.push(what.join()), told(what, ...rest)); true");
+        tab.click("Fonts");
+        tab.until("the fonts refused", "heardLog.includes('5,1')");
+        assert_eq!(tab.said("Fonts:", ""), "Fonts: 0 families");
+        tab.browser.set_permission(address, "local-fonts", "granted");
+        tab.click("Fonts");
         tab.until("the fonts listed", "[...page.readers.querySelectorAll('[data-key]')].some((made) => /^Fonts: [1-9]/.test(made.textContent))");
     }
 
@@ -621,13 +640,30 @@ window.page = await start("page.wasm", { element: document.getElementById("app")
         assert_eq!(tab.said("Drops:", "files"), "Drops: files three.txt (three)");
         drag_in(tab, at, r#"{"items":[{"mimeType":"text/plain","data":"dropped words"}],"dragOperationsMask":1}"#);
         assert_eq!(tab.said("Drops:", "text"), "Drops: text dropped words");
+        drop_leaves(tab);
+    }
+
+    /// A drag from outside the page that leaves it again: the drop box stops showing it.
+    fn drop_leaves(tab: &mut Tab) {
+        let (at, data) = (tab.middle("Drop here"), r#"{"items":[{"mimeType":"text/plain","data":"passing by"}],"dragOperationsMask":1}"#);
+        drag_event(tab, "dragEnter", at, data);
+        drag_event(tab, "dragOver", at, data);
+        assert_eq!(tab.said("Let go here", "Let go"), "Let go here", "the drag is over the box");
+        drag_event(tab, "dragOver", (820.0, 120.0), data);
+        assert_eq!(tab.said("Drop here", "Drop here"), "Drop here", "the drag left");
+        drag_event(tab, "dragCancel", (820.0, 120.0), data);
     }
 
     /// A drag from outside the page, over `at` and let go there.
-    fn drag_in(tab: &mut Tab, (x, y): (f64, f64), data: &str) {
+    fn drag_in(tab: &mut Tab, at: (f64, f64), data: &str) {
         for kind in ["dragEnter", "dragOver", "drop"] {
-            tab.call("Input.dispatchDragEvent", &format!(r#"{{"type":"{kind}","x":{x},"y":{y},"data":{data}}}"#));
+            drag_event(tab, kind, at, data);
         }
+    }
+
+    /// One event of a drag at `(x, y)`, the drag holding `data`.
+    fn drag_event(tab: &mut Tab, kind: &str, (x, y): (f64, f64), data: &str) {
+        tab.call("Input.dispatchDragEvent", &format!(r#"{{"type":"{kind}","x":{x},"y":{y},"data":{data}}}"#));
     }
 
     /// Boxes dragged with the mouse: text and a link go out as what the program hands out, and
@@ -661,6 +697,21 @@ window.page = await start("page.wasm", { element: document.getElementById("app")
         drag_in(tab, target, &data.to_string());
         tab.mouse("mouseReleased", target, 0);
         assert_eq!(tab.said("Drops:", "inside"), "Drops: dragged here inside the page");
+    }
+
+    /// The page's own drag over the page, then out of it onto another program's place: the
+    /// program hears the pointer leave, and the drop there.
+    fn drag_leaves(tab: &mut Tab) {
+        let (elsewhere, target) = ((820.0, 120.0), tab.middle("Drop here"));
+        let data = drag_out(tab, "Drag text", target).to_string();
+        drag_event(tab, "dragEnter", target, &data);
+        drag_event(tab, "dragOver", target, &data);
+        assert_eq!(tab.said("Pointer:", "in"), "Pointer: in");
+        drag_event(tab, "dragOver", elsewhere, &data);
+        assert_eq!(tab.said("Pointer:", "out"), "Pointer: out", "the drag left the page");
+        drag_event(tab, "drop", elsewhere, &data);
+        tab.mouse("mouseReleased", elsewhere, 0);
+        assert_eq!(tab.said("Drops:", "Copied"), "Drops: taken elsewhere (Copied)");
     }
 
     /// Presses a box and moves the mouse to `to`: the drag the browser starts, as it hands it
@@ -780,6 +831,12 @@ mod devtools {
         pub fn grant(&mut self, origin: &str, permissions: &[&str]) {
             let named: Vec<String> = permissions.iter().map(|name| Json::quoted(name)).collect();
             self.call(None, "Browser.grantPermissions", &format!(r#"{{"origin":{},"permissions":[{}]}}"#, Json::quoted(origin.trim_end_matches('/')), named.join(",")));
+        }
+
+        /// Sets a permission of `origin`: `granted`, `denied` or `prompt`.
+        pub fn set_permission(&mut self, origin: &str, name: &str, setting: &str) {
+            let permission = format!(r#"{{"name":{}}}"#, Json::quoted(name));
+            self.call(None, "Browser.setPermission", &format!(r#"{{"permission":{permission},"setting":{},"origin":{}}}"#, Json::quoted(setting), Json::quoted(origin.trim_end_matches('/'))));
         }
 
         /// A new tab at `address`: the session it is driven through.

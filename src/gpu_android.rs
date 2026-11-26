@@ -64,7 +64,7 @@ impl Block<'_> {
 /// The GPU the window is shown through.
 enum Gpu {
     Vulkan(Box<crate::gpu_vulkan_android::Gpu>),
-    OpenGL(crate::gpu_opengl_android::Gpu),
+    OpenGL(Box<crate::gpu_opengl_android::Gpu>),
 }
 
 /// The window shown through the GPU.
@@ -137,7 +137,7 @@ impl Screen {
         if !ready && !self.failed() {
             self.let_go();
             self.asks = None;
-            return ShownBy::CpuAfresh;
+            return hand_back(window.native);
         }
         if let (true, Some(gpu), Some(shows)) = (ready, self.gpu.as_mut(), self.shows.as_mut()) {
             let changed = gpu.draw_changes(shows, ui, surface, window);
@@ -146,7 +146,7 @@ impl Screen {
             }
         }
         self.mend();
-        if self.asks.is_some() { ShownBy::Gpu } else { ShownBy::CpuAfresh }
+        if self.asks.is_some() { ShownBy::Gpu } else { hand_back(window.native) }
     }
 
     /// Whether the device was lost or the window went: `mend` lets go of them.
@@ -206,12 +206,21 @@ impl Drop for Screen {
     }
 }
 
+/// Gives `native` (the window, alive) back to the CPU, to be drawn afresh: its buffers in 8-bit
+/// RGBA again, as the CPU writes them. (A swap chain may have left them in BGRA, and letting go
+/// of one leaves them at the activity's default, RGB 565.)
+fn hand_back(native: *mut c_void) -> ShownBy {
+    // SAFETY: the window is alive until `window_gone`; the size is the window's own (0, 0).
+    unsafe { crate::android_sys::ANativeWindow_setBuffersGeometry(native, 0, 0, crate::android_sys::RGBA_8888) };
+    ShownBy::CpuAfresh
+}
+
 impl Shows {
     /// Whether the window went (its surface is lost).
     fn gone(&self) -> bool {
         match self {
-            Shows::Vulkan(shows) => shows.gone,
-            Shows::OpenGL(shows) => shows.gone,
+            Shows::Vulkan(shows) => shows.gone(),
+            Shows::OpenGL(shows) => shows.gone(),
         }
     }
 
@@ -241,7 +250,7 @@ impl Gpu {
             return Some((Gpu::Vulkan(Box::new(gpu)), Shows::Vulkan(shows)));
         }
         let (gpu, shows) = unsafe { crate::gpu_opengl_android::Gpu::open(native, any) }?;
-        Some((Gpu::OpenGL(gpu), Shows::OpenGL(shows)))
+        Some((Gpu::OpenGL(Box::new(gpu)), Shows::OpenGL(shows)))
     }
 
     /// Shows `native` through the device. Nothing where it can't.
@@ -429,11 +438,16 @@ mod tests {
 
     impl Reader {
         fn new(size: [i32; 2]) -> Reader {
+            Reader::of(size, 1, 0x200 | 0x3)
+        }
+
+        /// A window `size` big of `format` (an `AIMAGE_FORMAT_*`), for `usage`.
+        fn of(size: [i32; 2], format: i32, usage: u64) -> Reader {
             let (mut reader, mut window) = (std::ptr::null_mut(), std::ptr::null_mut());
             let frames: Arc<Frames> = Arc::default();
             let mut listener = Box::new(Listener { context: Arc::as_ptr(&frames).cast_mut().cast(), heard: image_came });
             unsafe {
-                assert_eq!(AImageReader_newWithUsage(size[0], size[1], 1, 0x200 | 0x3, 4, &mut reader), 0, "an image reader");
+                assert_eq!(AImageReader_newWithUsage(size[0], size[1], format, usage, 4, &mut reader), 0, "an image reader");
                 AImageReader_getWindow(reader, &mut window);
                 AImageReader_setImageListener(reader, &mut *listener);
             }
@@ -683,6 +697,30 @@ mod tests {
             bench.click(pt(30.0, 40.0));
             assert_eq!(bench.draw(false, [None, None]), ShownBy::CpuAfresh, "{renderer:?}: one lost too many");
             assert_eq!((bench.screen.renderer(), bench.draw(false, [None, None])), (Renderer::Cpu, ShownBy::Cpu));
+        }
+    }
+
+    #[test]
+    fn a_window_the_gpu_gives_up_is_handed_back_to_the_cpu_in_rgba() {
+        use crate::android_sys::{ANativeWindow_lock, ANativeWindow_setBuffersGeometry, ANativeWindow_unlockAndPost, RGBA_8888, WindowBuffer};
+        let _one = one();
+        for renderer in BOTH {
+            let mut bench = Bench::new(renderer, [200, 160], 1.0, counter());
+            // A window at the activity's default, RGB 565 (`AIMAGE_FORMAT_RGB_565`), written by
+            // the GPU and the CPU, set to RGBA as `android` sets each window.
+            bench.reader = Reader::of([200, 160], 4, 0x200 | 0x3 | 0x30);
+            unsafe { ANativeWindow_setBuffersGeometry(bench.reader.window, 0, 0, RGBA_8888) };
+            assert_eq!(bench.draw(false, [None, None]), ShownBy::Gpu, "{renderer:?} shows the window");
+            bench.screen.losses = MOST_LOST;
+            bench.lose();
+            bench.click(pt(30.0, 40.0));
+            assert_eq!(bench.draw(false, [None, None]), ShownBy::CpuAfresh, "{renderer:?}: given up");
+            let mut buffer = WindowBuffer { width: 0, height: 0, stride: 0, format: 0, bits: std::ptr::null_mut(), reserved: [0; 6] };
+            unsafe {
+                assert_eq!(ANativeWindow_lock(bench.reader.window, &mut buffer, std::ptr::null_mut()), 0, "{renderer:?}: the CPU takes the window");
+                ANativeWindow_unlockAndPost(bench.reader.window);
+            }
+            assert_eq!(buffer.format, RGBA_8888, "{renderer:?}: the CPU writes RGBA, and finds the window so");
         }
     }
 

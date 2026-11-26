@@ -29,7 +29,7 @@ use crate::geom::{Point, Rect, rect};
 use crate::id::{Id, fold, hash};
 use crate::layout::{Align, Content};
 use crate::path::Path;
-use crate::text::{Font, Line};
+use crate::text::{Font, Line, Paragraph};
 use crate::text_edit::{Edit, in_word, step};
 use crate::ui::{Response, Ui};
 use std::any::Any;
@@ -772,21 +772,22 @@ impl View {
         Some(View { start: start as usize, end: end as usize, font, lines: lines[first..last].to_vec(), first, inside, top, line_height: place.line_height, lift: place.lift, side, area })
     }
 
-    /// Whether line `line` is right-to-left, and its horizontal start: as `Painter::words` has
-    /// it.
-    fn line_start(&self, ui: &Ui, line: &Line) -> (bool, f32) {
-        let strings = &ui.tree.strings;
-        let paragraph = strings[self.start..line.start].rfind('\n').map_or(self.start, |at| self.start + at + 1);
-        let leftward = crate::bidi::leftward(&strings[paragraph..self.end]);
-        let x = self.inside.x + ((self.inside.w - line.width).max(0.0) * if leftward { 1.0 - self.side } else { self.side }).round();
-        (leftward, x)
+    /// The paragraph of line `line` (see `Paragraph`), in the window's text `strings`.
+    fn paragraph<'a>(&self, strings: &'a str, line: &Line) -> Paragraph<'a> {
+        Paragraph::of(&strings[self.start..self.end], line.start - self.start..line.end - self.start)
+    }
+
+    /// Line `line`'s horizontal start: as `Painter::words` has it.
+    fn line_start(&self, ui: &Ui, line: &Line) -> f32 {
+        let leftward = self.paragraph(&ui.tree.strings, line).leftward;
+        self.inside.x + ((self.inside.w - line.width).max(0.0) * if leftward { 1.0 - self.side } else { self.side }).round()
     }
 
     /// The horizontally visible byte range of a very long line, rounded to whole characters.
     fn across(&self, ui: &mut Ui, line: &Line) -> Option<Range<usize>> {
-        let (leftward, x) = self.line_start(ui, line);
+        let x = self.line_start(ui, line);
         let text = &ui.tree.strings[line.start..line.end];
-        if leftward || !crate::bidi::plain(text) {
+        if !self.paragraph(&ui.tree.strings, line).plain(text) {
             return None;
         }
         let mut stops = Vec::new();
@@ -802,15 +803,16 @@ impl View {
         if wrong.is_empty() {
             return;
         }
-        let (leftward, x) = self.line_start(ui, line);
+        let x = self.line_start(ui, line);
         let y = self.top + row as f32 * self.line_height;
         let metrics = ui.text.metrics(self.font, ui.scale);
         // (Just under the baseline, never below the line's own height.)
         let middle = (y - self.lift + metrics.ascent + RISE + 1.0).min(y + self.line_height - RISE - 0.5);
-        // (Text without right-to-left characters is measured once, each character after the
-        // previous. Other text a word at a time, as displayed.)
+        // (A line shown as typed is measured once, each character after the previous. Other
+        // text a word at a time, as displayed.)
         let text = &ui.tree.strings[line.start..line.end];
-        let (plain, mut stops, mut pieces) = (!leftward && crate::bidi::plain(text), Vec::new(), Vec::new());
+        let paragraph = self.paragraph(&ui.tree.strings, line);
+        let (plain, mut stops, mut pieces) = (paragraph.plain(text), Vec::new(), Vec::new());
         if plain {
             ui.text.measure(text, self.font, ui.scale, Some(&mut stops));
         }
@@ -818,7 +820,7 @@ impl View {
         for word in wrong {
             match plain {
                 true => (pieces.clear(), pieces.push([at_byte(text, &stops, line.start, word.start, &mut counted), at_byte(text, &stops, line.start, word.end, &mut counted)])).1,
-                false => _ = crate::text::marks(ui.text.as_mut(), text, line.start, line.width, self.font, ui.scale, leftward, [word.start, word.end], None, false, &mut pieces),
+                false => _ = crate::text::marks(ui.text.as_mut(), text, line.start, line.width, self.font, ui.scale, paragraph, [word.start, word.end], None, false, &mut pieces),
             }
             let bytes = word.start - self.start..word.end - self.start;
             found.spots.extend(pieces.iter().map(|[left, right]| (bytes.clone(), rect(x + left, y, right - left, self.line_height))));
@@ -1080,7 +1082,7 @@ impl Drop for Speller {
 }
 
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
-use crate::x11::{dlclose, dlopen, library, symbol};
+use crate::dynamic_library::library;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 use std::ffi::{c_char, c_int, c_void};
 
@@ -1600,8 +1602,8 @@ pub(crate) mod tests {
         // SAFETY: the library is opened (never closed), and its prefix function called as
         // declared, with a NUL-terminated name.
         unsafe {
-            let library = dlopen(c"libenchant-2.so.2".as_ptr(), 2);
-            let set = (!library.is_null()).then(|| symbol(library, "enchant_set_prefix_dir\0")).flatten();
+            let library = crate::dynamic_library::dlopen(c"libenchant-2.so.2".as_ptr(), crate::dynamic_library::NOW);
+            let set = (!library.is_null()).then(|| crate::dynamic_library::symbol(library, "enchant_set_prefix_dir\0")).flatten();
             if let Some(set) = set {
                 std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*const c_char)>(set)(prefix.as_ptr());
             }

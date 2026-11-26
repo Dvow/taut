@@ -34,7 +34,7 @@ use crate::macos_sys::*;
 use crate::platform::{Clipboard, PicturesAndFiles, Window, WindowPlacement};
 use crate::preferences::Preferences;
 use crate::screens::{OpenAt, Screen, window_origin};
-use crate::second_window::{WindowKind, WindowOpening};
+use crate::second_window::{WindowKind, WindowOpening, within};
 use crate::surface::Surface;
 use crate::theme::ContrastColors;
 use crate::ui::Ui;
@@ -257,7 +257,7 @@ extern "C" fn should_terminate(_: Obj, _: Sel, _: Obj) -> usize {
     0
 }
 
-/// The system's looks or screens changed.
+/// The system's looks or screens changed (a screen's EDR headroom too).
 extern "C" fn looks_changed(_: Obj, _: Sel, _: Obj) {
     heard(Heard::Looks);
 }
@@ -960,14 +960,6 @@ fn prepare_view(view: Obj, transparent: bool) {
     }
 }
 
-/// Runs work in the interface of a window: the first's, or a second one's.
-fn within<T>(first: &mut Ui, known: Option<Id>, work: impl FnOnce(&mut Ui) -> T) -> Option<T> {
-    match known {
-        Some(known) => first.in_window(known, work),
-        None => Some(work(first)),
-    }
-}
-
 /// The windows and their interfaces.
 struct Host<App> {
     app: App,
@@ -1280,13 +1272,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     /// How long the loop may wait for events: until the interface's next timer, or not at all
     /// when a run is due.
     fn patience(&self) -> Option<Duration> {
-        let wait = if self.rerun || !HEARD.with_borrow(Vec::is_empty) { Some(Duration::ZERO) } else { self.ui.wake_in() };
-        // (A screen's EDR headroom changes unsaid: a lit window's is read again soon.)
-        #[cfg(feature = "hdr")]
-        if self.windows.iter().any(|shown| matches!(&shown.way, crate::gpu_metal::Way::Gpu(shows) if shows.in_edr())) {
-            return Some(wait.map_or(crate::hdr_metal::WATCHED, |wait| wait.min(crate::hdr_metal::WATCHED)));
-        }
-        wait
+        if self.rerun || !HEARD.with_borrow(Vec::is_empty) { Some(Duration::ZERO) } else { self.ui.wake_in() }
     }
 }
 

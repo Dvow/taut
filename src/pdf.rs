@@ -934,19 +934,17 @@ fn font_table<'a>(font: &'a FontFile, name: &[u8; 4]) -> Bytes<'a> {
 /// glyph's new id by its old. Nothing for a non-TrueType or damaged font.
 fn cut_down(font: &FontFile, used: &BTreeMap<u16, String>) -> Option<(Vec<u8>, BTreeMap<u16, u16>)> {
     let (head, hhea, maxp, hmtx) = (font_table(font, b"head"), font_table(font, b"hhea"), font_table(font, b"maxp"), font_table(font, b"hmtx"));
-    let (glyf, loca) = (font_table(font, b"glyf"), font_table(font, b"loca"));
-    let (long, count, metrics) = (head.i16(50)? != 0, maxp.u16(4)? as usize, hhea.u16(34)? as usize);
-    if glyf.0.is_empty() || loca.0.is_empty() || metrics == 0 {
+    let (count, metrics) = (maxp.u16(4)? as usize, hhea.u16(34)? as usize);
+    if font.points(0).is_none() || metrics == 0 {
         return None;
     }
-    let outlines = Outlines { glyf, loca, long };
-    let new_ids = glyphs_and_components(&outlines, used, count)?;
+    let new_ids = glyphs_and_components(font, used, count)?;
     // The glyphs, each four-byte aligned; their offsets; and each one's advance and left side
     // bearing.
     let (mut glyphs, mut starts, mut widths) = (Vec::new(), Vec::new(), Vec::new());
     for old in new_ids.keys() {
         starts.extend((glyphs.len() as u32).to_be_bytes());
-        glyphs.extend(plain(outlines.glyph(*old)?, &new_ids));
+        glyphs.extend(plain(font.points(*old)?.0, &new_ids));
         glyphs.resize(glyphs.len().next_multiple_of(4), 0);
         let listed = (*old as usize).min(metrics - 1);
         let edge = if (*old as usize) < metrics { hmtx.u16(listed * 4 + 2) } else { hmtx.u16(metrics * 4 + (*old as usize - metrics) * 2) };
@@ -970,35 +968,16 @@ fn cut_down(font: &FontFile, used: &BTreeMap<u16, String>) -> Option<(Vec<u8>, B
     Some((font_file(tables), new_ids))
 }
 
-/// A TrueType font's glyph outlines: `glyf`, found through `loca` (of long or short offsets).
-struct Outlines<'a> {
-    glyf: Bytes<'a>,
-    loca: Bytes<'a>,
-    long: bool,
-}
-
-impl<'a> Outlines<'a> {
-    /// Where a glyph's bytes start.
-    fn offset(&self, glyph: usize) -> Option<usize> {
-        if self.long { self.loca.u32(glyph * 4).map(|at| at as usize) } else { self.loca.u16(glyph * 2).map(|at| at as usize * 2) }
-    }
-    /// A glyph's bytes (none for an empty glyph).
-    fn glyph(&self, glyph: u16) -> Option<&'a [u8]> {
-        let (from, to) = (self.offset(glyph as usize)?, self.offset(glyph as usize + 1)?);
-        Some(if to > from { self.glyf.part(from, to - from)?.0 } else { &[] })
-    }
-}
-
 /// The notdef glyph, every used glyph and every component of those (below `count`), each with
 /// its new id: renumbered from zero in original order. Nothing if a glyph is damaged.
-fn glyphs_and_components(outlines: &Outlines, used: &BTreeMap<u16, String>, count: usize) -> Option<BTreeMap<u16, u16>> {
+fn glyphs_and_components(font: &FontFile, used: &BTreeMap<u16, String>, count: usize) -> Option<BTreeMap<u16, u16>> {
     let mut found: BTreeMap<u16, u16> = BTreeMap::new();
     let mut left: Vec<u16> = std::iter::once(0).chain(used.keys().copied()).filter(|glyph| (*glyph as usize) < count).collect();
     while let Some(glyph) = left.pop() {
         if found.insert(glyph, 0).is_some() {
             continue;
         }
-        left.extend(parts(outlines.glyph(glyph)?).into_iter().map(|(_, part)| part).filter(|part| (*part as usize) < count && !found.contains_key(part)));
+        left.extend(parts(font.points(glyph)?.0).into_iter().map(|(_, part)| part).filter(|part| (*part as usize) < count && !found.contains_key(part)));
     }
     for (new, number) in found.values_mut().enumerate() {
         *number = new as u16;

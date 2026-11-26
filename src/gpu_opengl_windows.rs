@@ -11,6 +11,7 @@
 //!   context is made on a hidden window of the device's own thread.
 //! - With the feature `hdr`, the windows of a device made while a screen is HDR are given a
 //!   float pixel format and presented in scRGB (`hdr_opengl`).
+use crate::functions::functions;
 use crate::gpu_windows::{function_in, system_library};
 use crate::windows::sys::{CreateWindowExW, DestroyWindow, GetModuleHandleW, HANDLE};
 use std::cell::Cell;
@@ -51,8 +52,9 @@ struct PixelFormat {
 /// colour, no depth.
 const WANTED: PixelFormat = PixelFormat { size: 40, version: 1, flags: 0x4 | 0x20 | 0x1 | 0x8000, bytes: [0, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], masks: [0; 3] };
 
-/// The WGL functions of opengl32.dll's that are called.
+/// opengl32.dll, and the WGL functions of its that are called.
 struct Wgl {
+    library: isize,
     create: unsafe extern "system" fn(HANDLE) -> HANDLE,
     delete: unsafe extern "system" fn(HANDLE) -> i32,
     current: unsafe extern "system" fn(HANDLE, HANDLE) -> i32,
@@ -60,14 +62,14 @@ struct Wgl {
 }
 
 impl Wgl {
-    /// WGL's functions in opengl32.dll; nothing if one is missing.
+    /// WGL's functions in opengl32.dll (`library`, loaded); nothing if one is missing.
     fn load(library: isize) -> Option<Wgl> {
-        // (The library is loaded.)
         let found = |name: &CStr| Some(function_in(library, name)).filter(|found| *found != 0);
         let [create, delete, current, find] = [c"wglCreateContext", c"wglDeleteContext", c"wglMakeCurrent", c"wglGetProcAddress"].map(found);
         // SAFETY: each as wingdi.h declares it.
         unsafe {
             Some(Wgl {
+                library,
                 create: std::mem::transmute::<usize, unsafe extern "system" fn(HANDLE) -> HANDLE>(create?),
                 delete: std::mem::transmute::<usize, unsafe extern "system" fn(HANDLE) -> i32>(delete?),
                 current: std::mem::transmute::<usize, unsafe extern "system" fn(HANDLE, HANDLE) -> i32>(current?),
@@ -75,26 +77,18 @@ impl Wgl {
             })
         }
     }
+
+    /// An OpenGL or WGL function of the current context by name: WGL's, or for those of OpenGL
+    /// 1.1 opengl32.dll's own; null where neither has it.
+    pub(crate) fn function(&self, name: &CStr) -> *const c_void {
+        // SAFETY: a context is current; the name ends in a zero. Drivers give nothing (or 1, 2,
+        // 3 or -1) for OpenGL 1.1's own functions.
+        let found = unsafe { (self.find)(name.as_ptr()) };
+        if matches!(found as isize, -1..=3) { function_in(self.library, name) as *const c_void } else { found }
+    }
 }
 
-/// Declares the OpenGL functions called, loaded by name.
-macro_rules! functions {
-    ($($(#[$only:meta])? $name:ident: fn($($arg:ty),*) $(-> $out:ty)?;)*) => {
-        /// The OpenGL functions called.
-        #[allow(non_snake_case)]
-        struct Gl { $($(#[$only])? $name: unsafe extern "system" fn($($arg),*) $(-> $out)?,)* }
-        impl Gl {
-            /// Each function through `find`; nothing if one is missing.
-            fn load(find: &dyn Fn(&str) -> *const c_void) -> Option<Gl> {
-                let found = |name: &str| Some(find(name)).filter(|found| !found.is_null());
-                // SAFETY: each function is declared as glcorearb.h declares it.
-                Some(Gl { $($(#[$only])? $name: unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn($($arg),*) $(-> $out)?>(found(concat!(stringify!($name), "\0"))?) },)* })
-            }
-        }
-    };
-}
-
-functions! {
+functions!(Gl {
     glGetString: fn(u32) -> *const c_char;
     glGetError: fn() -> u32;
     glGenTextures: fn(i32, *mut u32);
@@ -117,7 +111,7 @@ functions! {
     glMapBufferRange: fn(u32, isize, isize, u32) -> *mut c_void;
     glUnmapBuffer: fn(u32) -> u8;
     glBlitFramebuffer: fn(i32, i32, i32, i32, i32, i32, i32, i32, u32, u32);
-}
+});
 
 // From glcorearb.h and wglext.h.
 const TEXTURE_2D: u32 = 0x0DE1;
@@ -211,7 +205,7 @@ impl Device {
         let hidden = unsafe { CreateWindowExW(0, class.as_ptr(), class.as_ptr(), 0x8000_0000, 0, 0, 1, 1, 0, 0, GetModuleHandleW(null()), null_mut()) };
         // SAFETY: the window is alive.
         let dc = unsafe { GetDC(hidden) };
-        let made = format.or_else(|| eight_bit(dc)).and_then(|format| Device::on(dc, library, wgl, format));
+        let made = format.or_else(|| eight_bit(dc)).and_then(|format| Device::on(dc, wgl, format));
         // SAFETY: as made above, on this thread.
         unsafe {
             ReleaseDC(hidden, dc);
@@ -222,7 +216,7 @@ impl Device {
 
     /// The context, made on device context `dc` of a hidden window, given pixel format
     /// `format`.
-    fn on(dc: HANDLE, library: isize, wgl: Wgl, format: i32) -> Option<Device> {
+    fn on(dc: HANDLE, wgl: Wgl, format: i32) -> Option<Device> {
         // SAFETY: the device context is alive.
         if unsafe { SetPixelFormat(dc, format, &WANTED) } == 0 {
             return None;
@@ -243,7 +237,7 @@ impl Device {
         if context == 0 {
             return None;
         }
-        Device::loaded(library, wgl, context, format, dc)
+        Device::loaded(wgl, context, format, dc)
     }
 
     /// An OpenGL 3.3 core context, robust where the driver offers it, made with the current
@@ -255,8 +249,8 @@ impl Device {
         type Make = unsafe extern "system" fn(HANDLE, HANDLE, *const i32) -> HANDLE;
         // SAFETY: as the caller promises; the function as wglext.h declares it.
         unsafe {
-            let make = (wgl.find)(c"wglCreateContextAttribsARB".as_ptr());
-            if matches!(make as isize, -1..=3) {
+            let make = wgl.function(c"wglCreateContextAttribsARB");
+            if make.is_null() {
                 return 0;
             }
             let make = std::mem::transmute::<*const c_void, Make>(make);
@@ -268,14 +262,13 @@ impl Device {
 
     /// The device, with its functions found while the context is current on `dc`; current on
     /// no thread after. Nothing where a function is missing or it draws on the CPU.
-    fn loaded(library: isize, wgl: Wgl, context: HANDLE, format: i32, dc: HANDLE) -> Option<Device> {
-        let find = |name: &str| gl_function(&wgl, library, CStr::from_bytes_until_nul(name.as_bytes()).unwrap_or_default());
-        let gl = Gl::load(&find).filter(|gl| !software(gl));
+    fn loaded(wgl: Wgl, context: HANDLE, format: i32, dc: HANDLE) -> Option<Device> {
+        let gl = Gl::load(&mut |name| wgl.function(name)).ok().filter(|gl| !software(gl));
         // SAFETY: as declared in wglext.h and glcorearb.h.
-        let interval = Some(find("wglSwapIntervalEXT\0")).filter(|found| !found.is_null()).map(|found| unsafe { std::mem::transmute(found) });
-        let reset = Some(find("glGetGraphicsResetStatusARB\0")).filter(|found| !found.is_null()).map(|found| unsafe { std::mem::transmute(found) });
+        let interval = Some(wgl.function(c"wglSwapIntervalEXT")).filter(|found| !found.is_null()).map(|found| unsafe { std::mem::transmute(found) });
+        let reset = Some(wgl.function(c"glGetGraphicsResetStatusARB")).filter(|found| !found.is_null()).map(|found| unsafe { std::mem::transmute(found) });
         #[cfg(feature = "hdr")]
-        let offered_float = float_format(&find, dc);
+        let offered_float = float_format(&wgl, dc);
         #[cfg(not(feature = "hdr"))]
         let _ = dc;
         let wgl = Arc::new(wgl);
@@ -301,15 +294,6 @@ impl Device {
     }
 }
 
-/// An OpenGL function of the current context by name: WGL's, or for those of OpenGL 1.1
-/// opengl32.dll's (`library`) own; null where neither has it.
-fn gl_function(wgl: &Wgl, library: isize, name: &CStr) -> *const c_void {
-    // SAFETY: a context is current; the name ends in a zero. Drivers give nothing (or 1, 2, 3
-    // or -1) for OpenGL 1.1's own functions.
-    let found = unsafe { (wgl.find)(name.as_ptr()) };
-    if matches!(found as isize, -1..=3) { function_in(library, name) as *const c_void } else { found }
-}
-
 /// The pixel format for 8-bit colour on `dc`, as GDI chooses it; nothing where it draws on the
 /// CPU (GDI's own: `PFD_GENERIC_FORMAT`, not `PFD_GENERIC_ACCELERATED`).
 fn eight_bit(dc: HANDLE) -> Option<i32> {
@@ -322,11 +306,11 @@ fn eight_bit(dc: HANDLE) -> Option<i32> {
 }
 
 /// The first float pixel format of four 16-bit channels on `dc` (`wglChoosePixelFormatARB`,
-/// found by `find` while a context is current on it); nothing where the driver has none.
+/// found through `wgl` while a context is current on it); nothing where the driver has none.
 #[cfg(feature = "hdr")]
-fn float_format(find: &dyn Fn(&str) -> *const c_void, dc: HANDLE) -> Option<i32> {
+fn float_format(wgl: &Wgl, dc: HANDLE) -> Option<i32> {
     type Choose = unsafe extern "system" fn(HANDLE, *const i32, *const f32, u32, *mut i32, *mut u32) -> i32;
-    let choose = Some(find("wglChoosePixelFormatARB\0")).filter(|found| !found.is_null())?;
+    let choose = Some(wgl.function(c"wglChoosePixelFormatARB")).filter(|found| !found.is_null())?;
     let (mut format, mut count) = (0, 0);
     // SAFETY: as wglext.h declares it; the attributes end in a zero, the answer has room for one.
     let chosen = unsafe { std::mem::transmute::<*const c_void, Choose>(choose)(dc, crate::hdr_opengl::FLOAT_FORMAT.as_ptr(), null(), 1, &mut format, &mut count) };
@@ -500,7 +484,7 @@ impl Shown {
         if self.size[0] <= 0 || !self.owner.with(self.dc) {
             return false;
         }
-        let made = drawing.get_or_insert_with(|| crate::gpu_draw_opengl::Pipeline::new(&mut crate::gpu_draw_windows::wgl_function, true));
+        let made = drawing.get_or_insert_with(|| crate::gpu_draw_opengl::Pipeline::new(&mut |name| self.owner.wgl.function(name), true));
         made.as_mut().is_some_and(|pipeline| pipeline.draw(self.texture, self.size, list, area))
     }
 
@@ -552,7 +536,7 @@ impl Shown {
             self.copy_to_back_buffer();
             return true;
         }
-        let made = self.pass.get_or_insert_with(|| crate::hdr_opengl::Pass::new(&mut |name| gl_function(&self.owner.wgl, system_library("opengl32.dll"), name)));
+        let made = self.pass.get_or_insert_with(|| crate::hdr_opengl::Pass::new(&mut |name| self.owner.wgl.function(name)));
         let Some(pass) = made.as_mut() else { return false };
         self.hdr.on = self.hdr.wanted();
         let constants = self.hdr.constants();

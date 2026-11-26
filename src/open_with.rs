@@ -172,11 +172,12 @@ mod tests {
     }
 
     /// A stand-in for whatever the system would start: built in a folder whose name has a space
-    /// and a non-ASCII letter, it writes what it was handed (one per line) into `opened.txt`
-    /// beside itself, and shows nothing.
+    /// and a non-ASCII letter (and the process's number: two runs of the tests at once build
+    /// their own), it writes what it was handed (one per line) into `opened.txt` beside itself,
+    /// and shows nothing.
     #[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code))]
     fn stand_in(name: &str) -> PathBuf {
-        let folder = std::env::current_exe().unwrap().parent().unwrap().join(format!("stand in \u{e9} {name}"));
+        let folder = std::env::current_exe().unwrap().parent().unwrap().join(format!("stand in \u{e9} {name} {}", std::process::id()));
         _ = std::fs::remove_dir_all(&folder);
         std::fs::create_dir_all(&folder).unwrap();
         let source = folder.join("main.rs");

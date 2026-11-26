@@ -8,11 +8,12 @@ use std::cell::{Cell, RefCell};
 
 #[link(wasm_import_module = "taut")]
 unsafe extern "C" {
-    fn ask_fonts(again: u32);
+    fn ask_fonts(again: u32) -> u32;
 }
 
 /// What the loader hears: the list, or that the browser refused to give it.
 const LISTED: u32 = 0;
+const REFUSED_TO_LIST: u32 = 1;
 
 thread_local! {
     /// The person's fonts as the browser listed them, each family and style; none until asked.
@@ -27,10 +28,12 @@ pub(crate) fn listed(family: Option<&str>) -> Vec<(String, Style)> {
     let wanted = |(of, _): &&(String, Style)| family.is_none_or(|family| of.eq_ignore_ascii_case(family));
     let found = LOCAL_FONTS.with_borrow(|fonts| fonts.as_ref().map(|fonts| fonts.iter().filter(wanted).cloned().collect()));
     found.unwrap_or_else(|| {
-        LOCAL_FONTS.set(Some(Vec::new()));
         add_part(parts::FONTS, Part { after: |_| {}, heard });
-        // SAFETY: a plain request, answered through `heard`.
-        unsafe { ask_fonts(REFUSED.get() as u32) };
+        // SAFETY: a plain request, answered through `heard`; it says whether it was made (after
+        // a refusal, only from a press or a key: else it is asked again at the next call).
+        if unsafe { ask_fonts(REFUSED.get() as u32) } != 0 {
+            LOCAL_FONTS.set(Some(Vec::new()));
+        }
         Vec::new()
     })
 }
@@ -38,7 +41,7 @@ pub(crate) fn listed(family: Option<&str>) -> Vec<(String, Style)> {
 /// The browser's list: a line a font, its family and style name apart by a tab. Or it refused:
 /// it is asked again at the next call (from a press or a key).
 fn heard(_: &mut Ui, heard: Heard) -> (Then, u32) {
-    REFUSED.set(heard.what != LISTED);
+    REFUSED.set(heard.what == REFUSED_TO_LIST);
     if heard.what != LISTED {
         LOCAL_FONTS.set(None);
         return (Then::Wait, 0);

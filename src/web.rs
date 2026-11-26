@@ -130,4 +130,72 @@ mod tests {
         }
         assert!(LOADER.contains("exports.taut_alloc(") && host.contains("pub extern \"C\" fn taut_alloc("));
     }
+
+    /// The `u32` constants of a Rust file: those of its inner module `module`, or its own (an
+    /// empty `module`), by name.
+    fn constants(file: &str, module: &str) -> Vec<(String, u32)> {
+        let lines: Vec<&str> = match module {
+            "" => file.lines().filter(|line| line.starts_with("const ")).collect(),
+            _ => {
+                let start = file.find(&format!("mod {module} {{\n")).unwrap_or_else(|| panic!("no module {module}"));
+                let body = &file[start..];
+                body[..body.find("\n}").unwrap()].lines().map(str::trim_start).collect()
+            }
+        };
+        let numbers = lines.iter().filter_map(|line| line.trim_start_matches("pub ").strip_prefix("const ")?.strip_suffix(';')?.split_once(": u32 = "));
+        numbers.map(|(name, number)| (name.to_string(), number.parse().unwrap())).collect()
+    }
+
+    /// The loader's names for what the page heard (`HEARD` in `web.js`): each one's part and
+    /// message numbers.
+    fn loader_heard() -> Vec<(String, [u32; 2])> {
+        let start = LOADER.find("const HEARD = {\n").expect("HEARD in the loader") + "const HEARD = {\n".len();
+        let block = &LOADER[start..start + LOADER[start..].find("\n};").unwrap()];
+        let entry = |line: &str| {
+            let (name, numbers) = line.trim().strip_suffix("],")?.split_once(": [")?;
+            let (part, what) = numbers.split_once(", ")?;
+            Some((name.to_string(), [part.parse().ok()?, what.parse().ok()?]))
+        };
+        block.lines().map(|line| entry(line).unwrap_or_else(|| panic!("an entry of HEARD: {line}"))).collect()
+    }
+
+    /// What the loader tells the program it heard, the program reads by the same numbers. (The
+    /// web's modules compile only for the web: their constants are read here as text.)
+    #[test]
+    fn the_loader_numbers_what_it_hears_as_the_program_does() {
+        let (drops, clipboard, desktop) = (include_str!("web_drag_drop.rs"), include_str!("web_clipboard.rs"), include_str!("web_desktop.rs"));
+        let (files, fonts, gpu, print) = (include_str!("web_files.rs"), include_str!("web_fonts.rs"), include_str!("web_gpu.rs"), include_str!("web_print.rs"));
+        // Each message by its name in the loader: its part's constant (in `web_host::parts`),
+        // and the file and module of the message's constant, and its name there.
+        #[rustfmt::skip]
+        let messages = [
+            ("dropOver", "DROPS", drops, "dropping", "OVER"), ("dropLeft", "DROPS", drops, "dropping", "LEFT"),
+            ("droppedFile", "DROPS", drops, "dropping", "FILE"), ("droppedFiles", "DROPS", drops, "dropping", "FILES"),
+            ("droppedText", "DROPS", drops, "dropping", "TEXT"),
+            ("dragStart", "DRAG_OUT", drops, "dragging", "START"), ("dragOver", "DRAG_OUT", drops, "dragging", "OVER"),
+            ("dragDrop", "DRAG_OUT", drops, "dragging", "DROP"), ("dragEnd", "DRAG_OUT", drops, "dragging", "END"),
+            ("dragLeft", "DRAG_OUT", drops, "dragging", "LEFT"), ("dragOffered", "DRAG_OUT", drops, "dragging", "OFFERED"),
+            ("clipboardPicture", "CLIPBOARD", clipboard, "heard", "PICTURE"), ("pastedFile", "CLIPBOARD", clipboard, "heard", "FILE"),
+            ("pastedFiles", "CLIPBOARD", clipboard, "heard", "FILES"),
+            ("notificationClicked", "DESKTOP", desktop, "heard", "CLICKED"), ("laterTab", "DESKTOP", desktop, "heard", "STARTED"),
+            ("printClosed", "PRINT", print, "", "CLOSED"), ("printUnable", "PRINT", print, "", "UNABLE"),
+            ("fontsListed", "FONTS", fonts, "", "LISTED"), ("fontsRefused", "FONTS", fonts, "", "REFUSED_TO_LIST"),
+            ("contextLost", "GPU", gpu, "", "LOST"),
+            ("pickedMore", "FILES", files, "heard", "MORE"), ("pickedLast", "FILES", files, "heard", "LAST"),
+            ("pickedFolder", "FILES", files, "heard", "FOLDER"), ("saveChosen", "FILES", files, "heard", "SAVED"),
+        ];
+        let parts = constants(include_str!("web_host.rs"), "parts");
+        let number = |list: &[(String, u32)], name: &str| list.iter().find(|(named, _)| named == name).unwrap_or_else(|| panic!("no constant {name}")).1;
+        let loader = loader_heard();
+        assert_eq!(loader.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), messages.map(|message| message.0), "the loader's names, in order");
+        for ((name, numbers), (_, part, file, module, message)) in loader.iter().zip(messages) {
+            assert_eq!(*numbers, [number(&parts, part), number(&constants(file, module), message)], "{name}");
+        }
+        // And every message the program hears has a name in the loader.
+        for (_, _, file, module, _) in messages {
+            for (constant, _) in constants(file, module) {
+                assert!(messages.iter().any(|message| std::ptr::eq(message.2, file) && message.3 == module && message.4 == constant), "{module}::{constant} has no name in the loader");
+            }
+        }
+    }
 }

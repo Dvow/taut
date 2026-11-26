@@ -1044,10 +1044,10 @@ fn lay_letters(tree: &Tree, text: &mut dyn TextSystem, scale: f32, (at, r): (u32
         let y = top + row as f32 * high;
         letters.places.extend(std::iter::repeat_n(after, tree.strings[done..line.start.max(done)].chars().count()));
         letters.lines.push(letters.places.len() as u32);
-        let paragraph = tree.strings[start..line.start].rfind('\n').map_or(start, |at| start + at + 1);
-        let leftward = crate::bidi::leftward(&tree.strings[paragraph..end]);
+        let paragraph = crate::text::Paragraph::of(&tree.strings[start..end], line.start - start..line.end - start);
+        let leftward = paragraph.leftward;
         let x = inside.x + ((inside.w - line.width).max(0.0) * if leftward { 1.0 - before } else { before }).round();
-        text.places(&tree.strings[line.start..line.end], font, scale, leftward, &mut edges);
+        text.places(&tree.strings[line.start..line.end], font, scale, paragraph, &mut edges);
         letters.places.extend(edges.iter().map(|[left, right]| rect(x + left, y, right - left, high)));
         (after, done) = (rect(if leftward { x } else { x + line.width }, y, 0.0, high), line.end.max(done));
     }
