@@ -4,7 +4,7 @@
 //! app to test is named.
 use crate::android_text::attribute;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 /// `adb`, from the SDK or the path: what it printed.
@@ -12,11 +12,52 @@ pub(crate) fn adb(args: &[&str]) -> Vec<u8> {
     adb_said(args).0
 }
 
+/// How long the emulator may stay out of reach before a test gives up on it.
+const OUT_OF_REACH: Duration = Duration::from_secs(120);
+
 /// `adb`: what it printed, and its errors.
 fn adb_said(args: &[&str]) -> (Vec<u8>, Vec<u8>) {
+    let done = adb_run(args);
+    (done.stdout, done.stderr)
+}
+
+/// `adb`, run until it reaches the emulator. The emulator's connection drops now and then (on
+/// a busy runner, after a large copy) and comes back: a command that never reached it is sent
+/// again once it is back.
+fn adb_run(args: &[&str]) -> Output {
     let tools = std::env::var_os("ANDROID_HOME").map(|home| PathBuf::from(home).join("platform-tools").join("adb"));
     let program = tools.filter(|path| path.exists() || path.with_extension("exe").exists()).unwrap_or_else(|| "adb".into());
-    Command::new(program).args(args).output().map(|done| (done.stdout, done.stderr)).unwrap_or_default()
+    let since = Instant::now();
+    loop {
+        let done = Command::new(&program).args(args).output().expect("adb runs");
+        if !never_reached(&done.stderr) {
+            return done;
+        }
+        assert!(since.elapsed() < OUT_OF_REACH, "the emulator stayed out of reach: adb {args:?}: {}", String::from_utf8_lossy(&done.stderr));
+        settle(1);
+    }
+}
+
+/// Copies the emulator's file `path` into `folder`, again until it comes whole: a copy that a
+/// dropped connection cuts short fails (where `exec-out cat` ends early without a word).
+pub(crate) fn pull(path: &str, folder: &Path) {
+    let since = Instant::now();
+    loop {
+        let done = adb_run(&["pull", path, &folder.to_string_lossy()]);
+        if done.status.success() {
+            return;
+        }
+        assert!(since.elapsed() < OUT_OF_REACH, "{path} was not copied: {}", String::from_utf8_lossy(&done.stderr));
+        settle(1);
+    }
+}
+
+/// Whether `adb`'s errors say it never reached the emulator, so the command did nothing there.
+fn never_reached(errors: &[u8]) -> bool {
+    let errors = String::from_utf8_lossy(errors);
+    // (After "error: " from most commands, "adb: " or "adb.exe: " from installs.)
+    let said = errors.lines().next().and_then(|line| line.split_once(": ")).map_or("", |(_, said)| said.trim_end());
+    said == "device offline" || said == "no devices/emulators found" || (said.starts_with("device '") && said.ends_with("' not found"))
 }
 
 /// Installs an APK: what went wrong, if it was not installed.
@@ -465,6 +506,17 @@ mod tests {
         shell(&format!("input tap 270 {}", to.1 + 600));
         if wait_for(out, "Drops: file taken by another app (Copied)").is_none() {
             wrong.push("the first app did not hear its file was taken".into());
+        }
+    }
+
+    #[test]
+    fn adb_errors_from_a_dropped_emulator_are_told_apart() {
+        let lost = ["error: device offline\n", "error: no devices/emulators found\n", "error: device 'emulator-5554' not found\n", "adb.exe: device 'emulator-5554' not found\r\n"];
+        for lost in lost {
+            assert!(never_reached(lost.as_bytes()), "{lost}");
+        }
+        for reached in ["", "All files should be loaded. Notifying the device.\n", "cat: /sdcard/x: No such file or directory\n", "error: closed\n"] {
+            assert!(!never_reached(reached.as_bytes()), "{reached}");
         }
     }
 

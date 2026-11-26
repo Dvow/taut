@@ -491,7 +491,7 @@ mod tests {
         std::fs::create_dir_all(&fonts).unwrap();
         let names = shell("ls /system/fonts");
         for name in names.split_whitespace().filter(|name| name.ends_with(".ttf") || name.ends_with(".ttc") || name.ends_with(".otf")) {
-            std::fs::write(fonts.join(name), adb(&["exec-out", "cat", &format!("/system/fonts/{name}")])).unwrap();
+            pull(&format!("/system/fonts/{name}"), &fonts);
         }
         eprintln!("fonts copied: {}", std::fs::read_dir(&fonts).map_or(0, |files| files.count()));
         for name in ["Roboto-Regular.ttf", "RobotoStatic-Regular.ttf", "DroidSansMono.ttf"] {
@@ -530,7 +530,7 @@ mod tests {
         let out = std::env::var_os("TAUT_PICTURES").map_or_else(|| std::env::temp_dir().join("taut-android"), std::path::PathBuf::from);
         std::fs::create_dir_all(&out).unwrap();
         let mut wrong: Vec<String> = Vec::new();
-        adb(&["install", "-r", &apk.to_string_lossy()]);
+        install(Path::new(&apk)).unwrap_or_else(|said| panic!("the gallery was not installed: {said}"));
         adb(&["logcat", "-c"]);
         // A slow emulator's "isn't responding" dialogs would cover the app.
         shell("settings put global hide_error_dialogs 1; settings put system accelerometer_rotation 0; settings put system user_rotation 0");
