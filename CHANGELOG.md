@@ -112,6 +112,92 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - **Ruby** (feature `ruby`): `Span::ruby(reading)` sets a reading over rich text (`ui.rich`) and
   beside vertical text, as CSS Ruby Layout and Chrome set it. Readers hear it after its base, in
   brackets.
+- **Locales write as the place does:** `Locale` has six more fields: `date_digits`,
+  `am_pm_place` (`AmPmPlace`), `hour_digits`, `time_separator`, `group_sizes` and `zero_digit`.
+  A `Locale { .. }` written out in full needs them; one ending in `..Locale::PLAIN` does not.
+  An app's own locale writes as its fields say (before: groups of three, two-digit days,
+  months and hours, ":").
+  - Digits of other scripts (Arabic, Persian, Devanagari, Bengali, Thai, Myanmar…) in numbers,
+    dates, times, calendars, sliders and number and time fields; typed in them or in 0–9.
+  - AM/PM before the time where the place puts it ("오후 2:05", "下午2:05"); a time box then has
+    that field first.
+  - Read from the system: Windows' native digits (always, or "by context" where the display
+    language reads right to left) and AM/PM's place; glibc's and Foundation's AM/PM place;
+    Foundation's group sizes, digits, and month and day names and AM/PM (before: English).
+- **`Locale::named("hi-IN")`:** CLDR 49's formats for 34 places, years in full. In a program
+  only when called.
+- **Locale changes followed** on macOS and iOS (`NSCurrentLocaleDidChangeNotification`),
+  Android (configuration changes; the 24-hour setting on resume) and Linux (GNOME's 12/24-hour
+  clock through the portal, which overrides the locale's). Android reads the locale through
+  `java.text` and ICU (before: the plain formats).
+- **Linux screen readers set number and time fields** by value (AT-SPI `Value`, as near as the
+  range allows) and by text (`EditableText`).
+- **`translations` in 20 languages:** Arabic, Dutch, Hindi, Indonesian, Italian, Korean,
+  Polish, Russian, Swedish, Thai, traditional Chinese, Turkish, Ukrainian and Vietnamese added.
+  Their month and day names and AM/PM are CLDR's. The feature costs what six languages did
+  (35 KB on Windows, 37 KB on Linux): each language is one text.
+- **Sticky columns:** `El::sticky_x` sticks a box at the left of the nearest box scrolling
+  sideways, as `sticky` does at the top. Each sticks in the nearest box that scrolls its way,
+  the page too; `frozen` and `sticky` together stick in the next box out (a table's header on
+  a long page); a box may stick both ways.
+- **The page scrolls sideways** where what is on it is wider than the window: wheel, bar, Left
+  and Right with nothing focused, and screen readers asking to see a part. A program whose page
+  ran past the window's right edge now gets a bar there.
+- **See-through boxes are kept:** an `El::opacity` box is drawn once into a layer and, while
+  neither its content nor what is under it changes, blended again from it: a fade redraws none
+  of its content. With `gpu-draw`, the GPU lays that layer; before, such a part was the CPU's.
+- **Striped rows** in lists, tables and tree views: `ui.striped_rows(color)` before them. A long
+  list's `rows` in a box with `El::stripes` take the stripes over, counted from the first row;
+  rows kept in view (`frozen`) are passed over.
+- **Pasting into tables:** `ui.paste_adds_rows(&table)` lets a paste run past the last row (its
+  cells come in `cell_changes`, the app adds the rows), and an empty table takes a paste.
+  `ui.refused_cells(&table)` gives the values a column refused; their cells are outlined in red
+  until the table next changes.
+- **Markdown documents:**
+  - Laid out only as far as seen: a 10,000-line document's first show costs a screenful, the
+    rest's height is estimated until it scrolls into view. Links get boxes where they show
+    (and the one before and after, for Tab).
+  - Hebrew and Arabic paragraphs read right to left across style pieces and start at the
+    right, as `dir="auto"` does in a browser; so does `ui.rich`.
+  - Wide code blocks scroll sideways (wheel, or Left, Right, Home, End once Tab reaches them)
+    instead of wrapping.
+  - Tables are tables to screen readers (headings, rows, cells); the selection is told in each
+    block it covers; a link's title shows by it on hover or focus and is told as its
+    description.
+  - A context menu (copy, select all, copy link; `Markdown::set_copy_link_word`), and the view
+    scrolls while a selection is dragged past its edge.
+  - Lists and quotes nest as deep as written; the 100-deep limit holds only where many blank
+    lines would make parsing slow.
+- **`AccessNode::description`** and **`ui.tell_description`**: what an element says more than
+  its name, told as UI Automation's help text, AT-SPI's description, `accessibilityHelp`,
+  Android's tooltip text and `aria-description`.
+- **Video captions, tracks and speed** (feature `video`): `Video::sound_tracks` and
+  `caption_tracks` (`Track`: language and name) list the file's tracks, `set_sound_track` and
+  `set_caption_track` choose them (captions start off), `add_captions` adds the app's WebVTT or
+  SRT (`CaptionsError` where it holds no cue), `caption` is the one on show, and `set_speed`
+  plays at 0.25 to 2 times, the pitch kept where the system can. `ui.video_captions`, after
+  `ui.video` in a stack, draws the caption over the video in the system's caption style and has
+  screen readers say it. `ui.video_controls` gains Captions, Sound track (with two or more) and
+  Speed menus: Tab now passes Speed between the time and Mute.
+- **Video on Windows decodes on the GPU** (Direct3D 11, DXVA) where there is one: HEVC and VP9
+  on the GPU's decoder; MJPEG also where Windows' decoder takes only a texture, not a bitmap.
+  Frames match software's within 2 levels of 255.
+- **Thai, Lao, Khmer and Burmese lines break between words everywhere** (feature `brahmic`;
+  on Linux, Android and the web also the new feature `word-lists`): CoreFoundation's tokenizer
+  on macOS and iOS; on Linux, Android and the web ICU 78's word lists (804 KB) walked as ICU's
+  dictionary break engines walk them, matching ICU on 48,991 texts. The crate's licence adds BSD-2-Clause and BSD-3-Clause
+  for the Lao and Burmese lists (`THIRD-PARTY.md`).
+- **Marks in fonts without `GPOS`** sit on their letters, placed by combining class as
+  HarfBuzz's fallback places them (1,269 word-font pairs alike, HarfBuzz 12.3.2 and 14.5).
+- **The system's text in a language's forms** (`shaping`) also in lines with marks or letters
+  of fallback fonts (shaped in their fonts, as right-to-left text is), and on macOS and iOS.
+- **Fallback glyphs** (`fallback-fonts`, now also on Linux, macOS and iOS): on Linux a fallback
+  font with a taller line is sized to the face's line, as on Windows; on Windows, Linux, macOS
+  and iOS what a fallback glyph still overhangs is clipped to the line, so nothing is left
+  behind on redraw.
+- **SVG text** (`shaping`) is shaped in runs of one script (a Latin word and a Hindi one in one
+  font were shaped as one script), a grapheme cluster in one font, and a family's own font is
+  the one it draws a space in (a family without Latin letters fell back for its spaces).
 
 ## 0.3.0 (2026-11-24)
 

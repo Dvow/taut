@@ -76,6 +76,7 @@ fn element_class() -> Obj {
         (c"accessibilityLabel", label as *const c_void, object.clone()),
         (c"accessibilityTitle", label as *const c_void, object.clone()),
         (c"accessibilityValue", value as *const c_void, object.clone()),
+        (c"accessibilityHelp", help as *const c_void, object.clone()),
         (c"accessibilityMinValue", least as *const c_void, object.clone()),
         (c"accessibilityMaxValue", most as *const c_void, object.clone()),
         (c"accessibilityParent", parent as *const c_void, object.clone()),
@@ -209,6 +210,11 @@ extern "C" fn subrole(element: Obj, _: Sel) -> Obj {
 
 extern "C" fn label(element: Obj, _: Sel) -> Obj {
     with_node(element, |told, at| ns_string(&told.nodes[at].name)).unwrap_or(std::ptr::null_mut())
+}
+
+/// What the element says more than its name (a link's title), if anything.
+extern "C" fn help(element: Obj, _: Sel) -> Obj {
+    with_node(element, |told, at| (!told.nodes[at].description.is_empty()).then(|| ns_string(&told.nodes[at].description))).flatten().unwrap_or(std::ptr::null_mut())
 }
 
 /// A number, as an `NSNumber` (autoreleased).
@@ -478,7 +484,8 @@ fn roles_for(name: &CStr) -> Option<&'static [Role]> {
         b"accessibilityStringForRange:" | b"accessibilityAttributedStringForRange:" | b"accessibilityFrameForRange:" | b"accessibilityRangeForPosition:" => TEXT,
         b"accessibilityLineForIndex:" | b"accessibilityRangeForLine:" | b"accessibilityRangeForIndex:" => TEXT,
         b"accessibilityNumberOfCharacters" | b"accessibilityVisibleCharacterRange" => TEXT,
-        b"accessibilitySelectedTextRange" | b"setAccessibilitySelectedTextRange:" | b"accessibilitySelectedText" | b"accessibilityInsertionPointLineNumber" => BOXES,
+        b"accessibilitySelectedTextRange" | b"accessibilitySelectedText" => TEXT,
+        b"setAccessibilitySelectedTextRange:" | b"accessibilityInsertionPointLineNumber" => BOXES,
         _ => return None,
     };
     Some(found)
@@ -510,7 +517,7 @@ extern "C" fn character_count(element: Obj, _: Sel) -> isize {
 
 /// The selection, from its start: the cursor alone where nothing is selected.
 fn selection(element: Obj) -> NSRange {
-    let found = with_node(element, |told, at| told.nodes[at].caret.map(|[anchor, cursor]| (told.nodes[at].value.clone(), anchor.min(cursor), anchor.max(cursor))));
+    let found = with_node(element, |told, at| told.nodes[at].caret.map(|[anchor, cursor]| (told.nodes[at].text().to_string(), anchor.min(cursor), anchor.max(cursor))));
     let Some(Some((text, from, to))) = found else { return NSRange::default() };
     let start = units_before(&text, from) as usize;
     NSRange { location: start, length: units_before(&text, to) as usize - start }

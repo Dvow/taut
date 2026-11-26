@@ -209,9 +209,21 @@ impl SystemText {
         let font = self.fonts[&(face, pixels)].0;
         self.glyphs.entry((face, pixels, letter)).or_insert_with(|| match glyph_in(font, letter) {
             Some(glyph) => drawn(font, glyph),
-            None => fallback(font, letter).map_or_else(|| drawn(font, 0), |(other, glyph)| drawn(other.0, glyph)),
+            None => fallback(font, letter).map_or_else(|| drawn(font, 0), |(other, glyph)| fallen(drawn(other.0, glyph), font)),
         })
     }
+}
+
+/// A fallback glyph as drawn for a font it stands in for: with `fallback-fonts`, kept within
+/// that font's line, so nothing it overhangs is left behind on redraw.
+fn fallen(glyph: Glyph, font: *const c_void) -> Glyph {
+    if !cfg!(feature = "fallback-fonts") {
+        return glyph;
+    }
+    // SAFETY: plain questions of a font.
+    let line = unsafe { [CTFontGetAscent(font), CTFontGetDescent(font)] }.map(|reach| reach.ceil() as i32);
+    let (top, cover) = crate::system_fonts::within_line(glyph.top, glyph.width, &glyph.cover, line);
+    Glyph { top, cover: cover.to_vec(), ..glyph }
 }
 
 impl TextSystem for SystemText {

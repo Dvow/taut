@@ -1,8 +1,9 @@
 //! The desktop portal (`xdg-desktop-portal`) on Linux, reached over the session bus, which
 //! forwards requests to whatever desktop runs. Two things are asked of it: the user's
-//! appearance and motion preferences ([`Preferences`]), read at start and then followed through
-//! change signals; and the desktop's own file dialog over a window, which the portal shows from
-//! its own process and answers later, so nothing waits and the window keeps running.
+//! appearance and motion preferences ([`Preferences`]) and GNOME's 12 or 24-hour clock, read at
+//! start and then followed through change signals; and the desktop's own file dialog over a
+//! window, which the portal shows from its own process and answers later, so nothing waits and
+//! the window keeps running.
 //!
 //! It is spoken to over the windows' bus connection (`atspi::Bus`), in hand-written D-Bus:
 //! nothing is linked and no program is run. Nothing is kept while nothing is asked, and nothing
@@ -40,6 +41,10 @@ const SCHEME: &str = "color-scheme";
 const ACCENT: &str = "accent-color";
 const CONTRAST: &str = "contrast";
 const MOTION: &str = "reduced-motion";
+/// GNOME's interface settings group, and its clock: "12h" or "24h", which GNOME's own programs
+/// follow over the locale's.
+const GNOME: &str = "org.gnome.desktop.interface";
+const CLOCK_FORMAT: &str = "clock-format";
 /// How long the portal has to acknowledge a file dialog request. (It does so at once; the
 /// dialog then stays up as long as the user likes.)
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -84,6 +89,8 @@ pub(crate) struct Portal {
     pub(crate) accent: Option<Color>,
     pub(crate) high_contrast: bool,
     pub(crate) reduced_motion: bool,
+    /// The desktop's clock, where it names one (GNOME): 12 hours or 24.
+    pub(crate) twelve_hour_clock: Option<bool>,
     /// The portal has a file dialog that can also pick folders.
     pub(crate) files: bool,
     /// Ended file dialogs, until the windows take them: the window that asked, and the picked
@@ -115,6 +122,7 @@ impl Portal {
             accent: None,
             high_contrast: false,
             reduced_motion: false,
+            twelve_hour_clock: None,
             files: false,
             answers: Vec::new(),
             asked: [0; 2],
@@ -125,17 +133,20 @@ impl Portal {
             now: Duration::ZERO,
         };
         let Some(bus) = session else { return portal };
-        bus.ask("AddMatch", &format!("type='signal',sender='{PORTAL}',path='{PORTAL_PATH}',interface='{SETTINGS}',member='SettingChanged',arg0='{APPEARANCE}'"));
+        // (Of GNOME's settings, only the clock is routed here.)
+        let changed = format!("type='signal',sender='{PORTAL}',path='{PORTAL_PATH}',interface='{SETTINGS}',member='SettingChanged'");
+        bus.ask("AddMatch", &format!("{changed},arg0='{APPEARANCE}'"));
+        bus.ask("AddMatch", &format!("{changed},arg0='{GNOME}',arg1='{CLOCK_FORMAT}'"));
         bus.ask("AddMatch", &format!("type='signal',sender='{BUS}',interface='{BUS}',member='NameOwnerChanged',arg0='{PORTAL}'"));
         portal.ask_how(bus);
         portal
     }
 
-    /// Asks the portal's state: all its appearance settings (in one call every portal version
-    /// knows), and its file chooser's version. (A portal not running is activated for that, as
-    /// the session sets it up.)
+    /// Asks the portal's state: all its appearance settings and GNOME's interface settings (in
+    /// one call every portal version knows), and its file chooser's version. (A portal not
+    /// running is activated for that, as the session sets it up.)
     fn ask_how(&mut self, bus: &mut Bus) {
-        self.asked[0] = bus.call(PORTAL, PORTAL_PATH, SETTINGS, "ReadAll", "as", Pack::default().open(4).text(APPEARANCE).close());
+        self.asked[0] = bus.call(PORTAL, PORTAL_PATH, SETTINGS, "ReadAll", "as", Pack::default().open(4).text(APPEARANCE).text(GNOME).close());
         self.asked[1] = bus.call(PORTAL, PORTAL_PATH, PROPERTIES, "Get", "ss", Pack::default().text(CHOOSER).text("version"));
     }
 
@@ -186,25 +197,22 @@ impl Portal {
         }
     }
 
-    /// The portal replied with its appearance settings, or did not (none): a dict of groups,
-    /// each a dict of settings and values. Only the one group was asked for; an unlisted
-    /// setting is no preference.
+    /// The portal replied with its appearance and GNOME settings, or did not (none): a dict of
+    /// groups, each a dict of settings and values. An unlisted setting is no preference.
     fn read_all(&mut self, body: Option<Unpack>) {
-        (self.dark, self.accent, self.high_contrast, self.reduced_motion) = (None, None, false, false);
+        (self.dark, self.accent, self.high_contrast, self.reduced_motion, self.twelve_hour_clock) = (None, None, false, false, None);
         let Some(mut body) = body else { return };
         let Some(end) = body.list(8) else { return };
         while body.at < end && self.read_group(&mut body).is_some() {}
     }
 
-    /// One settings group, read from `body`: its name, then its settings, each taken in if the
-    /// group is the appearance one. Nothing where the bytes are not laid out so.
+    /// One settings group, read from `body`: its name, then its settings, each taken in.
+    /// Nothing where the bytes are not laid out so.
     fn read_group(&mut self, body: &mut Unpack) -> Option<()> {
         let (group, end) = (body.take(8, 0).and(body.text())?, body.list(8)?);
         while body.at < end {
             let name = body.take(8, 0).and(body.text())?;
-            if group == APPEARANCE {
-                self.heard(name, *body);
-            }
+            self.heard(group, name, *body);
             body.skip("v")?;
         }
         Some(())
@@ -236,19 +244,20 @@ impl Portal {
 
     /// The portal says a setting changed: its group, name and value.
     fn set(&mut self, mut body: Unpack) {
-        if let (Some(APPEARANCE), Some(name)) = (body.text(), body.text()) {
-            self.heard(name, body);
+        if let (Some(group), Some(name)) = (body.text(), body.text()) {
+            self.heard(group, name, body);
         }
     }
 
-    /// An appearance setting by name; its value follows in `value`. A value of the wrong type
-    /// is no preference.
-    fn heard(&mut self, name: &str, value: Unpack) {
-        match name {
-            SCHEME => self.dark = dark_in(value),
-            ACCENT => self.accent = color_in(value),
-            CONTRAST => self.high_contrast = number_in(value) == Some(1),
-            MOTION => self.reduced_motion = number_in(value) == Some(1),
+    /// A setting by group and name; its value follows in `value`. A value of the wrong type is
+    /// no preference.
+    fn heard(&mut self, group: &str, name: &str, value: Unpack) {
+        match (group, name) {
+            (APPEARANCE, SCHEME) => self.dark = dark_in(value),
+            (APPEARANCE, ACCENT) => self.accent = color_in(value),
+            (APPEARANCE, CONTRAST) => self.high_contrast = number_in(value) == Some(1),
+            (APPEARANCE, MOTION) => self.reduced_motion = number_in(value) == Some(1),
+            (GNOME, CLOCK_FORMAT) => self.twelve_hour_clock = clock_in(value),
             _ => {}
         }
     }
@@ -398,6 +407,15 @@ fn dark_in(value: Unpack) -> Option<bool> {
     }
 }
 
+/// GNOME's clock setting: 12 hours for "12h", 24 for "24h", none for anything else.
+fn clock_in(value: Unpack) -> Option<bool> {
+    match unwrapped(value).value()? {
+        Value::Text("12h") => Some(true),
+        Value::Text("24h") => Some(false),
+        _ => None,
+    }
+}
+
 /// The number in a variant, as the portal hands a setting.
 fn number_in(value: Unpack) -> Option<u32> {
     match unwrapped(value).value()? {
@@ -482,7 +500,7 @@ pub(crate) mod tests {
         /// 4.
         fn with_a_portal() -> Self {
             let (mut side, asked) = Side::new();
-            side.answers(THEM, serial(&asked, "ReadAll"), "a{sa{sv}}", &appearance(&Stand { scheme: Some(0), ..Stand::default() }));
+            side.answers(THEM, serial(&asked, "ReadAll"), "a{sa{sv}}", &portal_settings(&Stand { scheme: Some(0), ..Stand::default() }));
             side.answers(THEM, serial(&asked, "Get"), "v", Pack::default().kinds("u").u32(4));
             assert!(side.portal.files && side.portal.dark.is_none());
             side
@@ -632,24 +650,27 @@ pub(crate) mod tests {
             let mut said = Message::read(bytes).unwrap().body;
             [said.text(), said.text()].map(|text| text.unwrap_or_default().to_string())
         };
-        assert_eq!(names(&asked), ["AddMatch", "AddMatch", "ReadAll", "Get"]);
+        assert_eq!(names(&asked), ["AddMatch", "AddMatch", "AddMatch", "ReadAll", "Get"]);
         let settings = "type='signal',sender='org.freedesktop.portal.Desktop',path='/org/freedesktop/portal/desktop',interface='org.freedesktop.portal.Settings'";
         assert_eq!(texts(&asked[0].1)[0], format!("{settings},member='SettingChanged',arg0='org.freedesktop.appearance'"));
-        assert_eq!(texts(&asked[1].1)[0], "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.portal.Desktop'");
+        assert_eq!(texts(&asked[1].1)[0], format!("{settings},member='SettingChanged',arg0='org.gnome.desktop.interface',arg1='clock-format'"));
+        assert_eq!(texts(&asked[2].1)[0], "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.portal.Desktop'");
         let read = |at: usize| Message::read(&asked[at].1).map(|call| (call.path.to_string(), call.interface.to_string(), texts(&asked[at].1).join(" "), asked[at].1[2])).unwrap();
-        assert_eq!(read(3), (PORTAL_PATH.into(), PROPERTIES.into(), "org.freedesktop.portal.FileChooser version".into(), 0));
-        // (All of the one group's settings, asked as a list of wanted namespaces.)
-        let call = Message::read(&asked[2].1).unwrap();
+        assert_eq!(read(4), (PORTAL_PATH.into(), PROPERTIES.into(), "org.freedesktop.portal.FileChooser version".into(), 0));
+        // (All of the two groups' settings, asked as a list of wanted namespaces.)
+        let call = Message::read(&asked[3].1).unwrap();
         let mut all = call.body;
         let end = all.list(4);
-        assert_eq!((call.path, call.interface, all.text(), end == Some(all.at), asked[2].1[2]), (PORTAL_PATH, SETTINGS, Some(APPEARANCE), true, 0));
+        let groups = (all.text(), all.text(), end == Some(all.at));
+        assert_eq!((call.path, call.interface, groups, asked[3].1[2]), (PORTAL_PATH, SETTINGS, (Some(APPEARANCE), Some(GNOME), true), 0));
         assert!(side.portal.dark.is_none() && !side.portal.files, "until the portal has said otherwise");
 
-        // The user wants dark windows and reduced motion, and picked a colour; the file chooser
-        // can pick folders. Nothing more is asked.
-        let how = Stand { scheme: Some(1), accent: Some([0.0, 120.0 / 255.0, 212.0 / 255.0]), motion: Some(1), ..Stand::default() };
-        assert!(side.answers(THEM, serial(&asked, "ReadAll"), "a{sa{sv}}", &appearance(&how)).is_empty() && !side.portal.files);
+        // The user wants dark windows, reduced motion and a 24-hour clock, and picked a colour;
+        // the file chooser can pick folders. Nothing more is asked.
+        let how = Stand { scheme: Some(1), accent: Some([0.0, 120.0 / 255.0, 212.0 / 255.0]), motion: Some(1), clock: Some("24h"), ..Stand::default() };
+        assert!(side.answers(THEM, serial(&asked, "ReadAll"), "a{sa{sv}}", &portal_settings(&how)).is_empty() && !side.portal.files);
         assert_eq!((side.portal.dark, side.portal.accent, side.portal.high_contrast, side.portal.reduced_motion), (Some(true), Some(Color::rgb(0x0078d4)), false, true));
+        assert_eq!(side.portal.twelve_hour_clock, Some(false), "GNOME's clock");
         assert!(side.answers(THEM, serial(&asked, "Get"), "v", Pack::default().kinds("u").u32(3)).is_empty() && side.portal.files);
         assert_eq!((side.portal.asked, side.portal.owner.as_str(), side.portal.me.as_str()), ([0; 2], THEM, "1_42"));
 
@@ -678,6 +699,12 @@ pub(crate) mod tests {
         assert_eq!(told(ACCENT, &Stand { accent: Some([1.0, 0.5, 0.0]), ..Stand::default() }), (true, false, Some(Color::rgb(0xff8000))));
         assert_eq!(told(ACCENT, &Stand { accent: Some([1.0, -0.5, 0.0]), ..Stand::default() }), (true, false, None));
         assert_eq!(told(CONTRAST, &Stand { contrast: Some(0), ..Stand::default() }), (false, false, None));
+        // GNOME's clock: 12 hours, 24, something else; the same name in another group is not it.
+        let mut clock = |group: &str, said: &str| {
+            side.news(THEM, PORTAL_PATH, "SettingChanged", "ssv", Pack::default().text(group).text(CLOCK_FORMAT).kinds("s").text(said));
+            side.portal.twelve_hour_clock
+        };
+        assert_eq!([clock(GNOME, "12h"), clock(APPEARANCE, "24h"), clock(GNOME, "24h"), clock(GNOME, "36h")], [Some(true), Some(true), Some(false), None]);
 
         // A file chooser before 2020 cannot pick folders: the library's own is shown.
         for (version, usable) in [(1, false), (2, false), (3, true), (9, true)] {
@@ -741,7 +768,7 @@ pub(crate) mod tests {
         // signalled also when the question activated it), nothing is asked twice.
         let asked = owned(&mut side, BUS, PORTAL, ":1.8");
         assert_eq!((names(&asked), owned(&mut side, BUS, PORTAL, ":1.8").len()), (vec!["ReadAll", "Get"], 0));
-        side.answers(":1.8", serial(&asked, "ReadAll"), "a{sa{sv}}", &appearance(&Stand { scheme: Some(1), ..Stand::default() }));
+        side.answers(":1.8", serial(&asked, "ReadAll"), "a{sa{sv}}", &portal_settings(&Stand { scheme: Some(1), ..Stand::default() }));
         side.answers(":1.8", serial(&asked, "Get"), "v", Pack::default().kinds("u").u32(4));
         assert!(side.portal.dark == Some(true) && side.portal.files);
         // The former portal's word is nobody's now.
@@ -955,7 +982,7 @@ pub(crate) mod tests {
         // All settings at once, truncated anywhere or with bytes changed: read without harm, as
         // far as they hold.
         let full = Stand { scheme: Some(1), accent: Some([0.25, 0.5, 0.75]), contrast: Some(1), motion: Some(1), ..Stand::default() };
-        let settings = packed(ANSWER, 1, &[(5, "u", "3"), (8, "g", "a{sa{sv}}")], &appearance(&full));
+        let settings = packed(ANSWER, 1, &[(5, "u", "3"), (8, "g", "a{sa{sv}}")], &portal_settings(&full));
         let read_all = |bytes: &[u8]| {
             let mut portal = Portal::new(None);
             portal.read_all(Message::read(bytes).map(|message| message.body));
@@ -1067,6 +1094,8 @@ pub(crate) mod tests {
         pub(crate) accent: Option<[f64; 3]>,
         pub(crate) contrast: Option<u32>,
         pub(crate) motion: Option<u32>,
+        /// GNOME's clock setting ("12h" or "24h"); none where it lacks the setting.
+        pub(crate) clock: Option<&'static str>,
         /// Its file chooser version; none where it has none.
         pub(crate) version: Option<u32>,
         /// How its file dialog ends, and how long after the request.
@@ -1077,7 +1106,7 @@ pub(crate) mod tests {
     impl Default for Stand {
         /// A portal without settings, with a version 4 file chooser the user cancels at once.
         fn default() -> Self {
-            Stand { scheme: None, accent: None, contrast: None, motion: None, version: Some(4), ends: Ends::Closed, after: Duration::ZERO }
+            Stand { scheme: None, accent: None, contrast: None, motion: None, clock: None, version: Some(4), ends: Ends::Closed, after: Duration::ZERO }
         }
     }
 
@@ -1193,11 +1222,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// The stand-in signals an appearance setting's current value. (A setting it lacks, it says
-    /// nothing of.)
+    /// The stand-in signals a setting's current value: an appearance one, or GNOME's clock. (A
+    /// setting it lacks, it says nothing of.)
     fn say(bus: &mut Bus, name: &str, how: &Stand) {
         let mut said = Pack::default();
-        said.text(APPEARANCE).text(name);
+        said.text(if name == CLOCK_FORMAT { GNOME } else { APPEARANCE }).text(name);
         if value_of(&mut said, name, how) {
             bus.send(Header { kind: NEWS, path: PORTAL_PATH, interface: SETTINGS, member: "SettingChanged", kinds: "ssv", ..Default::default() }, &said.bytes);
         }
@@ -1213,27 +1242,33 @@ pub(crate) mod tests {
     /// Writes setting `name`'s value as a portal like `how` has it, as a variant; and says
     /// whether it has one.
     fn value_of(said: &mut Pack, name: &str, how: &Stand) -> bool {
-        match (name, how.scheme, how.accent, how.contrast, how.motion) {
-            (SCHEME, Some(value), ..) | (CONTRAST, _, _, Some(value), _) | (MOTION, .., Some(value)) => _ = said.kinds("u").u32(value),
+        match (name, how.scheme, how.accent, how.contrast, how.motion, how.clock) {
+            (SCHEME, Some(value), ..) | (CONTRAST, _, _, Some(value), ..) | (MOTION, _, _, _, Some(value), _) => _ = said.kinds("u").u32(value),
             (ACCENT, _, Some([red, green, blue]), ..) => _ = said.kinds("(ddd)").pad(8).f64(red).f64(green).f64(blue),
+            (CLOCK_FORMAT, .., Some(clock)) => _ = said.kinds("s").text(clock),
             _ => return false,
         }
         true
     }
 
-    /// All the appearance settings a portal like `how` has, as it answers for them: one group,
-    /// each setting it has.
-    fn appearance(how: &Stand) -> Pack {
+    /// All the settings a portal like `how` has, as it answers for them: the appearance group,
+    /// and GNOME's where it has its clock; each setting it has.
+    fn portal_settings(how: &Stand) -> Pack {
         let mut said = Pack::default();
-        said.open(8).pad(8).text(APPEARANCE).open(8);
-        for name in [SCHEME, ACCENT, CONTRAST, MOTION] {
-            let before = said.bytes.len();
-            said.pad(8).text(name);
-            if !value_of(&mut said, name, how) {
-                said.bytes.truncate(before);
+        said.open(8);
+        let groups = [(APPEARANCE, &[SCHEME, ACCENT, CONTRAST, MOTION][..]), (GNOME, &[CLOCK_FORMAT])];
+        for (group, names) in groups.into_iter().filter(|(group, _)| *group == APPEARANCE || how.clock.is_some()) {
+            said.pad(8).text(group).open(8);
+            for name in names {
+                let before = said.bytes.len();
+                said.pad(8).text(name);
+                if !value_of(&mut said, name, how) {
+                    said.bytes.truncate(before);
+                }
             }
+            said.close();
         }
-        said.close().close();
+        said.close();
         said
     }
 
@@ -1262,9 +1297,9 @@ pub(crate) mod tests {
         }
         let (mut said, mut values) = (call.body, Pack::default());
         let about = (said.text(), said.text());
-        let settings = how.scheme.or(how.contrast).or(how.motion).is_some() || how.accent.is_some();
+        let settings = how.scheme.or(how.contrast).or(how.motion).is_some() || how.accent.is_some() || how.clock.is_some();
         let answer = match (call.interface, call.member, how.version) {
-            (SETTINGS, "ReadAll", _) if settings => Ok(("a{sa{sv}}", values = appearance(how)).0),
+            (SETTINGS, "ReadAll", _) if settings => Ok(("a{sa{sv}}", values = portal_settings(how)).0),
             (PROPERTIES, "Get", Some(version)) if about == (Some(CHOOSER), Some("version")) => Ok(("v", values.kinds("u").u32(version)).0),
             (CHOOSER, "OpenFile" | "SaveFile", Some(_)) => show(call, how, asked, up, &mut values),
             (REQUEST, "Close", ..) => {
@@ -1342,6 +1377,11 @@ pub(crate) mod tests {
         assert!(until(&mut bus, &mut portal, |portal| portal.high_contrast && portal.reduced_motion && portal.accent == Some(Color::rgb(0xff0080))));
         stand.change(MOTION, |how| how.motion = Some(0));
         assert!(until(&mut bus, &mut portal, |portal| !portal.reduced_motion) && portal.high_contrast);
+        // GNOME's clock: routed by its group and name.
+        for (clock, twelve) in [("12h", true), ("24h", false)] {
+            stand.change(CLOCK_FORMAT, |how| how.clock = Some(clock));
+            assert!(until(&mut bus, &mut portal, |portal| portal.twelve_hour_clock == Some(twelve)), "{clock}");
+        }
 
         // A file dialog: requested, taken, answered with the file.
         portal.ask(Some(&mut bus), "x11:1e00003", 4, &ask());

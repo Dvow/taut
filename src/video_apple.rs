@@ -2,9 +2,15 @@
 //! `AVPlayerItemVideoOutput` as 32-bit BGRA. The frameworks are opened at run time; their
 //! classes are reached by name. Bytes are played from a file of their own, removed after. It
 //! plays while the main thread's run loop turns (AppKit's or UIKit's).
+//!
+//! Sound tracks are the item's audio tracks, one enabled at a time. Caption tracks are the
+//! asset's subtitle and text tracks, their cues read once by an `AVAssetReader` (3GPP timed
+//! text). Speed is the player's rate, the pitch kept by the spectral time-pitch algorithm.
 
-use crate::macos_sys::{Block, Bool, Obj, Pool, class, ns_string, rust_string, send, send_large};
-use crate::video::{News, VideoError, VideoSource};
+use crate::color::Color;
+use crate::macos_sys::{Block, Bool, Obj, Pool, array_items, class, ns_string, rust_string, send, send_large};
+use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
+use crate::video_captions::Cue;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -37,7 +43,9 @@ impl CMTime {
     }
 }
 
-/// CoreVideo's functions for reading a pixel buffer, and its key for their format.
+/// CoreVideo's functions for reading a pixel buffer, and its key for their format; CoreMedia's
+/// for reading a sample buffer; AVFoundation's name of the time-pitch algorithm that keeps the
+/// pitch at any rate.
 struct Functions {
     lock: unsafe extern "C" fn(*mut c_void, u64) -> i32,
     unlock: unsafe extern "C" fn(*mut c_void, u64) -> i32,
@@ -47,6 +55,12 @@ struct Functions {
     height: unsafe extern "C" fn(*mut c_void) -> usize,
     release: unsafe extern "C" fn(*mut c_void),
     format_key: Obj,
+    sample_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
+    sample_duration: unsafe extern "C" fn(*mut c_void) -> CMTime,
+    sample_data: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    data_length: unsafe extern "C" fn(*mut c_void) -> usize,
+    copy_data: unsafe extern "C" fn(*mut c_void, usize, usize, *mut u8) -> i32,
+    spectral: Obj,
 }
 // SAFETY: functions, and a constant string object that lives as long as the program.
 unsafe impl Send for Functions {}
@@ -65,24 +79,31 @@ fn load() -> Option<Functions> {
         let library = unsafe { dlopen(path.as_ptr(), 1) };
         (!library.is_null()).then_some(library)
     };
-    let _av = open(c"/System/Library/Frameworks/AVFoundation.framework/AVFoundation")?;
+    let av = open(c"/System/Library/Frameworks/AVFoundation.framework/AVFoundation")?;
     let video = open(c"/System/Library/Frameworks/CoreVideo.framework/CoreVideo")?;
-    let found = |name: &CStr| {
+    let media = open(c"/System/Library/Frameworks/CoreMedia.framework/CoreMedia")?;
+    let found = |library: *mut c_void, name: &CStr| {
         // SAFETY: a name ending in a zero, of an open library.
-        let at = unsafe { dlsym(video, name.as_ptr()) };
+        let at = unsafe { dlsym(library, name.as_ptr()) };
         (!at.is_null()).then_some(at)
     };
     // SAFETY: each is the function or constant of that name, of the type its header gives.
     unsafe {
         Some(Functions {
-            lock: function(found(c"CVPixelBufferLockBaseAddress")?),
-            unlock: function(found(c"CVPixelBufferUnlockBaseAddress")?),
-            base: function(found(c"CVPixelBufferGetBaseAddress")?),
-            row: function(found(c"CVPixelBufferGetBytesPerRow")?),
-            width: function(found(c"CVPixelBufferGetWidth")?),
-            height: function(found(c"CVPixelBufferGetHeight")?),
-            release: function(found(c"CVBufferRelease")?),
-            format_key: *found(c"kCVPixelBufferPixelFormatTypeKey")?.cast::<Obj>(),
+            lock: function(found(video, c"CVPixelBufferLockBaseAddress")?),
+            unlock: function(found(video, c"CVPixelBufferUnlockBaseAddress")?),
+            base: function(found(video, c"CVPixelBufferGetBaseAddress")?),
+            row: function(found(video, c"CVPixelBufferGetBytesPerRow")?),
+            width: function(found(video, c"CVPixelBufferGetWidth")?),
+            height: function(found(video, c"CVPixelBufferGetHeight")?),
+            release: function(found(video, c"CVBufferRelease")?),
+            format_key: *found(video, c"kCVPixelBufferPixelFormatTypeKey")?.cast::<Obj>(),
+            sample_time: function(found(media, c"CMSampleBufferGetPresentationTimeStamp")?),
+            sample_duration: function(found(media, c"CMSampleBufferGetDuration")?),
+            sample_data: function(found(media, c"CMSampleBufferGetDataBuffer")?),
+            data_length: function(found(media, c"CMBlockBufferGetDataLength")?),
+            copy_data: function(found(media, c"CMBlockBufferCopyDataBytes")?),
+            spectral: *found(av, c"AVAudioTimePitchAlgorithmSpectral")?.cast::<Obj>(),
         })
     }
 }
@@ -114,6 +135,11 @@ pub(crate) struct Player {
     seeks: u32,
     /// What the player calls when a seek is over.
     seeked: &'static Seeked,
+    /// The rate it plays at.
+    speed: f32,
+    /// The caption tracks' cues, read once the item is ready; the one chosen.
+    cues: Vec<Vec<Cue>>,
+    captions: Option<usize>,
 }
 
 /// The block a seek calls when it is over, finished or not, with the count of seeks over. It
@@ -155,14 +181,22 @@ impl Player {
             if sound {
                 plays_sound();
             }
-            Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written, seeks: 0, seeked: seeked() })
+            send::<()>(item, c"setAudioTimePitchAlgorithm:", (functions.spectral,));
+            Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written, seeks: 0, seeked: seeked(), speed: 1.0, cues: Vec::new(), captions: None })
         }
     }
 
+    /// Plays at its speed (a rate of 0 is paused).
     pub(crate) fn play(&mut self) {
         self.playing = true;
         // SAFETY: a live player.
-        unsafe { send::<()>(self.player, c"play", ()) };
+        unsafe { send::<()>(self.player, c"setRate:", (self.speed,)) };
+    }
+    pub(crate) fn set_speed(&mut self, speed: f32) {
+        self.speed = speed;
+        if self.playing {
+            self.play();
+        }
     }
     pub(crate) fn pause(&mut self) {
         self.playing = false;
@@ -263,6 +297,159 @@ impl Player {
             (f.unlock)(buffer, 1);
             if into.is_empty() { 0 } else { width }
         }
+    }
+
+    // ---- tracks ----
+
+    /// The item's tracks of these media types (`AVPlayerItemTrack`s, autoreleased).
+    fn item_tracks(&self, kinds: &[&str]) -> Vec<Obj> {
+        // SAFETY: a live item; each track answers `assetTrack`, which answers `mediaType`.
+        let kind = |track: &Obj| unsafe { rust_string(send(send::<Obj>(*track, c"assetTrack", ()), c"mediaType", ())) };
+        // SAFETY: as above.
+        let all = array_items(unsafe { send(self.item, c"tracks", ()) });
+        all.into_iter().filter(|track| kind(track).is_some_and(|kind| kinds.contains(&kind.as_str()))).collect()
+    }
+
+    /// The item's sound and caption tracks, once it is ready; the caption tracks' cues are read
+    /// then.
+    pub(crate) fn tracks(&mut self) -> Option<Tracks> {
+        if !self.ready {
+            return None;
+        }
+        let _pool = Pool::new();
+        let sound = self.item_tracks(&["soun"]);
+        let captions = self.item_tracks(&["sbtl", "text"]);
+        // SAFETY: live tracks.
+        let chosen = sound.iter().position(|track| unsafe { send::<Bool>(*track, c"isEnabled", ()) } != 0);
+        self.cues = captions.iter().map(|track| self.cues_of(*track)).collect();
+        Some(Tracks { sound: sound.iter().map(|track| track_of(*track)).collect(), captions: captions.iter().map(|track| track_of(*track)).collect(), sound_chosen: chosen })
+    }
+
+    /// Plays the `nth` sound track, and no other.
+    pub(crate) fn choose_sound(&mut self, nth: usize) {
+        let _pool = Pool::new();
+        for (at, track) in self.item_tracks(&["soun"]).into_iter().enumerate() {
+            // SAFETY: a live track.
+            unsafe { send::<()>(track, c"setEnabled:", ((at == nth) as Bool,)) };
+        }
+    }
+    pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
+        self.captions = nth;
+    }
+    /// The chosen caption track's text on show.
+    pub(crate) fn caption(&mut self) -> Option<String> {
+        let at = self.position();
+        crate::video_captions::text_at(self.cues.get(self.captions?)?, at)
+    }
+
+    /// A caption track's cues, read from its 3GPP timed text samples; none where they can't be
+    /// read (a stream).
+    fn cues_of(&self, track: Obj) -> Vec<Cue> {
+        let mut cues = Vec::new();
+        let Some(output) = self.samples_of(track) else { return cues };
+        loop {
+            // SAFETY: a reading output; the sample buffer it copies is ours, read and released.
+            let sample: *mut c_void = unsafe { send(output, c"copyNextSampleBuffer", ()) };
+            if sample.is_null() {
+                break;
+            }
+            cues.extend(self.cue_of(sample));
+            // SAFETY: as above.
+            unsafe { crate::macos_sys::CFRelease(sample) };
+        }
+        cues.sort_by_key(|cue| cue.from);
+        cues
+    }
+
+    /// An `AVAssetReader`'s output of a track's samples as stored (no settings), reading
+    /// (autoreleased, with its reader); none where they can't be read.
+    fn samples_of(&self, track: Obj) -> Option<Obj> {
+        // SAFETY: live objects; what is made is autoreleased into the caller's pool.
+        unsafe {
+            let (asset, asset_track): (Obj, Obj) = (send(self.item, c"asset", ()), send(track, c"assetTrack", ()));
+            let reader: Obj = send(class(c"AVAssetReader"), c"assetReaderWithAsset:error:", (asset, std::ptr::null_mut::<Obj>()));
+            let output: Obj = send(class(c"AVAssetReaderTrackOutput"), c"assetReaderTrackOutputWithTrack:outputSettings:", (asset_track, std::ptr::null_mut::<c_void>()));
+            if reader.is_null() || output.is_null() {
+                return None;
+            }
+            send::<()>(reader, c"addOutput:", (output,));
+            (send::<Bool>(reader, c"startReading", ()) != 0).then_some(output)
+        }
+    }
+
+    /// A 3GPP timed text sample buffer's cue: its text, at its time, for its duration; none
+    /// where it is empty.
+    fn cue_of(&self, sample: *mut c_void) -> Option<Cue> {
+        let f = self.functions;
+        // SAFETY: a live sample buffer; its data is copied within its length.
+        unsafe {
+            let (from, length) = ((f.sample_time)(sample).known()?, (f.sample_duration)(sample).known());
+            let data = (f.sample_data)(sample);
+            let mut bytes = vec![0; if data.is_null() { 0 } else { (f.data_length)(data) }];
+            if data.is_null() || (f.copy_data)(data, 0, bytes.len(), bytes.as_mut_ptr()) != 0 {
+                return None;
+            }
+            Some(Cue { from, to: from + length.unwrap_or(Duration::MAX - from), text: timed_text(&bytes)? })
+        }
+    }
+}
+
+/// A live `AVPlayerItemTrack` as the app sees it: its language (BCP 47, else ISO 639).
+fn track_of(track: Obj) -> Track {
+    // SAFETY: a live track; the strings are copied.
+    let language = unsafe {
+        let asset_track: Obj = send(track, c"assetTrack", ());
+        rust_string(send(asset_track, c"extendedLanguageTag", ())).or_else(|| rust_string(send(asset_track, c"languageCode", ())))
+    };
+    Track { language: language.filter(|language| language != "und").unwrap_or_default(), name: String::new() }
+}
+
+/// A 3GPP timed text sample's text, after its length; none where it is empty.
+fn timed_text(sample: &[u8]) -> Option<String> {
+    let [high, low, rest @ ..] = sample else { return None };
+    let text = &rest[..(usize::from(*high) << 8 | usize::from(*low)).min(rest.len())];
+    Some(crate::video_captions::plain(String::from_utf8_lossy(text).trim())).filter(|text| !text.is_empty())
+}
+
+/// How captions look, as the system's caption settings say (MediaAccessibility's caption
+/// appearance, the user's): colours, their opacity, the size against the usual.
+pub(crate) fn caption_style() -> CaptionStyle {
+    caption_appearance().unwrap_or_default()
+}
+
+fn caption_appearance() -> Option<CaptionStyle> {
+    type Colour = unsafe extern "C" fn(isize, *mut isize) -> *const c_void;
+    type Amount = unsafe extern "C" fn(isize, *mut isize) -> f64;
+    // SAFETY: a path ending in a zero; 1 is `RTLD_LAZY`.
+    let library = unsafe { dlopen(c"/System/Library/Frameworks/MediaAccessibility.framework/MediaAccessibility".as_ptr(), 1) };
+    let graphics = unsafe { dlopen(c"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics".as_ptr(), 1) };
+    let found = |library: *mut c_void, name: &CStr| {
+        // SAFETY: a name ending in a zero, of an open library (or none, which finds nothing).
+        let at = unsafe { dlsym(library, name.as_ptr()) };
+        (!library.is_null() && !at.is_null()).then_some(at)
+    };
+    // SAFETY: each is the function of that name, of the type its header gives; the colours
+    // copied are read and released; 1 is `kMACaptionAppearanceDomainUser`.
+    unsafe {
+        let (text, background): (Colour, Colour) = (function(found(library, c"MACaptionAppearanceCopyForegroundColor")?), function(found(library, c"MACaptionAppearanceCopyBackgroundColor")?));
+        let (text_alpha, background_alpha, size): (Amount, Amount, Amount) = (
+            function(found(library, c"MACaptionAppearanceGetForegroundOpacity")?),
+            function(found(library, c"MACaptionAppearanceGetBackgroundOpacity")?),
+            function(found(library, c"MACaptionAppearanceGetRelativeCharacterSize")?),
+        );
+        let count: unsafe extern "C" fn(*const c_void) -> usize = function(found(graphics, c"CGColorGetNumberOfComponents")?);
+        let parts: unsafe extern "C" fn(*const c_void) -> *const f64 = function(found(graphics, c"CGColorGetComponents")?);
+        let colour = |made: *const c_void, alpha: f64| {
+            let channels = if made.is_null() { &[][..] } else { std::slice::from_raw_parts(parts(made), count(made)) };
+            let grey = |at: usize| channels.get(at).or(channels.first()).copied().unwrap_or(0.0);
+            let [red, green, blue] = (if channels.len() >= 4 { [grey(0), grey(1), grey(2)] } else { [grey(0); 3] }).map(|part| (part.clamp(0.0, 1.0) * 255.0).round() as u32);
+            if !made.is_null() {
+                crate::macos_sys::CFRelease(made);
+            }
+            Color::rgb(red << 16 | green << 8 | blue).with_alpha(alpha as f32)
+        };
+        let null = std::ptr::null_mut();
+        Some(CaptionStyle { text: colour(text(1, null), text_alpha(1, null)), background: colour(background(1, null), background_alpha(1, null)), scale: size(1, null) as f32 })
     }
 }
 

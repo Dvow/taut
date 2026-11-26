@@ -589,6 +589,9 @@ impl Fonts {
     /// for.) Or, with `form` not 0, that glyph of the font: the character's form in a language.
     fn draw(&mut self, face: Face, at: usize, px: u32, c: char, #[cfg(feature = "shaping")] form: u16) -> Glyph {
         let from = if self.has(at, c) || c.is_control() { at } else { self.stand_in(face, c).unwrap_or(at) };
+        if cfg!(feature = "fallback-fonts") && from != at {
+            return self.draw_fallback(at, from, px, c);
+        }
         let font = self.sized(from, px);
         // SAFETY: FreeType renders into the face's own glyph slot, read here before anything
         // else is drawn. `FT_LOAD_RENDER` (4) with `FT_LOAD_NO_BITMAP` (8): rows of one byte
@@ -598,12 +601,45 @@ impl Fonts {
             let failed = if form != 0 { self.load_glyph(font, form) } else { (self.ft.FT_Load_Char)(font, c as c_ulong, 4 | 8) != 0 };
             #[cfg(not(feature = "shaping"))]
             let failed = (self.ft.FT_Load_Char)(font, c as c_ulong, 4 | 8) != 0;
-            if failed {
-                return Glyph { width: 0, left: 0, top: 0, advance: px as f32 / 2.0, cover: Vec::new() };
-            }
-            let slot = &*(*font).glyph;
-            Glyph { width: slot.bitmap.width as usize, left: slot.left, top: slot.top, advance: slot.advance[0] as f32 / 64.0, cover: slot.bitmap.cover() }
+            rendered(font, failed, px)
         }
+    }
+
+    /// A character's glyph from fallback font `from` for a face drawn in font `at` (feature
+    /// `fallback-fonts`): at a size that fits its line into the face's, as Windows sizes linked
+    /// fonts, and kept within that line, so nothing it overhangs is left behind on redraw.
+    fn draw_fallback(&mut self, at: usize, from: usize, px: u32, c: char) -> Glyph {
+        let ([ascent, descent], [above, below]) = (self.reach(at, px), self.reach(from, px));
+        let fitted = (px as f32 * crate::system_fonts::fit((ascent + descent) as f32, (above + below) as f32)).round().max(1.0);
+        let font = self.sized(from, fitted as u32);
+        // SAFETY: as in `draw`.
+        let glyph = unsafe { rendered(font, (self.ft.FT_Load_Char)(font, c as c_ulong, 4 | 8) != 0, px) };
+        let (top, cover) = crate::system_fonts::within_line(glyph.top, glyph.width, &glyph.cover, [ascent, descent]);
+        Glyph { top, cover: cover.to_vec(), ..glyph }
+    }
+
+    /// How far a font's line reaches above and below the baseline at a pixel size, in whole
+    /// pixels.
+    fn reach(&mut self, at: usize, px: u32) -> [i32; 2] {
+        // SAFETY: a sized face has its size record. (Heights are in 26.6 fixed point.)
+        let size = unsafe { &*(*self.sized(at, px)).size };
+        [size.ascender, -size.descender].map(|reach| (reach as f32 / 64.0).ceil() as i32)
+    }
+}
+
+/// The glyph FreeType rendered into a font's slot; where loading it `failed`, a blank one
+/// advancing half of `px`.
+///
+/// # Safety
+/// The font is open, and its slot holds what was loaded last.
+unsafe fn rendered(font: *mut FaceRec, failed: bool, px: u32) -> Glyph {
+    if failed {
+        return Glyph { width: 0, left: 0, top: 0, advance: px as f32 / 2.0, cover: Vec::new() };
+    }
+    // SAFETY: as the caller promises.
+    unsafe {
+        let slot = &*(*font).glyph;
+        Glyph { width: slot.bitmap.width as usize, left: slot.left, top: slot.top, advance: slot.advance[0] as f32 / 64.0, cover: slot.bitmap.cover() }
     }
 }
 
@@ -2850,6 +2886,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     fn heed(&mut self) {
         let portal = &mut self.session.portal;
         self.rerun |= self.ui.set_preferences(portal.preferences(self.desk));
+        self.rerun |= crate::locale::set_desktop_clock(portal.twelve_hour_clock);
         self.ui.set_native_file_dialog(portal.files);
         for (known, file) in std::mem::take(&mut portal.answers) {
             let shown = self.windows.iter().find(|shown| shown.known.unwrap_or(0) == known);

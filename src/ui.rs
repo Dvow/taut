@@ -26,7 +26,7 @@ use crate::event::{Button, Cursor, Event, Key, Mods};
 use crate::file_dialog::FileDialogRequest;
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::id::{ById, Id, fold, hash, stir};
-use crate::layout::{Align, Content, Flow, Frame, NONE, Spec, Tree};
+use crate::layout::{Align, Content, Flow, Frame, KEPT, NONE, Spec, Tree, fade_key};
 use crate::locale::Locale;
 use crate::paint::{Mask, Painter, bar, bar_id};
 use crate::platform::{Clipboard, Renderer, WindowPlacement};
@@ -58,6 +58,8 @@ const GOES: usize = 8;
 /// The page's id: the root box of every window's interface, holding everything not layered over
 /// it.
 pub(crate) const PAGE_ID: Id = 1;
+/// How far Left or Right scrolls sideways with nothing focused: a line, a third of a wheel notch.
+const LINE: f32 = 16.0;
 /// The height of a layer over every panel: a menu, a tooltip, a dialog.
 const OVER: u64 = 1 << 32;
 
@@ -728,7 +730,9 @@ pub struct Ui {
     counts: ById<i32>,
     clips: Vec<[i32; 4]>,
     stops: Vec<f32>,
-    under: (Vec<u32>, Vec<[i32; 4]>),
+    /// What see-through boxes keep: a `paint::Fading` behind a type-erased pointer, so a program
+    /// with none has no code to drop one. (Made by the first.)
+    pub(crate) fading: Option<Box<dyn std::any::Any>>,
     /// A box was hidden this run ([`El::hidden`](crate::El::hidden)): what keeps focus out of
     /// it, set by that box and reached no other way.
     pub(crate) hiding: Option<fn(&mut Ui)>,
@@ -911,7 +915,7 @@ impl Ui {
             masks: HashMap::new(),
             counts: ById::default(),
             clips: Vec::new(),
-            under: (Vec::new(), Vec::new()),
+            fading: None,
             hiding: None,
             stops: Vec::new(),
         };
@@ -1326,6 +1330,10 @@ impl Ui {
         if let Some(vertical) = crate::vertical_paragraph::VERTICAL.get() {
             (vertical.settle)(self);
         }
+        // With every mark made: what see-through boxes' layers depend on (see `paint::Fading`).
+        if let Some(fades) = self.shows.fade {
+            (fades.key)(self);
+        }
         self.scroll();
         // An Escape nothing in the innermost dialog took closes it, in the next pass.
         if let Some(dialog) = self.dialog_escape.take().filter(|_| self.key(Key::Escape, Mods::NONE)) {
@@ -1671,13 +1679,16 @@ impl Ui {
                 Content::Animation { animation, frame, keep } => [animation as u64 | (keep as u64) << 32, frame as u64],
                 Content::Scene { scene } => [scenes.key(scene), 0],
                 Content::Gradient { stops: [from, to], turn } => [blend(from, to), turn.map_or(u64::MAX, |turn| turn.to_bits() as u64)],
-                Content::Stripes { color } => [0x7374_7269_7065, color.0 as u64],
+                // (A long list's stripes go by whether its first row is odd.)
+                Content::Stripes { color, first_row } => [0x7374_7269_7065 ^ first_row.map_or(u64::MAX, |row| row as u64 & 1), color.0 as u64],
             };
             let marked = spec.select.map_or(u64::MAX, |[from, to]| pair(from, to));
-            let flags = ringed as u32 | ((lit == bar_id(spec.id, 1)) as u32) << 1 | ((lit == bar_id(spec.id, 0)) as u32) << 2 | (spec.fade as u32) << 8;
+            let flags = ringed as u32 | ((lit == bar_id(spec.id, 1)) as u32) << 1 | ((lit == bar_id(spec.id, 0)) as u32) << 2;
             let words = [what, how, marked, pair(spec.fill.0, spec.border.0), pair(spec.border_width.to_bits(), spec.radius.to_bits()), pair(spec.frame.shadow.to_bits(), flags)];
             let moved = [pair(spec.offset[0].to_bits(), spec.offset[1].to_bits()), pair(tree.extent(seen.at, 0).to_bits(), tree.extent(seen.at, 1).to_bits())];
-            marks.push((stir(words.iter().chain(&moved).fold(seen.place, |look, word| fold(look, *word))), seen.area));
+            // (How see-through it is goes in last, on its own: a layer is kept by the rest.)
+            let look = stir(words.iter().chain(&moved).fold(seen.place, |look, word| fold(look, *word)));
+            marks.push((look ^ fade_key(spec.fade), seen.area));
         }
     }
 
@@ -1733,22 +1744,25 @@ impl Ui {
         // larger (a cell partly under frozen columns): the rest shows when its container
         // scrolls back that far.
         let before = |spec: &Spec| (-spec.frame.pad.left).max(0.0);
-        let kept_in_view = |spec: &Spec| matches!(spec.frame.pinned, 1 | 2);
+        let kept_in_view = |spec: &Spec| spec.frame.pinned & KEPT != 0;
         let (mut up, mut cut, mut kept) = (self.tree.specs[at as usize].frame.parent, before(&self.tree.specs[at as usize]), kept_in_view(&self.tree.specs[at as usize]));
-        let mut heading = true;
+        // (Whether a box stuck at the start of the innermost scroll box each way is still to be
+        // allowed for.)
+        let mut heading = [true; 2];
         while let Some(spec) = self.tree.specs.get(up as usize) {
             let (view, scroll) = (self.tree.view(up, self.tree.rect_of(up)).inset(spec.frame.pad), [self.tree.scrolls(up, 0), self.tree.scrolls(up, 1)]);
-            // Vertically, the spot must fall between the boxes this one keeps in view, and
-            // below a heading stuck at its top; a spot in one of those is in view at any
+            // Vertically, the spot must fall between the boxes this one keeps in view; and each
+            // way, past a box stuck at its start. A spot in one of those is in view at any
             // scroll.
             let [top, bottom] = self.tree.places[up as usize].bands;
-            let over =
-                self.tree.sticks.and_then(|sticks| (sticks.over)(&self.tree, at, up)).filter(|_| scroll[1] && std::mem::take(&mut heading)).map_or(0.0, |over| self.tree.places[over as usize].dim[1]);
-            let down = if scroll[1] && !kept { slide(spot.y, spot.h, view.y + top + over, view.h - top - bottom - over) } else { 0.0 };
+            let ways = [scroll[0] && heading[0], scroll[1] && heading[1]];
+            let over = self.tree.sticks.map_or([0.0; 2], |sticks| (sticks.over)(&self.tree, at, up, ways));
+            heading = [heading[0] && !scroll[0], heading[1] && !scroll[1]];
+            let down = if scroll[1] && !kept { slide(spot.y, spot.h, view.y + top + over[1], view.h - top - bottom - over[1]) } else { 0.0 };
             // (For a box that scrolls sideways with another, that other is scrolled.)
             let with = self.follows.iter().find(|(follows, _)| *follows == spec.id).map(|(_, with)| *with);
             (up, cut, kept) = (spec.frame.parent, cut + before(spec), kept_in_view(spec));
-            let across = if scroll[0] || with.is_some() { slide(spot.x, spot.w, view.x, view.w) - std::mem::take(&mut cut) } else { 0.0 };
+            let across = if scroll[0] || with.is_some() { slide(spot.x, spot.w, view.x + over[0], view.w - over[0]) - std::mem::take(&mut cut) } else { 0.0 };
             let by = [across, down];
             if by == [0.0; 2] {
                 continue;
@@ -1767,11 +1781,15 @@ impl Ui {
         // Page Up and Down go a page (less two lines), Home and End to the end, where no part
         // asked for the key (least of all a text box). They scroll what the wheel would;
         // without the pointer over a scroll box, the first one.
-        let [up, down, home, end] = [Key::PageUp, Key::PageDown, Key::Home, Key::End].map(|key| self.key(key, Mods::NONE) as i32 as f32);
+        // (With nothing focused, Left and Right scroll sideways a line.)
+        let arrows = self.focus == 0;
+        let keys = [Key::PageUp, Key::PageDown, Key::Home, Key::End, Key::Left, Key::Right];
+        let [up, down, home, end, left, right] = keys.map(|key| ((arrows || !matches!(key, Key::Left | Key::Right)) && self.key(key, Mods::NONE)) as i32 as f32);
         let in_reach = &self.visible_boxes.scrollers[self.visible_boxes.covered.min(self.visible_boxes.scrollers.len())..];
         let under = |axis: usize| in_reach.iter().rev().find(|s| pointer.is_some_and(|p| s.visible.contains(p)) && self.tree.overflows(s.at, axis)).map(|s| s.at);
         let wheeled = [under(0), under(1)];
-        let keyed = wheeled[1].or(in_reach.iter().find(|s| self.tree.overflows(s.at, 1)).map(|s| s.at)).filter(|_| up + down + home + end > 0.0);
+        let first = |axis: usize| wheeled[axis].or(in_reach.iter().find(|s| self.tree.overflows(s.at, axis)).map(|s| s.at));
+        let keyed = [first(0).filter(|_| left + right > 0.0), first(1).filter(|_| up + down + home + end > 0.0)];
         let paged = |room: f32| (down - up) * (room - 40.0).max(20.0) + (end - home) * f32::MAX / 2.0;
         for i in 0..self.scrollers.len() {
             let at = self.scrollers[i];
@@ -1782,7 +1800,8 @@ impl Ui {
             let asked = if self.asks.scroll_requests.is_empty() { None } else { self.asks.take_scroll_request(id) };
             for axis in 0..2 {
                 let held = lies.and_then(|r| bar(&self.tree, at, r, axis)).zip(pointer).and_then(|(bar, p)| self.drag_bar(at, axis, bar, p));
-                let by_key = if axis == 1 && keyed == Some(at) { paged(self.tree.available(at, 1)) } else { 0.0 };
+                // (Keys scroll the box they are for: sideways a line, down a page.)
+                let by_key = if keyed[axis] == Some(at) { [(right - left) * LINE, paged(self.tree.available(at, 1))][axis] } else { 0.0 };
                 let by_person = by_key + if wheeled[axis] == Some(at) { wheel[axis] } else { 0.0 };
                 let to = held.or(asked.and_then(|asked| asked.to(axis, by_person))).unwrap_or(offset[axis] + by_person);
                 // (`0.0 - shift`, not `-shift`: with no shift that would be -0.0, a different
@@ -1795,7 +1814,7 @@ impl Ui {
                 ended(self, at, id, offset[1]);
             }
             // (Focus in a box a key pages goes onto what shows then.)
-            if keyed == Some(at) {
+            if keyed[1] == Some(at) {
                 self.paged = self.paged_to(at, id, offset == was, [up, down, home, end]);
                 self.again |= self.paged.is_some();
             }
@@ -1910,7 +1929,7 @@ impl Ui {
             stops: &mut self.stops,
             after: self.edit.after,
             spelling: &self.asks.spelling,
-            under: &mut self.under,
+            fading: &mut self.fading,
         };
         painter.draw(&self.visible_boxes.boxes, canvas);
     }

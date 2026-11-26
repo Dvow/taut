@@ -36,7 +36,8 @@
 //! the same text gets the same glyphs. Syriac's abbreviation mark is cut into pieces (`stch`)
 //! and its repeating pieces repeated to span the rest of its word.
 //!
-//! Not done: fallback mark positioning for fonts without `GPOS`.
+//! In a font without `GPOS`, marks are placed on their letters by combining class, as HarfBuzz
+//! places them then (`fallback_marks.rs`; horizontal text).
 use crate::bidi::{Kind, kind, mirrored};
 use crate::font_file::{Asked, Bytes, FontFile, class, covered, lists_at, lookup_at, lookups};
 use crate::scripts::{ARABIC, HEBREW, Language, SYRIAC};
@@ -300,6 +301,10 @@ pub(crate) struct Plan {
     /// over by `Plan::of`, so a program shaping only emoji (whose plans come from
     /// `Plan::looked_up`) does not carry Unicode's tables.
     pub accents: Option<(Normalizer, crate::normalization::Way)>,
+    /// For a font without `GPOS`, how marks are placed on their letters (see
+    /// `fallback_marks.rs`): each mark character's class, and the placing. Handed over by
+    /// `Plan::of` likewise.
+    pub fallback_marks: Option<FallbackMarks>,
     /// Whether the text is vertical (`Plan::downward`): glyphs advance by height, centred in
     /// the column; and whether, for a font without vertical forms (`vert`), characters with
     /// Unicode vertical forms use those.
@@ -328,6 +333,10 @@ const EVERY: Digest = [u64::MAX; 8];
 /// `normalization::normalized`).
 pub(crate) type Normalizer = fn(&FontFile, &[(char, u32)], &mut Vec<(u32, u16)>, crate::normalization::Way) -> (Vec<(char, u32)>, Vec<u32>);
 
+/// Places marks in a font without `GPOS`: a mark character's class (none for others), and the
+/// placing of a run's glyphs, in logical order (right to left where `true`).
+pub(crate) type FallbackMarks = (fn(char) -> Option<u8>, fn(&FontFile, &mut [Laid], bool));
+
 impl Plan {
     /// The lookups of a script, direction and language from a font's tables; and composition as
     /// HarfBuzz's shaper for that script does it. (Scripts `brahmic.rs` shapes do that
@@ -347,7 +356,10 @@ impl Plan {
             Script::Plain(n) if crate::scripts::tag(n) == b"hang" => crate::normalization::Way::Hangul,
             _ => crate::normalization::Way::Usual,
         };
-        Plan { accents: Some((crate::normalization::normalized, way)), ..plan }
+        // (As in HarfBuzz: not where the older `kern` table moves glyphs across the line.)
+        let unplaced = font.table(b"GPOS").0.is_empty() && !crate::fallback_marks::kerns_across(font.table(b"kern"));
+        let fallback_marks: Option<FallbackMarks> = unplaced.then_some((crate::fallback_marks::class, crate::fallback_marks::place));
+        Plan { accents: Some((crate::normalization::normalized, way)), fallback_marks, ..plan }
     }
 
     /// The lookups for vertical text, as HarfBuzz finds them: the direction-independent ones
@@ -364,7 +376,7 @@ impl Plan {
         let found = forms.iter().flatten().map(|lookup| Step { lookup: *lookup, mask: ALL, joiners: true, non_joiners: true, syllable: false });
         swaps[1] = merged(swaps[1].iter().copied().chain(found).collect());
         let moves = steps(moving, asked, &DOWNWARD_MOVES);
-        Plan { swaps, moves, kerned: true, leftward: false, joins: false, downward: true, upright_forms: forms.is_none(), stretch: false, ..plan }.digested(font)
+        Plan { swaps, moves, kerned: true, leftward: false, joins: false, downward: true, upright_forms: forms.is_none(), stretch: false, fallback_marks: None, ..plan }.digested(font)
     }
 
     /// The plan with one more feature's lookups applied after the rest, under whichever script
@@ -516,6 +528,9 @@ pub(crate) struct Laid {
     pub whole: u16,
     /// A piece of a stretching mark: fixed (1) or repeating (2), see `stretched`.
     stretch: u8,
+    /// Of a mark character, the class it is placed by where the font has no `GPOS` (see
+    /// `fallback_marks.rs`), if the plan places marks so.
+    pub combining: Option<u8>,
 }
 
 impl Laid {
@@ -530,8 +545,12 @@ impl Laid {
         if self.lig_base { 0 } else { self.lig_comp }
     }
     /// How many characters it covers: a ligature's components; else one.
-    fn parts(&self) -> u8 {
+    pub(crate) fn parts(&self) -> u8 {
         if self.lig_base && self.props & LIGATURE != 0 { self.lig_comp } else { 1 }
+    }
+    /// Of a ligature, or a mark or glyph belonging to one: its id (zero for none).
+    pub(crate) fn ligature(&self) -> u8 {
+        self.lig_id
     }
 }
 
@@ -665,8 +684,10 @@ impl FontFile {
                 laid.advance = self.spaced(laid.unicode >> 4, laid.advance);
             }
         }
-        // (In a font without `GPOS`, a zeroed mark hangs over the glyph before it.)
-        let hang = syllabic.is_some() && moves.0.is_empty();
+        // (In a font without `GPOS`, a zeroed mark hangs over the glyph before it where text runs
+        // forward. As in HarfBuzz, not where the older `kern` table kerns across the line: the
+        // one case where such a font's plan has no `fallback_marks`.)
+        let hang = moves.0.is_empty() && !leftward && (syllabic.is_some() || plan.fallback_marks.is_some());
         if plan.zeroing == Zeroing::Early {
             zero_marks(glyphs, hang);
         }
@@ -680,6 +701,9 @@ impl FontFile {
             zero_marks(glyphs, hang);
         }
         fix_attached(glyphs, leftward, plan.downward);
+        if let Some((_, place)) = plan.fallback_marks {
+            place(self, glyphs, leftward);
+        }
         if syllabic.is_some() {
             glyphs.retain(|laid| !laid.ignorable());
         }
@@ -771,7 +795,8 @@ impl FontFile {
             let mask = forms[n] | if mirror.is_some() && shown == letter { MIRROR } else { 0 } | ALL;
             let glyph = variants.iter().find(|(at, _)| *at == from).map_or_else(|| self.glyph(shown), |(_, glyph)| *glyph);
             let (glyph, spaced) = if glyph == 0 { self.instead(letter) } else { (glyph, 0) };
-            glyphs.push(Laid { glyph, from, mask, unicode: unicode(letter) | spaced << 4, props: base_or_mark(letter), ..Laid::default() });
+            let combining = plan.fallback_marks.and_then(|(class, _)| class(letter));
+            glyphs.push(Laid { glyph, from, mask, unicode: unicode(letter) | spaced << 4, props: base_or_mark(letter), combining, ..Laid::default() });
         }
         // (The joiners the lookups skip are as the plan says where it composed; else all of
         // them, as nothing came before.)

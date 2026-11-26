@@ -54,9 +54,9 @@ takes `&mut` to what it changes and returns what the user did.
   Android (`NativeActivity`, `cargo run --example apk`); the web (`wasm32-unknown-unknown`,
   [`taut::web`](https://docs.rs/taut/latest/taut/web/)).
 - **Rust:** 1.88+. **Licence:** MIT or Apache-2.0.
-- **Features** (all off by default): `right-to-left`, `brahmic`, `shaping`, `emoji`,
-  `fallback-fonts`, `touch`, `cff`, `woff2`, `hinting`, `color-profiles`, `rare-jpeg`, `gpu`,
-  `gpu-draw`, `hdr`, `ruby`, `translations`, `video`
+- **Features** (all off by default): `right-to-left`, `brahmic`, `word-lists`, `shaping`,
+  `emoji`, `fallback-fonts`, `touch`, `cff`, `woff2`, `hinting`, `color-profiles`, `rare-jpeg`,
+  `gpu`, `gpu-draw`, `hdr`, `ruby`, `translations`, `video`
   ([costs](docs/costs-and-speed.md#what-it-costs)).
 - **GPU or CPU:** the CPU draws every pixel; with `gpu`, the GPU shows them, byte for byte the
   same: Direct3D 11 or 12, Vulkan or OpenGL on Windows; OpenGL (EGL) or Vulkan under X11;

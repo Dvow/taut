@@ -393,6 +393,7 @@ mod tests {
 #[cfg(all(test, windows, feature = "ruby"))]
 mod against_edge {
     use super::*;
+    use crate::browser_check::{browsed, browser, ink_middle, ink_of};
     use crate::font_file::FontFile;
 
     /// The colours pieces are written in, in turn.
@@ -440,14 +441,6 @@ mod against_edge {
         // Ruby in a later column, in the room the column before leaves.
         Case { at: [440.0, 10.0], high: 100.0, size: 24.0, pieces: &[("あいうえ", "", false), ("漢字", "かんじ", false), ("を書く", "", false)] },
     ];
-
-    /// Where Edge or Chrome is, if installed.
-    fn browser() -> Option<std::path::PathBuf> {
-        let edge_core = std::path::Path::new(r"C:\Program Files (x86)\Microsoft\EdgeCore");
-        let versions = std::fs::read_dir(edge_core).into_iter().flatten().flatten().map(|entry| entry.path().join("msedge.exe"));
-        let known = [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", r"C:\Program Files\Google\Chrome\Application\chrome.exe"].map(std::path::PathBuf::from);
-        versions.chain(known).find(|path| path.exists())
-    }
 
     /// Rich text with readings over it, a line each: single bases under longer and shorter
     /// readings; a reading spread over its base, and one reaching over its neighbours.
@@ -511,42 +504,6 @@ mod against_edge {
         ui.close();
     }
 
-    /// One browser at a time: two at once draw each other's pages.
-    static BROWSING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// A page as the browser draws it, `width` by `height` pixels at scale 1. (Kept in
-    /// `TAUT_SHOTS`, with ours, where that names a folder.)
-    fn browsed(browser: &std::path::Path, html: &str, [width, height]: [usize; 2], name: &str) -> Vec<u32> {
-        let folder = std::env::temp_dir().join(format!("taut-vertical-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join("page.html"), html).unwrap();
-        let shot = folder.join("edge.png");
-        let _alone = BROWSING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::process::Command::new(browser)
-            .args([
-                "--headless=new",
-                "--disable-gpu",
-                "--disable-lcd-text",
-                "--force-color-profile=srgb",
-                "--hide-scrollbars",
-                "--force-device-scale-factor=1",
-                "--allow-file-access-from-files",
-                "--virtual-time-budget=3000",
-            ])
-            .arg(format!("--user-data-dir={}", folder.join("profile").display()))
-            .arg(format!("--window-size={width},{height}"))
-            .arg(format!("--screenshot={}", shot.display()))
-            .arg(format!("file:///{}", folder.join("page.html").to_string_lossy().replace('\\', "/")))
-            .output()
-            .expect("the browser runs");
-        let pixels = crate::png::decode(&std::fs::read(&shot).expect("a screenshot")).expect("a picture").1;
-        if let Ok(shots) = std::env::var("TAUT_SHOTS") {
-            std::fs::copy(&shot, std::path::Path::new(&shots).join(format!("{name}-edge.png"))).unwrap();
-        }
-        let _ = std::fs::remove_dir_all(&folder);
-        pixels
-    }
-
     /// Ours, drawn: the cases `write` describes, in Yu Gothic, `width` by `height`.
     fn drawn(font: FontFile, write: fn(&mut Ui), [width, height]: [usize; 2], name: &str) -> (Ui, Vec<u32>) {
         let mut ui = Ui::new(Box::new(crate::font_file::AppFonts::new(font)), Box::new(crate::platform::LocalClipboard::default()));
@@ -569,15 +526,15 @@ mod against_edge {
     /// Where a piece's ink lies within a line's band: its base's middle, and its reading's (the
     /// ink above the row with least ink between them), if it has one (`reading`).
     fn base_and_reading(pixels: &[u32], width: usize, band: Rect, color: u32, reading: bool) -> Option<([f32; 2], Option<[f32; 2]>)> {
-        let ink = |y: usize| (band.x as usize..band.right() as usize).map(|x| ink_of(pixels[y * width + x], color)).sum::<f32>();
+        let ink = |y: usize| (band.x as usize..band.right() as usize).map(|x| ink_of(pixels[y * width + x], color, &INKS)).sum::<f32>();
         let rows: Vec<f32> = (band.y as usize..band.bottom() as usize).map(ink).collect();
         let top = rows.iter().position(|ink| *ink > 0.5)?;
         let cut = |from: usize, to: usize| rect(band.x, band.y + from as f32, band.w, (to - from) as f32);
         if !reading {
-            return Some((ink_middle(pixels, width, cut(top, rows.len()), color)?, None));
+            return Some((ink_middle(pixels, width, cut(top, rows.len()), color, &INKS)?, None));
         }
         let gap = (top + 4..top + 14).min_by(|one, other| rows[*one].total_cmp(&rows[*other]))?;
-        Some((ink_middle(pixels, width, cut(gap, rows.len()), color)?, ink_middle(pixels, width, cut(top, gap), color)))
+        Some((ink_middle(pixels, width, cut(gap, rows.len()), color, &INKS)?, ink_middle(pixels, width, cut(top, gap), color, &INKS)))
     }
 
     #[test]
@@ -609,35 +566,6 @@ mod against_edge {
         assert!(wrong.is_empty(), "{} readings or bases lie elsewhere than in Chrome", wrong.len());
     }
 
-    /// How much of ink `color` a pixel holds (0 to 1), where that colour over white explains it
-    /// best of all the inks; else 0.
-    fn ink_of(pixel: u32, color: u32) -> f32 {
-        let channels = |rgb: u32| [(rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255].map(|c| c as f32 - 255.0);
-        let seen = channels(pixel);
-        let fit = |ink: u32| {
-            let c = channels(ink);
-            let dot: f32 = c.iter().map(|c| c * c).sum();
-            let alpha = (seen.iter().zip(&c).map(|(s, c)| s * c).sum::<f32>() / dot).clamp(0.0, 1.0);
-            let error: f32 = seen.iter().zip(&c).map(|(s, c)| (s - c * alpha).powi(2)).sum();
-            (alpha, error)
-        };
-        let best = INKS.iter().copied().min_by(|one, other| fit(*one).1.total_cmp(&fit(*other).1)).unwrap_or(color);
-        if best == color { fit(color).0 } else { 0.0 }
-    }
-
-    /// Where a colour's ink lies within a region of a picture: its middle (weighted by how
-    /// much ink each pixel holds), and how much there is.
-    fn ink_middle(pixels: &[u32], width: usize, region: Rect, color: u32) -> Option<[f32; 2]> {
-        let (mut sums, height) = ([0.0f32; 3], pixels.len() / width);
-        for y in (region.y.floor().max(0.0) as usize)..(region.bottom().ceil() as usize).min(height) {
-            for x in (region.x.floor().max(0.0) as usize)..(region.right().ceil() as usize).min(width) {
-                let ink = ink_of(pixels[y * width + x], color);
-                sums = [sums[0] + ink * (x as f32 + 0.5), sums[1] + ink * (y as f32 + 0.5), sums[2] + ink];
-            }
-        }
-        (sums[2] > 2.0).then(|| [sums[0] / sums[2], sums[1] / sums[2]])
-    }
-
     #[test]
     fn vertical_text_lies_where_chrome_lays_it() {
         let Some(browser) = browser() else { return eprintln!("no Edge or Chrome here: not compared") };
@@ -664,7 +592,7 @@ mod against_edge {
                         let middle = place.rect.x + place.rect.w / 2.0;
                         let region = rect(case.at[0] + x + middle - size / 2.0 - 1.0, case.at[1] + column.tops[n] + place.rect.y - 1.0, size + 2.0, place.rect.h + 2.0);
                         let off = if laid.pieces[step.piece as usize].upright { chrome_across(size) } else { 0.0 };
-                        let (mine, edge) = (ink_middle(&ours, width, region, color), ink_middle(&theirs, width, region.moved(off, 0.0), color));
+                        let (mine, edge) = (ink_middle(&ours, width, region, color, &INKS), ink_middle(&theirs, width, region.moved(off, 0.0), color, &INKS));
                         let edge = edge.map(|[x, y]| [x - off, y]);
                         let words = &laid.text[place.bytes[0] as usize..place.bytes[1] as usize];
                         compared += 1;

@@ -43,10 +43,11 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | Feature | Adds | Without it | Windows (hello; gallery) | Linux (hello; gallery) |
 | --- | --- | --- | --- | --- |
 | `right-to-left` | Hebrew, Arabic, Persian, Urdu in Unicode order; Arabic joined | letters left to right, as typed | 206 KB; 135 KB | 193 KB; 144 KB |
-| `brahmic` | Indic and South-East Asian scripts shaped by syllable | system text: whole on Windows, letter by letter on Linux | 280 KB; 209 KB | 277 KB; 228 KB |
-| `shaping` | app fonts shaped as pages are; the system's text in the language's forms | glyph by glyph, pairs kerned; default forms | 178 KB; 154 KB | 202 KB; 166 KB |
+| `brahmic` | Indic and South-East Asian scripts shaped by syllable; Thai, Lao, Khmer, Burmese broken between words where the system says (Windows, Apple's systems) | system text: whole on Windows, letter by letter on Linux; lines broken between syllables | 283 KB; 213 KB | 281 KB; 232 KB |
+| `word-lists` | with `brahmic`, Thai, Lao, Khmer, Burmese broken between words on Linux, Android and the web too (ICU's word lists) | lines broken between syllables there | nothing | 790 KB; 790 KB |
+| `shaping` | app fonts shaped as pages are; the system's text in the language's forms | glyph by glyph, pairs kerned; default forms | 204 KB; 132 KB | 188 KB; 139 KB |
 | `emoji` | colour emoji from the system font | plain letters: text colour on Windows; outlines if any on Linux | 142 KB; 55 KB | 140 KB; 71 KB |
-| `fallback-fonts` | Windows: missing letters in the font Windows would pick | Windows' linked fonts (Linux always uses Fontconfig) | 38 KB; 28 KB | nothing |
+| `fallback-fonts` | Windows: missing letters in the font Windows would pick; everywhere a taller fallback font fitted to the line, overhangs clipped | Windows' linked fonts (Linux always uses Fontconfig); fallback glyphs as their fonts are | 38 KB; 28 KB | 1 KB; 1 KB |
 | `touch` | touch, pen and pinch gestures | a finger is the system's mouse (Wayland: the first finger) | 30 KB; 12 KB | 40 KB; 19 KB |
 | `cff` | CFF and CFF2 fonts (most `.otf`) | not read | nothing; 17 KB | nothing; 17 KB |
 | `color-profiles` | colour profiles in picture files | colours as stored | nothing; 7 KB | nothing; 7 KB |
@@ -56,7 +57,7 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 | `gpu` | the GPU shows windows ([below](#gpu-or-cpu)) | the CPU shows them | 6 KB; 6 KB | 63 KB; 60 KB |
 | `gpu-draw` | the GPU draws them too ([below](#drawn-by-the-gpu)) | the CPU draws them | 124 KB; 143 KB more than `gpu` | 82 KB; 104 KB more than `gpu` |
 | `hdr` | boxes and pictures brighter than SDR white on HDR screens; Ultra HDR JPEGs | shown at SDR white | 48 KB; 65 KB more than `gpu` | 23 KB; 39 KB more than `gpu` |
-| `translations` | built-in words in German, Spanish, French, Japanese, Portuguese, Chinese | English until set | 24 KB; 22 KB | 37 KB; 36 KB |
+| `translations` | built-in words in 20 languages | English until set | 35 KB; 34 KB | 37 KB; 36 KB |
 | `video` | video and sound by the system's player (`Video`) | none | nothing; nothing | nothing; nothing |
 
 - `video` costs only where a video is opened: the `player` example is 88 KB more than `hello`
@@ -212,6 +213,10 @@ math:
   CPU: below that both cost about a present.
 - 4K, all changed: the cards' colours change every frame, so each label's run is drawn by GDI
   again on its new colour; that is most of the 33–48 ms.
+- A see-through panel of 24 lines fading over a page of cards (Windows, CPU time a frame,
+  2026-11-25), before and after its layer was kept: 1280×800 CPU 7.4 → 6.1 ms, Direct3D 11
+  drawing 11.7 → 5.3 ms, OpenGL drawing 12.9 → 6.9 ms; 2560×1440 CPU 12.9 → 11.4 ms, Direct3D 11
+  18.5 → 10.0 ms, OpenGL 20.6 → 11.0 ms. Where the page under it changes too, no change.
 - Direct3D 12 and Vulkan wait for each part they draw before the next; Direct3D 11 does not.
 - A shape is drawn in bands of 16 rows, each pixel visiting the edges of its band; one with
   more than 256 edges in a band stays on the CPU. Blur (SVG filters only) stays on the CPU: a

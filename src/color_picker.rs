@@ -13,6 +13,7 @@ use crate::event::{Key, Mods};
 use crate::geom::Rect;
 use crate::id::Id;
 use crate::layout::{Flow, Length};
+use crate::locale::Locale;
 use crate::path::Path;
 use crate::ui::{Picture, Response, Ui};
 
@@ -198,7 +199,7 @@ impl Ui {
             (self.picking.hsv, *color) = ([hue, strong, light], picked);
         }
         // As text, to read or type: "#rrggbb", plus two digits for alpha.
-        let typed = self.entry_box(format_args!("{color}"), '.', "#rrggbb").changed;
+        let typed = self.entry_box(format_args!("{color}"), Locale::PLAIN, "#rrggbb").changed;
         if let Some(written) = typed.then(|| Color::parse(&self.entry.1)).flatten() {
             *color = written;
         }

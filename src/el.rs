@@ -10,7 +10,7 @@
 use crate::color::Color;
 use crate::geom::Insets;
 use crate::id::{Id, fold, hash, mix};
-use crate::layout::{Align, Content, Flow, Frame, Length, NONE, Part, Placement, Spec};
+use crate::layout::{Align, Content, Flow, Frame, KEPT, Length, NONE, Part, Placement, STICKY, STICKY_X, Spec};
 use crate::path::Path;
 use crate::pen::{self, Inked, Paint, Pen};
 use crate::scene::{Camera, MeshInstance};
@@ -235,7 +235,7 @@ impl Ui {
         if let (false, Content::Shape { shape }) = (self.enabled, spec.content) {
             self.shapes[shape as usize].fade(self.theme.text_faint);
         }
-        if let (false, Content::Stripes { color }) = (self.enabled, &mut spec.content) {
+        if let (false, Content::Stripes { color, .. }) = (self.enabled, &mut spec.content) {
             *color = color.with_alpha(0.5);
         }
         if let (false, Content::Gradient { stops: [from, to], .. }) = (self.enabled, spec.content) {
@@ -420,10 +420,18 @@ impl El<'_> {
     }
     /// Fills every other line of its content with `color`, from the second: zebra stripes for a
     /// grid's rows, or a column's boxes. A stripe spans the box inside its padding, and halfway
-    /// into the gaps either side. (Replaces other content. In other flows it fills nothing.)
+    /// into the gaps either side. Boxes kept in view ([`frozen`](Self::frozen)) are passed over;
+    /// a long list's [`rows`](Ui::rows) in it take its stripes over, counted from the list's
+    /// first row. (Replaces other content. In other flows it fills nothing.)
     pub fn stripes(self, color: Color) -> Self {
         self.ui.shows.stripes = Some(crate::paint::stripes);
-        self.holds(Content::Stripes { color })
+        self.holds(Content::Stripes { color, first_row: None })
+    }
+    /// Stripes a long list's rows, the first of them row `first_row`: lines count from it, past
+    /// the room for those above (see [`Ui::rows`]).
+    pub(crate) fn row_stripes(self, color: Color, first_row: u32) -> Self {
+        self.ui.shows.stripes = Some(crate::paint::stripes);
+        self.holds(Content::Stripes { color, first_row: Some(first_row) })
     }
     /// A radial gradient from the centre: the first colour in the middle, the last at the edges
     /// (and in the corners beyond).
@@ -453,13 +461,15 @@ impl El<'_> {
     }
     /// Draws it, with its content, as one layer at this opacity: 1 opaque, 0.5 half transparent
     /// (a part not ready yet, one fading with [`Ui::animate`]). At 0 it is hidden, as `hidden`
-    /// does. Layout and input are unchanged.
+    /// does. Layout and input are unchanged. The layer is kept: while neither its content nor
+    /// what is under it changes, a new opacity blends it again without drawing it.
     pub fn opacity(self, solid: f32) -> Self {
         let solid = if solid.is_nan() { 1.0 } else { solid.clamp(0.0, 1.0) };
         let fade = 255 - (solid * 255.0).round() as u8;
         if fade != 0 && fade != 255 {
-            self.ui.shows.fade = Some(|painter, step, canvas| painter.fade(step, canvas));
+            self.ui.shows.fade = Some(&crate::paint::FADES);
             self.ui.visible_boxes.fades = Some(crate::visible_boxes::VisibleBoxes::fade);
+            self.ui.fading.get_or_insert_with(|| Box::new(crate::paint::Fading::default()));
         }
         self.fade(fade)
     }
@@ -513,21 +523,24 @@ impl El<'_> {
     /// Stays in view while its parent scrolls vertically: at the top if described before
     /// everything that scrolls in the parent, at the bottom if after (a table's header rows, a
     /// totals row, a list's heading). Content scrolls between; horizontally it scrolls along.
-    /// Ignored in a box that does not scroll vertically.
+    /// Ignored in a box that does not scroll vertically. With [`sticky`](Self::sticky) too, it
+    /// sticks to the top of the next box out that scrolls vertically while its parent passes
+    /// through there.
     pub fn frozen(self) -> Self {
         let specs = &self.ui.tree.specs;
         let Some(around) = self.ui.open.last().map(|around| around.at).filter(|at| specs[*at as usize].frame.scroll[1]) else { return self };
         // At the top, while everything before it in that box is kept too. (Checked only here,
         // so unkept boxes cost nothing.)
         let before = std::iter::successors(Some(around + 1), |at| specs.get(*at as usize).map(|spec| spec.end)).take_while(|at| (*at as usize) < specs.len());
-        let first = before.filter(|at| specs[*at as usize].frame.parent == around).all(|at| specs[at as usize].frame.pinned != 0);
-        self.frame(Part::Pinned, |frame| frame.pinned = if first { 1 } else { 2 })
+        let first = before.filter(|at| specs[*at as usize].frame.parent == around).all(|at| specs[at as usize].frame.pinned & KEPT != 0);
+        self.frame(Part::Pinned, |frame| frame.pinned = frame.pinned & !KEPT | if first { 1 } else { 2 })
     }
-    /// Sticks to the top of the nearest vertical scroll box while what follows it in its parent
-    /// scrolls under it: a list's group heading, as CSS `position: sticky`. It scrolls away
-    /// when its parent ends, or the next sticky box there arrives: so give each group its own
-    /// box, or put headings in sequence with their rows between. What lies under it is hidden
-    /// meanwhile. Without a vertical scroll box around it, it stays where it is.
+    /// Sticks to the top of the nearest box that scrolls vertically (the page does) while what
+    /// follows it in its parent scrolls under it: a list's group heading, as CSS
+    /// `position: sticky`. It scrolls away when its parent ends, or the next sticky box there
+    /// arrives: so give each group its own box, or put headings in sequence with their rows
+    /// between. What lies under it is hidden meanwhile. Without such a box around it, it stays
+    /// where it is. Goes with [`sticky_x`](Self::sticky_x) and [`frozen`](Self::frozen).
     ///
     /// ```
     /// # use taut::Ui;
@@ -549,8 +562,36 @@ impl El<'_> {
     /// ```
     #[inline]
     pub fn sticky(self) -> Self {
+        self.sticks(STICKY)
+    }
+    /// The same sideways: sticks to the left of the nearest box that scrolls horizontally (the
+    /// page does) while what follows it in its parent scrolls under it, as a sticky column. A
+    /// row's first cell, kept in view as the row scrolls left:
+    ///
+    /// ```
+    /// # use taut::{Length, Ui};
+    /// # fn describe(ui: &mut Ui, rows: &[[String; 8]]) {
+    /// let t = ui.theme;
+    /// ui.column().grow().scroll().scroll_x().open();
+    /// for row in rows {
+    ///     ui.row().open();
+    ///     ui.el().w(Length::Px(120.0)).fill(t.panel).sticky_x().text(&row[0], t.font, t.text).show();
+    ///     for cell in &row[1..] {
+    ///         ui.el().w(Length::Px(120.0)).text(cell, t.font, t.text).show();
+    ///     }
+    ///     ui.close();
+    /// }
+    /// ui.close();
+    /// # }
+    /// ```
+    #[inline]
+    pub fn sticky_x(self) -> Self {
+        self.sticks(STICKY_X)
+    }
+    /// Makes it sticky along the axis of bit `along` (see `Frame::pinned`).
+    fn sticks(self, along: u8) -> Self {
         self.ui.tree.sticks = Some(&crate::layout::STICKING);
-        self.frame(Part::Pinned, |frame| frame.pinned = crate::layout::STICKY)
+        self.frame(Part::Pinned, |frame| frame.pinned |= along)
     }
     /// Draws its content this far left and up of where layout puts it: for a box following
     /// another's scrolling.

@@ -4,7 +4,7 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A Rust GUI library for Windows, Linux, macOS, iOS and the web that aims to be small, fast and accessible, with zero dependencies and nothing compiled in that your program doesn't use."
-license = "(MIT OR Apache-2.0) AND Unicode-3.0"
+license = "(MIT OR Apache-2.0) AND Unicode-3.0 AND BSD-2-Clause AND BSD-3-Clause"
 repository = "https://github.com/Dvow/taut"
 homepage = "https://dvow.github.io/taut/"
 documentation = "https://docs.rs/taut"
@@ -22,9 +22,14 @@ default = []
 # Without it, their letters show left to right, unjoined.
 right-to-left = []
 # Indic, South-East Asian and other scripts HarfBuzz shapes with its Indic or Universal Shaping
-# Engine, shaped by syllable. Without it, the system's text draws them (whole on Windows, letter
-# by letter on Linux).
+# Engine, shaped by syllable; Thai, Lao, Khmer and Burmese lines broken between words where the
+# system says (Windows, Apple's systems), else between syllables. Without it, the system's text
+# draws them (whole on Windows, letter by letter on Linux).
 brahmic = []
+# `brahmic`, and Thai, Lao, Khmer and Burmese lines broken between words on Linux, Android and
+# the web too, from ICU's word lists (804 KB; nothing on Windows and Apple's systems, which have
+# their own). Without it, they break between syllables there.
+word-lists = ["brahmic"]
 # App fonts shaped as pages are: ligatures, contextual forms, marks placed on letters, kerning
 # beyond pairs; and the system's text in the language's forms. Without it, app fonts draw glyph
 # by glyph, kerned by pairs, and the system's text in its default forms.
@@ -40,7 +45,8 @@ touch = []
 emoji = []
 # Windows: letters a font lacks drawn in the font Windows would pick. Without it, Windows' linked
 # fonts are used in windows; `SystemText` on a surface and SVG text show missing-glyph boxes.
-# (Linux always uses Fontconfig's choice.)
+# (Linux always uses Fontconfig's choice.) Everywhere: a fallback font with a taller line sized
+# to the face's, and what a fallback glyph still overhangs clipped to the line.
 fallback-fonts = []
 # CFF and CFF2 fonts (most `.otf` files). Without it, `FontFile::read` rejects them.
 cff = []

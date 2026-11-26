@@ -1,11 +1,13 @@
 //! Videos on the web. One file, two programs:
 //!
 //! - Built for `wasm32-unknown-unknown`, it is a page (`page`): a video at the top left, its
-//!   controls, buttons that open, seek, loop and open many, and a line saying the video's state.
+//!   controls and caption, buttons that open, seek, loop, add captions and open many, and a line
+//!   saying the video's state.
 //! - Here (`checks`), it builds that page and runs it under Node (no page: `NoPlayer`) and in a
 //!   headless browser (Edge or Chrome; `TAUT_BROWSER` names one), muted, which presses its
 //!   parts through the readers' elements and keys and reads the frame numbers off the canvas:
 //!   frames at their times, pause, seeks to the frame asked, the end once, a loop, the controls,
+//!   the app's captions (shown and told), speed, the browser's own tracks,
 //!   bytes, a play with sound refused before a press, a missing file, and many opens.
 //!
 //! Each half says why and passes where it lacks the wasm target, Node or a browser, unless
@@ -40,6 +42,9 @@ mod page {
         many: Option<(u32, bool)>,
     }
 
+    /// The app's captions: one a second, none from 2 s to 2.5 s.
+    const NOTES: &str = "WEBVTT\n\n00:00.000 --> 00:01.000\nFirst\n\n00:01.000 --> 00:02.000\nSecond\n\n00:02.500 --> 00:03.000\nThird";
+
     pub fn main() {
         let mut page = Page::default();
         page.open(Video::open_silent("silent.mp4"));
@@ -66,6 +71,7 @@ mod page {
             if let Some(video) = &mut self.video {
                 ui.video(video).show();
                 ui.video_controls(video);
+                ui.video_captions(video);
                 self.ended += video.ended() as u32;
             }
             ui.row().gap(4.0).open();
@@ -77,17 +83,21 @@ mod page {
             if let (true, Some(video)) = (ui.button("Loop").clicked, &mut self.video) {
                 video.set_looping(true);
             }
+            if let (true, Some(video)) = (ui.button("Notes").clicked, &mut self.video) {
+                let notes = video.add_captions(NOTES, "en", "Notes").expect("WebVTT");
+                video.set_caption_track(Some(notes));
+            }
             ui.close();
             ui.row().gap(4.0).open();
-            let asked = ["Silent", "With sound", "Bytes", "Missing", "Many 5", "Many 40"].map(|name| ui.button(name).clicked);
+            let asked = ["Silent", "With sound", "Bytes", "Missing", "Many 5", "Many 40", "Languages"].map(|name| ui.button(name).clicked);
             ui.close();
             ui.label(&self.state());
             ui.close();
             self.asked(asked, ui);
         }
 
-        fn asked(&mut self, [silent, sound, bytes, missing, five, forty]: [bool; 6], ui: &mut Ui) {
-            if silent || sound || bytes || missing || five || forty {
+        fn asked(&mut self, [silent, sound, bytes, missing, five, forty, languages]: [bool; 7], ui: &mut Ui) {
+            if silent || sound || bytes || missing || five || forty || languages {
                 self.close(ui);
             }
             match () {
@@ -95,6 +105,7 @@ mod page {
                 _ if sound => self.open(Video::open("with-sound.mp4")),
                 _ if bytes => self.open(Video::open_silent(super::files::mp4(30, 10, false))),
                 _ if missing => self.open(Video::open_silent("missing.mp4")),
+                _ if languages => self.open(Video::open_silent("languages.mp4")),
                 _ if five || forty => {
                     self.open(Video::open_silent("with-sound.mp4"));
                     self.many = Some((if five { 5 } else { 40 }, false));
@@ -135,13 +146,17 @@ mod page {
             let length = video.length().map_or(-1.0, |length| length.as_secs_f32());
             let size = video.size().map_or("none".into(), |(width, height)| format!("{width}x{height}"));
             format!(
-                "state playing={} position={:.3} length={length:.3} size={size} frames={} ended={} muted={} volume={:.2} many={} error={}",
+                "state playing={} position={:.3} length={length:.3} size={size} frames={} ended={} muted={} volume={:.2} speed={:.2} tracks={}/{} caption={} many={} error={}",
                 video.playing() as u8,
                 video.position().as_secs_f32(),
                 video.frames_shown(),
                 self.ended,
                 video.muted() as u8,
                 video.volume(),
+                video.speed(),
+                video.sound_tracks().len(),
+                video.caption_tracks().len(),
+                video.caption().unwrap_or("none"),
                 self.many.map_or(0, |(left, _)| left),
                 video.error().unwrap_or("none"),
             )
@@ -156,7 +171,7 @@ mod web_page;
 
 #[cfg(not(target_family = "wasm"))]
 mod checks {
-    use super::files::{mp4, written};
+    use super::files::{TWO_CAPTIONS, TWO_LANGUAGES, movie, mp4, written};
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
@@ -216,6 +231,7 @@ mod checks {
         for (name, sound) in [("silent.mp4", false), ("with-sound.mp4", true)] {
             std::fs::copy(written(name, &mp4(30, 10, sound)), folder.join(name)).unwrap();
         }
+        std::fs::write(folder.join("languages.mp4"), movie(30, 10, false, &TWO_LANGUAGES, &TWO_CAPTIONS)).unwrap();
         folder
     }
 
@@ -411,6 +427,8 @@ async function the_controls() {
     await pause(100);
     await settle();
     if (shown() !== 29) fail(`End: frame ${shown()}`);
+    // Past Speed to Mute.
+    await key("Tab");
     await key("Tab");
     await key(" ", "Space");
     if (state().muted !== 0) fail(`Space on Mute: ${state().line}`);
@@ -431,6 +449,7 @@ async function bytes_and_errors() {
         named("button", "Play").focus();
         await key("Tab");
         await key("Tab");
+        await key("Tab");
         await key(" ", "Space");
         await press("Play");
         await until("a muted play", (now) => now.playing && now.position > 0.3);
@@ -439,6 +458,36 @@ async function bytes_and_errors() {
     await press("Missing");
     await until("the error of a missing file", (now) => now.error !== "none");
     results.missing = state().line;
+}
+
+async function captions_and_speed() {
+    if (!(await opened("Silent"))) return;
+    await press("Notes");
+    await seek("Seek 1.2", 12);
+    results.caption = state().caption;
+    if (state().caption !== "Second") fail(`the caption at 1.2 s: ${state().line}`);
+    if (!all().some((made) => made.textContent === "Second")) fail("the caption is not told to readers");
+    await seek("Seek 2.0", 20);
+    if (state().caption !== "none") fail(`no caption at 2.0 s: ${state().line}`);
+    await press("Speed");
+    await press("2×", "menuitemradio");
+    if (state().speed !== 2) fail(`the speed chosen: ${state().line}`);
+    await seek("Seek 0.5", 5);
+    await press("Play");
+    await until("playing", (now) => now.position >= 0.6);
+    const [from, begun] = [state().position, performance.now()];
+    await pause(600);
+    await settle();
+    results.rate = (state().position - from) / ((performance.now() - begun) / 1000);
+    if (Math.abs(results.rate - 2) > 0.4) fail(`at 2× the time moved ${results.rate} s a second`);
+}
+
+// The browser's own tracks of a file with two sound and two caption tracks: what it lists.
+async function the_files_tracks() {
+    if (!(await opened("Languages"))) return;
+    await pause(300);
+    await settle();
+    results.tracks = state().tracks;
 }
 
 async function many_opens() {
@@ -462,7 +511,7 @@ async function many_opens() {
 try {
     page = await start("page.wasm", { element: document.getElementById("app") });
     await settle();
-    for (const check of [frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, many_opens]) {
+    for (const check of [frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, the_files_tracks, many_opens]) {
         const failed = results.failed.length;
         await check();
         results[check.name] = results.failed.length === failed ? "passed" : "FAILED";

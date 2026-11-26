@@ -2475,6 +2475,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     fn heed(&mut self) {
         let portal = &mut self.session.portal;
         self.rerun |= self.ui.set_preferences(portal.preferences(Preferences::default()));
+        self.rerun |= crate::locale::set_desktop_clock(portal.twelve_hour_clock);
         self.ui.set_native_file_dialog(portal.files);
         for (known, file) in std::mem::take(&mut portal.answers) {
             let shown = self.windows.iter().find(|shown| shown.known.unwrap_or(0) == known);

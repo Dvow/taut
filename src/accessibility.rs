@@ -162,6 +162,8 @@ pub struct AccessNode {
     pub value: String,
     /// Its keyboard shortcut, as its part shows it ("Ctrl+O"): usually none.
     pub shortcut: String,
+    /// What more it says than its name: a link's title. Usually none.
+    pub description: String,
     /// Whether it is on, selected or expanded, for roles that can be. (For a tree: whether
     /// multiple selection is allowed.)
     pub on: Option<bool>,
@@ -278,6 +280,7 @@ pub(crate) struct Note {
     name: [u32; 2],
     value: [u32; 2],
     shortcut: [u32; 2],
+    description: [u32; 2],
     enabled: bool,
     /// A node of its own inside a node read as one: a tab's close button.
     separate: bool,
@@ -303,6 +306,7 @@ impl Note {
             name,
             value,
             shortcut: [value[1]; 2],
+            description: [value[1]; 2],
             enabled,
             separate: false,
         }
@@ -318,6 +322,7 @@ impl AccessNode {
             name,
             value: String::new(),
             shortcut: String::new(),
+            description: String::new(),
             on: None,
             expanded: None,
             level: 0,
@@ -648,6 +653,7 @@ fn merged_note(notes: &[Note], at: u32) -> Option<Note> {
     for later in on_box {
         let or_was = |range: [u32; 2], was: [u32; 2]| if range[0] < range[1] { range } else { was };
         (merged.role, merged.name, merged.value, merged.shortcut) = (later.role, or_was(later.name, merged.name), or_was(later.value, merged.value), or_was(later.shortcut, merged.shortcut));
+        merged.description = or_was(later.description, merged.description);
         (merged.on, merged.expanded, merged.value_range) = (later.on.or(merged.on), later.expanded.or(merged.expanded), later.value_range.or(merged.value_range));
         (merged.position, merged.caret, merged.grid) = (later.position.or(merged.position), later.caret.or(merged.caret), later.grid.or(merged.grid));
         (merged.row, merged.sorted) = (later.row.or(merged.row), later.sorted.or(merged.sorted));
@@ -881,12 +887,13 @@ impl NodeBuilder<'_> {
         let (name, position) = (self.name_of(note, role, at), self.position_of(note, at));
         let note_text = self.note_text;
         let text = |range: [u32; 2]| &note_text[range[0] as usize..range[1] as usize];
-        let (value, shortcut) = note.map_or(("", ""), |note| (text(note.value), text(note.shortcut)));
+        let (value, shortcut, description) = note.map_or(("", "", ""), |note| (text(note.value), text(note.shortcut), text(note.description)));
         let (id, parent) = (self.tree.specs[at as usize].id, self.groups.last().map(|group| group.node as usize));
         self.nodes.push(AccessNode {
             id: if id != 0 { id } else { hash(("said", self.last_id, self.since_id)) },
             value: value.to_string(),
             shortcut: shortcut.to_string(),
+            description: description.to_string(),
             on: note.and_then(|note| note.on),
             expanded: note.and_then(|note| note.expanded),
             level: note.map_or(0, |note| note.level),
@@ -1213,6 +1220,14 @@ impl Ui {
         let Ui { notes, noted, listening, .. } = self;
         if let Some(note) = notes.last_mut().filter(|_| *listening) {
             note.shortcut = push_text(noted, keys);
+        }
+    }
+    /// Adds to the last told element: what more it says than its name (a link's title), for a
+    /// screen reader to read after it.
+    pub fn tell_description(&mut self, words: &str) {
+        let Ui { notes, noted, listening, .. } = self;
+        if let Some(note) = notes.last_mut().filter(|_| *listening) {
+            note.description = push_text(noted, words);
         }
     }
     /// Says box `of` is told on its own, though inside an element told as one: a button in a

@@ -94,6 +94,8 @@ pub(crate) enum Heard {
     Focused(Obj, bool),
     /// The system's looks changed (dark or light, accent, contrast, motion), or its screens.
     Looks,
+    /// The user's locale or its formats changed: everything is written again.
+    Locale,
     /// The program was asked to quit (its menu, logging out).
     Quit,
     /// The desktop part heard something for the app: its tray icon, a hotkey.
@@ -131,7 +133,7 @@ impl Heard {
     fn view(&self) -> Obj {
         match self {
             Heard::Event(view, _) | Heard::Close(view) | Heard::Resized(view) | Heard::Moved(view) | Heard::Minimized(view, _) | Heard::Focused(view, _) | Heard::Other(view, _) => *view,
-            Heard::Looks | Heard::Quit | Heard::Desktop => std::ptr::null_mut(),
+            Heard::Looks | Heard::Locale | Heard::Quit | Heard::Desktop => std::ptr::null_mut(),
         }
     }
 }
@@ -197,9 +199,13 @@ fn application() -> Obj {
 }
 
 /// Readies the application the first time: its policy, delegate, menu, and the notices of
-/// changed looks and screens.
+/// changed looks, screens and locale.
 fn prepare(app: Obj) {
-    let methods: [(&CStr, *const c_void, &str); 2] = [(c"applicationShouldTerminate:", should_terminate as *const c_void, "Q@:@"), (c"looksChanged:", looks_changed as *const c_void, "v@:@")];
+    let methods: [(&CStr, *const c_void, &str); 3] = [
+        (c"applicationShouldTerminate:", should_terminate as *const c_void, "Q@:@"),
+        (c"looksChanged:", looks_changed as *const c_void, "v@:@"),
+        (c"localeChanged:", locale_changed as *const c_void, "v@:@"),
+    ];
     made_class(c"TautApplication", c"NSObject", &methods, &[c"NSApplicationDelegate"]);
     let delegate = made(c"TautApplication");
     // SAFETY: plain setup of the shared application; the delegate is kept for good.
@@ -219,6 +225,8 @@ fn prepare(app: Obj) {
             let name = ns_string(name.to_str().unwrap_or_default());
             send::<()>(centre, c"addObserver:selector:name:object:", (delegate, sel(c"looksChanged:"), name, std::ptr::null_mut::<c_void>()));
         }
+        let locale = crate::macos_sys::NSCurrentLocaleDidChangeNotification;
+        send::<()>(centre, c"addObserver:selector:name:object:", (delegate, sel(c"localeChanged:"), locale, std::ptr::null_mut::<c_void>()));
     }
 }
 
@@ -252,6 +260,11 @@ extern "C" fn should_terminate(_: Obj, _: Sel, _: Obj) -> usize {
 /// The system's looks or screens changed.
 extern "C" fn looks_changed(_: Obj, _: Sel, _: Obj) {
     heard(Heard::Looks);
+}
+
+/// The user's locale or its formats changed: they are read again, and the windows run.
+extern "C" fn locale_changed(_: Obj, _: Sel, _: Obj) {
+    heard(Heard::Locale);
 }
 
 /// What the person asked the system for: dark or light, the accent colour, more contrast, less
@@ -1041,6 +1054,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
         let at = self.window_of(what.view());
         match (what, at) {
             (Heard::Looks, _) => self.rerun |= self.ui.set_preferences(preferences()) | self.ui.set_screens(screens()),
+            (Heard::Locale, _) => {
+                crate::locale::changed();
+                self.rerun = true;
+            }
             (Heard::Quit, _) => self.closed(0),
             (Heard::Desktop, _) => self.rerun = true,
             (_, None) => {}

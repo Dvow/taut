@@ -85,9 +85,11 @@ const HAS_KEYBOARD: i32 = 30008;
 const TAKES_KEYBOARD: i32 = 30009;
 const ENABLED: i32 = 30010;
 const AUTOMATION_ID: i32 = 30011;
-/// More, which only some elements have: accelerator key, is password, position in set and set
-/// size, is dialog.
+/// More, which only some elements have: accelerator key, help text and full description (what
+/// it says more than its name), is password, position in set and set size, is dialog.
 const KEYS: i32 = 30006;
+const HELP: i32 = 30013;
+const DESCRIPTION: i32 = 30159;
 const HIDES_TEXT: i32 = 30019;
 const NTH: i32 = 30152;
 const OF_SO_MANY: i32 = 30153;
@@ -536,9 +538,12 @@ fn compare(old: &AccessNode, new: &AccessNode, changes: &mut Vec<Change>) {
     if matches!(new.role, Role::RadioButton | Role::Tab | Role::Row | Role::TableRow | Role::MenuItemRadio | Role::TreeItem) && on(new) && !on(old) {
         changes.push(Change::Picked(id));
     }
-    // A text box is read through the text pattern: its text, and its caret.
+    // A text box is read through the text pattern: its text, and its caret; other text, by its
+    // selection (a document's).
     if matches!(new.role, Role::TextBox | Role::PasswordBox) {
         changes.extend((old.value != new.value).then_some(Change::Text(id)));
+    }
+    if new.reads_text() {
         changes.extend((old.caret != new.caret).then_some(Change::Caret(id)));
     }
 }
@@ -1135,6 +1140,7 @@ impl Provider {
             ENABLED => Value::Truth(node.enabled),
             AUTOMATION_ID => Value::Text(format!("{:016x}", node.id)),
             KEYS if !node.shortcut.is_empty() => Value::Text(node.shortcut.clone()),
+            HELP | DESCRIPTION if !node.description.is_empty() => Value::Text(node.description.clone()),
             HIDES_TEXT => Value::Truth(node.role == Role::PasswordBox),
             OFF_THE_SCREEN => Value::Truth(!node.visible),
             IS_DIALOG => Value::Truth(node.role == Role::Dialog),

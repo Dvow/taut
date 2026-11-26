@@ -114,6 +114,9 @@ pub(crate) struct Grids {
     keyed: Option<u32>,
     /// What tables do to their rows and cells, set by the first table (see `Hooks`).
     pub hooks: Option<Hooks>,
+    /// The colour the next list, table or tree view stripes its rows in (`Ui::striped_rows`);
+    /// none until asked.
+    pub stripes: crate::color::Color,
 }
 
 /// What a table does to its boxes: makes each a cell of its column (noting the focused and the
@@ -344,15 +347,17 @@ impl Ui {
         }
     }
 
-    /// Keys on a focused table's cell: move it, select its row, edit it, or copy.
+    /// Keys on a focused table's cell: move it, select its row, edit it, or copy. (An empty
+    /// table has no cell, but takes a paste at its first.)
     fn cell_keys(&mut self, state: &mut Table, columns: &[Column], shown: &[usize], table: Id, rows: Rows, high: f32) {
+        let pasted_at = state.focused_cell.or(shown.first().map(|column| [0, *column]));
+        if let Some((keys, at)) = crate::table_paste::keys().zip(pasted_at) {
+            keys(self, table, columns, shown, at, rows.count);
+        }
         let Some([row, column]) = state.focused_cell else { return };
         let entry = columns.get(column).map_or(CellEditor::None, |column| column.editor);
         if self.key(Key::Char('c'), Mods::CTRL) {
             self.grids.copy = table;
-        }
-        if let Some(keys) = crate::table_paste::keys() {
-            keys(self, table, columns, shown, [row, column], rows.count);
         }
         // Enter edits an editable cell, and is left to the app on any other. A letter typed
         // into a text or number cell starts editing with it.
@@ -648,7 +653,8 @@ impl Ui {
     }
 
     /// Makes a box a cell of column `column`: at its place and width. The focused cell is
-    /// outlined; in a row just clicked, the cell under the pointer becomes focused.
+    /// outlined, and one whose pasted value its column refused (in red); in a row just clicked,
+    /// the cell under the pointer becomes focused.
     fn seat_cell(&mut self, spec: &mut Spec, column: u32) {
         let Some(track) = self.tracks.get(column as usize).copied() else { return };
         track.seat(spec);
@@ -663,8 +669,11 @@ impl Ui {
         if reader {
             (self.grids.pressed, self.focus, self.again) = (Some((self.grids.now[table].id, [row, (column - columns[0]) as usize], false)), self.grids.now[table].keys, true);
         }
-        let now = &self.grids.now[table];
-        if now.cell != Some([row, (column - columns[0]) as usize]) {
+        let (now, cell) = (&self.grids.now[table], [row, (column - columns[0]) as usize]);
+        if crate::table_paste::refused().is_some_and(|refused| refused(self, now.id, cell)) {
+            (spec.border, spec.border_width, spec.radius) = (self.theme.red, 2.0, spec.radius.max(3.0));
+        }
+        if now.cell != Some(cell) {
             return;
         }
         // Its text is what Ctrl+C copies with no row selected.

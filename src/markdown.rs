@@ -28,11 +28,11 @@ const TAB: usize = 4;
 const NONE: u32 = u32::MAX;
 /// The longest link label, in bytes.
 const LABEL: usize = 999;
-/// How deep blocks may nest (a list and each item count one each, as does a quote): past that,
-/// what would open another block is text. Parsing and laying out nested lists walks the blocks
-/// around each, so a text of only `- - - -` would cost the square of its depth (markdown-it
-/// stops at the same depth, `maxNesting`).
+/// How deep blocks may always nest (a list and each item count one each, as does a quote).
+/// Deeper is allowed while each blank line, which walks every open list item, costs no more
+/// than `BLANK_STEPS` in all; past that, what would open another block is text.
 const DEEPEST: usize = 100;
+const BLANK_STEPS: usize = 4_000_000;
 
 // ---- blocks ----
 
@@ -96,6 +96,8 @@ struct Block {
     info: String,
     /// Its last line was blank (what makes a list loose).
     blank: bool,
+    /// How deep it is: the document is 0, its children 1.
+    depth: u32,
     /// The line it started on.
     line: u32,
     /// For a task list item: whether checked.
@@ -150,10 +152,18 @@ struct Reader {
     nonspace_column: usize,
     indent: usize,
     blank: bool,
+    /// The open block the last line marked as ending blank, if any: the only open block that
+    /// can be marked so (NONE for none).
+    marked: u32,
+    /// Where on the line a thematic break can start (`breaks_from`).
+    breaks_from: [usize; 3],
+    /// How deep blocks may nest in this text.
+    deepest: usize,
 }
 
 impl Reader {
-    fn new() -> Self {
+    /// A parser for a text of `blank_lines` blank lines.
+    fn new(blank_lines: usize) -> Self {
         let document = Block {
             kind: Kind::Document,
             parent: NONE,
@@ -164,6 +174,7 @@ impl Reader {
             content: String::new(),
             info: String::new(),
             blank: false,
+            depth: 0,
             line: 0,
             ticked: None,
             inlines: NONE,
@@ -181,6 +192,9 @@ impl Reader {
             nonspace_column: 0,
             indent: 0,
             blank: false,
+            marked: NONE,
+            breaks_from: [0; 3],
+            deepest: DEEPEST.max(BLANK_STEPS / (blank_lines + 1)),
         }
     }
 
@@ -222,7 +236,7 @@ impl Reader {
 
     /// Parses one line: through the open blocks, into new ones, then into the last.
     fn read_line(&mut self, line: String) {
-        (self.line, self.number) = (line, self.number + 1);
+        (self.breaks_from, self.line, self.number) = (breaks_from(line.as_bytes()), line, self.number + 1);
         (self.offset, self.column, self.partial, self.blank) = (0, 0, false, false);
         let Some((matched, all)) = self.match_open() else { return };
         let mut container = matched;
@@ -318,15 +332,13 @@ impl Reader {
     }
 
     /// Opens the blocks the rest of the line starts, nested, as long as it starts one (no
-    /// deeper than `DEEPEST`).
+    /// deeper than `deepest`).
     fn open_new(&mut self, container: &mut u32, all: bool) {
         let mut lazy = self.kind(self.tip()) == Kind::Paragraph;
-        // (The block's depth: its index among the open ones, document first.)
-        let mut deep = self.open.iter().rposition(|open| *open == *container).unwrap_or(0);
-        while !matches!(self.kind(*container), Kind::Code { .. } | Kind::Html(_)) && deep < DEEPEST {
+        while !matches!(self.kind(*container), Kind::Code { .. } | Kind::Html(_)) && (self.blocks[*container as usize].depth as usize) < self.deepest {
             self.find_nonspace();
             let Some(opened) = self.start(*container, all, lazy) else { break };
-            (*container, deep) = (opened, self.open.len() - 1);
+            *container = opened;
             if takes_lines(self.kind(opened)) {
                 break;
             }
@@ -354,7 +366,7 @@ impl Reader {
         if let Some(level) = setext_line(bytes, at).filter(|_| !indented && kind == Kind::Paragraph) {
             return Some(self.setext(container, level));
         }
-        if !indented && !(kind == Kind::Paragraph && !all) && thematic_break(bytes, at) {
+        if !indented && !(kind == Kind::Paragraph && !all) && thematic_break(bytes, at, &self.breaks_from) {
             let rule = self.add_child(container, Kind::Rule);
             self.advance(self.line.len() - 1 - self.offset, false);
             return Some(rule);
@@ -462,6 +474,12 @@ impl Reader {
         }
     }
 
+    /// Whether open block `outer` holds `inner`, which is open too.
+    fn holds_open(&self, outer: u32, inner: u32) -> bool {
+        let depth = self.blocks[outer as usize].depth as usize;
+        self.open.get(depth) == Some(&outer) && self.blocks[inner as usize].depth as usize > depth
+    }
+
     /// Puts the rest of the line where it belongs: a lazily continued paragraph, the open
     /// block, or a new paragraph.
     fn add_text(&mut self, container: u32, matched: u32) {
@@ -475,11 +493,16 @@ impl Reader {
         let block = &self.blocks[container as usize];
         let starts_empty = matches!(kind, Kind::Item { .. }) && block.first == NONE && block.line == self.number;
         let fenced = matches!(kind, Kind::Code { fence, .. } if fence != 0);
-        self.blocks[container as usize].blank = blank && !starts_empty && !fenced && !matches!(kind, Kind::Quote | Kind::Heading { .. } | Kind::Rule);
-        let mut up = self.blocks[container as usize].parent;
-        while up != NONE {
-            self.blocks[up as usize].blank = false;
-            up = self.blocks[up as usize].parent;
+        let ends_blank = blank && !starts_empty && !fenced && !matches!(kind, Kind::Quote | Kind::Heading { .. } | Kind::Rule);
+        self.blocks[container as usize].blank = ends_blank;
+        // (A line inside a block ends its blank run. Only one open block can be in one: the
+        // last marked, while open.)
+        let marked = self.marked;
+        if marked == container || marked != NONE && self.holds_open(marked, container) {
+            (self.blocks[marked as usize].blank, self.marked) = (marked == container && ends_blank, NONE);
+        }
+        if ends_blank {
+            self.marked = container;
         }
         let tip = self.tip();
         if tip != matched && container == matched && !blank && self.kind(tip) == Kind::Paragraph {
@@ -544,7 +567,8 @@ impl Reader {
     /// Appends a child to `parent` without opening it.
     fn add_block(&mut self, parent: u32, kind: Kind, content: String) -> u32 {
         let (child, prev) = (self.blocks.len() as u32, self.blocks[parent as usize].last);
-        let block = Block { kind, parent, first: NONE, last: NONE, prev, next: NONE, content, info: String::new(), blank: false, line: self.number, ticked: None, inlines: NONE };
+        let depth = self.blocks[parent as usize].depth + 1;
+        let block = Block { kind, parent, first: NONE, last: NONE, prev, next: NONE, content, info: String::new(), blank: false, depth, line: self.number, ticked: None, inlines: NONE };
         self.blocks.push(block);
         match prev {
             NONE => self.blocks[parent as usize].first = child,
@@ -740,12 +764,20 @@ fn setext_line(line: &[u8], at: usize) -> Option<u8> {
     rest.iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r')).then_some(if mark == b'=' { 1 } else { 2 })
 }
 
-/// Three or more `*`, `-` or `_` alone on a line, with or without spaces between.
-fn thematic_break(line: &[u8], at: usize) -> bool {
-    let Some(mark) = line.get(at).copied().filter(|byte| matches!(byte, b'*' | b'-' | b'_')) else { return false };
-    let rest = &line[at..];
-    let all = rest.iter().all(|byte| *byte == mark || matches!(byte, b' ' | b'\t' | b'\n' | b'\r'));
-    all && rest.iter().filter(|byte| **byte == mark).count() >= 3
+/// The characters a thematic break is made of.
+const BREAK_MARKS: [u8; 3] = *b"*-_";
+
+/// For each of `BREAK_MARKS`, where on a line a break of it can start: past every byte that is
+/// neither it nor a space. (So a line of nested list markers is not read again from each one.)
+fn breaks_from(line: &[u8]) -> [usize; 3] {
+    BREAK_MARKS.map(|mark| line.iter().rposition(|byte| *byte != mark && !matches!(byte, b' ' | b'\t' | b'\n' | b'\r')).map_or(0, |last| last + 1))
+}
+
+/// Three or more `*`, `-` or `_` alone on a line, with or without spaces between: from `at`, on
+/// a line whose breaks can start as `from` says (`breaks_from`).
+fn thematic_break(line: &[u8], at: usize, from: &[usize; 3]) -> bool {
+    let Some(kind) = line.get(at).and_then(|byte| BREAK_MARKS.iter().position(|mark| mark == byte)) else { return false };
+    at >= from[kind] && line[at..].iter().filter(|byte| **byte == BREAK_MARKS[kind]).take(3).count() == 3
 }
 
 /// A list marker at `at`: `-`, `+` or `*`, or up to nine digits then `.` or `)`; then a space
@@ -1729,7 +1761,8 @@ struct Read {
 
 /// Parses a text: blocks, then each text block's inlines.
 fn read(text: &str) -> Read {
-    let mut reader = Reader::new();
+    let blank_lines = text.lines().filter(|line| line.bytes().all(|byte| matches!(byte, b' ' | b'\t' | b'\r'))).count();
+    let mut reader = Reader::new(blank_lines);
     for line in lines(text) {
         reader.read_line(line);
     }
@@ -1764,6 +1797,8 @@ pub struct Markdown {
     /// A unique id for this parse, so its layout can be cached. (Supplying a picture or rules
     /// gives a new one.)
     pub(crate) serial: u64,
+    /// The context menu's label for copying a link's address.
+    pub(crate) copy_link_word: String,
 }
 
 /// A parse id never used before.
@@ -1775,7 +1810,7 @@ fn serial() -> u64 {
 impl Markdown {
     /// Parses Markdown text.
     pub fn parse(text: &str) -> Markdown {
-        let markdown = Markdown { writing: Writing::default(), links: Vec::new(), names: Vec::new(), given: Vec::new(), rules: Vec::new(), serial: serial() };
+        let markdown = Markdown { writing: Writing::default(), links: Vec::new(), names: Vec::new(), given: Vec::new(), rules: Vec::new(), serial: serial(), copy_link_word: "Copy link".into() };
         let mut writer = Writer { markdown, read: read(text) };
         writer.write();
         writer.markdown
@@ -1799,6 +1834,11 @@ impl Markdown {
         self.rules.retain(|(known, _)| !known.eq_ignore_ascii_case(language));
         self.rules.push((language.to_string(), rules));
         self.serial = serial();
+    }
+    /// Labels the context menu's row that copies a link's address (`"Copy link"`): in the
+    /// app's language. (Its other rows are [`Ui::edit_words`](crate::Ui::edit_words).)
+    pub fn set_copy_link_word(&mut self, word: &str) {
+        self.copy_link_word = word.into();
     }
     /// Its text as shown, a block per line: what copying all of it gives.
     pub fn text(&self) -> &str {
@@ -2274,18 +2314,41 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
     }
 
+    /// How deep a parsed text's blocks nest, and its innermost text.
+    fn deepest(text: &str) -> (u32, String) {
+        let doc = Markdown::parse(text);
+        let depth = |mut at: usize| std::iter::from_fn(|| (at != NONE as usize).then(|| at = doc.writing.blocks[at].parent as usize)).count() as u32 - 1;
+        let last = doc.writing.blocks.len() - 1;
+        let [from, to] = doc.writing.blocks[last].words;
+        (depth(last), doc.writing.words[from as usize..to as usize].to_string())
+    }
+
     #[test]
-    fn blocks_past_a_depth_are_words() {
-        // Fifty nested lists (a hundred blocks: each list and item), and what would open more
-        // is the innermost item's text. A quote counts one; so does a list continued on the
-        // next line.
-        let deep = html(&("- ".repeat(52) + "x"));
+    fn blocks_nest_as_deep_as_written() {
+        // Five thousand lists, each in an item of the one before; and as many quotes.
+        assert_eq!(deepest(&("- ".repeat(5000) + "x")), (10_001, "x".into()));
+        assert_eq!(deepest(&("> ".repeat(5000) + "x")), (5001, "x".into()));
+        // Continued on the next line, as deep.
+        assert_eq!(deepest(&format!("{}x\n{}y", "- ".repeat(300), "  ".repeat(300))), (601, "x y".into()));
+    }
+
+    #[test]
+    fn blocks_past_a_depth_are_words_where_blank_lines_would_cost_too_much() {
+        // Each blank line walks the open items: with a hundred thousand of them, blocks nest a
+        // hundred deep (fifty lists in items), and what would open more is the innermost
+        // item's text. A quote counts one; so does a list continued on the next line.
+        let blank = "\n".repeat(100_000);
+        let deep = html(&("- ".repeat(52) + "x" + &blank));
         assert_eq!((deep.matches("<ul>").count(), deep.matches("<li>").count()), (50, 50));
         assert!(deep.ends_with(&format!("<li>- - x</li>\n{}", "</ul>\n</li>\n".repeat(49) + "</ul>\n")), "{deep}");
-        let quoted = html(&("> ".repeat(102) + "x"));
+        let quoted = html(&("> ".repeat(102) + "x" + &blank));
         assert!(quoted.matches("<blockquote>").count() == 100 && quoted.contains("<p>&gt; &gt; x</p>"), "{quoted}");
-        let then = html(&format!("{}x\n{}y", "- ".repeat(60), "  ".repeat(50)));
+        let then = html(&format!("{}x\n{}y{blank}", "- ".repeat(60), "  ".repeat(50)));
         assert!(then.matches("<ul>").count() == 50 && then.contains("<li>- - - - - - - - - - x\ny</li>"), "{then}");
+        // Blank lines in a deep list cost no more than that.
+        let started = std::time::Instant::now();
+        let _ = Markdown::parse(&format!("{}x\n{}", "- ".repeat(20_000), "\n".repeat(20_000)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
     }
 
     // ---- the specification's examples ----

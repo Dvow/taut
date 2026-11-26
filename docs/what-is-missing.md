@@ -71,16 +71,16 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Layout and parts
 
-- Sticky headings stick to the nearest vertical scroll box. `frozen` and `sticky` together in one
-  box are unsupported. The page scrolls vertically only. `.opacity` re-blends what's under it on
-  each redraw. Stripes only in grids and columns.
+- A see-through box (`.opacity`) over something that changes is drawn again whole (the system's
+  text is drawn onto what is under it); one over 4 million pixels keeps no layer. Hand-written
+  trees (`ui.tree`) aren't striped.
 - Built-in words other than month and day names and AM/PM are English until set, or with
-  `translations` in six more languages only.
-- Locale: digits 0–9 only. An app's own `Locale` writes groups of three, two-digit days, months
-  and hours, and ":". Linux reads the locale once (Windows follows changes). AM/PM always
-  after the time.
-- Linux screen readers can't set number or time fields by value (typing and stepping work).
-- Pasting into tables: no pasting into new rows; a value a column refuses is skipped silently.
+  `translations` in 20 languages.
+- Locale: Gregorian calendar only; no minimum grouping (CLDR leaves 1234 ungrouped in Spanish
+  and Polish); no right-to-left marks in Arabic dates; no 0–11 hours (Japanese `K`). glibc's
+  locales write 0–9 only. Linux takes a region changed while running at the next start (GTK and
+  Qt too); only GNOME's 12/24-hour clock is followed live.
+- Undoing a paste into a table puts back the rows that were there; rows it added stay (the app's).
   Windows time axes use today's UTC offset. Uneven-height lists estimate unseen rows. Second windows don't show the first's meshes.
   Pan-zoom text under 4 units isn't drawn.
 - Node graphs: frames don't nest or hold other frames; only the first 64 inputs of a node can
@@ -112,7 +112,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   layer or buffer is checked by number.
 - `gpu-draw`: scenes, SVG drawings (their blur too: drawn once, then kept), colour emoji, fills
   of other inks and shapes of over 256 edges in 16 rows are drawn by the CPU (into patches). A
-  see-through box (`El::opacity`) has the CPU draw its part: the GPU has no layers yet. GDI's
+  see-through box (`El::opacity`) has the CPU draw its part, from the box's kept layer where
+  that holds: the GPU has no layers of its own. GDI's
   text off one solid colour loses GDI's contrast (up to 13 levels in the walk). Direct3D 12 and
   Vulkan wait for each part drawn. Tested on WARP, SwiftShader, llvmpipe, lavapipe and an RTX
   2080 Ti; Wayland's drawing not run (no device here exports a dmabuf). On Windows, OpenGL's
@@ -151,11 +152,10 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Documents (Markdown)
 
-- Measured whole on first show (700 lines: about 9 ms); every link has a box each run (5,000
-  links: 0.4 ms per run).
-- Rows run left to right: Hebrew or Arabic paragraphs aren't reordered across style pieces.
-- Code blocks wrap; tables are told as text; selection isn't told; no context menu, edge
-  auto-scroll or link titles. Nesting over 100 deep becomes text.
+- Jumping far ahead (the scroll bar, Ctrl+End) lays out everything above the view first.
+- Lists and quotes in a right-to-left paragraph keep their markers at the left.
+- The selection is told for the blocks in view only.
+- Past 100 deep, nesting becomes text where blank lines times depth would pass 4 million.
 
 ## File dialog
 
@@ -174,14 +174,14 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   its typographic em box (app fonts use that). Readings in one line are each placed against their own
   base, not on one line. Horizontal text does not trim fullwidth punctuation.
 - Without `shaping`, app fonts draw glyph by glyph, kerned by pairs (pages shape fully); system
-  text keeps its default forms. With it, language forms in system text skip lines with marks,
-  letters from fallback fonts, or scripts shaped by syllable; not on macOS.
-- Marks in fonts without `GPOS` are not placed by HarfBuzz's fallback.
+  text keeps its default forms. With it, scripts shaped by syllable take language forms only
+  with `brahmic` too; system text on the web takes none.
+- Vertical text in fonts without `GPOS` leaves marks where zeroing leaves them (HarfBuzz's
+  fallback places them).
 - `shaping` shapes each line the first time it is seen (15–40 µs in Segoe UI or Calibri: 0.4 s
   for a window of 10,000 new rows) and keeps up to 16 MB of runs; a full draw takes about 40%
   longer.
-- `brahmic`: Thai, Lao, Khmer, Myanmar break by word only on Windows. Scripts with no Windows
-  font need an app font. A bare Ubuntu has none.
+- `brahmic`: scripts with no Windows font need an app font. A bare Ubuntu has none.
 - Emoji: `COLR` v1 and SVG only on request; variable emoji fonts at default; sRGB mixing; no
   flags on Windows; no emoji font, plain letters.
 - IME window placement verified on Linux with a real IME, on Windows only by reading back.
@@ -189,7 +189,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   auto-hinted), vertically only; at a variable font's instance about 1 glyph in 400 lands 1/64
   px off FreeType's. `VVAR`, variable `COLR` and vertical-metric variations not read. `CFF2`
   checked only with hand-made fonts.
-- Fallback glyphs that overhang aren't clipped; Linux fallback line metrics aren't matched.
+- A fallback glyph that overhangs the face's line is clipped with `fallback-fonts` (browsers make
+  the line taller); without it, not.
 - Named faces are kept for the program's life; names over 128 bytes match nothing; beyond 4,096
   families or 65,536 faces, new names use the system font.
 - Windows: the first letter no linked font has costs a full font scan (about 60 ms, 47 KB);
@@ -221,27 +222,44 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Video
 
-- No captions, no choice of sound or caption track, no playback speed.
-- Frames are copied through the CPU into a picture, also with `gpu`.
-- Windows: decoded in software (no Direct3D device given to Media Foundation), so only what
-  Windows decodes so: H.264, MPEG-4 Part 2, and what its extensions add; not MJPEG. N editions need
-  the Media Feature Pack. `open_silent` plays muted.
+- Frames are copied through the CPU into a picture on every path, also with `gpu`: a frame
+  decoded on the GPU is read back, then drawn. (Drawing it straight from its texture needs a
+  quad of `gpu-draw` that samples another device's texture.)
+- Captions: their text only, without the file's positions, regions or styles. Captions inside
+  the video stream (CEA-608/708) are not read.
+- Windows: the file's own captions only from Matroska (SRT, SSA, as text): Media Foundation reads
+  no caption track in MP4. The pitch at other speeds is as Media Foundation plays it (not
+  checked). Decoded on the GPU through Direct3D 11 where there is one; without one, in software
+  (MJPEG then only where Windows' decoder writes into a bitmap: not on every machine). AV1 needs
+  Windows' AV1 extension (on the GPU where it decodes AV1). N editions need the Media Feature
+  Pack. `open_silent` plays muted.
 - Linux: needs GStreamer's `playbin` and `appsink` and the plugins of the file's codecs; a
-  missing one is `VideoError::NoPlayer` or `video.error()`.
+  missing one is `VideoError::NoPlayer` or `video.error()`. The pitch is kept at other speeds
+  with `scaletempo` (plugins-good); without it the pitch moves. The file's captions need its
+  demuxer (`qtdemux` for MP4, `matroskademux`): none with base and bad plugins only. No caption
+  settings to follow: the usual style.
 - macOS and iOS: `open_silent` plays muted; bytes are played from a temporary file. iOS: a
   video with sound sets the audio session's category to `Playback` unless the app set one.
-  Checked only on GitHub's runner and in the iOS simulator.
+  Caption tracks of files only (3GPP timed text, read by an `AVAssetReader`), not of streams.
+  Tracks are named by their language only. Checked only on GitHub's runner and in the iOS
+  simulator.
 - Android: what the system's decoders read, through the NDK (no `MediaPlayer`); frames come
   through an image reader in YUV and are made RGB on the CPU. Volume scales the samples (AAudio
-  has none). Addresses play only in an app's process. No sound device: it plays silent.
-  Checked only on an emulator (software decoders); there, a command-line program that ended
-  the moment it dropped its last video once aborted in Android's own decoder thread.
-- Web: the browser's formats (H.264 in MP4 in most; VP8, VP9, AV1 in WebM). Sound plays only
-  after a press on the page: before, `play` gives `error()`, cleared at the next `play`;
-  muted, it plays. Another site's address needs CORS headers, or its frames can't
-  be read. A path is an address relative to the page. Under Node there is no player.
-- Tested with small made files (lossless H.264, MJPEG, Theora); playback of large files not
-  measured.
+  has none); other speeds are stretched by taut (WSOLA), the last 40 ms of sound not played.
+  Captions: 3GPP (MP4), SRT (Matroska), WebVTT (WebM), each until the next (Matroska's durations
+  not read); tracks named by their language. The caption style follows the system's in an app
+  only. Addresses play only in an app's process. No sound device: it plays silent. Checked only
+  on an emulator (software decoders); there, a command-line program that ended the moment it
+  dropped its last video once aborted in Android's own decoder thread.
+- Web: the browser's formats (H.264 in MP4 in most; VP8, VP9, AV1 in WebM). Sound tracks only
+  where the browser lists them (Safari; not Chrome, Edge or Firefox), and the file's captions
+  only where it reads them (Safari); the app's captions everywhere. A page can't read the
+  system's caption settings: the usual style. Sound plays only after a press on the page:
+  before, `play` gives `error()`, cleared at the next `play`; muted, it plays. Another site's
+  address needs CORS headers, or its frames can't be read. A path is an address relative to
+  the page. Under Node there is no player.
+- Tested with small made files (lossless H.264, MJPEG, Theora; HEVC, VP9 and AV1 made by
+  ffmpeg); playback of large files not measured.
 
 ## PDF and printing
 

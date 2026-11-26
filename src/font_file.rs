@@ -517,7 +517,7 @@ impl FontFile {
 
     /// A glyph's left side bearing in font units: `hmtx`'s other two bytes per glyph. Glyphs
     /// sharing the last advance have theirs after all the advances.
-    fn edge(&self, glyph: u16) -> Option<f32> {
+    pub(crate) fn edge(&self, glyph: u16) -> Option<f32> {
         let glyph = glyph as usize;
         let at = if glyph < self.listed { glyph * 4 + 2 } else { self.listed * 4 + (glyph - self.listed) * 2 };
         Bytes(&self.file).within(&self.widths).i16(at).map(|edge| edge as f32)

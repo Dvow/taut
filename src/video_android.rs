@@ -5,7 +5,9 @@
 //! sound's while it plays. No Java: it plays in an app and in a command-line program alike
 //! (addresses only in an app, where Android's network stack is).
 
-use crate::video::{News, VideoError, VideoSource};
+use crate::color::Color;
+use crate::video::{CaptionStyle, News, Tracks, VideoError, VideoSource};
+use crate::video_captions::Cue;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -154,6 +156,8 @@ const USAGE_MEDIA: i32 = 1;
 const CONTENT_MOVIE: i32 = 3;
 const PCM_FLOAT: i32 = 4;
 const MONOTONIC: c_int = 1;
+/// The caption tracks it reads: 3GPP timed text (MP4), SRT (Matroska), WebVTT (WebM).
+const CAPTIONS: [&str; 3] = ["text/3gpp-tt", "application/x-subrip", "text/vtt"];
 
 fn micros(time: Duration) -> i64 {
     time.as_micros().min(i64::MAX as u128) as i64
@@ -178,12 +182,30 @@ struct Held {
     _bytes: Option<Arc<Vec<u8>>>,
 }
 
-/// What a source holds: its first video track (number, type, size) and sound track, and the
-/// longest track's length.
+/// A track of a source: its number, type and language.
+#[derive(Clone)]
+struct Found {
+    at: usize,
+    mime: String,
+    language: String,
+}
+
+/// What a source holds: its first video track (number, type, size), its sound and caption
+/// tracks, and the longest track's length.
 struct Contents {
     video: Option<(usize, String, [i32; 2])>,
-    sound: Option<(usize, String)>,
+    sound: Vec<Found>,
+    captions: Vec<Found>,
     length: Option<Duration>,
+}
+
+impl Contents {
+    /// The tracks as the app sees them, the first sound track playing.
+    fn tracks(&self) -> Tracks {
+        let track = |found: &Found| crate::video::Track { language: found.language.clone(), name: String::new() };
+        let sound: Vec<_> = self.sound.iter().map(track).collect();
+        Tracks { sound_chosen: (!sound.is_empty()).then_some(0), sound, captions: self.captions.iter().map(track).collect() }
+    }
 }
 
 /// An extractor of a source, and the decoder of one of its tracks.
@@ -401,7 +423,7 @@ fn read_or_not(status: i32, held: Held) -> Result<Held, String> {
 
 /// What the extractor found.
 fn contents(media: &'static Media, extractor: Object) -> Contents {
-    let mut found = Contents { video: None, sound: None, length: None };
+    let mut found = Contents { video: None, sound: Vec::new(), captions: Vec::new(), length: None };
     // SAFETY: a live extractor.
     let count = unsafe { (media.AMediaExtractor_getTrackCount)(extractor) };
     for at in 0..count {
@@ -410,9 +432,11 @@ fn contents(media: &'static Media, extractor: Object) -> Contents {
         let length = long(media, format, c"durationUs").and_then(|us| u64::try_from(us).ok()).map(Duration::from_micros);
         found.length = found.length.max(length);
         let size = [c"width", c"height"].map(|key| number(media, format, key).unwrap_or(0));
+        let language = string(media, format, c"language").filter(|language| language != "und").unwrap_or_default();
         match string(media, format, c"mime") {
             Some(mime) if mime.starts_with("video/") && found.video.is_none() => found.video = Some((at, mime, size)),
-            Some(mime) if mime.starts_with("audio/") && found.sound.is_none() => found.sound = Some((at, mime)),
+            Some(mime) if mime.starts_with("audio/") => found.sound.push(Found { at, mime, language }),
+            Some(mime) if CAPTIONS.contains(&mime.as_str()) => found.captions.push(Found { at, mime, language }),
             _ => {}
         }
         // SAFETY: read, used no more.
@@ -441,23 +465,27 @@ fn long(media: &'static Media, format: Object, key: &CStr) -> Option<i64> {
 
 // ---- what the threads share ----
 
-/// The media's time: where it was at `since`, moving on from there while it runs.
+/// The media's time: where it was at `since`, moving on from there at `speed` while it runs.
 #[derive(Clone, Copy)]
 struct Clock {
     at: Duration,
     since: Instant,
     running: bool,
+    speed: f64,
 }
 
 impl Clock {
     fn now(&self) -> Duration {
-        if self.running { self.at + self.since.elapsed() } else { self.at }
+        if self.running { self.at + self.since.elapsed().mul_f64(self.speed) } else { self.at }
     }
     fn set_running(&mut self, running: bool) {
         (self.at, self.since, self.running) = (self.now(), Instant::now(), running);
     }
     fn set(&mut self, at: Duration, since: Instant) {
         (self.at, self.since) = (at, since);
+    }
+    fn set_speed(&mut self, speed: f64) {
+        (self.at, self.since, self.speed) = (self.now(), Instant::now(), speed);
     }
 }
 
@@ -478,6 +506,11 @@ struct State {
     length: Option<Duration>,
     volume: f32,
     muted: bool,
+    /// The source's tracks once read, the sound track chosen, and each caption track's cues
+    /// once read.
+    tracks: Option<Tracks>,
+    sound_track: usize,
+    cues: Vec<Vec<Cue>>,
     /// The newest frame not given yet.
     frame: Option<Frame>,
     /// The sound played its last (or there is none).
@@ -487,6 +520,9 @@ struct State {
     ended: bool,
     error: Option<String>,
     stop: bool,
+    /// (Tests: the sound last handed to the speaker, its first channel, and its rate.)
+    #[cfg(test)]
+    heard: (Vec<f32>, u32),
 }
 
 struct Shared {
@@ -528,6 +564,8 @@ struct Asked {
     seek_to: Duration,
     now: Duration,
     volume: f32,
+    speed: f64,
+    sound_track: usize,
     stop: bool,
 }
 
@@ -535,17 +573,21 @@ impl Shared {
     fn asked(&self) -> Asked {
         let state = self.lock();
         let volume = if state.muted { 0.0 } else { state.volume };
-        Asked { playing: state.playing, seeks: state.seeks, seek_to: state.seek_to, now: state.clock.now(), volume, stop: state.stop }
+        let (playing, seeks, seek_to, now, speed) = (state.playing, state.seeks, state.seek_to, state.clock.now(), state.clock.speed);
+        Asked { playing, seeks, seek_to, now, volume, speed, sound_track: state.sound_track, stop: state.stop }
     }
 }
 
 // ---- the player ----
 
-/// A source played by the video's thread (which also keeps the time and tells the end) and,
-/// where asked and there is sound, the sound's.
+/// A source played by the video's thread (which also keeps the time and tells the end), where
+/// asked and there is sound, the sound's, and where there are caption tracks, a thread that reads
+/// their cues.
 pub(crate) struct Player {
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
+    /// The caption track chosen.
+    captions: Option<usize>,
 }
 
 impl Player {
@@ -561,14 +603,20 @@ impl Player {
             Origin::Address(_) => None,
             _ => Some(Track::read(media, &origin).map_err(VideoError::Refused)?),
         };
-        let sounding = sound && read.as_ref().is_none_or(|(_, contents)| contents.sound.is_some());
-        let shared = Arc::new(Shared { state: Mutex::new(State::new(sounding)), changed: Condvar::new() });
-        let video_origin = origin.clone();
+        let sounding = sound && read.as_ref().is_none_or(|(_, contents)| !contents.sound.is_empty());
+        let captioned = read.as_ref().is_none_or(|(_, contents)| !contents.captions.is_empty());
+        let mut state = State::new(sounding);
+        state.tracks = read.as_ref().map(|(_, contents)| contents.tracks());
+        let shared = Arc::new(Shared { state: Mutex::new(state), changed: Condvar::new() });
+        let (video_origin, caption_origin) = (origin.clone(), origin.clone());
         let mut threads = vec![spawn(&shared, move |shared| video_thread(media, &video_origin, read, shared))];
         if sounding {
             threads.push(spawn(&shared, move |shared| sound_thread(media, &origin, shared)));
         }
-        Ok(Player { shared, threads })
+        if captioned {
+            threads.push(spawn(&shared, move |shared| caption_thread(media, &caption_origin, shared)));
+        }
+        Ok(Player { shared, threads, captions: None })
     }
 
     /// Changes what the threads share, and wakes them.
@@ -610,6 +658,10 @@ impl Player {
     pub(crate) fn set_muted(&mut self, muted: bool) {
         self.change(|state| state.muted = muted);
     }
+    /// Plays at this speed: the clock moves so, and the sound is stretched to it.
+    pub(crate) fn set_speed(&mut self, speed: f32) {
+        self.change(|state| state.clock.set_speed(speed as f64));
+    }
     pub(crate) fn news(&mut self) -> News {
         let mut state = self.shared.lock();
         News { ended: std::mem::take(&mut state.ended), error: state.error.take(), clears_on_play: false }
@@ -620,6 +672,24 @@ impl Player {
         *into = frame.pixels;
         Some((frame.width, frame.at))
     }
+
+    /// The source's tracks, once read.
+    pub(crate) fn tracks(&mut self) -> Option<Tracks> {
+        self.shared.lock().tracks.take()
+    }
+    /// Plays the `nth` sound track: the sound's thread follows.
+    pub(crate) fn choose_sound(&mut self, nth: usize) {
+        self.change(|state| state.sound_track = nth);
+    }
+    pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
+        self.captions = nth;
+    }
+    /// The chosen caption track's text on show, once its cues are read.
+    pub(crate) fn caption(&mut self) -> Option<String> {
+        let at = self.position();
+        let state = self.shared.lock();
+        crate::video_captions::text_at(state.cues.get(self.captions?)?, at)
+    }
 }
 
 impl State {
@@ -628,16 +698,21 @@ impl State {
             playing: false,
             seek_to: Duration::ZERO,
             seeks: 0,
-            clock: Clock { at: Duration::ZERO, since: Instant::now(), running: false },
+            clock: Clock { at: Duration::ZERO, since: Instant::now(), running: false, speed: 1.0 },
             length: None,
             volume: 1.0,
             muted: false,
+            tracks: None,
+            sound_track: 0,
+            cues: Vec::new(),
             frame: None,
             sound_done: !sounding,
             sounding,
             ended: false,
             error: None,
             stop: false,
+            #[cfg(test)]
+            heard: (Vec::new(), 0),
         }
     }
 }
@@ -657,14 +732,93 @@ fn spawn(shared: &Arc<Shared>, run: impl FnOnce(&Shared) + Send + 'static) -> Jo
     std::thread::spawn(move || run(&shared))
 }
 
+/// How captions look: as the system's caption settings say (Settings, Accessibility, Caption
+/// preferences, through `CaptioningManager`) in an app; the usual in a command-line program.
+pub(crate) fn caption_style() -> CaptionStyle {
+    use crate::android_jni::service;
+    let (Some(env), activity) = (crate::android_jni::env(), crate::android::activity()) else { return CaptionStyle::default() };
+    if activity.is_null() {
+        return CaptionStyle::default();
+    }
+    let colour = |argb: i32| Color::rgb(argb as u32 & 0xFF_FFFF).with_alpha((argb as u32 >> 24) as f32 / 255.0);
+    env.frame(|| {
+        let manager = service(env, activity, "captioning");
+        if manager.is_null() {
+            return CaptionStyle::default();
+        }
+        let style = env.call(manager, c"getUserStyle", c"()Landroid/view/accessibility/CaptioningManager$CaptionStyle;", &[]).object();
+        let scale = env.call(manager, c"getFontScale", c"()F", &[]).as_float();
+        CaptionStyle { text: colour(env.int_field(style, c"foregroundColor")), background: colour(env.int_field(style, c"backgroundColor")), scale }
+    })
+}
+
+// ---- the captions' thread ----
+
+/// Reads each caption track's cues (the source's text samples), in turn, into what the threads
+/// share; for an address, finds the tracks first.
+fn caption_thread(media: &'static Media, origin: &Origin, shared: &Shared) {
+    let Ok((_, contents)) = Track::read(media, origin) else { return };
+    for found in &contents.captions {
+        let cues = Track::read(media, origin).map(|(track, _)| track.cues(found)).unwrap_or_default();
+        let mut state = shared.lock();
+        if state.stop {
+            return;
+        }
+        state.cues.push(cues);
+    }
+}
+
+impl Track {
+    /// The cues of a caption track: each text sample until the next.
+    fn cues(&self, found: &Found) -> Vec<Cue> {
+        // SAFETY: a live extractor: only this track is read.
+        unsafe { (self.media.AMediaExtractor_selectTrack)(self.extractor, found.at) };
+        let (mut buffer, mut samples) = (vec![0u8; 64 << 10], Vec::new());
+        while let Some((time, size)) = self.next_sample(&mut buffer) {
+            samples.push((time, cue_text(&found.mime, &buffer[..size])));
+        }
+        let ends = samples.iter().skip(1).map(|(time, _)| *time).chain([Duration::MAX]);
+        samples.iter().zip(ends).filter(|((_, text), _)| !text.is_empty()).map(|((from, text), to)| Cue { from: *from, to, text: text.clone() }).collect()
+    }
+
+    /// The next sample, into `buffer`: its time and size; none after the last.
+    fn next_sample(&self, buffer: &mut [u8]) -> Option<(Duration, usize)> {
+        let m = self.media;
+        // SAFETY: a live extractor, writing within the buffer's room.
+        unsafe {
+            let size = usize::try_from((m.AMediaExtractor_readSampleData)(self.extractor, buffer.as_mut_ptr(), buffer.len())).ok()?;
+            let time = Duration::from_micros((m.AMediaExtractor_getSampleTime)(self.extractor).max(0) as u64);
+            (m.AMediaExtractor_advance)(self.extractor);
+            Some((time, size))
+        }
+    }
+}
+
+/// A caption sample's text: 3GPP timed text's after its length (styles after it dropped); SRT's
+/// and WebVTT's as they are, without their markup.
+fn cue_text(mime: &str, sample: &[u8]) -> String {
+    let text = match (mime, sample) {
+        ("text/3gpp-tt", [high, low, rest @ ..]) => &rest[..(usize::from(*high) << 8 | usize::from(*low)).min(rest.len())],
+        ("text/3gpp-tt", _) => &[],
+        _ => sample,
+    };
+    crate::video_captions::plain(String::from_utf8_lossy(text).trim_end_matches('\0').trim())
+}
+
 // ---- the video's thread ----
 
 /// Reads the source (where `open` did not), decodes the video and shows each frame at its
 /// time: after a seek, the frame at the time asked. Keeps the time where there is no video, and
 /// tells the end.
 fn video_thread(media: &'static Media, origin: &Origin, read: Option<(Track, Contents)>, shared: &Shared) {
+    let tracks_known = read.is_some();
     let played = read.map_or_else(|| Track::read(media, origin), Ok).and_then(|(track, contents)| {
-        shared.lock().length = contents.length;
+        let mut state = shared.lock();
+        state.length = contents.length;
+        if !tracks_known {
+            state.tracks = Some(contents.tracks());
+        }
+        drop(state);
         let mut pictures = Pictures::open(track, contents.video)?;
         play_pictures(pictures.as_mut(), shared)
     });
@@ -703,7 +857,7 @@ fn keep_time(asked: Asked, shared: &Shared) {
     }
     let end = state.length.unwrap_or(asked.now);
     (state.playing, state.ended) = (false, true);
-    state.clock = Clock { at: end, since: Instant::now(), running: false };
+    state.clock = Clock { at: end, since: Instant::now(), running: false, ..state.clock };
 }
 
 /// The video's track, the image reader it decodes into, and where it is.
@@ -960,17 +1114,12 @@ impl Colours {
 
 // ---- the sound's thread ----
 
-/// Decodes the sound and plays it through AAudio while the video plays, from where it is;
-/// moves the clock to the sound's own as it is heard. Where there is no AAudio, no stream or no
-/// decoder, the video plays on without sound.
+/// Decodes the chosen sound track and plays it through AAudio while the video plays, from where
+/// it is, stretched to its speed; moves the clock to the sound's own as it is heard. Where there
+/// is no AAudio, no stream or no decoder, the video plays on without sound.
 fn sound_thread(media: &'static Media, origin: &Origin, shared: &Shared) {
-    let opened = Audio::get().ok_or_else(String::new).and_then(|audio| Ok((audio, Track::read(media, origin)?)));
-    let speaker = opened.and_then(|(audio, (mut track, contents))| {
-        let (at, mime) = contents.sound.ok_or_else(String::new)?;
-        track.decode(at, &mime, null_mut())?;
-        Ok(Speaker { audio, track, stream: None, seeks: 0, skip_to: Duration::ZERO, waiting: Vec::new(), heard_from: None })
-    });
-    let played = speaker.and_then(|mut speaker| speaker.play(shared));
+    let opened = Audio::get().ok_or_else(String::new).and_then(|audio| Speaker::open(audio, media, origin, shared.asked().sound_track));
+    let played = opened.and_then(|mut speaker| speaker.play(shared));
     if played.is_err() {
         shared.lock().sound_done = true;
         shared.rest();
@@ -980,16 +1129,23 @@ fn sound_thread(media: &'static Media, origin: &Origin, shared: &Shared) {
 /// The sound's track, its stream once its format is known, and what waits to be written.
 struct Speaker {
     audio: &'static Audio,
+    media: &'static Media,
+    origin: Origin,
+    /// The sound track it decodes, by its place among the source's.
+    sound_track: usize,
     track: Track,
     stream: Option<Stream>,
     seeks: u32,
     /// Samples before this time are not played (decoded on the way to a seek's time).
     skip_to: Duration,
-    /// Samples decoded and not yet written, and the time of the first.
+    /// Samples decoded, stretched and not yet written.
     waiting: Vec<i16>,
     /// The time of the first sample written since the stream started or was emptied, and the
     /// stream's count of frames written then.
     heard_from: Option<(Duration, i64)>,
+    /// The speed it plays at, and its stretch (made with the stream).
+    speed: f64,
+    stretch: Option<Stretch>,
 }
 
 /// An AAudio stream: its rate and channels, and whether it plays.
@@ -1002,6 +1158,14 @@ struct Stream {
 }
 
 impl Speaker {
+    /// The source's `nth` sound track (its first where there is no such), decoding.
+    fn open(audio: &'static Audio, media: &'static Media, origin: &Origin, nth: usize) -> Result<Speaker, String> {
+        let (mut track, contents) = Track::read(media, origin)?;
+        let found = contents.sound.get(nth).or(contents.sound.first()).ok_or_else(String::new)?;
+        track.decode(found.at, &found.mime, null_mut())?;
+        Ok(Speaker { audio, media, origin: origin.clone(), sound_track: nth, track, stream: None, seeks: 0, skip_to: Duration::ZERO, waiting: Vec::new(), heard_from: None, speed: 1.0, stretch: None })
+    }
+
     /// Plays until the player is dropped; an error where no stream opens.
     fn play(&mut self, shared: &Shared) -> Result<(), String> {
         loop {
@@ -1014,8 +1178,17 @@ impl Speaker {
     }
 
     fn step(&mut self, asked: Asked, shared: &Shared) -> Result<(), String> {
+        if asked.sound_track != self.sound_track {
+            // (Another track: decoded from where the media is.)
+            *self = Speaker::open(self.audio, self.media, &self.origin, asked.sound_track)?;
+            self.seek(asked.seeks, asked.now);
+        }
         if asked.seeks != self.seeks {
             self.seek(asked.seeks, asked.seek_to);
+        }
+        if asked.speed != self.speed {
+            (self.speed, self.heard_from) = (asked.speed, None);
+            self.stretch = self.stream.as_ref().map(|stream| Stretch::new(stream.channels, stream.rate));
         }
         if !asked.playing {
             if let Some(stream) = &mut self.stream {
@@ -1028,7 +1201,7 @@ impl Speaker {
         stream.set_playing(true);
         let written = stream.write(&self.waiting);
         self.waiting.drain(..written * stream.channels);
-        if let Some(heard) = self.heard_from.and_then(|from| stream.heard(from)) {
+        if let Some(heard) = self.heard_from.and_then(|from| stream.heard(from, self.speed)) {
             follow(heard, shared);
         }
         Ok(())
@@ -1040,11 +1213,12 @@ impl Speaker {
         self.track.seek(to);
         if let Some(stream) = &mut self.stream {
             stream.empty();
+            self.stretch = Some(Stretch::new(stream.channels, stream.rate));
         }
     }
 
-    /// Decodes the next samples into `waiting`, at the volume asked; opens the stream for the
-    /// first.
+    /// Decodes the next samples into `waiting`, at the volume asked, stretched to the speed;
+    /// opens the stream for the first.
     fn decode(&mut self, volume: f32, shared: &Shared) -> Result<(), String> {
         self.track.feed();
         let Some((at, info)) = self.track.output(Duration::from_millis(10))? else { return Ok(()) };
@@ -1055,40 +1229,111 @@ impl Speaker {
             return Ok(());
         }
         if self.stream.is_none() {
-            self.stream = Some(Stream::open(self.audio, &self.track).ok_or("no sound stream")?);
+            let stream = Stream::open(self.audio, &self.track).ok_or("no sound stream")?;
+            self.stretch = Some(Stretch::new(stream.channels, stream.rate));
+            self.stream = Some(stream);
         }
         let time = Duration::from_micros(info.time_us.max(0) as u64);
         let float = self.track.output_number(c"pcm-encoding") == Some(PCM_FLOAT);
-        let samples = samples(self.track.bytes(at, &info), float, volume);
+        let samples = samples(self.track.bytes(at, &info), float);
         self.track.release(at, false);
-        let Some(stream) = &self.stream else { return Ok(()) };
+        let (Some(stream), Some(stretch)) = (&self.stream, &mut self.stretch) else { return Ok(()) };
         let skipped = self.skip_to.saturating_sub(time).as_secs_f64() * f64::from(stream.rate);
         let skipped = (skipped as usize * stream.channels).min(samples.len());
         if skipped < samples.len() && self.heard_from.is_none() {
             let first = time + Duration::from_secs_f64(skipped as f64 / stream.channels as f64 / f64::from(stream.rate));
             self.heard_from = Some((first, stream.written()));
         }
-        self.waiting = samples[skipped..].to_vec();
+        self.waiting = stretch.apply(&samples[skipped..], self.speed);
+        #[cfg(test)]
+        {
+            let first: Vec<f32> = self.waiting.iter().step_by(stream.channels).map(|sample| f32::from(*sample) / 32768.0).collect();
+            shared.lock().heard = (first, stream.rate as u32);
+        }
+        // (The volume last: a muted video is still heard here in tests.)
+        self.waiting.iter_mut().for_each(|sample| *sample = (f32::from(*sample) * volume) as i16);
         Ok(())
     }
 }
 
-/// 16-bit samples from a decoder's bytes (16-bit, or float), at a volume.
-fn samples(bytes: &[u8], float: bool, volume: f32) -> Vec<i16> {
-    let scale = |sample: f32| (sample * volume).clamp(-32768.0, 32767.0) as i16;
+/// 16-bit samples from a decoder's bytes (16-bit, or float).
+fn samples(bytes: &[u8], float: bool) -> Vec<i16> {
     if float {
-        bytes.as_chunks::<4>().0.iter().map(|sample| scale(f32::from_le_bytes(*sample) * 32767.0)).collect()
+        bytes.as_chunks::<4>().0.iter().map(|sample| (f32::from_le_bytes(*sample) * 32767.0).clamp(-32768.0, 32767.0) as i16).collect()
     } else {
-        bytes.as_chunks::<2>().0.iter().map(|sample| scale(f32::from(i16::from_le_bytes(*sample)))).collect()
+        bytes.as_chunks::<2>().0.iter().map(|sample| i16::from_le_bytes(*sample)).collect()
     }
 }
 
 /// Moves the clock to the sound's time where they are more than 40 ms apart.
 fn follow((heard, at): (Duration, Instant), shared: &Shared) {
     let mut state = shared.lock();
-    let clock = Clock { at: heard, since: at, running: true };
+    let clock = Clock { at: heard, since: at, ..state.clock };
     if state.clock.running && state.clock.now().abs_diff(clock.now()) > Duration::from_millis(40) {
         state.clock.set(heard, at);
+    }
+}
+
+/// Sound made faster or slower at the same pitch (WSOLA): windows of 30 ms, each laid half over
+/// the last, each taken from the input near where it is due, where it best continues the last.
+struct Stretch {
+    channels: usize,
+    /// A window's frames.
+    window: usize,
+    /// Samples not yet used, and where in them the next window is due, in frames.
+    input: Vec<f32>,
+    due: f64,
+    /// The last window's second half, to add to the next's first.
+    tail: Vec<f32>,
+    /// What followed the last window's first half in the input (first channel), which the next
+    /// window should continue.
+    follows: Vec<f32>,
+}
+
+impl Stretch {
+    fn new(channels: usize, rate: i32) -> Stretch {
+        let window = ((rate.max(8000) as usize * 3 / 100) & !1).max(32);
+        Stretch { channels: channels.max(1), window, input: Vec::new(), due: 0.0, tail: vec![0.0; window / 2 * channels.max(1)], follows: Vec::new() }
+    }
+
+    /// The stretched sound of these samples (what is due of them so far: the rest waits for the
+    /// next); as they are at the usual speed.
+    fn apply(&mut self, samples: &[i16], speed: f64) -> Vec<i16> {
+        if speed == 1.0 && self.input.is_empty() {
+            return samples.to_vec();
+        }
+        self.input.extend(samples.iter().map(|sample| f32::from(*sample)));
+        let (half, reach, channels) = (self.window / 2, self.window / 4, self.channels);
+        let mut out = Vec::new();
+        while self.due as usize + reach + self.window <= self.input.len() / channels {
+            let start = self.best(self.due as usize, reach);
+            self.lay(start, &mut out);
+            self.due += half as f64 * speed;
+        }
+        let used = (self.due as usize).saturating_sub(reach);
+        self.input.drain(..used * channels);
+        self.due -= used as f64;
+        out.into_iter().map(|sample| sample.round().clamp(-32768.0, 32767.0) as i16).collect()
+    }
+
+    /// Where near `due` a window best continues the last: the most alike to what followed it.
+    fn best(&self, due: usize, reach: usize) -> usize {
+        if self.follows.is_empty() {
+            return due;
+        }
+        let alike = |start: usize| -> f32 { self.follows.iter().step_by(4).enumerate().map(|(at, follows)| self.input[(start + at * 4) * self.channels] * follows).sum() };
+        (due.saturating_sub(reach)..=due + reach).step_by(2).max_by(|one, other| alike(*one).total_cmp(&alike(*other))).unwrap_or(due)
+    }
+
+    /// Lays the window from `start` (Hann-shaped, so two halves sum to the whole): its first
+    /// half added to the last's second, into `out`; its second half kept.
+    fn lay(&mut self, start: usize, out: &mut Vec<f32>) {
+        let (half, channels) = (self.window / 2, self.channels);
+        let shape = |at: usize| 0.5 - 0.5 * (std::f32::consts::TAU * at as f32 / self.window as f32).cos();
+        let sample = |at: usize, channel: usize| self.input[(start + at) * channels + channel] * shape(at);
+        out.extend((0..half * channels).map(|at| self.tail[at] + sample(at / channels, at % channels)));
+        self.tail = (0..half * channels).map(|at| sample(half + at / channels, at % channels)).collect();
+        self.follows = (0..half).map(|at| self.input[(start + half + at) * channels]).collect();
     }
 }
 
@@ -1142,8 +1387,9 @@ impl Stream {
         unsafe { (self.audio.AAudioStream_getFramesWritten)(self.stream) }
     }
 
-    /// The media time heard at an instant: from the frame the stream last played, and when.
-    fn heard(&self, (first, written): (Duration, i64)) -> Option<(Duration, Instant)> {
+    /// The media time heard at an instant, played at `speed`: from the frame the stream last
+    /// played, and when.
+    fn heard(&self, (first, written): (Duration, i64), speed: f64) -> Option<(Duration, Instant)> {
         let (mut frame, mut nanos, mut now) = (0, 0, [0; 2]);
         // SAFETY: a live stream; a clock this system has.
         let known = unsafe { (self.audio.AAudioStream_getTimestamp)(self.stream, MONOTONIC, &mut frame, &mut nanos) == 0 && clock_gettime(MONOTONIC, &mut now) == 0 };
@@ -1151,7 +1397,7 @@ impl Stream {
             return None;
         }
         let ago = Duration::new(now[0] as u64, now[1] as u32).saturating_sub(Duration::from_nanos(nanos as u64));
-        let heard = first + Duration::from_secs_f64((frame - written) as f64 / f64::from(self.rate));
+        let heard = first + Duration::from_secs_f64((frame - written) as f64 * speed / f64::from(self.rate));
         Some((heard, Instant::now().checked_sub(ago)?))
     }
 }
@@ -1160,5 +1406,40 @@ impl Drop for Stream {
     fn drop(&mut self) {
         // SAFETY: the stream is this one's.
         unsafe { (self.audio.AAudioStream_close)(self.stream) };
+    }
+}
+
+#[cfg(test)]
+impl Player {
+    /// The sound last handed to the speaker, its first channel, and its rate; none before any
+    /// (or with no sound device).
+    pub(crate) fn heard(&mut self) -> Option<(Vec<f32>, u32)> {
+        let heard = self.shared.lock().heard.clone();
+        (!heard.0.is_empty()).then_some(heard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// How many times a second a sound at 8 kHz crosses zero, halved: a tone's Hz.
+    fn hertz(samples: &[i16]) -> f32 {
+        let crossings = samples.windows(2).filter(|two| (two[0] < 0) != (two[1] < 0)).count();
+        crossings as f32 * 8000.0 / samples.len() as f32 / 2.0
+    }
+
+    #[test]
+    fn stretched_sound_keeps_its_pitch_and_takes_the_time_its_speed_says() {
+        let tone: Vec<i16> = (0..16_000).map(|at| ((at as f32 * 400.0 / 8000.0 * std::f32::consts::TAU).sin() * 8000.0) as i16).collect();
+        for speed in [2.0, 0.5, 1.5] {
+            let mut stretch = Stretch::new(1, 8000);
+            let out: Vec<i16> = tone.chunks(800).flat_map(|chunk| stretch.apply(chunk, speed)).collect();
+            let expected = tone.len() as f64 / speed;
+            // (The last window and its reach wait for more.)
+            assert!((out.len() as f64 - expected).abs() < 2.0 * stretch.window as f64 / speed, "at {speed}×: {} samples, not about {expected}", out.len());
+            let heard = hertz(&out[stretch.window..]);
+            assert!((heard - 400.0).abs() < 20.0, "at {speed}× the tone is {heard} Hz");
+        }
     }
 }

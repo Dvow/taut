@@ -300,7 +300,12 @@ impl Ui {
         let (at, end) = (self.tree.specs.len() as u32, self.tracks.len() as u32);
         self.note_body(all.id, at);
         self.join_next = true;
-        self.column().key(BODY).grow().scroll().scroll_x().open();
+        let stripes = std::mem::take(&mut self.grids.stripes);
+        let rows = self.column().key(BODY).grow().scroll().scroll_x();
+        match stripes.is_none() {
+            true => rows.open(),
+            false => rows.stripes(stripes).open(),
+        };
         self.measures.push(Measure { at, within: at, id: body, read });
         if let Some(open) = self.open.last_mut() {
             open.columns = [first, end];
@@ -499,6 +504,14 @@ impl Ui {
         if first == NONE { row } else { row.sense() }
     }
 
+    /// Adds `count` columns, all shown and in order, for a table laid out elsewhere (a
+    /// document's) to tell screen readers. Returns their range in the window's list.
+    pub(crate) fn plain_columns(&mut self, count: usize) -> [u32; 2] {
+        let first = self.tracks.len() as u32;
+        self.tracks.extend((0..count as u32).map(|place| Track { x: 0.0, width: 0.0, under: 0.0, eager: 0.0, side: Align::Start, shows: true, place }));
+        [first, self.tracks.len() as u32]
+    }
+
     /// The table the open box is in, for screen readers: the index of the note it was told by.
     /// (None outside a table, or while nobody listens.)
     pub(crate) fn open_table_note(&self) -> Option<usize> {
@@ -590,8 +603,13 @@ impl Ui {
         }
         self.measures.push(Measure { at: self.tree.specs.len() as u32, within, id, read });
         // A box as tall as all rows together, so the scroll bar is right; in it, a spacer for
-        // the rows above the visible ones, then those.
-        self.column().h(Length::Px(((count - left_out) as f64 * high) as f32)).open();
+        // the rows above the visible ones, then those. (Striped, it is as wide as its room.)
+        let stripes = self.take_stripes();
+        let all = self.column().h(Length::Px(((count - left_out) as f64 * high) as f32));
+        match stripes.is_none() {
+            true => all.open(),
+            false => all.w(Length::Grow(1.0)).row_stripes(stripes, rows.start as u32).open(),
+        };
         self.el().h(Length::Px((rows.start.saturating_sub(left_out) as f64 * high) as f32)).show();
         // (Rows number from the first of all, not the first visible: so a row stays the same
         // row however the list scrolls, and what pointer and keyboard are doing with it stays
@@ -643,6 +661,25 @@ impl Ui {
             self.tree.shifted.push((within, (now as f64 * high) as f32));
         }
         (now, above)
+    }
+
+    /// The colour a long list's rows are striped in: asked for (`striped_rows`), or the stripes
+    /// of the box it is in, which it takes over (else that box would stripe the list as one
+    /// line). None if neither.
+    fn take_stripes(&mut self) -> Color {
+        let asked = std::mem::take(&mut self.grids.stripes);
+        let Some(around) = self.open.last().map(|open| open.at as usize) else { return asked };
+        let Content::Stripes { color, .. } = self.tree.specs[around].content else { return asked };
+        self.tree.specs[around].content = Content::None;
+        if asked.is_none() { color } else { asked }
+    }
+
+    /// Stripes the rows of the next list, table or tree view: every other row from the second
+    /// filled with `color`, under what the row draws (its selection and hover show over it).
+    /// Rows kept in view ([`frozen`](crate::El::frozen)) are passed over. (Around rows of your
+    /// own, [`El::stripes`](crate::El::stripes) on their box does it.)
+    pub fn striped_rows(&mut self, color: Color) {
+        self.grids.stripes = color;
     }
 
     /// Starts a long list in its own scroll box: `rows`, and the box around them. Describe the

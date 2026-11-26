@@ -276,6 +276,7 @@ mod reader {
     const PROGRESS_BAR: c_int = 42;
     const BUTTON: c_int = 43;
     const SLIDER: c_int = 51;
+    const SPIN_BUTTON: c_int = 52;
     const TABLE: c_int = 55;
     const TABLE_CELL: c_int = 56;
     const TABLE_ROW: c_int = 90;
@@ -1034,6 +1035,28 @@ mod reader {
         Ok(())
     }
 
+    /// The page of form parts: a number box and a time's minutes are spin buttons, set by the
+    /// screen reader by value (as near as their range allows) and by text.
+    fn numbers_and_times_are_set(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
+        let (atspi, frame) = (&reader.atspi, landmarks.frame);
+        reader.press(reader.find(frame, PAGE_TAB, "More")?)?;
+        let spins = || Ok::<Vec<Thing>, Gone>(reader.below(frame)?.into_iter().map(|(thing, _)| thing).filter(|thing| reader.role(*thing).is_ok_and(|kind| kind == SPIN_BUTTON)).collect());
+        check("the page of form parts is picked: its number and time fields are spin buttons", reader.wait(5.0, || Ok(spins()?.len() >= 3)), "");
+        let number = spins()?.first().copied().unwrap_or(Thing::NONE);
+        let value = |of: Thing| reader.ask(&atspi.atspi_value_get_current_value, of);
+        let range = (reader.ask(&atspi.atspi_value_get_minimum_value, number)?, reader.ask(&atspi.atspi_value_get_maximum_value, number)?);
+        check("  the number box says between what its number goes", range == (0.0, 99.0), &format!("{range:?}"));
+        let set = reader.set_value(number, 42.0)?;
+        check("  its number is set by value", set && reader.wait(5.0, || Ok(value(number)? == 42.0)), &short(value(number)?));
+        let set = reader.set_value(number, 500.0)?;
+        check("  a number beyond its range goes to its end", set && reader.wait(5.0, || Ok(value(number)? == 99.0)), &short(value(number)?));
+        check("  its number is set by text, as typed", reader.put_text(number, c"7")? && reader.wait(5.0, || Ok(value(number)? == 7.0)), &short(value(number)?));
+        let minutes = reader.find(frame, SPIN_BUTTON, "Minutes")?;
+        let set = reader.set_value(minutes, 45.0)?;
+        check("  a time's minutes are set by value", set && reader.wait(5.0, || Ok(value(minutes)? == 45.0)), &short(value(minutes)?));
+        Ok(())
+    }
+
     /// The page with the table: libatspi, by its own functions for tables, reads it as a
     /// table of all its rows and its columns, a cell at a row in view and a column, where
     /// the cell says it is, under the heading of its column. A cell in a row out of view is
@@ -1343,6 +1366,7 @@ mod reader {
         buttons_are_pressed(reader, &landmarks)?;
         another_page_is_picked(reader, &landmarks)?;
         a_table(reader, &landmarks)?;
+        numbers_and_times_are_set(reader, &landmarks)?;
         a_tree(reader, &landmarks)?;
         text_is_put_in(reader, &landmarks)?;
         let keys = open_keys();

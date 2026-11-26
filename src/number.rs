@@ -10,8 +10,8 @@
 //! or is out of bounds, is refused: the number stays, a note under the box says why while it is
 //! typed into (screen readers hear it too), and when focus leaves, the box shows the number
 //! again. Text that may still become one ("-", "1.") is waited for silently. The number is
-//! written with the person's decimal mark ([`ui.locale`](Ui::locale)) and read back with it or
-//! with a point.
+//! written with the person's digits and decimal mark ([`ui.locale`](Ui::locale)) and read back
+//! with them, or with 0–9 and a point.
 use crate::accessibility::Role;
 use crate::color::Color;
 use crate::event::{Key, Mods};
@@ -143,7 +143,7 @@ impl Ui {
         // Up and Down are taken before the text box sees them: there they would move within its
         // line.
         let keys = if self.focus == self.next_id() { self.number_keys() } else { 0.0 };
-        let state = self.entry_box(written, locale.decimal_point, "");
+        let state = self.entry_box(written, locale, "");
         if !unit.is_empty() {
             self.el().grow().pad((0.0, 0.0, 8.0, 0.0)).text(unit, t.font, t.text_dim).text_align(Align::End).show();
         }
@@ -197,7 +197,7 @@ impl Ui {
     /// `beyond`), in a note over what is under it that takes no clicks; screen readers hear it
     /// when `just` typed.
     fn refuse(&mut self, of: &Response, refused: Refused, beyond: &str, just: bool) {
-        let (t, words, locale) = (self.theme, self.number_words, self.formats());
+        let (t, words, locale) = (self.theme, self.number_words, self.locale_in_use());
         let mut said = String::from(words[refused as usize]);
         if !beyond.is_empty() {
             said.push(' ');
@@ -224,10 +224,11 @@ impl Ui {
     }
 
     /// A text box for something the app does not hold as text (a number, a colour). Shows
-    /// `value` (with `point` as decimal mark) until typed into, then the typed text while
-    /// focused, and `hint` while empty, which is also its name for screen readers. `changed`
-    /// says it was just typed into: its text is then in `self.entry`.
-    pub(crate) fn entry_box(&mut self, value: Arguments, point: char, hint: &str) -> Response {
+    /// `value` (a number as Rust writes it, in `locale`'s digits and decimal mark) until typed
+    /// into, then the typed text while focused, and `hint` while empty, which is also its name
+    /// for screen readers. `changed` says it was just typed into: its text is then in
+    /// `self.entry`.
+    pub(crate) fn entry_box(&mut self, value: Arguments, locale: Locale, hint: &str) -> Response {
         let id = self.next_id();
         let (mine, fresh) = (self.focus == id, self.entry.0 != id);
         // The box being typed into has its own text; all others share one.
@@ -236,8 +237,9 @@ impl Ui {
             text.clear();
             let _ = text.write_fmt(value);
         }
-        if (!mine || fresh) && point != '.' && text.contains('.') {
-            text = text.replace('.', point.encode_utf8(&mut [0; 4]));
+        if (!mine || fresh) && (locale.decimal_point != '.' || locale.zero_digit != '0') {
+            let rust = std::mem::take(&mut text);
+            locale.write_number(&mut text, &rust, false);
         }
         // Typing in it starts or stops.
         if mine == fresh {

@@ -952,6 +952,31 @@ pub(crate) mod tests {
             Scene { ui, size, under: vec![0xff12_3456; cpu.pixels.len()], cpu: cpu.pixels }
         }
 
+        /// A see-through panel over the scene, its layer kept by a redraw on the CPU, then faded
+        /// further: the GPU lays the layer, not drawing what is in it.
+        #[cfg(windows)]
+        pub(crate) fn faded(scale: f32) -> Scene {
+            let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
+            ui.resize(Size { w: 360.0, h: 210.0 }, scale);
+            let mut pictures = None;
+            let mut describe = |ui: &mut Ui, solid: f32| {
+                ui.el().flow(crate::Flow::Stack).grow().open();
+                every_kind(ui, &mut pictures);
+                ui.column().place(crate::Align::Center).pad(12.0).fill(Color::WHITE).radius(8.0).opacity(solid).open();
+                ui.label("Faded words");
+                ui.close();
+                ui.close();
+            };
+            ui.run(&mut |ui| describe(ui, 0.6));
+            let mut kept = Surface::draw(&mut ui, 64);
+            kept.pixels.fill(0);
+            kept.redraw(&mut ui, crate::geom::rect(0.0, 0.0, 360.0, 210.0));
+            ui.run(&mut |ui| describe(ui, 0.35));
+            let cpu = Surface::draw(&mut ui, 64);
+            let size = [cpu.width as i32, cpu.height as i32];
+            Scene { ui, size, under: vec![0xff12_3456; cpu.pixels.len()], cpu: cpu.pixels }
+        }
+
         /// Records the scene into `list`, all of the window.
         pub(crate) fn record(&mut self, list: &mut DrawList) {
             list.begin(self.size);

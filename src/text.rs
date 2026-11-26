@@ -171,8 +171,8 @@ pub struct Line {
 /// than a line) wherever it must, but never before a zero-width character: that belongs to the
 /// one before (an accent after its letter, a flag's second half). `stops` are its character
 /// ends, as `measure` gives them for the whole text on one line. (With `brahmic`, text without
-/// spaces between words, Thai, Lao, Khmer and Burmese, also breaks at word boundaries the
-/// system knows, and where it must, between syllables: see `line_breaks.rs`.)
+/// spaces between words, Thai, Lao, Khmer and Burmese, also breaks between words, and where it
+/// must, between syllables: see `line_breaks.rs`.)
 pub fn wrap(text: &str, stops: &[f32], max: f32, lines: &mut Vec<Line>) {
     let x_at = |n: usize| if n == 0 { 0.0 } else { stops[n - 1] };
     let unspaced = cfg!(feature = "brahmic") && text.chars().any(crate::line_breaks::unspaced);
@@ -894,19 +894,21 @@ mod tests {
     fn thai_breaks_between_words_where_the_system_knows_them_and_else_between_syllables() {
         // ภาษาไทยเป็นภาษาที่สวยงาม ("Thai is a beautiful language"), each character 10 wide
         // except zero-width marks. No line ends with a preposed vowel, and none starts with a
-        // vowel or sign that follows its consonant; and on Windows, where no word is wider than
-        // a line (the widest, สวยงาม, is 60), every line ends at a Windows word boundary.
+        // vowel or sign that follows its consonant; and where no word is wider than a line, every
+        // line ends between words.
         let text = "\u{e20}\u{e32}\u{e29}\u{e32}\u{e44}\u{e17}\u{e22}\u{e40}\u{e1b}\u{e47}\u{e19}\u{e20}\u{e32}\u{e29}\u{e32}\u{e17}\u{e35}\u{e48}\u{e2a}\u{e27}\u{e22}\u{e07}\u{e32}\u{e21}";
         let mark = |letter: char| matches!(letter as u32, 0xe31 | 0xe34..=0xe3a | 0xe47..=0xe4e);
         let stops: Vec<f32> = text.chars().scan(0.0, |x, letter| Some((*x += if mark(letter) { 0.0 } else { 10.0 }, *x).1)).collect();
         let words = crate::line_breaks::words(text);
+        let ends: Vec<usize> = [0].into_iter().chain(words.iter().copied()).chain([stops.len()]).collect();
+        let widest = ends.windows(2).map(|pair| stops[pair[1] - 1] - if pair[0] == 0 { 0.0 } else { stops[pair[0] - 1] }).fold(0.0, f32::max);
         for max in [35.0, 45.0, 60.0, 80.0] {
             let mut lines = Vec::new();
             wrap(text, &stops, max, &mut lines);
             for line in &lines[1..] {
                 let (letters, n) = (text.chars().collect::<Vec<_>>(), text[..line.start].chars().count());
                 assert!(crate::line_breaks::between(&letters, n), "{max}: a syllable broken at {n}");
-                assert!(words.is_empty() || words.contains(&n) || max < 60.0, "{max}: not between words at {n}");
+                assert!(words.is_empty() || words.contains(&n) || max < widest, "{max}: not between words at {n}");
             }
         }
     }

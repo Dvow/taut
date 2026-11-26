@@ -206,6 +206,27 @@ mod tests {
         (top as usize..bottom as usize).flat_map(|y| (left as usize..right as usize).map(move |x| shown.1.get(y * shown.0 + x).copied().unwrap_or(0))).collect()
     }
 
+    /// The formats line follows the app's language as the system sets it (a configuration
+    /// change, the app running on), written as Android's `java.text` and ICU write each place:
+    /// its digits, separators, group sizes, date order, 12 or 24 hours and AM/PM's place.
+    fn formats(out: &Path, wrong: &mut Vec<String>) {
+        let app = "taut.example.system_parts";
+        let places = [
+            ("ar-EG", "Formats: ١٬٢٣٤٬٥٦٧٫٥ · ٧/٣/٢٠٢٦ · ٢:٠٥ م"),
+            ("hi-IN", "Formats: 12,34,567.5 · 7/3/2026 · 2:05 pm"),
+            ("ko-KR", "Formats: 1,234,567.5 · 2026.3.7 · 오후 2:05"),
+            ("de-DE", "Formats: 1.234.567,5 · 7.3.2026 · 14:05"),
+        ];
+        for (place, wanted) in places {
+            shell(&format!("cmd locale set-app-locales {app} --locales {place}"));
+            if wait_for(out, wanted).is_none() {
+                let shown = named(&dump(out, "formats"), "Formats:").map_or_else(String::new, |node| node.text.clone());
+                wrong.push(format!("{place}: {shown:?}, not {wanted:?}"));
+            }
+        }
+        shell(&format!("cmd locale set-app-locales {app} --locales en-US"));
+    }
+
     /// Faces named by family are drawn in other fonts than the system's.
     fn named_faces(out: &Path, wrong: &mut Vec<String>) {
         let nodes = dump(out, "faces");
@@ -471,6 +492,7 @@ mod tests {
         if wait_for(&out, "Drag me").is_none() {
             panic!("the app did not show");
         }
+        formats(&out, &mut wrong);
         named_faces(&out, &mut wrong);
         spelling(&out, &mut wrong);
         composing(&out, &keystore, &mut wrong);

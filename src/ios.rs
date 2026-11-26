@@ -121,6 +121,8 @@ pub(crate) enum Heard {
     Resized,
     /// The system's looks changed: dark or light, contrast, motion, text size.
     Looks,
+    /// The user's locale or its formats changed: everything is written again.
+    Locale,
     /// The keyboard covers this much of the view's bottom now, in points.
     Keyboard(f64),
     /// The program went to the background (`true`) or came back.
@@ -322,7 +324,7 @@ extern "C" fn woken(_: *mut c_void) {
 /// notices.
 fn delegate_class() -> Obj {
     let notice = "v@:@";
-    let methods: [(&CStr, *const c_void, &str); 9] = [
+    let methods: [(&CStr, *const c_void, &str); 10] = [
         (c"application:didFinishLaunchingWithOptions:", launched as *const c_void, "B@:@@"),
         (c"application:configurationForConnectingSceneSession:options:", scene_configuration as *const c_void, "@@:@@@"),
         (c"enteredBackground:", entered_background as *const c_void, notice),
@@ -331,6 +333,7 @@ fn delegate_class() -> Obj {
         (c"resigningActive:", resigning_active as *const c_void, notice),
         (c"terminating:", terminating as *const c_void, notice),
         (c"looksChanged:", looks_changed as *const c_void, notice),
+        (c"localeChanged:", locale_changed as *const c_void, notice),
         (c"keyboardMoved:", keyboard_moved as *const c_void, notice),
     ];
     made_class(c"TautAppDelegate", c"UIResponder", &methods, &[c"UIApplicationDelegate"])
@@ -362,6 +365,7 @@ extern "C" fn launched(delegate: Obj, _: Sel, _: Obj, _: Obj) -> Bool {
             (UIContentSizeCategoryDidChangeNotification, c"looksChanged:"),
             (UIAccessibilityReduceMotionStatusDidChangeNotification, c"looksChanged:"),
             (UIAccessibilityDarkerSystemColorsStatusDidChangeNotification, c"looksChanged:"),
+            (crate::macos_sys::NSCurrentLocaleDidChangeNotification, c"localeChanged:"),
             (UIKeyboardWillChangeFrameNotification, c"keyboardMoved:"),
             (UIKeyboardWillHideNotification, c"keyboardMoved:"),
         ];
@@ -437,6 +441,11 @@ extern "C" fn terminating(_: Obj, _: Sel, _: Obj) {
 
 extern "C" fn looks_changed(_: Obj, _: Sel, _: Obj) {
     heard(Heard::Looks);
+}
+
+/// The user's locale or its formats changed: they are read again, and the window runs.
+extern "C" fn locale_changed(_: Obj, _: Sel, _: Obj) {
+    heard(Heard::Locale);
 }
 
 /// The keyboard moves: how much of the view's bottom it will cover.
@@ -1068,6 +1077,10 @@ impl Host {
             Heard::Event(event) => self.rerun |= self.ui.event(event),
             Heard::Resized => self.rerun |= self.measure(),
             Heard::Looks => self.rerun |= self.ui.set_preferences(preferences(self.view)) | self.ui.set_screens(screens()),
+            Heard::Locale => {
+                crate::locale::changed();
+                self.rerun = true;
+            }
             Heard::Keyboard(covered) => {
                 self.keyboard = covered;
                 self.rerun |= self.measure();

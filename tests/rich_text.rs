@@ -121,10 +121,12 @@ fn a_document_is_told_as_a_document() {
         words(Role::Quote, ""),
         words(Role::Paragraph, "quoted"),
         words(Role::Code, "fn main() {}"),
-        words(Role::Paragraph, "a"),
-        words(Role::Paragraph, "b"),
-        words(Role::Paragraph, "1"),
-        words(Role::Paragraph, "2"),
+        words(Role::Table, ""),
+        words(Role::ColumnHeader, "a"),
+        words(Role::ColumnHeader, "b"),
+        words(Role::TableRow, "1, 2"),
+        words(Role::Cell, "1"),
+        words(Role::Cell, "2"),
         words(Role::Link, "link"),
     ];
     assert_eq!(given, expected);
@@ -229,4 +231,146 @@ fn code_is_coloured_by_its_language_and_pictures_are_given_by_name() {
     w.run(&mut build(&doc));
     w.run(&mut build(&doc));
     assert_eq!(w.screen.pixels.iter().filter(|pixel| **pixel == 0xffff_0000).count(), 1);
+}
+
+/// A document in a scroll box filling the window.
+fn scrolled(doc: &Markdown) -> impl FnMut(&mut Ui) + '_ {
+    move |ui: &mut Ui| {
+        ui.column().grow().scroll().open();
+        ui.markdown(doc);
+        ui.close();
+    }
+}
+
+#[test]
+fn a_documents_table_is_told_as_rows_and_cells_under_its_headings() {
+    let mut w = window(1.0);
+    w.set_screen_reader(true);
+    let doc = Markdown::parse("| Name | Size |\n|---|--:|\n| a | 1 |\n| b | 2 |\n");
+    settle(&mut w, build(&doc));
+    let nodes = w.visible_access_nodes().to_vec();
+    let table = nodes.iter().position(|node| node.role == Role::Table).expect("a table");
+    assert_eq!(nodes[table].grid, Some([2, 2]), "two rows of two columns, the headings apart");
+    let under = |role: Role| nodes.iter().filter(move |node| node.role == role);
+    let heads: Vec<_> = under(Role::ColumnHeader).map(|node| (node.name.as_str(), node.position, node.parent)).collect();
+    assert_eq!(heads, [("Name", Some([1, 2]), Some(table)), ("Size", Some([2, 2]), Some(table))]);
+    let rows: Vec<_> = under(Role::TableRow).map(|node| (node.name.as_str(), node.position)).collect();
+    assert_eq!(rows, [("a, 1", Some([1, 2])), ("b, 2", Some([2, 2]))]);
+    let cells: Vec<_> = under(Role::Cell).map(|node| (node.name.as_str(), node.grid)).collect();
+    assert_eq!(cells, [("a", Some([0, 0])), ("1", Some([0, 1])), ("b", Some([1, 0])), ("2", Some([1, 1]))]);
+}
+
+#[test]
+fn the_selection_in_a_document_is_told_in_each_block_it_covers() {
+    let mut w = window(1.0);
+    w.set_screen_reader(true);
+    let doc = Markdown::parse("Hello brave new world\n\nA second *block* of words.\n");
+    settle(&mut w, build(&doc));
+    assert!(w.visible_access_nodes().iter().all(|node| node.caret.is_none()));
+    // From "brave" into the second block: each block is told its part, in characters, from
+    // where the selection was started to where it was taken.
+    drag(&mut w, pt(74.0, 10.0), pt(26.0, 41.0), build(&doc));
+    assert_eq!(expect_node_as(&w, Role::Paragraph, "Hello brave new world").caret, Some([6, 21]));
+    assert_eq!(expect_node_as(&w, Role::Paragraph, "A second block of words.").caret, Some([0, 2]));
+}
+
+#[test]
+fn a_links_title_shows_while_it_is_hovered_and_is_told() {
+    let mut w = window(1.0);
+    w.set_screen_reader(true);
+    let doc = Markdown::parse("See [the guide](https://example.com \"How it all works\") first.\n");
+    settle(&mut w, build(&doc));
+    let link = expect_node_as(&w, Role::Link, "the guide");
+    assert_eq!(link.description, "How it all works");
+    assert!(find_node(&w, "How it all works").is_none());
+    // Once the pointer rests on it, its title shows by it.
+    does(&mut w, Event::Move(middle(link.rect)), build(&doc));
+    w.set_time(Duration::from_secs(1));
+    settle(&mut w, build(&doc));
+    assert!(find_node(&w, "How it all works").is_some_and(|tip| tip.rect.y >= link.rect.bottom()));
+}
+
+#[test]
+fn a_documents_context_menu_copies_selects_all_and_copies_a_link() {
+    let mut w = window(1.0);
+    w.set_screen_reader(true);
+    let doc = Markdown::parse("Some [words](https://example.com/w) here.\n");
+    settle(&mut w, build(&doc));
+    let right_click = |w: &mut Window, at| {
+        for event in [Event::Move(at), Event::Press(taut::Button::Right, Mods::NONE), Event::Release(taut::Button::Right)] {
+            does(w, event, build(&doc));
+        }
+        w.run(&mut build(&doc));
+    };
+    // On its text: copy (nothing to copy yet) and select all; no link to copy.
+    right_click(&mut w, pt(10.0, 10.0));
+    assert!(!expect_node_as(&w, Role::MenuItem, "Copy").enabled);
+    assert!(find_node_as(&w, Role::MenuItem, "Copy link").is_none());
+    let at = middle(expect_node_as(&w, Role::MenuItem, "Select all").rect);
+    click(&mut w, at, build(&doc));
+    right_click(&mut w, pt(10.0, 10.0));
+    let at = middle(expect_node_as(&w, Role::MenuItem, "Copy").rect);
+    click(&mut w, at, build(&doc));
+    assert_eq!(w.clipboard().as_deref(), Some("Some words here."));
+    // On the link: its address too.
+    let at = middle(expect_node_as(&w, Role::Link, "words").rect);
+    right_click(&mut w, at);
+    let at = middle(expect_node_as(&w, Role::MenuItem, "Copy link").rect);
+    click(&mut w, at, build(&doc));
+    assert_eq!(w.clipboard().as_deref(), Some("https://example.com/w"));
+}
+
+#[test]
+fn a_selection_dragged_past_the_views_edge_scrolls_it() {
+    let mut w = window(1.0);
+    let text: String = (0..60).map(|n| format!("Paragraph {n}.\n\n")).collect();
+    let doc = Markdown::parse(&text);
+    settle(&mut w, scrolled(&doc));
+    for event in [Event::Move(pt(1.0, 10.0)), Event::Press(taut::Button::Left, Mods::NONE), Event::Move(pt(30.0, 298.0))] {
+        does(&mut w, event, scrolled(&doc));
+    }
+    // Held at the bottom edge, time passes: the view goes on down, and the selection with it.
+    for step in 1..=120 {
+        w.set_time(Duration::from_millis(16 * step));
+        w.run(&mut scrolled(&doc));
+    }
+    does(&mut w, Event::Release(taut::Button::Left), scrolled(&doc));
+    assert!(find_node(&w, "Paragraph 0.").is_none_or(|node| !node.visible));
+    key(&mut w, Key::Char('c'), Mods::CTRL, scrolled(&doc));
+    let copied = w.clipboard().unwrap_or_default();
+    assert!(copied.starts_with("Paragraph 0.\nParagraph 1.") && copied.contains("Paragraph 15."), "{copied:?}");
+}
+
+#[test]
+fn a_wide_code_block_scrolls_sideways_by_its_keys() {
+    let mut w = window(1.0);
+    w.set_screen_reader(true);
+    let doc = Markdown::parse(&format!("```\nstart{}end\n```\n", " ".repeat(60)));
+    settle(&mut w, build(&doc));
+    let code = expect_node_as(&w, Role::Code, &format!("start{}end", " ".repeat(60)));
+    let row = taut::Rect { y: code.rect.y + 2.0, h: 30.0, ..code.rect };
+    let (left, right) = (taut::Rect { w: 40.0, ..row }, taut::Rect { x: row.right() - 60.0, w: 50.0, ..row });
+    let background = w.theme.panel;
+    assert!(painted_pixels(&w, left, background) > 0 && painted_pixels(&w, right, background) == 0, "a row, not wrapped");
+    // Tab reaches the document, then the code; End takes it to its far end, Home back.
+    for _ in 0..2 {
+        key(&mut w, Key::Tab, Mods::NONE, build(&doc));
+    }
+    assert_eq!(focused_node(&w).map(|node| node.role), Some(Role::Code));
+    key(&mut w, Key::End, Mods::NONE, build(&doc));
+    settle(&mut w, build(&doc));
+    assert!(painted_pixels(&w, right, background) > 0);
+    key(&mut w, Key::Home, Mods::NONE, build(&doc));
+    settle(&mut w, build(&doc));
+    assert!(painted_pixels(&w, right, background) == 0);
+}
+
+#[test]
+fn a_list_nested_thousands_deep_shows_its_text_wide_enough_to_read() {
+    let mut w = window(1.0);
+    w.set_screen_reader(true);
+    let doc = Markdown::parse(&("- ".repeat(3000) + "deep"));
+    settle(&mut w, scrolled(&doc));
+    let deep = expect_node_as(&w, Role::Paragraph, "deep");
+    assert!(deep.rect.w >= 100.0 && deep.rect.right() <= 420.0, "{:?}", deep.rect);
 }

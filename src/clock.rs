@@ -6,16 +6,17 @@
 //! ```
 //!
 //! A time box has a field each for hours, minutes, seconds (if asked) and AM/PM (on a 12-hour
-//! clock). Tab and Left/Right move between fields. A field takes Up/Down (minutes and seconds
-//! by ten with Shift, or Page Up/Down), Home/End, the wheel, and typed digits; a full field
-//! moves on to the next. Screen readers get each field as a spin button in a group named by the
-//! whole time.
+//! clock, first where the locale writes it first). Tab and Left/Right move between fields. A
+//! field takes Up/Down (minutes and seconds by ten with Shift, or Page Up/Down), Home/End, the
+//! wheel, and typed digits (the locale's or 0–9); a full field moves on to the next. Screen
+//! readers get each field as a spin button in a group named by the whole time.
 use crate::accessibility::Role;
 use crate::color::Color;
 use crate::date::Date;
 use crate::event::{Key, Mods};
 use crate::id::Id;
 use crate::layout::{Align, Length};
+use crate::locale::AmPmPlace;
 use crate::ui::{Response, Stroke, Ui};
 use crate::widgets::DOWN;
 use std::fmt::Write;
@@ -68,23 +69,30 @@ const HALF: usize = 3;
 
 /// Times of day, and days with a time.
 impl Ui {
-    /// A time in the window's locale: "14:05", or "2:05 PM" on a 12-hour clock; with seconds if
-    /// asked.
+    /// A time in the window's locale: "14:05", "2:05 PM" or "오후 2:05" on a 12-hour clock; with
+    /// seconds if asked.
     pub fn format_time(&self, time: Time, seconds: bool) -> String {
         let mut written = String::new();
         self.write_time(&mut written, time, seconds);
         written
     }
     fn write_time(&self, into: &mut String, time: Time, seconds: bool) {
-        let formats = self.formats();
-        let (twelve, mark) = (formats.locale.twelve_hour_clock, formats.fine.time_separator);
-        formats.write_hour(into, if twelve { (time.hour % 12 + 11) % 12 + 1 } else { time.hour });
-        let _ = write!(into, "{mark}{:02}", time.minute);
-        if seconds {
-            let _ = write!(into, "{mark}{:02}", time.second);
+        let locale = self.locale_in_use();
+        let half = locale.twelve_hour_clock.then(|| self.calendar_words_in_use().halves[(time.hour / 12).min(1) as usize]);
+        match (half, locale.am_pm_place) {
+            (Some(half), AmPmPlace::Before) => _ = write!(into, "{half} "),
+            (Some(half), AmPmPlace::BeforeTouching) => into.push_str(half),
+            _ => {}
         }
-        if twelve {
-            let _ = write!(into, " {}", self.calendar_words_in_use().halves[(time.hour / 12).min(1) as usize]);
+        let hour = if half.is_some() { (time.hour % 12 + 11) % 12 + 1 } else { time.hour };
+        locale.write_digits(into, i32::from(hour), usize::from(locale.hour_digits));
+        let parts = [time.minute, time.second];
+        for part in &parts[..1 + usize::from(seconds)] {
+            into.push(locale.time_separator);
+            locale.write_digits(into, i32::from(*part), 2);
+        }
+        if let (Some(half), AmPmPlace::After) = (half, locale.am_pm_place) {
+            let _ = write!(into, " {half}");
         }
     }
 
@@ -112,7 +120,7 @@ impl Ui {
         // The date: a field like the others, that opens the calendar.
         let mut written = std::mem::take(&mut self.scratch);
         written.clear();
-        self.formats().write_date(&mut written, *date);
+        self.locale_in_use().write_date(&mut written, *date);
         let opener = self.press(self.id("date"));
         if opener.clicked {
             self.open_calendar(opener.id, state.rect);
@@ -156,39 +164,48 @@ impl Ui {
         state
     }
 
-    /// The time's fields side by side in the open box; returns the first one's id.
+    /// The time's fields side by side in the open box, AM/PM where the locale puts it; returns
+    /// the first one's id.
     fn time_parts(&mut self, time: &mut Time, seconds: bool) -> Id {
-        let twelve = self.locale_in_use().twelve_hour_clock;
-        let last = if twelve {
-            HALF
-        } else if seconds {
-            SECONDS
-        } else {
-            MINUTES
+        let locale = self.locale_in_use();
+        let twelve = locale.twelve_hour_clock;
+        let half_first = twelve && locale.am_pm_place != AmPmPlace::After;
+        let last = match (twelve && !half_first, seconds) {
+            (true, _) => HALF,
+            (false, true) => SECONDS,
+            (false, false) => MINUTES,
         };
-        // On a 12-hour clock hours run 12 to 11, and AM/PM follows.
-        let (hour, half) = (time.hour % 24, time.hour % 24 / 12);
+        // On a 12-hour clock hours run 12 to 11, and AM/PM is a field of its own.
+        let (hour, mut half) = (time.hour % 24, time.hour % 24 / 12);
+        let mut first = None;
+        if half_first {
+            let (field, picked) = self.time_part(HALF, half, [0, 1], last);
+            self.el().w(Length::Px(4.0)).show();
+            (first, half) = (Some(field.id), picked);
+        }
         let (shown, hours) = if twelve { ((hour + 11) % 12 + 1, [1, 12]) } else { (hour, [0, 23]) };
-        let (first, mut hour) = self.time_part(HOURS, shown, hours, last);
+        let (hours, mut hour) = self.time_part(HOURS, shown, hours, last);
         self.time_mark();
         let minute = self.time_part(MINUTES, time.minute, [0, 59], last).1;
         let second = match seconds {
             true => self.time_mark().time_part(SECONDS, time.second, [0, 59], last).1,
             false => time.second,
         };
-        if twelve {
+        if twelve && !half_first {
             self.el().w(Length::Px(4.0)).show();
-            let half = self.time_part(HALF, half, [0, 1], last).1;
+            half = self.time_part(HALF, half, [0, 1], last).1;
+        }
+        if twelve {
             hour = hour % 12 + 12 * half;
         }
         *time = Time::new(hour, minute, second);
-        first.id
+        first.unwrap_or(hours.id)
     }
 
     /// The separator between fields.
     fn time_mark(&mut self) -> &mut Self {
         let (t, mut mark) = (self.theme, [0; 4]);
-        let mark = self.formats().fine.time_separator.encode_utf8(&mut mark);
+        let mark = self.locale_in_use().time_separator.encode_utf8(&mut mark);
         self.el().text(mark, t.font, t.text_dim).show();
         self
     }
@@ -209,16 +226,13 @@ impl Ui {
             to = set.round() as i32;
         }
         let to = (least as i32 + (to - least as i32).rem_euclid((most - least) as i32 + 1)) as u8;
-        let mut written = std::mem::take(&mut self.scratch);
+        let (mut written, locale) = (std::mem::take(&mut self.scratch), self.locale_in_use());
         written.clear();
-        let _ = match which {
-            HALF => write!(written, "{}", words.halves[to as usize]),
-            HOURS => {
-                self.formats().write_hour(&mut written, to);
-                Ok(())
-            }
-            _ => write!(written, "{to:02}"),
-        };
+        match which {
+            HALF => written.push_str(words.halves[to as usize]),
+            HOURS => locale.write_digits(&mut written, i32::from(to), usize::from(locale.hour_digits)),
+            _ => locale.write_digits(&mut written, i32::from(to), 2),
+        }
         let (fill, ink) = match (state.focused, state.hovered) {
             (true, _) => (t.accent, t.on_accent),
             (false, true) => (t.hover, t.text),
@@ -273,7 +287,7 @@ impl Ui {
             let picked = self.calendar_words_in_use().halves.iter().position(|word| word.chars().next().and_then(|first| first.to_lowercase().next()) == lower);
             return (picked.map_or(value, |half| half as i32), false);
         }
-        let Some(digit) = letter.to_digit(10) else { return (value, false) };
+        let Some(digit) = self.locale_in_use().digit_value(letter) else { return (value, false) };
         if self.entry.0 != id {
             (self.entry.0, self.entry.1) = (id, String::new());
         }

@@ -175,10 +175,21 @@ fn kept(face: Face) -> Kept {
 const BOLD: u16 = if cfg!(windows) { 600 } else { 700 };
 
 /// The scale for a fallback font so its line is at most as tall as the face's line: from the
-/// two line heights at the same size. (Both systems scale fallback glyphs this way.)
-#[cfg(any(test, windows))]
+/// two line heights at the same size. (Windows and Linux scale fallback glyphs this way.)
+#[cfg(any(test, windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 pub(crate) fn fit(face_line: f32, own_line: f32) -> f32 {
     if own_line > face_line && own_line > 0.0 { face_line / own_line } else { 1.0 }
+}
+
+/// The rows of a fallback glyph's picture that lie within the face's line, `ascent` pixels above
+/// the baseline to `descent` below (its `top` row is that many above it), so nothing it
+/// overhangs is left behind on redraw: its new top, and those rows' coverage.
+#[cfg(any(windows, all(unix, not(target_os = "android"))))]
+pub(crate) fn within_line(top: i32, width: usize, cover: &[u8], [ascent, descent]: [i32; 2]) -> (i32, &[u8]) {
+    let rows = cover.len().checked_div(width).unwrap_or(0) as i32;
+    let (first, end) = ((top - ascent).clamp(0, rows), (top + descent).clamp(0, rows));
+    let kept = cover.get(first as usize * width..(end.max(first) as usize) * width).unwrap_or(&[]);
+    (top - first, kept)
 }
 
 /// Whether every font is taken to have a character, which is never looked up elsewhere: ASCII,
@@ -1190,6 +1201,35 @@ mod tests {
         assert_eq!(pattern(Face::named("Noto Serif").weight(600)), "Noto Serif:weight=demibold");
         assert_eq!(pattern(Face::named("Odd-Name: 1,2").weight(320)), "Odd\\-Name\\: 1\\,2:weight=light");
         assert_eq!([weight_of(80), weight_of(200), weight_of(181), weight_of(0)], [400, 700, 600, 100]);
+    }
+
+    #[test]
+    #[cfg(any(windows, all(unix, not(target_os = "android"))))]
+    fn a_fallback_glyph_keeps_the_rows_within_the_line() {
+        // Twenty rows from 10 above the baseline, in a line 8 above it and 4 below: rows 2 to 13.
+        let cover: Vec<u8> = (0..40).collect();
+        assert_eq!(within_line(10, 2, &cover, [8, 4]), (8, &cover[4..28]));
+        // Wholly inside, wholly outside.
+        assert_eq!(within_line(5, 2, &cover[..4], [8, 4]), (5, &cover[..4]));
+        assert_eq!(within_line(30, 2, &cover[..4], [8, 4]).1, &[][..]);
+    }
+
+    #[test]
+    #[cfg(all(feature = "fallback-fonts", any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
+    fn letters_of_fallback_fonts_stay_within_the_line() {
+        use crate::text::{Font, TextSystem};
+        // Tibetan stacks, Burmese, Javanese and Balinese stacks: letters of fonts with taller
+        // lines than the face's, where installed.
+        let Some(mut text) = crate::platform::SystemText::new() else { return };
+        let font = Font::new(24.0);
+        let metrics = text.metrics(font, 1.0);
+        let line = 40..40 + (metrics.ascent + metrics.descent).round() as usize;
+        for word in ["ཀྵྰཱཱུ", "ဿ္လျှ", "ꦏ꧀ꦏ꧀ꦏ", "ᬓ᭄ᬓ᭄ᬓ"] {
+            let mut pixels = vec![0u32; 300 * 120];
+            text.draw(&mut crate::canvas::Canvas::new(&mut pixels, 300, 120, (0, 0), 1.0), word, 4.0, 40.0, font, crate::color::Color::WHITE);
+            let rows: Vec<usize> = (0..120).filter(|row| pixels[row * 300..(row + 1) * 300].iter().any(|pixel| *pixel != 0)).collect();
+            assert!(rows.iter().all(|row| line.contains(row)), "{word}: rows {rows:?} outside {line:?}");
+        }
     }
 }
 

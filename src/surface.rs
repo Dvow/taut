@@ -37,18 +37,21 @@ impl std::fmt::Debug for Surface {
 
 impl Surface {
     /// The whole interface as last laid out, drawn afresh `strip` rows at a time, as a window
-    /// draws through one small block.
+    /// draws through one small block. (See-through boxes too: their kept layers are set aside
+    /// meanwhile, for the next redraw.)
     pub fn draw(ui: &mut Ui, strip: usize) -> Surface {
         let (scale, strip) = (ui.scale(), strip.max(1));
         let (width, height) = ((ui.size().w * scale).round() as usize, (ui.size().h * scale).round() as usize);
         let mut pixels = vec![0u32; width * height];
         let mut block = vec![0u32; width * strip];
+        let layers = crate::paint::Fading::set_aside(&mut ui.fading);
         for top in (0..height).step_by(strip) {
             let rows = strip.min(height - top);
             block.fill(0);
             ui.paint(&mut Canvas::new(&mut block[..width * rows], width, rows, (0, top as i32), scale));
             pixels[top * width..(top + rows) * width].copy_from_slice(&block[..width * rows]);
         }
+        crate::paint::Fading::put_back(&mut ui.fading, layers);
         Surface { width, height, pixels }
     }
 

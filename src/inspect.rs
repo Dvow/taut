@@ -833,7 +833,7 @@ impl InspectorRow<'_> {
         }
         ui.el().w(Length::Px(if ranged { 72.0 } else { 120.0 })).open();
         let step = N::from_f64(if field.step > 0.0 { field.step } else { 1.0 });
-        let mut state = if self.mixed { ui.entry_box(format_args!("\u{2014}"), ui.locale_in_use().decimal_point, "") } else { ui.number(value, step) };
+        let mut state = if self.mixed { ui.entry_box(format_args!("\u{2014}"), ui.locale_in_use(), "") } else { ui.number(value, step) };
         // Where values differ, text typed after the dash applies as soon as it is a number; the
         // box then shows it as the number of all of them.
         let typed = self.mixed && state.changed;

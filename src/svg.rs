@@ -2946,7 +2946,7 @@ impl<'a> Reading<'a> {
         }
         // Each letter's first byte, for turning stretches into letters.
         let starts: Vec<usize> = text.char_indices().map(|(at, _)| at).collect();
-        let fonts: Vec<Option<usize>> = letters.iter().map(|given| self.letter_font(given, pieces)).collect();
+        let fonts = self.letter_fonts(letters, pieces, &text);
         let mut shaper = Shaper { line: Line { set: Vec::new(), pen: start, apart: 0.0 }, plans: Vec::new(), laid: Vec::new(), moved: vec![false; letters.len()] };
         for (bytes, level) in stretches {
             let [first, last] = [bytes.start, bytes.end].map(|byte| starts.partition_point(|at| *at < byte));
@@ -2959,6 +2959,28 @@ impl<'a> Reading<'a> {
             }
         }
         shaper.line
+    }
+
+    /// The font each letter of a chunk (as `text`) is drawn in, as its piece's style finds it:
+    /// a grapheme cluster's in its first letter's font where that has them (an accent with its
+    /// letter, a joiner with its syllable).
+    #[cfg(feature = "shaping")]
+    fn letter_fonts(&mut self, letters: &[Given], pieces: &[Piece], text: &str) -> Vec<Option<usize>> {
+        let mut fonts = Vec::with_capacity(letters.len());
+        let (mut at, mut n) = (0, 0);
+        while at < text.len() {
+            let end = at + crate::text::cluster(&text[at..]).max(1);
+            let mut cluster: Option<usize> = None;
+            for given in &letters[n..n + text[at..end].chars().count()] {
+                let has = |font: usize| self.file_of(font).is_some_and(|file| file.glyph(given.letter) != 0);
+                let kept = cluster.filter(|font| has(*font));
+                let font = if kept.is_some() { kept } else { self.letter_font(given, pieces) };
+                cluster = cluster.or(font);
+                fonts.push(font);
+            }
+            (at, n) = (end, fonts.len());
+        }
+        fonts
     }
 
     /// The font a letter of a chunk is drawn in, as its piece's style finds it.
@@ -3060,7 +3082,9 @@ impl<'a> Reading<'a> {
             return at;
         }
         // Past the lookup budget a letter has no font: see `LOOKUPS`.
-        let file = if self.looks() { crate::system_fonts::file_for(face, if letter == '\0' { 'a' } else { letter }) } else { None };
+        // (The face's own font is the one it draws a space in: every font has one, whatever its
+        // script.)
+        let file = if self.looks() { crate::system_fonts::file_for(face, if letter == '\0' { ' ' } else { letter }) } else { None };
         // A file found before for another letter is kept once: one copy per letter the face
         // lacks would come to gigabytes.
         let same = |kept: &FontFile, file: &FontFile| kept.start == file.start && kept.varied.is_none() && kept.bytes().0 == file.bytes().0;
@@ -3675,18 +3699,23 @@ struct Shaper {
 }
 
 /// The runs a chunk's letters from `first` on are shaped in (see `Reading::line`), in order:
-/// each of one piece and font, and no longer than is shaped at once.
+/// each of one piece, font and script (figures, signs and marks going with the letters around
+/// them), and no longer than is shaped at once.
 #[cfg(feature = "shaping")]
 fn runs(letters: &[Given], fonts: &[Option<usize>], first: usize) -> Vec<std::ops::Range<usize>> {
-    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    let script = |at: usize| crate::shaping::Script::of(letters[at].letter);
+    let mut runs: Vec<(std::ops::Range<usize>, Option<crate::shaping::Script>)> = Vec::new();
     for at in first..letters.len() {
-        let same = |run: &std::ops::Range<usize>| (letters[run.start].piece, fonts[run.start]) == (letters[at].piece, fonts[at]) && run.len() < crate::shaping::LONGEST - 64;
+        let same = |(run, own): &(std::ops::Range<usize>, Option<crate::shaping::Script>)| {
+            let script = script(at);
+            (letters[run.start].piece, fonts[run.start]) == (letters[at].piece, fonts[at]) && (script.is_none() || own.is_none() || script == *own) && run.len() < crate::shaping::LONGEST - 64
+        };
         match runs.last_mut().filter(|run| same(run)) {
-            Some(run) => run.end = at + 1,
-            None => runs.push(at..at + 1),
+            Some((run, own)) => (run.end, *own) = (at + 1, own.or(script(at))),
+            None => runs.push((at..at + 1, script(at))),
         }
     }
-    runs
+    runs.into_iter().map(|(run, _)| run).collect()
 }
 
 /// Character data as written, with `&name;` and `&#number;` references decoded.
@@ -5076,5 +5105,93 @@ mod tests {
         if let (Some(first), Some(last)) = (columns.first(), columns.last()) {
             assert_eq!(columns.len(), last - first + 1, "{columns:?}");
         }
+    }
+
+    /// A path's outline as SVG path data.
+    #[cfg(all(target_os = "linux", feature = "shaping"))]
+    fn path_data(path: &Path) -> String {
+        use crate::path::Step;
+        let point = |at: Point| format!("{} {}", at.x, at.y);
+        let step = |step: &Step| match step {
+            Step::Move(to) => format!("M{}", point(*to)),
+            Step::Line(to) => format!("L{}", point(*to)),
+            Step::Quad(by, to) => format!("Q{} {}", point(*by), point(*to)),
+            Step::Cubic(a, b, to) => format!("C{} {} {}", point(*a), point(*b), point(*to)),
+            Step::Close => "Z".to_string(),
+        };
+        path.steps().iter().map(step).collect()
+    }
+
+    /// A text's runs of one script, figures, signs and marks going with the letters before
+    /// them.
+    #[cfg(all(target_os = "linux", feature = "shaping"))]
+    fn script_runs(text: &str) -> Vec<String> {
+        let mut runs: Vec<(String, Option<crate::shaping::Script>)> = Vec::new();
+        for letter in text.chars() {
+            let script = crate::shaping::Script::of(letter);
+            match runs.last_mut().filter(|(_, own)| script.is_none() || own.is_none() || *own == script) {
+                Some((run, own)) => (run.push(letter), *own = own.or(script)).1,
+                None => runs.push((letter.to_string(), script)),
+            }
+        }
+        runs.into_iter().map(|(run, _)| run).collect()
+    }
+
+    #[cfg(all(target_os = "linux", feature = "shaping"))]
+    #[test]
+    fn text_comes_out_as_harfbuzz_shapes_it() {
+        enable_text();
+        // Words in families of a Linux desktop, where installed: Arabic with its vowels, Hindi,
+        // Thai, Latin letters with marks the font places, ligatures.
+        let words = [
+            ("Noto Sans Arabic", "مَرْحَبًا بِالعَالَمِ", cfg!(feature = "right-to-left")),
+            ("DejaVu Sans", "مرحبا بالعالم", cfg!(feature = "right-to-left")),
+            ("Noto Sans Devanagari", "हिन्दी भाषा क्षत्रिय", cfg!(feature = "brahmic")),
+            ("Noto Sans Thai", "ภาษาไทยน้ำ", cfg!(feature = "brahmic")),
+            ("DejaVu Sans", "q\u{303}x\u{323}\u{301} o\u{328}\u{304}", true),
+            ("Noto Sans", "office flow q\u{30c}\u{323}", true),
+        ];
+        let mut tried = 0;
+        for (family, word, shaped) in words {
+            let first = word.chars().find(|letter| crate::shaping::Script::of(*letter).is_some()).unwrap();
+            let Some(path) = crate::x11::file_for(Face::named(family), first).filter(|path| path.to_string_lossy().contains(&family.replace(' ', ""))) else { continue };
+            let Some(font) = FontFile::open(&path).filter(|_| shaped) else { continue };
+            // (HarfBuzz shapes each script's letters on their own, with the signs after them.)
+            let runs = script_runs(word);
+            let Some(theirs) = crate::shaping::harfbuzz::harfbuzz_in(&path, 0, &runs, "") else { return eprintln!("no HarfBuzz here: not tested") };
+            let (mut placed, mut pen) = (Vec::new(), 0);
+            for (glyphs, total) in &theirs {
+                placed.extend(glyphs.iter().map(|(glyph, [x, y])| (*glyph, [pen + x, *y])));
+                pen += total;
+            }
+            // Their glyphs, each outline where HarfBuzz puts it: 40 units high, from (10, 60).
+            let unit = 40.0 / font.units();
+            let outline = |(glyph, [x, y]): &(u16, [i32; 2])| path_data(&font.outline_through(*glyph, [unit, 0.0, 0.0, -unit, 10.0 + *x as f32 * unit, 60.0 - *y as f32 * unit]).0);
+            let data: String = placed.iter().map(outline).collect();
+            let page = |shapes: String| decode(&format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="100">{shapes}</svg>"#), 600, 100).unwrap().1;
+            let ours = page(format!(r#"<text x="10" y="60" font-family="{family}" font-size="40">{word}</text>"#));
+            let wanted = page(format!(r#"<path d="{data}"/>"#));
+            let apart = |at: usize| (0..4).map(|byte| ((ours[at] >> (byte * 8)) & 255).abs_diff((wanted[at] >> (byte * 8)) & 255)).max().unwrap_or(0);
+            let differ = (0..ours.len()).filter(|at| apart(*at) > 24).count();
+            assert!(differ == 0 && wanted.iter().any(|pixel| *pixel != 0), "{family}, {word}: {differ} pixels differ");
+            println!("{family}: {word} as HarfBuzz shapes it");
+            tried += 1;
+        }
+        println!("{tried} words held against HarfBuzz");
+    }
+
+    #[cfg(feature = "shaping")]
+    #[test]
+    fn text_is_shaped_in_runs_of_one_script() {
+        // In one font and piece: Latin, then Devanagari with the sign after it, then Latin; a
+        // run starting with a figure takes the script after it.
+        let given = |text: &str| text.chars().map(|letter| Given { letter, piece: 0, at: [None; 4] }).collect::<Vec<_>>();
+        let letters = given("ab हिन्दी, cd");
+        let fonts = vec![Some(0); letters.len()];
+        assert_eq!(runs(&letters, &fonts, 0), [0..3, 3..11, 11..13]);
+        let letters = given("1हि");
+        assert_eq!(runs(&letters, &[Some(0); 3], 0).first(), Some(&(0..3)));
+        // Another font is another run.
+        assert_eq!(runs(&given("abc"), &[Some(0), Some(1), Some(1)], 0), [0..1, 1..3]);
     }
 }

@@ -1,11 +1,11 @@
 //! The system's own parts, each a button away: its file dialog (a file, several, saving), the
 //! clipboard's pictures and files, a notification, a box checked for spelling, faces named by
 //! family, printing, opening a file in another app, and dragging out and dropping in. Under
-//! each, what came of it.
+//! each, what came of it. At the top, a number, a day and a time in the person's formats.
 //!   cargo run --example system_parts
 //!   cargo run --example apk -- system_parts --target x86_64-linux-android
 use std::path::PathBuf;
-use taut::{Color, DragData, Face, FileDialog, Font, Notification, Paper, PrintJob, PrintOutcome, Ui, Window};
+use taut::{Color, Date, DragData, Face, FileDialog, Font, Notification, Paper, PrintJob, PrintOutcome, Time, Ui, Window};
 
 /// What the dialog is up for.
 #[derive(Clone, Copy, PartialEq)]
@@ -46,6 +46,8 @@ pub fn parts() -> Parts {
 pub fn describe(parts: &mut Parts, ui: &mut Ui) {
     answers(parts, ui);
     ui.column().pad(12.0).gap(6.0).grow().scroll().open();
+    // A number, a day and a time as the person's locale writes them.
+    ui.label(&format!("Formats: {} · {} · {}", ui.format_number(1_234_567.5, 1), ui.format_date(Date::new(2026, 3, 7)), ui.format_time(Time::new(14, 5, 0), false)));
     file_buttons(parts, ui);
     clipboard_buttons(parts, ui);
     ui.row().gap(8.0).open();

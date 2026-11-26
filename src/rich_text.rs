@@ -304,7 +304,8 @@ impl Bit {
 }
 
 /// A laid-out paragraph row: its fragment range; its left edge and top (as the paragraph was
-/// laid out); its height and baseline; and the text byte range it covers.
+/// laid out); its height and baseline; the text byte range it covers; and whether its
+/// paragraph runs right to left.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Row {
     pub frags: [u32; 2],
@@ -313,12 +314,16 @@ pub(crate) struct Row {
     pub high: f32,
     pub base: f32,
     pub words: [u32; 2],
+    pub leftward: bool,
 }
 
 /// What one piece has on one row: the piece; its text bytes; its first character's stop; its
 /// offset from the row's left edge (and into the piece's text); its width, and a thing's
-/// height; its box's offset down the row; and for a link piece, which of that link's fragments
-/// it is, from 0.
+/// height; its box's offset down the row; for a link piece, which of that link's fragments it
+/// is, from 0; and its bidi level (odd: it reads right to left).
+///
+/// Fragments are kept in text order; a row with right-to-left text has them split where the
+/// level changes, and placed in display order (`x`).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Frag {
     pub bit: u32,
@@ -330,6 +335,23 @@ pub(crate) struct Frag {
     pub high: f32,
     pub y: f32,
     pub part: u32,
+    pub level: u8,
+}
+
+impl Frag {
+    /// Whether it reads right to left. (Never without `right-to-left`: what handles it is then
+    /// left out.)
+    fn leftward(&self) -> bool {
+        cfg!(feature = "right-to-left") && self.level % 2 == 1
+    }
+}
+
+impl Row {
+    /// Whether its fragments may be out of text order: some read right to left, or its
+    /// paragraph does. (Never without `right-to-left`.)
+    fn turned(&self, frags: &[Frag]) -> bool {
+        cfg!(feature = "right-to-left") && (self.leftward || frags.iter().any(Frag::leftward))
+    }
 }
 
 /// Laid-out text: its pieces, their character ends, and its rows of fragments.
@@ -417,35 +439,56 @@ impl Laid {
     }
 
     /// The offset from row `row`'s left edge of the position before byte `at` of `text` (past
-    /// the row's content: the row's end).
+    /// the row's content: the row's end, on its paragraph's ending side).
     pub fn x_at(&self, text: &str, row: usize, at: u32) -> f32 {
         let row = self.rows[row];
         let frags = &self.frags[row.frags[0] as usize..row.frags[1] as usize];
-        let Some(frag) = frags.iter().find(|frag| at < frag.words[1]) else { return frags.last().map_or(0.0, |frag| frag.x + frag.wide) };
-        if at <= frag.words[0] || !matches!(self.bits[frag.bit as usize].thing, Thing::Words | Thing::Named(_)) {
-            return frag.x + if at <= frag.words[0] { 0.0 } else { frag.wide };
+        match frags.iter().find(|frag| at < frag.words[1]) {
+            Some(frag) => self.frag_x(text, frag, at),
+            None if row.leftward => frags.iter().map(|frag| frag.x).reduce(f32::min).unwrap_or(0.0),
+            None => frags.iter().map(|frag| frag.x + frag.wide).reduce(f32::max).unwrap_or(0.0),
         }
-        let count = text[frag.words[0] as usize..at as usize].chars().count() as u32;
-        frag.x + self.stops[(frag.first + count - 1) as usize] - frag.into
+    }
+
+    /// The offset from its row's left edge of the position before byte `at` in a fragment
+    /// (`at` within its text, or at its end): measured from its right edge where it reads right
+    /// to left.
+    fn frag_x(&self, text: &str, frag: &Frag, at: u32) -> f32 {
+        let words = matches!(self.bits[frag.bit as usize].thing, Thing::Words | Thing::Named(_));
+        let into = match at {
+            _ if at <= frag.words[0] => 0.0,
+            _ if at >= frag.words[1] || !words => frag.wide,
+            _ => self.stops[(frag.first + text[frag.words[0] as usize..at as usize].chars().count() as u32 - 1) as usize] - frag.into,
+        };
+        if frag.leftward() { frag.x + frag.wide - into } else { frag.x + into }
     }
 
     /// The byte of `text` nearest `x` units from row `row`'s left edge: before or after the
     /// character under it, whichever edge is nearer (never inside a grapheme cluster).
     pub fn at_x(&self, text: &str, row: usize, x: f32) -> u32 {
         let row = self.rows[row];
-        for frag in &self.frags[row.frags[0] as usize..row.frags[1] as usize] {
-            if x >= frag.x + frag.wide {
-                continue;
-            }
-            return match self.bits[frag.bit as usize].thing {
-                Thing::Words | Thing::Named(_) => self.at_in(text, frag, x),
-                _ => frag.words[(x >= frag.x + frag.wide / 2.0) as usize],
-            };
+        let frags = &self.frags[row.frags[0] as usize..row.frags[1] as usize];
+        if !row.turned(frags) {
+            return frags.iter().find(|frag| x < frag.x + frag.wide).map_or(row.words[1], |frag| self.at_frag(text, frag, x));
         }
-        row.words[1]
+        // (Fragments in display order are not in text order: the one under `x`, else the
+        // nearest.)
+        let away = |frag: &&Frag| (frag.x - x).max(x - frag.x - frag.wide).max(0.0);
+        frags.iter().min_by(|a, b| away(a).total_cmp(&away(b))).map_or(row.words[0], |frag| self.at_frag(text, frag, x))
     }
 
-    /// The same within one text fragment whose right edge is past `x`.
+    /// The byte nearest `x` in one fragment: before or after the character under it, read the
+    /// way the fragment reads.
+    fn at_frag(&self, text: &str, frag: &Frag, x: f32) -> u32 {
+        // (Right to left, `x` is mirrored within the fragment: then it reads as left to right.)
+        let x = if frag.leftward() { 2.0 * frag.x + frag.wide - x } else { x };
+        match self.bits[frag.bit as usize].thing {
+            Thing::Words | Thing::Named(_) => self.at_in(text, frag, x),
+            _ => frag.words[(x >= frag.x + frag.wide / 2.0) as usize],
+        }
+    }
+
+    /// The same within one text fragment read left to right.
     fn at_in(&self, text: &str, frag: &Frag, x: f32) -> u32 {
         let words = &text[frag.words[0] as usize..frag.words[1] as usize];
         let (mut at, mut left, mut count) = (0, frag.x, 0);
@@ -498,6 +541,8 @@ struct Breaker<'a> {
     space: Option<(At, At)>,
     /// The piece after the paragraph's last.
     end: u32,
+    /// The paragraph runs right to left: its first strong letter does.
+    leftward: bool,
 }
 
 /// Lays out pieces `bits` of `laid`, their text starting at byte `from` of `text`, as a
@@ -509,7 +554,9 @@ pub(crate) fn lay(laid: &mut Laid, bits: Range<u32>, text: &str, from: u32, room
         stop: bit.stops,
         x: 0.0,
     });
-    let mut breaker = Breaker { laid, text, room, scale, start, top, space: None, end: bits.end };
+    let text_end = laid.bits.get(bits.end.wrapping_sub(1) as usize).filter(|_| !bits.is_empty()).map_or(from, |bit| bit.words[1]);
+    let leftward = crate::bidi::leftward(&text[start.byte as usize..text_end.max(start.byte) as usize]);
+    let mut breaker = Breaker { laid, text, room, scale, start, top, space: None, end: bits.end, leftward };
     for at in bits.clone() {
         let bit = breaker.laid.bits[at as usize];
         match bit.thing {
@@ -567,6 +614,10 @@ impl Breaker<'_> {
         for at in self.start.bit..end.bit.saturating_add(1).min(self.end) {
             self.frag(at, end);
         }
+        let words = [self.start.byte, end.byte.max(self.start.byte)];
+        if cfg!(feature = "right-to-left") && (self.leftward || !crate::bidi::plain(&self.text[words[0] as usize..words[1] as usize])) {
+            self.turn_row(first as usize, words);
+        }
         let frags = first as usize..self.laid.frags.len();
         let (mut above, mut below) = (self.room.above, self.room.below);
         for frag in &self.laid.frags[frags.clone()] {
@@ -580,7 +631,9 @@ impl Breaker<'_> {
         let high = ((above + below).max(self.room.high) * self.scale).ceil() / self.scale;
         let base = pixel((high - above - below) / 2.0 + above);
         let wide = end.x - self.start.x;
-        let shift = pixel((self.room.wide - wide).max(0.0) * [0.0, 0.5, 1.0, 0.0][self.room.side as usize]);
+        // (A right-to-left paragraph starts at the right, as a label's does.)
+        let side = [0.0, 0.5, 1.0, 0.0][self.room.side as usize];
+        let shift = pixel((self.room.wide - wide).max(0.0) * if self.leftward { 1.0 - side } else { side });
         for frag in &mut self.laid.frags[frags] {
             let bit = &self.laid.bits[frag.bit as usize];
             frag.x += shift;
@@ -590,9 +643,79 @@ impl Breaker<'_> {
                 _ => base - bit.above,
             });
         }
-        let row = Row { frags: [first, self.laid.frags.len() as u32], left: self.room.left, top: self.top, high, base, words: [self.start.byte, end.byte] };
+        let row = Row { frags: [first, self.laid.frags.len() as u32], left: self.room.left, top: self.top, high, base, words: [self.start.byte, end.byte], leftward: self.leftward };
         self.laid.rows.push(row);
         (self.start, self.space, self.top) = (next, None, self.top + high);
+    }
+
+    /// Puts the fragments of the row from `first` (text bytes `words`) in display order, as the
+    /// bidi algorithm (UAX #9) has it: each split where its characters' level changes; every
+    /// run of them at a level or above reversed, from the highest level down; then placed left
+    /// to right in that order, each with its background's padding.
+    fn turn_row(&mut self, first: usize, [from, to]: [u32; 2]) {
+        let mut order = crate::bidi::Order::default();
+        order.of(&self.text[from as usize..to as usize], Some(self.leftward));
+        let row: Vec<Frag> = self.laid.frags.drain(first..).collect();
+        let (mut letter, mut byte) = (0, from);
+        for frag in row {
+            letter += self.text[byte as usize..frag.words[0].max(byte) as usize].chars().count();
+            letter = self.split(frag, letter, &order.levels);
+            byte = frag.words[1].max(frag.words[0]).max(byte);
+        }
+        // (Pieces of a link split apart are its further fragments.)
+        for at in first..self.laid.frags.len() {
+            let (frag, before) = (self.laid.frags[at], at.checked_sub(1).map(|before| self.laid.frags[before]));
+            let link = self.laid.bits[frag.bit as usize].link;
+            let same = before.filter(|before| link != 0 && self.laid.bits[before.bit as usize].link == link);
+            self.laid.frags[at].part = same.map_or(0, |before| before.part + 1);
+        }
+        let mut shown: Vec<usize> = (first..self.laid.frags.len()).collect();
+        let levels = shown.iter().map(|at| self.laid.frags[*at].level);
+        let [lowest, highest] = levels.fold([u8::MAX, 0], |[low, high], level| [low.min(level | 1), high.max(level)]);
+        for level in (lowest..=highest).rev() {
+            crate::bidi::turn(&mut shown, |at| self.laid.frags[*at].level >= level);
+        }
+        let mut pen = 0.0;
+        for at in shown {
+            let Laid { frags, bits, .. } = &mut self.laid;
+            let bit = &bits[frags[at].bit as usize];
+            let frag = &mut frags[at];
+            let pad = |edge: bool| if bit.back != Color::NONE && edge { PAD } else { 0.0 };
+            let (before, after) = (pad(frag.into <= 0.0), pad(frag.words[1] >= bit.words[1]));
+            frag.x = pen + before;
+            pen += before + frag.wide + after;
+        }
+    }
+
+    /// Adds a row's fragment, split where its characters' level (`levels`, by character of the
+    /// row, the fragment's first being `letter`) changes. Returns the character after it.
+    fn split(&mut self, frag: Frag, letter: usize, levels: &[u8]) -> usize {
+        let words = &self.text[frag.words[0] as usize..frag.words[1] as usize];
+        let count = words.chars().count();
+        if count == 0 || !matches!(self.laid.bits[frag.bit as usize].thing, Thing::Words | Thing::Named(_)) {
+            // (A thing without text goes as the text either side does, where that agrees.)
+            let near = [letter.checked_sub(1).and_then(|before| levels.get(before)), levels.get(letter)];
+            let level = match near {
+                _ if count > 0 => levels.get(letter).copied().unwrap_or(self.leftward as u8),
+                [Some(before), Some(after)] if before % 2 == after % 2 => *before.min(after),
+                _ => self.leftward as u8,
+            };
+            self.laid.frags.push(Frag { level, ..frag });
+            return letter + count;
+        }
+        let mut piece = Frag { level: levels.get(letter).copied().unwrap_or(0), ..frag };
+        for (n, (byte, _)) in words.char_indices().enumerate().skip(1) {
+            let level = levels.get(letter + n).copied().unwrap_or(piece.level);
+            if level == piece.level {
+                continue;
+            }
+            let (cut, into) = (frag.words[0] + byte as u32, self.laid.stops[(frag.first + n as u32 - 1) as usize]);
+            let head = Frag { words: [piece.words[0], cut], wide: into - piece.into, ..piece };
+            self.laid.frags.push(head);
+            piece = Frag { words: [cut, frag.words[1]], first: frag.first + n as u32, into, wide: piece.wide - head.wide, level, ..piece };
+        }
+        self.laid.frags.push(piece);
+        letter + count
     }
 
     /// What piece `at` has on the row ending at `end`.
@@ -616,19 +739,21 @@ impl Breaker<'_> {
             Some(last) if bit.link != 0 && self.laid.bits[last.bit as usize].link == bit.link => last.part + 1,
             _ => 0,
         };
-        let frag = Frag { bit: at, words: [from.byte, if words { to } else { bit.words[1] }], first: from.stop, x: from.x - self.start.x, into: from.x - bit.x, wide, high, y: 0.0, part };
+        let frag = Frag { bit: at, words: [from.byte, if words { to } else { bit.words[1] }], first: from.stop, x: from.x - self.start.x, into: from.x - bit.x, wide, high, y: 0.0, part, level: 0 };
         self.laid.frags.push(frag);
     }
 }
 
 // ---- describing laid-out text ----
 
-/// Laid-out text being described: its text, each link's text (by number, from 1); the selection
-/// range, and whether it shows as the focused selection.
+/// Laid-out text being described: its text, each link's text (by number, from 1) and its
+/// destination and title (none for rich text); the selection range, and whether it shows as
+/// the focused selection.
 pub(crate) struct Shape<'a> {
     pub laid: &'a Laid,
     pub text: &'a str,
     pub links: &'a [[u32; 2]],
+    pub titles: &'a [(String, String)],
     pub picked: [u32; 2],
     pub keyed: bool,
 }
@@ -637,22 +762,38 @@ pub(crate) struct Shape<'a> {
 /// fragment.
 pub(crate) type Target = (u32, u32);
 
+/// What the user did to some text's links this run: those hovered or focused (to underline),
+/// and the one clicked, right-clicked and focused (each 0 for none).
+#[derive(Default)]
+pub(crate) struct Links {
+    pub lit: Vec<u32>,
+    pub pressed: u32,
+    pub right_clicked: u32,
+    pub focused: u32,
+}
+
+impl Links {
+    /// Adds what was done to a box of link `link`.
+    pub fn note(&mut self, link: u32, state: crate::ui::Response) {
+        if state.hovered || state.focused {
+            self.lit.push(link);
+        }
+        let [pressed, right_clicked, focused] = [state.clicked, state.right_clicked, state.focused].map(|done| if done { link } else { 0 });
+        (self.pressed, self.right_clicked, self.focused) = (self.pressed.max(pressed), self.right_clicked.max(right_clicked), self.focused.max(focused));
+    }
+}
+
 impl Ui {
     /// The user's interaction with each link of some text, via its pressable fragments
     /// (`targets`), each identified within the open box by link number and fragment index.
-    /// Returns the links hovered or focused (to underline), and the one pressed (0 for none).
-    pub(crate) fn link_states(&mut self, shape: &Shape, targets: &[Target]) -> (Vec<u32>, u32) {
-        let (mut lit, mut pressed) = (Vec::new(), 0);
+    pub(crate) fn link_states(&mut self, shape: &Shape, targets: &[Target]) -> Links {
+        let mut links = Links::default();
         for (_, frag) in targets {
             let frag = shape.laid.frags[*frag as usize];
             let link = shape.laid.bits[frag.bit as usize].link;
-            let state = self.link_state(link, frag.part);
-            if state.hovered || state.focused {
-                lit.push(link);
-            }
-            pressed = if state.clicked { link } else { pressed };
+            links.note(link, self.link_state(link, frag.part));
         }
-        (lit, pressed)
+        links
     }
 
     /// Boxes over the pressable link fragments `link_states` queried: each as tall as its row,
@@ -664,8 +805,19 @@ impl Ui {
             let link = shape.laid.bits[frag.bit as usize].link;
             let place = crate::geom::rect(corner[0] + row.left + frag.x, corner[1] + row.top, frag.wide, row.high);
             let [from, to] = shape.links.get(link as usize - 1).copied().unwrap_or_default();
-            self.link_box(link, frag.part, place, shape.text.get(from as usize..to as usize).unwrap_or(""));
+            self.titled_link_box(shape, link, frag.part, place, shape.text.get(from as usize..to as usize).unwrap_or(""));
         }
+    }
+
+    /// A link's box (as `link_box` makes it) with its title, if it has one: shown by it while
+    /// hovered or focused, and told to screen readers as its description.
+    pub(crate) fn titled_link_box(&mut self, shape: &Shape, link: u32, part: u32, place: crate::geom::Rect, name: &str) {
+        let state = self.link_box(link, part, place, name);
+        let Some((_, title)) = shape.titles.get(link as usize - 1).filter(|(_, title)| !title.is_empty()) else { return };
+        if part == 0 {
+            self.tell_description(title);
+        }
+        self.tooltip(&state, title);
     }
 
     /// The user's interaction with fragment `part` of link `link` (from 1) in the open box: the
@@ -681,14 +833,14 @@ impl Ui {
 
     /// The pressable box `link_state` asked about, at `place` in the open box: the link's first
     /// fragment a Tab stop, told to screen readers as the link, `name`.
-    pub(crate) fn link_box(&mut self, link: u32, part: u32, place: crate::geom::Rect, name: &str) {
+    pub(crate) fn link_box(&mut self, link: u32, part: u32, place: crate::geom::Rect, name: &str) -> crate::ui::Response {
         let target = self.el().key(("link", link, part)).offset(place.x, place.y).size(place.w, place.h).radius(2.0).sense();
         if part > 0 {
-            target.show();
-            return;
+            return target.show();
         }
         let state = target.focusable().show();
         self.tell(&state, Role::Link, None, name);
+        state
     }
 
     /// Describes rows `rows` of some text into the open box, placed from `corner` (the origin
@@ -712,10 +864,36 @@ impl Ui {
         if from >= to || to <= row.words[0] || from > row.words[1] {
             return;
         }
-        let left = shape.laid.x_at(shape.text, at, from.max(row.words[0]));
-        let right = if to > row.words[1] { shape.laid.x_at(shape.text, at, row.words[1]) + 4.0 } else { shape.laid.x_at(shape.text, at, to) };
         let color = self.theme.accent.with_alpha(if shape.keyed { 0.35 } else { 0.2 });
-        self.el().offset(corner[0] + left, corner[1]).size(right - left, row.high).fill(color).show();
+        let laid = shape.laid;
+        let frags = &laid.frags[row.frags[0] as usize..row.frags[1] as usize];
+        if !row.turned(frags) {
+            let left = laid.x_at(shape.text, at, from.max(row.words[0]));
+            let right = if to > row.words[1] { laid.x_at(shape.text, at, row.words[1]) + 4.0 } else { laid.x_at(shape.text, at, to) };
+            self.el().offset(corner[0] + left, corner[1]).size(right - left, row.high).fill(color).show();
+            return;
+        }
+        // (In display order a selection may be in several places: its part of each fragment,
+        // joined where they meet; and past the row's end, on its ending side.)
+        let part = |frag: &Frag| [laid.frag_x(shape.text, frag, from.max(frag.words[0])), laid.frag_x(shape.text, frag, to.min(frag.words[1]))];
+        let parts = frags.iter().filter(|frag| frag.words[0] < to && frag.words[1] > from).map(part).map(|[a, b]| [a.min(b), a.max(b)]);
+        let end = laid.x_at(shape.text, at, row.words[1]);
+        let past = (to > row.words[1]).then_some(if row.leftward { [end - 4.0, end] } else { [end, end + 4.0] });
+        // (A row has few: each goes in where it belongs, left to right.)
+        let mut spans: Vec<[f32; 2]> = Vec::new();
+        for span in parts.chain(past) {
+            spans.insert(spans.partition_point(|one| one[0] < span[0]), span);
+        }
+        let mut joined: Vec<[f32; 2]> = Vec::new();
+        for span in spans {
+            match joined.last_mut() {
+                Some(last) if span[0] <= last[1] + 0.01 => last[1] = last[1].max(span[1]),
+                _ => joined.push(span),
+            }
+        }
+        for [left, right] in joined {
+            self.el().offset(corner[0] + left, corner[1]).size(right - left, row.high).fill(color).show();
+        }
     }
 
     /// One fragment of a row: its piece's background, if any, and its text, icon or picture.
@@ -734,7 +912,9 @@ impl Ui {
             Thing::Picture(picture, _) => _ = self.el().picture(picture).size(frag.wide, frag.high).offset(x, y).show(),
             _ => {
                 let font = if bit.link != 0 && lit.contains(&bit.link) { bit.font.underlined() } else { bit.font };
-                self.el().text(&shape.text[frag.words[0] as usize..frag.words[1] as usize], font, bit.color).select(None, false).offset(x, y).show();
+                let words = &shape.text[frag.words[0] as usize..frag.words[1] as usize];
+                let turned = turned_if_bare(frag, words);
+                self.el().text(turned.as_deref().unwrap_or(words), font, bit.color).select(None, false).offset(x, y).show();
             }
         }
     }
@@ -813,19 +993,19 @@ impl Ui {
         // (In a shrink-to-fit box, it asks for its text on one line.)
         self.el().w(Length::Px(paragraph.long)).show();
         let rows = 0..paragraph.laid.rows.len();
-        let shape = Shape { laid: &paragraph.laid, text: &paragraph.text, links: &paragraph.links, picked: [0; 2], keyed: false };
+        let shape = Shape { laid: &paragraph.laid, text: &paragraph.text, links: &paragraph.links, titles: &[], picked: [0; 2], keyed: false };
         let frags = shape.laid.frags.iter().enumerate();
         let targets: Vec<Target> = frags.filter(|(_, frag)| shape.laid.bits[frag.bit as usize].link != 0).map(|(at, _)| (row_of(shape.laid, at as u32), at as u32)).collect();
-        let (lit, pressed) = self.link_states(&shape, &targets);
+        let links = self.link_states(&shape, &targets);
         let words = self.el().flow(Flow::Stack).w(Length::Grow(1.0)).h(Length::Px(paragraph.high)).open();
         self.tell(&words, Role::Text, None, &paragraph.text);
-        self.write_rows(&shape, rows, [0.0; 2], &lit);
+        self.write_rows(&shape, rows, [0.0; 2], &links.lit);
         self.close();
         self.link_boxes(&shape, &targets, [0.0; 2]);
         self.close();
         paragraph.used = true;
         self.keep_writings(kept);
-        pressed.checked_sub(1).map(|link| link as usize)
+        links.pressed.checked_sub(1).map(|link| link as usize)
     }
 
     /// Updates a paragraph for its pieces, theme and scale (re-measuring where any changed),
@@ -866,6 +1046,25 @@ impl Ui {
         let room = Room { above, below, high: 0.0, left: 0.0, wide: width.max(1.0), side: Align::Start };
         paragraph.high = lay(laid, 0..laid.bits.len() as u32, &paragraph.text, 0, room, 0.0, scale);
     }
+}
+
+/// A right-to-left fragment's text as it shows, where it has no right-to-left letter (the text
+/// system would set it left to right): turned round. None for any other.
+fn turned_if_bare(frag: &Frag, words: &str) -> Option<String> {
+    let strong = |letter: char| matches!(crate::bidi::kind(letter), crate::bidi::Kind::Right | crate::bidi::Kind::Arabic);
+    (frag.leftward() && !words.chars().any(strong)).then(|| turned_round(words))
+}
+
+/// Text as it shows right to left: its grapheme clusters in reverse order, brackets mirrored.
+fn turned_round(words: &str) -> String {
+    let mut clusters = Vec::new();
+    let mut at = 0;
+    while at < words.len() {
+        let next = at + crate::text::cluster(&words[at..]);
+        clusters.push(&words[at..next]);
+        at = next;
+    }
+    clusters.iter().rev().flat_map(|cluster| cluster.chars()).map(|letter| crate::bidi::mirrored(letter).unwrap_or(letter)).collect()
 }
 
 /// A fragment's row.
@@ -943,5 +1142,156 @@ mod tests {
         assert_eq!([face_of(Face::Regular, bold), face_of(Face::Bold, bold), face_of(Face::Regular, TextStyle { mono: true, ..bold })], [Face::Bold, Face::Bold, Face::Mono.weight(700)]);
         assert_eq!(face_of(Face::Regular, TextStyle { italic: true, ..TextStyle::default() }), Face::Italic);
         assert_eq!(face_of(Face::Bold, TextStyle { italic: true, ..TextStyle::default() }), Face::Bold.italic());
+    }
+
+    /// Pieces laid out as one paragraph `wide` units wide in the small Hebrew test font
+    /// (`bidi::tests::hebrew`: alef 7 wide, gimel 10, space 4, Latin 12, at 16): its text and
+    /// layout.
+    #[cfg(feature = "right-to-left")]
+    fn laid_both_ways(pieces: &[&str], wide: f32) -> (String, Laid) {
+        let (mut laid, mut text, font) = (Laid::default(), String::new(), Font::new(16.0));
+        for (n, words) in pieces.iter().enumerate() {
+            let start = text.len() as u32;
+            text.push_str(words);
+            let font = if n % 2 == 1 { font.bold() } else { font };
+            laid.bits.push(Bit::new([start, text.len() as u32], font, Color::WHITE, Color::NONE, 0, Thing::Words));
+        }
+        laid.measure(0..laid.bits.len(), &text, &mut crate::bidi::tests::hebrew(), 1.0, &mut Vec::new());
+        let room = Room { above: 0.0, below: 0.0, high: 0.0, left: 0.0, wide, side: Align::Start };
+        let count = laid.bits.len() as u32;
+        lay(&mut laid, 0..count, &text, 0, room, 0.0, 1.0);
+        (text, laid)
+    }
+
+    /// Each fragment of a row as its text and place, left to right.
+    #[cfg(feature = "right-to-left")]
+    fn shown_left_to_right(text: &str, laid: &Laid, row: usize) -> Vec<(String, f32)> {
+        let row = laid.rows[row];
+        let mut frags: Vec<(String, f32)> =
+            laid.frags[row.frags[0] as usize..row.frags[1] as usize].iter().map(|frag| (text[frag.words[0] as usize..frag.words[1] as usize].to_string(), frag.x)).collect();
+        frags.sort_by(|a, b| a.1.total_cmp(&b.1));
+        frags
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn hebrew_in_a_left_to_right_paragraph_reads_right_to_left_across_its_pieces() {
+        // Two Hebrew words in two pieces, between Latin: the space between the words goes with
+        // them, the spaces at their edges with the Latin; the second word shows first.
+        let (text, laid) = laid_both_ways(&["ab ", "\u{5d0}\u{5d2}", " \u{5d2}\u{5d0}", " cd"], 400.0);
+        let shown = shown_left_to_right(&text, &laid, 0);
+        let expected = [("ab ", 0.0), (" \u{5d2}\u{5d0}", 28.0), ("\u{5d0}\u{5d2}", 49.0), (" cd", 66.0)];
+        assert_eq!(shown, expected.map(|(words, x)| (words.to_string(), x)));
+        // The cursor before alef stands at the right of its word; a point just right of that
+        // word's left edge is after its last letter, gimel; and after gimel is its left edge.
+        let alef = 3;
+        assert_eq!(laid.x_at(&text, 0, alef), 66.0);
+        assert_eq!(laid.at_x(&text, 0, 50.0), alef + 4);
+        assert_eq!(laid.at_x(&text, 0, 64.0), alef);
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn a_right_to_left_paragraph_starts_at_the_right_and_runs_leftward() {
+        // Hebrew first: the paragraph runs right to left, so its rows end at the right; the
+        // Latin word in it reads left to right, at the left of the Hebrew before it.
+        let (text, laid) = laid_both_ways(&["\u{5d0}\u{5d2} ", "cd", " \u{5d2}"], 100.0);
+        let shown = shown_left_to_right(&text, &laid, 0);
+        // Alef-gimel and its space 21, "cd" in bold 28, space and gimel 14: 63 in all, from 37.
+        let expected = [(" \u{5d2}", 37.0), ("cd", 51.0), ("\u{5d0}\u{5d2} ", 79.0)];
+        assert_eq!(shown, expected.map(|(words, x)| (words.to_string(), x)));
+        assert!(laid.rows[0].leftward);
+        // Past the row's end is its left end.
+        assert_eq!(laid.x_at(&text, 0, text.len() as u32), 37.0);
+    }
+}
+
+/// Hebrew and Arabic across pieces of rich text, held against Chrome's drawing of the same
+/// paragraphs (`dir="auto"`, each piece a span in its own colour), in Arial: each piece's ink
+/// lies where Chrome puts it.
+#[cfg(all(test, windows, feature = "right-to-left"))]
+mod against_edge {
+    use super::*;
+    use crate::browser_check::{browsed, browser, ink_middle};
+    use crate::font_file::{AppFonts, FontFile};
+    use crate::geom::rect;
+
+    /// The colours pieces are written in, in turn.
+    const INKS: [u32; 5] = [0x000000, 0xd00000, 0x008000, 0x0000ff, 0xb000b0];
+
+    /// Paragraphs, a line each: Hebrew in a left-to-right one, split across pieces; Hebrew
+    /// first, with Latin in it; Arabic first, with digits; Arabic-Indic digits and Arabic in a
+    /// left-to-right one; and punctuation alone between Hebrew words.
+    const CASES: [&[&str]; 5] = [
+        &["Read ", "\u{5e9}\u{5dc}\u{5d5}\u{5dd}", " \u{5e2}\u{5d5}\u{5dc}\u{5dd}", " now."],
+        &["\u{5e9}\u{5dc}\u{5d5}\u{5dd} ", "world", " \u{5e2}\u{5d5}\u{5dc}\u{5dd}", "!"],
+        &["\u{645}\u{631}\u{62d}\u{628}\u{627} ", "\u{628}\u{627}\u{644}\u{639}\u{627}\u{644}\u{645}", " 123", " test"],
+        &["Price: ", "\u{663}\u{664}\u{665}", " \u{631}\u{64a}\u{627}\u{644}", " each"],
+        &["\u{5e9}\u{5dc}\u{5d5}\u{5dd} ", "?!", " \u{5e2}\u{5d5}\u{5dc}\u{5dd}"],
+    ];
+
+    /// Where case `n` is drawn: its left and top.
+    fn place(n: usize) -> [f32; 2] {
+        [10.0, 10.0 + 40.0 * n as f32]
+    }
+
+    /// The cases as a page, in the font at `path`.
+    fn page(path: &str) -> String {
+        let mut html = format!(
+            "<!doctype html><meta charset=utf-8><style>@font-face {{ font-family: Probe; src: url('file:///{path}'); }} body {{ margin: 0; background: #fff; }} div {{ position: absolute; width: 500px; font: 20px Probe; line-height: 30px; white-space: nowrap; font-kerning: none; }}</style>"
+        );
+        for (n, pieces) in CASES.iter().enumerate() {
+            let [x, y] = place(n);
+            html += &format!("<div dir=auto style='left: {x}px; top: {y}px'>");
+            for (at, words) in pieces.iter().enumerate() {
+                html += &format!("<span style='color: #{:06x}'>{words}</span>", INKS[at]);
+            }
+            html += "</div>";
+        }
+        html
+    }
+
+    /// The same, written by the library as rich text.
+    fn written(ui: &mut Ui) {
+        ui.el().flow(Flow::Stack).w(Length::Grow(1.0)).h(Length::Grow(1.0)).open();
+        for (n, pieces) in CASES.iter().enumerate() {
+            let [x, y] = place(n);
+            ui.el().offset(x, y).w(Length::Px(500.0)).open();
+            let spans: Vec<Span> = pieces.iter().enumerate().map(|(at, words)| Span::text(words).size(20.0).color(Color::rgb(INKS[at]))).collect();
+            ui.rich(&spans);
+            ui.close();
+        }
+        ui.close();
+    }
+
+    #[test]
+    fn pieces_of_hebrew_and_arabic_lie_where_chrome_sets_them() {
+        let Some(browser) = browser() else { return eprintln!("no Edge or Chrome here: not compared") };
+        let path = std::path::Path::new(&std::env::var_os("WINDIR").unwrap_or_default()).join(r"Fonts\arial.ttf");
+        let Some(font) = FontFile::open(&path) else { return eprintln!("no Arial here: not compared") };
+        let size = [540, 220];
+        let theirs = browsed(&browser, &page(&path.to_string_lossy().replace('\\', "/")), size, "bidi");
+        let mut ui = Ui::new(Box::new(AppFonts::new(font)), Box::new(crate::platform::LocalClipboard::default()));
+        ui.resize(crate::geom::Size { w: size[0] as f32, h: size[1] as f32 }, 1.0);
+        ui.theme.bg = Color::WHITE;
+        ui.run(&mut written);
+        let ours = crate::surface::Surface::draw(&mut ui, 64).pixels;
+        let mut wrong = Vec::new();
+        for (n, pieces) in CASES.iter().enumerate() {
+            let [x, y] = place(n);
+            let band = rect(x - 5.0, y - 5.0, 510.0, 40.0);
+            for (at, words) in pieces.iter().enumerate() {
+                let middle = |pixels: &[u32]| ink_middle(pixels, size[0], band, INKS[at], &INKS).map(|[x, _]| x);
+                let (mine, edge) = (middle(&ours), middle(&theirs));
+                // (Within 3: Latin and digits advance by whole pixels here, by fractions in
+                // Chrome, so a line drifts by a pixel or two. A piece out of order is a word
+                // away.)
+                if !mine.zip(edge).is_some_and(|(mine, edge)| (mine - edge).abs() <= 3.0) {
+                    wrong.push(format!("{words:?}: ours at {mine:?}, Edge's at {edge:?}"));
+                }
+            }
+        }
+        wrong.iter().for_each(|line| println!("  {line}"));
+        assert!(wrong.is_empty(), "{} pieces lie elsewhere than in Chrome", wrong.len());
     }
 }

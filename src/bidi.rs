@@ -600,7 +600,7 @@ impl Order {
 }
 
 /// Reverses each run of items `within` accepts.
-fn turn<T>(things: &mut [T], within: impl Fn(&T) -> bool) {
+pub(crate) fn turn<T>(things: &mut [T], within: impl Fn(&T) -> bool) {
     let mut at = 0;
     while at < things.len() {
         let end = at + things[at..].iter().position(|thing| !within(thing)).unwrap_or(things.len() - at);
@@ -826,13 +826,23 @@ pub struct BidiText {
     /// Kept only to reuse memory: glyphs, and character ends.
     glyphs: Vec<Laid>,
     stops: Vec<f32>,
+    /// The language's forms in the system's fonts, for lines its text leaves without them (see
+    /// `system_forms`).
+    #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+    forms: crate::system_forms::Forms,
 }
 
-/// The text system for all text: `text` with right-to-left text reordered around it and Indic
-/// and Southeast Asian scripts shaped ([`BidiText`]); or `text` alone without the features
-/// `right-to-left` and `brahmic`.
+/// Whether lines the system's text leaves without their language's forms are shaped here: with
+/// `shaping`, where the system's fonts are files read here (not on Android, whose text takes the
+/// language itself, nor on the web).
+const SHAPES_FORMS: bool = cfg!(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))));
+
+/// The text system for all text: `text` with right-to-left text reordered around it, Indic and
+/// Southeast Asian scripts shaped, and lines the system's text leaves without their language's
+/// forms shaped with them ([`BidiText`]); or `text` alone without the features `right-to-left`,
+/// `brahmic` and `shaping`.
 pub(crate) fn ordered(text: Box<dyn TextSystem>) -> Box<dyn TextSystem> {
-    match cfg!(feature = "right-to-left") || cfg!(feature = "brahmic") {
+    match cfg!(feature = "right-to-left") || cfg!(feature = "brahmic") || SHAPES_FORMS {
         true => Box::new(BidiText::around(text)),
         false => text,
     }
@@ -861,7 +871,28 @@ impl BidiText {
             cache_bytes: 0,
             glyphs: Vec::new(),
             stops: Vec::new(),
+            #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+            forms: crate::system_forms::Forms::new(),
         }
+    }
+
+    /// Whether a line goes to the inner system as it is: it has no right-to-left letters, none
+    /// of scripts shaped here by syllable, and no forms of its language the inner system leaves
+    /// out.
+    fn passes(&mut self, text: &str, face: Face) -> bool {
+        plain(text) && !self.forms_here(face, text)
+    }
+
+    /// Whether a line is shaped here for its language's forms (see `system_forms`): only where
+    /// the inner system draws the system's fonts.
+    #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+    fn forms_here(&mut self, face: Face, text: &str) -> bool {
+        self.text.file(face, 'a').is_none() && self.forms.shaped_here(face, text)
+    }
+    /// None without `shaping`.
+    #[cfg(not(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm")))))]
+    fn forms_here(&mut self, _face: Face, _text: &str) -> bool {
+        false
     }
 
     /// Splits a line into pieces in display order, each with its width. Returns the line's
@@ -901,16 +932,19 @@ impl BidiText {
 
     /// Splits a left-to-right run into pieces, in order: runs of one Indic or Southeast Asian
     /// script (with signs and spaces between), each shaped for its font; and the rest, the
-    /// inner system's as is. (Without `brahmic`, all of it is the inner system's.)
+    /// inner system's as is. (Without `brahmic`, all of it is the inner system's.) A run the
+    /// inner system would leave without its language's forms is shaped here whole, each script
+    /// for its font.
     fn ahead_stretch(&mut self, text: &str, bytes: Range<usize>, font: Font, scale: f32) {
         let stretch = &text[bytes.clone()];
         let syllabic = |letter: char| matches!(Script::of(letter), Some(Script::Brahmic(_)));
-        if !cfg!(feature = "brahmic") || !stretch.chars().any(syllabic) {
+        let forms = self.forms_here(font.face, stretch);
+        if !forms && (!cfg!(feature = "brahmic") || !stretch.chars().any(syllabic)) {
             return self.pieces.push(Piece { bytes, way: Way::Ahead, wide: 0.0 });
         }
         let mut at = 0;
         while at < stretch.len() {
-            let next = stretch[at..].char_indices().find(|(_, letter)| syllabic(*letter)).map_or(stretch.len(), |(n, _)| at + n);
+            let next = stretch[at..].char_indices().find(|(_, letter)| forms || syllabic(*letter)).map_or(stretch.len(), |(n, _)| at + n);
             let (long, way) = if next > at { (next - at, None) } else { self.run(stretch, at, font, scale) };
             self.pieces.push(Piece { bytes: bytes.start + at..bytes.start + at + long, way: way.unwrap_or(Way::Ahead), wide: 0.0 });
             at += long;
@@ -979,7 +1013,11 @@ impl BidiText {
             return self.text.file(face, letter);
         }
         if !self.fonts.iter().any(|(known, of, _)| *known == face && *of == script) {
-            self.fonts.push((face, script, system(face, letter)));
+            // (Letters of scripts without shaping of their own, shaped only for their forms, in
+            // the font the system's text draws them in.)
+            let plain = SHAPES_FORMS && matches!(script, Script::Plain(_));
+            let file = if plain { crate::system_fonts::file_for(face, letter).filter(|file| file.glyph(letter) != 0) } else { system(face, letter) };
+            self.fonts.push((face, script, file));
         }
         self.fonts.iter().find(|(known, of, _)| *known == face && *of == script).and_then(|(.., file)| file.as_ref())
     }
@@ -998,10 +1036,11 @@ impl BidiText {
             return None;
         }
         // (The file is looked up again: its borrow ends where the plan is made. Scripts
-        // `brahmic.rs` shapes go their own way; the rest here are right-to-left.)
-        let (syllabic, language) = (matches!(script, Script::Brahmic(_)), self.language);
+        // `brahmic.rs` shapes go their own way, left to right as are scripts shaped only for
+        // their forms; the rest here are right-to-left.)
+        let (leftward, language) = (!matches!(script, Script::Brahmic(_) | Script::Plain(_)), self.language);
         if !self.plans.iter().any(|(of, known, _)| *of == serial && *known == script) {
-            let plan = Plan::of(self.file(face, script, letter)?, script, !syllabic, language);
+            let plan = Plan::of(self.file(face, script, letter)?, script, leftward, language);
             self.plans.push((serial, script, plan));
         }
         let BidiText { text, fonts, plans, glyphs, .. } = self;
@@ -1012,7 +1051,7 @@ impl BidiText {
         };
         let total = file.shape(plan, run, glyphs);
         let unit = file.unit(pixels);
-        let edges = if syllabic { syllable_edges(glyphs, run, unit) } else { edges_of(glyphs, run, unit) };
+        let edges = if leftward { edges_of(glyphs, run, unit) } else { syllable_edges(glyphs, run, unit) };
         let shaped = Shaped { wide: (total as f32 * unit).round(), edges, drawn: None };
         self.cache_bytes += run.len() + shaped.edges.len() * 8 + size_of::<(u32, u32, Box<str>, Shaped)>();
         self.shaped.insert(at, (serial, pixels.to_bits(), run.into(), shaped));
@@ -1342,11 +1381,13 @@ impl TextSystem for BidiText {
         if language != self.language {
             (self.language, self.plans, self.shaped, self.cache_bytes) = (language, Vec::new(), Vec::new(), 0);
         }
+        #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+        self.forms.set(language);
         self.text.set_language(language);
     }
 
     fn measure(&mut self, text: &str, font: Font, scale: f32, stops: Option<&mut Vec<f32>>) -> f32 {
-        if plain(text) {
+        if self.passes(text, font.face) {
             return self.text.measure(text, font, scale, stops);
         }
         let Some(stops) = stops else { return self.lay(text, font, scale, None, None) / scale };
@@ -1366,14 +1407,14 @@ impl TextSystem for BidiText {
     }
 
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
-        match plain(text) {
+        match self.passes(text, font.face) {
             true => self.text.draw(canvas, text, x, y, font, color),
             false => self.write(canvas, text, [x, y], font, color, None),
         }
     }
 
     fn places(&mut self, text: &str, font: Font, scale: f32, leftward: bool, places: &mut Vec<[f32; 2]>) -> f32 {
-        if plain(text) && !leftward {
+        if !leftward && self.passes(text, font.face) {
             places.clear();
             self.stops.clear();
             let wide = self.text.measure(text, font, scale, Some(&mut self.stops));
@@ -1386,7 +1427,7 @@ impl TextSystem for BidiText {
     }
 
     fn draw_line(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color, leftward: bool) {
-        match plain(text) && !leftward {
+        match !leftward && self.passes(text, font.face) {
             true => self.text.draw(canvas, text, x, y, font, color),
             false => self.write(canvas, text, [x, y], font, color, Some(leftward)),
         }
@@ -1910,5 +1951,76 @@ pub(crate) mod tests {
         }
         println!("{cases} cases, {} wrong; {by_table} differ by the kinds kept here", wrong.len());
         assert!(wrong.is_empty(), "{} of {cases} wrong:\n{}", wrong.len(), wrong[..wrong.len().min(20)].join("\n"));
+    }
+
+    /// The glyphs of the runs a line is shaped in here, as drawn.
+    #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+    fn shaped_glyphs(text: &mut BidiText, line: &str, font: Font) -> Vec<u16> {
+        text.lay(line, font, 1.0, None, None);
+        let mut all = Vec::new();
+        for piece in text.pieces.clone() {
+            let Way::Shaped(_) = piece.way else { continue };
+            let run = &line[piece.bytes];
+            let script = run.chars().find_map(Script::of).unwrap_or(Script::None);
+            let letter = run.chars().find(|letter| Script::of(*letter) == Some(script)).unwrap_or(' ');
+            let serial = text.file(font.face, script, letter).unwrap().serial();
+            let plan = &text.plans.iter().find(|(of, known, _)| *of == serial && *known == script).unwrap().2;
+            let file = text.fonts.iter().find(|(known, of, _)| *known == font.face && *of == script).unwrap().2.as_ref().unwrap();
+            file.shape(plan, run, &mut text.glyphs);
+            all.extend(text.glyphs.iter().map(|laid| laid.glyph));
+        }
+        all
+    }
+
+    #[test]
+    #[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
+    fn lines_the_systems_text_leaves_without_a_languages_forms_are_shaped_with_them() {
+        // Families with forms of their own for a language, where installed, and words taking
+        // them: a mark on the first letter, or a letter the family's font lacks after them, keeps
+        // the system's text from swapping them in.
+        let families = [
+            ("Bahnschrift", "sr", "бгдпт"),
+            ("Noto Sans", "bg", "вдгжзийклптцчшщъю"),
+            ("DejaVu Sans", "sr", "бгдпт"),
+            ("Arial", "ro", "şţ"),
+            ("Times New Roman", "ro", "şţ"),
+            ("Georgia", "ro", "şţ"),
+            ("Verdana", "ro", "şţ"),
+        ];
+        let mut tried = 0;
+        for (family, language, word) in families {
+            let (face, language) = (Face::named(family), Language::named(language));
+            let font = Font { face, ..Font::new(32.0) };
+            // (Where the family is not installed, the system's own font stands in: one without
+            // such forms, often.)
+            let Some(file) = crate::system_fonts::file_for(face, 'a') else { continue };
+            let forms: Vec<u16> = word.chars().map(|letter| crate::shaping::local(&file, letter, language)).filter(|form| !word.chars().any(|letter| file.glyph(letter) == *form)).collect();
+            if forms.is_empty() {
+                continue;
+            }
+            let other = ['α', 'ა', 'Ա', 'ሀ'].into_iter().find(|letter| file.glyph(*letter) == 0 && crate::system_fonts::file_for(face, *letter).is_some_and(|other| other.glyph(*letter) != 0));
+            let mut letters = word.chars();
+            let first = letters.next().unwrap();
+            let lines = [Some(format!("{first}\u{301}{}", letters.as_str())), other.map(|other| format!("{word} {other}"))];
+            for line in lines.iter().flatten() {
+                let mut text = BidiText::around(Box::new(crate::platform::SystemText::new().expect("the system's text")));
+                text.set_language(language);
+                let glyphs = shaped_glyphs(&mut text, line, font);
+                assert!(forms.iter().all(|form| glyphs.contains(form)), "{family}, {line}: {glyphs:?} lacks {forms:?}");
+                // And none without the language.
+                text.set_language(Language::NONE);
+                assert!(shaped_glyphs(&mut text, line, font).is_empty(), "{family}, {line}");
+            }
+            // A line of simple script is the system's text's own, with the forms swapped in
+            // (except on Apple's systems, whose text takes no forms itself).
+            let mut text = BidiText::around(Box::new(crate::platform::SystemText::new().unwrap()));
+            text.set_language(language);
+            assert_eq!(shaped_glyphs(&mut text, word, font).is_empty(), cfg!(not(target_vendor = "apple")), "{family}");
+            tried += 1;
+            println!("{family}: forms {forms:?} in lines with a mark{}", if other.is_some() { " and with a letter of another font" } else { "" });
+        }
+        if tried == 0 {
+            eprintln!("no system font with such forms: not tested");
+        }
     }
 }

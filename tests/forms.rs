@@ -17,9 +17,11 @@ fn left_of(rect: Rect) -> Point {
 }
 
 /// A clock that goes round twice a day, the month first, weeks that start on Sunday.
-const AMERICAN: Locale = Locale { date_order: DateOrder::MonthDayYear, date_separator: '/', first_weekday: 6, twelve_hour_clock: true, thousands_separator: Some(','), decimal_point: '.' };
+const AMERICAN: Locale =
+    Locale { date_order: DateOrder::MonthDayYear, date_separator: '/', first_weekday: 6, twelve_hour_clock: true, thousands_separator: Some(','), decimal_point: '.', ..Locale::PLAIN };
 /// The day first, a 24-hour clock, a comma before a fraction.
-const GERMAN: Locale = Locale { date_order: DateOrder::DayMonthYear, date_separator: '.', first_weekday: 0, twelve_hour_clock: false, thousands_separator: Some('.'), decimal_point: ',' };
+const GERMAN: Locale =
+    Locale { date_order: DateOrder::DayMonthYear, date_separator: '.', first_weekday: 0, twelve_hour_clock: false, thousands_separator: Some('.'), decimal_point: ',', ..Locale::PLAIN };
 
 #[test]
 fn a_time_is_typed_stepped_by_keys_and_the_wheel_and_told_part_by_part() {
@@ -230,6 +232,68 @@ fn a_date_and_a_time_are_set_in_one_box() {
     typed(&mut ui, "0815", |ui| build(ui, &mut day, &mut at, &mut frame));
     assert_eq!(at, Time::new(8, 15, 0));
     assert_eq!(nodes_as(&ui, Role::Fold)[0].name, "12.11.2026");
+}
+
+#[test]
+fn on_a_clock_with_am_pm_first_the_half_is_the_first_field() {
+    let mut ui = window(1.0);
+    ui.locale = Locale::named("ko-KR");
+    ui.calendar_words.halves = ["오전", "오후"];
+    ui.set_screen_reader(true);
+    let (mut at, mut frame) = (Time::new(14, 5, 0), Rect::EMPTY);
+    let build = |ui: &mut Ui, at: &mut Time, frame: &mut Rect| {
+        ui.row().pad(10.0).open();
+        *frame = ui.time(at, false).rect;
+        ui.close();
+    };
+    settle(&mut ui, |ui| build(ui, &mut at, &mut frame));
+    let (half, hours) = (expect_node(&ui, "AM or PM"), expect_node(&ui, "Hours"));
+    assert_eq!((half.value.as_str(), hours.value.as_str()), ("오후", "2"));
+    assert!(half.rect.right() <= hours.rect.x, "AM/PM {:?} before the hours {:?}", half.rect, hours.rect);
+    assert_eq!(expect_node(&ui, "오후 2:05").role, Role::Group);
+    // A press beside the fields puts the keyboard on the first: AM/PM. Its first letter picks
+    // it; Tab goes on to the hours, and a full hour on to the minutes, the last.
+    click(&mut ui, left_of(frame), |ui| build(ui, &mut at, &mut frame));
+    assert!(expect_node(&ui, "AM or PM").focused);
+    typed(&mut ui, "오전", |ui| build(ui, &mut at, &mut frame));
+    key(&mut ui, Key::Tab, Mods::NONE, |ui| build(ui, &mut at, &mut frame));
+    typed(&mut ui, "930", |ui| build(ui, &mut at, &mut frame));
+    assert_eq!((at, expect_node(&ui, "Minutes").focused), (Time::new(9, 30, 0), true));
+    // Chinese writes AM/PM touching the time.
+    ui.locale = Locale::named("zh-TW");
+    ui.calendar_words.halves = ["上午", "下午"];
+    assert_eq!(ui.format_time(Time::new(14, 5, 9), true), "下午2:05:09");
+}
+
+#[test]
+fn numbers_dates_and_times_are_written_and_typed_in_the_places_own_digits() {
+    let mut ui = window(1.0);
+    ui.locale = Locale::named("ar-EG");
+    ui.set_screen_reader(true);
+    let (mut weight, mut day, mut at, mut boxes) = (12.5f32, Date::new(2026, 3, 7), Time::new(14, 5, 0), [Rect::EMPTY; 2]);
+    let build = |ui: &mut Ui, weight: &mut f32, day: &mut Date, at: &mut Time, boxes: &mut [Rect; 2]| {
+        ui.column().pad(10.0).gap(40.0).open();
+        boxes[0] = ui.number_in(weight, 0.0..=500.0, 0.5, "").rect;
+        boxes[1] = ui.date_time(day, at).rect;
+        ui.close();
+    };
+    settle(&mut ui, |ui| build(ui, &mut weight, &mut day, &mut at, &mut boxes));
+    assert_eq!(nodes_as(&ui, Role::SpinButton)[0].value, "١٢٫٥");
+    assert_eq!(nodes_as(&ui, Role::Fold)[0].name, "٧/٣/٢٠٢٦");
+    assert_eq!([expect_node(&ui, "Hours").value, expect_node(&ui, "Minutes").value], ["٢", "٠٥"]);
+    assert_eq!(ui.format_number(-1234567.25, 2), "-١٬٢٣٤٬٥٦٧٫٢٥");
+    // Typed in Arabic digits, or in 0–9.
+    click(&mut ui, middle(boxes[0]), |ui| build(ui, &mut weight, &mut day, &mut at, &mut boxes));
+    key(&mut ui, Key::Char('a'), Mods::CTRL, |ui| build(ui, &mut weight, &mut day, &mut at, &mut boxes));
+    typed(&mut ui, "٧٫٢٥", |ui| build(ui, &mut weight, &mut day, &mut at, &mut boxes));
+    assert_eq!(weight, 7.25);
+    key(&mut ui, Key::Char('a'), Mods::CTRL, |ui| build(ui, &mut weight, &mut day, &mut at, &mut boxes));
+    typed(&mut ui, "3", |ui| build(ui, &mut weight, &mut day, &mut at, &mut boxes));
+    assert_eq!(weight, 3.0);
+    let hours = expect_node(&ui, "Hours").rect;
+    click(&mut ui, middle(hours), |ui| build(ui, &mut weight, &mut day, &mut at, &mut boxes));
+    typed(&mut ui, "١١٣٠", |ui| build(ui, &mut weight, &mut day, &mut at, &mut boxes));
+    assert_eq!(at, Time::new(23, 30, 0), "eleven in the afternoon, thirty minutes");
 }
 
 #[test]

@@ -109,6 +109,13 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
           xvfb-run -n 190 -s "-screen 0 900x600x24" cargo test --lib --all-features --no-fail-fast -- --include-ignored --skip how_long --skip made_afresh
+      - name: Formats against glibc's locales (compiled into a folder of the job's own)
+        if: ${{ !cancelled() }}
+        env:
+          LOCPATH: ${{ runner.temp }}/locales
+        run: |
+          ~/ci locales "$LOCPATH" en_US de_DE sv_SE en_IN fi_FI ru_RU ko_KR ja_JP fr_FR
+          cargo test --lib --all-features locale
       - name: Build the walks
         if: ${{ !cancelled() }}
         run: cargo build --release --all-features --example gallery --example walk --example walk_reader

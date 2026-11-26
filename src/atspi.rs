@@ -973,8 +973,10 @@ enum Act {
     Focus,
     /// Set its text.
     Type(String),
-    /// Set its value.
+    /// Bring its value to this, a step at a time (a slider).
     Reach(f32),
+    /// Set its value to this (a spin button).
+    Set(f32),
     /// Expand (`true`) or collapse a tree item.
     Open(bool),
     /// Toggle a tree item's selection.
@@ -1326,6 +1328,7 @@ impl Readers {
             Act::Pick => ui.pick_for_reader(deed.thing),
             Act::Show => ui.show_for_reader(deed.thing),
             Act::Row(row, pick) => ui.row_for_reader(deed.thing, row, pick),
+            Act::Set(to) => ui.set_for_reader(deed.thing, to),
             Act::Reach(to) => {
                 self.reach = Some(Reach { window: deed.window, thing: deed.thing, to, off: f32::INFINITY, left: 100 });
                 self.step(ui, deed.window);
@@ -1437,7 +1440,7 @@ impl Readers {
     /// The interfaces an object implements.
     fn interfaces(&self, which: Which) -> Vec<&'static str> {
         let Some(node) = self.node(which) else { return vec![ACCESSIBLE, if which == Which::Program { APPLICATION } else { COMPONENT }] };
-        let (types, moves) = (matches!(node.role, Role::TextBox | Role::PasswordBox), node.value_range.is_some());
+        let (types, moves) = (matches!(node.role, Role::TextBox | Role::PasswordBox | Role::SpinButton), node.value_range.is_some());
         let also = [
             (pressed(node), ACTION),
             (moves, VALUE),
@@ -1546,7 +1549,8 @@ impl Readers {
         let amount = node.and_then(|node| node.value_range).unwrap_or_default().map(f64::from);
         match (interface, name) {
             (ACCESSIBLE, "Name") => values.kinds("s").text(&self.called(which)),
-            (ACCESSIBLE, "Description" | "HelpText") | (VALUE, "Text") => values.kinds("s").text(""),
+            (ACCESSIBLE, "Description" | "HelpText") => values.kinds("s").text(node.map_or("", |node| &node.description)),
+            (VALUE, "Text") => values.kinds("s").text(""),
             (ACCESSIBLE, "Parent") if which == Which::Program => values.kinds("(so)").object(&self.desktop.0, if self.desktop.1.is_empty() { NOTHING } else { &self.desktop.1 }),
             (ACCESSIBLE, "Parent") => values.kinds("(so)").object(&self.name, &self.path(within)),
             (ACCESSIBLE, "ChildCount") => values.kinds("i").i32(self.children(which).len() as i32),
@@ -1677,13 +1681,21 @@ impl Readers {
         Some(answer.0)
     }
 
-    /// Sets a property: the id the registry assigns the application, which it keeps; or a
-    /// slider's value, which it then moves to.
+    /// Sets a property: the id the registry assigns the application, which it keeps; a
+    /// slider's value, which it then moves to; or a spin button's (a number or time field), as
+    /// near as its range allows. (libatspi aborts its program on an error reply to setting a
+    /// value: one out of range is taken to the nearest end, and no number changes nothing.)
     fn set(&mut self, which: Which, interface: &str, name: &str, value: Value, deeds: &mut Vec<Deed>) -> Option<()> {
         match (interface, name, value, self.node(which), self.frame(which)) {
             (APPLICATION, "Id", Value::Number(id), ..) if which == Which::Program => self.id = id as i32,
             (VALUE, "CurrentValue", Value::Number(to), Some(node), Some(frame)) if node.role == Role::Slider && node.enabled => {
                 deeds.push(Deed { window: frame.known, thing: node.id, act: Act::Reach(to as f32) })
+            }
+            (VALUE, "CurrentValue", Value::Number(to), Some(node), Some(frame)) if node.role == Role::SpinButton && node.enabled => {
+                // (Not `clamp`: its panic message would bring float formatting into every program.)
+                let [_, least, most] = node.value_range?;
+                let set = Deed { window: frame.known, thing: node.id, act: Act::Set((to as f32).max(least).min(most)) };
+                deeds.extend((!to.is_nan()).then_some(set));
             }
             _ => return None,
         }
@@ -1848,10 +1860,10 @@ impl Readers {
         Some(answer.0)
     }
 
-    /// The editable text interface: the whole text replaced, with the requested insertion or
-    /// deletion.
+    /// The editable text interface of a text box or spin button: the whole text replaced, with
+    /// the requested insertion or deletion.
     fn editable(&self, which: Which, member: &str, asked: &mut Unpack, values: &mut Pack, deeds: &mut Vec<Deed>) -> Option<&'static str> {
-        let (node, frame) = (self.node(which).filter(|node| matches!(node.role, Role::TextBox | Role::PasswordBox) && node.enabled)?, self.frame(which)?);
+        let (node, frame) = (self.node(which).filter(|node| matches!(node.role, Role::TextBox | Role::PasswordBox | Role::SpinButton) && node.enabled)?, self.frame(which)?);
         let text = match member {
             "SetTextContents" => asked.text()?.to_string(),
             "InsertText" => {
@@ -3357,6 +3369,65 @@ pub(crate) mod tests {
             assert!(deeds.is_empty() && !fine, "{member}");
         }
         assert_eq!((ui.clipboard(), app.name.as_str()), (None, "\u{17c}"));
+    }
+
+    /// A number box and a time box: copies, and an alarm.
+    fn fields(ui: &mut Ui, (copies, alarm): &mut (u8, crate::Time)) {
+        ui.number_in(copies, 1..=9, 1, "");
+        ui.time(alarm, false);
+    }
+
+    #[test]
+    fn a_screen_reader_sets_number_and_time_fields_by_value_and_by_text() {
+        let mut held = (3u8, crate::Time::new(7, 30, 0));
+        let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
+        ui.locale = Some(crate::Locale::PLAIN);
+        ui.resize(Size { w: 420.0, h: 300.0 }, 1.0);
+        ui.set_screen_reader(true);
+        for _ in 0..2 {
+            ui.run(&mut |ui| fields(ui, &mut held));
+        }
+        let (mut readers, mut peer) = told_of(&mut ui);
+        let does = |ui: &mut Ui, readers: &mut Readers, held: &mut (u8, crate::Time), deeds: Vec<Deed>| {
+            deeds.into_iter().for_each(|deed| readers.act(ui, deed));
+            for _ in 0..4 {
+                ui.run(&mut |ui| fields(ui, held));
+                readers.keep(ui, 0, "Settings window", [420, 300], 1.0);
+            }
+            readers.settle();
+        };
+        let spin = readers.path(Which::Thing(0, readers.frames[0].nodes.iter().position(|node| node.role == Role::SpinButton && node.name != "Hours").unwrap()));
+        let set = |peer: &mut Peer, readers: &mut Readers, path: &str, to: f64| peer.ask(readers, path, PROPERTIES, "Set", "ssv", Pack::default().text(VALUE).text("CurrentValue").kinds("d").f64(to));
+        // By value, at once; beyond its range, to the nearest end; no number changes nothing.
+        let (deeds, fine, ..) = set(&mut peer, &mut readers, &spin, 7.0);
+        assert!(fine);
+        does(&mut ui, &mut readers, &mut held, deeds);
+        assert_eq!(held.0, 7);
+        assert!((number_in(&peer.property(&mut readers, &spin, VALUE, "CurrentValue")) - 7.0).abs() < 1e-6);
+        for (beyond, end) in [(12.0, 9), (0.0, 1), (f64::NAN, 1)] {
+            let (deeds, fine, ..) = set(&mut peer, &mut readers, &spin, beyond);
+            assert!(fine, "{beyond}");
+            does(&mut ui, &mut readers, &mut held, deeds);
+            assert_eq!(held.0, end, "{beyond}");
+        }
+        // By text, as typed.
+        let (deeds, fine, ..) = peer.ask(&mut readers, &spin, EDITABLE, "SetTextContents", "s", Pack::default().text("5"));
+        assert!(fine);
+        does(&mut ui, &mut readers, &mut held, deeds);
+        assert_eq!(held.0, 5);
+        // A time's parts: the minutes by value, the hours by text.
+        let (minutes, hours) = (path_of(&readers, "Minutes"), path_of(&readers, "Hours"));
+        let (deeds, fine, ..) = set(&mut peer, &mut readers, &minutes, 45.0);
+        assert!(fine);
+        does(&mut ui, &mut readers, &mut held, deeds);
+        let (deeds, fine, ..) = peer.ask(&mut readers, &hours, EDITABLE, "SetTextContents", "s", Pack::default().text("9"));
+        assert!(fine);
+        does(&mut ui, &mut readers, &mut held, deeds);
+        assert_eq!(held.1, crate::Time::new(9, 45, 0));
+        let (deeds, fine, ..) = set(&mut peer, &mut readers, &hours, 24.0);
+        assert!(fine);
+        does(&mut ui, &mut readers, &mut held, deeds);
+        assert_eq!(held.1.hour, 23, "the hours run to 23");
     }
 
     #[test]

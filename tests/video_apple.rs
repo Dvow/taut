@@ -47,7 +47,7 @@ mod checks {
     use std::ffi::c_void;
     use std::time::{Duration, Instant};
     use taut::testing::Trial;
-    use taut::{Role, Video};
+    use taut::{Role, Track, Video};
 
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
@@ -110,7 +110,36 @@ mod checks {
         until(&mut bytes, "the first frame", |video| video.size().is_some());
         assert_eq!(seek(&mut bytes, Duration::from_millis(1200)), 12);
         println!("bytes");
+        tracks_captions_and_speed();
+        println!("tracks, captions and speed");
         many_opens(&with_sound);
+    }
+
+    /// The first two letters of each track's language.
+    fn languages(tracks: &[Track]) -> Vec<String> {
+        tracks.iter().map(|track| track.language.chars().take(2).collect()).collect()
+    }
+
+    fn tracks_captions_and_speed() {
+        let file = written("languages.mp4", &movie(30, 10, false, &TWO_LANGUAGES, &TWO_CAPTIONS));
+        let mut trial = trial(Video::open_silent(file).unwrap(), false);
+        until(&mut trial, "the tracks and the first frame", |video| video.sound_tracks().len() == 2 && video.size().is_some());
+        assert_eq!((languages(trial.app.sound_tracks()), languages(trial.app.caption_tracks())), (vec!["en".to_string(), "de".into()], vec!["en".to_string(), "fr".into()]));
+        trial.app.set_sound_track(1);
+        assert_eq!(trial.app.sound_track(), Some(1));
+        trial.app.set_caption_track(Some(1));
+        for (to, text) in [(500, Some("Français un")), (1500, Some("Français deux")), (2200, None), (2700, Some("Français fin"))] {
+            seek(&mut trial, Duration::from_millis(to));
+            assert_eq!(trial.app.caption(), text, "at {to} ms");
+        }
+        trial.app.set_speed(2.0);
+        seek(&mut trial, Duration::ZERO);
+        trial.app.play();
+        until(&mut trial, "playing", |video| video.position() >= Duration::from_millis(200));
+        let (start, from) = (Instant::now(), trial.app.position());
+        pass(&mut trial, Duration::from_millis(600));
+        let rate = (trial.app.position() - from).as_secs_f32() / start.elapsed().as_secs_f32();
+        assert!((rate - 2.0).abs() < 0.4, "at 2× the time moved {rate} s a second");
     }
 
     fn frames_show_at_their_times(file: &std::path::Path) {

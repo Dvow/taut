@@ -56,6 +56,8 @@ pub(crate) enum Heard {
     Back,
     /// The window or its insets changed size, or the display settings changed.
     Looks,
+    /// The user's locale or its formats changed: everything is written again.
+    Locale,
     /// The window must be shown whole again.
     Redraw,
 }
@@ -383,8 +385,11 @@ fn register(env: Env, classes: &[Obj; 3]) -> bool {
     env.register(classes[0], &host) && env.register(classes[1], &crate::android_access::natives())
 }
 
+/// The activity comes back: the 24-hour setting may have changed meanwhile (it is no configuration
+/// change), so the formats are read again.
 extern "C" fn on_resume(_: *mut Activity) {
     SHELL.with_borrow_mut(|shell| shell.resumed = true);
+    heard(Heard::Locale);
     heard(Heard::Event(Event::Minimized(false)));
     heard(Heard::Redraw);
     kick();
@@ -472,8 +477,10 @@ extern "C" fn on_queue_destroyed(_: *mut Activity, queue: *mut c_void) {
     SHELL.with_borrow_mut(|shell| shell.queue = std::ptr::null_mut());
 }
 
+/// The configuration changed: looks, and the locale (the manifest asks for both).
 extern "C" fn on_configuration_changed(_: *mut Activity) {
     heard(Heard::Looks);
+    heard(Heard::Locale);
     kick();
 }
 
@@ -802,6 +809,10 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             }
             Heard::Other(work) => self.rerun |= work(&mut self.ui),
             Heard::Looks => self.measure(),
+            Heard::Locale => {
+                crate::locale::changed();
+                self.rerun = true;
+            }
             Heard::Redraw => self.whole = true,
             Heard::Back if self.ui.popup_anchor().is_some() => self.rerun |= self.ui.event(Event::Key(Key::Escape, Mods::NONE)),
             Heard::Back => {

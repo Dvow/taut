@@ -247,6 +247,9 @@ fn describe(env: Env, info: Obj, view: Obj, id: i32, node: &AccessNode) {
     let package = env.call(activity(), c"getPackageName", c"()Ljava/lang/String;", &[]).object();
     env.call(info, c"setPackageName", c"(Ljava/lang/CharSequence;)V", &[Value::obj(package)]);
     text(c"setClassName", class_of(node.role));
+    if !node.description.is_empty() {
+        text(c"setTooltipText", &node.description);
+    }
     let parent = TOLD.with_borrow(|told| node.parent.and_then(|at| told.nodes.get(at)).and_then(|parent| told.ids.get(&parent.id).copied()));
     env.call(info, c"setParent", c"(Landroid/view/View;I)V", &[Value::obj(view), Value::int(parent.unwrap_or(HOST))]);
     let index = TOLD.with_borrow(|told| index_of(told, id));

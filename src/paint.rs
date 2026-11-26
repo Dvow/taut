@@ -2,8 +2,8 @@
 use crate::canvas::{Canvas, coverage};
 use crate::color::Color;
 use crate::geom::{Point, Rect, pt, rect};
-use crate::id::Id;
-use crate::layout::{Align, BAR, Content, Flow, Tree};
+use crate::id::{Id, fold};
+use crate::layout::{Align, BAR, Content, Flow, KEPT, Tree, fade_key};
 use crate::path::Path;
 use crate::scene::Scenes;
 use crate::slots::Slots;
@@ -11,6 +11,7 @@ use crate::text::{Decoration, Font, Line, TextSystem};
 use crate::theme::Theme;
 use crate::ui::{Icon, Stored};
 use crate::visible_boxes::{Fade, VisibleBox};
+use std::any::Any;
 use std::collections::HashMap;
 
 /// An icon rasterized once at one size: each pixel's coverage.
@@ -22,7 +23,8 @@ pub(crate) struct Mask {
 /// Fills every other line of box `at`'s content (the second, fourth and so on) in `color`, the
 /// box being at `r` (see [`El::stripes`](crate::El::stripes)): a grid's rows of cells, a
 /// column's children. A line spans the box less its padding, and half the gap to its
-/// neighbours.
+/// neighbours. Boxes kept in view are not lines (they stay put while the lines scroll); in a
+/// long list's rows, lines count from its first row, past the room for those above.
 pub(crate) fn stripes(tree: &Tree, at: u32, r: Rect, color: Color, canvas: &mut Canvas) {
     let spec = &tree.specs[at as usize];
     let each = match spec.frame.flow {
@@ -30,24 +32,32 @@ pub(crate) fn stripes(tree: &Tree, at: u32, r: Rect, color: Color, canvas: &mut 
         Flow::Column => 1,
         _ => return,
     };
+    let (first, room_above) = match spec.content {
+        Content::Stripes { first_row: Some(row), .. } => (row as usize, 1),
+        _ => (0, 0),
+    };
     let (top, inside) = (r.y - spec.offset[1], r.inset(spec.frame.pad));
     // Each line's top and bottom: the highest top and lowest bottom of its boxes.
-    let (mut lines, mut child, mut n): (Vec<[f32; 2]>, u32, usize) = (Vec::new(), at + 1, 0);
-    while child < spec.end {
+    let mut lines: Vec<[f32; 2]> = Vec::new();
+    let lined = tree.children(at).skip(room_above).filter(|child| tree.specs[*child as usize].frame.pinned & KEPT == 0);
+    for (n, child) in lined.enumerate() {
         let place = &tree.places[child as usize];
         let [y, bottom] = [top + place.pos[1], top + place.pos[1] + place.dim[1]];
-        if n % each == 0 || lines.is_empty() {
-            lines.push([y, bottom]);
-        } else if let Some(line) = lines.last_mut() {
-            *line = [line[0].min(y), line[1].max(bottom)];
+        match lines.last_mut() {
+            Some(line) if n % each != 0 => *line = [line[0].min(y), line[1].max(bottom)],
+            _ => lines.push([y, bottom]),
         }
-        (child, n) = (tree.specs[child as usize].end, n + 1);
     }
-    for k in (1..lines.len()).step_by(2) {
-        let before = (lines[k][0] - lines[k - 1][1]) / 2.0;
-        let after = lines.get(k + 1).map_or(before, |next| (next[0] - lines[k][1]) / 2.0);
+    // Half the gap after line `k`, where another follows.
+    let gap = |k: usize| lines.get(k + 1).map(|next| (next[0] - lines[k][1]) / 2.0);
+    // (In a scroll box, where its content shows: not under what it keeps in view.)
+    let held = canvas.clip(tree.scrolled_view(at, r));
+    for k in (1 - first % 2..lines.len()).step_by(2) {
+        let before = k.checked_sub(1).and_then(gap).or(gap(k)).unwrap_or(0.0);
+        let after = gap(k).unwrap_or(before);
         canvas.rect(rect(inside.x, lines[k][0] - before, inside.w, lines[k][1] - lines[k][0] + before + after), color);
     }
+    canvas.restore_clip(held);
 }
 
 /// The id of the scroll bar of box `of` along `axis`.
@@ -95,17 +105,13 @@ pub(crate) struct Shows {
     pub shadow: Option<ShowsShadow>,
     /// Fills a box with a gradient, as [`Canvas::gradient`] does.
     pub gradient: Option<ShowsGradient>,
-    /// Keeps what is under a see-through box and lets it show through what was drawn of the
-    /// box, as `Painter::fade` does.
-    pub fade: Option<Fades>,
+    /// Draws see-through boxes, each as one layer kept between paints (see `Fades`).
+    pub fade: Option<&'static Fades>,
     /// Fills every other line of a box's content, as `stripes` does.
     pub stripes: Option<ShowsStripes>,
 }
 /// Fills every other line of a box's content: the tree, the box, its place, the colour.
 type ShowsStripes = fn(&Tree, u32, Rect, Color, &mut Canvas);
-/// Keeps the pixels under a see-through box where it starts, and lets them show through where
-/// it ends.
-type Fades = fn(&mut Painter<'_>, &VisibleBox, &mut Canvas<'_>);
 /// Brings an animation to a frame and hands out its pixels.
 type ShowsAnimation = for<'r> fn(&'r mut crate::animation::LoadedAnimation, usize) -> (&'r [u32], usize);
 /// Fills a box with a gradient.
@@ -114,6 +120,153 @@ type ShowsGradient = fn(&mut Canvas, Rect, f32, &[(f32, Color)], Option<f32>);
 type ShowsShadow = fn(&mut Canvas, Rect, f32, f32, Color);
 /// Lays a picture into a box: its pixels, row length, the box, its corner radius.
 type ShowsPicture = fn(&mut Canvas, &[u32], usize, Rect, f32);
+
+/// What draws see-through boxes, each as one layer kept between paints: where one starts or
+/// ends among the boxes in view (`Painter::fade`, which returns the next box to draw), and what
+/// this run's layers depend on (`Fading::key_layers`). Set going by the first such box
+/// ([`El::opacity`](crate::El::opacity)) and reached by nothing else.
+pub(crate) struct Fades {
+    pub draw: fn(&mut Painter<'_>, &[VisibleBox], usize, &mut Canvas<'_>) -> usize,
+    pub key: fn(&mut crate::ui::Ui),
+}
+pub(crate) static FADES: Fades = Fades { draw: |painter, seen, at, canvas| painter.fade(seen, at, canvas), key: Fading::key_layers };
+
+/// The most pixels a see-through box's layer may hold: one larger is drawn afresh each time.
+const LAYER_MOST: usize = 4_194_304;
+
+/// What see-through boxes keep (see [`El::opacity`](crate::El::opacity)): what is under the
+/// ones being drawn, and each one's layer. Made by the first such box.
+#[derive(Default)]
+pub(crate) struct Fading {
+    /// What lies under the see-through boxes being drawn: their pixels one box after another;
+    /// and for each, which of the window's pixels those are and all the box's own.
+    under: Vec<u32>,
+    parts: Vec<([i32; 4], [i32; 4])>,
+    /// Each see-through box's layer: what it drew over what was under it, before that showed
+    /// through.
+    layers: Vec<Layer>,
+    /// This run's see-through boxes in view: each one's index, id, and the looks its layer
+    /// depends on, as one number (see `Fading::key_layers`).
+    keys: Vec<(u32, Id, u64)>,
+}
+
+/// The `Fading` a window keeps (see `Ui::fading`), once a box has been see-through.
+fn kept(fading: &mut Option<Box<dyn Any>>) -> Option<&mut Fading> {
+    fading.as_mut()?.downcast_mut()
+}
+
+/// What a see-through box last drew over what was under it, window pixels `area` (left, top,
+/// right, bottom) row by row, while its content and what is under it look as `key` says; and
+/// how much of each row holds that (from, to).
+pub(crate) struct Layer {
+    id: Id,
+    key: u64,
+    area: [i32; 4],
+    pixels: Vec<u32>,
+    filled: Vec<[i32; 2]>,
+}
+
+impl Layer {
+    /// Whether it holds all of window pixels `part`.
+    fn holds(&self, [left, top, right, bottom]: [i32; 4]) -> bool {
+        (top..bottom).all(|y| self.filled.get((y - self.area[1]) as usize).is_some_and(|[from, to]| *from <= left && right <= *to))
+    }
+    /// Notes that it now holds window pixels `part` too. (Where a row's pixels so far and these
+    /// don't meet, it keeps the wider.)
+    fn fill(&mut self, [left, top, right, bottom]: [i32; 4]) {
+        for y in top..bottom {
+            let Some([from, to]) = self.filled.get_mut((y - self.area[1]) as usize) else { continue };
+            let meets = *from < *to && left <= *to && *from <= right;
+            [*from, *to] = match meets {
+                true => [(*from).min(left), (*to).max(right)],
+                false if right - left > *to - *from => [left, right],
+                false => [*from, *to],
+            };
+        }
+    }
+}
+
+impl Fading {
+    /// Works out this run's `keys`: for each see-through box in view, its own look, its
+    /// content's and what lies under it (the boxes before it there, and marks there besides
+    /// the boxes', such as a text cursor's). Layers of boxes no longer see-through in view are
+    /// dropped.
+    pub(crate) fn key_layers(ui: &mut crate::ui::Ui) {
+        let (boxes, marks, tree) = (&ui.visible_boxes.boxes, &ui.marks, &ui.tree);
+        let Some(fading) = kept(&mut ui.fading) else { return };
+        fading.keys.clear();
+        // (Marks come one per box entered, in order, then the others.)
+        let (mut marked, entered) = (0, boxes.iter().filter(|step| !step.leaving).count());
+        for (at, step) in boxes.iter().enumerate() {
+            marked += !step.leaving as usize;
+            if step.fade != Fade::Starts {
+                continue;
+            }
+            let ends = boxes[at..].iter().position(|end| end.fade == Fade::Ends && end.at == step.at).map_or(boxes.len(), |end| at + end);
+            let inside = marked + boxes[at..ends].iter().filter(|step| !step.leaving).count();
+            let spec = &tree.specs[step.at as usize];
+            // (Its own look, not counting how see-through it is.)
+            let own = marks.get(marked).map_or(0, |(look, _)| look ^ fade_key(spec.fade));
+            // (What lies under the pixel its layer has all round counts too: see
+            // `Canvas::pixels_of`.)
+            let around = step.area.grow(2.0);
+            let under = marks[..marked].iter().chain(&marks[entered.min(marks.len())..]).filter(|(_, r)| !r.intersect(around).is_empty());
+            let looks = marks.get(marked + 1..inside).unwrap_or_default().iter().chain(under).fold(own, |key, (look, _)| fold(key, *look));
+            fading.keys.push((step.at, spec.id, looks));
+        }
+        let Fading { layers, keys, .. } = fading;
+        layers.retain(|layer| keys.iter().any(|(_, id, _)| *id == layer.id));
+    }
+
+    /// The layers of a window's see-through boxes (`fading`), set aside for a fresh draw
+    /// ([`Surface::draw`](crate::Surface::draw)): without them every such box is drawn anew, so
+    /// a redraw held against it shows a stale one.
+    pub(crate) fn set_aside(fading: &mut Option<Box<dyn Any>>) -> Vec<Layer> {
+        kept(fading).map_or(Vec::new(), |fading| std::mem::take(&mut fading.layers))
+    }
+    /// Puts back the layers `set_aside` took, in place of any made meanwhile.
+    pub(crate) fn put_back(fading: &mut Option<Box<dyn Any>>, layers: Vec<Layer>) {
+        if let Some(fading) = kept(fading) {
+            fading.layers = layers;
+        }
+    }
+
+    /// The layer of see-through box `seen[at]`, if it holds all of window pixels `part` of the
+    /// box's `area` as they would be drawn now; and where in `seen` the box ends. (None where
+    /// the box's end lets what follows it show only past it: passing over that would lose it.)
+    fn layer_for(&self, seen: &[VisibleBox], at: usize, area: [i32; 4], part: [i32; 4]) -> Option<(usize, usize)> {
+        let of = seen[at].at;
+        let &(_, id, key) = self.keys.iter().find(|(box_at, ..)| *box_at == of)?;
+        let layer = self.layers.iter().position(|layer| layer.id == id && layer.key == key && layer.area == area && layer.holds(part))?;
+        let ends = at + seen[at..].iter().position(|step| step.fade == Fade::Ends && step.at == of)?;
+        (!seen[at..ends].iter().any(|step| step.at == of && step.pins != 0)).then_some((layer, ends))
+    }
+
+    /// Keeps what see-through box `at` drew over window pixels `part` of its `area` in its
+    /// layer, as of this run's looks: a layer of other looks, or of another place, starts
+    /// afresh. (Not for a box larger than `LAYER_MOST`, nor one this run has no key for.)
+    fn keep(&mut self, at: u32, part: [i32; 4], area: [i32; 4], canvas: &mut Canvas) {
+        let Some(&(_, id, key)) = self.keys.iter().find(|(box_at, ..)| *box_at == at) else { return };
+        let [wide, high] = [area[2] - area[0], area[3] - area[1]].map(|side| side.max(0) as usize);
+        if wide * high > LAYER_MOST || part[0] >= part[2] || part[1] >= part[3] {
+            return;
+        }
+        let layer = self.layers.iter().position(|layer| layer.id == id).unwrap_or_else(|| {
+            self.layers.push(Layer { id, key, area, pixels: Vec::new(), filled: Vec::new() });
+            self.layers.len() - 1
+        });
+        let layer = &mut self.layers[layer];
+        if layer.key != key || layer.area != area || layer.pixels.len() != wide * high {
+            (layer.key, layer.area) = (key, area);
+            layer.pixels.clear();
+            layer.pixels.resize(wide * high, 0);
+            layer.filled.clear();
+            layer.filled.resize(high, [0, 0]);
+        }
+        canvas.copy_into(part, &mut layer.pixels, area);
+        layer.fill(part);
+    }
+}
 
 /// Everything drawing needs, for one paint.
 pub(crate) struct Painter<'a> {
@@ -145,9 +298,8 @@ pub(crate) struct Painter<'a> {
     /// What spell checking keeps once a box asked for it: the misspelled words' wavy lines and
     /// what draws them (see `spell`).
     pub spelling: &'a crate::spell::Spelling,
-    /// What lies under the see-through boxes being drawn: their pixels one box after another,
-    /// and which pixels each box has.
-    pub under: &'a mut (Vec<u32>, Vec<[i32; 4]>),
+    /// What see-through boxes keep: what is under the ones being drawn, and their layers.
+    pub fading: &'a mut Option<Box<dyn Any>>,
 }
 
 impl Painter<'_> {
@@ -156,18 +308,20 @@ impl Painter<'_> {
     /// screenful.
     pub fn draw(&mut self, seen: &[VisibleBox], canvas: &mut Canvas) {
         self.clips.clear();
-        for step in seen {
-            match step.leaving {
-                false => self.enter(step, canvas),
-                true => self.leave(step, canvas),
-            }
+        let mut at = 0;
+        while let Some(step) = seen.get(at) {
+            at = match (step.leaving, step.fade) {
+                (false, _) => (self.enter(step, canvas), at + 1).1,
+                (true, Fade::No) => (self.leave(step, canvas), at + 1).1,
+                (true, _) => self.shows.fade.map_or(at + 1, |fades| (fades.draw)(self, seen, at, canvas)),
+            };
         }
     }
 
     /// The box itself, under its content.
     fn enter(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
         let (spec, r) = (&self.tree.specs[step.at as usize], step.rect);
-        if matches!(spec.frame.pinned, 1 | 2) {
+        if spec.frame.pinned & KEPT != 0 {
             self.widen(step.at, canvas);
         }
         if !step.area.intersect(canvas.visible()).is_empty() {
@@ -213,12 +367,9 @@ impl Painter<'_> {
     }
 
     /// What lies over a box's content: its scroll bars and focus ring. (And the clip sticky
-    /// headings in it set is released; or, for such a heading, what follows it in its box is
-    /// clipped to below it, as the survey has it: see `Lying::pin`.)
+    /// boxes in it set is released; or, for such a box, what follows it in its box is clipped
+    /// to past it, as the survey has it: see `Lying::pin`.)
     fn leave(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
-        if step.fade != Fade::No {
-            return self.shows.fade.map_or((), |fade| fade(self, step, canvas));
-        }
         let (spec, r) = (&self.tree.specs[step.at as usize], step.rect);
         if let Some(before) = (0..step.lets_go).filter_map(|_| self.clips.pop()).last() {
             canvas.restore_clip(before);
@@ -237,23 +388,47 @@ impl Painter<'_> {
             let ring = if spec.fill.solid() == self.theme.accent.solid() { self.theme.on_accent } else { self.theme.accent };
             canvas.border(r, spec.radius, 2.0, ring);
         }
-        if let Some(before) = self.clips.pop_if(|_| matches!(spec.frame.pinned, 1 | 2)) {
+        if let Some(before) = self.clips.pop_if(|_| spec.frame.pinned & KEPT != 0) {
             canvas.restore_clip(before);
         }
-        if step.pins {
-            self.clips.push(canvas.clip(rect(Rect::EVERYTHING.x, r.bottom(), Rect::EVERYTHING.w, Rect::EVERYTHING.h)));
+        if step.pins != 0 {
+            // What follows it shows only past it: right of it, below it, or both.
+            let [x, y] = [(1, r.right(), Rect::EVERYTHING.x), (2, r.bottom(), Rect::EVERYTHING.y)].map(|(bit, past, anywhere)| if step.pins & bit != 0 { past } else { anywhere });
+            self.clips.push(canvas.clip(rect(x, y, Rect::EVERYTHING.w, Rect::EVERYTHING.h)));
         }
     }
 
-    /// Where a see-through box starts, what is under it is kept; where it ends, that shows
-    /// through all drawn of it since (see `Fade`), as through one picture.
-    pub(crate) fn fade(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
-        let (kept, parts) = &mut *self.under;
-        match step.fade {
-            Fade::Starts => parts.push(canvas.keep_under(step.area, kept)),
-            Fade::Ends => parts.pop().into_iter().for_each(|part| canvas.let_through(part, kept, self.tree.specs[step.at as usize].fade)),
-            Fade::No => {}
+    /// Where see-through box `seen[at]` starts or ends (see `Fade`), drawing it as one layer:
+    /// returns the next of `seen` to draw.
+    pub(crate) fn fade(&mut self, seen: &[VisibleBox], at: usize, canvas: &mut Canvas) -> usize {
+        match seen[at].fade {
+            Fade::Starts => self.start_fade(seen, at, canvas),
+            _ => (self.end_fade(&seen[at], canvas), at + 1).1,
         }
+    }
+
+    /// Where a see-through box starts: if its layer holds what it drew over what is under it
+    /// now (neither has changed since), the layer is blended in and its content passed over,
+    /// to the box after its end; else what is under it is kept.
+    fn start_fade(&mut self, seen: &[VisibleBox], at: usize, canvas: &mut Canvas) -> usize {
+        let (step, Some(fading)) = (&seen[at], kept(self.fading)) else { return at + 1 };
+        let (area, fade) = (canvas.pixels_of(step.area), self.tree.specs[step.at as usize].fade);
+        let part = canvas.within_clip(area);
+        if let Some((layer, ends)) = fading.layer_for(seen, at, area, part) {
+            canvas.blend_layer(part, &fading.layers[layer].pixels, area, fade);
+            return ends + 1;
+        }
+        fading.parts.push((canvas.keep_under(step.area, &mut fading.under), area));
+        at + 1
+    }
+
+    /// Where a see-through box ends: what was drawn of it is kept as its layer, and what was
+    /// under it shows through that, as through one picture.
+    fn end_fade(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
+        let Some(fading) = kept(self.fading) else { return };
+        let Some((part, area)) = fading.parts.pop() else { return };
+        fading.keep(step.at, part, area, canvas);
+        canvas.let_through(part, &mut fading.under, self.tree.specs[step.at as usize].fade);
     }
 
     /// What a box at `r` holds: a picture, a shape, an icon, or text.
@@ -269,7 +444,7 @@ impl Painter<'_> {
         let held = spec.frame.clip.then(|| canvas.clip(rect(r.x, r.y - up, r.w, r.h + up + down)));
         match spec.content {
             Content::None | Content::Gradient { .. } => {}
-            Content::Stripes { color } => self.shows.stripes.map_or((), |stripes| stripes(self.tree, at, r, color, canvas)),
+            Content::Stripes { color, .. } => self.shows.stripes.map_or((), |stripes| stripes(self.tree, at, r, color, canvas)),
             Content::Text { .. } => self.words(at, inside, canvas),
             // A picture the app let go draws nothing.
             Content::Picture { picture, keep } => {
@@ -565,5 +740,49 @@ mod tests {
         trial.press(crate::Role::Button, "Icon");
         trial.press(crate::Role::Button, "Icon");
         assert!(!trial.app);
+    }
+}
+
+#[cfg(all(test, feature = "gpu-draw"))]
+mod gpu_tests {
+    use crate::canvas::Canvas;
+    use crate::geom::Size;
+    use crate::gpu_draw::{DrawList, PATCH};
+    use crate::text::BuiltInFont;
+    use crate::{Color, Length, LocalClipboard, Surface, Ui};
+
+    /// A panel of words at `solid`, over blue.
+    fn faded(ui: &mut Ui, solid: f32) {
+        ui.el().w(Length::Px(200.0)).h(Length::Px(100.0)).fill(Color::rgb(0x2050c0)).open();
+        ui.column().pad(8.0).fill(Color::WHITE).opacity(solid).open();
+        ui.label("Words");
+        ui.close();
+        ui.close();
+    }
+
+    #[test]
+    fn for_the_gpu_a_see_through_box_is_its_layer_laid_over_what_is_under_it() {
+        let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
+        ui.resize(Size { w: 300.0, h: 200.0 }, 1.0);
+        ui.run(&mut |ui| faded(ui, 0.5));
+        // No layer yet: the GPU can't draw the part, the CPU does (and keeps the layer).
+        let mut list = DrawList::default();
+        let record = |ui: &mut Ui, list: &mut DrawList| {
+            list.begin([300, 200]);
+            ui.paint(&mut Canvas::recording(list, 300, 200, (0, 0), 1.0));
+        };
+        record(&mut ui, &mut list);
+        assert!(list.failed);
+        let cpu = Surface::draw(&mut ui, 64);
+        let mut kept = Surface { width: 300, height: 200, pixels: vec![0; 300 * 200] };
+        kept.redraw(&mut ui, crate::geom::rect(0.0, 0.0, 300.0, 200.0));
+        assert_eq!(kept.pixels, cpu.pixels);
+        // More faded: the GPU lays the layer, as see-through as the box, over what it drew.
+        ui.run(&mut |ui| faded(ui, 0.25));
+        record(&mut ui, &mut list);
+        assert!(!list.failed && list.quads.iter().any(|quad| quad.rows[5][0] == PATCH));
+        // Its texels are the layer's at a quarter: the box's white over blue, a quarter of it.
+        let white = list.staging.iter().filter(|texel| **texel == 0x4040_4040).count();
+        assert!(white > 1000, "{white} quarter-white texels");
     }
 }

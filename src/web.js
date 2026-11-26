@@ -295,6 +295,11 @@ export class Page {
             video_sound: (id, volume, muted) => page.videoSound(id, volume, muted),
             video_state: (id, out) => page.videoState(id, out),
             video_frame: (id, out) => page.videoFrame(id, out),
+            video_speed: (id, speed) => page.videoSpeed(id, speed),
+            video_tracks: (id) => page.videoTracks(id),
+            video_choose_sound: (id, nth) => page.videoChooseSound(id, nth),
+            video_choose_captions: (id, nth) => page.videoChooseCaptions(id, nth),
+            video_caption: (id) => page.videoCaption(id),
             drag_from: (left, top, width, height) => (page.dragFrom = [left, top, width, height]),
             drag_item: (kind, name, nameLength, at, length) => page.dragItems.push([kind, page.text(name, nameLength), page.bytes(at, length).slice()]),
             clipboard_watch: () => (page.clipboardParts = true),
@@ -624,6 +629,7 @@ export class Page {
         }
         this.focusKey = said.focus;
         this.placeFocus();
+        this.placeSelection();
         if (said.say.length > 0) {
             this.live.textContent = "";
             setTimeout(() => (this.live.textContent = said.say.join(". ")), 50);
@@ -721,6 +727,24 @@ export class Page {
         const parent = made.parentKey ? this.nodes.get(made.parentKey)?.said : null;
         const [left, top] = parent ? [parent.x ?? 0, parent.y ?? 0] : [0, 0];
         Object.assign(made.style, { left: `${(node.x ?? 0) - left}px`, top: `${(node.y ?? 0) - top}px`, width: `${node.w ?? 0}px`, height: `${node.h ?? 0}px` });
+    }
+
+    // A document's selection, as the program tells it: the page's selection, from the first
+    // element holding some of it to the last, so a reader reads it. Not while the text field is
+    // in use: it holds its own.
+    placeSelection() {
+        if (this.fieldOn) {
+            return;
+        }
+        const held = [...this.readers.querySelectorAll("[data-key]")].filter((made) => made.said.s);
+        const chosen = document.getSelection();
+        if (held.length > 0) {
+            const [first, last] = [held[0], held[held.length - 1]];
+            chosen.setBaseAndExtent(first.firstChild, first.said.s[0], last.firstChild, last.said.s[1]);
+        } else if (this.selected) {
+            chosen.removeAllRanges();
+        }
+        this.selected = held.length > 0;
     }
 
     // The keyboard goes where the interface has it: the text field while text is typed, else
@@ -1379,6 +1403,52 @@ export class Page {
         }
     }
 
+    // Plays at this speed from now on, the pitch kept.
+    videoSpeed(id, speed) {
+        const made = this.videos.get(id);
+        if (made) {
+            Object.assign(made.element, { defaultPlaybackRate: speed, playbackRate: speed, preservesPitch: true });
+        }
+    }
+
+    // The element's sound tracks (where the browser lists them) and caption tracks, a line each,
+    // kept for `take`: "sound" or "captions", its language, its label, whether it plays, by tabs.
+    // Answers their length; 0 before the element has read the source's metadata.
+    videoTracks(id) {
+        const element = this.videos.get(id)?.element;
+        if (!element || element.readyState < 1) {
+            return 0;
+        }
+        const line = (kind, track, on) => [kind, track.language, track.label, on ? 1 : 0].join("\t");
+        const sound = [...(element.audioTracks || [])].map((track) => line("sound", track, track.enabled));
+        const captions = captionTracks(element).map((track) => line("captions", track, false));
+        this.made = encoder.encode(["tracks", ...sound, ...captions].join("\n"));
+        return this.made.length;
+    }
+
+    videoChooseSound(id, nth) {
+        const tracks = this.videos.get(id)?.element.audioTracks || [];
+        [...tracks].forEach((track, at) => (track.enabled = at === nth));
+    }
+
+    // Shows the `nth` caption track's cues to `videoCaption` (hidden: the page draws them), or
+    // none for -1.
+    videoChooseCaptions(id, nth) {
+        const element = this.videos.get(id)?.element;
+        if (element) {
+            captionTracks(element).forEach((track, at) => (track.mode = at === nth ? "hidden" : "disabled"));
+        }
+    }
+
+    // The chosen caption track's cues on show, a line each, kept for `take`: their length.
+    videoCaption(id) {
+        const element = this.videos.get(id)?.element;
+        const track = element && captionTracks(element).find((track) => track.mode === "hidden");
+        const shown = [...(track?.activeCues || [])].map((cue) => cue.text);
+        this.made = encoder.encode(shown.join("\n"));
+        return this.made.length;
+    }
+
     // Writes the time, the length (NaN unknown), the end (once) and an error's kind (1, or 2 for
     // one that clears on the next play); answers the error's length, its words kept for `take`.
     // (A browser that paused a video it was unmuting before any press says nothing: that is
@@ -1433,6 +1503,11 @@ export class Page {
         new Float64Array(this.exports.memory.buffer, out, 3).set([width, height, time]);
         return this.made.length;
     }
+}
+
+// A video element's subtitle and caption tracks.
+function captionTracks(element) {
+    return [...element.textTracks].filter((track) => track.kind === "subtitles" || track.kind === "captions");
 }
 
 // The canvas text is measured and drawn on: one of its own, read back often.

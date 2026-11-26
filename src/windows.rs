@@ -733,16 +733,19 @@ impl TextSystem for GdiText {
 
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
         if !crate::system_fonts::pieces(text, font.face, &mut self.fonts.pieces) {
-            return self.draw_one(canvas, text, x, y, font, color);
+            return self.draw_one(canvas, text, [x, y], font, color, [i32::MIN, i32::MAX]);
         }
         // Each piece in its own font after the one before, on the baseline of the face's own
-        // font.
+        // font; a fallback font's kept within the face's line.
         let (pieces, scale, mut pen) = (std::mem::take(&mut self.fonts.pieces), canvas.scale(), x);
-        let ascent = self.fonts.font(font, scale).1.ascent;
+        let metrics = self.fonts.font(font, scale).1;
+        let top = (y * scale).round() as i32;
+        let line = [top, top + ((metrics.ascent + metrics.descent) * scale).round() as i32];
         for (bytes, face) in &pieces {
             let piece = Font { face: *face, ..font };
-            let lower = ascent - self.fonts.font(piece, scale).1.ascent;
-            self.draw_one(canvas, &text[bytes.clone()], pen, y + lower, piece, color);
+            let lower = metrics.ascent - self.fonts.font(piece, scale).1.ascent;
+            let rows = if *face == font.face { [i32::MIN, i32::MAX] } else { line };
+            self.draw_one(canvas, &text[bytes.clone()], [pen, y + lower], piece, color, rows);
             pen += self.fonts.measure_one(&text[bytes.clone()], piece, scale, None);
         }
         self.fonts.pieces = pieces;
@@ -750,8 +753,9 @@ impl TextSystem for GdiText {
 }
 
 impl GdiText {
-    /// Draws a line of text in one font with its top left at (`x`, `y`).
-    fn draw_one(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
+    /// Draws a line of text in one font with its top left at (`x`, `y`), within pixel rows
+    /// `rows`.
+    fn draw_one(&mut self, canvas: &mut Canvas, text: &str, [x, y]: [f32; 2], font: Font, color: Color, rows: [i32; 2]) {
         let scale = canvas.scale();
         let (handle, _) = self.fonts.font(font, scale);
         self.fonts.utf16.clear();
@@ -761,7 +765,8 @@ impl GdiText {
         #[cfg(not(feature = "shaping"))]
         let glyphs = false;
         let (dc, units) = (self.strip.dc, &self.fonts.utf16);
-        let (origin, clip) = (canvas.origin(), canvas.clip_pixels());
+        let (origin, [left, top, right, bottom]) = (canvas.origin(), canvas.clip_pixels());
+        let clip = [left, top.max(rows[0]), right, bottom.min(rows[1])];
         let ink = color.0;
         #[cfg(feature = "gpu-draw")]
         if let Some(list) = canvas.list() {
@@ -888,19 +893,25 @@ impl TextSystem for SystemText {
 
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
         let scale = canvas.scale();
-        let ascent = (self.fonts.font(font, scale).1.ascent * scale).round() as i32;
+        let metrics = self.fonts.font(font, scale).1;
+        let [ascent, descent] = [metrics.ascent, metrics.descent].map(|reach| (reach * scale).round() as i32);
         let (mut pen, line) = ((x * scale).round() as i32, (y * scale).round() as i32 + ascent);
         // (The language's forms, where the line takes some: each in the face's own font.)
         #[cfg(feature = "shaping")]
         let mut forms = self.fonts.forms.glyphs(font.face, text).unwrap_or_default().into_iter();
         for letter in text.chars() {
-            // A letter the face's font lacks comes from its fallback.
+            // A letter the face's font lacks comes from its fallback, kept within the line.
             let face = Font { face: crate::system_fonts::face_for(font.face, letter), ..font };
             #[cfg(feature = "shaping")]
             let glyph = self.glyph(face, scale, letter, forms.next().map_or(0, |[own, form]| if form == own { 0 } else { form }));
             #[cfg(not(feature = "shaping"))]
             let glyph = self.glyph(face, scale, letter);
-            canvas.cover(pen + glyph.left, line - glyph.top, glyph.width, &glyph.cover, color);
+            let (top, cover) = if face.face == font.face || !cfg!(feature = "fallback-fonts") {
+                (glyph.top, &glyph.cover[..])
+            } else {
+                crate::system_fonts::within_line(glyph.top, glyph.width, &glyph.cover, [ascent, descent])
+            };
+            canvas.cover(pen + glyph.left, line - top, glyph.width, cover, color);
             pen += glyph.advance;
         }
     }
@@ -4703,7 +4714,8 @@ pub(crate) mod tests {
 
     /// Whether this test program has the GPU path: the name of the function that makes
     /// Direct3D devices is in its file. (The name is made here at run time, so the test is not
-    /// what compiles it in.)
+    /// what compiles it in.) Not with `video` alone, which makes a device of its own to decode on.
+    #[cfg(any(feature = "gpu", not(feature = "video")))]
     pub(crate) fn has_device_creation() -> bool {
         let mut name = *b"D3D11CreateDevicf";
         name[16] = std::hint::black_box(name[16]) - 1;
@@ -4712,7 +4724,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(any(feature = "gpu", feature = "video")))]
     fn without_the_feature_the_gpu_path_is_not_compiled_in() {
         assert!(!has_device_creation());
     }

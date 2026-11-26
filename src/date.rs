@@ -22,12 +22,8 @@ use crate::ui::{Icon, Response, Ui};
 use crate::widgets::{Before, DOWN, RIGHT};
 #[cfg(unix)]
 use std::ffi::{c_int, c_long};
-use std::fmt::Write;
 
 const LEFT: Icon = Icon::line("M9.5 4 5.5 8 9.5 12");
-/// Day numbers, written out once.
-const NUMBERS: [&str; 31] =
-    ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31"];
 /// Minimum width and height of a calendar day (more with larger text).
 const DAY: [f32; 2] = [30.0, 26.0];
 
@@ -249,7 +245,7 @@ impl Ui {
     pub fn date(&mut self, date: &mut Date) -> Response {
         let mut written = std::mem::take(&mut self.scratch);
         written.clear();
-        self.formats().write_date(&mut written, *date);
+        self.locale_in_use().write_date(&mut written, *date);
         let mut state = self.opens_calendar(&written);
         self.scratch = written;
         if let Some(day) = self.calendar(state.id, [*date; 2]) {
@@ -264,7 +260,7 @@ impl Ui {
     /// up to the day under the pointer or focus, and nothing changes. `changed` is set when a
     /// range is picked.
     pub fn date_range(&mut self, from: &mut Date, to: &mut Date) -> Response {
-        let (mut written, locale) = (std::mem::take(&mut self.scratch), self.formats());
+        let (mut written, locale) = (std::mem::take(&mut self.scratch), self.locale_in_use());
         written.clear();
         locale.write_date(&mut written, *from);
         written.push_str(" \u{2013} ");
@@ -410,7 +406,9 @@ impl Ui {
     }
     /// A calendar day's size: room for "30".
     fn day_size(&mut self) -> [f32; 2] {
-        let (font, wide) = (self.theme.font, self.text_width("30", self.theme.font));
+        let mut thirty = String::new();
+        self.locale_in_use().write_digits(&mut thirty, 30, 2);
+        let (font, wide) = (self.theme.font, self.text_width(&thirty, self.theme.font));
         [DAY[0].max(wide.ceil() + 10.0), DAY[1].max(self.text.metrics(font, self.scale).height().ceil() + 6.0)]
     }
 
@@ -418,7 +416,7 @@ impl Ui {
     fn year_label(&mut self, year: i32) {
         let (t, mut written) = (self.theme, std::mem::take(&mut self.scratch));
         written.clear();
-        let _ = write!(written, "{year}");
+        self.locale_in_use().write_digits(&mut written, year, 1);
         self.text(&written, t.font.bold(), t.text_dim);
         self.scratch = written;
     }
@@ -443,8 +441,12 @@ impl Ui {
             (false, true) => t.accent,
             (false, false) => Color::NONE,
         };
-        let cell = self.el().key(day.days()).size(wide, high).text(NUMBERS[day.day as usize - 1], t.font, ink).text_align(Align::Center);
+        let mut number = std::mem::take(&mut self.scratch);
+        number.clear();
+        self.locale_in_use().write_digits(&mut number, i32::from(day.day), 1);
+        let cell = self.el().key(day.days()).size(wide, high).text(&number, t.font, ink).text_align(Align::Center);
         cell.fill(fill).border(edge, 1.0).radius(5.0).sense().focusable().show();
+        self.scratch = number;
         if self.listening {
             let name = format!("{} {} {}", day.day, self.calendar_words_in_use().months[day.month as usize - 1], day.year);
             self.tell(&state, Role::Row, Some(ends || within), &name);

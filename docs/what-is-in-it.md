@@ -10,7 +10,11 @@ Every feature, by area. Gaps: [what is missing](what-is-missing.md). Calls: the
 - Wrapping, aligned text; "…" when clipped.
 - Boxes that shrink in priority order when room runs short (`.gives_way`).
 - Scrolling both ways (wheel, keys, bars that never cover content); rows kept in view
-  (`.kept()`); sticky headings (`.sticky()`); the page scrolls when taller than the window.
+  (`.frozen()`); sticky headings and columns (`.sticky()`, `.sticky_x()`), in the nearest box
+  scrolling their way, or with `.frozen()` the next one out; the page scrolls both ways when
+  larger than the window (wheel, bars, keys, screen readers).
+- See-through boxes (`.opacity`) kept as a layer: a new opacity blends it again without drawing
+  it.
 - Programmatic scrolling, stay-at-end for chats and logs, scroll into view; `ui.available_size` to fit
   content in the same run.
 
@@ -60,9 +64,12 @@ Popovers anchored to their button.
 - Sort by heading (Shift: several columns); resize, reorder, hide columns.
 - Horizontal scrolling with pinned columns; pinned top and bottom rows.
 - One Tab stop with a cell cursor; keyboard row selection; in-place editing (text, number,
-  choice); Ctrl+C copies rows as spreadsheet text; Ctrl+V pastes it into editable cells;
-  Ctrl+Z and Ctrl+Y undo and redo edits and pastes (`ui.cell_changes`).
+  choice); Ctrl+C copies rows as spreadsheet text; Ctrl+V pastes it into editable cells, past
+  the last row adding rows where the app lets it (`ui.paste_adds_rows`), values a column
+  refuses outlined and handed to the app (`ui.refused_cells`); Ctrl+Z and Ctrl+Y undo and redo
+  edits and pastes (`ui.cell_changes`).
 - Lists of any length cost only visible rows, including rows of varying height.
+- Striped rows in lists, tables and tree views (`ui.striped_rows`).
 
 ## Panels, docks, pan and zoom, graphs
 
@@ -85,14 +92,17 @@ Popovers anchored to their button.
 - **Inspector:** an app value as name/editor rows; folding sections, editable lists, filter,
   changed marks, reset, undo, several values at once.
 - **Rich text:** styled pieces with links, icons and pictures in one wrapping paragraph.
-- **Markdown:** CommonMark plus GitHub tables, task lists and strikethrough; highlighted code,
-  app pictures; selectable, copyable, keyboard links, heading links scroll; a document to screen
-  readers; cost is the visible part.
+- **Markdown:** CommonMark plus GitHub tables, task lists and strikethrough; highlighted code
+  that scrolls sideways, app pictures, any nesting depth; Hebrew and Arabic right to left;
+  selectable, copyable, a context menu, keyboard links with titles, heading links scroll; a
+  document to screen readers, tables as tables, the selection told; laid out as far as seen,
+  cost is the visible part.
 
 ## Fonts and text
 
 - **System fonts** by name and style; family lists; system fallback for missing letters
-  (Windows: feature `fallback-fonts`, else linked fonts; Linux: Fontconfig).
+  (Windows: feature `fallback-fonts`, else linked fonts; Linux: Fontconfig); with that feature a
+  taller fallback font is sized to the face's line, and what still overhangs it is clipped.
 - **App fonts:** TrueType, OpenType, WOFF, WOFF2 (`woff2`), CFF and CFF2 (`cff`), collections,
   variable fonts at any axis position; same output on every system.
 - **Hinting:** small Latin, Greek and Cyrillic snap vertically to whole pixels, as FreeType's
@@ -107,14 +117,19 @@ Popovers anchored to their button.
   marks placed as HarfBuzz does, visual cursor, split where directions meet.
 - **Indic and South-East Asian** (`brahmic`): all of HarfBuzz's Indic and Universal Shaping
   Engine scripts; grapheme clusters kept whole by cursor and line breaks. Matches HarfBuzz on
-  263,205 words in 46 fonts.
+  263,205 words in 46 fonts. Thai, Lao, Khmer and Burmese lines break between words: Uniscribe
+  on Windows, CoreFoundation on macOS and iOS, elsewhere ICU 78's word lists (`word-lists`,
+  804 KB) walked as ICU walks them, matching ICU on 48,991 texts.
 - **Shaped app fonts** (`shaping`): ligatures, contextual forms, stacked marks, kerning beyond
   pairs, as on pages, in whole pixels; matches HarfBuzz on 1,657 word-font pairs. The system's
-  text in the window's language forms (`locl`).
+  text in the window's language forms (`locl`), also in lines with marks or letters of fallback
+  fonts, and on macOS.
 - **Shaping:** script and language features (`Language::named("sr")`), variation selectors,
   fractions, random alternates, Syriac stretching, variable-font feature variations: matches
   HarfBuzz 12.3.2 and 14.5 on 13,066 words in 77 fonts. Mark composition and decomposition:
-  matches HarfBuzz 14.5 on 428,444 word-font pairs.
+  matches HarfBuzz 14.5 on 428,444 word-font pairs. Marks in fonts without `GPOS` placed by
+  combining class, as HarfBuzz's fallback: matches HarfBuzz 12.3.2 and 14.5 on 1,269 word-font
+  pairs.
 - **Vertical text**: labels, paragraphs and rich text in columns right to left
   (`ui.vertical_label`, `ui.vertical_paragraph`, `ui.vertical_rich`), breaking as CJK line breaking
   (UAX #14, kinsoku) allows; text boxes (`ui.vertical_text_box`, `ui.vertical_text_area`) with
@@ -127,11 +142,14 @@ Popovers anchored to their button.
   spread and reaching over neighbours as CSS Ruby and JLREQ have it; within a pixel of Chrome.
   Readers hear each reading after its base, in brackets.
 - **Dates, times, numbers** in the user's system format (order, separators, digit counts, group
-  sizes such as 12,34,567); month and day names and AM/PM in the system's language; Windows
-  region changes followed while running; overridable.
-- **Built-in words** (menus, file dialog, calendar, bars) in German, Spanish, French, Japanese,
-  Portuguese and Simplified Chinese with `translations`, from the user's language or
-  `ui.translate("de")`.
+  sizes such as 12,34,567, the script's digits such as ١٢٣, AM/PM before or after); month and
+  day names and AM/PM in the system's language; on Windows, macOS, iOS, Android and Linux
+  (glibc). Changes followed while running (Linux: GNOME's 12/24-hour clock). Overridable, or
+  CLDR's for 34 places (`Locale::named("hi-IN")`). Typed in the script's digits or 0–9.
+- **Built-in words** (menus, file dialog, calendar, bars) in 20 languages with `translations`
+  (Arabic, Chinese, Dutch, French, German, Hindi, Indonesian, Italian, Japanese, Korean,
+  Polish, Portuguese, Russian, Spanish, Swedish, Thai, Turkish, Ukrainian, Vietnamese), from
+  the user's language or `ui.translate("de")`.
 
 ## Drawing and pictures
 
@@ -149,8 +167,11 @@ Popovers anchored to their button.
 - Video and sound (`video`): files, addresses and bytes, played by the system's player
   (Media Foundation, GStreamer, AVFoundation on macOS and iOS, the NDK's media codecs and AAudio
   on Android, a `<video>` element on the web), loaded at run time. Only the video's box
-  redraws per frame. Play, pause, seek to the exact frame, volume, mute, loop, end; controls for
-  keyboard and screen readers.
+  redraws per frame. Play, pause, seek to the exact frame, volume, mute, loop, end; speed from
+  0.25 to 2 times, the pitch kept; sound and caption tracks listed with their languages and
+  chosen; captions (the file's own, and the app's WebVTT or SRT) drawn over the video in the
+  system's caption style and said by screen readers; controls for keyboard and screen readers.
+  Windows decodes on the GPU (DXVA) what the GPU decodes (checked: H.264, HEVC, VP9).
 - SVG: clip paths, masks, patterns, markers, symbols; on request, `shape-rendering`, seamless
   clip paths and masks, text (on paths too; shaped with `shaping`), filters (every primitive,
   lighting and `BackgroundImage` included; about 90 KB), pictures and nested SVG (in the file,

@@ -454,4 +454,18 @@ pub(crate) mod tests {
         }
         unsafe { [context, device].into_iter().for_each(|object| release(object)) };
     }
+
+    #[test]
+    fn direct3d_11_lays_a_see_through_boxs_kept_layer_as_the_cpu_blends_it() {
+        let (device, context) = warp();
+        let mut pipeline = Pipeline::new(device).expect("the shaders compile and the states are made");
+        for scale in [1.0, 1.5] {
+            let (mut scene, mut list) = (Scene::faded(scale), DrawList::default());
+            scene.record(&mut list);
+            assert!(!list.failed && list.quads.iter().any(|quad| quad.rows[5][0] == crate::gpu_draw::PATCH), "the layer laid by the GPU");
+            let gpu = drawn(device, context, &mut pipeline, &list, scene.size, &scene.under);
+            compare(&scene, &gpu, &format!("Direct3D 11 (WARP), a kept layer, at {scale}"));
+        }
+        unsafe { [context, device].into_iter().for_each(|object| release(object)) };
+    }
 }

@@ -7,6 +7,9 @@ taut is MIT OR Apache-2.0. It carries data from these projects, under their lice
 | Decompositions, combining classes, bidi classes, grapheme breaks, scripts, Arabic joining, vertical orientation | tables in `src/` | Unicode Character Database (Unicode 17) | Unicode-3.0 |
 | Shaping categories, mark classes, script tags | `src/brahmic.rs`, `src/accents.rs`, `src/scripts.rs` | HarfBuzz | MIT (HarfBuzz's "Old MIT") |
 | The Brotli dictionary (RFC 7932, Appendix A) | `src/brotli.rs` | Brotli | MIT |
+| Thai and Khmer word lists | `src/word_breaks.bin` | ICU 78 (`thaidict.txt`, `khmerdict.txt`) | Unicode-3.0 |
+| Lao word list | `src/word_breaks.bin` | ICU 78 (`laodict.txt`): Brian Eugene Wilson, Robert Martin Campbell | BSD-2-Clause |
+| Burmese word list | `src/word_breaks.bin` | ICU 78 (`burmesedict.txt`): LeRoy Benjamin Sharon | BSD-3-Clause |
 
 Light hinting and font variations follow the behaviour of FreeType; they contain no FreeType code.
 
@@ -123,4 +126,63 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+```
+
+## Lao word list
+
+```text
+Copyright (C) 2013 Brian Eugene Wilson, Robert Martin Campbell.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+	Redistributions of source code must retain the above copyright notice, this
+	list of conditions and the following disclaimer. Redistributions in binary
+	form must reproduce the above copyright notice, this list of conditions and
+	the following disclaimer in the documentation and/or other materials
+	provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+## Burmese word list
+
+```text
+Copyright (c) 2013, LeRoy Benjamin Sharon
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+  Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+  Redistributions in binary form must reproduce the above copyright notice, this
+  list of conditions and the following disclaimer in the documentation and/or
+  other materials provided with the distribution.
+
+  Neither the name Myanmar Karen Word Lists, nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```

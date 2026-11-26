@@ -1,12 +1,16 @@
 //! The system's text in a language's forms (feature `shaping`): Serbian and Macedonian б, г, д,
 //! п, т; Bulgarian Cyrillic; Romanian ș with a comma; Japanese, Chinese or Korean forms of a
-//! CJK character. GDI and FreeType take a character's glyph from the font's character map
-//! alone. Where the font of a face has localized forms (`locl`) for the window's language, the
-//! system's text draws those glyphs instead, found in the font's own tables as text in app fonts
-//! finds them (`shaping::local`).
+//! CJK character. GDI, FreeType and CoreText take a character's glyph from the font's character
+//! map alone. Where the font a letter is drawn in has localized forms (`locl`) for the window's
+//! language, the system's text draws those glyphs instead, found in the font's own tables as
+//! text in app fonts finds them (`shaping::local`).
 //!
-//! Only lines of simple scripts change: every character in the face's own font, none a mark or
-//! of a script shaped by syllable or right to left. Others are left to the system as they are.
+//! A line of simple script (every character in the face's own font, none a mark or of a script
+//! shaped by syllable or right to left) is still drawn by GDI or FreeType, with those glyphs.
+//! Any other line with a letter that takes a form (a mark after it, a letter of a fallback
+//! font; on macOS and iOS every such line) is shaped in the fonts its letters are drawn in, as
+//! right-to-left text is (`bidi.rs`). Scripts shaped by syllable take their forms there too,
+//! with `brahmic`.
 use crate::font_file::FontFile;
 use crate::scripts::Language;
 use crate::shaping::Script;
@@ -16,11 +20,16 @@ use std::collections::HashMap;
 /// A language's forms in the system's fonts, as looked up so far.
 pub(crate) struct Forms {
     language: Language,
-    /// Each face's font, where it has forms for the language; and whether it has some for
-    /// Latin, which ASCII text may take.
-    fonts: Vec<(Face, Option<FontFile>, bool)>,
+    /// Each face's own font; whether it has forms for the language, and whether some for Latin,
+    /// which ASCII text may take.
+    fonts: Vec<(Face, Option<FontFile>, bool, bool)>,
+    /// The font a face draws a script's letters in where its own lacks them, if it has forms
+    /// for the language.
+    fallbacks: Vec<(Face, Option<Script>, Option<FontFile>)>,
     /// Each character's form looked up, by face: none where it has none, or the font lacks it.
     found: HashMap<(Face, char), Option<u16>>,
+    /// Whether a letter the face's font lacks takes a form in the font drawing it, by face.
+    fallen: HashMap<(Face, char), bool>,
 }
 
 impl std::fmt::Debug for Forms {
@@ -33,7 +42,7 @@ impl std::fmt::Debug for Forms {
 impl Forms {
     /// The system language's forms.
     pub fn new() -> Forms {
-        Forms { language: Language::of_the_system(), fonts: Vec::new(), found: HashMap::new() }
+        Forms { language: Language::of_the_system(), fonts: Vec::new(), fallbacks: Vec::new(), found: HashMap::new(), fallen: HashMap::new() }
     }
 
     /// Takes another language's forms from now on: whether that is a change.
@@ -41,13 +50,14 @@ impl Forms {
         if language == self.language {
             return false;
         }
-        (self.language, self.fonts, self.found) = (language, Vec::new(), HashMap::new());
+        *self = Forms { language, ..Forms::new() };
         true
     }
 
     /// A line's glyphs in a face's font where a character of it takes a form there: each
     /// character's own and the one drawn, one per UTF-16 unit, as GDI and FreeType count them.
     /// Nothing where none does, or the line is not all simple script in that font (see above).
+    #[cfg(not(target_vendor = "apple"))]
     pub fn glyphs(&mut self, face: Face, text: &str) -> Option<Vec<[u16; 2]>> {
         if self.language == Language::NONE || (text.is_ascii() && !self.font(face).is_some_and(|(_, latin)| latin)) {
             return None;
@@ -56,12 +66,56 @@ impl Forms {
         for letter in text.chars() {
             any |= self.form(face, letter)?.is_some();
         }
-        let file = self.fonts.iter().find(|(known, ..)| *known == face).and_then(|(_, file, _)| file.as_ref()).filter(|_| any)?;
+        self.font(face).filter(|_| any)?;
+        let file = self.fonts.iter().find(|(known, ..)| *known == face).and_then(|(_, file, ..)| file.as_ref())?;
         let glyph = |letter: char| {
             let own = file.glyph(letter);
             [own, self.found.get(&(face, letter)).copied().flatten().unwrap_or(own)]
         };
         Some(text.chars().map(glyph).collect())
+    }
+
+    /// Whether a line is shaped in its letters' fonts for their forms (see above): it has a
+    /// letter that takes one, and is no line `glyphs` gives (on Apple's systems, any line).
+    pub fn shaped_here(&mut self, face: Face, text: &str) -> bool {
+        if self.language == Language::NONE || (text.is_ascii() && !self.font(face).is_some_and(|(_, latin)| latin)) {
+            return false;
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        if self.glyphs(face, text).is_some() {
+            return false;
+        }
+        text.chars().any(|letter| self.takes_form(face, letter))
+    }
+
+    /// Whether a letter takes a form in the font it is drawn in: the face's own, or where that
+    /// lacks it, its fallback's.
+    fn takes_form(&mut self, face: Face, letter: char) -> bool {
+        if letter > '\u{ffff}' || !matches!(Script::of(letter), Some(Script::Plain(_))) {
+            return false;
+        }
+        self.font(face);
+        let own = self.fonts.iter().find(|(known, ..)| *known == face).and_then(|(_, file, ..)| file.as_ref());
+        match own.map(|file| file.glyph(letter) != 0) {
+            Some(true) => self.form(face, letter).flatten().is_some(),
+            _ => self.falls_into_form(face, letter),
+        }
+    }
+
+    /// Whether a letter the face's font lacks takes a form in the fallback font drawing it.
+    fn falls_into_form(&mut self, face: Face, letter: char) -> bool {
+        if let Some(takes) = self.fallen.get(&(face, letter)) {
+            return *takes;
+        }
+        let (script, language) = (Script::of(letter), self.language);
+        if !self.fallbacks.iter().any(|(known, of, _)| *known == face && *of == script) {
+            let file = crate::system_fonts::file_for(face, letter).filter(|file| has_forms(file, language, None));
+            self.fallbacks.push((face, script, file));
+        }
+        let file = self.fallbacks.iter().find(|(known, of, _)| *known == face && *of == script).and_then(|(.., file)| file.as_ref());
+        let takes = file.is_some_and(|file| file.glyph(letter) != 0 && crate::shaping::local(file, letter, language) != file.glyph(letter));
+        self.fallen.insert((face, letter), takes);
+        takes
     }
 
     /// A character's form, if it has one: nothing where the line is to be left to the system
@@ -90,12 +144,13 @@ impl Forms {
     /// A face's font, where it has forms for the language; and whether it has some for Latin.
     fn font(&mut self, face: Face) -> Option<(&FontFile, bool)> {
         if !self.fonts.iter().any(|(known, ..)| *known == face) {
-            let file = crate::system_fonts::file_for(face, 'a').filter(|file| has_forms(file, self.language, None));
-            let latin = file.as_ref().is_some_and(|file| has_forms(file, self.language, Some(b"latn")));
-            self.fonts.push((face, file, latin));
+            let file = crate::system_fonts::file_for(face, 'a');
+            let forms = file.as_ref().is_some_and(|file| has_forms(file, self.language, None));
+            let latin = forms && file.as_ref().is_some_and(|file| has_forms(file, self.language, Some(b"latn")));
+            self.fonts.push((face, file, forms, latin));
         }
-        let (_, file, latin) = self.fonts.iter().find(|(known, ..)| *known == face)?;
-        Some((file.as_ref()?, *latin))
+        let (_, file, forms, latin) = self.fonts.iter().find(|(known, ..)| *known == face)?;
+        Some((file.as_ref().filter(|_| *forms)?, *latin))
     }
 }
 
@@ -108,7 +163,8 @@ fn has_forms(file: &FontFile, language: Language, only: Option<&[u8; 4]>) -> boo
     tags.filter(|tag| only.is_none_or(|only| tag == only)).any(|tag| crate::font_file::lookups(gsub, (&[&tag], &languages, file.place()), &[b"locl"]).is_some_and(|found| !found.is_empty()))
 }
 
-#[cfg(test)]
+// (Apple's systems swap no forms into lines: see `bidi.rs` for theirs.)
+#[cfg(all(test, not(target_vendor = "apple")))]
 mod tests {
     use super::*;
     use crate::text::{Font, TextSystem};

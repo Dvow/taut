@@ -62,6 +62,11 @@ pub(crate) fn mark(letter: char) -> bool {
     found(letter) >> 8 != 0
 }
 
+/// Whether a character is a nonspacing mark (category Mn).
+pub(crate) fn nonspacing(letter: char) -> bool {
+    found(letter) >> 8 == 1
+}
+
 /// The first Hangul syllable, the first jamo of each kind, and their counts.
 const SYLLABLES: u32 = 0xac00;
 const LEADING: u32 = 0x1100;

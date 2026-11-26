@@ -115,6 +115,9 @@ pub(crate) fn states_of(node: &AccessNode) -> Vec<(&'static str, String)> {
     if !node.shortcut.is_empty() {
         say("aria-keyshortcuts", node.shortcut.replace("Ctrl", "Control").replace(' ', ""));
     }
+    if !node.description.is_empty() {
+        say("aria-description", node.description.clone());
+    }
     if !node.enabled {
         say("aria-disabled", "true".into());
     }
@@ -138,6 +141,12 @@ fn record(node: &AccessNode) -> String {
     quote(&mut out, if node.role == Role::Text { "" } else { &node.name });
     out.push_str(",\"t\":");
     quote(&mut out, shown);
+    // A document's selection in this text, in UTF-16 units: the page selects it for readers.
+    // (A text box's is its field's.)
+    if let Some(caret) = node.caret.filter(|[from, to]| from != to && !matches!(node.role, Role::TextBox | Role::PasswordBox | Role::ComboBox)) {
+        let units = |letters: u32| shown.chars().take(letters as usize).map(char::len_utf16).sum::<usize>();
+        let _ = write!(out, ",\"s\":[{},{}]", units(caret[0].min(caret[1])), units(caret[0].max(caret[1])));
+    }
     out.push_str(",\"a\":[");
     for (at, (name, value)) in states_of(node).into_iter().enumerate() {
         out.push_str(if at == 0 { "[" } else { ",[" });
@@ -315,6 +324,17 @@ mod tests {
         assert_eq!(id_of(&format!("{:x}", nodes[1].id)), Some(nodes[1].id));
         mirror.forget();
         assert_eq!(mirror.update(&nodes, &[]).unwrap().matches("\"k\":").count(), nodes.len());
+    }
+
+    #[test]
+    fn a_documents_selection_is_sent_in_the_units_the_page_counts() {
+        // The second to the third character, backward, across a character of two units; a text
+        // box's goes to the field instead.
+        let rect = crate::geom::rect(0.0, 0.0, 10.0, 10.0);
+        let paragraph = AccessNode { caret: Some([3, 1]), ..AccessNode::plain(1, Role::Paragraph, "a\u{1f600}bc".into(), rect, None) };
+        assert!(record(&paragraph).contains("\"s\":[1,4]"), "{}", record(&paragraph));
+        let field = AccessNode { caret: Some([0, 2]), value: "abc".into(), ..AccessNode::plain(2, Role::TextBox, "Name".into(), rect, None) };
+        assert!(!record(&field).contains("\"s\":"), "{}", record(&field));
     }
 
     #[test]

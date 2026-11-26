@@ -7,22 +7,22 @@
 //! only what can be seen; for the accessibility tree, visiting everything, by the same rules.
 use crate::geom::{Rect, rect};
 use crate::id::{ById, Id, hash};
-use crate::layout::{PAGE, STICKY, Tree};
+use crate::layout::{KEPT, PAGE, STICKS_ALONG, Tree};
 use crate::paint::{bar, bar_id};
 
 /// A box in view: where it is in the window, the part of the window it draws on, and a number
 /// for where it is (stable while it stays put). Listed in drawing order; a box that holds
 /// something back from its content, or draws over it, is listed again after all of it as
-/// `leaving`. Of those, a sticky heading standing at the top of a scroll area `pins` what
-/// follows it in its box to below it, and a box in which headings did so `lets_go` of that
-/// many.
+/// `leaving`. Of those, a sticky box standing at the start of a scroll area `pins` what follows
+/// it in its box to past it (bit 0: right of it, bit 1: below it), and a box in which such boxes
+/// did so `lets_go` of that many.
 pub(crate) struct VisibleBox {
     pub at: u32,
     pub rect: Rect,
     pub area: Rect,
     pub place: u64,
     pub leaving: bool,
-    pub pins: bool,
+    pub pins: u8,
     pub lets_go: u8,
     /// Also listed as `leaving`: where a see-through box starts (before it) and ends (after all
     /// of it); `area` is all of it that may be seen. Else `No`.
@@ -52,7 +52,7 @@ pub(crate) struct Scroller {
 
 /// Where boxes lie as they are walked, parents first: for the boxes entered, innermost last,
 /// the origin their content counts from and the part of the window it may be seen in; and for
-/// each that sticky headings cut short (see `pin`), its depth and how many did.
+/// each that sticky boxes cut short (see `pin`), its depth and how many did.
 #[derive(Default)]
 pub(crate) struct Lying {
     corners: Vec<[f32; 2]>,
@@ -77,12 +77,12 @@ impl Lying {
         let (spec, place) = (&tree.specs[at as usize], &tree.places[at as usize]);
         let (corner, clip) = (self.corners[self.corners.len() - 1], self.clips[self.clips.len() - 1]);
         let r = rect(corner[0] + place.pos[0], corner[1] + place.pos[1], place.dim[0], place.dim[1]);
-        match spec.frame.pinned {
-            0 => (r, clip),
-            // A sticky heading stands in what scrolls, like the rest.
-            STICKY => (r.moved(0.0, tree.stuck(at)), clip),
-            _ => (r.moved(0.0, tree.stuck(at)), self.kept_clip(tree, at)),
+        if spec.frame.pinned == 0 {
+            return (r, clip);
         }
+        // A sticky box stands in what scrolls, like the rest; a kept one in all its parent's view.
+        let [x, y] = tree.stuck(at);
+        (r.moved(x, y), if spec.frame.pinned & KEPT != 0 { self.kept_clip(tree, at) } else { clip })
     }
 
     /// Enters box `at`, lying at `r` and visible within `clip`: its content counts from its
@@ -92,17 +92,18 @@ impl Lying {
         let spec = &tree.specs[at as usize];
         self.corners.push([r.x - spec.offset[0], r.y - spec.offset[1]]);
         // A scrolling page clips its content to the window vertically, as any scroll box does:
-        // what lies past its edge is out of view.
+        // what lies past its edge is out of view. (Not sideways: what lies past the right edge
+        // keeps its place there, which apps measure by.)
         let clip = match () {
             _ if spec.frame.clip => tree.scrolled_view(at, r).intersect(clip),
-            _ if at == PAGE && tree.overflows(at, 1) => rect(clip.x, r.y, clip.w, r.h).intersect(clip),
+            _ if at == PAGE && page_scrolls(tree) => rect(clip.x, r.y, clip.w, r.h).intersect(clip),
             _ => clip,
         };
         self.clips.push(clip);
     }
 
-    /// Leaves box `at`: where it lies, and how many sticky headings in it cut short what shows
-    /// of it (released now).
+    /// Leaves box `at`: where it lies, and how many sticky boxes in it cut short what shows of
+    /// it (released now).
     #[inline(always)]
     pub fn go_out(&mut self, tree: &Tree, at: u32) -> (Rect, u8) {
         let (spec, place) = (&tree.specs[at as usize], &tree.places[at as usize]);
@@ -115,30 +116,34 @@ impl Lying {
 
     /// The part of the window box `at` may be seen in, once left.
     pub fn clip_of(&self, tree: &Tree, at: u32) -> Rect {
-        if matches!(tree.specs[at as usize].frame.pinned, 1 | 2) { self.kept_clip(tree, at) } else { self.clips[self.clips.len() - 1] }
+        if tree.specs[at as usize].frame.pinned & KEPT != 0 { self.kept_clip(tree, at) } else { self.clips[self.clips.len() - 1] }
     }
 
-    /// Box `at` was just left, lying at `r`: if it is a sticky heading standing lower than it
-    /// would have scrolled to, what follows it in its box shows only below it, scrolling under
-    /// it. Says whether it does. (Only checked once a box has stuck: see `Sticks`.)
+    /// Box `at` was just left, lying at `r`: if it is a sticky box standing past where it would
+    /// have scrolled to, what follows it in its box shows only past it (right of it, below it,
+    /// or both), scrolling under it. Says which ways it does, as `VisibleBox::pins`. (Only
+    /// checked once a box has stuck: see `Sticks`.)
     #[inline(always)]
-    pub fn pin(&mut self, tree: &Tree, at: u32, r: Rect) -> bool {
-        tree.sticks.is_some_and(|sticks| (sticks.pin)(self, tree, at, r))
+    pub fn pin(&mut self, tree: &Tree, at: u32, r: Rect) -> u8 {
+        tree.sticks.map_or(0, |sticks| (sticks.pin)(self, tree, at, r))
     }
     /// What `pin` does, once a box has stuck.
-    pub(crate) fn pin_below(&mut self, tree: &Tree, at: u32, r: Rect) -> bool {
-        let (corner, depth) = (self.corners[self.corners.len() - 1], self.clips.len() - 1);
-        if tree.specs[at as usize].frame.pinned != STICKY || r.y <= corner[1] + tree.places[at as usize].pos[1] {
-            return false;
+    pub(crate) fn pin_past(&mut self, tree: &Tree, at: u32, r: Rect) -> u8 {
+        let (pinned, depth) = (tree.specs[at as usize].frame.pinned, self.clips.len() - 1);
+        let stuck = |axis: usize| pinned & STICKS_ALONG[axis] != 0 && tree.sticking(at, axis) > 0.0;
+        let pins = stuck(0) as u8 | (stuck(1) as u8) << 1;
+        if pins == 0 {
+            return 0;
         }
         let clip = self.clips[depth];
-        let top = clip.y.max(r.bottom());
-        self.clips[depth] = rect(clip.x, top, clip.w, (clip.bottom() - top).max(0.0));
+        let left = if pins & 1 != 0 { clip.x.max(r.right()) } else { clip.x };
+        let top = if pins & 2 != 0 { clip.y.max(r.bottom()) } else { clip.y };
+        self.clips[depth] = rect(left, top, (clip.right() - left).max(0.0), (clip.bottom() - top).max(0.0));
         match self.pins.last_mut() {
             Some((deep, count)) if *deep == depth => *count += 1,
             _ => self.pins.push((depth, 1)),
         }
-        true
+        pins
     }
 
     /// The part of the window a box kept in view may be seen in, its parent being the last box
@@ -151,6 +156,11 @@ impl Lying {
         let outer = self.clips.len().checked_sub(2).map_or(Rect::EVERYTHING, |before| self.clips[before]);
         tree.view(up, room).intersect(outer)
     }
+}
+
+/// Whether the page has more content than the window, either way.
+fn page_scrolls(tree: &Tree) -> bool {
+    tree.overflows(PAGE, 0) || tree.overflows(PAGE, 1)
 }
 
 #[derive(Default)]
@@ -234,8 +244,8 @@ impl VisibleBoxes {
             self.hits.push((spec.id, seen));
             self.rects.insert(spec.id, seen);
         }
-        // The page scrolls too, where its content is taller than the window.
-        if spec.frame.scroll != [false; 2] || at == PAGE && tree.overflows(at, 1) {
+        // The page scrolls too, where its content is larger than the window.
+        if spec.frame.scroll != [false; 2] || at == PAGE && page_scrolls(tree) {
             self.scrollers.push(Scroller { at, id: spec.id, rect: r, visible: seen });
         }
         if !area.is_empty() {
@@ -245,7 +255,7 @@ impl VisibleBoxes {
             // while they change.
             let (pad, cut) = (spec.frame.pad, spec.frame.clip);
             let inside = [pad.left.to_bits(), pad.top.to_bits(), pad.right.to_bits(), pad.bottom.to_bits()];
-            self.boxes.push(VisibleBox { at, rect: r, area, place: hash((bits(r), bits(clip), self.height, inside, cut)), leaving: false, pins: false, lets_go: 0, fade: Fade::No });
+            self.boxes.push(VisibleBox { at, rect: r, area, place: hash((bits(r), bits(clip), self.height, inside, cut)), leaving: false, pins: 0, lets_go: 0, fade: Fade::No });
         }
         self.lying.go_in(tree, at, r, clip);
         true
@@ -262,10 +272,10 @@ impl VisibleBoxes {
         // for a box kept in view, its view): drawing must pass here again. So it must where
         // headings in it stood at the top of what scrolls, holding what followed them below
         // them; and for such a heading, from here on.
-        let again = spec.frame.clip || spec.frame.focus || spec.frame.scroll != [false; 2] || spec.frame.pinned != 0 || at == PAGE && tree.overflows(at, 1);
+        let again = spec.frame.clip || spec.frame.focus || spec.frame.scroll != [false; 2] || spec.frame.pinned != 0 || at == PAGE && page_scrolls(tree);
         let shows = again && !tree.drawn(at).moved(r.x, r.y).intersect(clip).is_empty();
         let pins = self.lying.pin(tree, at, r);
-        if shows || pins || lets_go > 0 {
+        if shows || pins != 0 || lets_go > 0 {
             self.boxes.push(VisibleBox { at, rect: r, area: r.intersect(clip), place: 0, leaving: true, pins, lets_go, fade: Fade::No });
         }
         if spec.fade != 0
@@ -280,7 +290,7 @@ impl VisibleBoxes {
     /// seen of it and its content) or ends (after all of that).
     pub(crate) fn fade(&mut self, tree: &Tree, at: u32, r: Rect, clip: Rect, starts: bool) {
         let (area, fade) = if starts { (tree.places[at as usize].reach.moved(r.x, r.y).intersect(clip), Fade::Starts) } else { (r.intersect(clip), Fade::Ends) };
-        self.boxes.push(VisibleBox { at, rect: r, area, place: 0, leaving: true, pins: false, lets_go: 0, fade });
+        self.boxes.push(VisibleBox { at, rect: r, area, place: 0, leaving: true, pins: 0, lets_go: 0, fade });
     }
 }
 

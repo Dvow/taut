@@ -84,7 +84,11 @@ unsafe extern "C" {
 
 // The frameworks, linked by name: their classes are found at run time, through the runtime.
 #[link(name = "Foundation", kind = "framework")]
-unsafe extern "C" {}
+unsafe extern "C" {
+    /// Posted when the user's locale or its formats change; and a locale's key for its calendar.
+    pub(crate) static NSCurrentLocaleDidChangeNotification: Obj;
+    pub(crate) static NSLocaleCalendar: Obj;
+}
 #[link(name = "QuartzCore", kind = "framework")]
 unsafe extern "C" {
     /// How a layer shows its picture: at its top left, unscaled.

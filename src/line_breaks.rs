@@ -8,15 +8,17 @@
 //! has it (Chrome's default).
 //!
 //! **Thai, Lao, Khmer and Burmese** (Unicode line breaking's "complex context"). Word
-//! boundaries there need a dictionary per language, too large to carry for text a program may
-//! never get. So:
+//! boundaries there need a dictionary per language. A line breaks between words, as:
 //!
-//! - Windows: Uniscribe's `ScriptBreak` (it has the dictionaries) breaks between words.
-//! - Elsewhere no system service does (ICU and libthai are not always installed). A line breaks
-//!   between syllables: between grapheme clusters (which keep Khmer and Burmese stacked
-//!   consonants together), but never after a Thai or Lao vowel written before its consonant,
-//!   before one of their vowels or signs that follows it, or before a Burmese final consonant
-//!   (with asat, or stacked).
+//! - Windows: Uniscribe's `ScriptBreak` says.
+//! - macOS and iOS: CoreFoundation's tokenizer says (with Apple's dictionaries).
+//! - Linux, Android and the web: ICU's word lists, carried here (`word_breaks.rs`, 804 KB; feature
+//!   `word-lists`; without it, between syllables).
+//!
+//! A word longer than a line breaks between syllables: between grapheme clusters (which keep
+//! Khmer and Burmese stacked consonants together), but never after a Thai or Lao vowel written
+//! before its consonant, before one of their vowels or signs that follows it, or before a
+//! Burmese final consonant (with asat, or stacked).
 //!
 //! Feature `brahmic`.
 
@@ -195,11 +197,78 @@ pub(crate) fn between(letters: &[char], n: usize) -> bool {
     !(leading || following || ending)
 }
 
-/// Character indices where a line may break between words, as the system says. Empty where it
-/// cannot be asked.
-#[cfg(not(windows))]
+/// Character indices where a line may break between words, from ICU's word lists (see
+/// `word_breaks.rs`): where no system dictionary is asked.
+#[cfg(all(feature = "word-lists", not(any(windows, target_vendor = "apple"))))]
+pub(crate) use crate::word_breaks::words;
+
+/// None without `word-lists`: lines break between syllables.
+#[cfg(not(any(windows, target_vendor = "apple", feature = "word-lists")))]
 pub(crate) fn words(_text: &str) -> Vec<usize> {
     Vec::new()
+}
+
+/// `CFRange`: a start and a length in UTF-16 units.
+#[cfg(target_vendor = "apple")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Range {
+    location: isize,
+    length: isize,
+}
+
+#[cfg(target_vendor = "apple")]
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFStringTokenizerCreate(allocator: *const std::ffi::c_void, text: *const std::ffi::c_void, range: Range, unit: usize, locale: *const std::ffi::c_void) -> *const std::ffi::c_void;
+    fn CFStringTokenizerAdvanceToNextToken(tokenizer: *const std::ffi::c_void) -> usize;
+    fn CFStringTokenizerGetCurrentTokenRange(tokenizer: *const std::ffi::c_void) -> Range;
+}
+
+/// `kCFStringTokenizerUnitWordBoundary`: tokens from word boundary to word boundary.
+#[cfg(target_vendor = "apple")]
+const WORD_BOUNDARIES: usize = 4;
+
+/// Character indices where a line may break between words, as CoreFoundation says: where its
+/// tokenizer's tokens between word boundaries start.
+#[cfg(target_vendor = "apple")]
+pub(crate) fn words(text: &str) -> Vec<usize> {
+    use crate::macos_sys::{CFRelease, CFStringCreateWithBytes, UTF8};
+    let units = text.encode_utf16().count() as isize;
+    let mut starts = Vec::new();
+    // SAFETY: the string is made from the text's bytes and released, as is the tokenizer made
+    // over all of it.
+    unsafe {
+        let string = CFStringCreateWithBytes(std::ptr::null(), text.as_ptr(), text.len() as isize, UTF8, 0);
+        if string.is_null() {
+            return Vec::new();
+        }
+        let tokenizer = CFStringTokenizerCreate(std::ptr::null(), string, Range { location: 0, length: units }, WORD_BOUNDARIES, std::ptr::null());
+        while !tokenizer.is_null() && CFStringTokenizerAdvanceToNextToken(tokenizer) != 0 {
+            starts.push(CFStringTokenizerGetCurrentTokenRange(tokenizer).location.max(0) as usize);
+        }
+        if !tokenizer.is_null() {
+            CFRelease(tokenizer);
+        }
+        CFRelease(string);
+    }
+    between_words(text, |unit| starts.binary_search(&unit).is_ok())
+}
+
+/// The character indices between two letters of unspaced scripts, not inside a syllable (see
+/// `between`), where `starts` holds for the UTF-16 unit there: a word starts.
+#[cfg(any(windows, target_vendor = "apple"))]
+fn between_words(text: &str, starts: impl Fn(usize) -> bool) -> Vec<usize> {
+    let letters: Vec<char> = text.chars().collect();
+    let mut chances = Vec::new();
+    let mut unit = 0;
+    for (n, letter) in letters.iter().enumerate() {
+        if n > 0 && unspaced(*letter) && unspaced(letters[n - 1]) && starts(unit) && between(&letters, n) {
+            chances.push(n);
+        }
+        unit += letter.len_utf16();
+    }
+    chances
 }
 
 /// `SCRIPT_ITEM` (usp10.h): start in UTF-16 units, and the analysis, only passed back.
@@ -240,17 +309,7 @@ pub(crate) fn words(text: &str) -> Vec<usize> {
         // SAFETY: the item's units lie in the text, and there is an attribute for each.
         unsafe { ScriptBreak(units[from..].as_ptr(), (to - from) as i32, &items[item].analysis, attributes[from..].as_mut_ptr()) };
     }
-    let letters: Vec<char> = text.chars().collect();
-    let mut chances = Vec::new();
-    let mut unit = 0;
-    for (n, letter) in letters.iter().enumerate() {
-        let between_words = n > 0 && unspaced(*letter) && unspaced(letters[n - 1]);
-        if between_words && attributes.get(unit).is_some_and(|attribute| attribute & 1 != 0) {
-            chances.push(n);
-        }
-        unit += letter.len_utf16();
-    }
-    chances
+    between_words(text, |unit| attributes.get(unit).is_some_and(|attribute| attribute & 1 != 0))
 }
 
 #[cfg(test)]
@@ -298,5 +357,36 @@ mod tests {
         let found = words("\u{e20}\u{e32}\u{e29}\u{e32}\u{e44}\u{e17}\u{e22}");
         assert!(found.is_empty() || found == [4], "{found:?}");
         println!("Windows breaks ภาษาไทย before {found:?}");
+    }
+
+    #[test]
+    #[cfg(any(all(target_vendor = "apple", feature = "brahmic"), all(not(windows), feature = "word-lists")))]
+    fn words_of_thai_lao_burmese_and_khmer_end_where_the_dictionary_ends_them() {
+        // As ICU 78 splits them, from its word lists (Linux, Android, the web). Apple's systems
+        // say with dictionaries of their own (ภาษาไทย is one word there): each sentence breaks
+        // between words, never inside a syllable.
+        let split = |text: &str| {
+            let letters: Vec<char> = text.chars().collect();
+            let starts: Vec<usize> = [0].into_iter().chain(words(text)).chain([letters.len()]).collect();
+            starts.windows(2).map(|pair| letters[pair[0]..pair[1]].iter().collect::<String>()).collect::<Vec<_>>()
+        };
+        let all = [
+            ("ภาษาไทยเป็นภาษาที่สวยงาม", &["ภาษา", "ไทย", "เป็น", "ภาษา", "ที่", "สวยงาม"][..]),
+            ("เด็กๆเล่นกันอยู่ในสวนฯลฯ", &["เด็กๆ", "เล่น", "กัน", "อยู่", "ใน", "สวน", "ฯลฯ"]),
+            ("ພາສາລາວເປັນພາສາທີ່ສວຍງາມ", &["ພາສາ", "ລາວ", "ເປັນ", "ພາສາ", "ທີ່", "ສວຍງາມ"]),
+            ("အပြည်ပြည်ဆိုင်ရာလူ့အခွင့်အရေးကြေညာစာတမ်း", &["အပြည်", "ပြည်", "ဆိုင်ရာ", "လူ့", "အခွင့်အရေး", "ကြေညာစာတမ်း"]),
+            ("ប្រទេសកម្ពុជាមានប្រជាជនច្រើន", &["ប្រទេស", "កម្ពុជា", "មាន", "ប្រជាជន", "ច្រើន"]),
+        ];
+        for (text, words_of_icu) in all {
+            let found = split(text);
+            println!("{text}: {found:?}");
+            if cfg!(target_vendor = "apple") {
+                let letters: Vec<char> = text.chars().collect();
+                let breaks = words(text);
+                assert!(breaks.len() >= 2 && breaks.iter().all(|at| between(&letters, *at)), "{text}: {found:?}");
+            } else {
+                assert_eq!(found, words_of_icu, "{text}");
+            }
+        }
     }
 }

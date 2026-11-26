@@ -149,14 +149,23 @@ impl<'a> Canvas<'a> {
             list.failed = true;
             return [0; 4];
         }
-        let (s, [cx0, cy0, cx1, cy1]) = (self.scale, self.clip);
-        // One pixel more all round: an edge covering half a pixel is included.
-        let part = [whole(area.x * s - 1.0).max(cx0), whole(area.y * s - 1.0).max(cy0), whole(area.right() * s + 1.0).min(cx1), whole(area.bottom() * s + 1.0).min(cy1)];
+        let part = self.within_clip(self.pixels_of(area));
         let [left, top, right, bottom] = part;
         if left < right {
             (top..bottom).for_each(|y| kept.extend_from_slice(self.row(y, left, right)));
         }
         part
+    }
+    /// The window pixels `area` (units) touches: left, top, right, bottom, one pixel more all
+    /// round (an edge covering half a pixel is included).
+    pub(crate) fn pixels_of(&self, area: Rect) -> [i32; 4] {
+        let s = self.scale;
+        [whole(area.x * s - 1.0), whole(area.y * s - 1.0), whole(area.right() * s + 1.0), whole(area.bottom() * s + 1.0)]
+    }
+    /// Window pixels `part` cut to the clip.
+    pub(crate) fn within_clip(&self, [left, top, right, bottom]: [i32; 4]) -> [i32; 4] {
+        let [cx0, cy0, cx1, cy1] = self.clip;
+        [left.max(cx0), top.max(cy0), right.min(cx1), bottom.min(cy1)]
     }
     /// Blends the pixels `keep_under` last saved (the end of `kept`) back through what was
     /// drawn over them since, by `fade` (0 none, 255 fully), and removes them from `kept`.
@@ -171,6 +180,37 @@ impl<'a> Canvas<'a> {
             self.row(y, left, right).iter_mut().zip(under).for_each(|(drawn, under)| *drawn = between(*under, *drawn, 255 - fade as u32));
         }
         kept.truncate(from);
+    }
+    /// Copies the pixels of `part` (window pixels within the clip) into `layer`, which holds
+    /// those of `area`, a row of `area` at a time: what a see-through box drew, kept to blend
+    /// again (see `paint::Fading`).
+    pub(crate) fn copy_into(&mut self, [left, top, right, bottom]: [i32; 4], layer: &mut [u32], area: [i32; 4]) {
+        #[cfg(feature = "gpu-draw")]
+        if self.list.is_some() {
+            return;
+        }
+        let wide = (area[2] - area[0]) as usize;
+        for y in top..bottom.max(top) {
+            let from = (y - area[1]) as usize * wide + (left - area[0]) as usize;
+            layer[from..from + (right - left).max(0) as usize].copy_from_slice(self.row(y, left, right.max(left)));
+        }
+    }
+    /// Blends `layer` (holding the pixels of `area`, a row of `area` at a time) over the pixels
+    /// of `part` by `fade`, as `let_through` does: what is drawn there now shows through it.
+    pub(crate) fn blend_layer(&mut self, [left, top, right, bottom]: [i32; 4], layer: &[u32], area: [i32; 4], fade: u8) {
+        let (wide, solid) = ((area[2] - area[0]) as usize, 255 - fade as u32);
+        let rows = (top..bottom.max(top)).map(|y| (y - area[1]) as usize * wide + (left - area[0]) as usize);
+        let rows = rows.map(|from| &layer[from..from + (right - left).max(0) as usize]);
+        // For the GPU, the layer as see-through as the box, premultiplied: laid over what the
+        // GPU drew under it, that is the blend.
+        #[cfg(feature = "gpu-draw")]
+        if let Some(list) = self.list.as_deref_mut() {
+            let faded: Vec<u32> = rows.flat_map(|row| row.iter().map(|drawn| between(0, *drawn, solid))).collect();
+            return list.pixels(&faded, (right - left).max(0) as usize, [left, top], self.clip);
+        }
+        for (y, drawn) in (top..).zip(rows) {
+            self.row(y, left, right.max(left)).iter_mut().zip(drawn).for_each(|(under, drawn)| *under = between(*under, *drawn, solid));
+        }
     }
 
     /// The pixels of row `y` from `x0` to `x1`. (Always inlined, like other per-pixel or

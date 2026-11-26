@@ -11,6 +11,10 @@
 //!     (display <display>), whose screen the tests read and drive (TAUT_XVFB); else headless.
 //!     gl: the GL renderer (takes dmabufs); else pixman (doesn't). The command gets
 //!     WAYLAND_DISPLAY and TAUT_DESK; a "not tested" in its output fails the step.
+//!
+//!   ci locales <folder> <name...>
+//!     Compiles glibc's locales `<name>.UTF-8` (en_US, de_DE, ...) into <folder>, for programs run
+//!     with LOCPATH=<folder>; no root is needed.
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -27,7 +31,8 @@ fn main() -> ExitCode {
     let done = match args.split_first() {
         Some((what, packages)) if what == "apt" && !packages.is_empty() => apt(packages),
         Some((what, rest)) if what == "desk" && rest.len() > 2 => desk(&rest[0], &rest[1], &rest[2..]),
-        _ => Err("usage: ci apt <package...> | ci desk <kind> <display> <command...>".into()),
+        Some((what, rest)) if what == "locales" && rest.len() > 1 => locales(Path::new(&rest[0]), &rest[1..]),
+        _ => Err("usage: ci apt <package...> | ci desk <kind> <display> <command...> | ci locales <folder> <name...>".into()),
     };
     match done {
         Ok(true) => ExitCode::SUCCESS,
@@ -72,6 +77,20 @@ fn debs_in(folder: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(folder) else { return Vec::new() };
     let paths = entries.filter_map(|entry| Some(entry.ok()?.path()));
     paths.filter(|path| path.extension().is_some_and(|e| e == "deb")).map(|path| path.display().to_string()).collect()
+}
+
+/// `ci locales`: compiles each of `names` into `folder` (see the top).
+fn locales(folder: &Path, names: &[String]) -> Done {
+    fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    for name in names {
+        let into = folder.join(format!("{name}.UTF-8"));
+        let status = Command::new("localedef").args(["-i", name, "-f", "UTF-8"]).arg(&into).status();
+        let status = status.map_err(|e| format!("localedef: {e}"))?;
+        if !status.success() {
+            return Err(format!("localedef {name} ended with {status}"));
+        }
+    }
+    Ok(true)
 }
 
 /// Runs `args` as root.

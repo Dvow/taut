@@ -335,6 +335,12 @@ async function gallery(page) {
     field.dispatchEvent(new InputEvent("input", { inputType: "deleteContentBackward", bubbles: true }));
     await settle(page);
     results.deleted = box().textContent;
+    // The page of writing: its document, all selected, is the page's selection for readers.
+    await press(page, named(page, "tab", "Writing"));
+    await press(page, all(page, "paragraph")[0]);
+    key(document.activeElement, "keydown", "a", "KeyA", { ctrlKey: true });
+    await settle(page);
+    results.document_selection = document.getSelection().toString().slice(0, 60);
     // What a frame costs to show: `putImageData` against a WebGL texture upload and draw.
     results.show_ms = showing(page.canvas.width, page.canvas.height);
     // A smaller page: the canvas follows, in whole device pixels.
@@ -544,6 +550,7 @@ fn the_gallery_in_a_browser_is_drawn_as_here_and_heard_through_the_dom() {
         assert!(said("copied").contains("abc日本"), "{}", said("copied"));
         assert!(said("pasted").contains("abc日本XYZ"), "{}", said("pasted"));
         assert_eq!(said("deleted"), said("pasted").replace("XYZ", "XY"));
+        assert!(said("document_selection").contains("A document read from Markdown"), "{}", said("document_selection"));
         assert_eq!(said("resized"), "[700,700]");
         eprintln!("gallery: started in {} ms; a whole frame shown, putImageData then WebGL (ms, renderer): {}", said("started_ms"), said("show_ms"));
     }

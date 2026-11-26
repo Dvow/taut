@@ -105,6 +105,8 @@ mod bidi;
 pub mod bmp;
 mod brahmic;
 mod brotli;
+#[cfg(all(test, windows, any(feature = "right-to-left", feature = "ruby")))]
+mod browser_check;
 pub mod canvas;
 mod cells;
 mod cff;
@@ -129,6 +131,7 @@ mod el;
 pub mod emoji;
 pub mod event;
 mod exif_orientation;
+mod fallback_marks;
 mod file_dialog;
 mod folder_listing;
 pub mod font_file;
@@ -218,6 +221,7 @@ pub mod layout;
 mod line_breaks;
 #[cfg_attr(target_os = "android", allow(dead_code))] // (Desktop back ends only.)
 mod locale;
+mod locales;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -296,7 +300,7 @@ pub mod svg;
 mod svg_animation;
 mod svg_filters;
 pub mod system_fonts;
-#[cfg(all(feature = "shaping", any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
+#[cfg(all(feature = "shaping", not(any(target_os = "android", target_family = "wasm"))))]
 mod system_forms;
 mod table;
 mod table_paste;
@@ -335,6 +339,8 @@ mod video;
 mod video_android;
 #[cfg(all(feature = "video", target_vendor = "apple"))]
 mod video_apple;
+#[cfg(feature = "video")]
+mod video_captions;
 #[cfg(all(feature = "video", unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod video_gstreamer;
 #[cfg(all(feature = "video", target_family = "wasm"))]
@@ -378,6 +384,8 @@ mod windows;
 #[cfg(windows)]
 mod windows_shell;
 mod woff2;
+#[cfg(all(feature = "word-lists", not(any(windows, target_vendor = "apple"))))]
+mod word_breaks;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod x11;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
@@ -408,7 +416,7 @@ pub use geom::{Corners, Insets, Point, Rect, Size, Transform};
 pub use id::Id;
 pub use inspect::{Field, Fields, Inspect, Inspector, InspectorRow};
 pub use layout::{Align, Flow, Length};
-pub use locale::{DateOrder, Locale};
+pub use locale::{AmPmPlace, DateOrder, Locale};
 pub use markdown::Markdown;
 pub use node_graph::{Frame, Graph, GraphAction, GraphWords, Node, Port, Reroute, Wire};
 pub use notifications::Notification;
@@ -434,6 +442,7 @@ pub use single_instance::{Relaunch, single_instance};
 pub use surface::{Surface, Upload};
 pub use svg::Drawing;
 pub use table::{Column, Table};
+pub use table_paste::RefusedCell;
 pub use text::{Face, Font, TextSystem};
 pub use text_edit::{TextCommand, TextEditState};
 pub use theme::{ContrastColors, Theme};
@@ -442,7 +451,7 @@ pub use tree_view::{TreeItem, TreeView};
 pub use ui::{Icon, Picture, Response, Ui};
 pub use variable_fonts::FontAxis;
 #[cfg(feature = "video")]
-pub use video::{Video, VideoError, VideoSource};
+pub use video::{CaptionsError, Track, Video, VideoError, VideoSource};
 pub use web_widgets::{Severity, WidgetWords};
 
 /// The README and book examples are compiled as doc tests, so they stay correct. (The guide's

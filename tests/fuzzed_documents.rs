@@ -46,12 +46,9 @@ fn a_list_of_empty_items_after_a_long_paragraph_is_drawn_the_same_in_strips_and_
 }
 
 /// Lists in lists, as deep as a text can make them: `- - - - x`, 8,000 deep, in 16,000
-/// bytes. Both reading it and laying it out grow with the square of how deep it goes (laying
-/// out, each list counts the lists it is in by going through all the blocks that are open):
-/// 0.17 s for 8,000 in a release build, seconds for 32,000, and 4 to 5 s for this in a debug
-/// build. (Found as 15,000 bytes of `- - -` that took 0.65 s.) Readers that guard against
-/// this stop opening blocks at a depth (markdown-it's `maxNesting` is 100), and take the
-/// marks after that as words.
+/// bytes, every one read and laid out. (Found as 15,000 bytes of `- - -` that took 0.65 s,
+/// when both grew with the square of the depth: each marker looked for a thematic break in
+/// the rest of the line, and each list counted the lists open around it.)
 #[test]
 fn lists_nested_thousands_deep_are_read_and_laid_out_in_time() {
     let text = format!("{}x\n", "- ".repeat(8_000));
