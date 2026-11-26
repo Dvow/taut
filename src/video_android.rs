@@ -216,6 +216,8 @@ struct Track {
     codec: Object,
     /// The samples ran out, and the decoder was told.
     fed: bool,
+    /// The decoder has given output: it may be flushed.
+    output_began: bool,
 }
 
 // SAFETY: the NDK's extractors and decoders may be used from any thread; a track is used by
@@ -230,7 +232,7 @@ impl Track {
         if extractor.is_null() {
             return Err("no extractor".into());
         }
-        let mut track = Track { media, extractor, held: Held::default(), codec: null_mut(), fed: false };
+        let mut track = Track { media, extractor, held: Held::default(), codec: null_mut(), fed: false, output_began: false };
         track.held = open_source(media, extractor, origin)?;
         Ok((track, contents(media, extractor)))
     }
@@ -257,13 +259,17 @@ impl Track {
         Ok(())
     }
 
-    /// Goes to the key frame at or before `to`; what the decoder held is dropped.
+    /// Goes to the key frame at or before `to`; what the decoder held is dropped, once it has
+    /// given output. (Flushed before, it loses the codec-specific data it was started with and
+    /// decodes nothing more: what it gives from before `to` is left to the caller to drop.)
     fn seek(&mut self, to: Duration) {
         self.fed = false;
         // SAFETY: a live extractor and a started decoder.
         unsafe {
             (self.media.AMediaExtractor_seekTo)(self.extractor, micros(to), SEEK_PREVIOUS_SYNC);
-            (self.media.AMediaCodec_flush)(self.codec);
+            if self.output_began {
+                (self.media.AMediaCodec_flush)(self.codec);
+            }
         }
     }
 
@@ -294,6 +300,7 @@ impl Track {
         let mut info = BufferInfo::default();
         // SAFETY: a started decoder, writing the info.
         let at = unsafe { (self.media.AMediaCodec_dequeueOutputBuffer)(self.codec, &mut info, micros(wait)) };
+        self.output_began |= at != TRY_AGAIN_LATER;
         match at {
             0.. => Ok(Some((at as usize, info))),
             // (A new format or new buffers are read when used.)
@@ -740,7 +747,11 @@ pub(crate) fn caption_style() -> CaptionStyle {
     if activity.is_null() {
         return CaptionStyle::default();
     }
-    let colour = |argb: i32| Color::rgb(argb as u32 & 0xFF_FFFF).with_alpha((argb as u32 >> 24) as f32 / 255.0);
+    // (0x00FFFFFF is `CaptionStyle.COLOR_UNSPECIFIED`: the user left it to the app.)
+    let colour = |argb: i32, usual: Color| match argb as u32 {
+        0x00FF_FFFF => usual,
+        argb => Color::rgb(argb & 0xFF_FFFF).with_alpha((argb >> 24) as f32 / 255.0),
+    };
     env.frame(|| {
         let manager = service(env, activity, "captioning");
         if manager.is_null() {
@@ -748,18 +759,20 @@ pub(crate) fn caption_style() -> CaptionStyle {
         }
         let style = env.call(manager, c"getUserStyle", c"()Landroid/view/accessibility/CaptioningManager$CaptionStyle;", &[]).object();
         let scale = env.call(manager, c"getFontScale", c"()F", &[]).as_float();
-        CaptionStyle { text: colour(env.int_field(style, c"foregroundColor")), background: colour(env.int_field(style, c"backgroundColor")), scale }
+        let usual = CaptionStyle::default();
+        let (text, background) = (env.int_field(style, c"foregroundColor"), env.int_field(style, c"backgroundColor"));
+        CaptionStyle { text: colour(text, usual.text), background: colour(background, usual.background), scale }
     })
 }
 
 // ---- the captions' thread ----
 
 /// Reads each caption track's cues (the source's text samples), in turn, into what the threads
-/// share; for an address, finds the tracks first.
+/// share; for an address, finds the tracks first. Stops when the player is dropped.
 fn caption_thread(media: &'static Media, origin: &Origin, shared: &Shared) {
     let Ok((_, contents)) = Track::read(media, origin) else { return };
     for found in &contents.captions {
-        let cues = Track::read(media, origin).map(|(track, _)| track.cues(found)).unwrap_or_default();
+        let cues = Track::read(media, origin).map(|(track, _)| track.cues(found, shared)).unwrap_or_default();
         let mut state = shared.lock();
         if state.stop {
             return;
@@ -769,12 +782,15 @@ fn caption_thread(media: &'static Media, origin: &Origin, shared: &Shared) {
 }
 
 impl Track {
-    /// The cues of a caption track: each text sample until the next.
-    fn cues(&self, found: &Found) -> Vec<Cue> {
+    /// The cues of a caption track: each text sample until the next; those read so far once
+    /// the player is dropped (an address's may take a while).
+    fn cues(&self, found: &Found, shared: &Shared) -> Vec<Cue> {
         // SAFETY: a live extractor: only this track is read.
         unsafe { (self.media.AMediaExtractor_selectTrack)(self.extractor, found.at) };
         let (mut buffer, mut samples) = (vec![0u8; 64 << 10], Vec::new());
-        while let Some((time, size)) = self.next_sample(&mut buffer) {
+        while !shared.lock().stop
+            && let Some((time, size)) = self.next_sample(&mut buffer)
+        {
             samples.push((time, cue_text(&found.mime, &buffer[..size])));
         }
         let ends = samples.iter().skip(1).map(|(time, _)| *time).chain([Duration::MAX]);
@@ -1244,7 +1260,7 @@ impl Speaker {
             let first = time + Duration::from_secs_f64(skipped as f64 / stream.channels as f64 / f64::from(stream.rate));
             self.heard_from = Some((first, stream.written()));
         }
-        self.waiting = stretch.apply(&samples[skipped..], self.speed);
+        stretch.apply(&samples[skipped..], self.speed, &mut self.waiting);
         #[cfg(test)]
         {
             let first: Vec<f32> = self.waiting.iter().step_by(stream.channels).map(|sample| f32::from(*sample) / 32768.0).collect();
@@ -1296,24 +1312,22 @@ impl Stretch {
         Stretch { channels: channels.max(1), window, input: Vec::new(), due: 0.0, tail: vec![0.0; window / 2 * channels.max(1)], follows: Vec::new() }
     }
 
-    /// The stretched sound of these samples (what is due of them so far: the rest waits for the
-    /// next); as they are at the usual speed.
-    fn apply(&mut self, samples: &[i16], speed: f64) -> Vec<i16> {
+    /// The stretched sound of these samples, into `out` (what is due of them so far: the rest
+    /// waits for the next); as they are at the usual speed.
+    fn apply(&mut self, samples: &[i16], speed: f64, out: &mut Vec<i16>) {
         if speed == 1.0 && self.input.is_empty() {
-            return samples.to_vec();
+            return out.extend_from_slice(samples);
         }
         self.input.extend(samples.iter().map(|sample| f32::from(*sample)));
         let (half, reach, channels) = (self.window / 2, self.window / 4, self.channels);
-        let mut out = Vec::new();
         while self.due as usize + reach + self.window <= self.input.len() / channels {
             let start = self.best(self.due as usize, reach);
-            self.lay(start, &mut out);
+            self.lay(start, out);
             self.due += half as f64 * speed;
         }
         let used = (self.due as usize).saturating_sub(reach);
         self.input.drain(..used * channels);
         self.due -= used as f64;
-        out.into_iter().map(|sample| sample.round().clamp(-32768.0, 32767.0) as i16).collect()
     }
 
     /// Where near `due` a window best continues the last: the most alike to what followed it.
@@ -1327,13 +1341,17 @@ impl Stretch {
 
     /// Lays the window from `start` (Hann-shaped, so two halves sum to the whole): its first
     /// half added to the last's second, into `out`; its second half kept.
-    fn lay(&mut self, start: usize, out: &mut Vec<f32>) {
-        let (half, channels) = (self.window / 2, self.channels);
-        let shape = |at: usize| 0.5 - 0.5 * (std::f32::consts::TAU * at as f32 / self.window as f32).cos();
-        let sample = |at: usize, channel: usize| self.input[(start + at) * channels + channel] * shape(at);
-        out.extend((0..half * channels).map(|at| self.tail[at] + sample(at / channels, at % channels)));
-        self.tail = (0..half * channels).map(|at| sample(half + at / channels, at % channels)).collect();
-        self.follows = (0..half).map(|at| self.input[(start + half + at) * channels]).collect();
+    fn lay(&mut self, start: usize, out: &mut Vec<i16>) {
+        let (window, half, channels, input) = (self.window, self.window / 2, self.channels, &self.input);
+        let shape = |at: usize| 0.5 - 0.5 * (std::f32::consts::TAU * at as f32 / window as f32).cos();
+        let sample = |at: usize, channel: usize| input[(start + at) * channels + channel] * shape(at);
+        for (at, tail) in self.tail.iter_mut().enumerate() {
+            let (frame, channel) = (at / channels, at % channels);
+            out.push((*tail + sample(frame, channel)).round().clamp(-32768.0, 32767.0) as i16);
+            *tail = sample(half + frame, channel);
+        }
+        self.follows.clear();
+        self.follows.extend((0..half).map(|at| input[(start + half + at) * channels]));
     }
 }
 
@@ -1434,7 +1452,8 @@ mod tests {
         let tone: Vec<i16> = (0..16_000).map(|at| ((at as f32 * 400.0 / 8000.0 * std::f32::consts::TAU).sin() * 8000.0) as i16).collect();
         for speed in [2.0, 0.5, 1.5] {
             let mut stretch = Stretch::new(1, 8000);
-            let out: Vec<i16> = tone.chunks(800).flat_map(|chunk| stretch.apply(chunk, speed)).collect();
+            let mut out = Vec::new();
+            tone.chunks(800).for_each(|chunk| stretch.apply(chunk, speed, &mut out));
             let expected = tone.len() as f64 / speed;
             // (The last window and its reach wait for more.)
             assert!((out.len() as f64 - expected).abs() < 2.0 * stretch.window as f64 / speed, "at {speed}×: {} samples, not about {expected}", out.len());

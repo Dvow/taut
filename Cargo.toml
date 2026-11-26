@@ -26,9 +26,10 @@ right-to-left = []
 # system says (Windows, Apple's systems), else between syllables. Without it, the system's text
 # draws them (whole on Windows, letter by letter on Linux).
 brahmic = []
-# `brahmic`, and Thai, Lao, Khmer and Burmese lines broken between words on Linux, Android and
+# With `brahmic`, Thai, Lao, Khmer and Burmese lines broken between words on Linux, Android and
 # the web too, from ICU's word lists (804 KB; nothing on Windows and Apple's systems, which have
-# their own). Without it, they break between syllables there.
+# their own). A program built with it must carry the Lao and Burmese lists' BSD notices
+# (THIRD-PARTY.md). Without it, those lines break between syllables there.
 word-lists = ["brahmic"]
 # App fonts shaped as pages are: ligatures, contextual forms, marks placed on letters, kerning
 # beyond pairs; and the system's text in the language's forms. Without it, app fonts draw glyph
@@ -45,8 +46,9 @@ touch = []
 emoji = []
 # Windows: letters a font lacks drawn in the font Windows would pick. Without it, Windows' linked
 # fonts are used in windows; `SystemText` on a surface and SVG text show missing-glyph boxes.
-# (Linux always uses Fontconfig's choice.) Everywhere: a fallback font with a taller line sized
-# to the face's, and what a fallback glyph still overhangs clipped to the line.
+# (Linux always uses Fontconfig's choice.) Also: on Linux a fallback font with a taller line
+# sized to the face's; on Windows, Linux, macOS and iOS what a fallback glyph still overhangs
+# clipped to the line.
 fallback-fonts = []
 # CFF and CFF2 fonts (most `.otf` files). Without it, `FontFile::read` rejects them.
 cff = []

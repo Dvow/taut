@@ -420,9 +420,12 @@ pub(crate) fn caption_style() -> CaptionStyle {
 fn caption_appearance() -> Option<CaptionStyle> {
     type Colour = unsafe extern "C" fn(isize, *mut isize) -> *const c_void;
     type Amount = unsafe extern "C" fn(isize, *mut isize) -> f64;
-    // SAFETY: a path ending in a zero; 1 is `RTLD_LAZY`.
-    let library = unsafe { dlopen(c"/System/Library/Frameworks/MediaAccessibility.framework/MediaAccessibility".as_ptr(), 1) };
-    let graphics = unsafe { dlopen(c"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics".as_ptr(), 1) };
+    let open = |path: &CStr| {
+        // SAFETY: a path ending in a zero; 1 is `RTLD_LAZY`.
+        unsafe { dlopen(path.as_ptr(), 1) }
+    };
+    let library = open(c"/System/Library/Frameworks/MediaAccessibility.framework/MediaAccessibility");
+    let graphics = open(c"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics");
     let found = |library: *mut c_void, name: &CStr| {
         // SAFETY: a name ending in a zero, of an open library (or none, which finds nothing).
         let at = unsafe { dlsym(library, name.as_ptr()) };

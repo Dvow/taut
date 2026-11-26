@@ -3,7 +3,7 @@ use crate::canvas::{Canvas, coverage};
 use crate::color::Color;
 use crate::geom::{Point, Rect, pt, rect};
 use crate::id::{Id, fold};
-use crate::layout::{Align, BAR, Content, Flow, KEPT, Tree, fade_key};
+use crate::layout::{Align, BAR, Content, FROZEN, Flow, Tree, fade_key};
 use crate::path::Path;
 use crate::scene::Scenes;
 use crate::slots::Slots;
@@ -39,7 +39,7 @@ pub(crate) fn stripes(tree: &Tree, at: u32, r: Rect, color: Color, canvas: &mut 
     let (top, inside) = (r.y - spec.offset[1], r.inset(spec.frame.pad));
     // Each line's top and bottom: the highest top and lowest bottom of its boxes.
     let mut lines: Vec<[f32; 2]> = Vec::new();
-    let lined = tree.children(at).skip(room_above).filter(|child| tree.specs[*child as usize].frame.pinned & KEPT == 0);
+    let lined = tree.children(at).skip(room_above).filter(|child| tree.specs[*child as usize].frame.pinned & FROZEN == 0);
     for (n, child) in lined.enumerate() {
         let place = &tree.places[child as usize];
         let [y, bottom] = [top + place.pos[1], top + place.pos[1] + place.dim[1]];
@@ -131,8 +131,9 @@ pub(crate) struct Fades {
 }
 pub(crate) static FADES: Fades = Fades { draw: |painter, seen, at, canvas| painter.fade(seen, at, canvas), key: Fading::key_layers };
 
-/// The most pixels a see-through box's layer may hold: one larger is drawn afresh each time.
-const LAYER_MOST: usize = 4_194_304;
+/// The most pixels a see-through box's layer may hold (16 MB): one larger is drawn afresh each
+/// time.
+const LAYER_MOST: usize = 2048 * 2048;
 
 /// What see-through boxes keep (see [`El::opacity`](crate::El::opacity)): what is under the
 /// ones being drawn, and each one's layer. Made by the first such box.
@@ -151,7 +152,7 @@ pub(crate) struct Fading {
 }
 
 /// The `Fading` a window keeps (see `Ui::fading`), once a box has been see-through.
-fn kept(fading: &mut Option<Box<dyn Any>>) -> Option<&mut Fading> {
+fn fading_of(fading: &mut Option<Box<dyn Any>>) -> Option<&mut Fading> {
     fading.as_mut()?.downcast_mut()
 }
 
@@ -193,7 +194,7 @@ impl Fading {
     /// dropped.
     pub(crate) fn key_layers(ui: &mut crate::ui::Ui) {
         let (boxes, marks, tree) = (&ui.visible_boxes.boxes, &ui.marks, &ui.tree);
-        let Some(fading) = kept(&mut ui.fading) else { return };
+        let Some(fading) = fading_of(&mut ui.fading) else { return };
         fading.keys.clear();
         // (Marks come one per box entered, in order, then the others.)
         let (mut marked, entered) = (0, boxes.iter().filter(|step| !step.leaving).count());
@@ -222,11 +223,11 @@ impl Fading {
     /// ([`Surface::draw`](crate::Surface::draw)): without them every such box is drawn anew, so
     /// a redraw held against it shows a stale one.
     pub(crate) fn set_aside(fading: &mut Option<Box<dyn Any>>) -> Vec<Layer> {
-        kept(fading).map_or(Vec::new(), |fading| std::mem::take(&mut fading.layers))
+        fading_of(fading).map_or(Vec::new(), |fading| std::mem::take(&mut fading.layers))
     }
     /// Puts back the layers `set_aside` took, in place of any made meanwhile.
     pub(crate) fn put_back(fading: &mut Option<Box<dyn Any>>, layers: Vec<Layer>) {
-        if let Some(fading) = kept(fading) {
+        if let Some(fading) = fading_of(fading) {
             fading.layers = layers;
         }
     }
@@ -321,7 +322,7 @@ impl Painter<'_> {
     /// The box itself, under its content.
     fn enter(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
         let (spec, r) = (&self.tree.specs[step.at as usize], step.rect);
-        if spec.frame.pinned & KEPT != 0 {
+        if spec.frame.pinned & FROZEN != 0 {
             self.widen(step.at, canvas);
         }
         if !step.area.intersect(canvas.visible()).is_empty() {
@@ -388,30 +389,30 @@ impl Painter<'_> {
             let ring = if spec.fill.solid() == self.theme.accent.solid() { self.theme.on_accent } else { self.theme.accent };
             canvas.border(r, spec.radius, 2.0, ring);
         }
-        if let Some(before) = self.clips.pop_if(|_| spec.frame.pinned & KEPT != 0) {
+        if let Some(before) = self.clips.pop_if(|_| spec.frame.pinned & FROZEN != 0) {
             canvas.restore_clip(before);
         }
-        if step.pins != 0 {
-            // What follows it shows only past it: right of it, below it, or both.
-            let [x, y] = [(1, r.right(), Rect::EVERYTHING.x), (2, r.bottom(), Rect::EVERYTHING.y)].map(|(bit, past, anywhere)| if step.pins & bit != 0 { past } else { anywhere });
-            self.clips.push(canvas.clip(rect(x, y, Rect::EVERYTHING.w, Rect::EVERYTHING.h)));
+        // What follows a stuck box shows only past it, as the survey has it.
+        if let Some(sticks) = self.tree.sticks.filter(|_| step.pins != 0) {
+            self.clips.push(canvas.clip((sticks.past)(step.pins, r)));
         }
     }
 
     /// Where see-through box `seen[at]` starts or ends (see `Fade`), drawing it as one layer:
     /// returns the next of `seen` to draw.
     pub(crate) fn fade(&mut self, seen: &[VisibleBox], at: usize, canvas: &mut Canvas) -> usize {
-        match seen[at].fade {
-            Fade::Starts => self.start_fade(seen, at, canvas),
-            _ => (self.end_fade(&seen[at], canvas), at + 1).1,
+        if seen[at].fade == Fade::Starts {
+            return self.start_fade(seen, at, canvas);
         }
+        self.end_fade(&seen[at], canvas);
+        at + 1
     }
 
     /// Where a see-through box starts: if its layer holds what it drew over what is under it
     /// now (neither has changed since), the layer is blended in and its content passed over,
     /// to the box after its end; else what is under it is kept.
     fn start_fade(&mut self, seen: &[VisibleBox], at: usize, canvas: &mut Canvas) -> usize {
-        let (step, Some(fading)) = (&seen[at], kept(self.fading)) else { return at + 1 };
+        let (step, Some(fading)) = (&seen[at], fading_of(self.fading)) else { return at + 1 };
         let (area, fade) = (canvas.pixels_of(step.area), self.tree.specs[step.at as usize].fade);
         let part = canvas.within_clip(area);
         if let Some((layer, ends)) = fading.layer_for(seen, at, area, part) {
@@ -425,7 +426,7 @@ impl Painter<'_> {
     /// Where a see-through box ends: what was drawn of it is kept as its layer, and what was
     /// under it shows through that, as through one picture.
     fn end_fade(&mut self, step: &VisibleBox, canvas: &mut Canvas) {
-        let Some(fading) = kept(self.fading) else { return };
+        let Some(fading) = fading_of(self.fading) else { return };
         let Some((part, area)) = fading.parts.pop() else { return };
         fading.keep(step.at, part, area, canvas);
         canvas.let_through(part, &mut fading.under, self.tree.specs[step.at as usize].fade);

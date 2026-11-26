@@ -913,8 +913,8 @@ impl BidiText {
         for stretch in 0..self.stretches.len() {
             let (bytes, level) = self.stretches[stretch].clone();
             match level % 2 {
-                0 => self.ahead_stretch(text, bytes, font, scale),
-                _ => self.turned_stretch(text, bytes, font, scale),
+                1 if cfg!(feature = "right-to-left") => self.turned_stretch(text, bytes, font, scale),
+                _ => self.ahead_stretch(text, bytes, font, scale),
             }
         }
         if let Some(edges) = edges.as_deref_mut() {
@@ -932,19 +932,25 @@ impl BidiText {
 
     /// Splits a left-to-right run into pieces, in order: runs of one Indic or Southeast Asian
     /// script (with signs and spaces between), each shaped for its font; and the rest, the
-    /// inner system's as is. (Without `brahmic`, all of it is the inner system's.) A run the
-    /// inner system would leave without its language's forms is shaped here whole, each script
-    /// for its font.
+    /// inner system's as is. (Without `brahmic`, all of it is the inner system's.) In a line the
+    /// inner system would leave without its language's forms, runs of scripts without shaping
+    /// of their own are shaped here too, each for its font.
     fn ahead_stretch(&mut self, text: &str, bytes: Range<usize>, font: Font, scale: f32) {
         let stretch = &text[bytes.clone()];
-        let syllabic = |letter: char| matches!(Script::of(letter), Some(Script::Brahmic(_)));
         let forms = self.forms_here(font.face, stretch);
-        if !forms && (!cfg!(feature = "brahmic") || !stretch.chars().any(syllabic)) {
+        // (Letters of right-to-left scripts stay the inner system's: here only without
+        // `right-to-left`, which leaves them unreversed and unjoined.)
+        let shaped = |letter: char| match Script::of(letter) {
+            Some(Script::Brahmic(_)) => true,
+            Some(Script::Plain(_)) => forms,
+            _ => false,
+        };
+        if !stretch.chars().any(shaped) {
             return self.pieces.push(Piece { bytes, way: Way::Ahead, wide: 0.0 });
         }
         let mut at = 0;
         while at < stretch.len() {
-            let next = stretch[at..].char_indices().find(|(_, letter)| forms || syllabic(*letter)).map_or(stretch.len(), |(n, _)| at + n);
+            let next = stretch[at..].char_indices().find(|(_, letter)| shaped(*letter)).map_or(stretch.len(), |(n, _)| at + n);
             let (long, way) = if next > at { (next - at, None) } else { self.run(stretch, at, font, scale) };
             self.pieces.push(Piece { bytes: bytes.start + at..bytes.start + at + long, way: way.unwrap_or(Way::Ahead), wide: 0.0 });
             at += long;
@@ -986,7 +992,7 @@ impl BidiText {
         // before), and no letter of another script comes. (An Indic or Southeast Asian run ends
         // at a letter of an unshaped script, a Latin one say, which the inner system draws;
         // Vedic signs belong to it.)
-        let syllabic = matches!(script, Script::Brahmic(_));
+        let syllabic = cfg!(feature = "brahmic") && matches!(script, Script::Brahmic(_));
         let foreign = |letter: char| syllabic && letter.is_alphabetic() && Script::of(letter).is_none() && !('\u{1cd0}'..='\u{1cff}').contains(&letter);
         let mut long = 0;
         while long < rest.len() {
@@ -1014,9 +1020,13 @@ impl BidiText {
         }
         if !self.fonts.iter().any(|(known, of, _)| *known == face && *of == script) {
             // (Letters of scripts without shaping of their own, shaped only for their forms, in
-            // the font the system's text draws them in.)
-            let plain = SHAPES_FORMS && matches!(script, Script::Plain(_));
-            let file = if plain { crate::system_fonts::file_for(face, letter).filter(|file| file.glyph(letter) != 0) } else { system(face, letter) };
+            // the font the system's text draws them in. Others come here only with
+            // `right-to-left` or `brahmic`.)
+            let file = match script {
+                Script::Plain(_) if SHAPES_FORMS => crate::system_fonts::file_for(face, letter).filter(|file| file.glyph(letter) != 0),
+                _ if cfg!(feature = "right-to-left") || cfg!(feature = "brahmic") => system(face, letter),
+                _ => None,
+            };
             self.fonts.push((face, script, file));
         }
         self.fonts.iter().find(|(known, of, _)| *known == face && *of == script).and_then(|(.., file)| file.as_ref())
@@ -2022,5 +2032,27 @@ pub(crate) mod tests {
         if tried == 0 {
             eprintln!("no system font with such forms: not tested");
         }
+    }
+
+    #[test]
+    #[cfg(all(feature = "shaping", not(feature = "right-to-left"), not(any(target_os = "android", target_family = "wasm"))))]
+    fn without_right_to_left_hebrew_in_a_line_shaped_for_its_forms_stays_the_systems() {
+        // A Serbian word with a mark, then Hebrew: the word is shaped for its forms, the Hebrew
+        // left to the system's text as typed (not reversed here).
+        let line = "б\u{301}гдпт שלום";
+        let hebrew = line.find('ש').unwrap();
+        for family in ["Bahnschrift", "DejaVu Sans"] {
+            let font = Font { face: Face::named(family), ..Font::new(32.0) };
+            let mut text = BidiText::around(Box::new(crate::platform::SystemText::new().expect("the system's text")));
+            text.set_language(Language::named("sr"));
+            text.lay(line, font, 1.0, None, None);
+            if !text.pieces.iter().any(|piece| matches!(piece.way, Way::Shaped(_))) {
+                continue;
+            }
+            let shaped_hebrew = text.pieces.iter().any(|piece| piece.bytes.end > hebrew && !matches!(piece.way, Way::Ahead));
+            assert!(!shaped_hebrew, "{family}: {:?}", text.pieces);
+            return;
+        }
+        eprintln!("no system font with Serbian forms: not tested");
     }
 }

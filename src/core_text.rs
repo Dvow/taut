@@ -9,20 +9,13 @@
 use crate::canvas::Canvas;
 use crate::color::Color;
 use crate::font_file::{FontFile, Set};
-use crate::macos_sys::{CFRelease, CFStringCreateWithBytes, NSPoint, NSRect, NSSize, Obj, UTF8, array_items, rust_string, send};
+use crate::macos_sys::{CFRange, CFRelease, CFStringCreateWithBytes, NSPoint, NSRect, NSSize, Obj, UTF8, array_items, rust_string, send};
 use crate::macos_sys::{CGBitmapContextCreate, CGColorSpaceCreateDeviceGray, CGColorSpaceRelease, CGContextRelease, CGContextSetGrayFillColor, CGContextSetShouldAntialias};
 use crate::system_fonts::Style;
 use crate::text::{Face, Font, Metrics, TextSystem};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::PathBuf;
-
-/// `CFRange`.
-#[repr(C)]
-struct CFRange {
-    location: isize,
-    length: isize,
-}
 
 #[link(name = "CoreText", kind = "framework")]
 unsafe extern "C" {

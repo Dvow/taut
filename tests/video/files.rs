@@ -402,7 +402,7 @@ fn block(track: u8, at: u32, bytes: &[u8], duration: Option<u32>) -> Vec<u8> {
 }
 
 /// A Matroska file of `count` frames at `rate` a second (lossless H.264, 64×48), with these
-/// sound tracks (16-bit PCM) and caption tracks (SRT), each as long. A cluster a second, each found by a cue point.
+/// sound tracks (16-bit PCM) and caption tracks (SRT), each as long.
 pub fn matroska(count: usize, rate: u32, sounds: &[Sound], captions: &[Captions]) -> Vec<u8> {
     let header = element(0x1A45_DFA3, &[number(0x4286, 1), number(0x42F7, 1), number(0x42F2, 4), number(0x42F3, 8), words(0x4282, "matroska"), number(0x4287, 4), number(0x4285, 2)].concat());
     let (frame_ms, samples_per_frame) = (1000 / rate, 8000 / rate as usize);

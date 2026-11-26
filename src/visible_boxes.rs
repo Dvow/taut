@@ -7,7 +7,7 @@
 //! only what can be seen; for the accessibility tree, visiting everything, by the same rules.
 use crate::geom::{Rect, rect};
 use crate::id::{ById, Id, hash};
-use crate::layout::{KEPT, PAGE, STICKS_ALONG, Tree};
+use crate::layout::{FROZEN, PAGE, Tree};
 use crate::paint::{bar, bar_id};
 
 /// A box in view: where it is in the window, the part of the window it draws on, and a number
@@ -82,7 +82,7 @@ impl Lying {
         }
         // A sticky box stands in what scrolls, like the rest; a kept one in all its parent's view.
         let [x, y] = tree.stuck(at);
-        (r.moved(x, y), if spec.frame.pinned & KEPT != 0 { self.kept_clip(tree, at) } else { clip })
+        (r.moved(x, y), if spec.frame.pinned & FROZEN != 0 { self.kept_clip(tree, at) } else { clip })
     }
 
     /// Enters box `at`, lying at `r` and visible within `clip`: its content counts from its
@@ -116,7 +116,7 @@ impl Lying {
 
     /// The part of the window box `at` may be seen in, once left.
     pub fn clip_of(&self, tree: &Tree, at: u32) -> Rect {
-        if tree.specs[at as usize].frame.pinned & KEPT != 0 { self.kept_clip(tree, at) } else { self.clips[self.clips.len() - 1] }
+        if tree.specs[at as usize].frame.pinned & FROZEN != 0 { self.kept_clip(tree, at) } else { self.clips[self.clips.len() - 1] }
     }
 
     /// Box `at` was just left, lying at `r`: if it is a sticky box standing past where it would
@@ -129,16 +129,12 @@ impl Lying {
     }
     /// What `pin` does, once a box has stuck.
     pub(crate) fn pin_past(&mut self, tree: &Tree, at: u32, r: Rect) -> u8 {
-        let (pinned, depth) = (tree.specs[at as usize].frame.pinned, self.clips.len() - 1);
-        let stuck = |axis: usize| pinned & STICKS_ALONG[axis] != 0 && tree.sticking(at, axis) > 0.0;
-        let pins = stuck(0) as u8 | (stuck(1) as u8) << 1;
+        let ([x, y], depth) = (tree.sticky_shift(at), self.clips.len() - 1);
+        let pins = (x > 0.0) as u8 | ((y > 0.0) as u8) << 1;
         if pins == 0 {
             return 0;
         }
-        let clip = self.clips[depth];
-        let left = if pins & 1 != 0 { clip.x.max(r.right()) } else { clip.x };
-        let top = if pins & 2 != 0 { clip.y.max(r.bottom()) } else { clip.y };
-        self.clips[depth] = rect(left, top, (clip.right() - left).max(0.0), (clip.bottom() - top).max(0.0));
+        self.clips[depth] = self.clips[depth].intersect(past(pins, r));
         match self.pins.last_mut() {
             Some((deep, count)) if *deep == depth => *count += 1,
             _ => self.pins.push((depth, 1)),
@@ -156,6 +152,13 @@ impl Lying {
         let outer = self.clips.len().checked_sub(2).map_or(Rect::EVERYTHING, |before| self.clips[before]);
         tree.view(up, room).intersect(outer)
     }
+}
+
+/// Where what follows a stuck box at `r` may show, as `pins` (see `VisibleBox::pins`) says: right
+/// of it, below it, or both.
+pub(crate) fn past(pins: u8, r: Rect) -> Rect {
+    let from = |axis: usize, edge: f32, anywhere: f32| if pins & 1 << axis != 0 { edge } else { anywhere };
+    rect(from(0, r.right(), Rect::EVERYTHING.x), from(1, r.bottom(), Rect::EVERYTHING.y), Rect::EVERYTHING.w, Rect::EVERYTHING.h)
 }
 
 /// Whether the page has more content than the window, either way.

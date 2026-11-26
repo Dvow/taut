@@ -15,7 +15,7 @@ static BROWSING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A page as the browser draws it, `width` by `height` pixels at scale 1. (Kept in
 /// `TAUT_SHOTS`, with ours, where that names a folder.)
-pub(crate) fn browsed(browser: &std::path::Path, html: &str, [width, height]: [usize; 2], name: &str) -> Vec<u32> {
+fn browsed(browser: &std::path::Path, html: &str, [width, height]: [usize; 2], name: &str) -> Vec<u32> {
     let folder = std::env::temp_dir().join(format!("taut-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("page.html"), html).unwrap();
@@ -44,6 +44,28 @@ pub(crate) fn browsed(browser: &std::path::Path, html: &str, [width, height]: [u
     }
     let _ = std::fs::remove_dir_all(&folder);
     pixels
+}
+
+/// What lies elsewhere in ours than in the browser's drawing of a page, as `differ` finds it
+/// (each difference: what, and how): only what does so in each of up to three shots. (Edge on
+/// GitHub's runner sometimes sets one glyph of a page 1.3 px from where it sets it in other
+/// runs.)
+pub(crate) fn lasting_differences(browser: &std::path::Path, html: &str, size: [usize; 2], name: &str, differ: impl Fn(&[u32]) -> Vec<(String, String)>) -> Vec<String> {
+    let mut lasting = differences(browser, html, size, name, &differ);
+    for _ in 1..3 {
+        if lasting.is_empty() {
+            break;
+        }
+        let again = differences(browser, html, size, name, &differ);
+        lasting.retain(|what| again.contains(what));
+    }
+    lasting
+}
+
+/// The differences in one shot of the page: what each is, printed with how.
+fn differences(browser: &std::path::Path, html: &str, size: [usize; 2], name: &str, differ: &impl Fn(&[u32]) -> Vec<(String, String)>) -> Vec<String> {
+    let found = differ(&browsed(browser, html, size, name));
+    found.into_iter().inspect(|(what, how)| println!("  {what}: {how}")).map(|(what, _)| what).collect()
 }
 
 /// How much of ink `color` a pixel holds (0 to 1), where that colour over white explains it

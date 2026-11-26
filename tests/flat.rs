@@ -8,9 +8,10 @@ const DEEPEST: usize = 16;
 fn no_code_is_nested_deeper_than_two_blocks() {
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut too_deep = Vec::new();
-    for file in std::fs::read_dir(&source).unwrap().map(|entry| entry.unwrap().path()) {
-        // (Data files, such as the word lists, are no code.)
-        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+    // (Data files, such as the word lists, are no code.)
+    let code = |path: &std::path::PathBuf| path.extension().is_some_and(|extension| extension == "rs" || extension == "js");
+    for file in std::fs::read_dir(&source).unwrap().map(|entry| entry.unwrap().path()).filter(code) {
+        let text = std::fs::read_to_string(&file).unwrap();
         // (Tests at the end of a file may be laid out as they like, and so may comments.)
         let code = text.lines().enumerate().take_while(|(_, line)| !line.starts_with("#[cfg(test)]"));
         let deep = code.filter(|(_, line)| line.len() - line.trim_start().len() > DEEPEST && !line.trim_start().starts_with("//"));

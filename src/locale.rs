@@ -10,7 +10,7 @@
 //! | Windows | the user's region settings | `WM_SETTINGCHANGE` "intl" |
 //! | Linux (glibc) | the locale `LC_ALL`, else `LC_TIME` or `LC_NUMERIC`, else `LANG` names | GNOME's 12/24-hour clock, through the portal |
 //! | macOS, iOS | `NSLocale.currentLocale` | `NSCurrentLocaleDidChangeNotification` |
-//! | Android | `Locale.getDefault()`, the 24-hour setting | configuration changes |
+//! | Android | `Locale.getDefault()`, the 24-hour setting | configuration changes; the 24-hour setting on resume |
 //!
 //! With no locale named, or C's ("C", "POSIX", "C.UTF-8"), and on other systems:
 //! [`Locale::PLAIN`]. An app sets its own in [`ui.locale`](Ui::locale), such as
@@ -18,7 +18,6 @@
 use crate::date::{CalendarWords, Date};
 use crate::number::Number;
 use crate::ui::Ui;
-use std::fmt::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -125,12 +124,12 @@ pub(crate) unsafe fn region_changed(said: isize) -> bool {
 
 /// The desktop's 12 or 24-hour clock (GNOME's, through the portal): 0 unknown, 1 twelve, 2
 /// twenty-four.
-#[cfg(target_os = "linux")]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 static CLOCK: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// The desktop said whether its clock has 12 hours (`None`: it says nothing). Returns whether
 /// that changed: the formats are then read again.
-#[cfg(target_os = "linux")]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 pub(crate) fn set_desktop_clock(twelve_hours: Option<bool>) -> bool {
     let said = twelve_hours.map_or(0, |twelve| if twelve { 1 } else { 2 });
     let changes = CLOCK.swap(said, Ordering::Relaxed) != said;
@@ -141,19 +140,19 @@ pub(crate) fn set_desktop_clock(twelve_hours: Option<bool>) -> bool {
 }
 
 /// The system's formats with the desktop's clock, where it named one.
-#[cfg(target_os = "linux")]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn desktop_clock(locale: Locale) -> Locale {
     with_clock(locale, CLOCK.load(Ordering::Relaxed))
 }
 
-/// The system's formats: no desktop setting outside Linux.
-#[cfg(not(target_os = "linux"))]
+/// The system's formats: only X11 and Wayland desktops name a clock of their own.
+#[cfg(not(all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
 fn desktop_clock(locale: Locale) -> Locale {
     locale
 }
 
 /// `locale` with the clock the desktop said, as `CLOCK` holds it.
-#[cfg(target_os = "linux")]
+#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn with_clock(mut locale: Locale, said: u8) -> Locale {
     if said != 0 {
         locale.twelve_hour_clock = said == 1;
@@ -187,7 +186,7 @@ impl Locale {
     /// The value of a digit typed: 0–9, or one of this locale's digits.
     pub(crate) fn digit_value(self, letter: char) -> Option<u32> {
         let native = (letter as u32).wrapping_sub(self.zero_digit as u32);
-        letter.to_digit(10).filter(|_| letter.is_ascii_digit()).or((native < 10).then_some(native))
+        letter.to_digit(10).or((native < 10).then_some(native))
     }
 
     /// An ASCII digit as this locale writes it; anything else as it is.
@@ -225,13 +224,17 @@ impl Locale {
         plain
     }
 
-    /// Writes a whole number with at least `fewest` digits, in this locale's digits.
+    /// Writes a whole number with at least `fewest` digits, in this locale's digits. (Digit by
+    /// digit: smaller than `write!` with a width, then each digit mapped.)
     pub(crate) fn write_digits(self, into: &mut String, number: i32, fewest: usize) {
-        let from = into.len();
-        let _ = write!(into, "{number:0fewest$}");
-        if self.zero_digit != '0' {
-            let written = into.split_off(from);
-            into.extend(written.chars().map(|letter| self.digit(letter)));
+        if number < 0 {
+            into.push('-');
+        }
+        let size = number.unsigned_abs();
+        let digits = size.checked_ilog10().map_or(1, |log| log as usize + 1);
+        for place in (0..digits.max(fewest)).rev() {
+            let digit = 10u32.checked_pow(place as u32).map_or(0, |power| size / power % 10);
+            into.push(self.digit(char::from(b'0' + digit as u8)));
         }
     }
 
@@ -519,7 +522,8 @@ fn glibc_pattern(written: &str) -> String {
     pattern
 }
 
-/// The first character of what the system said, if anything.
+/// The first character of what the system said, if anything. (Android answers characters.)
+#[cfg(not(target_os = "android"))]
 fn first(said: &str) -> Option<char> {
     said.chars().next()
 }
@@ -840,6 +844,25 @@ fn read() -> Locale {
     })
 }
 
+/// Android said the formats may have changed: with every configuration change (a turned screen
+/// too) and every resume (the 24-hour setting is no configuration change). They count as
+/// changed, and are read again when next needed, only where the locale (with its regional
+/// preferences) or the formats differ from those seen last. Returns whether they did.
+#[cfg(target_os = "android")]
+pub(crate) fn read_again() -> bool {
+    static SEEN: Mutex<Option<(String, Locale)>> = Mutex::new(None);
+    let Some(env) = crate::android_jni::thread_env() else { return false };
+    let now = (env.frame(|| env.text(java_locale(env))).unwrap_or_default(), read());
+    let mut seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+    // (Nothing was read before the first notice: the activity resumes before it is drawn.)
+    let differs = seen.as_ref().is_some_and(|seen| *seen != now);
+    *seen = Some(now);
+    if differs {
+        changed();
+    }
+    differs
+}
+
 /// The person's locale: `Locale.getDefault()`.
 #[cfg(target_os = "android")]
 fn java_locale(env: crate::android_jni::Env) -> crate::android_jni::Obj {
@@ -1091,7 +1114,7 @@ mod tests {
 
     /// GNOME's clock setting, as the portal reports it, overrides the locale's; each change has
     /// the formats read again.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     #[test]
     fn the_desktops_clock_setting_is_followed() {
         let american = Locale::named("en-US").unwrap();

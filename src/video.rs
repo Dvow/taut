@@ -428,7 +428,8 @@ impl Video {
         };
         self.captioned = chosen;
         self.player.choose_captions(file);
-        self.caption = self.caption_now();
+        let caption = self.caption_now();
+        self.set_caption(caption);
     }
     /// Adds the app's captions, WebVTT or SRT text, as a caption track named `name` in
     /// `language`: its place in [`caption_tracks`](Self::caption_tracks). Only the text of each
@@ -495,6 +496,10 @@ impl Video {
             self.take_tracks();
         }
         let caption = self.caption_now();
+        self.set_caption(caption);
+    }
+    /// The caption on show from now: readers are told it where it is new.
+    fn set_caption(&mut self, caption: Option<String>) {
         self.caption_new |= caption.is_some() && caption != self.caption;
         self.caption = caption;
     }
@@ -1328,6 +1333,22 @@ mod tests {
 
     #[test]
     #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
+    fn captions_turned_on_during_a_cue_say_it() {
+        let _alone = alone();
+        let Some(mut video) = opened(false) else { return };
+        video.add_captions(NOTES, "en", "Notes").unwrap();
+        let mut trial = Trial::new(video, captioned);
+        until(&mut trial, "the first frame and the tracks", |video| video.size().is_some() && video.tracks_known);
+        trial.app.seek(Duration::from_millis(500));
+        until(&mut trial, "the frame after a seek", |video| !video.awaited);
+        let Trial { app: mut video, mut ui, .. } = trial;
+        video.set_caption_track(Some(video.caption_tracks().len() - 1));
+        ui.run(&mut |ui| captioned(&mut video, ui));
+        assert_eq!(ui.announced(), ["First"]);
+    }
+
+    #[test]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
     fn a_faster_or_slower_speed_moves_the_frames_that_much_faster_or_slower() {
         let _alone = alone();
         for speed in [2.0, 0.5] {
@@ -1352,6 +1373,24 @@ mod tests {
             let rate = (trial.app.player.position() - from).as_secs_f32() / start.elapsed().as_secs_f32();
             assert!((rate - speed).abs() <= speed * 0.2, "at {speed}× the time moved {rate} s a second");
         }
+    }
+
+    #[test]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
+    fn a_speed_set_after_a_seek_keeps_the_seek() {
+        let _alone = alone();
+        let Some(mut video) = opened(false) else { return };
+        video.seek(Duration::from_millis(1200));
+        video.set_speed(2.0);
+        let mut trial = trial(video, false);
+        let start = std::time::Instant::now();
+        while shown(&trial) != 12 && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+            let now = trial.ui.now + Duration::from_millis(20);
+            trial.ui.set_time(now);
+            trial.run();
+        }
+        assert_eq!(shown(&trial), 12, "{:?}", trial.app);
     }
 
     #[test]

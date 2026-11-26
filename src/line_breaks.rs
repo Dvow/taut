@@ -22,6 +22,9 @@
 //!
 //! Feature `brahmic`.
 
+#[cfg(target_vendor = "apple")]
+use crate::macos_sys::CFRange;
+
 /// A character's line breaking class (UAX #14), as far as CJK text with Latin among it needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BreakClass {
@@ -208,21 +211,12 @@ pub(crate) fn words(_text: &str) -> Vec<usize> {
     Vec::new()
 }
 
-/// `CFRange`: a start and a length in UTF-16 units.
-#[cfg(target_vendor = "apple")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Range {
-    location: isize,
-    length: isize,
-}
-
 #[cfg(target_vendor = "apple")]
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
-    fn CFStringTokenizerCreate(allocator: *const std::ffi::c_void, text: *const std::ffi::c_void, range: Range, unit: usize, locale: *const std::ffi::c_void) -> *const std::ffi::c_void;
+    fn CFStringTokenizerCreate(allocator: *const std::ffi::c_void, text: *const std::ffi::c_void, range: CFRange, unit: usize, locale: *const std::ffi::c_void) -> *const std::ffi::c_void;
     fn CFStringTokenizerAdvanceToNextToken(tokenizer: *const std::ffi::c_void) -> usize;
-    fn CFStringTokenizerGetCurrentTokenRange(tokenizer: *const std::ffi::c_void) -> Range;
+    fn CFStringTokenizerGetCurrentTokenRange(tokenizer: *const std::ffi::c_void) -> CFRange;
 }
 
 /// `kCFStringTokenizerUnitWordBoundary`: tokens from word boundary to word boundary.
@@ -243,7 +237,7 @@ pub(crate) fn words(text: &str) -> Vec<usize> {
         if string.is_null() {
             return Vec::new();
         }
-        let tokenizer = CFStringTokenizerCreate(std::ptr::null(), string, Range { location: 0, length: units }, WORD_BOUNDARIES, std::ptr::null());
+        let tokenizer = CFStringTokenizerCreate(std::ptr::null(), string, CFRange { location: 0, length: units }, WORD_BOUNDARIES, std::ptr::null());
         while !tokenizer.is_null() && CFStringTokenizerAdvanceToNextToken(tokenizer) != 0 {
             starts.push(CFStringTokenizerGetCurrentTokenRange(tokenizer).location.max(0) as usize);
         }

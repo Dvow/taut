@@ -515,6 +515,10 @@ struct At {
     x: f32,
 }
 
+/// A width rows are never wrapped in (a code block's): they start at the left, whichever way
+/// they read, as there is no right edge.
+pub(crate) const NO_WRAP: f32 = f32::MAX;
+
 /// Every row's minimum and placement: ascent and descent, row height; left edge, width, and
 /// where narrower rows align.
 #[derive(Clone, Copy)]
@@ -631,9 +635,10 @@ impl Breaker<'_> {
         let high = ((above + below).max(self.room.high) * self.scale).ceil() / self.scale;
         let base = pixel((high - above - below) / 2.0 + above);
         let wide = end.x - self.start.x;
-        // (A right-to-left paragraph starts at the right, as a label's does.)
+        // (A right-to-left paragraph starts at the right, as a label's does, where it has one.)
         let side = [0.0, 0.5, 1.0, 0.0][self.room.side as usize];
-        let shift = pixel((self.room.wide - wide).max(0.0) * if self.leftward { 1.0 - side } else { side });
+        let side = if self.leftward && self.room.wide < NO_WRAP { 1.0 - side } else { side };
+        let shift = pixel((self.room.wide - wide).max(0.0) * side);
         for frag in &mut self.laid.frags[frags] {
             let bit = &self.laid.bits[frag.bit as usize];
             frag.x += shift;
@@ -1212,7 +1217,7 @@ mod tests {
 #[cfg(all(test, windows, feature = "right-to-left"))]
 mod against_edge {
     use super::*;
-    use crate::browser_check::{browsed, browser, ink_middle};
+    use crate::browser_check::{browser, ink_middle, lasting_differences};
     use crate::font_file::{AppFonts, FontFile};
     use crate::geom::rect;
 
@@ -1270,28 +1275,30 @@ mod against_edge {
         let path = std::path::Path::new(&std::env::var_os("WINDIR").unwrap_or_default()).join(r"Fonts\arial.ttf");
         let Some(font) = FontFile::open(&path) else { return eprintln!("no Arial here: not compared") };
         let size = [540, 220];
-        let theirs = browsed(&browser, &page(&path.to_string_lossy().replace('\\', "/")), size, "bidi");
         let mut ui = Ui::new(Box::new(AppFonts::new(font)), Box::new(crate::platform::LocalClipboard::default()));
         ui.resize(crate::geom::Size { w: size[0] as f32, h: size[1] as f32 }, 1.0);
         ui.theme.bg = Color::WHITE;
         ui.run(&mut written);
         let ours = crate::surface::Surface::draw(&mut ui, 64).pixels;
-        let mut wrong = Vec::new();
-        for (n, pieces) in CASES.iter().enumerate() {
-            let [x, y] = place(n);
-            let band = rect(x - 5.0, y - 5.0, 510.0, 40.0);
-            for (at, words) in pieces.iter().enumerate() {
-                let middle = |pixels: &[u32]| ink_middle(pixels, size[0], band, INKS[at], &INKS).map(|[x, _]| x);
-                let (mine, edge) = (middle(&ours), middle(&theirs));
-                // (Within 3: Latin and digits advance by whole pixels here, by fractions in
-                // Chrome, so a line drifts by a pixel or two. A piece out of order is a word
-                // away.)
-                if !mine.zip(edge).is_some_and(|(mine, edge)| (mine - edge).abs() <= 3.0) {
-                    wrong.push(format!("{words:?}: ours at {mine:?}, Edge's at {edge:?}"));
+        let differ = |theirs: &[u32]| {
+            let mut wrong = Vec::new();
+            for (n, pieces) in CASES.iter().enumerate() {
+                let [x, y] = place(n);
+                let band = rect(x - 5.0, y - 5.0, 510.0, 40.0);
+                for (at, words) in pieces.iter().enumerate() {
+                    let middle = |pixels: &[u32]| ink_middle(pixels, size[0], band, INKS[at], &INKS).map(|[x, _]| x);
+                    let (mine, edge) = (middle(&ours), middle(theirs));
+                    // (Within 3: Latin and digits advance by whole pixels here, by fractions in
+                    // Chrome, so a line drifts by a pixel or two. A piece out of order is a word
+                    // away.)
+                    if !mine.zip(edge).is_some_and(|(mine, edge)| (mine - edge).abs() <= 3.0) {
+                        wrong.push((format!("{words:?}"), format!("ours at {mine:?}, Edge's at {edge:?}")));
+                    }
                 }
             }
-        }
-        wrong.iter().for_each(|line| println!("  {line}"));
+            wrong
+        };
+        let wrong = lasting_differences(&browser, &page(&path.to_string_lossy().replace('\\', "/")), size, "bidi", differ);
         assert!(wrong.is_empty(), "{} pieces lie elsewhere than in Chrome", wrong.len());
     }
 }

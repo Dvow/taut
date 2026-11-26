@@ -56,7 +56,8 @@ pub(crate) enum Heard {
     Back,
     /// The window or its insets changed size, or the display settings changed.
     Looks,
-    /// The user's locale or its formats changed: everything is written again.
+    /// The user's locale or its formats may have changed: read again, and if they did,
+    /// everything is written again.
     Locale,
     /// The window must be shown whole again.
     Redraw,
@@ -809,10 +810,7 @@ impl<App: FnMut(&mut Ui)> Host<App> {
             }
             Heard::Other(work) => self.rerun |= work(&mut self.ui),
             Heard::Looks => self.measure(),
-            Heard::Locale => {
-                crate::locale::changed();
-                self.rerun = true;
-            }
+            Heard::Locale => self.rerun |= crate::locale::read_again(),
             Heard::Redraw => self.whole = true,
             Heard::Back if self.ui.popup_anchor().is_some() => self.rerun |= self.ui.event(Event::Key(Key::Escape, Mods::NONE)),
             Heard::Back => {

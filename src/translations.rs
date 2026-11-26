@@ -13,28 +13,28 @@ use crate::popups::FrameWords;
 use crate::ui::Ui;
 use crate::web_widgets::WidgetWords;
 
-/// How many words a language has: edit menu 6, search 1, code bars 11, frames 5, numbers 3,
+/// How many words a language has: edit menu 7, search 1, code bars 11, frames 5, numbers 3,
 /// web parts 10, clock 4, calendar arrows 2, file dialog 34, months 12, days 7, AM/PM 2.
-const WORDS: usize = 97;
+const WORDS: usize = 98;
 /// Where each kind of word starts.
 const EDIT: usize = 0;
-const SEARCH: usize = 6;
-const CODE: usize = 7;
-const FRAME: usize = 18;
-const NUMBER: usize = 23;
-const WIDGET: usize = 26;
-const CLOCK: usize = 36;
-const ARROWS: usize = 40;
-const FILES: usize = 42;
-const MONTHS: usize = 76;
-const DAYS: usize = 88;
-const HALVES: usize = 95;
+const SEARCH: usize = 7;
+const CODE: usize = 8;
+const FRAME: usize = 19;
+const NUMBER: usize = 24;
+const WIDGET: usize = 27;
+const CLOCK: usize = 37;
+const ARROWS: usize = 41;
+const FILES: usize = 43;
+const MONTHS: usize = 77;
+const DAYS: usize = 89;
+const HALVES: usize = 96;
 
 /// Each language: its code ("zh-Hant" for traditional Chinese), and its words (`split_words`).
 #[rustfmt::skip]
 static LANGUAGES: [(&str, &str); 20] = [
     ("de", concat!(
-        "Ausschneiden|Kopieren|Einfügen|Alles auswählen|Zum Wörterbuch hinzufügen|Ignorieren|",
+        "Ausschneiden|Kopieren|Einfügen|Alles auswählen|Zum Wörterbuch hinzufügen|Ignorieren|Link kopieren|",
         "Suchen|",
         "Suchen|Ersetzen durch|Groß/klein beachten|Ganzes Wort|Ersetzen|Alle ersetzen|Gehe zu Zeile|von|Weiter|Zurück|Schließen|",
         "Mehr|Schließen|Dock füllen|Zurück an seinen Platz|Breite des Bereichs|",
@@ -51,7 +51,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "AM|PM|",
     )),
     ("es", concat!(
-        "Cortar|Copiar|Pegar|Seleccionar todo|Añadir al diccionario|Omitir|",
+        "Cortar|Copiar|Pegar|Seleccionar todo|Añadir al diccionario|Omitir|Copiar enlace|",
         "Buscar|",
         "Buscar|Reemplazar por|Mayúsculas y minúsculas|Palabra completa|Reemplazar|Reemplazar todo|Ir a la línea|de|Siguiente|Anterior|Cerrar|",
         "Más|Cerrar|Llenar el panel|Volver a su sitio|Ancho del panel|",
@@ -68,7 +68,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "a. m.|p. m.|",
     )),
     ("fr", concat!(
-        "Couper|Copier|Coller|Tout sélectionner|Ajouter au dictionnaire|Ignorer|",
+        "Couper|Copier|Coller|Tout sélectionner|Ajouter au dictionnaire|Ignorer|Copier le lien|",
         "Rechercher|",
         "Rechercher|Remplacer par|Respecter la casse|Mot entier|Remplacer|Tout remplacer|Aller à la ligne|sur|Suivant|Précédent|Fermer|",
         "Plus|Fermer|Remplir le dock|Remettre à sa place|Largeur du volet|",
@@ -85,7 +85,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "AM|PM|",
     )),
     ("ja", concat!(
-        "切り取り|コピー|貼り付け|すべて選択|辞書に追加|無視|",
+        "切り取り|コピー|貼り付け|すべて選択|辞書に追加|無視|リンクをコピー|",
         "検索|",
         "検索|置換後の文字列|大文字と小文字を区別|単語単位|置換|すべて置換|行へ移動|/|次へ|前へ|閉じる|",
         "その他|閉じる|ドック全体に表示|元の位置に戻す|ペインの幅|",
@@ -102,7 +102,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "午前|午後|",
     )),
     ("pt", concat!(
-        "Recortar|Copiar|Colar|Selecionar tudo|Adicionar ao dicionário|Ignorar|",
+        "Recortar|Copiar|Colar|Selecionar tudo|Adicionar ao dicionário|Ignorar|Copiar link|",
         "Pesquisar|",
         "Localizar|Substituir por|Diferenciar maiúsculas|Palavra inteira|Substituir|Substituir tudo|Ir para a linha|de|Próximo|Anterior|Fechar|",
         "Mais|Fechar|Preencher o painel|Voltar ao seu lugar|Largura do painel|",
@@ -119,7 +119,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "AM|PM|",
     )),
     ("zh", concat!(
-        "剪切|复制|粘贴|全选|添加到词典|忽略|",
+        "剪切|复制|粘贴|全选|添加到词典|忽略|复制链接|",
         "搜索|",
         "查找|替换为|区分大小写|全字匹配|替换|全部替换|转到行|/|下一个|上一个|关闭|",
         "更多|关闭|填满停靠区|放回原处|窗格宽度|",
@@ -136,7 +136,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "上午|下午|",
     )),
     ("zh-Hant", concat!(
-        "剪下|複製|貼上|全選|新增至字典|略過|",
+        "剪下|複製|貼上|全選|新增至字典|略過|複製連結|",
         "搜尋|",
         "尋找|取代為|大小寫須相符|全字拼寫須相符|取代|全部取代|移至行|/|下一個|上一個|關閉|",
         "更多|關閉|填滿停駐區|回到原位|窗格寬度|",
@@ -153,7 +153,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "上午|下午|",
     )),
     ("it", concat!(
-        "Taglia|Copia|Incolla|Seleziona tutto|Aggiungi al dizionario|Ignora|",
+        "Taglia|Copia|Incolla|Seleziona tutto|Aggiungi al dizionario|Ignora|Copia link|",
         "Cerca|",
         "Trova|Sostituisci con|Maiuscole/minuscole|Parola intera|Sostituisci|Sostituisci tutto|Vai alla riga|di|Successivo|Precedente|Chiudi|",
         "Altro|Chiudi|Riempi l’area di ancoraggio|Torna al suo posto|Larghezza del riquadro|",
@@ -170,7 +170,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "AM|PM|",
     )),
     ("ru", concat!(
-        "Вырезать|Копировать|Вставить|Выделить все|Добавить в словарь|Пропустить|",
+        "Вырезать|Копировать|Вставить|Выделить все|Добавить в словарь|Пропустить|Копировать ссылку|",
         "Поиск|",
         "Найти|Заменить на|С учетом регистра|Слово целиком|Заменить|Заменить все|Перейти к строке|из|Далее|Назад|Закрыть|",
         "Еще|Закрыть|Заполнить область закрепления|Вернуть на место|Ширина панели|",
@@ -187,7 +187,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "AM|PM|",
     )),
     ("ko", concat!(
-        "잘라내기|복사|붙여넣기|모두 선택|사전에 추가|무시|",
+        "잘라내기|복사|붙여넣기|모두 선택|사전에 추가|무시|링크 복사|",
         "검색|",
         "찾기|바꿀 내용|대/소문자 구분|단어 단위로|바꾸기|모두 바꾸기|줄로 이동|/|다음|이전|닫기|",
         "더 보기|닫기|도킹 영역 채우기|원래 위치로|창 너비|",
@@ -204,7 +204,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "오전|오후|",
     )),
     ("ar", concat!(
-        "قص|نسخ|لصق|تحديد الكل|إضافة إلى القاموس|تجاهل|",
+        "قص|نسخ|لصق|تحديد الكل|إضافة إلى القاموس|تجاهل|نسخ الرابط|",
         "بحث|",
         "بحث|استبدال بـ|مطابقة حالة الأحرف|الكلمة بأكملها|استبدال|استبدال الكل|الانتقال إلى السطر|من|التالي|السابق|إغلاق|",
         "المزيد|إغلاق|ملء منطقة الإرساء|إعادة إلى مكانه|عرض الجزء|",
@@ -221,7 +221,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "ص|م|",
     )),
     ("hi", concat!(
-        "काटें|कॉपी करें|चिपकाएँ|सभी चुनें|शब्दकोश में जोड़ें|अनदेखा करें|",
+        "काटें|कॉपी करें|चिपकाएँ|सभी चुनें|शब्दकोश में जोड़ें|अनदेखा करें|लिंक कॉपी करें|",
         "खोजें|",
         "ढूँढें|इससे बदलें|केस मिलाएँ|पूरा शब्द|बदलें|सभी बदलें|पंक्ति पर जाएँ|में से|अगला|पिछला|बंद करें|",
         "और|बंद करें|डॉक भरें|अपनी जगह पर वापस|फलक की चौड़ाई|",
@@ -238,7 +238,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "am|pm|",
     )),
     ("tr", concat!(
-        "Kes|Kopyala|Yapıştır|Tümünü seç|Sözlüğe ekle|Yoksay|",
+        "Kes|Kopyala|Yapıştır|Tümünü seç|Sözlüğe ekle|Yoksay|Bağlantıyı kopyala|",
         "Ara|",
         "Bul|Şununla değiştir|Büyük/küçük harf eşleştir|Tam sözcük|Değiştir|Tümünü değiştir|Satıra git|/|Sonraki|Önceki|Kapat|",
         "Diğer|Kapat|Yerleştirme alanını doldur|Yerine geri koy|Bölme genişliği|",
@@ -255,7 +255,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "ÖÖ|ÖS|",
     )),
     ("pl", concat!(
-        "Wytnij|Kopiuj|Wklej|Zaznacz wszystko|Dodaj do słownika|Ignoruj|",
+        "Wytnij|Kopiuj|Wklej|Zaznacz wszystko|Dodaj do słownika|Ignoruj|Kopiuj link|",
         "Szukaj|",
         "Znajdź|Zamień na|Uwzględniaj wielkość liter|Całe wyrazy|Zamień|Zamień wszystko|Przejdź do wiersza|z|Następny|Poprzedni|Zamknij|",
         "Więcej|Zamknij|Wypełnij obszar dokowania|Wróć na miejsce|Szerokość panelu|",
@@ -272,7 +272,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "AM|PM|",
     )),
     ("nl", concat!(
-        "Knippen|Kopiëren|Plakken|Alles selecteren|Toevoegen aan woordenlijst|Negeren|",
+        "Knippen|Kopiëren|Plakken|Alles selecteren|Toevoegen aan woordenlijst|Negeren|Link kopiëren|",
         "Zoeken|",
         "Zoeken|Vervangen door|Hoofdlettergevoelig|Heel woord|Vervangen|Alles vervangen|Ga naar regel|van|Volgende|Vorige|Sluiten|",
         "Meer|Sluiten|Dockgebied vullen|Terug naar zijn plaats|Breedte van het deelvenster|",
@@ -289,7 +289,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "a.m.|p.m.|",
     )),
     ("id", concat!(
-        "Potong|Salin|Tempel|Pilih semua|Tambahkan ke kamus|Abaikan|",
+        "Potong|Salin|Tempel|Pilih semua|Tambahkan ke kamus|Abaikan|Salin tautan|",
         "Cari|",
         "Temukan|Ganti dengan|Cocokkan huruf besar/kecil|Seluruh kata|Ganti|Ganti semua|Buka baris|dari|Berikutnya|Sebelumnya|Tutup|",
         "Lainnya|Tutup|Isi area dok|Kembali ke tempatnya|Lebar panel|",
@@ -306,7 +306,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "AM|PM|",
     )),
     ("vi", concat!(
-        "Cắt|Sao chép|Dán|Chọn tất cả|Thêm vào từ điển|Bỏ qua|",
+        "Cắt|Sao chép|Dán|Chọn tất cả|Thêm vào từ điển|Bỏ qua|Sao chép liên kết|",
         "Tìm kiếm|",
         "Tìm|Thay bằng|Khớp chữ hoa/thường|Toàn bộ từ|Thay thế|Thay thế tất cả|Đi tới dòng|/|Tiếp|Trước|Đóng|",
         "Thêm|Đóng|Lấp đầy khu neo|Trả về chỗ cũ|Độ rộng ngăn|",
@@ -323,7 +323,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "SA|CH|",
     )),
     ("th", concat!(
-        "ตัด|คัดลอก|วาง|เลือกทั้งหมด|เพิ่มลงในพจนานุกรม|ละเว้น|",
+        "ตัด|คัดลอก|วาง|เลือกทั้งหมด|เพิ่มลงในพจนานุกรม|ละเว้น|คัดลอกลิงก์|",
         "ค้นหา|",
         "ค้นหา|แทนที่ด้วย|ตรงตามตัวพิมพ์|ทั้งคำ|แทนที่|แทนที่ทั้งหมด|ไปที่บรรทัด|จาก|ถัดไป|ก่อนหน้า|ปิด|",
         "เพิ่มเติม|ปิด|เต็มพื้นที่เชื่อมต่อ|กลับไปที่เดิม|ความกว้างของบานหน้าต่าง|",
@@ -340,7 +340,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "AM|PM|",
     )),
     ("uk", concat!(
-        "Вирізати|Копіювати|Вставити|Виділити все|Додати до словника|Пропустити|",
+        "Вирізати|Копіювати|Вставити|Виділити все|Додати до словника|Пропустити|Копіювати посилання|",
         "Пошук|",
         "Знайти|Замінити на|З урахуванням регістру|Слово повністю|Замінити|Замінити все|Перейти до рядка|з|Далі|Назад|Закрити|",
         "Більше|Закрити|Заповнити область закріплення|Повернути на місце|Ширина панелі|",
@@ -357,7 +357,7 @@ static LANGUAGES: [(&str, &str); 20] = [
         "дп|пп|",
     )),
     ("sv", concat!(
-        "Klipp ut|Kopiera|Klistra in|Markera allt|Lägg till i ordlistan|Ignorera|",
+        "Klipp ut|Kopiera|Klistra in|Markera allt|Lägg till i ordlistan|Ignorera|Kopiera länk|",
         "Sök|",
         "Sök|Ersätt med|Matcha gemener/versaler|Hela ord|Ersätt|Ersätt alla|Gå till rad|av|Nästa|Föregående|Stäng|",
         "Mer|Stäng|Fyll dockningsytan|Tillbaka till sin plats|Fönsterrutans bredd|",
@@ -379,10 +379,8 @@ static LANGUAGES: [(&str, &str); 20] = [
 /// "zh-Hans-CN"), if it has a table: by its first part; Chinese of Taiwan, Hong Kong and Macao,
 /// or in traditional script, traditional.
 fn words_of(language: &str) -> Option<[&'static str; WORDS]> {
-    let mut parts = language.split(['-', '_', '.', '@']);
-    let first = parts.next()?.to_ascii_lowercase();
-    let traditional = first == "zh" && parts.any(|part| ["tw", "hk", "mo", "hant"].contains(&part.to_ascii_lowercase().as_str()));
-    let code = if traditional { "zh-Hant" } else { first.as_str() };
+    let (language, region) = crate::locales::language_and_region(language);
+    let code = if language == "zh" && region.as_deref() == Some("TW") { "zh-Hant" } else { language.as_str() };
     LANGUAGES.iter().find(|(known, _)| *known == code).map(|(_, table)| split_words(table))
 }
 
@@ -592,11 +590,12 @@ mod tests {
     #[test]
     fn a_window_and_a_file_dialog_take_a_language() {
         let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
-        ui.edit_words = ["Cut", "Copy", "Paste", "Select all", "Add to dictionary", "Ignore"];
+        ui.edit_words = ["Cut", "Copy", "Paste", "Select all", "Add to dictionary", "Ignore", "Copy link"];
         assert!(!ui.translate("tlh"));
         assert_eq!(ui.edit_words[0], "Cut", "nothing changes for a language taut lacks");
         assert!(ui.translate("de-CH"));
-        assert_eq!((ui.edit_words[2], ui.search_word, ui.code_words[10], ui.number_words[0]), ("Einfügen", "Suchen", "Schließen", "Keine Zahl"));
+        assert_eq!((ui.edit_words[2], ui.edit_words[6], ui.search_word, ui.code_words[10]), ("Einfügen", "Link kopieren", "Suchen", "Schließen"));
+        assert_eq!(ui.number_words[0], "Keine Zahl");
         assert_eq!((ui.frame_words.splitter, ui.widget_words.high, ui.calendar_words.clock[3], ui.calendar_words.arrows[1]), ("Breite des Bereichs", "oberes Ende", "AM oder PM", "Nächster Monat"));
         assert_eq!((ui.calendar_words.months[2], ui.calendar_words.days[6], ui.calendar_words.halves[1]), ("März", "So", "PM"));
         let french = FileWords::in_language("fr").unwrap();

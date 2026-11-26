@@ -26,7 +26,7 @@ use crate::event::{Button, Cursor, Event, Key, Mods};
 use crate::file_dialog::FileDialogRequest;
 use crate::geom::{Point, Rect, Size, pt, rect};
 use crate::id::{ById, Id, fold, hash, stir};
-use crate::layout::{Align, Content, Flow, Frame, KEPT, NONE, Spec, Tree, fade_key};
+use crate::layout::{Align, Content, FROZEN, Flow, Frame, NONE, Spec, Tree, fade_key};
 use crate::locale::Locale;
 use crate::paint::{Mask, Painter, bar, bar_id};
 use crate::platform::{Clipboard, Renderer, WindowPlacement};
@@ -444,10 +444,10 @@ impl Tween {
 pub struct Ui {
     /// The colours and sizes everything is drawn with. Change any of it at any time.
     pub theme: Theme,
-    /// The text box context menu's labels: cut, copy, paste, select all; and on a misspelled
-    /// word, add to dictionary and ignore (see [`check_spelling`](Ui::check_spelling)).
-    /// Translate them for other languages.
-    pub edit_words: [&'static str; 6],
+    /// The context menus' labels: cut, copy, paste, select all; on a misspelled word, add to
+    /// dictionary and ignore (see [`check_spelling`](Ui::check_spelling)); on a document's link,
+    /// copy link. Translate them for other languages.
+    pub edit_words: [&'static str; 7],
     /// The placeholder of a `combo`'s search box.
     pub search_word: &'static str,
     /// The code editor bars' labels: find, replace with, match case, whole word, replace,
@@ -766,7 +766,7 @@ impl Ui {
         #[cfg_attr(not(feature = "translations"), allow(unused_mut))]
         let mut ui = Ui {
             theme: Theme::dark(),
-            edit_words: ["Cut", "Copy", "Paste", "Select all", "Add to dictionary", "Ignore"],
+            edit_words: ["Cut", "Copy", "Paste", "Select all", "Add to dictionary", "Ignore", "Copy link"],
             frame_words: Default::default(),
             frame: Default::default(),
             search_word: "Search",
@@ -1744,7 +1744,7 @@ impl Ui {
         // larger (a cell partly under frozen columns): the rest shows when its container
         // scrolls back that far.
         let before = |spec: &Spec| (-spec.frame.pad.left).max(0.0);
-        let kept_in_view = |spec: &Spec| spec.frame.pinned & KEPT != 0;
+        let kept_in_view = |spec: &Spec| spec.frame.pinned & FROZEN != 0;
         let (mut up, mut cut, mut kept) = (self.tree.specs[at as usize].frame.parent, before(&self.tree.specs[at as usize]), kept_in_view(&self.tree.specs[at as usize]));
         // (Whether a box stuck at the start of the innermost scroll box each way is still to be
         // allowed for.)

@@ -20,9 +20,8 @@ use std::collections::HashMap;
 /// A language's forms in the system's fonts, as looked up so far.
 pub(crate) struct Forms {
     language: Language,
-    /// Each face's own font; whether it has forms for the language, and whether some for Latin,
-    /// which ASCII text may take.
-    fonts: Vec<(Face, Option<FontFile>, bool, bool)>,
+    /// Each face's own font.
+    fonts: Vec<OwnFont>,
     /// The font a face draws a script's letters in where its own lacks them, if it has forms
     /// for the language.
     fallbacks: Vec<(Face, Option<Script>, Option<FontFile>)>,
@@ -30,6 +29,15 @@ pub(crate) struct Forms {
     found: HashMap<(Face, char), Option<u16>>,
     /// Whether a letter the face's font lacks takes a form in the font drawing it, by face.
     fallen: HashMap<(Face, char), bool>,
+}
+
+/// A face's own font, if the system gives its file: whether it has forms for the language, and
+/// whether some for Latin, which ASCII text may take.
+struct OwnFont {
+    face: Face,
+    file: Option<FontFile>,
+    forms: bool,
+    latin: bool,
 }
 
 impl std::fmt::Debug for Forms {
@@ -67,7 +75,7 @@ impl Forms {
             any |= self.form(face, letter)?.is_some();
         }
         self.font(face).filter(|_| any)?;
-        let file = self.fonts.iter().find(|(known, ..)| *known == face).and_then(|(_, file, ..)| file.as_ref())?;
+        let file = self.fonts.iter().find(|own| own.face == face)?.file.as_ref()?;
         let glyph = |letter: char| {
             let own = file.glyph(letter);
             [own, self.found.get(&(face, letter)).copied().flatten().unwrap_or(own)]
@@ -94,9 +102,7 @@ impl Forms {
         if letter > '\u{ffff}' || !matches!(Script::of(letter), Some(Script::Plain(_))) {
             return false;
         }
-        self.font(face);
-        let own = self.fonts.iter().find(|(known, ..)| *known == face).and_then(|(_, file, ..)| file.as_ref());
-        match own.map(|file| file.glyph(letter) != 0) {
+        match self.own(face).file.as_ref().map(|file| file.glyph(letter) != 0) {
             Some(true) => self.form(face, letter).flatten().is_some(),
             _ => self.falls_into_form(face, letter),
         }
@@ -143,14 +149,20 @@ impl Forms {
 
     /// A face's font, where it has forms for the language; and whether it has some for Latin.
     fn font(&mut self, face: Face) -> Option<(&FontFile, bool)> {
-        if !self.fonts.iter().any(|(known, ..)| *known == face) {
-            let file = crate::system_fonts::file_for(face, 'a');
-            let forms = file.as_ref().is_some_and(|file| has_forms(file, self.language, None));
-            let latin = forms && file.as_ref().is_some_and(|file| has_forms(file, self.language, Some(b"latn")));
-            self.fonts.push((face, file, forms, latin));
+        let own = self.own(face);
+        Some((own.file.as_ref().filter(|_| own.forms)?, own.latin))
+    }
+
+    /// A face's own font, looked up the first time.
+    fn own(&mut self, face: Face) -> &OwnFont {
+        if let Some(at) = self.fonts.iter().position(|own| own.face == face) {
+            return &self.fonts[at];
         }
-        let (_, file, forms, latin) = self.fonts.iter().find(|(known, ..)| *known == face)?;
-        Some((file.as_ref().filter(|_| *forms)?, *latin))
+        let file = crate::system_fonts::file_for(face, 'a');
+        let forms = file.as_ref().is_some_and(|file| has_forms(file, self.language, None));
+        let latin = forms && file.as_ref().is_some_and(|file| has_forms(file, self.language, Some(b"latn")));
+        self.fonts.push(OwnFont { face, file, forms, latin });
+        &self.fonts[self.fonts.len() - 1]
     }
 }
 

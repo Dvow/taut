@@ -56,15 +56,23 @@ impl Locale {
     /// fa-IR, hi-IN, bn-BD, mr-IN, ne-NP, th-TH, tr-TR, pl-PL, nl-NL, id-ID, vi-VN, uk-UA,
     /// sv-SE, cs-CZ, he-IL, fi-FI, my-MM.
     pub fn named(name: &str) -> Option<Locale> {
-        let mut parts = name.split(['-', '_', '.', '@']);
-        let language = parts.next()?.to_ascii_lowercase();
-        let rest: Vec<String> = parts.map(|part| part.to_ascii_uppercase()).collect();
-        let traditional = language == "zh" && rest.iter().any(|part| ["HANT", "TW", "HK", "MO"].contains(&part.as_str()));
-        let region = if traditional { Some("TW") } else { rest.iter().map(String::as_str).find(|part| part.len() == 2) };
+        let (language, region) = language_and_region(name);
         let of_language = |(code, _): &&(&str, Locale)| code.split('-').next() == Some(language.as_str());
-        let exact = region.and_then(|region| LOCALES.iter().filter(of_language).find(|(code, _)| code.ends_with(region)));
+        let exact = region.and_then(|region| LOCALES.iter().filter(of_language).find(|(code, _)| code.ends_with(&region)));
         exact.or_else(|| LOCALES.iter().find(of_language)).map(|(_, locale)| *locale)
     }
+}
+
+/// A locale's name as systems write it ("de-DE", "hi_IN.UTF-8", "zh-Hant-HK") in parts: its
+/// language in lower case, and its region in upper case where it names one. Traditional
+/// Chinese (Hong Kong's and Macao's too) is Taiwan's.
+pub(crate) fn language_and_region(name: &str) -> (String, Option<String>) {
+    let mut parts = name.split(['-', '_', '.', '@']);
+    let language = parts.next().unwrap_or_default().to_ascii_lowercase();
+    let rest: Vec<String> = parts.map(str::to_ascii_uppercase).collect();
+    let traditional = language == "zh" && rest.iter().any(|part| ["HANT", "TW", "HK", "MO"].contains(&part.as_str()));
+    let region = if traditional { Some("TW".to_owned()) } else { rest.into_iter().find(|part| part.len() == 2) };
+    (language, region)
 }
 
 #[cfg(test)]

@@ -262,10 +262,11 @@ impl Player {
         // SAFETY: a boolean property, the list ending in a null.
         unsafe { (self.lib.gobject.g_object_set)(self.playbin, c"mute".as_ptr(), muted as c_int, std::ptr::null::<c_char>()) };
     }
-    /// Plays at this speed from where it is: a seek there at that rate.
+    /// Plays at this speed from where it is (or from a seek not yet done): a seek there at that
+    /// rate.
     pub(crate) fn set_speed(&mut self, speed: f32) {
         self.speed = speed as f64;
-        let here = self.position();
+        let here = self.pending.map_or_else(|| self.position(), |to| Duration::from_nanos(to as u64));
         self.seek(here);
     }
 

@@ -1,4 +1,4 @@
-//! Videos on Windows: Media Found        self.captions = nth.filter(|at| *at < self.caption_ids.len());ion's Media Engine, loaded at run time, in frame-server mode
+//! Videos on Windows: Media Foundation's Media Engine, loaded at run time, in frame-server mode
 //! (no window of its own).
 //!
 //! - Decoding: where the machine has a GPU, the engine is handed a Direct3D 11 device (one for
@@ -363,35 +363,8 @@ impl Player {
 
     /// A new engine with no source yet: decoding on the GPU where `on_gpu` and there is one.
     fn new(sound: bool, on_gpu: bool) -> Result<Player, VideoError> {
-        let functions = functions().ok_or_else(|| VideoError::NoPlayer("Media Foundation is not installed".into()))?;
-        // SAFETY: COM and Media Foundation are started for this thread (single-threaded, as
-        // OLE wants it; a thread already started either way keeps its kind).
-        let started = unsafe {
-            crate::windows::sys::CoInitializeEx(null_mut(), 2);
-            (functions.startup)(0x0002_0070, 0)
-        };
-        if started < 0 {
-            return Err(VideoError::NoPlayer(format!("Media Foundation did not start ({:#010x})", started as u32)));
-        }
-        let gpu = if on_gpu { gpu(functions) } else { None };
-        let said = Listener::boxed(&SAID.unknown, &A_NOTIFY, Said { bits: AtomicU32::new(0), code: AtomicI32::new(0) });
-        let showing = Listener::boxed(&SHOWING.unknown, &A_CUE_NOTIFY, Mutex::new(Vec::new()));
-        let mut player = Player {
-            functions,
-            engine: null_mut(),
-            ex: null_mut(),
-            said,
-            showing,
-            frames: Frames::Bitmap { wic: null_mut(), bitmap: null_mut(), size: (0, 0) },
-            last: None,
-            loaded: false,
-            sound_streams: Vec::new(),
-            timed_text: null_mut(),
-            caption_ids: Vec::new(),
-            captions: None,
-            #[cfg(test)]
-            hearing: null_mut(),
-        };
+        let mut player = Player::started()?;
+        let gpu = if on_gpu { gpu(player.functions) } else { None };
         player.engine = player.make_engine(sound, gpu)?;
         player.frames = Frames::new(gpu)?;
         // SAFETY: the engine is alive (0: QueryInterface); the extended interface is released
@@ -402,6 +375,36 @@ impl Player {
         }
         player.timed_text = player.make_timed_text();
         Ok(player)
+    }
+
+    /// Media Foundation started, and what the engine will tell: a player with no engine yet.
+    fn started() -> Result<Player, VideoError> {
+        let functions = functions().ok_or_else(|| VideoError::NoPlayer("Media Foundation is not installed".into()))?;
+        // SAFETY: COM and Media Foundation are started for this thread (single-threaded, as
+        // OLE wants it; a thread already started either way keeps its kind).
+        let started = unsafe {
+            crate::windows::sys::CoInitializeEx(null_mut(), 2);
+            (functions.startup)(0x0002_0070, 0)
+        };
+        if started < 0 {
+            return Err(VideoError::NoPlayer(format!("Media Foundation did not start ({:#010x})", started as u32)));
+        }
+        Ok(Player {
+            functions,
+            engine: null_mut(),
+            ex: null_mut(),
+            said: Listener::boxed(&SAID.unknown, &A_NOTIFY, Said { bits: AtomicU32::new(0), code: AtomicI32::new(0) }),
+            showing: Listener::boxed(&SHOWING.unknown, &A_CUE_NOTIFY, Mutex::new(Vec::new())),
+            frames: Frames::Bitmap { wic: null_mut(), bitmap: null_mut(), size: (0, 0) },
+            last: None,
+            loaded: false,
+            sound_streams: Vec::new(),
+            timed_text: null_mut(),
+            caption_ids: Vec::new(),
+            captions: None,
+            #[cfg(test)]
+            hearing: null_mut(),
+        })
     }
 
     /// A new engine telling `said`, giving frames as 32-bit BGRA, decoding on `gpu` if any.
@@ -993,12 +996,15 @@ impl Drop for Frames {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        // SAFETY: the engine is shut down (42) and released with its interfaces; then our
-        // references to what tells us; Media Foundation is stopped as often as started.
+        // SAFETY: the engine, where it was made, is shut down (42) and released with its
+        // interfaces; then our references to what tells us; Media Foundation is stopped as
+        // often as started.
         unsafe {
             release_all(&[self.timed_text, self.ex]);
-            self.call::<i32>(42);
-            Com::release(self.engine);
+            if !self.engine.is_null() {
+                self.call::<i32>(42);
+                Com::release(self.engine);
+            }
             release(self.said);
             release(self.showing);
             #[cfg(test)]
@@ -1352,5 +1358,16 @@ mod hearing {
             // SAFETY: each held once, or null.
             unsafe { release_all(&[self.input, self.output, self.held]) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_player_whose_engine_was_never_made_drops_cleanly() {
+        let Ok(player) = Player::started() else { return eprintln!("no Media Foundation here: skipped") };
+        drop(player);
     }
 }

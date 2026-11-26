@@ -1684,18 +1684,16 @@ impl Readers {
     /// Sets a property: the id the registry assigns the application, which it keeps; a
     /// slider's value, which it then moves to; or a spin button's (a number or time field), as
     /// near as its range allows. (libatspi aborts its program on an error reply to setting a
-    /// value: one out of range is taken to the nearest end, and no number changes nothing.)
+    /// value: one out of range is taken to the nearest end, and no number, or a disabled part,
+    /// changes nothing.)
     fn set(&mut self, which: Which, interface: &str, name: &str, value: Value, deeds: &mut Vec<Deed>) -> Option<()> {
         match (interface, name, value, self.node(which), self.frame(which)) {
             (APPLICATION, "Id", Value::Number(id), ..) if which == Which::Program => self.id = id as i32,
-            (VALUE, "CurrentValue", Value::Number(to), Some(node), Some(frame)) if node.role == Role::Slider && node.enabled => {
-                deeds.push(Deed { window: frame.known, thing: node.id, act: Act::Reach(to as f32) })
-            }
-            (VALUE, "CurrentValue", Value::Number(to), Some(node), Some(frame)) if node.role == Role::SpinButton && node.enabled => {
+            (VALUE, "CurrentValue", Value::Number(to), Some(node), Some(frame)) if matches!(node.role, Role::Slider | Role::SpinButton) => {
                 // (Not `clamp`: its panic message would bring float formatting into every program.)
-                let [_, least, most] = node.value_range?;
-                let set = Deed { window: frame.known, thing: node.id, act: Act::Set((to as f32).max(least).min(most)) };
-                deeds.extend((!to.is_nan()).then_some(set));
+                let [_, least, most] = node.value_range.unwrap_or([0.0, f32::MIN, f32::MAX]);
+                let act = if node.role == Role::Slider { Act::Reach(to as f32) } else { Act::Set((to as f32).max(least).min(most)) };
+                deeds.extend((node.enabled && !to.is_nan()).then_some(Deed { window: frame.known, thing: node.id, act }));
             }
             _ => return None,
         }
@@ -3428,6 +3426,26 @@ pub(crate) mod tests {
         assert!(fine);
         does(&mut ui, &mut readers, &mut held, deeds);
         assert_eq!(held.1.hour, 23, "the hours run to 23");
+    }
+
+    #[test]
+    fn a_disabled_number_field_answers_a_value_set_without_an_error_and_keeps_its_number() {
+        let mut copies = 3u8;
+        let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
+        ui.resize(Size { w: 420.0, h: 300.0 }, 1.0);
+        ui.set_screen_reader(true);
+        let disabled = |ui: &mut Ui, copies: &mut u8| {
+            ui.set_enabled(false);
+            ui.number_in(copies, 1..=9, 1, "");
+            ui.set_enabled(true);
+        };
+        for _ in 0..2 {
+            ui.run(&mut |ui| disabled(ui, &mut copies));
+        }
+        let (mut readers, mut peer) = told_of(&mut ui);
+        let spin = readers.path(Which::Thing(0, readers.frames[0].nodes.iter().position(|node| node.role == Role::SpinButton).unwrap()));
+        let (deeds, fine, ..) = peer.ask(&mut readers, &spin, PROPERTIES, "Set", "ssv", Pack::default().text(VALUE).text("CurrentValue").kinds("d").f64(7.0));
+        assert!(fine && deeds.is_empty(), "libatspi aborts its program on an error reply");
     }
 
     #[test]

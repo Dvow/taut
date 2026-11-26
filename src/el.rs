@@ -10,7 +10,7 @@
 use crate::color::Color;
 use crate::geom::Insets;
 use crate::id::{Id, fold, hash, mix};
-use crate::layout::{Align, Content, Flow, Frame, KEPT, Length, NONE, Part, Placement, STICKY, STICKY_X, Spec};
+use crate::layout::{Align, Content, FROZEN, FROZEN_BOTTOM, FROZEN_TOP, Flow, Frame, Length, NONE, Part, Placement, STICKY_X, STICKY_Y, Spec};
 use crate::path::Path;
 use crate::pen::{self, Inked, Paint, Pen};
 use crate::scene::{Camera, MeshInstance};
@@ -532,8 +532,8 @@ impl El<'_> {
         // At the top, while everything before it in that box is kept too. (Checked only here,
         // so unkept boxes cost nothing.)
         let before = std::iter::successors(Some(around + 1), |at| specs.get(*at as usize).map(|spec| spec.end)).take_while(|at| (*at as usize) < specs.len());
-        let first = before.filter(|at| specs[*at as usize].frame.parent == around).all(|at| specs[at as usize].frame.pinned & KEPT != 0);
-        self.frame(Part::Pinned, |frame| frame.pinned = frame.pinned & !KEPT | if first { 1 } else { 2 })
+        let first = before.filter(|at| specs[*at as usize].frame.parent == around).all(|at| specs[at as usize].frame.pinned & FROZEN != 0);
+        self.frame(Part::Pinned, |frame| frame.pinned = frame.pinned & !FROZEN | if first { FROZEN_TOP } else { FROZEN_BOTTOM })
     }
     /// Sticks to the top of the nearest box that scrolls vertically (the page does) while what
     /// follows it in its parent scrolls under it: a list's group heading, as CSS
@@ -562,7 +562,7 @@ impl El<'_> {
     /// ```
     #[inline]
     pub fn sticky(self) -> Self {
-        self.sticks(STICKY)
+        self.stick(STICKY_Y)
     }
     /// The same sideways: sticks to the left of the nearest box that scrolls horizontally (the
     /// page does) while what follows it in its parent scrolls under it, as a sticky column. A
@@ -586,12 +586,12 @@ impl El<'_> {
     /// ```
     #[inline]
     pub fn sticky_x(self) -> Self {
-        self.sticks(STICKY_X)
+        self.stick(STICKY_X)
     }
-    /// Makes it sticky along the axis of bit `along` (see `Frame::pinned`).
-    fn sticks(self, along: u8) -> Self {
+    /// Makes it sticky along the axis of `bit`: `STICKY_X` or `STICKY_Y`.
+    fn stick(self, bit: u8) -> Self {
         self.ui.tree.sticks = Some(&crate::layout::STICKING);
-        self.frame(Part::Pinned, |frame| frame.pinned |= along)
+        self.frame(Part::Pinned, |frame| frame.pinned |= bit)
     }
     /// Draws its content this far left and up of where layout puts it: for a box following
     /// another's scrolling.

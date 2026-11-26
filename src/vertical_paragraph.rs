@@ -393,7 +393,7 @@ mod tests {
 #[cfg(all(test, windows, feature = "ruby"))]
 mod against_edge {
     use super::*;
-    use crate::browser_check::{browsed, browser, ink_middle, ink_of};
+    use crate::browser_check::{browser, ink_middle, ink_of, lasting_differences};
     use crate::font_file::FontFile;
 
     /// The colours pieces are written in, in turn.
@@ -543,26 +543,29 @@ mod against_edge {
         let Some((font, path)) = yu_gothic() else { return eprintln!("no Yu Gothic here: not compared") };
         let line = crate::vertical_layout::line_of(&font, 20.0);
         let size = [420, 160];
-        let theirs = browsed(&browser, &page(&path, &ACROSS, true, |_| line), size, "ruby");
         let (_, ours) = drawn(font, written_across, size, "ruby");
-        let mut wrong = Vec::new();
-        for case in &ACROSS {
-            let band = rect(case.at[0], case.at[1] - 20.0, 400.0, 60.0);
-            let found = |pixels: &[u32], n: usize| base_and_reading(pixels, size[0], band, INKS[n], !case.pieces[n].1.is_empty()).expect("the piece is drawn");
-            let (mine, edge) = (found(&ours, 0), found(&theirs, 0));
-            for (n, piece) in case.pieces.iter().enumerate().skip(1) {
-                let ((my_base, my_reading), (edge_base, edge_reading)) = (found(&ours, n), found(&theirs, n));
-                // Each base against the first piece, each reading against its base.
-                let pairs = [([my_base, mine.0], [edge_base, edge.0])].into_iter().chain(my_reading.zip(edge_reading).map(|(mine, edge)| ([mine, my_base], [edge, edge_base])));
-                for ([one, from], [other, other_from]) in pairs {
-                    let (ours, chrome) = ([one[0] - from[0], one[1] - from[1]], [other[0] - other_from[0], other[1] - other_from[1]]);
-                    if (ours[0] - chrome[0]).abs() > 1.0 || (ours[1] - chrome[1]).abs() > 1.0 {
-                        wrong.push(format!("{piece:?}: ours {ours:?}, Edge's {chrome:?}"));
+        let differ = |theirs: &[u32]| {
+            let mut wrong = Vec::new();
+            for case in &ACROSS {
+                let band = rect(case.at[0], case.at[1] - 20.0, 400.0, 60.0);
+                let found = |pixels: &[u32], n: usize| base_and_reading(pixels, size[0], band, INKS[n], !case.pieces[n].1.is_empty()).expect("the piece is drawn");
+                let (mine, edge) = (found(&ours, 0), found(theirs, 0));
+                for (n, piece) in case.pieces.iter().enumerate().skip(1) {
+                    let ((my_base, my_reading), (edge_base, edge_reading)) = (found(&ours, n), found(theirs, n));
+                    // Each base against the first piece, each reading against its base.
+                    let pairs = [([my_base, mine.0], [edge_base, edge.0])].into_iter().chain(my_reading.zip(edge_reading).map(|(mine, edge)| ([mine, my_base], [edge, edge_base])));
+                    for (pair, ([one, from], [other, other_from])) in pairs.enumerate() {
+                        let (ours, chrome) = ([one[0] - from[0], one[1] - from[1]], [other[0] - other_from[0], other[1] - other_from[1]]);
+                        if (ours[0] - chrome[0]).abs() > 1.0 || (ours[1] - chrome[1]).abs() > 1.0 {
+                            let what = if pair == 0 { "base" } else { "reading" };
+                            wrong.push((format!("{piece:?}'s {what}"), format!("ours {ours:?}, Edge's {chrome:?}")));
+                        }
                     }
                 }
             }
-        }
-        wrong.iter().for_each(|line| println!("  {line}"));
+            wrong
+        };
+        let wrong = lasting_differences(&browser, &page(&path, &ACROSS, true, |_| line), size, "ruby", differ);
         assert!(wrong.is_empty(), "{} readings or bases lie elsewhere than in Chrome", wrong.len());
     }
 
@@ -572,44 +575,44 @@ mod against_edge {
         let Some((font, path)) = yu_gothic() else { return eprintln!("no Yu Gothic here: not compared") };
         let html = page(&path, &CASES, false, |size| crate::vertical_layout::line_of(&font, size));
         let (width, height) = (560, 330);
-        let theirs = browsed(&browser, &html, [width, height], "vertical");
-        let (ui, ours) = drawn(font, written, [width, height], "vertical");
-        let mut ui = ui;
+        let (mut ui, ours) = drawn(font, written, [width, height], "vertical");
         let kept = ui.take_vertical();
-        let mut wrong = Vec::new();
-        let mut compared = 0;
-        for case in &CASES {
-            let text: String = case.pieces.iter().map(|(words, reading, _)| if reading.is_empty() { words.to_string() } else { format!("{words}({reading})") }).collect();
-            let shown = kept.shown.values().find(|shown| shown.laid.text == text).expect("the case is shown");
-            let laid = &shown.laid;
-            let middles = middles(&laid.columns, laid.wide.ceil());
-            for (column, x) in laid.columns.iter().zip(&middles) {
-                for (n, at) in (column.steps[0]..column.steps[1]).enumerate() {
-                    let step = laid.steps[at as usize];
-                    let color = laid.pieces[step.piece as usize].color.0 & 0xffffff;
-                    for place in &laid.places[step.places[0] as usize..step.places[1] as usize] {
-                        let size = laid.pieces[step.piece as usize].font.size * if place.rect.x > 0.0 { crate::ruby::READING } else { 1.0 };
-                        let middle = place.rect.x + place.rect.w / 2.0;
-                        let region = rect(case.at[0] + x + middle - size / 2.0 - 1.0, case.at[1] + column.tops[n] + place.rect.y - 1.0, size + 2.0, place.rect.h + 2.0);
-                        let off = if laid.pieces[step.piece as usize].upright { chrome_across(size) } else { 0.0 };
-                        let (mine, edge) = (ink_middle(&ours, width, region, color, &INKS), ink_middle(&theirs, width, region.moved(off, 0.0), color, &INKS));
-                        let edge = edge.map(|[x, y]| [x - off, y]);
-                        let words = &laid.text[place.bytes[0] as usize..place.bytes[1] as usize];
-                        compared += 1;
-                        let near = match (mine, edge) {
-                            (Some(mine), Some(edge)) => (mine[0] - edge[0]).abs() <= 1.0 && (mine[1] - edge[1]).abs() <= 1.0,
-                            (None, None) => true,
-                            _ => false,
-                        };
-                        if !near {
-                            wrong.push(format!("{words:?} at {region:?}: ours {mine:?}, Edge's {edge:?}"));
+        let differ = |theirs: &[u32]| {
+            let (mut wrong, mut compared) = (Vec::new(), 0);
+            for case in &CASES {
+                let text: String = case.pieces.iter().map(|(words, reading, _)| if reading.is_empty() { words.to_string() } else { format!("{words}({reading})") }).collect();
+                let shown = kept.shown.values().find(|shown| shown.laid.text == text).expect("the case is shown");
+                let laid = &shown.laid;
+                let middles = middles(&laid.columns, laid.wide.ceil());
+                for (column, x) in laid.columns.iter().zip(&middles) {
+                    for (n, at) in (column.steps[0]..column.steps[1]).enumerate() {
+                        let step = laid.steps[at as usize];
+                        let color = laid.pieces[step.piece as usize].color.0 & 0xffffff;
+                        for place in &laid.places[step.places[0] as usize..step.places[1] as usize] {
+                            let size = laid.pieces[step.piece as usize].font.size * if place.rect.x > 0.0 { crate::ruby::READING } else { 1.0 };
+                            let middle = place.rect.x + place.rect.w / 2.0;
+                            let region = rect(case.at[0] + x + middle - size / 2.0 - 1.0, case.at[1] + column.tops[n] + place.rect.y - 1.0, size + 2.0, place.rect.h + 2.0);
+                            let off = if laid.pieces[step.piece as usize].upright { chrome_across(size) } else { 0.0 };
+                            let (mine, edge) = (ink_middle(&ours, width, region, color, &INKS), ink_middle(theirs, width, region.moved(off, 0.0), color, &INKS));
+                            let edge = edge.map(|[x, y]| [x - off, y]);
+                            let words = &laid.text[place.bytes[0] as usize..place.bytes[1] as usize];
+                            compared += 1;
+                            let near = match (mine, edge) {
+                                (Some(mine), Some(edge)) => (mine[0] - edge[0]).abs() <= 1.0 && (mine[1] - edge[1]).abs() <= 1.0,
+                                (None, None) => true,
+                                _ => false,
+                            };
+                            if !near {
+                                wrong.push((format!("{words:?} at {region:?}"), format!("ours {mine:?}, Edge's {edge:?}")));
+                            }
                         }
                     }
                 }
             }
-        }
-        println!("{compared} clusters compared with {}, {} differ", browser.display(), wrong.len());
-        wrong.iter().for_each(|line| println!("  {line}"));
+            println!("{compared} clusters compared with {}, {} differ", browser.display(), wrong.len());
+            wrong
+        };
+        let wrong = lasting_differences(&browser, &html, [width, height], "vertical", differ);
         assert!(wrong.is_empty(), "{} clusters lie elsewhere than in Chrome", wrong.len());
     }
 }

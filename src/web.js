@@ -116,6 +116,7 @@ export class Page {
         this.told = new Map();
         this.focusKey = "";
         this.ownFocus = false;
+        this.selected = false;
         this.fieldOn = 0;
         this.size = [0, 0, 1];
         this.sized = false;

@@ -42,10 +42,10 @@ dialog are compiled in only when called. What calls can't reveal is a feature, o
 
 | Feature | Adds | Without it | Windows (hello; gallery) | Linux (hello; gallery) |
 | --- | --- | --- | --- | --- |
-| `right-to-left` | Hebrew, Arabic, Persian, Urdu in Unicode order; Arabic joined | letters left to right, as typed | 206 KB; 135 KB | 193 KB; 144 KB |
-| `brahmic` | Indic and South-East Asian scripts shaped by syllable; Thai, Lao, Khmer, Burmese broken between words where the system says (Windows, Apple's systems) | system text: whole on Windows, letter by letter on Linux; lines broken between syllables | 283 KB; 213 KB | 281 KB; 232 KB |
+| `right-to-left` | Hebrew, Arabic, Persian, Urdu in Unicode order; Arabic joined | letters left to right, as typed | 215 KB; 151 KB | 205 KB; 161 KB |
+| `brahmic` | Indic and South-East Asian scripts shaped by syllable; Thai, Lao, Khmer, Burmese broken between words where the system says (Windows, Apple's systems) | system text: whole on Windows, letter by letter on Linux; lines broken between syllables | 282 KB; 212 KB | 280 KB; 230 KB |
 | `word-lists` | with `brahmic`, Thai, Lao, Khmer, Burmese broken between words on Linux, Android and the web too (ICU's word lists) | lines broken between syllables there | nothing | 790 KB; 790 KB |
-| `shaping` | app fonts shaped as pages are; the system's text in the language's forms | glyph by glyph, pairs kerned; default forms | 204 KB; 132 KB | 188 KB; 139 KB |
+| `shaping` | app fonts shaped as pages are; the system's text in the language's forms | glyph by glyph, pairs kerned; default forms | 182 KB; 126 KB | 183 KB; 133 KB |
 | `emoji` | colour emoji from the system font | plain letters: text colour on Windows; outlines if any on Linux | 142 KB; 55 KB | 140 KB; 71 KB |
 | `fallback-fonts` | Windows: missing letters in the font Windows would pick; everywhere a taller fallback font fitted to the line, overhangs clipped | Windows' linked fonts (Linux always uses Fontconfig); fallback glyphs as their fonts are | 38 KB; 28 KB | 1 KB; 1 KB |
 | `touch` | touch, pen and pinch gestures | a finger is the system's mouse (Wayland: the first finger) | 30 KB; 12 KB | 40 KB; 19 KB |

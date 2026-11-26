@@ -261,6 +261,38 @@ fn a_documents_table_is_told_as_rows_and_cells_under_its_headings() {
 }
 
 #[test]
+fn ctrl_c_on_a_document_with_nothing_selected_is_left_to_the_app() {
+    let mut w = window(1.0);
+    let doc = Markdown::parse("Some words.\n");
+    let mut heard = 0;
+    let build = |ui: &mut Ui, heard: &mut i32| {
+        ui.markdown(&doc);
+        *heard += ui.key(Key::Char('c'), Mods::CTRL) as i32;
+    };
+    settle(&mut w, |ui| build(ui, &mut heard));
+    key(&mut w, Key::Tab, Mods::NONE, |ui| build(ui, &mut heard));
+    key(&mut w, Key::Char('c'), Mods::CTRL, |ui| build(ui, &mut heard));
+    assert_eq!(heard, 1);
+    // Selected, it copies.
+    key(&mut w, Key::Char('a'), Mods::CTRL, |ui| build(ui, &mut heard));
+    key(&mut w, Key::Char('c'), Mods::CTRL, |ui| build(ui, &mut heard));
+    assert_eq!((heard, w.clipboard().as_deref()), (1, Some("Some words.")));
+}
+
+#[test]
+fn a_documents_table_rows_keep_their_places_when_laid_out_at_another_width() {
+    let mut w = window(1.0);
+    w.set_screen_reader(true);
+    let doc = Markdown::parse("| Name | Size |\n|---|--:|\n| a | 1 |\n| b | 2 |\n");
+    settle(&mut w, build(&doc));
+    w.resize(taut::geom::Size { w: 400.0, h: 300.0 }, 1.0);
+    w.screen = taut::Surface::draw(&mut w.ui, 64);
+    settle(&mut w, build(&doc));
+    let rows: Vec<_> = w.visible_access_nodes().iter().filter(|node| node.role == Role::TableRow).map(|node| node.position).collect();
+    assert_eq!(rows, [Some([1, 2]), Some([2, 2])]);
+}
+
+#[test]
 fn the_selection_in_a_document_is_told_in_each_block_it_covers() {
     let mut w = window(1.0);
     w.set_screen_reader(true);

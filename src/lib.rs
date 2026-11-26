@@ -219,7 +219,6 @@ pub mod layer_opengl;
 pub mod layer_vulkan;
 pub mod layout;
 mod line_breaks;
-#[cfg_attr(target_os = "android", allow(dead_code))] // (Desktop back ends only.)
 mod locale;
 mod locales;
 #[cfg(target_os = "macos")]

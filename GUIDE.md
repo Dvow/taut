@@ -716,7 +716,7 @@ assert_eq!(state.source.text(), "fn main() {}\n");
 returns the pressed link. Markdown is parsed once (`Markdown::parse`) and shown with
 `ui.markdown` (code coloured by `Syntax`; `set_syntax` adds a language; pictures by name). Put it
 in a scroll box: only the visible part is described, and only what has shown is laid out. Its
-context menu copies, selects all and copies a link (`set_copy_link_word` translates that row);
+context menu copies, selects all and copies a link (`ui.edit_words` translates it);
 wide code scrolls sideways; Hebrew and Arabic paragraphs run right to left.
 
 ```rust

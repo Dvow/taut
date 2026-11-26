@@ -154,14 +154,13 @@ impl List {
         loop {
             let label = at;
             at += self.automaton.get(at..)?.iter().position(|byte| byte & 0x80 != 0)? + 1;
-            let code = *self.automaton.get(at)?;
+            let (code_at, code) = (at, *self.automaton.get(at)?);
             let form = (code >> 4 & 3) as usize;
-            let high = (code & 15) as usize;
             let more = self.automaton.get(at + 1..at + form.max(1))?;
             at += form.max(1);
             if self.automaton[label] & 0x7f == symbol {
-                let distance = more.iter().fold(high, |distance, byte| distance << 8 | *byte as usize);
-                return Some(Edge { label: label + 1..at - form.max(1), ends: code & 0x40 != 0, target: (form != 0).then_some(at + distance) });
+                let distance = more.iter().fold((code & 15) as usize, |distance, byte| distance << 8 | *byte as usize);
+                return Some(Edge { label: label + 1..code_at, ends: code & 0x40 != 0, target: (form != 0).then_some(at + distance) });
             }
             if code & 0x80 != 0 {
                 return None;
@@ -370,13 +369,8 @@ impl Finder<'_> {
             self.at = here + long;
             return long;
         }
-        let suffix = |letter: Option<char>| matches!(letter, Some(PAIYANNOI | MAIYAMOK));
-        if at(self.at) == Some(PAIYANNOI) && !suffix(at(self.at - 1)) {
+        if at(self.at) == Some(PAIYANNOI) && !matches!(at(self.at - 1), Some(PAIYANNOI | MAIYAMOK)) {
             (self.at, long) = (self.at + 1, long + 1);
-            if at(self.at) == Some(MAIYAMOK) && at(self.at - 1) != Some(MAIYAMOK) {
-                (self.at, long) = (self.at + 1, long + 1);
-            }
-            return long;
         }
         if at(self.at) == Some(MAIYAMOK) && at(self.at - 1) != Some(MAIYAMOK) {
             (self.at, long) = (self.at + 1, long + 1);

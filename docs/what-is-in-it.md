@@ -123,7 +123,7 @@ Popovers anchored to their button.
 - **Shaped app fonts** (`shaping`): ligatures, contextual forms, stacked marks, kerning beyond
   pairs, as on pages, in whole pixels; matches HarfBuzz on 1,657 word-font pairs. The system's
   text in the window's language forms (`locl`), also in lines with marks or letters of fallback
-  fonts, and on macOS.
+  fonts, and on macOS and iOS.
 - **Shaping:** script and language features (`Language::named("sr")`), variation selectors,
   fractions, random alternates, Syriac stretching, variable-font feature variations: matches
   HarfBuzz 12.3.2 and 14.5 on 13,066 words in 77 fonts. Mark composition and decomposition:

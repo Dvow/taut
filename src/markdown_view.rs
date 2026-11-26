@@ -23,7 +23,7 @@ use crate::geom::{Point, Rect, pt, rect};
 use crate::id::hash;
 use crate::layout::{Align, Flow, Length};
 use crate::markdown::Markdown;
-use crate::rich_text::{Bit, Kind, Laid, Links, Room, Shape, THING, Target, TextStyle, Thing, Writing, face_of, heights, lay, row_of};
+use crate::rich_text::{Bit, Kind, Laid, Links, NO_WRAP, Room, Shape, THING, Target, TextStyle, Thing, Writing, face_of, heights, lay, row_of};
 use crate::slots::Slots;
 use crate::text::{Decoration, Face, Font, TextSystem};
 use crate::text_edit::{step, word, word_edge};
@@ -417,12 +417,14 @@ impl Shown {
         let worded = order.iter().map(|at| *at as usize).filter(|at| worded(writing.blocks[*at].kind));
         let [low, high] = worded.map(|at| self.rows_in_view(at, view)).fold([usize::MAX, 0], |[low, high], [from, to]| [low.min(from), high.max(to)]);
         let [from, to] = [low, high].map(|row| self.targets.partition_point(|(at, _)| (*at as usize) < row));
+        // (No text in view: none between the links before and after.)
+        let to = to.max(from);
         let tab_stop = |at: &usize| self.laid.frags[self.targets[*at].1 as usize].part == 0;
         let (before, after) = ((0..from).rev().find(tab_stop), (to..self.targets.len()).find(tab_stop));
         let focused = self.targets.partition_point(|target| link_of(self, target) < self.focused);
         let focused = self.targets.get(focused).filter(|target| link_of(self, target) == self.focused).map(|_| focused);
         // (In text order: the focused one goes in where it belongs, if not there already.)
-        let mut picked: Vec<usize> = before.into_iter().chain(from..to.max(from)).chain(after).collect();
+        let mut picked: Vec<usize> = before.into_iter().chain(from..to).chain(after).collect();
         if let Some(focused) = focused
             && let Err(at) = picked.binary_search(&focused)
         {
@@ -639,7 +641,7 @@ impl Laying<'_, '_> {
         let font = font_of(block.kind, heads(self.writing, at), given.t);
         let [above, below] = heights(given.system, font, given.scale, &mut self.shown.fonts);
         let (pad, side, wide) = match block.kind {
-            Kind::Code(_) => ([self.size.pad; 2], Align::Start, f32::MAX),
+            Kind::Code(_) => ([self.size.pad; 2], Align::Start, NO_WRAP),
             Kind::Cell(side) => (self.size.cell, side, w - 2.0 * self.size.cell[0]),
             _ => ([0.0; 2], Align::Start, w),
         };
@@ -671,12 +673,12 @@ impl Laying<'_, '_> {
         let total: f32 = wants.iter().sum();
         let narrowed = if total > w { w / total } else { 1.0 };
         let widths: Vec<f32> = wants.iter().map(|want| (want * narrowed).floor()).collect();
-        let (mut top, body) = (y, rows.iter().filter(|row| self.writing.blocks[**row].kind == Kind::Row { head: false }).count() as u32);
+        let body = rows.iter().filter(|row| self.writing.blocks[**row].kind == Kind::Row { head: false }).count() as u32;
+        let (mut top, mut nth) = (y, 0);
         for row in rows {
             let head = self.writing.blocks[row].kind == Kind::Row { head: true };
-            let before = self.shown.areas[at].nth[0];
-            self.shown.areas[row].nth = if head { [u32::MAX, body] } else { [before, body] };
-            self.shown.areas[at].nth[0] += !head as u32;
+            self.shown.areas[row].nth = [if head { u32::MAX } else { nth }, body];
+            nth += !head as u32;
             top += self.table_row(row, x, top, &widths);
         }
         (self.shown.areas[at].rect, self.shown.areas[at].nth) = (rect(x, y, widths.iter().sum(), top - y), [body, wants.len() as u32]);
@@ -886,7 +888,8 @@ impl Ui {
         if self.key(Key::Char('a'), Mods::CTRL) {
             shown.picked = [0, text.trim_end_matches('\n').len() as u32];
         }
-        if self.key(Key::Char('c'), Mods::CTRL) {
+        // (With nothing selected, Ctrl+C is the app's.)
+        if shown.picked[0] != shown.picked[1] && self.key(Key::Char('c'), Mods::CTRL) {
             self.copy_selection(shown, doc);
         }
         let (shift, both) = (Mods::SHIFT, Mods { ctrl: true, shift: true, alt: false });
@@ -949,9 +952,10 @@ impl Ui {
         if self.menu_item(self.edit_words[3]).clicked {
             shown.picked = [0, doc.writing.words.trim_end_matches('\n').len() as u32];
         }
-        let address = doc.links.get(shown.menu_link.wrapping_sub(1) as usize).map(|(url, _)| url.as_str());
-        if address.is_some_and(|_| self.menu_item(&doc.copy_link_word).clicked) {
-            self.copy(address.unwrap_or_default());
+        if let Some((address, _)) = doc.links.get(shown.menu_link.wrapping_sub(1) as usize)
+            && self.menu_item(self.edit_words[6]).clicked
+        {
+            self.copy(address);
         }
         self.close();
     }
@@ -1209,8 +1213,7 @@ mod tests {
             })
             .collect();
         let doc = Markdown::parse(&text);
-        let mut ui = Ui::new(Box::new(crate::text::BuiltInFont), Box::new(crate::platform::LocalClipboard::default()));
-        ui.resize(Size { w: 420.0, h: 300.0 }, 1.0);
+        let mut ui = shown_in_a_window(Box::new(crate::text::BuiltInFont));
         let mut build = |ui: &mut Ui| {
             ui.column().grow().scroll().open();
             ui.markdown(&doc);
@@ -1231,8 +1234,7 @@ mod tests {
         assert!(last && !ui.tree.strings.contains("Paragraph 0,"));
     }
 
-    /// A window 420 by 300 written with `system`, showing `doc` in a scroll box; and how to
-    /// describe it.
+    /// A window 420 by 300 that writes with `system`.
     fn shown_in_a_window(system: Box<dyn TextSystem>) -> Ui {
         let mut ui = Ui::new(system, Box::new(crate::platform::LocalClipboard::default()));
         ui.resize(Size { w: 420.0, h: 300.0 }, 1.0);
@@ -1295,6 +1297,29 @@ mod tests {
         let [first, italic, latin] = [place("\u{5d0}\u{5d2} "), place("\u{5d2}\u{5d0}"), place("cd")];
         assert!((first[1] - 420.0).abs() < 1.0, "{shown:?}");
         assert!(latin[1] <= italic[0] && italic[1] <= first[0], "{shown:?}");
+    }
+
+    #[test]
+    fn links_given_boxes_with_no_text_in_view_stay_in_text_order() {
+        let doc = Markdown::parse("[one](#a) and [two](#b).\n");
+        let mut ui = shown_in_a_window(Box::new(crate::text::BuiltInFont));
+        let mut build = |ui: &mut Ui| _ = ui.markdown(&doc);
+        ui.run(&mut build);
+        ui.run(&mut build);
+        let (targets, _) = with_shown(&mut ui, |shown| shown.reachable(&doc.writing, &[], [1000.0, 1300.0]));
+        assert!(!targets.is_empty() && targets.is_sorted(), "{targets:?}");
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn right_to_left_code_lies_in_its_block() {
+        let doc = Markdown::parse("```\n\u{5d0}\u{5d2} \u{5d2}\u{5d0}\n```\n");
+        let mut ui = shown_in_a_window(Box::new(crate::bidi::tests::hebrew_letters()));
+        let mut build = |ui: &mut Ui| _ = ui.markdown(&doc);
+        ui.run(&mut build);
+        ui.run(&mut build);
+        let ends = with_shown(&mut ui, |shown| shown.laid.frags.iter().map(|frag| shown.laid.rows[0].left + frag.x + frag.wide).fold(0.0f32, f32::max));
+        assert!(ends <= 420.0, "{ends}");
     }
 
     #[test]

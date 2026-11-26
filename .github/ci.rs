@@ -84,19 +84,20 @@ fn locales(folder: &Path, names: &[String]) -> Done {
     fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     for name in names {
         let into = folder.join(format!("{name}.UTF-8"));
-        let status = Command::new("localedef").args(["-i", name, "-f", "UTF-8"]).arg(&into).status();
-        let status = status.map_err(|e| format!("localedef: {e}"))?;
-        if !status.success() {
-            return Err(format!("localedef {name} ended with {status}"));
-        }
+        run("localedef", &["-i", name, "-f", "UTF-8", &into.to_string_lossy()])?;
     }
     Ok(true)
 }
 
 /// Runs `args` as root.
 fn sudo(args: &[&str]) -> Result<(), String> {
-    let status = Command::new("sudo").args(args).status().map_err(|e| format!("sudo: {e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("sudo {} ended with {status}", args.join(" "))) }
+    run("sudo", args)
+}
+
+/// Runs `program` with `args`; an error unless it succeeds.
+fn run(program: &str, args: &[&str]) -> Result<(), String> {
+    let status = Command::new(program).args(args).status().map_err(|e| format!("{program}: {e}"))?;
+    if status.success() { Ok(()) } else { Err(format!("{program} {} ended with {status}", args.join(" "))) }
 }
 
 /// `ci desk`: runs `command` under a Weston of its own (see the top).

@@ -232,8 +232,11 @@ impl Ui {
     /// changes.
     pub fn refused_cells(&mut self, of: &Response) -> Vec<RefusedCell> {
         let table = (std::ptr::from_ref(self) as usize, of.id);
-        let unheard = with_kept(|kept| kept.refused.iter_mut().find(|(of, _, heard)| *of == table && !*heard).map(|(_, cells, heard)| (*heard = true, cells.clone()).1));
-        unheard.unwrap_or_default()
+        with_kept(|kept| {
+            let Some((_, cells, heard)) = kept.refused.iter_mut().find(|(of, _, heard)| *of == table && !*heard) else { return Vec::new() };
+            *heard = true;
+            cells.clone()
+        })
     }
 
     /// Whether cell `[row, column]` of table `table` is outlined as refused by its last paste.

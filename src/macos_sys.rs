@@ -105,6 +105,14 @@ unsafe extern "C" {
     pub(crate) static NSDefaultRunLoopMode: Obj;
 }
 
+/// `CFRange`: a start and a length in UTF-16 units.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct CFRange {
+    pub(crate) location: isize,
+    pub(crate) length: isize,
+}
+
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     pub(crate) fn CFRelease(object: *const c_void);

@@ -1797,8 +1797,6 @@ pub struct Markdown {
     /// A unique id for this parse, so its layout can be cached. (Supplying a picture or rules
     /// gives a new one.)
     pub(crate) serial: u64,
-    /// The context menu's label for copying a link's address.
-    pub(crate) copy_link_word: String,
 }
 
 /// A parse id never used before.
@@ -1810,7 +1808,7 @@ fn serial() -> u64 {
 impl Markdown {
     /// Parses Markdown text.
     pub fn parse(text: &str) -> Markdown {
-        let markdown = Markdown { writing: Writing::default(), links: Vec::new(), names: Vec::new(), given: Vec::new(), rules: Vec::new(), serial: serial(), copy_link_word: "Copy link".into() };
+        let markdown = Markdown { writing: Writing::default(), links: Vec::new(), names: Vec::new(), given: Vec::new(), rules: Vec::new(), serial: serial() };
         let mut writer = Writer { markdown, read: read(text) };
         writer.write();
         writer.markdown
@@ -1834,11 +1832,6 @@ impl Markdown {
         self.rules.retain(|(known, _)| !known.eq_ignore_ascii_case(language));
         self.rules.push((language.to_string(), rules));
         self.serial = serial();
-    }
-    /// Labels the context menu's row that copies a link's address (`"Copy link"`): in the
-    /// app's language. (Its other rows are [`Ui::edit_words`](crate::Ui::edit_words).)
-    pub fn set_copy_link_word(&mut self, word: &str) {
-        self.copy_link_word = word.into();
     }
     /// Its text as shown, a block per line: what copying all of it gives.
     pub fn text(&self) -> &str {

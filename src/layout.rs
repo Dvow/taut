@@ -233,10 +233,11 @@ pub(crate) struct Frame {
     pub shadow: f32,
     /// Its text is being edited, so a cursor and selection marks draw just outside the text.
     pub edited: bool,
-    /// How it stays in view, as bits: kept while its parent scrolls vertically (`KEPT`): 1 at
-    /// the parent's top (where it is when unscrolled), 2 at its bottom (where it is when fully
-    /// scrolled); `STICKY` at the top and `STICKY_X` at the left of the nearest scroll box that
-    /// way, while the rest of its parent passes under it. 0 scrolls with the rest.
+    /// How it stays in view, as bits: frozen while its parent scrolls vertically, at the
+    /// parent's top (`FROZEN_TOP`, where it is when unscrolled) or bottom (`FROZEN_BOTTOM`,
+    /// where it is when fully scrolled); sticky at the top (`STICKY_Y`) or left (`STICKY_X`) of
+    /// the nearest scroll box that way, while the rest of its parent passes under it. 0 scrolls
+    /// with the rest.
     pub pinned: u8,
     /// How readily it shrinks along its parent's flow when short of room: 0 never; of 1 to 3,
     /// higher first. Plus `SHRINK_WIDTH`: in rows only, it narrows but never gets shorter.
@@ -245,30 +246,36 @@ pub(crate) struct Frame {
 
 /// Added to `shrink`: shrinks its width in a row, never its height in a column.
 pub(crate) const SHRINK_WIDTH: u8 = 4;
-/// The bits of `Frame::pinned` that keep a box at its parent's top (1) or bottom (2) while the
-/// parent scrolls vertically (see [`El::frozen`](crate::El::frozen)).
-pub(crate) const KEPT: u8 = 3;
-/// `Frame::pinned` for a sticky heading of what follows it in its parent: at the top of the
-/// nearest vertical scroll box while that scrolls under it (see
+/// `Frame::pinned` for a box kept at its parent's top while the parent scrolls vertically (see
+/// [`El::frozen`](crate::El::frozen)).
+pub(crate) const FROZEN_TOP: u8 = 1;
+/// The same at the parent's bottom.
+pub(crate) const FROZEN_BOTTOM: u8 = 2;
+/// The bits of `Frame::pinned` of a frozen box.
+pub(crate) const FROZEN: u8 = FROZEN_TOP | FROZEN_BOTTOM;
+/// The bit of `Frame::pinned` of a sticky heading of what follows it in its parent: at the top
+/// of the nearest vertical scroll box while that scrolls under it (see
 /// [`El::sticky`](crate::El::sticky)).
-pub(crate) const STICKY: u8 = 4;
+pub(crate) const STICKY_Y: u8 = 4;
 /// The same at the left of the nearest horizontal scroll box: a sticky column (see
 /// [`El::sticky_x`](crate::El::sticky_x)).
 pub(crate) const STICKY_X: u8 = 8;
 /// The sticky bit of each axis.
-pub(crate) const STICKS_ALONG: [u8; 2] = [STICKY_X, STICKY];
+pub(crate) const STICKY_ALONG: [u8; 2] = [STICKY_X, STICKY_Y];
 
-/// What only sticky boxes need: how far one sits past its scrolled position along an axis
-/// (`Tree::sticking`), how far those over a box at the start of a scroll view reach into it
-/// (`Tree::stuck_over`), and what follows a stuck one is kept past it (`Lying::pin_past`).
-/// Set by the first sticky box ([`El::sticky`](crate::El::sticky)) and reached by nothing else:
-/// a program without one does not carry it.
+/// What only sticky boxes need: how far one sits right of and below its scrolled position
+/// (`Tree::sticky_shift`), how far those over a box at the start of a scroll view reach into it
+/// (`Tree::stuck_over`), and where what follows a stuck one shows (`Lying::pin_past`, and
+/// `visible_boxes::past` for drawing). Set by the first sticky box
+/// ([`El::sticky`](crate::El::sticky)) and reached by nothing else: a program without one does
+/// not carry it.
 pub(crate) struct Sticks {
-    pub sticking: fn(&Tree, u32, usize) -> f32,
+    pub shift: fn(&Tree, u32) -> [f32; 2],
     pub over: fn(&Tree, u32, u32, [bool; 2]) -> [f32; 2],
     pub pin: fn(&mut crate::visible_boxes::Lying, &Tree, u32, Rect) -> u8,
+    pub past: fn(u8, Rect) -> Rect,
 }
-pub(crate) static STICKING: Sticks = Sticks { sticking: Tree::sticking, over: Tree::stuck_over, pin: crate::visible_boxes::Lying::pin_past };
+pub(crate) static STICKING: Sticks = Sticks { shift: Tree::sticky_shift, over: Tree::stuck_over, pin: crate::visible_boxes::Lying::pin_past, past: crate::visible_boxes::past };
 
 /// Whether any value in a frame is NaN: then the frame is unequal even to itself.
 #[cfg(debug_assertions)]
@@ -528,9 +535,6 @@ pub(crate) struct Tree {
     pub line_gaps: Vec<(u32, f32)>,
     /// What sticky headings need, once a box sticks (see `Sticks`).
     pub sticks: Option<&'static Sticks>,
-    /// How far right the page's boxes reach, from where its content starts: past its room, the
-    /// page scrolls sideways. 0 while the page's content fits its width.
-    page_wide: f32,
 }
 
 impl Tree {
@@ -575,39 +579,45 @@ impl Tree {
         rect(x, y, place.dim[0], place.dim[1])
     }
     /// How far right of and below its scrolled position box `at` sits: zero, except for a box
-    /// kept in view (see `kept`) or a sticky one (see `sticking`), or both.
+    /// frozen (see `frozen`) or a sticky one (see `sticky_shift`), or both.
     pub fn stuck(&self, at: u32) -> [f32; 2] {
-        let pinned = self.specs[at as usize].frame.pinned;
-        if pinned == 0 {
+        if self.specs[at as usize].frame.pinned == 0 {
             return [0.0; 2];
         }
-        let kept = self.kept(at);
-        let Some(sticks) = self.sticks else { return [0.0, kept] };
-        let along = |axis: usize| if pinned & STICKS_ALONG[axis] != 0 { (sticks.sticking)(self, at, axis) } else { 0.0 };
-        [along(0), kept + along(1)]
+        let [x, y] = self.sticks.map_or([0.0; 2], |sticks| (sticks.shift)(self, at));
+        [x, y + self.frozen(at)]
     }
-    /// How far below its scrolled position box `at`, kept in view, sits: one kept at the top
-    /// sits where it would unscrolled, one at the bottom where it would fully scrolled.
-    fn kept(&self, at: u32) -> f32 {
+    /// How far below its scrolled position a frozen box `at` sits: one frozen at the top sits
+    /// where it would unscrolled, one at the bottom where it would fully scrolled.
+    fn frozen(&self, at: u32) -> f32 {
         let frame = &self.specs[at as usize].frame;
-        match frame.pinned & KEPT {
-            1 => self.specs[frame.parent as usize].offset[1],
-            2 => self.specs[frame.parent as usize].offset[1] - self.scroll_end(frame.parent, 1),
+        match frame.pinned & FROZEN {
+            FROZEN_TOP => self.specs[frame.parent as usize].offset[1],
+            FROZEN_BOTTOM => self.specs[frame.parent as usize].offset[1] - self.scroll_end(frame.parent, 1),
             _ => 0.0,
         }
+    }
+    /// How far right of and below its scrolled position box `at` sits by sticking (see
+    /// `sticking`): zero along an axis it isn't sticky along.
+    pub(crate) fn sticky_shift(&self, at: u32) -> [f32; 2] {
+        let (pinned, mut shift) = (self.specs[at as usize].frame.pinned, [0.0; 2]);
+        for axis in (0..2).filter(|axis| pinned & STICKY_ALONG[*axis] != 0) {
+            shift[axis] = self.sticking(at, axis);
+        }
+        shift
     }
     /// How far past its scrolled position along `axis` a sticky box at `at` sits: where it
     /// would scroll out past the start of its nearest scroll box that way (or the page's), it
     /// sits at that start; but no further than keeps it inside its parent, and before the next
-    /// box there sticky that way. One kept in view in its parent sticks in the next scroll box
-    /// out, from where it is kept. (Only computed for such a box: it finds what it needs walking
-    /// up its ancestors and along its following siblings.)
-    pub(crate) fn sticking(&self, at: u32, axis: usize) -> f32 {
+    /// box there sticky that way. A frozen one sticks in the next scroll box out, from where it
+    /// is frozen. (Only computed for such a box: it finds what it needs walking up its ancestors
+    /// and along its following siblings.)
+    fn sticking(&self, at: u32, axis: usize) -> f32 {
         let (frame, long) = (&self.specs[at as usize].frame, self.places[at as usize].dim[axis]);
-        let (parent, kept) = (frame.parent, axis == 1 && frame.pinned & KEPT != 0);
+        let (parent, frozen) = (frame.parent, axis == 1 && frame.pinned & FROZEN != 0);
         // Where its parent's content coordinates start, relative to the scroll box's content
-        // coordinates. (A kept box lies in its parent's view: the parent scrolls it nowhere.)
-        let (mut from, mut up) = match kept {
+        // coordinates. (A frozen box lies in its parent's view: the parent scrolls it nowhere.)
+        let (mut from, mut up) = match frozen {
             true => (self.places[parent as usize].pos[1] - self.specs[parent as usize].offset[1], self.specs[parent as usize].frame.parent),
             false => (0.0, parent),
         };
@@ -627,12 +637,12 @@ impl Tree {
             true => scrolls.frame.pad_before(axis) + self.extent(up, axis),
             false => from + self.specs[parent as usize].offset[axis] + self.places[parent as usize].dim[axis],
         };
-        let (mut next, stop, bit) = (self.specs[at as usize].end, self.specs[parent as usize].end, STICKS_ALONG[axis]);
+        let (mut next, stop, bit) = (self.specs[at as usize].end, self.specs[parent as usize].end, STICKY_ALONG[axis]);
         while next < stop && !(self.specs[next as usize].frame.parent == parent && self.specs[next as usize].frame.pinned & bit != 0) {
             next = self.specs[next as usize].end;
         }
         let end = if next < stop { end.min(from + self.places[next as usize].pos[axis]) } else { end };
-        let natural = from + self.places[at as usize].pos[axis] + if kept { self.kept(at) } else { 0.0 };
+        let natural = from + self.places[at as usize].pos[axis] + if frozen { self.frozen(at) } else { 0.0 };
         (line.min(end - long) - natural).max(0.0)
     }
     /// How far the boxes sticky along each axis `ways` asks for, lying over box `at` at the
@@ -645,7 +655,7 @@ impl Tree {
     /// `None` if there is none, and for content of such a box (which is at the start itself
     /// then).
     fn heading_over(&self, at: u32, within: u32, axis: usize) -> Option<u32> {
-        let (mut inner, bit) = (at, STICKS_ALONG[axis]);
+        let (mut inner, bit) = (at, STICKY_ALONG[axis]);
         while inner != NONE && inner != within {
             if self.specs[inner as usize].frame.pinned & bit != 0 {
                 return None;
@@ -686,7 +696,6 @@ impl Tree {
     /// The room box `at`'s children take along `axis`: more than it has, in a scroll box.
     pub fn extent(&self, at: u32, axis: usize) -> f32 {
         let (frame, taken) = (&self.specs[at as usize].frame, self.places[at as usize].taken_up[axis]);
-        let taken = if at == PAGE && axis == 0 { taken.max(self.page_wide) } else { taken };
         if frame.flows(axis) { (taken - frame.gap).max(0.0) } else { taken }
     }
     /// Whether box `at` has more content along `axis` than room, so it scrolls. (The page, by
@@ -796,12 +805,12 @@ impl Tree {
         self.reach();
     }
 
-    /// How far right the page's boxes reach (`page_wide`): the right edge of the furthest, from
-    /// where the page's content starts, not counting what lies inside boxes that clip. Measured
-    /// only where the page's content asks for more width than it has: a page that fits costs
-    /// nothing more.
+    /// Widens the room the page's content takes (`Place::taken_up`) to how far right its boxes
+    /// reach: the right edge of the furthest, from where the page's content starts, not counting
+    /// what lies inside boxes that clip. Past the page's room, it scrolls sideways. Measured only
+    /// where the page's content asks for more width than it has: a page that fits costs nothing
+    /// more.
     fn measure_page_width(&mut self) {
-        self.page_wide = 0.0;
         if !self.places.first().is_some_and(|page| page.fit[0] > page.dim[0] + 0.5) {
             return;
         }
@@ -819,7 +828,8 @@ impl Tree {
             // What a box that clips holds lies within it.
             at = if spec.frame.clip || up != PAGE { spec.end } else { at + 1 };
         }
-        self.page_wide = (far - self.specs[PAGE as usize].frame.pad.left).max(0.0);
+        let page = &mut self.places[PAGE as usize];
+        page.taken_up[0] = page.taken_up[0].max(far - self.specs[PAGE as usize].frame.pad.left);
     }
 
     /// Bottom-up: the size each box wants along `axis`. Each, once it knows, tells its parent.
@@ -921,8 +931,8 @@ impl Tree {
             (up.pen, up.taken_up[axis]) = (up.pen + place.dim[axis] + up.between, up.taken_up[axis] + place.dim[axis] + around.gap);
             // A kept-in-view box takes its height, and the gap after it, from the scrolled
             // area.
-            if frame.pinned & KEPT != 0 && axis == 1 {
-                up.bands[(frame.pinned & KEPT) as usize - 1] += place.dim[1] + up.between;
+            if frame.pinned & FROZEN != 0 && axis == 1 {
+                up.bands[(frame.pinned & FROZEN_BOTTOM != 0) as usize] += place.dim[1] + up.between;
             }
             return;
         }

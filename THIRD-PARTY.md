@@ -8,8 +8,12 @@ taut is MIT OR Apache-2.0. It carries data from these projects, under their lice
 | Shaping categories, mark classes, script tags | `src/brahmic.rs`, `src/accents.rs`, `src/scripts.rs` | HarfBuzz | MIT (HarfBuzz's "Old MIT") |
 | The Brotli dictionary (RFC 7932, Appendix A) | `src/brotli.rs` | Brotli | MIT |
 | Thai and Khmer word lists | `src/word_breaks.bin` | ICU 78 (`thaidict.txt`, `khmerdict.txt`) | Unicode-3.0 |
-| Lao word list | `src/word_breaks.bin` | ICU 78 (`laodict.txt`): Brian Eugene Wilson, Robert Martin Campbell | BSD-2-Clause |
-| Burmese word list | `src/word_breaks.bin` | ICU 78 (`burmesedict.txt`): LeRoy Benjamin Sharon | BSD-3-Clause |
+| Lao word list | `src/word_breaks.bin` | ICU 78 (`laodict.txt`), from Brian Eugene Wilson and Robert Martin Campbell's list | Unicode-3.0 AND BSD-2-Clause |
+| Burmese word list | `src/word_breaks.bin` | ICU 78 (`burmesedict.txt`), from LeRoy Benjamin Sharon's list | Unicode-3.0 AND BSD-3-Clause |
+
+The word lists are compiled into a program only with the feature `word-lists`, off Windows and
+Apple's systems. Such a program must carry the Lao and Burmese notices below with its
+documentation.
 
 Light hinting and font variations follow the behaviour of FreeType; they contain no FreeType code.
 

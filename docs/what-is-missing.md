@@ -71,9 +71,9 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Layout and parts
 
-- A see-through box (`.opacity`) over something that changes is drawn again whole (the system's
-  text is drawn onto what is under it); one over 4 million pixels keeps no layer. Hand-written
-  trees (`ui.tree`) aren't striped.
+- A see-through box (`.opacity`) is drawn again whole when what is under it changes: the
+  system's text draws onto what lies under it. One over 4 million pixels keeps no layer.
+  Hand-written trees (`ui.tree`) aren't striped.
 - Built-in words other than month and day names and AM/PM are English until set, or with
   `translations` in 20 languages.
 - Locale: Gregorian calendar only; no minimum grouping (CLDR leaves 1234 ungrouped in Spanish
@@ -154,7 +154,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 - Jumping far ahead (the scroll bar, Ctrl+End) lays out everything above the view first.
 - Lists and quotes in a right-to-left paragraph keep their markers at the left.
-- The selection is told for the blocks in view only.
+- The selection is told for the blocks in view only, and not in table cells.
+- Right-to-left lines of code start at the left.
 - Past 100 deep, nesting becomes text where blank lines times depth would pass 4 million.
 
 ## File dialog

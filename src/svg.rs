@@ -5153,9 +5153,12 @@ mod tests {
         ];
         let mut tried = 0;
         for (family, word, shaped) in words {
+            if !shaped {
+                continue;
+            }
             let first = word.chars().find(|letter| crate::shaping::Script::of(*letter).is_some()).unwrap();
             let Some(path) = crate::x11::file_for(Face::named(family), first).filter(|path| path.to_string_lossy().contains(&family.replace(' ', ""))) else { continue };
-            let Some(font) = FontFile::open(&path).filter(|_| shaped) else { continue };
+            let Some(font) = FontFile::open(&path) else { continue };
             // (HarfBuzz shapes each script's letters on their own, with the signs after them.)
             let runs = script_runs(word);
             let Some(theirs) = crate::shaping::harfbuzz::harfbuzz_in(&path, 0, &runs, "") else { return eprintln!("no HarfBuzz here: not tested") };
@@ -5183,13 +5186,13 @@ mod tests {
     #[cfg(feature = "shaping")]
     #[test]
     fn text_is_shaped_in_runs_of_one_script() {
-        // In one font and piece: Latin, then Devanagari with the sign after it, then Latin; a
-        // run starting with a figure takes the script after it.
+        // In one font and piece: Latin, then Greek with the sign after it, then Latin; a run
+        // starting with a figure takes the script after it.
         let given = |text: &str| text.chars().map(|letter| Given { letter, piece: 0, at: [None; 4] }).collect::<Vec<_>>();
-        let letters = given("ab हिन्दी, cd");
+        let letters = given("ab αβγ, cd");
         let fonts = vec![Some(0); letters.len()];
-        assert_eq!(runs(&letters, &fonts, 0), [0..3, 3..11, 11..13]);
-        let letters = given("1हि");
+        assert_eq!(runs(&letters, &fonts, 0), [0..3, 3..8, 8..10]);
+        let letters = given("1αβ");
         assert_eq!(runs(&letters, &[Some(0); 3], 0).first(), Some(&(0..3)));
         // Another font is another run.
         assert_eq!(runs(&given("abc"), &[Some(0), Some(1), Some(1)], 0), [0..1, 1..3]);

@@ -164,7 +164,8 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   - Tables are tables to screen readers (headings, rows, cells); the selection is told in each
     block it covers; a link's title shows by it on hover or focus and is told as its
     description.
-  - A context menu (copy, select all, copy link; `Markdown::set_copy_link_word`), and the view
+  - A context menu (copy, select all, copy link: `ui.edit_words` has a seventh word, so an
+    app that sets all of them needs it; translated with the others), and the view
     scrolls while a selection is dragged past its edge.
   - Lists and quotes nest as deep as written; the 100-deep limit holds only where many blank
     lines would make parsing slow.
@@ -185,8 +186,9 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - **Thai, Lao, Khmer and Burmese lines break between words everywhere** (feature `brahmic`;
   on Linux, Android and the web also the new feature `word-lists`): CoreFoundation's tokenizer
   on macOS and iOS; on Linux, Android and the web ICU 78's word lists (804 KB) walked as ICU's
-  dictionary break engines walk them, matching ICU on 48,991 texts. The crate's licence adds BSD-2-Clause and BSD-3-Clause
-  for the Lao and Burmese lists (`THIRD-PARTY.md`).
+  dictionary break engines walk them, matching ICU on 48,991 texts. The crate's licence adds
+  BSD-2-Clause and BSD-3-Clause for the Lao and Burmese lists, whose notices a program built
+  with `word-lists` must carry (`THIRD-PARTY.md`).
 - **Marks in fonts without `GPOS`** sit on their letters, placed by combining class as
   HarfBuzz's fallback places them (1,269 word-font pairs alike, HarfBuzz 12.3.2 and 14.5).
 - **The system's text in a language's forms** (`shaping`) also in lines with marks or letters
