@@ -43,15 +43,16 @@
 //!   ([`enable_images_from`])
 //! - with [`AnimatedDrawing`], [`decode_at`] and [`encode_animation`]: `<animate>`, `<set>`,
 //!   `<animateTransform>`, `<animateMotion>`, timed or (in a window) begun and ended by the
-//!   pointer and keys (see `svg_animation.rs`)
+//!   pointer, keys, focus and the wall clock (see `svg_animation.rs`)
 //!
 //! Images and `feImage` elements bring drawings of their own: each is read once the file's
 //! own walk is done, into the same lists, and its items put where it was met (so nothing
 //! reads recursively). Four deep at most, all within the outermost file's budget.
 //!
-//! Not read: a pattern as a `FillPaint` or `StrokePaint` input (nothing); glyphs are drawn
-//! without filters. Style rules by position among siblings match nothing, and rules apply in
-//! source order. A clip path's own clip path, `mask-type`, and marker clipping are ignored.
+//! Not read: glyphs are drawn without filters. A kernel unit finer than an eighth of a pixel
+//! counts as an eighth (librsvg goes finer). Style rules by position among siblings match
+//! nothing, and rules apply in source order. A clip path's own clip path, `mask-type`, and
+//! marker clipping are ignored.
 //! Text is not rotated per letter; unshaped (without `shaping`) it has no joining or
 //! right-to-left order; it uses the family's font or the system's fallback. A gradient focus
 //! outside its circle is moved onto it; a subpath starting where the previous unclosed one
@@ -67,7 +68,9 @@
 //! differ on a few pixels of a curve); text paths are drawn (librsvg draws none); a picture's
 //! edges are cut sharp (librsvg fades them over one of its pixels); a convolution keeping alpha
 //! on a grid of kernel units resamples premultiplied colours (librsvg resamples plain ones as if
-//! premultiplied, which tints the last cells a region fills in part).
+//! premultiplied, which tints the last cells a region fills in part); a pattern as a `FillPaint`
+//! or `StrokePaint` input is scaled with the drawing (librsvg keeps its tiles' content at the
+//! file's own size).
 //!
 //! Cost is bounded by what a file of its length could cost written out, however often it reuses
 //! elements: shapes, outline segments and reading steps (elements, attributes, style rules
@@ -76,7 +79,9 @@
 //! offscreen group, clip and tile its block's area; each filter its region times its cost, 18
 //! for a blur; each image as a tile). The bound is 64 passes, plus one per 16 bytes of file. A
 //! filter over budget is skipped (its element drawn unfiltered); what lies past the budget is
-//! not drawn. (The costliest icon of a whole desktop icon theme uses a third of it.)
+//! not drawn. (The costliest icon of a whole desktop icon theme uses a third of it.) A
+//! kernel unit finer than a pixel counts its cells in a picture 512 pixels across: a smaller
+//! picture may cost as much as that one.
 //!
 //! With [`enable_seamless_clips`], clip paths and masks fill their abutting opaque shapes of one
 //! colour as one outline, each turned to go round positively first: no seam where they meet
@@ -112,6 +117,10 @@ pub struct Drawing(pub(crate) u32);
 /// The most pixels a drawing is cached as. Shown larger, only its visible rows are drawn,
 /// afresh each time.
 const MOST: usize = 1 << 24;
+/// How many pixels across its larger side a picture is in which a filter step's kernel unit is
+/// counted: a picture of a drawing that is smaller may cost as much as one this large, where
+/// a kernel unit is finer than its pixels (see `svg_filters::cells_per_pixel`).
+const COUNTED_SIDE: f32 = 512.0;
 /// How many cached pictures of a drawing are kept: one per size and colour shown.
 const KEPT: usize = 4;
 /// How deeply semi-transparent groups may nest and each still composite as one (each renders to
@@ -983,16 +992,21 @@ struct More {
 
 /// What lies where in a drawing, to find the element under the pointer: each shape kept for an
 /// element, in drawing order, and the `<use>` elements that brought them (each shape's range of
-/// them, innermost first).
+/// them, innermost first); and the clips on them, each with its outlines (by which clip). A
+/// shape takes the pointer only within every clip on it, as in browsers: clip paths and
+/// viewports, not masks.
 #[derive(Default)]
 struct Hits {
     shapes: Vec<Hit>,
     uses: Vec<u32>,
+    clips: Vec<HitClip>,
+    outlines: Vec<(u32, Hit)>,
 }
 
 /// A shape of an element as it takes the pointer: its outline (which kept one) and transform,
-/// whether its fill counts (with its rule), its stroke's width (0: none), and how far it reaches
-/// (left, top, right, bottom in drawing units, its stroke included).
+/// whether its fill counts (with its rule), its stroke's width (0: none), how far it reaches
+/// (left, top, right, bottom in drawing units, its stroke included), and the kept box aligned
+/// with the picture that clips it.
 #[derive(Clone, Copy)]
 struct Hit {
     element: u32,
@@ -1003,6 +1017,15 @@ struct Hit {
     even_odd: bool,
     stroke: f32,
     reach: [f32; 4],
+    boxed: Option<u32>,
+}
+
+/// A clip on the shapes a walk drew, as they take the pointer: which of them (a range of
+/// `Hits::shapes`), the walk (by the first item of its block) and which of its cuts.
+struct HitClip {
+    shapes: [u32; 2],
+    walk: u32,
+    cut: u8,
 }
 
 /// Notes the shapes a reading kept for an element (see `Reading::note_hits`).
@@ -1038,10 +1061,22 @@ struct Later {
     depth: u8,
 }
 
-/// What a waiting drawing is: an element of the file, or another file's text.
+/// What a waiting drawing is: an element of the file, another file's text, or a pattern tiling a
+/// filter's region.
 enum Brought {
     Element(usize),
     File(Rc<str>),
+    Pattern(Tiling),
+}
+
+/// A pattern tiling a filter's region, as a `FillPaint` or `StrokePaint` input takes the
+/// element's paint (see `Reading::paint_block`): the pattern element, the bounding box of what
+/// the filter applies to (left, top, width, height) and the region to fill, in the filter's
+/// units.
+struct Tiling {
+    pattern: usize,
+    bounds: [f32; 4],
+    region: [f32; 4],
 }
 
 /// How many drawings deep images and `feImage` may bring drawings: a file holding itself goes no
@@ -1337,16 +1372,28 @@ impl ParsedDrawing {
     /// The element whose shape lies at point `at` of the window (where the drawing was last
     /// noted showing), topmost first, of those `takes` says take the pointer (given an element
     /// and the `<use>` elements that brought it): it, and those `<use>` elements. A shape takes
-    /// the pointer where its fill or stroke would paint, clips and masks aside.
+    /// the pointer where its fill or stroke would paint, within its clip paths and viewports
+    /// (not its masks, as in browsers).
     pub(crate) fn element_at(&self, at: Point, takes: impl Fn(usize, &[u32]) -> bool) -> Option<(usize, &[u32])> {
         let More { shown, hits, .. } = self.held()?;
         let within = (*shown)?;
         let back = undone(&both(&[1.0, 0.0, 0.0, 1.0, within.x, within.y], &self.fit([within.w, within.h])))?;
         let point = through(&back, at);
         let uses = |hit: &Hit| &hits.uses[hit.uses[0] as usize..hit.uses[1] as usize];
-        let near = |hit: &&Hit| point.x >= hit.reach[0] && point.y >= hit.reach[1] && point.x <= hit.reach[2] && point.y <= hit.reach[3];
-        let hit = hits.shapes.iter().rev().filter(near).find(|hit| self.lies_in(hit, point) && takes(hit.element as usize, uses(hit)))?;
+        let near = |(_, hit): &(usize, &Hit)| point.x >= hit.reach[0] && point.y >= hit.reach[1] && point.x <= hit.reach[2] && point.y <= hit.reach[3];
+        let found = |(n, hit): &(usize, &Hit)| self.lies_in(hit, point) && self.unclipped(hits, *n, point) && takes(hit.element as usize, uses(hit));
+        let (_, hit) = hits.shapes.iter().enumerate().rev().filter(near).find(found)?;
         Some((hit.element as usize, uses(hit)))
+    }
+
+    /// Whether a point (in drawing units) lies within every clip on hit shape `n`: its box
+    /// aligned with the picture, and each clip noted on it (within any of its outlines).
+    fn unclipped(&self, hits: &Hits, n: usize, point: Point) -> bool {
+        let boxed = hits.shapes[n].boxed.and_then(|boxed| self.boxes.get(boxed as usize));
+        let in_box = boxed.is_none_or(|[left, top, right, bottom]| point.x >= *left && point.y >= *top && point.x <= *right && point.y <= *bottom);
+        let on_it = |clip: &(usize, &HitClip)| (clip.1.shapes[0] as usize..clip.1.shapes[1] as usize).contains(&n);
+        let within = |(at, _): (usize, &HitClip)| hits.outlines.iter().any(|(clip, outline)| *clip as usize == at && self.lies_in(outline, point));
+        in_box && hits.clips.iter().enumerate().filter(on_it).all(within)
     }
 
     /// Whether a point (in drawing units) lies in a shape's fill, where it is filled, or within
@@ -1926,8 +1973,12 @@ impl<'a> Reading<'a> {
     /// Walks the elements from `root` on, styled `style` around it, keeping every shape to
     /// draw, as far as `spent` allows.
     fn walk(&mut self, root: usize, style: Style) {
-        // The walks in progress, innermost last.
-        let mut walks = vec![Walk::through(root, root + 1, style)];
+        self.walk_from(vec![Walk::through(root, root + 1, style)], root);
+    }
+
+    /// Goes on with `walks` (the walks in progress, innermost last) until all are done, `root`
+    /// being the element that holds the drawing (see `walk`).
+    fn walk_from(&mut self, mut walks: Vec<Walk>, root: usize) {
         while let Some(deep) = walks.len().checked_sub(1) {
             // Each step looks through the walks it is in.
             self.steps += deep + 1;
@@ -2092,29 +2143,91 @@ impl<'a> Reading<'a> {
         }
     }
 
-    /// Notes the shapes kept for element `at` from item `first` on (see `Hits`), with the
-    /// `<use>` elements that brought it, where `walks` are none of a clip path, mask, pattern
-    /// or marker: what is drawn of the file itself.
+    /// Notes the shapes kept for element `at` from item `first` on (see `Hits`): what is drawn
+    /// of the file itself, with the `<use>` elements that brought it and the clips on it; or,
+    /// where `walks` are those of a clip path on what is drawn of the file, its outlines (that
+    /// walk lies on the walk it clips). Nothing within a mask, pattern or marker.
     fn note_hits(&mut self, at: usize, first: usize, walks: &[Walk]) {
         let named = |walk: &Walk| walk.used.map(|used| self.file.elements[used].name);
-        if walks.iter().any(|walk| walk.keep.is_some() || walk.style.clipping || matches!(named(walk), Some("pattern" | "marker"))) {
+        if walks.iter().any(|walk| matches!(walk.keep, Some(Keep::Bright)) || matches!(named(walk), Some("pattern" | "marker"))) {
             return;
         }
+        let mut clipping = walks.iter().enumerate().filter(|(_, walk)| walk.keep.is_some());
+        match (clipping.next(), clipping.next()) {
+            (None, _) => self.note_shapes(at, first, walks),
+            (Some((n, _)), None) if n > 0 => self.note_outlines(walks[n - 1].first, first),
+            _ => {}
+        }
+    }
+
+    /// Notes the shapes kept for element `at` from item `first` on, with the `<use>` elements
+    /// that brought it and the clips on it (see `note_hits`).
+    fn note_shapes(&mut self, at: usize, first: usize, walks: &[Walk]) {
         let mut hits = std::mem::take(&mut self.parsed.more().hits);
         let from = hits.uses.len() as u32;
         for (n, walk) in walks.iter().enumerate().skip(1).rev() {
             let Some(brought) = walk.used else { continue };
             hits.uses.extend(self.user(brought, walks[n - 1].at).map(|user| user as u32));
         }
-        let uses = [from, hits.uses.len() as u32];
-        for item in &self.parsed.items[first.min(self.parsed.items.len())..] {
-            let Item::Shape(shape) = item else { continue };
+        let (uses, noted) = ([from, hits.uses.len() as u32], hits.shapes.len() as u32);
+        for shape in self.shapes_from(first) {
             let stroke = if shape.line == Ink::None { 0.0 } else { self.parsed.pens[shape.pen as usize].width };
-            let (path, table, filled, even_odd) = (shape.path, shape.table, shape.fill != Ink::None, shape.even_odd);
-            let reach = reach_of(&self.parsed.paths[path as usize], &table, stroke);
-            hits.shapes.push(Hit { element: at as u32, uses, path, table, filled, even_odd, stroke, reach });
+            hits.shapes.push(Hit { element: at as u32, uses, filled: shape.fill != Ink::None, ..self.outline_of(shape, stroke) });
+        }
+        let shapes = [noted, hits.shapes.len() as u32];
+        self.parsed.more().hits = hits;
+        let cuts = walks.iter().flat_map(|walk| walk.cuts.iter().enumerate().filter_map(move |(n, cut)| Some((walk, n, (*cut)?))));
+        for (walk, n, cut) in cuts.filter(|(.., cut)| !matches!(cut, Cut::Mask(_))) {
+            self.note_clip((walk, n, cut), shapes);
+        }
+    }
+
+    /// Notes that a walk's clip (`n` of its cuts) clips shapes just noted (a range of
+    /// `Hits::shapes`, see `HitClip`): a box's outline at once, a clip path's as its walk keeps
+    /// them. Not a mask: in browsers the pointer goes through masks.
+    fn note_clip(&mut self, (walk, n, cut): (&Walk, usize, Cut), shapes: [u32; 2]) {
+        let hits = &mut self.parsed.more().hits;
+        if let Some(noted) = hits.clips.iter_mut().rev().find(|noted| noted.walk as usize == walk.first && noted.cut as usize == n) {
+            noted.shapes[1] = shapes[1];
+            return;
+        }
+        let clip = hits.clips.len() as u32;
+        hits.clips.push(HitClip { shapes, walk: walk.first as u32, cut: n as u8 });
+        if !matches!(cut, Cut::Box(_) | Cut::DrawingBox(_)) {
+            return;
+        }
+        let (place, table) = self.box_cut(cut, walk.units);
+        let path = self.kept_path(rect(place, [None; 2]));
+        let outline = self.hit(path, table, 0.0);
+        self.parsed.more().hits.outlines.push((clip, outline));
+    }
+
+    /// Notes the shapes kept from item `first` on as outlines of the clip path on the walk whose
+    /// block begins at item `clipped` (see `HitClip`): filled by their rule, strokes aside.
+    fn note_outlines(&mut self, clipped: usize, first: usize) {
+        let mut hits = std::mem::take(&mut self.parsed.more().hits);
+        if let Some(clip) = hits.clips.iter().rposition(|noted| noted.walk as usize == clipped && noted.cut == 0) {
+            hits.outlines.extend(self.shapes_from(first).map(|shape| (clip as u32, self.outline_of(shape, 0.0))));
         }
         self.parsed.more().hits = hits;
+    }
+
+    /// The shapes kept from item `first` on.
+    fn shapes_from(&self, first: usize) -> impl Iterator<Item = &Shape> {
+        self.parsed.items.iter().skip(first).filter_map(|kept| if let Item::Shape(shape) = kept { Some(shape) } else { None })
+    }
+
+    /// A kept shape as it takes the pointer (see `Hit`): its fill by its rule, within its box, and
+    /// its stroke as wide as `stroke`; of no element.
+    fn outline_of(&self, shape: &Shape, stroke: f32) -> Hit {
+        Hit { even_odd: shape.even_odd, boxed: shape.boxed, ..self.hit(shape.path, shape.table, stroke) }
+    }
+
+    /// An outline (which kept one, through `table`) as it takes the pointer (see `Hit`): filled,
+    /// and stroked as wide as `stroke`; of no element.
+    fn hit(&self, path: u32, table: Table, stroke: f32) -> Hit {
+        let reach = reach_of(&self.parsed.paths[path as usize], &table, stroke);
+        Hit { element: 0, uses: [0; 2], path, table, filled: true, even_odd: false, stroke, reach, boxed: None }
     }
 
     /// The `<use>` element that brought `brought`, the walk around it being past it at `after`:
@@ -2209,9 +2322,16 @@ impl<'a> Reading<'a> {
             // costing more than the budget left is skipped with those after it: the element is
             // drawn unfiltered. Else a few elements could stand for any number of full-picture
             // blurs.
+            // (A kernel unit finer than a pixel makes more cells to work on than pixels: counted
+            // in a picture `COUNTED_SIDE` across. Drawn larger, there are fewer; smaller, no
+            // more cells than there.)
             let [l, t, r, b] = filter.bounds();
             let share = ((r - l) * (b - t) * walk.style.share[0]).min(walk.style.share[1]);
-            let weights: f32 = filter.steps.iter().map(|step| svg_filters::weight(&step.kind) + svg_filters::background_weight(step)).sum();
+            let [.., wide, high] = self.parsed.view;
+            let scale = COUNTED_SIDE / wide.max(high);
+            let counted = both(&[scale, 0.0, 0.0, scale, 0.0, 0.0], &filter.table);
+            let weigh = |step: &svg_filters::Step| svg_filters::weight(&step.kind) * svg_filters::cells_per_pixel(&step.kind, &counted) + svg_filters::background_weight(step);
+            let weights: f32 = filter.steps.iter().map(weigh).sum();
             let cost = share * (svg_filters::FIXED + weights) + images.len() as f32 * walk.style.share[1];
             if self.passes + cost > passes(self.budget) {
                 return;
@@ -2246,16 +2366,27 @@ impl<'a> Reading<'a> {
 
     /// Fills the filter region of a filter applied to what `walk` drew with the element's fill
     /// (`which` 0) or stroke (1) paint, at its opacity, as librsvg does (more than the region:
-    /// the filter cuts it): a gradient in units of the element's bounding box fits that box. (A
-    /// pattern paints nothing.)
+    /// the filter cuts it): a gradient in units of the element's bounding box fits that box, a
+    /// pattern is tiled from it (read once the file's own walk is done, see `Tiling`).
     fn paint_block(&mut self, which: usize, filter: &Filter, walk: &Walk) {
         let own = walk.own.map_or(walk.style, |at| self.styled(at, &walk.style));
         let square = self.box_of(walk);
-        let fitted = self.kept_path(rect([square[4], square[5], square[0], square[3]], [None; 2]));
-        let fill = self.ink(own.paints[which], own.solid[which] * own.faded, own.ink, fitted, None);
+        let (bounds, solid) = ([square[4], square[5], square[0], square[3]], own.solid[which] * own.faded);
         // Half as large again each way: the region's pixels, rounded out, are covered whole.
         let [x, y, w, h] = filter.region.map(|side| side as f32);
-        let path = self.kept_path(rect([x - w / 2.0, y - h / 2.0, 2.0 * w, 2.0 * h], [None; 2]));
+        let region = [x - w / 2.0, y - h / 2.0, 2.0 * w, 2.0 * h];
+        if let Paint::Tiles(pattern) = own.paints[which] {
+            let brought = Brought::Pattern(Tiling { pattern, bounds, region });
+            let later =
+                Later { at: self.parsed.items.len(), brought, table: filter.table, share: walk.style.share, place: [None; 4], aspect: Aspect::read(""), solid, boxed: None, depth: self.depth + 1 };
+            if positive(solid) {
+                self.wait(later);
+            }
+            return;
+        }
+        let fitted = self.kept_path(rect(bounds, [None; 2]));
+        let fill = self.ink(own.paints[which], solid, own.ink, fitted, None);
+        let path = self.kept_path(rect(region, [None; 2]));
         let pen = self.pen(&own);
         self.parsed.items.push(Item::Shape(Shape { path, table: filter.table, fill, even_odd: false, line: Ink::None, pen, boxed: None, crisp: false }));
     }
@@ -2798,25 +2929,39 @@ impl<'a> Reading<'a> {
         if self.spent() {
             return Vec::new();
         }
+        let style = Style { table: later.table, share: later.share, ..Style::default() };
         match &later.brought {
-            Brought::Element(at) => self.read_element(*at, &later),
+            Brought::Element(at) => self.read_apart(later.depth, |brought| brought.walk(*at, style)),
             Brought::File(text) => self.read_file(text, &later),
+            Brought::Pattern(tiling) => self.read_apart(later.depth, |brought| brought.tile_region(tiling, &style, later.solid)),
         }
     }
 
-    /// Reads an element of this file as a drawing of its own (see `read_later`), in the units
-    /// `later` gives, onto the block begun for it.
-    fn read_element(&mut self, at: usize, later: &Later) -> Vec<Item> {
+    /// Reads part of this file as a drawing of its own (see `read_later`), `depth` drawings
+    /// deep, as `read` reads it: into the kept lists, onto the block begun for it.
+    fn read_apart(&mut self, depth: u8, read: impl FnOnce(&mut Reading<'a>)) -> Vec<Item> {
         let file = std::mem::replace(&mut self.file, File::read(""));
         let mut brought = Reading::with(file, (self.parsed.size, self.parsed.view, self.parsed.aspect), self.filtering);
         self.lend_kept(&mut brought);
         self.lend_cached(&mut brought);
-        brought.depth = later.depth;
-        brought.walk(at, Style { table: later.table, share: later.share, ..Style::default() });
+        brought.depth = depth;
+        read(&mut brought);
         self.lend_kept(&mut brought);
         self.lend_cached(&mut brought);
         self.file = brought.file;
         brought.parsed.items
+    }
+
+    /// Fills a filter's region with a pattern's tiles at opacity `solid`, in the units `style`
+    /// gives (see `Tiling`): the tile drawn, then the region filled with it (each pixel's colour
+    /// sampled from the tile, as `TILES` counts). Nothing for a pattern of no size or content.
+    fn tile_region(&mut self, tiling: &Tiling, style: &Style, solid: f32) {
+        let Some((tile, walk)) = self.tile(tiling.pattern, tiling.bounds, style) else { return };
+        self.parsed.items.push(Item::Tile(tile));
+        self.walk_from(vec![walk], usize::MAX);
+        self.spend((TILES - 1.0) * style.share[1]);
+        let (path, pen) = (self.kept_path(rect(tiling.region, [None; 2])), self.pen(style));
+        self.parsed.items.push(Item::Shape(Shape { path, table: style.table, fill: Ink::Tiles(tile, solid), even_odd: false, line: Ink::None, pen, boxed: None, crisp: false }));
     }
 
     /// Reads another SVG file (see `read_later`): its view fitted into its box, on a block of
@@ -5144,6 +5289,30 @@ mod tests {
     }
 
     #[test]
+    fn a_kernel_unit_finer_than_a_pixel_runs_on_a_finer_grid_as_librsvg_does() {
+        enable_filters();
+        let lit = r##"<filter id="e" x="0" y="0" width="1" height="1"><feGaussianBlur in="SourceAlpha" stdDeviation="3"/><feDiffuseLighting surfaceScale="4" kernelUnitLength="0.5" lighting-color="white"><fePointLight x="10" y="10" z="20"/></feDiffuseLighting></filter><circle cx="20" cy="20" r="14" filter="url(#e)"/>"##;
+        let row = row_of(lit, 20);
+        assert!(near(&row, &written(FINE_LIT), 3), "{row:x?}");
+        let convolved = r##"<filter id="e" x="0" y="0" width="1" height="1"><feConvolveMatrix order="3" kernelMatrix="1 2 1 2 4 2 1 2 1" kernelUnitLength="0.25"/></filter><g filter="url(#e)"><rect x="5" y="5" width="30" height="30" fill="none" stroke="#080" stroke-width="4"/><path d="M10 32 L20 8 L30 32 Z" fill="#c0c"/></g>"##;
+        let row = row_of(convolved, 20);
+        assert!(near(&row, &written(FINE_CONVOLVED), 2), "{row:x?}");
+        // Finer than an eighth of a pixel counts as an eighth, which is no whole pixel. (Over a
+        // small region: over the whole drawing, a unit that fine costs more than its budget.)
+        let small = lit.replace(r#"x="0" y="0" width="1" height="1""#, r#"filterUnits="userSpaceOnUse" x="13" y="18" width="4" height="4""#);
+        let finest = |unit: &str| row_of(&small.replace(r#"kernelUnitLength="0.5""#, unit), 20);
+        let lit_finest = finest(r#"kernelUnitLength="0.01""#);
+        assert!(lit_finest[15] & 0xff_ffff > 0x80_8080, "lit, not drawn unfiltered: {:x}", lit_finest[15]);
+        assert_eq!(lit_finest, finest(r#"kernelUnitLength="0.125""#));
+        assert_ne!(finest(r#"kernelUnitLength="0.125""#), finest(r#"kernelUnitLength="1""#));
+    }
+    // librsvg's rows of those two files (`own/probes/unit`: lit05, conv025).
+    const FINE_LIT: &str = ". . . . . . ffbebebe ffd7d7d7 ffd9d9d9 ffe1e1e1 ffe9e9e9 ffececec ffececec ffececec ffeaeaea ffe9e9e9 ffe7e7e7 ffe5e5e5 ffe4e4e4 ffe2e2e2 ffdfdfdf ffdddddd \
+        ffdbdbdb ffd8d8d8 ffd6d6d6 ffd1d1d1 ffcbcbcb ffc1c1c1 ffb4b4b4 ffa3a3a3 ff858585 ff6e6e6e ff707070 ff161616 . . . . . .";
+    const FINE_CONVOLVED: &str = ". . . . . df008800 db008800 23008300 . . . . . 08bf00bf 4fcb00cb decc00cc fecc00cc ffcc00cc ffcc00cc ffcc00cc ffcc00cc ffcc00cc ffcc00cc fecc00cc decc00cc \
+        4ecb00cb 08bf00bf . . . . . 24008700 db008800 df008800 . . . . .";
+
+    #[test]
     fn paint_inputs_fill_the_filter_region_with_the_element_s_paint_as_librsvg_does() {
         enable_filters();
         // A gradient in units of the group's box, kept where the group is.
@@ -5158,6 +5327,26 @@ mod tests {
         let unpainted = stroked.replace(r##" stroke="#0a0""##, "");
         assert_eq!(row_of(&unpainted, 20)[7], 0);
     }
+
+    #[test]
+    fn a_pattern_as_a_paint_input_tiles_the_filter_region_as_librsvg_does() {
+        enable_filters();
+        // Tiles in units, kept where the circle is; tiles in units of the group's box over a flood.
+        let tiled = r##"<pattern id="p" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="#c00"/><rect x="4" y="4" width="4" height="4" fill="#00c"/></pattern><filter id="e" x="0" y="0" width="1" height="1"><feComposite in="FillPaint" in2="SourceAlpha" operator="in"/></filter><circle cx="20" cy="20" r="14" fill="url(#p)" filter="url(#e)"/>"##;
+        let row = row_of(tiled, 20);
+        assert!(near(&row, &written(PATTERN_PAINT), 6), "{row:x?}");
+        let boxed = r##"<pattern id="p" width="0.5" height="0.5" patternContentUnits="objectBoundingBox"><rect width="0.25" height="0.25" fill="#08c"/></pattern><filter id="e" x="-0.2" y="-0.2" width="1.4" height="1.4"><feFlood flood-color="#ff0" result="f"/><feComposite in="FillPaint" in2="f" operator="over"/></filter><g fill="url(#p)" filter="url(#e)"><ellipse cx="20" cy="20" rx="12" ry="8"/></g>"##;
+        let row = row_of(boxed, 13);
+        assert!(near(&row, &written(PATTERN_BOX_PAINT), 1), "{row:x?}");
+        // At no opacity, nothing.
+        assert_eq!(row_of(&tiled.replace("fill=\"url(#p)\"", "fill=\"url(#p)\" fill-opacity=\"0\""), 20), [0; 40]);
+    }
+    // librsvg's rows of those two files (`own/probes/paint40`). (Drawn at another size, librsvg
+    // does not scale the tiles' content with it: taut does.)
+    const PATTERN_PAINT: &str =
+        ". . . . . . f20000cc ff0000cc . . . . ff0000cc ff0000cc ff0000cc ff0000cc . . . . ff0000cc ff0000cc ff0000cc ff0000cc . . . . ff0000cc ff0000cc ff0000cc ff0000cc . . . . . . . .";
+    const PATTERN_BOX_PAINT: &str = ". . . ffffff00 ffffff00 ffffff00 ffffff00 ffffff00 ff0088cc ff0088cc ff0088cc ff0088cc ff0088cc ff0088cc ffffff00 ffffff00 ffffff00 ffffff00 ffffff00 ffffff00 \
+        ff0088cc ff0088cc ff0088cc ff0088cc ff0088cc ff0088cc ffffff00 ffffff00 ffffff00 ffffff00 ffffff00 ffffff00 ff0088cc ff0088cc ff0088cc ff0088cc ff0088cc . . .";
 
     #[test]
     fn a_map_moves_pixels_as_librsvg_moves_them() {

@@ -42,6 +42,13 @@ pub(crate) const KEPT: f32 = 7.0;
 pub(crate) const GRADIENT: f32 = 8.0;
 pub(crate) const PATH: f32 = 9.0;
 pub(crate) const STROKE: f32 = 10.0;
+/// A video's frame on the GPU: a picture whose texels are the frame's own texture, given only to
+/// a path that reads it (`DrawList::takes_frames`).
+#[cfg(all(feature = "video", windows))]
+pub(crate) const FRAME: f32 = 11.0;
+/// The most videos' frames one part draws from their textures; others are read back.
+#[cfg(all(feature = "video", windows))]
+pub(crate) const MOST_FRAMES: usize = 4;
 
 /// Rows of pixels a path's quads cover each, each quad reading only the edges that reach them.
 const BAND: i32 = 16;
@@ -141,6 +148,13 @@ pub(crate) struct DrawList {
     /// (`run`) fails.
     #[cfg(windows)]
     pub(crate) no_runs: bool,
+    /// Videos' frames on the GPU this part draws (`MOST_FRAMES` at most), each quad of one
+    /// naming it by its place here.
+    #[cfg(all(feature = "video", windows))]
+    pub(crate) frames: Vec<std::sync::Arc<crate::video::FrameTexture>>,
+    /// The device draws videos' frames from their own textures.
+    #[cfg(all(feature = "video", windows))]
+    pub(crate) takes_frames: bool,
     /// What a patch is drawn into first.
     scratch: Vec<u32>,
     /// A path's edges (left, top, right, bottom ends), and its bands: first row, end row, first
@@ -206,6 +220,8 @@ impl DrawList {
         self.quads.clear();
         self.uploads.clear();
         self.staging.clear();
+        #[cfg(all(feature = "video", windows))]
+        self.frames.clear();
     }
 
     /// Records the part `area` (in units) of `ui`'s window, `size` pixels big.
@@ -575,6 +591,31 @@ impl DrawList {
         let source = [texels[0] as f32, texels[1] as f32, width as f32, height as f32];
         let more = [radius * scale, steps[0], steps[1], 0.0];
         self.quad(shape, clip, [shape, more, source, [255.0; 4]], PICTURE, 1.0);
+    }
+
+    /// A video's frame on the GPU in a box at `r` with rounded corners, laid as `picture` lays
+    /// pixels but read from the frame's own texture, where the device can: whether it is. Not
+    /// where it is reduced more than `MOST_REDUCED` times, or the part draws `MOST_FRAMES`
+    /// others: then the CPU reads it back.
+    #[cfg(all(feature = "video", windows))]
+    pub(crate) fn video_frame(&mut self, frame: &crate::video::FrameOnGpu, r: Rect, radius: f32, scale: f32, clip: [i32; 4]) -> bool {
+        let [left, top, width, height] = frame.crop.map(|side| side as f32);
+        let shape = [r.x, r.y, r.right(), r.bottom()].map(|side| whole(side * scale));
+        let steps = [width / (shape[2] - shape[0]).max(1.0), height / (shape[3] - shape[1]).max(1.0)];
+        if !self.takes_frames || steps.iter().any(|step| *step > MOST_REDUCED) {
+            return false;
+        }
+        let nth = match self.frames.iter().position(|kept| std::sync::Arc::ptr_eq(kept, &frame.texture)) {
+            Some(nth) => nth,
+            None if self.frames.len() < MOST_FRAMES => {
+                self.frames.push(frame.texture.clone());
+                self.frames.len() - 1
+            }
+            None => return false,
+        };
+        let more = [radius * scale, steps[0], steps[1], nth as f32];
+        self.quad(shape, clip, [shape, more, [left, top, width, height], [255.0; 4]], FRAME, 1.0);
+        true
     }
 }
 

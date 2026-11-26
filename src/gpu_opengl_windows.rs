@@ -12,8 +12,8 @@
 //! - With the feature `hdr`, the windows of a device made while a screen is HDR are given a
 //!   float pixel format and presented in scRGB (`hdr_opengl`).
 use crate::functions::functions;
-use crate::gpu_windows::{function_in, system_library};
 use crate::windows::sys::{CreateWindowExW, DestroyWindow, GetModuleHandleW, HANDLE};
+use crate::windows::{function_in, system_library};
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr::{null, null_mut};

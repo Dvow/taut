@@ -36,6 +36,7 @@ use crate::portal::Portal;
 use crate::preferences::{Preferences, of_x_settings};
 use crate::screens::{OpenAt, Screen, window_origin};
 use crate::second_window::{WindowKind, WindowOpening};
+use crate::system_fonts::{GLYPHS, cached};
 use crate::text::{Face, Font, Metrics, TextSystem};
 use crate::ui::Ui;
 use std::cell::{Cell, RefCell};
@@ -736,13 +737,13 @@ impl SystemText {
     #[cfg(not(feature = "shaping"))]
     fn glyph(&mut self, (which, at, px): (Face, usize, u32), c: char) -> &Glyph {
         let fonts = &mut self.fonts;
-        self.glyphs.entry((which, px, c)).or_insert_with(|| fonts.draw(which, at, px, c))
+        cached(&mut self.glyphs, GLYPHS, (which, px, c), || fonts.draw(which, at, px, c))
     }
     /// The same, or that of its language form `form` (where not 0).
     #[cfg(feature = "shaping")]
     fn glyph(&mut self, (which, at, px): (Face, usize, u32), c: char, form: u16) -> &Glyph {
         let fonts = &mut self.fonts;
-        self.glyphs.entry((which, px, c, form)).or_insert_with(|| fonts.draw(which, at, px, c, form))
+        cached(&mut self.glyphs, GLYPHS, (which, px, c, form), || fonts.draw(which, at, px, c, form))
     }
 
     /// Each character's form in a line, where it takes some (0 where none): see
@@ -819,7 +820,7 @@ impl TextSystem for SystemText {
         let Some(from) = self.fonts.shaped_in(which, at, letter) else { return false };
         for (id, [right, down]) in glyphs {
             let fonts = &mut self.fonts;
-            let g = self.by_id.entry((from, px, *id)).or_insert_with(|| fonts.draw_glyph(from, px, *id));
+            let g = cached(&mut self.by_id, GLYPHS, (from, px, *id), || fonts.draw_glyph(from, px, *id));
             canvas.cover(x + right.round() as i32 + g.left, line + down.round() as i32 - g.top, g.width, &g.cover, color);
         }
         true
@@ -4416,6 +4417,48 @@ pub(crate) mod tests {
         let (advance, mut stops) = (text.glyph(with, c).advance, Vec::new());
         let (a, wide) = (text.measure("a", font, 1.0, None), text.measure(&format!("a{c}a"), font, 1.0, Some(&mut stops)));
         assert_eq!((wide, stops), (a + advance + a, vec![a, a + advance, a + advance + a]));
+    }
+
+    /// Letters drawn at every size a pan-and-zoom view zooms through keep at most `GLYPHS`
+    /// pictures, and so at most that many pictures' bytes; what is dropped comes back the same.
+    #[test]
+    fn glyph_pictures_drawn_at_every_size_are_held_to_a_bound() {
+        let _alone = alone();
+        let Some(mut text) = SystemText::new() else { return eprintln!("no fonts: not tested") };
+        let (mut pixels, word) = (vec![0u32; 400 * 80], "Wide");
+        let first = text.measure(word, Font::new(14.0), 1.0, None);
+        let letters: String = (0x21..0x17f).filter_map(char::from_u32).collect();
+        for px in 4..=60 {
+            text.draw(&mut Canvas::new(&mut pixels, 400, 80, (0, 0), 1.0), &letters, 0.0, 0.0, Font::new(px as f32), Color::WHITE);
+            assert!(text.glyphs.len() <= GLYPHS, "{} pictures kept", text.glyphs.len());
+        }
+        let bytes: usize = text.glyphs.values().map(|glyph| size_of::<Glyph>() + glyph.cover.len()).sum();
+        assert!(bytes <= GLYPHS * (size_of::<Glyph>() + 60 * 60), "{bytes} bytes kept");
+        assert_eq!(text.measure(word, Font::new(14.0), 1.0, None), first);
+    }
+
+    /// Glyphs drawn by id (`TextSystem::draw_glyphs`) at every size are held to the same bound,
+    /// and one dropped is drawn again the same.
+    #[cfg(feature = "shaping")]
+    #[test]
+    fn glyphs_drawn_by_id_at_every_size_are_held_to_a_bound() {
+        let _alone = alone();
+        let Some(mut text) = SystemText::new() else { return eprintln!("no fonts: not tested") };
+        let (font, at) = (Font::new(20.0), text.face(Font::new(20.0), 1.0).1);
+        // SAFETY: the font is open while the text lives.
+        let own = unsafe { (text.fonts.ft.FT_Get_Char_Index)(text.fonts.open[at].face, 'a' as c_ulong) } as u16;
+        let ids: Vec<(u16, [f32; 2])> = (1..400).map(|id| (id, [0.0, 0.0])).collect();
+        let drawn = |text: &mut SystemText, font: Font, ids: &[(u16, [f32; 2])]| {
+            let mut pixels = vec![0u32; 80 * 80];
+            assert!(text.draw_glyphs(&mut Canvas::new(&mut pixels, 80, 80, (0, 0), 1.0), font, ('a', own), ids, [10, 60], Color::WHITE));
+            pixels
+        };
+        let first = drawn(&mut text, font, &[(own, [0.0, 0.0])]);
+        for px in 4..=60 {
+            drawn(&mut text, Font::new(px as f32), &ids);
+            assert!(text.by_id.len() <= GLYPHS, "{} pictures kept", text.by_id.len());
+        }
+        assert!(first.iter().any(|pixel| *pixel != 0) && drawn(&mut text, font, &[(own, [0.0, 0.0])]) == first);
     }
 
     // What only the tests ask of X: resize or move a window, a letter's keycode, fill a window

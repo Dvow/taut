@@ -260,22 +260,28 @@ fn first_strong(kinds: &[Kind], inside: bool) -> Option<bool> {
 /// Whether a paragraph starting with `text` is right-to-left: whether its first strong letter
 /// is. (No letter means left-to-right; so does everything without `right-to-left`.)
 pub(crate) fn leftward(text: &str) -> bool {
+    strong_direction(text) == Some(true)
+}
+
+/// The direction of the first strong letter of the paragraph starting with `text`: right to
+/// left (`Some(true)`), left to right, or none (always none without `right-to-left`).
+pub(crate) fn strong_direction(text: &str) -> Option<bool> {
     if !cfg!(feature = "right-to-left") {
-        return false;
+        return None;
     }
     let mut depth = 0usize;
     for kind in text.chars().map(kind) {
         match kind {
             Kind::LeftIsolate | Kind::RightIsolate | Kind::FirstIsolate => depth += 1,
             Kind::PopIsolate => depth = depth.saturating_sub(1),
-            Kind::Paragraph => return false,
+            Kind::Paragraph => return None,
             _ if depth > 0 => {}
-            Kind::Left => return false,
-            Kind::Right | Kind::Arabic => return true,
+            Kind::Left => return Some(false),
+            Kind::Right | Kind::Arabic => return Some(true),
             _ => {}
         }
     }
-    false
+    None
 }
 
 /// The next level above `level`: the next odd for right-to-left, the next even for

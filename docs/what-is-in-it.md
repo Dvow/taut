@@ -88,15 +88,17 @@ Popovers anchored to their button.
 ## Code, inspector, rich text
 
 - **Code box:** syntax colouring from data (`Syntax`: Rust, C, Python, JavaScript, custom),
-  multiple cursors, undo, folding; cost is the visible lines.
+  multiple cursors, undo, folding; the system's keyboard on Android (its deletes keep each
+  selection); cost is the visible lines.
 - **Inspector:** an app value as name/editor rows; folding sections, editable lists, filter,
   changed marks, reset, undo, several values at once.
 - **Rich text:** styled pieces with links, icons and pictures in one wrapping paragraph.
 - **Markdown:** CommonMark plus GitHub tables, task lists and strikethrough; highlighted code
-  that scrolls sideways, app pictures, any nesting depth; Hebrew and Arabic right to left;
-  selectable, copyable, a context menu, keyboard links with titles, heading links scroll; a
-  document to screen readers, tables as tables, the selection told; laid out as far as seen,
-  cost is the visible part.
+  that scrolls sideways, app pictures, any nesting depth; Hebrew and Arabic right to left, with
+  list markers and quote bars at the right; selectable, copyable, a context menu, keyboard links
+  with titles, heading links scroll; a document to screen readers, tables as tables, the
+  selection told, in cells too; laid out only around what is seen, a far jump (Ctrl+End, a
+  heading link, the scroll bar) included: cost is the visible part.
 
 ## Fonts and text
 
@@ -174,16 +176,19 @@ Popovers anchored to their button.
   on Android, a `<video>` element on the web), loaded at run time. Only the video's box
   redraws per frame. Play, pause, seek to the exact frame, volume, mute, loop, end; speed from
   0.25 to 2 times, the pitch kept; sound and caption tracks listed with their languages and
-  chosen; captions (the file's own, and the app's WebVTT or SRT) drawn over the video in the
-  system's caption style and said by screen readers; controls for keyboard and screen readers.
-  Windows decodes on the GPU (DXVA) what the GPU decodes (checked: H.264, HEVC, VP9).
+  chosen; captions (the file's own, those in the video stream (CEA-608, track `CC1`), and the
+  app's WebVTT or SRT) drawn over the video in the system's caption style and said by screen
+  readers; controls for keyboard and screen readers. Windows decodes on the GPU (DXVA) what the
+  GPU decodes (checked: H.264, HEVC, VP9); with `gpu-draw` on Direct3D 11, frames are drawn
+  from the decoder's texture, never read back (1080p H.264: 3 ms of CPU a frame instead of 6).
 - SVG: clip paths, masks, patterns, markers, symbols; on request, `shape-rendering`, seamless
   clip paths and masks, text (on paths too; shaped with `shaping`), filters (every primitive,
-  lighting, `BackgroundImage`, paint inputs and kernel units included; about 90 KB), pictures and
-  nested SVG (in the file, or through the app's loader). SMIL animation, motion along paths
-  included: as frames, or playing in a window (`AnimatedDrawing`), where the pointer and keys
-  begin and end what waits for them. Drawing cost is bounded by file length. Windows' system
-  fonts are read a glyph at a time (a page of CJK text peaks at 6 MB, not 51).
+  lighting, `BackgroundImage`, paint inputs (patterns too) and kernel units included; about 90
+  KB), pictures and nested SVG (in the file, or through the app's loader). SMIL animation,
+  motion along paths included: as frames, or playing in a window (`AnimatedDrawing`), where the
+  pointer (within clip paths), keys, focus and the wall clock begin and end what waits for them;
+  an event costs the same however long it has played. Drawing cost is bounded by file length.
+  Windows' system fonts are read a glyph at a time (a page of CJK text peaks at 6 MB, not 51).
 - 3D meshes: filled, lit, coloured or outlined, with depth; all CPU cores, only on change; a
   million triangles in about 14 ms at 1920×1080.
 - PDF: pages up to 200 inches, shapes, searchable shaped text with subset fonts (as their
@@ -224,14 +229,15 @@ Popovers anchored to their button.
   running copy across tabs; WebGL2 (`gpu`, `gpu-draw`). A frame only when something changed.
 - Open files and links with the default program.
 - **iOS and iPadOS** (UIKit): a window filling its scene, the safe area and keyboard kept
-  clear; on iPad each second window a scene of its own; rotation, Split View and Stage Manager
-  sizes; dark mode, Dynamic Type, more contrast, less motion; fingers, Apple Pencil, trackpad
-  and mouse, hardware keyboards, input methods, the system's keyboard reading text boxes
-  (corrections, predictions, capitals) and its edit menu; the document picker as the system
-  file dialog (several files, folders, saving); files opened in the system's preview; files,
-  pictures and text dropped in; drag out; files on the clipboard; VoiceOver; going to the
-  background heard as minimized. `examples/ios_bundle.rs` makes an example an app for the
-  simulator or a device.
+  clear; on iPad each second window a scene of its own; a scene the system lets go of to free
+  memory keeps its window and state, the person closing one is a close request; rotation, Split
+  View and Stage Manager sizes; dark mode, Dynamic Type, more contrast, less motion; fingers,
+  Apple Pencil, trackpad and mouse, hardware keyboards, input methods, the system's keyboard
+  reading text boxes (corrections, predictions, capitals) and its edit menu; the document picker
+  as the system file dialog (several files, folders, saving); files opened in the system's
+  preview; files, pictures and text dropped in; drag out; files on the clipboard; VoiceOver;
+  going to the background heard as minimized. `examples/ios_bundle.rs` makes an example an app
+  for the simulator or a device.
 - Tray icon with native menu, system notifications (on macOS and iOS for app bundles), global
   hotkeys, single instance. Unused, none of it is compiled in.
 - **GPU or CPU** (`gpu`): Direct3D 11 or 12, Vulkan or OpenGL (Windows), OpenGL ES 3 (EGL) and

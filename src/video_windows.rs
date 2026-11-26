@@ -17,8 +17,8 @@ use crate::video_captions::Cue;
 use crate::windows::{Com, named, wide};
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 #[link(name = "kernel32")]
@@ -63,7 +63,6 @@ const A_TIMED_TEXT: [u32; 4] = named(0x1F2A_94C9, 0xA3DF, 0x430D, [0x9D, 0x0F, 0
 /// The functions of Media Foundation and its helpers that are not methods.
 struct Functions {
     startup: unsafe extern "system" fn(u32, u32) -> i32,
-    shutdown: unsafe extern "system" fn() -> i32,
     attributes: unsafe extern "system" fn(*mut *mut Com, u32) -> i32,
     on_stream: unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32,
     device_manager: unsafe extern "system" fn(*mut u32, *mut *mut Com) -> i32,
@@ -83,6 +82,14 @@ fn functions() -> Option<&'static Functions> {
     LOADED.get_or_init(load).as_ref()
 }
 
+/// Starts Media Foundation once, for the program's life: its `HRESULT`. (Started and shut down
+/// per video, opening took twice as long: 40 opens 17 s, now 8.5 s.)
+fn media_foundation_started(functions: &Functions) -> i32 {
+    static STARTED: OnceLock<i32> = OnceLock::new();
+    // SAFETY: `MFStartup` with the version of the SDK used (MF_VERSION), full start.
+    *STARTED.get_or_init(|| unsafe { (functions.startup)(0x0002_0070, 0) })
+}
+
 fn load() -> Option<Functions> {
     let library = |name: &str| {
         let name = wide(name);
@@ -99,7 +106,6 @@ fn load() -> Option<Functions> {
     unsafe {
         Some(Functions {
             startup: function(found(mf, b"MFStartup\0")?),
-            shutdown: function(found(mf, b"MFShutdown\0")?),
             attributes: function(found(mf, b"MFCreateAttributes\0")?),
             on_stream: function(found(mf, b"MFCreateMFByteStreamOnStream\0")?),
             device_manager: function(found(mf, b"MFCreateDXGIDeviceManager\0")?),
@@ -129,8 +135,8 @@ macro_rules! call {
 
 // ---- the GPU the engines decode on ----
 
-/// The Direct3D 11 device every video's engine decodes with (made once, kept for the program's
-/// life), its immediate context, and the DXGI device manager that hands it to Media Foundation.
+/// The Direct3D 11 device videos' engines decode with, its immediate context, and the DXGI
+/// device manager that hands it to Media Foundation. One for the program, made again once lost.
 struct Gpu {
     device: *mut Com,
     context: *mut Com,
@@ -143,10 +149,31 @@ unsafe impl Send for Gpu {}
 // SAFETY: as above.
 unsafe impl Sync for Gpu {}
 
-/// The device, made at first use; none where the machine has no GPU (or no Direct3D 11).
-fn gpu(functions: &Functions) -> Option<&'static Gpu> {
-    static MADE: OnceLock<Option<Gpu>> = OnceLock::new();
-    MADE.get_or_init(|| make_gpu(functions)).as_ref()
+impl Gpu {
+    /// Whether the device is gone: removed, reset or hung (`GetDeviceRemovedReason`, 39).
+    fn lost(&self) -> bool {
+        // SAFETY: a plain query of a live device.
+        unsafe { call!(self.device, 39, unsafe extern "system" fn(*mut Com) -> i32) != 0 }
+    }
+}
+
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        // SAFETY: each is held once, by this.
+        unsafe { release_all(&[self.manager, self.context, self.device]) };
+    }
+}
+
+/// The device, made at first use and again after a loss (the GPU reset, its driver updated):
+/// one lost would fail every video after. None where the machine has no GPU (or no
+/// Direct3D 11), which is not asked again.
+fn gpu(functions: &Functions) -> Option<Arc<Gpu>> {
+    static MADE: Mutex<Option<Option<Arc<Gpu>>>> = Mutex::new(None);
+    let mut made = MADE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if made.as_ref().is_none_or(|known| known.as_ref().is_some_and(|gpu| gpu.lost())) {
+        *made = Some(make_gpu(functions).map(Arc::new));
+    }
+    made.clone().flatten()
 }
 
 fn make_gpu(functions: &Functions) -> Option<Gpu> {
@@ -270,8 +297,19 @@ unsafe extern "system" fn event(this: *mut Listener<Said>, event: u32, _: usize,
     0
 }
 
-/// The cues the timed text shows now (`IMFTimedTextNotify`): each with its id and track's.
-type Showing = Mutex<Vec<(u32, u32, Cue)>>;
+/// What the timed text told (`IMFTimedTextNotify`): the cues it shows now, each with its id
+/// and track's; and whether its tracks changed since asked (captions in the video stream,
+/// CEA-608, are a track added once their first data plays).
+struct Showing {
+    cues: Mutex<Vec<(u32, u32, Cue)>>,
+    tracks_changed: AtomicBool,
+}
+
+impl Showing {
+    fn cues(&self) -> std::sync::MutexGuard<'_, Vec<(u32, u32, Cue)>> {
+        self.cues.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
 
 #[repr(C)]
 struct ShowingTable {
@@ -287,8 +325,8 @@ struct ShowingTable {
 
 static SHOWING: ShowingTable = ShowingTable {
     unknown: ListenerTable { query, add, release },
-    track_added: ignore_track,
-    track_removed: ignore_track,
+    track_added: tracks_changed,
+    track_removed: tracks_changed,
     track_selected: ignore_selected,
     track_ready: ignore_track,
     error: ignore_error,
@@ -300,6 +338,11 @@ unsafe extern "system" fn ignore_track(_: *mut Listener<Showing>, _: u32) {}
 unsafe extern "system" fn ignore_selected(_: *mut Listener<Showing>, _: u32, _: i32) {}
 unsafe extern "system" fn ignore_error(_: *mut Listener<Showing>, _: u32, _: i32, _: u32) {}
 
+unsafe extern "system" fn tracks_changed(this: *mut Listener<Showing>, _: u32) {
+    // SAFETY: the timed text holds a reference while it calls.
+    unsafe { (*this).told.tracks_changed.store(true, Ordering::Release) };
+}
+
 /// A cue came on show (0), went (1), or all went (2). (Of the cue: 3: GetId, 8: GetTrackId.)
 unsafe extern "system" fn cue(this: *mut Listener<Showing>, happened: u32, _: f64, cue: *mut Com) {
     // SAFETY: the timed text holds a reference while it calls, and lends a live cue (or
@@ -308,7 +351,7 @@ unsafe extern "system" fn cue(this: *mut Listener<Showing>, happened: u32, _: f6
         let ids = (!cue.is_null()).then(|| (call!(cue, 3, unsafe extern "system" fn(*mut Com) -> u32), call!(cue, 8, unsafe extern "system" fn(*mut Com) -> u32)));
         (&(*this).told, ids.map(|ids| ids.0), ids.map(|ids| ids.1))
     };
-    let mut shown = showing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut shown = showing.cues();
     match (happened, id, track) {
         // SAFETY: as above.
         (0, Some(id), Some(track)) => shown.push((id, track, unsafe { cue_of(cue) })),
@@ -320,8 +363,7 @@ unsafe extern "system" fn cue(this: *mut Listener<Showing>, happened: u32, _: f6
 
 unsafe extern "system" fn reset(this: *mut Listener<Showing>) {
     // SAFETY: the timed text holds a reference while it calls.
-    let showing = unsafe { &(*this).told };
-    showing.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+    unsafe { (*this).told.cues().clear() };
 }
 
 // ---- the player ----
@@ -365,7 +407,7 @@ impl Player {
     fn new(sound: bool, on_gpu: bool) -> Result<Player, VideoError> {
         let mut player = Player::started()?;
         let gpu = if on_gpu { gpu(player.functions) } else { None };
-        player.engine = player.make_engine(sound, gpu)?;
+        player.engine = player.make_engine(sound, gpu.as_deref())?;
         player.frames = Frames::new(gpu)?;
         // SAFETY: the engine is alive (0: QueryInterface); the extended interface is released
         // with it.
@@ -380,12 +422,10 @@ impl Player {
     /// Media Foundation started, and what the engine will tell: a player with no engine yet.
     fn started() -> Result<Player, VideoError> {
         let functions = functions().ok_or_else(|| VideoError::NoPlayer("Media Foundation is not installed".into()))?;
-        // SAFETY: COM and Media Foundation are started for this thread (single-threaded, as
-        // OLE wants it; a thread already started either way keeps its kind).
-        let started = unsafe {
-            crate::windows::sys::CoInitializeEx(null_mut(), 2);
-            (functions.startup)(0x0002_0070, 0)
-        };
+        // SAFETY: COM is started for this thread (single-threaded, as OLE wants it; a thread
+        // already started either way keeps its kind).
+        unsafe { crate::windows::sys::CoInitializeEx(null_mut(), 2) };
+        let started = media_foundation_started(functions);
         if started < 0 {
             return Err(VideoError::NoPlayer(format!("Media Foundation did not start ({:#010x})", started as u32)));
         }
@@ -394,7 +434,7 @@ impl Player {
             engine: null_mut(),
             ex: null_mut(),
             said: Listener::boxed(&SAID.unknown, &A_NOTIFY, Said { bits: AtomicU32::new(0), code: AtomicI32::new(0) }),
-            showing: Listener::boxed(&SHOWING.unknown, &A_CUE_NOTIFY, Mutex::new(Vec::new())),
+            showing: Listener::boxed(&SHOWING.unknown, &A_CUE_NOTIFY, Showing { cues: Mutex::new(Vec::new()), tracks_changed: AtomicBool::new(false) }),
             frames: Frames::Bitmap { wic: null_mut(), bitmap: null_mut(), size: (0, 0) },
             last: None,
             loaded: false,
@@ -549,7 +589,9 @@ impl Player {
         let (said, code) = (told.bits.swap(0, Ordering::AcqRel), told.code.load(Ordering::Acquire));
         self.loaded |= said & LOADED != 0;
         let error = (said & FAILED != 0).then(|| format!("the player stopped: {} ({:#010x})", self.error_words(), code as u32));
-        News { ended: said & ENDED != 0, error, clears_on_play: false }
+        // SAFETY: as above.
+        let tracks_changed = unsafe { (*self.showing).told.tracks_changed.swap(false, Ordering::AcqRel) };
+        News { ended: said & ENDED != 0, error, clears_on_play: false, tracks_changed }
     }
     /// The engine's error as words (3: GetError; of the error, 3: GetErrorCode).
     fn error_words(&self) -> &'static str {
@@ -568,8 +610,31 @@ impl Player {
     }
 
     /// The newest frame where there is one not given yet: its width and time, its pixels in
-    /// `into`. (44: OnVideoStreamTick, 40: GetNativeVideoSize, 43: TransferVideoFrame.)
+    /// `into`.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
+        let (at, width) = self.transferred()?;
+        self.frames.read(into).then_some((width, at))
+    }
+
+    /// Whether frames are decoded on the GPU, and so given as textures (`frame_texture`).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn decodes_on_gpu(&self) -> bool {
+        matches!(self.frames, Frames::Gpu { .. })
+    }
+    /// The newest frame where there is one not given yet, left on the GPU: its texture and
+    /// time.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn frame_texture(&mut self) -> Option<(Arc<FrameTexture>, Duration)> {
+        let (at, _) = self.transferred()?;
+        match &self.frames {
+            Frames::Gpu { texture: Some(texture), .. } => Some((texture.clone(), at)),
+            _ => None,
+        }
+    }
+
+    /// Has the engine put its newest frame into the target where there is one not given yet:
+    /// its time and width. (44: OnVideoStreamTick, 40: GetNativeVideoSize.)
+    fn transferred(&mut self) -> Option<(Duration, usize)> {
         let (mut at, mut width, mut height) = (0i64, 0u32, 0u32);
         // SAFETY: the engine is alive, and writes the time and size.
         unsafe {
@@ -579,18 +644,12 @@ impl Player {
             }
             call!(self.engine, 40, unsafe extern "system" fn(*mut Com, *mut u32, *mut u32) -> i32, &mut width, &mut height);
         }
-        if width == 0 || height == 0 || !self.frames.sized(width, height) {
-            return None;
-        }
         let whole = [0i32, 0, width as i32, height as i32];
-        // SAFETY: the engine is alive; the target is a live texture or bitmap of that size.
-        let sent = unsafe { call!(self.engine, 43, Transfer, self.frames.target(), null(), &whole, null()) };
-        if sent < 0 || !self.frames.read(into) {
+        if width == 0 || height == 0 || !self.frames.sized(width, height) || !self.frames.transfer(self.engine, &whole) {
             return None;
         }
-        into.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
         self.last = Some(at);
-        Some((width as usize, Duration::from_nanos(at.max(0) as u64 * 100)))
+        Some((Duration::from_nanos(at.max(0) as u64 * 100), width as usize))
     }
 
     // ---- tracks ----
@@ -692,8 +751,7 @@ impl Player {
     pub(crate) fn caption(&mut self) -> Option<String> {
         let id = *self.caption_ids.get(self.captions?)?;
         // SAFETY: ours is one of its references.
-        let showing = unsafe { &(*self.showing).told };
-        let shown = showing.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let shown = unsafe { (*self.showing).told.cues() };
         let mut cues: Vec<&Cue> = shown.iter().filter(|(_, track, _)| *track == id).map(|(_, _, cue)| cue).collect();
         cues.sort_by_key(|cue| cue.from);
         let first = cues.first()?.text.clone();
@@ -787,19 +845,20 @@ type CopyPixels = unsafe extern "system" fn(*mut Com, *const c_void, u32, u32, *
 type Map = unsafe extern "system" fn(*mut Com, *mut Com, u32, u32, u32, *mut Pixels) -> i32;
 type MakeTexture = unsafe extern "system" fn(*mut Com, *const TextureDescription, *const c_void, *mut *mut Com) -> i32;
 
-/// Where the engine puts each new frame, and the CPU reads it from.
+/// Where the engine puts each new frame.
 enum Frames {
-    /// On the GPU: a texture it draws into, and a copy the CPU can read.
-    Gpu { gpu: &'static Gpu, drawn: *mut Com, readable: *mut Com, size: (u32, u32) },
+    /// On the GPU, in a texture of the device it decodes on (made at the first frame, again
+    /// when the size changes).
+    Gpu { gpu: Arc<Gpu>, texture: Option<Arc<FrameTexture>> },
     /// A WIC bitmap, made by WIC's factory.
     Bitmap { wic: *mut Com, bitmap: *mut Com, size: (u32, u32) },
 }
 
 impl Frames {
     /// Frames on `gpu`, or in a bitmap where none.
-    fn new(gpu: Option<&'static Gpu>) -> Result<Frames, VideoError> {
+    fn new(gpu: Option<Arc<Gpu>>) -> Result<Frames, VideoError> {
         if let Some(gpu) = gpu {
-            return Ok(Frames::Gpu { gpu, drawn: null_mut(), readable: null_mut(), size: (0, 0) });
+            return Ok(Frames::Gpu { gpu, texture: None });
         }
         let mut wic = null_mut();
         // SAFETY: the factory is made with its interface id.
@@ -810,22 +869,15 @@ impl Frames {
         }
     }
 
-    /// What the engine transfers into.
-    fn target(&self) -> *mut Com {
-        match self {
-            Frames::Gpu { drawn, .. } => *drawn,
-            Frames::Bitmap { bitmap, .. } => *bitmap,
-        }
-    }
-
     /// Makes the target this size where it is not: whether it is.
     fn sized(&mut self, width: u32, height: u32) -> bool {
         match self {
-            Frames::Gpu { size, drawn: target, .. } | Frames::Bitmap { size, bitmap: target, .. } if *size == (width, height) && !target.is_null() => true,
-            Frames::Gpu { gpu, drawn, readable, size } => {
-                *size = (width, height);
-                remade_textures(gpu, drawn, readable, *size)
+            Frames::Gpu { texture: Some(texture), .. } if texture.size == (width, height) => true,
+            Frames::Gpu { gpu, texture } => {
+                *texture = FrameTexture::new(gpu, (width, height)).map(Arc::new);
+                texture.is_some()
             }
+            Frames::Bitmap { size, bitmap, .. } if *size == (width, height) && !bitmap.is_null() => true,
             Frames::Bitmap { wic, bitmap, size } => {
                 *size = (width, height);
                 remade_bitmap(*wic, bitmap, *size)
@@ -833,26 +885,155 @@ impl Frames {
         }
     }
 
+    /// Has the engine transfer its frame into the target, `whole` its rectangle (43:
+    /// TransferVideoFrame): whether it did.
+    fn transfer(&self, engine: *mut Com, whole: &[i32; 4]) -> bool {
+        // SAFETY: the engine is alive; the target is a live texture or bitmap of that size,
+        // the texture held by this device while drawn into.
+        unsafe {
+            match self {
+                Frames::Gpu { texture: Some(texture), .. } => texture.held(|| call!(engine, 43, Transfer, texture.drawn, null(), whole, null()) >= 0),
+                Frames::Gpu { texture: None, .. } => false,
+                Frames::Bitmap { bitmap, .. } => call!(engine, 43, Transfer, *bitmap, null(), whole, null()) >= 0,
+            }
+        }
+    }
+
     /// Reads the frame transferred into the target: whether it did.
     fn read(&self, into: &mut Vec<u32>) -> bool {
-        match *self {
-            Frames::Gpu { gpu, drawn, readable, size } => read_texture(gpu, [drawn, readable], size, into),
-            Frames::Bitmap { bitmap, size, .. } => read_bitmap(bitmap, size, into),
+        match self {
+            Frames::Gpu { texture: Some(texture), .. } => texture.read(into),
+            Frames::Gpu { texture: None, .. } => false,
+            Frames::Bitmap { bitmap, size, .. } => read_bitmap(*bitmap, *size, into),
         }
     }
 }
 
-/// Makes the texture the engine draws into and the one the CPU reads, this size, in place of
-/// the old: whether both were made. (0x28: a render and shader target; 3, 0x20000: staging,
-/// read by the CPU.)
-fn remade_textures(gpu: &Gpu, drawn: &mut *mut Com, readable: &mut *mut Com, (width, height): (u32, u32)) -> bool {
-    // SAFETY: the old textures are released; new ones made on the live device.
-    unsafe {
-        release_all(&[*drawn, *readable]);
-        *drawn = texture(gpu, width, height, [0, 0x28, 0]);
-        *readable = texture(gpu, width, height, [3, 0, 0x20000]);
+/// A frame on the GPU: the texture the engine draws it into, and a copy the CPU reads it from.
+/// With `gpu-draw` the texture is shared with windows' devices, which draw the frame from it:
+/// a keyed mutex orders the devices' work on it.
+pub(crate) struct FrameTexture {
+    gpu: Arc<Gpu>,
+    drawn: *mut Com,
+    readable: *mut Com,
+    /// Its keyed mutex (`IDXGIKeyedMutex`), and the handle other devices open it by: null and 0
+    /// where the device could not share it.
+    #[cfg(feature = "gpu-draw")]
+    mutex: *mut Com,
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) handle: isize,
+    /// Its width and height.
+    pub(crate) size: (u32, u32),
+}
+
+// SAFETY: its device is multithread protected (see `Gpu`); the textures are used under its
+// lock, the shared one under its keyed mutex.
+unsafe impl Send for FrameTexture {}
+// SAFETY: as above.
+unsafe impl Sync for FrameTexture {}
+
+/// `IDXGIKeyedMutex` and `IDXGIResource`.
+#[cfg(feature = "gpu-draw")]
+pub(crate) const A_KEYED_MUTEX: [u32; 4] = named(0x9D8E_1289, 0xD7B3, 0x465F, [0x81, 0x26, 0x25, 0x0E, 0x34, 0x9A, 0xF8, 0x5D]);
+#[cfg(feature = "gpu-draw")]
+const A_DXGI_RESOURCE: [u32; 4] = named(0x035F_3AB4, 0x482E, 0x4E50, [0xB4, 0x1F, 0x8A, 0x7F, 0x8B, 0xD8, 0x96, 0x0B]);
+
+impl FrameTexture {
+    /// The two textures, this size, on `gpu`; none where they can't be made. (0x28: a render
+    /// and shader target, with `gpu-draw` shared with a keyed mutex, 0x100, where the device
+    /// can; 3, 0x20000: staging, read by the CPU.)
+    fn new(gpu: &Arc<Gpu>, (width, height): (u32, u32)) -> Option<FrameTexture> {
+        let shared = if cfg!(feature = "gpu-draw") { 0x100 } else { 0 };
+        // SAFETY: the device is alive.
+        let (mut drawn, readable) = unsafe { (texture(gpu, width, height, [0, 0x28, 0, shared]), texture(gpu, width, height, [3, 0, 0x20000, 0])) };
+        if drawn.is_null() {
+            // SAFETY: as above.
+            drawn = unsafe { texture(gpu, width, height, [0, 0x28, 0, 0]) };
+        }
+        #[cfg(not(feature = "gpu-draw"))]
+        let made = FrameTexture { gpu: gpu.clone(), drawn, readable, size: (width, height) };
+        #[cfg(feature = "gpu-draw")]
+        let made = FrameTexture { gpu: gpu.clone(), drawn, readable, mutex: null_mut(), handle: 0, size: (width, height) }.shared();
+        (!made.drawn.is_null() && !made.readable.is_null()).then_some(made)
     }
-    !drawn.is_null() && !readable.is_null()
+
+    /// The same with its keyed mutex and shared handle (of `IDXGIResource`, 8: GetSharedHandle),
+    /// where it is shared: else windows' devices can't open it, and its frames are read back.
+    #[cfg(feature = "gpu-draw")]
+    fn shared(mut self) -> FrameTexture {
+        if self.drawn.is_null() {
+            return self;
+        }
+        let mut resource = null_mut();
+        // SAFETY: the texture is alive; what it gives is released (the mutex with it, if any).
+        unsafe {
+            call!(self.drawn, 0, Ask, &A_KEYED_MUTEX, &mut self.mutex);
+            call!(self.drawn, 0, Ask, &A_DXGI_RESOURCE, &mut resource);
+            if !resource.is_null() {
+                call!(resource, 8, unsafe extern "system" fn(*mut Com, *mut isize) -> i32, &mut self.handle);
+                Com::release(resource);
+            }
+        }
+        self
+    }
+
+    /// Does `work` on the texture drawn into, holding its keyed mutex (8: AcquireSync, 9:
+    /// ReleaseSync): other devices' work on it is done first, and theirs waits for this.
+    fn held<R>(&self, work: impl FnOnce() -> R) -> R {
+        #[cfg(feature = "gpu-draw")]
+        if !self.mutex.is_null() {
+            // SAFETY: the mutex is alive; key 0 is the one every device takes.
+            unsafe { call!(self.mutex, 8, unsafe extern "system" fn(*mut Com, u64, u32) -> i32, 0, u32::MAX) };
+        }
+        let done = work();
+        #[cfg(feature = "gpu-draw")]
+        if !self.mutex.is_null() {
+            // SAFETY: taken above.
+            unsafe { call!(self.mutex, 9, unsafe extern "system" fn(*mut Com, u64) -> i32, 0) };
+        }
+        done
+    }
+
+    /// Copies the frame to the readable texture and reads its rows into `into`, opaque:
+    /// whether it could (of the device's context, 47: CopyResource, 14: Map, 15: Unmap).
+    pub(crate) fn read(&self, into: &mut Vec<u32>) -> bool {
+        let (width, height) = (self.size.0 as usize, self.size.1 as usize);
+        into.resize(width * height, 0);
+        let mut mapped = Pixels { first: null(), row_pitch: 0, slice_pitch: 0 };
+        // SAFETY: two live textures of one size and format; the copy is mapped for reading.
+        let mapped_now = unsafe {
+            self.held(|| call!(self.gpu.context, 47, unsafe extern "system" fn(*mut Com, *mut Com, *mut Com), self.readable, self.drawn));
+            call!(self.gpu.context, 14, Map, self.readable, 0, 1, 0, &mut mapped) >= 0 && !mapped.first.is_null()
+        };
+        if !mapped_now {
+            return false;
+        }
+        for (row, line) in into.chunks_exact_mut(width).enumerate() {
+            // SAFETY: each mapped row holds `width` pixels, at its pitch from the first.
+            let from = unsafe { std::slice::from_raw_parts(mapped.first.cast::<u8>().add(row * mapped.row_pitch as usize).cast::<u32>(), width) };
+            line.iter_mut().zip(from).for_each(|(pixel, from)| *pixel = from | 0xFF00_0000);
+        }
+        // SAFETY: mapped above.
+        unsafe { call!(self.gpu.context, 15, unsafe extern "system" fn(*mut Com, *mut Com, u32), self.readable, 0) };
+        #[cfg(test)]
+        READ_BACK.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+}
+
+/// (Tests: frames read back from the GPU so far.)
+#[cfg(test)]
+pub(crate) static READ_BACK: AtomicU32 = AtomicU32::new(0);
+
+impl Drop for FrameTexture {
+    fn drop(&mut self) {
+        // SAFETY: each is held once, or null (the handle goes with the texture).
+        unsafe {
+            #[cfg(feature = "gpu-draw")]
+            release_all(&[self.mutex]);
+            release_all(&[self.drawn, self.readable]);
+        }
+    }
 }
 
 /// Makes a bitmap this size in place of the old: whether it was made (17:
@@ -867,42 +1048,22 @@ fn remade_bitmap(wic: *mut Com, bitmap: &mut *mut Com, (width, height): (u32, u3
     !bitmap.is_null()
 }
 
-/// Copies the texture drawn into to the readable one and reads its rows into `into`: whether it
-/// could (of the device's context, 47: CopyResource, 14: Map, 15: Unmap).
-fn read_texture(gpu: &Gpu, [drawn, readable]: [*mut Com; 2], (width, height): (u32, u32), into: &mut Vec<u32>) -> bool {
-    into.resize(width as usize * height as usize, 0);
-    let mut mapped = Pixels { first: null(), row_pitch: 0, slice_pitch: 0 };
-    // SAFETY: two live textures of one size and format; the copy is mapped for reading.
-    let mapped_now = unsafe {
-        call!(gpu.context, 47, unsafe extern "system" fn(*mut Com, *mut Com, *mut Com), readable, drawn);
-        call!(gpu.context, 14, Map, readable, 0, 1, 0, &mut mapped) >= 0 && !mapped.first.is_null()
-    };
-    if !mapped_now {
-        return false;
-    }
-    for (row, line) in into.chunks_exact_mut(width as usize).enumerate() {
-        // SAFETY: each mapped row holds `width` pixels, at its pitch from the first.
-        let from = unsafe { std::slice::from_raw_parts(mapped.first.cast::<u8>().add(row * mapped.row_pitch as usize).cast::<u32>(), width as usize) };
-        line.copy_from_slice(from);
-    }
-    // SAFETY: mapped above.
-    unsafe { call!(gpu.context, 15, unsafe extern "system" fn(*mut Com, *mut Com, u32), readable, 0) };
-    true
-}
-
-/// Reads a bitmap's pixels into `into` (7: CopyPixels): whether it could.
+/// Reads a bitmap's pixels into `into` (7: CopyPixels), opaque: whether it could.
 fn read_bitmap(bitmap: *mut Com, (width, height): (u32, u32), into: &mut Vec<u32>) -> bool {
     into.resize(width as usize * height as usize, 0);
     // SAFETY: a live bitmap of that size, and `into` holds all its pixels.
-    unsafe { call!(bitmap, 7, CopyPixels, null(), width * 4, width * height * 4, into.as_mut_ptr()) >= 0 }
+    let read = unsafe { call!(bitmap, 7, CopyPixels, null(), width * 4, width * height * 4, into.as_mut_ptr()) >= 0 };
+    into.iter_mut().for_each(|pixel| *pixel |= 0xFF00_0000);
+    read
 }
 
-/// A BGRA texture on the GPU: its usage, bind flags and CPU access (5: CreateTexture2D).
+/// A BGRA texture on the GPU: its usage, bind flags, CPU access and other flags (5:
+/// CreateTexture2D).
 ///
 /// # Safety
 /// The device is alive.
-unsafe fn texture(gpu: &Gpu, width: u32, height: u32, [usage, bind_flags, cpu_access_flags]: [u32; 3]) -> *mut Com {
-    let described = TextureDescription { width, height, mip_levels: 1, array_size: 1, format: B8G8R8A8_UNORM, sample_count: 1, sample_quality: 0, usage, bind_flags, cpu_access_flags, misc_flags: 0 };
+unsafe fn texture(gpu: &Gpu, width: u32, height: u32, [usage, bind_flags, cpu_access_flags, misc_flags]: [u32; 4]) -> *mut Com {
+    let described = TextureDescription { width, height, mip_levels: 1, array_size: 1, format: B8G8R8A8_UNORM, sample_count: 1, sample_quality: 0, usage, bind_flags, cpu_access_flags, misc_flags };
     let mut made = null_mut();
     // SAFETY: as the caller promises.
     unsafe { call!(gpu.device, 5, MakeTexture, &described, null(), &mut made) };
@@ -984,12 +1145,9 @@ unsafe fn release_all(objects: &[*mut Com]) {
 
 impl Drop for Frames {
     fn drop(&mut self) {
-        // SAFETY: each is held once, or null.
-        unsafe {
-            match *self {
-                Frames::Gpu { drawn, readable, .. } => release_all(&[drawn, readable]),
-                Frames::Bitmap { wic, bitmap, .. } => release_all(&[bitmap, wic]),
-            }
+        if let Frames::Bitmap { wic, bitmap, .. } = *self {
+            // SAFETY: each is held once, or null.
+            unsafe { release_all(&[bitmap, wic]) };
         }
     }
 }
@@ -997,8 +1155,7 @@ impl Drop for Frames {
 impl Drop for Player {
     fn drop(&mut self) {
         // SAFETY: the engine, where it was made, is shut down (42) and released with its
-        // interfaces; then our references to what tells us; Media Foundation is stopped as
-        // often as started.
+        // interfaces; then our references to what tells us.
         unsafe {
             release_all(&[self.timed_text, self.ex]);
             if !self.engine.is_null() {
@@ -1011,7 +1168,6 @@ impl Drop for Player {
             if !self.hearing.is_null() {
                 release(self.hearing);
             }
-            (self.functions.shutdown)();
         }
     }
 }
@@ -1357,6 +1513,170 @@ mod hearing {
         fn drop(&mut self) {
             // SAFETY: each held once, or null.
             unsafe { release_all(&[self.input, self.output, self.held]) };
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod played {
+    //! For tests: what this process plays, as Windows mixes it (process loopback capture of
+    //! WASAPI), at 48 kHz in floats.
+    use super::*;
+
+    const LOOPBACK_DEVICE: &str = "VAD\\Process_Loopback";
+    const AN_AUDIO_CLIENT: [u32; 4] = named(0x1CB9_AD4C, 0xDBFA, 0x4C32, [0xB1, 0x78, 0xC2, 0xF5, 0x68, 0xA7, 0x03, 0xB2]);
+    const A_CAPTURE_CLIENT: [u32; 4] = named(0xC8AD_BD64, 0xE71E, 0x48A0, [0xA4, 0xDE, 0x18, 0x5C, 0x39, 0x5C, 0xD3, 0x17]);
+    const A_COMPLETION: [u32; 4] = named(0x41D9_49AB, 0x9862, 0x444A, [0x80, 0xF6, 0xC2, 0x61, 0x33, 0x4D, 0xA5, 0xEB]);
+    const AN_AGILE_OBJECT: [u32; 4] = named(0x94EA_2B94, 0xE9CC, 0x49E0, [0xC0, 0xFF, 0xEE, 0x64, 0xCA, 0x8F, 0x5B, 0x90]);
+    pub(crate) const RATE: u32 = 48_000;
+
+    #[link(name = "mmdevapi")]
+    unsafe extern "system" {
+        fn ActivateAudioInterfaceAsync(path: *const u16, interface: *const [u32; 4], parameters: *const Blob, handler: *mut c_void, operation: *mut *mut Com) -> i32;
+    }
+
+    /// A `PROPVARIANT` holding a `VT_BLOB`.
+    #[repr(C)]
+    struct Blob {
+        kind: u16,
+        reserved: [u16; 3],
+        size: u32,
+        data: *const u8,
+    }
+
+    /// `IActivateAudioInterfaceCompletionHandler`, agile; it does nothing (the result is asked
+    /// for until it is there).
+    #[repr(C)]
+    struct Handler {
+        table: &'static HandlerTable,
+    }
+    #[repr(C)]
+    struct HandlerTable {
+        query: unsafe extern "system" fn(*mut Handler, *const [u32; 4], *mut *mut c_void) -> i32,
+        add: unsafe extern "system" fn(*mut Handler) -> u32,
+        release: unsafe extern "system" fn(*mut Handler) -> u32,
+        completed: unsafe extern "system" fn(*mut Handler, *mut Com) -> i32,
+    }
+    static HANDLER: Handler = Handler { table: &HandlerTable { query: handler_query, add: kept, release: kept, completed } };
+    unsafe extern "system" fn handler_query(this: *mut Handler, of: *const [u32; 4], out: *mut *mut c_void) -> i32 {
+        // SAFETY: COM passes a valid interface id and a place for the answer.
+        unsafe {
+            let ours = [AN_UNKNOWN, A_COMPLETION, AN_AGILE_OBJECT].contains(&*of);
+            *out = if ours { this.cast() } else { null_mut() };
+            if ours { 0 } else { 0x8000_4002_u32 as i32 }
+        }
+    }
+    /// It is static: counting references is not needed.
+    unsafe extern "system" fn kept(_: *mut Handler) -> u32 {
+        1
+    }
+    unsafe extern "system" fn completed(_: *mut Handler, _: *mut Com) -> i32 {
+        0
+    }
+
+    /// A capture of what this process plays, started.
+    pub(crate) struct Capture {
+        client: *mut Com,
+        capture: *mut Com,
+        event: isize,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateEventW(attributes: *const c_void, manual: i32, initial: i32, name: *const u16) -> isize;
+        fn CloseHandle(handle: usize) -> i32;
+    }
+
+    impl Capture {
+        /// Starts capturing what this process plays, stereo floats at 48 kHz; none where Windows
+        /// can't (before Windows 10 2004).
+        pub(crate) fn start() -> Option<Capture> {
+            let parameters = [1u32, std::process::id(), 0];
+            let blob = Blob { kind: 65, reserved: [0; 3], size: 12, data: parameters.as_ptr().cast() };
+            let path = wide(LOOPBACK_DEVICE);
+            let mut operation = null_mut();
+            // SAFETY: COM for this thread, of either kind.
+            unsafe { crate::windows::sys::CoInitializeEx(null_mut(), 2) };
+            // SAFETY: the activation is asked for with parameters that live through the call;
+            // its result is asked for until it is there (3: GetActivateResult), then released.
+            let client = unsafe {
+                if ActivateAudioInterfaceAsync(path.as_ptr(), &AN_AUDIO_CLIENT, &blob, (&raw const HANDLER).cast_mut().cast(), &mut operation) < 0 || operation.is_null() {
+                    return None;
+                }
+                let (mut result, mut client) = (0i32, null_mut());
+                let start = std::time::Instant::now();
+                while call!(operation, 3, unsafe extern "system" fn(*mut Com, *mut i32, *mut *mut Com) -> i32, &mut result, &mut client) < 0 && start.elapsed() < Duration::from_secs(5) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Com::release(operation);
+                if result < 0 || client.is_null() {
+                    return None;
+                }
+                client
+            };
+            // `WAVEFORMATEX`: IEEE floats, two channels, 48 kHz, 8 bytes a frame, 32 bits.
+            let format: [u16; 9] = [3, 2, RATE as u16, (RATE >> 16) as u16, (RATE * 8) as u16, ((RATE * 8) >> 16) as u16, 8, 32, 0];
+            let mut capture = null_mut();
+            // SAFETY: the client is alive: it is initialized for loopback with events (3:
+            // Initialize, 13: SetEventHandle), started (10), and its capture service asked for
+            // (14: GetService).
+            unsafe {
+                let event = CreateEventW(null(), 0, 0, null());
+                let flags = 0x0002_0000 | 0x0004_0000 | 0x8000_0000 | 0x0800_0000;
+                let ready = call!(client, 3, unsafe extern "system" fn(*mut Com, u32, u32, i64, i64, *const u16, *const c_void) -> i32, 0, flags, 2_000_000, 0, format.as_ptr(), null()) >= 0
+                    && call!(client, 13, unsafe extern "system" fn(*mut Com, isize) -> i32, event) >= 0
+                    && call!(client, 14, unsafe extern "system" fn(*mut Com, *const [u32; 4], *mut *mut Com) -> i32, &A_CAPTURE_CLIENT, &mut capture) >= 0
+                    && call!(client, 10, unsafe extern "system" fn(*mut Com) -> i32) >= 0;
+                if !ready || capture.is_null() {
+                    release_all(&[capture, client]);
+                    CloseHandle(event as usize);
+                    return None;
+                }
+                Some(Capture { client, capture, event })
+            }
+        }
+
+        /// What was played since last asked: the first channel.
+        pub(crate) fn take(&mut self) -> Vec<f32> {
+            let mut taken = Vec::new();
+            // SAFETY: the capture client is alive; each packet is read and released (5:
+            // GetNextPacketSize, 3: GetBuffer, 4: ReleaseBuffer); silent ones (flag 2) are zeros.
+            unsafe {
+                let mut next = 0u32;
+                while call!(self.capture, 5, unsafe extern "system" fn(*mut Com, *mut u32) -> i32, &mut next) >= 0 && next > 0 {
+                    let (mut data, mut frames, mut flags) = (null_mut::<f32>(), 0u32, 0u32);
+                    if call!(
+                        self.capture,
+                        3,
+                        unsafe extern "system" fn(*mut Com, *mut *mut f32, *mut u32, *mut u32, *mut u64, *mut u64) -> i32,
+                        &mut data,
+                        &mut frames,
+                        &mut flags,
+                        null_mut(),
+                        null_mut()
+                    ) < 0
+                    {
+                        break;
+                    }
+                    match flags & 2 != 0 || data.is_null() {
+                        true => taken.extend(std::iter::repeat_n(0.0, frames as usize)),
+                        false => taken.extend(std::slice::from_raw_parts(data, frames as usize * 2).iter().step_by(2)),
+                    }
+                    call!(self.capture, 4, unsafe extern "system" fn(*mut Com, u32) -> i32, frames);
+                }
+            }
+            taken
+        }
+    }
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            // SAFETY: stopped (11) and released; the event closed.
+            unsafe {
+                call!(self.client, 11, unsafe extern "system" fn(*mut Com) -> i32);
+                release_all(&[self.capture, self.client]);
+                CloseHandle(self.event as usize);
+            }
         }
     }
 }

@@ -50,6 +50,7 @@ impl Library {
 
     /// Finds `names` (each ending in a zero, one after another) into `found`, in order;
     /// nothing where one is missing.
+    #[cfg(any(test, not(target_os = "android"), feature = "gpu", feature = "video"))]
     pub(crate) fn find_all(&self, names: &'static str, found: &mut [*const c_void]) -> Option<()> {
         crate::functions::found_all(&mut |name| self.symbol(name).unwrap_or(std::ptr::null()), &mut names.split_inclusive('\0'), found).ok()
     }
@@ -65,7 +66,8 @@ impl Drop for Library {
 /// Declares a system library as a struct of its functions (`vis` its visibility and theirs),
 /// found by name when it is opened (`open`; none where the library or one of its functions is
 /// missing). The library closes when the struct is dropped. `...` stands for variadic
-/// arguments.
+/// arguments. (On Android only `gpu` and `video` declare libraries.)
+#[cfg(any(test, not(target_os = "android"), feature = "gpu", feature = "video"))]
 macro_rules! library {
     ($vis:vis $name:ident, [$($file:literal),+], { $(fn $function:ident $arguments:tt $(-> $result:ty)?;)* }) => {
         /// The library's functions, and the library, open while they are.
@@ -94,6 +96,7 @@ macro_rules! library {
     (@fn ($($argument:ty),*) $(-> $result:ty)?) => { unsafe extern "C" fn($($argument),*) $(-> $result)? };
     (@fn ($($argument:ty),*, ...) $(-> $result:ty)?) => { unsafe extern "C" fn($($argument),*, ...) $(-> $result)? };
 }
+#[cfg(any(not(target_os = "android"), feature = "gpu", feature = "video"))]
 pub(crate) use library;
 
 #[cfg(test)]

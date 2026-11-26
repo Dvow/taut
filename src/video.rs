@@ -44,6 +44,8 @@ use crate::video_apple::{Player, caption_style};
 use crate::video_gstreamer::{Player, caption_style};
 #[cfg(target_family = "wasm")]
 use crate::video_web::{Player, caption_style};
+#[cfg(all(feature = "gpu-draw", windows))]
+pub(crate) use crate::video_windows::FrameTexture;
 #[cfg(windows)]
 use crate::video_windows::{Player, caption_style};
 
@@ -128,7 +130,7 @@ impl Track {
 }
 
 /// The tracks a player found in its source, and which sound track plays.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct Tracks {
     pub sound: Vec<Track>,
     pub captions: Vec<Track>,
@@ -167,6 +169,9 @@ pub(crate) struct News {
     pub error: Option<String>,
     /// The error clears at the next play: a browser waiting for a press.
     pub clears_on_play: bool,
+    /// The source's tracks changed since they were read: captions in the video stream found
+    /// once they play.
+    pub tracks_changed: bool,
 }
 
 /// Numbers each video, for its box's key.
@@ -487,10 +492,8 @@ impl Video {
         if news.ended {
             self.restart_or_stop();
         }
-        let mut pixels = Vec::new();
-        if let Some((width, at)) = self.player.frame(&mut pixels) {
-            self.show(ui, width, pixels, at);
-        }
+        self.tracks_known &= !news.tracks_changed;
+        self.take_frame(ui);
         (self.position, self.length) = (self.player.position(), self.player.length().or(self.length));
         if !self.tracks_known {
             self.take_tracks();
@@ -512,13 +515,31 @@ impl Video {
         self.player.seek(Duration::ZERO);
         self.player.play();
     }
-    /// Shows a new frame of this width, taken at `at`: cut to its box's shape when filling.
-    fn show(&mut self, ui: &mut Ui, width: usize, pixels: Vec<u32>, at: Duration) {
+    /// Takes the player's newest frame, if it has one: left on the GPU where it decodes there,
+    /// else as pixels.
+    fn take_frame(&mut self, ui: &mut Ui) {
+        #[cfg(all(feature = "gpu-draw", windows))]
+        if self.player.decodes_on_gpu() {
+            if let Some((texture, at)) = self.player.frame_texture() {
+                self.show_texture(ui, texture, at);
+            }
+            return;
+        }
+        let mut pixels = Vec::new();
+        if let Some((width, at)) = self.player.frame(&mut pixels) {
+            self.show(ui, width, pixels, at);
+        }
+    }
+    /// A new frame came, taken at `at`, this big.
+    fn came(&mut self, at: Duration, size: (usize, usize)) {
         if let Some(gap) = self.last.and_then(|last| at.checked_sub(last)).filter(|gap| !gap.is_zero()) {
             self.gap = gap.clamp(Duration::from_millis(4), Duration::from_millis(100));
         }
-        (self.last, self.awaited, self.frames) = (Some(at), false, self.frames + 1);
-        self.size = Some((width, pixels.len() / width.max(1)));
+        (self.last, self.awaited, self.frames, self.size) = (Some(at), false, self.frames + 1, Some(size));
+    }
+    /// Shows a new frame of this width, taken at `at`: cut to its box's shape when filling.
+    fn show(&mut self, ui: &mut Ui, width: usize, pixels: Vec<u32>, at: Duration) {
+        self.came(at, (width, pixels.len() / width.max(1)));
         let (width, pixels) = match self.fill {
             true => cut_to(width, pixels, self.room),
             false => (width, pixels),
@@ -528,23 +549,73 @@ impl Video {
             None => self.picture = Some(ui.add_picture(width, pixels)),
         }
     }
+    /// Shows a new frame left on the GPU, taken at `at`: its middle when filling.
+    #[cfg(all(feature = "gpu-draw", windows))]
+    fn show_texture(&mut self, ui: &mut Ui, texture: std::sync::Arc<FrameTexture>, at: Duration) {
+        let size = (texture.size.0 as usize, texture.size.1 as usize);
+        self.came(at, size);
+        let crop = if self.fill { middle(size, self.room) } else { [0, 0, size.0, size.1] };
+        let frame = FrameOnGpu { texture, crop, read: false };
+        match self.picture {
+            Some(picture) => ui.set_picture_texture(picture, frame),
+            None => self.picture = Some(ui.add_picture_texture(frame)),
+        }
+    }
 }
 
 /// The middle of a frame with the shape of a box `room` wide and high: all of it where the box
 /// has no size yet.
-fn cut_to(width: usize, pixels: Vec<u32>, (wide, high): (f32, f32)) -> (usize, Vec<u32>) {
-    let height = pixels.len() / width.max(1);
-    if wide <= 0.0 || high <= 0.0 || height == 0 {
+fn cut_to(width: usize, pixels: Vec<u32>, room: (f32, f32)) -> (usize, Vec<u32>) {
+    let [left, top, cut_w, cut_h] = middle((width, pixels.len() / width.max(1)), room);
+    if cut_w == width {
         return (width, pixels);
+    }
+    let rows = pixels.chunks_exact(width).skip(top).take(cut_h);
+    (cut_w, rows.flat_map(|row| &row[left..left + cut_w]).copied().collect())
+}
+
+/// Where the middle of a frame `width` by `height` with the shape of a box `room` wide and
+/// high lies in it: left, top, width, height. All of it where the box has no size yet.
+fn middle((width, height): (usize, usize), (wide, high): (f32, f32)) -> [usize; 4] {
+    if wide <= 0.0 || high <= 0.0 || height == 0 || width == 0 {
+        return [0, 0, width, height];
     }
     let shape = wide / high;
     let (cut_w, cut_h) = match (width as f32 / height as f32) > shape {
         true => (((height as f32 * shape).round() as usize).clamp(1, width), height),
         false => (width, ((width as f32 / shape).round() as usize).clamp(1, height)),
     };
-    let (left, top) = ((width - cut_w) / 2, (height - cut_h) / 2);
-    let rows = pixels.chunks_exact(width).skip(top).take(cut_h);
-    (cut_w, rows.flat_map(|row| &row[left..left + cut_w]).copied().collect())
+    [(width - cut_w) / 2, (height - cut_h) / 2, cut_w, cut_h]
+}
+
+/// A video's frame left on the GPU, shown by a picture: its texture, the part shown (left,
+/// top, width, height), and whether the picture's pixels hold it yet (read back only for the
+/// CPU).
+#[cfg(all(feature = "gpu-draw", windows))]
+pub(crate) struct FrameOnGpu {
+    pub texture: std::sync::Arc<FrameTexture>,
+    pub crop: [usize; 4],
+    pub read: bool,
+}
+
+#[cfg(all(feature = "gpu-draw", windows))]
+impl FrameOnGpu {
+    /// Reads the part shown back into `into`: whether it could.
+    pub(crate) fn read_into(&self, into: &mut Vec<u32>) -> bool {
+        let [left, top, width, height] = self.crop;
+        let size = (self.texture.size.0 as usize, self.texture.size.1 as usize);
+        if (left, top, width, height) == (0, 0, size.0, size.1) {
+            return self.texture.read(into);
+        }
+        let mut whole = Vec::new();
+        if !self.texture.read(&mut whole) {
+            return false;
+        }
+        let rows = whole.chunks_exact(size.0).skip(top).take(height);
+        into.clear();
+        into.extend(rows.flat_map(|row| &row[left..left + width]));
+        true
+    }
 }
 
 /// A file kind's usual ending, told by its first bytes: for players that pick a reader by name.
@@ -760,12 +831,12 @@ fn clock(time: Duration) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// (Each system uses some of them.)
     #[allow(dead_code)]
-    mod files {
+    pub(crate) mod files {
         include!("../tests/video/files.rs");
     }
     use files::*;
@@ -773,7 +844,7 @@ mod tests {
     /// Frames 0 to 29 at 10 a second: a lossless H.264 MP4 where the system plays H.264; on
     /// Linux an MJPEG AVI where GStreamer reads those, else Theora in Ogg made by `ffmpeg`.
     /// `sound` adds a silent track.
-    pub(super) fn test_file(sound: bool) -> Option<PathBuf> {
+    pub(crate) fn test_file(sound: bool) -> Option<PathBuf> {
         let name = if sound { "with-sound" } else { "silent" };
         #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
         if !crate::video_gstreamer::has_element(c"avidemux") || !crate::video_gstreamer::has_element(c"jpegdec") {
@@ -878,11 +949,15 @@ mod tests {
     }
     /// Passes time until `done`, or fails after 10 s saying `what`.
     fn until(trial: &mut Trial<Video>, what: &str, done: impl Fn(&Video) -> bool) {
+        until_within(trial, what, Duration::from_secs(10), done);
+    }
+    /// The same within `limit`.
+    fn until_within(trial: &mut Trial<Video>, what: &str, limit: Duration, done: impl Fn(&Video) -> bool) {
         // (Run first: the test changed the video from outside, as an app's timer would.)
         trial.run();
         let start = std::time::Instant::now();
         while !done(&trial.app) {
-            assert!(start.elapsed() < Duration::from_secs(10), "{what} did not happen: {:?}", trial.app);
+            assert!(start.elapsed() < limit, "{what} did not happen: {:?}", trial.app);
             pass(trial, Duration::from_millis(20));
         }
     }
@@ -1113,13 +1188,14 @@ mod tests {
         assert_eq!(trial.ui.picture_size(picture), Some((32, 48)));
     }
 
-    /// Opens, plays a moment and drops a video, `times` over.
+    /// Opens, plays a moment and drops a video, `times` over. (The first frame may take 30 s:
+    /// with five busy threads a core, Media Foundation's first opens took 8 s here.)
     #[cfg(not(target_vendor = "apple"))]
     fn open_and_close(times: usize) {
         for _ in 0..times {
             let Some(video) = opened(true) else { return };
             let mut trial = trial(video, false);
-            until(&mut trial, "the first frame", |video| video.size().is_some());
+            until_within(&mut trial, "the first frame", Duration::from_secs(30), |video| video.size().is_some());
             trial.app.play();
             pass(&mut trial, Duration::from_millis(100));
             let Trial { app, mut ui, .. } = trial;
@@ -1230,15 +1306,20 @@ mod tests {
         })
     }
 
-    /// The tone the video plays now, in Hz, where this system's player lets it be heard here.
-    fn heard(video: &mut Video) -> Option<f32> {
+    /// The sound the video's player handed on last, where this system's player lets it be heard
+    /// here: its first channel, and its rate.
+    fn heard_samples(video: &mut Video) -> Option<(Vec<f32>, u32)> {
         #[cfg(any(windows, target_os = "android", all(unix, not(target_vendor = "apple"))))]
-        return video.player.heard().map(|(samples, rate)| hertz_of(&samples, rate));
+        return video.player.heard();
         #[cfg(not(any(windows, target_os = "android", all(unix, not(target_vendor = "apple")))))]
         {
             let _ = video;
             None
         }
+    }
+    /// The tone the video plays now, in Hz, where this system's player lets it be heard here.
+    fn heard(video: &mut Video) -> Option<f32> {
+        heard_samples(video).map(|(samples, rate)| hertz_of(&samples, rate))
     }
 
     /// The first two letters of each track's language.
@@ -1426,6 +1507,126 @@ mod tests {
             trial.run();
         }
         assert_eq!(shown(&trial), 12, "{:?}", trial.app);
+    }
+
+    /// What a video plays, heard here. Windows: what it mixes for this process, the video
+    /// played at −130 dB (inaudible), since Media Foundation changes the speed after the
+    /// effect that hears it. Elsewhere: what the player hands its sound device (`heard`).
+    struct Ear {
+        #[cfg(windows)]
+        capture: crate::video_windows::played::Capture,
+        played: Vec<f32>,
+        rate: u32,
+    }
+
+    impl Ear {
+        /// The video opened to be heard, and an ear on it; none where there is no player, or
+        /// this system's sound can't be heard here.
+        fn open(file: &Path) -> Option<(Video, Ear)> {
+            #[cfg(windows)]
+            {
+                let capture = crate::video_windows::played::Capture::start()?;
+                let mut video = player(Video::open(file))?;
+                video.set_volume(1e-6);
+                Some((video, Ear { capture, played: Vec::new(), rate: crate::video_windows::played::RATE }))
+            }
+            #[cfg(not(windows))]
+            opened_to_hear(file).map(|video| (video, Ear { played: Vec::new(), rate: 0 }))
+        }
+        /// Forgets what it heard.
+        fn clear(&mut self) {
+            #[cfg(windows)]
+            self.capture.take();
+            self.played.clear();
+        }
+        /// Takes what was played since last asked.
+        fn listen(&mut self, video: &mut Video) {
+            #[cfg(windows)]
+            {
+                let _ = video;
+                self.played.extend(self.capture.take());
+            }
+            #[cfg(not(windows))]
+            if let Some((samples, rate)) = heard_samples(video) {
+                (self.played, self.rate) = (samples, rate);
+            }
+        }
+        /// The tone of the last half second heard, in Hz, where it sounded: a player starved on
+        /// a busy computer leaves gaps of silence, which are not its pitch. None where all was
+        /// silent.
+        fn tone(&self) -> Option<f32> {
+            let last = &self.played[self.played.len().saturating_sub(self.rate as usize / 2)..];
+            let sounding: Vec<f32> = last.iter().copied().filter(|sample| *sample != 0.0).collect();
+            (sounding.len() > 200).then(|| hertz_of(&sounding, self.rate))
+        }
+    }
+
+    #[test]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
+    fn the_pitch_stays_at_other_speeds() {
+        let _alone = alone();
+        #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+        if !skipped(crate::video_gstreamer::has_element(c"scaletempo"), "GStreamer here has no scaletempo (plugins-good): the pitch moves") {
+            return;
+        }
+        let Some((file, _)) = languages_file() else { return };
+        for speed in [0.5, 1.5, 2.0] {
+            let Some((mut video, mut ear)) = Ear::open(&file) else { return eprintln!("this player's sound can't be heard here: skipped") };
+            video.set_looping(true);
+            video.set_speed(speed);
+            let mut trial = trial(video, false);
+            let ready = |video: &Video| (video.size().is_some() && video.sound_tracks().len() == 2) || video.error().is_some();
+            until(&mut trial, "the first frame and the sound tracks", ready);
+            if let Some(why) = trial.app.error() {
+                return eprintln!("{why} (no sound device?): the tones skipped");
+            }
+            // (English, at 400 Hz: some demuxers list the tracks out of the file's order.)
+            let english = languages(trial.app.sound_tracks()).iter().position(|language| language == "en").expect("an English track");
+            trial.app.set_sound_track(english);
+            trial.app.play();
+            pass(&mut trial, Duration::from_millis(500));
+            ear.clear();
+            let (start, from) = (std::time::Instant::now(), trial.app.player.position());
+            while start.elapsed() < Duration::from_secs(1) {
+                pass(&mut trial, Duration::from_millis(20));
+                ear.listen(&mut trial.app);
+            }
+            let rate = (trial.app.player.position() - from).as_secs_f32() / start.elapsed().as_secs_f32();
+            assert!((rate - speed).abs() <= speed * 0.2, "at {speed}× the time moved {rate} s a second");
+            let Some(hertz) = ear.tone() else { return eprintln!("nothing was heard (no sound device?): the tones skipped") };
+            eprintln!("at {speed}× the 400 Hz tone plays at {hertz} Hz");
+            assert!((hertz - 400.0).abs() <= 40.0, "at {speed}× the 400 Hz tone plays at {hertz} Hz");
+        }
+    }
+
+    /// Two CEA-608 captions in the video stream: from 0.5 s to 1.2 s, and from 1.8 s to 2.6 s.
+    const IN_STREAM: &[(u32, u32, &str)] = &[(5, 12, "Hello there"), (18, 26, "Second line")];
+
+    #[test]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
+    fn captions_in_the_video_stream_are_a_caption_track_shown_at_their_times() {
+        let _alone = alone();
+        #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+        {
+            use crate::video_gstreamer::has_element;
+            let reads = has_element(c"qtdemux") && has_element(c"h264parse") && (has_element(c"avdec_h264") || has_element(c"openh264dec"));
+            if !skipped(reads, "GStreamer here reads no H.264 in MP4 (qtdemux, h264parse, avdec_h264)") {
+                return;
+            }
+        }
+        let file = written("in-stream.mp4", &movie_captioned_in_stream(30, IN_STREAM));
+        let Some(video) = player(Video::open_silent(file)) else { return };
+        let mut trial = trial(video, false);
+        until(&mut trial, "the first frame", |video| video.size().is_some());
+        trial.app.play();
+        // (Found once their first data plays.)
+        until(&mut trial, "a caption track", |video| !video.caption_tracks().is_empty());
+        assert_eq!(trial.app.caption_tracks()[0].name, "CC1");
+        trial.app.set_caption_track(Some(0));
+        for (at, caption) in [(0.7, Some("Hello there")), (1.45, None), (2.1, Some("Second line")), (2.85, None)] {
+            until(&mut trial, "the time", |video| video.position() >= Duration::from_secs_f32(at));
+            assert_eq!(trial.app.caption(), caption, "at {:?}", trial.app.position());
+        }
     }
 
     #[test]

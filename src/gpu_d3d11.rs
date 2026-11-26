@@ -9,10 +9,10 @@
 //! - d3d11.dll is loaded from the system folder when a window first asks for the GPU. COM
 //!   methods are called by their place in the vtable, as d3d11.h and dxgi1_2.h order them.
 //! - Its software device (WARP) shows windows after a loss with no GPU left (`gpu_windows`).
-use crate::gpu_windows::{function_in, inside, system_library};
+use crate::gpu_windows::inside;
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, TextureDescription, function, release};
-use crate::windows::named;
 use crate::windows::sys::{HANDLE, RECT};
+use crate::windows::{function_in, named, system_library};
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 
@@ -26,7 +26,7 @@ const WARP: u32 = 5;
 /// The interfaces asked for: `IDXGIDevice1`, `IDXGIFactory2`, `ID3D11Texture2D`.
 const DXGI_DEVICE: [u32; 4] = named(0x77DB_970F, 0x6276, 0x48BA, [0xBA, 0x28, 0x07, 0x01, 0x43, 0xB4, 0x39, 0x2C]);
 const FACTORY: [u32; 4] = named(0x50C8_3A1C, 0xE072, 0x4C48, [0x87, 0xB0, 0x36, 0x30, 0xFA, 0x36, 0xA6, 0xD0]);
-const TEXTURE: [u32; 4] = named(0x6F15_AAF2, 0xD208, 0x4E89, [0x9A, 0xB4, 0x48, 0x95, 0x35, 0xD3, 0x4F, 0x9C]);
+pub(crate) const TEXTURE: [u32; 4] = named(0x6F15_AAF2, 0xD208, 0x4E89, [0x9A, 0xB4, 0x48, 0x95, 0x35, 0xD3, 0x4F, 0x9C]);
 
 /// `DXGI_SWAP_CHAIN_DESC1`.
 #[repr(C)]

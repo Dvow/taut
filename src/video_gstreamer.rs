@@ -1,15 +1,17 @@
 //! Videos on Linux: GStreamer's `playbin`, opened with `dlopen`. Frames come from an `appsink`
 //! as 32-bit BGRx, the file's captions from another as text; with no sound, audio goes to a
 //! `fakesink`. Sound and caption tracks are `playbin`'s streams, named by their tags. Speed is a
-//! seek at that rate, the pitch kept by `scaletempo` where it is installed. A system without
-//! GStreamer, or without `playbin`, is told so.
+//! seek at that rate, the pitch kept by `scaletempo` where it is installed. Captions in the
+//! video stream (CEA-608) come from the caption meta parsers put on frames (`h264parse`), read by
+//! a probe on the frame sink. A system without GStreamer, or without `playbin`, is told so.
 
 use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
+use crate::video_cea608::Decoder;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::ptr::null_mut;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 type Object = *mut c_void;
@@ -36,6 +38,9 @@ library!(Gst, ["libgstreamer-1.0.so.0"], {
     fn gst_buffer_new_memdup(*const c_void, usize) -> Object;
     fn gst_filename_to_uri(*const c_char, *mut *mut GError) -> *mut c_char;
     fn gst_tag_list_get_string(Object, *const c_char, *mut *mut c_char) -> c_int;
+    fn gst_buffer_get_meta(Object, usize) -> *const CaptionMeta;
+    fn gst_element_get_static_pad(Object, *const c_char) -> Object;
+    fn gst_pad_add_probe(Object, c_uint, *const c_void, *mut c_void, *const c_void) -> u64;
 });
 library!(App, ["libgstapp-1.0.so.0"], {
     fn gst_app_src_push_buffer(Object, Object) -> c_int;
@@ -46,6 +51,7 @@ library!(GObject, ["libgobject-2.0.so.0"], {
     fn g_object_get(Object, *const c_char, ...);
     fn g_signal_connect_data(Object, *const c_char, *const c_void, *mut c_void, *const c_void, c_int) -> u64;
     fn g_signal_emit_by_name(Object, *const c_char, ...);
+    fn g_type_from_name(*const c_char) -> usize;
 });
 library!(GLib, ["libglib-2.0.so.0"], {
     fn g_free(*mut c_void);
@@ -68,6 +74,24 @@ struct MapInfo {
     size: usize,
     rest: [usize; 9],
 }
+
+/// `GstVideoCaptionMeta`: its `GstMeta` (flags, info), the kind of its data, and the data.
+#[repr(C)]
+struct CaptionMeta {
+    meta: [usize; 2],
+    kind: c_uint,
+    data: *const u8,
+    size: usize,
+}
+
+/// Caption data as pairs of field 1 (`GST_VIDEO_CAPTION_TYPE_CEA608_RAW`), as triplets with
+/// the field first (`..._CEA608_S334_1A`), as A/53 `cc_data` (`..._CEA708_RAW`).
+const CEA608_PAIRS: c_uint = 1;
+const CEA608_FIELD_TRIPLETS: c_uint = 2;
+const CC_DATA: c_uint = 3;
+/// A probe of buffers, which lets each pass.
+const PROBE_BUFFERS: c_uint = 1 << 4;
+const PROBE_OK: c_int = 1;
 
 /// Where in a `GstMessage` its type is, and in a `GstBuffer` its time and duration: after the
 /// `GstMiniObject` (64 bytes), and its pool.
@@ -134,6 +158,66 @@ pub(crate) struct Player {
     /// A sound stream chosen while paused, played from the next play. (Switched while paused,
     /// a flushing seek after hangs in `playbin`'s input selector.)
     sound_wanted: Option<usize>,
+    /// The captions in the video stream, read by the frame sink's probe (freed after the
+    /// player); whether they were listed as a track, and whether they are shown.
+    in_stream: Box<InStream>,
+    in_stream_listed: bool,
+    in_stream_shown: bool,
+}
+
+/// The captions read from the caption meta of each frame that reaches the frame sink.
+struct InStream {
+    lib: &'static Libraries,
+    /// `GstVideoCaptionMetaAPI`'s type, once registered (by the first such meta).
+    meta_kind: AtomicUsize,
+    decoder: Mutex<Decoder>,
+}
+
+impl InStream {
+    fn decoder(&self) -> MutexGuard<'_, Decoder> {
+        self.decoder.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// `GstVideoCaptionMetaAPI`'s type, once registered; 0 before.
+    fn meta_kind(&self) -> usize {
+        let known = self.meta_kind.load(Ordering::Relaxed);
+        if known != 0 {
+            return known;
+        }
+        // SAFETY: a type name ending in a zero.
+        let kind = unsafe { (self.lib.gobject.g_type_from_name)(c"GstVideoCaptionMetaAPI".as_ptr()) };
+        self.meta_kind.store(kind, Ordering::Relaxed);
+        kind
+    }
+
+    /// Reads a buffer's caption meta, if it has one.
+    fn read(&self, buffer: Object) {
+        let kind = self.meta_kind();
+        if kind == 0 {
+            return;
+        }
+        // SAFETY: a live buffer: its time follows the mini object; its meta, where it has one,
+        // lives as long as it, and its data is as long as it says.
+        let (time, meta) = unsafe { (*buffer.cast::<u8>().add(BUFFER_TIME).cast::<u64>(), (self.lib.gst.gst_buffer_get_meta)(buffer, kind).as_ref()) };
+        let Some(meta) = meta.filter(|meta| time != u64::MAX && !meta.data.is_null()) else { return };
+        // SAFETY: as above.
+        let data = unsafe { std::slice::from_raw_parts(meta.data, meta.size) };
+        let (mut decoder, at) = (self.decoder(), Duration::from_nanos(time));
+        match meta.kind {
+            CC_DATA => decoder.read_cc_data(data, at),
+            CEA608_PAIRS => data.as_chunks::<2>().0.iter().for_each(|pair| decoder.read_pair(*pair, at)),
+            CEA608_FIELD_TRIPLETS => data.as_chunks::<3>().0.iter().filter(|three| three[0] & 0x80 != 0).for_each(|three| decoder.read_pair([three[1], three[2]], at)),
+            _ => {}
+        }
+    }
+}
+
+/// A frame reached the frame sink: its captions are read.
+unsafe extern "C" fn frame_came(_: Object, info: *mut c_void, data: *mut c_void) -> c_int {
+    // SAFETY: `data` is the player's `InStream`, alive while the pipeline runs; a buffer
+    // probe's info holds the buffer after its type and id.
+    unsafe { (*data.cast::<InStream>()).read(*info.cast::<u8>().add(16).cast::<Object>()) };
+    PROBE_OK
 }
 
 impl Player {
@@ -149,7 +233,27 @@ impl Player {
         }
         // SAFETY: the bus of a live element, held until the player is dropped.
         let bus = unsafe { (lib.gst.gst_element_get_bus)(playbin) };
-        let mut player = Player { lib, playbin, sink, text_sink, bus, playing: false, pending: None, ready: false, last: None, bytes: None, speed: 1.0, captions: false, sound_wanted: None };
+        let in_stream = Box::new(InStream { lib, meta_kind: AtomicUsize::new(0), decoder: Mutex::new(Decoder::default()) });
+        let (in_stream_listed, in_stream_shown) = (false, false);
+        let mut player = Player {
+            lib,
+            playbin,
+            sink,
+            text_sink,
+            bus,
+            playing: false,
+            pending: None,
+            ready: false,
+            last: None,
+            bytes: None,
+            speed: 1.0,
+            captions: false,
+            sound_wanted: None,
+            in_stream,
+            in_stream_listed,
+            in_stream_shown,
+        };
+        player.read_captions_in_stream();
         player.set_sinks(sound, make(c"fakesink"), make(c"scaletempo"));
         player.set_source(source)?;
         // SAFETY: a live element.
@@ -177,6 +281,20 @@ impl Player {
             if !sound && !quiet.is_null() {
                 set(quiet, c"sync".as_ptr(), 1 as c_int, end);
                 set(self.playbin, c"audio-sink".as_ptr(), quiet, c"mute".as_ptr(), 1 as c_int, end);
+            }
+        }
+    }
+
+    /// Reads each frame's captions as it reaches the frame sink (a buffer probe on its pad).
+    fn read_captions_in_stream(&mut self) {
+        let data = (&*self.in_stream as *const InStream).cast_mut().cast();
+        // SAFETY: the sink's pad, released once the probe is on it; the callback has a probe's
+        // arguments, and the data outlives the pipeline.
+        unsafe {
+            let pad = (self.lib.gst.gst_element_get_static_pad)(self.sink, c"sink".as_ptr());
+            if !pad.is_null() {
+                (self.lib.gst.gst_pad_add_probe)(pad, PROBE_BUFFERS, frame_came as *const c_void, data, std::ptr::null());
+                (self.lib.gst.gst_object_unref)(pad);
             }
         }
     }
@@ -232,6 +350,7 @@ impl Player {
     pub(crate) fn seek(&mut self, to: Duration) {
         // (At the very end there is no frame to show: just before it, the last.)
         let to = self.length().map_or(to, |length| to.min(length.saturating_sub(Duration::from_millis(1))));
+        self.in_stream.decoder().sought(to);
         let to = to.as_nanos().min(i64::MAX as u128) as i64;
         self.last = None;
         // SAFETY: a live element; flushing, to the exact frame, at the speed it plays.
@@ -280,6 +399,7 @@ impl Player {
             // SAFETY: popped, so ours.
             unsafe { (self.lib.gst.gst_mini_object_unref)(message) };
         }
+        news.tracks_changed = self.ready && !self.in_stream_listed && self.in_stream.decoder().found();
         news
     }
     /// The player finished a change: a seek asked before may go now.
@@ -364,14 +484,20 @@ impl Player {
         unsafe { (self.lib.gobject.g_object_get)(self.playbin, name.as_ptr(), &mut value, std::ptr::null::<c_char>()) };
         value
     }
-    /// The source's sound and caption tracks, once the player has read it.
+    /// The source's sound and caption tracks, once the player has read it; the captions in the
+    /// video stream after the source's own, once they came.
     pub(crate) fn tracks(&mut self) -> Option<Tracks> {
         if !self.ready {
             return None;
         }
         let sound = self.streams(c"n-audio", c"get-audio-tags");
         let chosen = usize::try_from(self.number(c"current-audio")).ok().filter(|at| *at < sound.len());
-        Some(Tracks { sound, captions: self.streams(c"n-text", c"get-text-tags"), sound_chosen: chosen })
+        let mut captions = self.streams(c"n-text", c"get-text-tags");
+        self.in_stream_listed = self.in_stream.decoder().found();
+        if self.in_stream_listed {
+            captions.push(Track { language: String::new(), name: "CC1".into() });
+        }
+        Some(Tracks { sound, captions, sound_chosen: chosen })
     }
     /// Each stream of a kind, named by its tags.
     fn streams(&self, count: &CStr, tags_of: &CStr) -> Vec<Track> {
@@ -413,16 +539,23 @@ impl Player {
         // SAFETY: an int property, the list ending in a null.
         unsafe { (self.lib.gobject.g_object_set)(self.playbin, c"current-audio".as_ptr(), nth as c_int, std::ptr::null::<c_char>()) };
     }
-    /// Shows the `nth` caption stream, or none.
+    /// Shows the `nth` caption stream (the captions in the video stream after them), or none.
     pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
+        self.in_stream_shown = self.in_stream_listed && nth == usize::try_from(self.number(c"n-text")).ok();
+        let nth = nth.filter(|_| !self.in_stream_shown);
         self.captions = nth.is_some();
         if let Some(nth) = nth {
             // SAFETY: an int property, the list ending in a null.
             unsafe { (self.lib.gobject.g_object_set)(self.playbin, c"current-text".as_ptr(), nth as c_int, std::ptr::null::<c_char>()) };
         }
     }
-    /// The caption on show: the text sink's last sample, while its span holds the position.
+    /// The caption on show: the text sink's last sample, while its span holds the position; or
+    /// the captions in the video stream's at the position.
     pub(crate) fn caption(&mut self) -> Option<String> {
+        if self.in_stream_shown {
+            let at = self.position();
+            return crate::video_captions::text_at(self.in_stream.decoder().cues(), at);
+        }
         if !self.captions {
             return None;
         }

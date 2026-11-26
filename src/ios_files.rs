@@ -263,6 +263,7 @@ pub(crate) fn hand_drops() {
     }
     crate::ios::DROPS.set(Some(note_takes));
     crate::ios::on_every_view(take_drops);
+    crate::ios::on_view_closed(forget_takes);
 }
 
 /// Has a view take drops.
@@ -283,6 +284,11 @@ fn note_takes(ui: &mut Ui, view: Obj) {
         Some((_, kept)) => *kept = takes,
         None => known.push((view, takes)),
     });
+}
+
+/// The window of `view` closed: what its app takes is forgotten.
+fn forget_takes(view: Obj) {
+    TAKES.with_borrow_mut(|known| known.retain(|(of, _)| *of != view));
 }
 
 /// The drop delegate's class.

@@ -55,15 +55,18 @@ pub(crate) struct Shown {
     /// fragment.
     links: Vec<[u32; 2]>,
     targets: Vec<Target>,
-    /// The blocks measured so far, and the next block to lay out; the containers open there,
-    /// the page first.
-    measured: usize,
+    /// What is laid out: from block `first` (the containers around it opened), to before the
+    /// next block to lay out; the containers open there, the page first. (Above and below, the
+    /// height is estimated.)
+    first: usize,
     next: usize,
     open: Vec<Open>,
     fonts: Vec<(Font, [f32; 2])>,
-    /// The bottom of what is laid out, and the end of its text.
+    /// The top and the bottom of what is laid out.
+    top: f32,
     bottom: f32,
-    laid_bytes: u32,
+    /// The view's height when last laid out for: how far around it to lay out.
+    screen: f32,
     /// The measured text's width and its bytes: what the rest's height is estimated by.
     sample: [f32; 2],
     /// Its first heading's text: its name for screen readers.
@@ -88,18 +91,21 @@ pub(crate) struct Shown {
     pub used: bool,
 }
 
-/// A block's layout: its pieces, its place from the document's top left, and its rows; its
-/// children (a range of `Shown::kids`), and whether it is in a quote. For an item: its first
-/// row's baseline offset (where its marker goes), and its index and count in its list. For a
-/// list: its marker column's width, and its nesting depth. For a table row: its index among the
-/// body rows (the header row is none of them), and their count.
+/// A block's layout: its pieces (once measured), its place from the document's top left, and
+/// its rows; its children (a range of `Shown::kids`), and whether it is in a quote. For an
+/// item: its first row's baseline offset (where its marker goes), and its index and count in
+/// its list. For a list: its marker column's width, and its nesting depth. For a table row: its
+/// index among the body rows (the header row is none of them), and their count. A list or quote
+/// reading right to left has its marks at the right.
 #[derive(Clone, Copy, Default)]
 struct Area {
     bits: [u32; 2],
+    measured: bool,
     rect: Rect,
     rows: [u32; 2],
     kids: [u32; 2],
     quoted: bool,
+    leftward: bool,
     mark: f32,
     nth: [u32; 2],
 }
@@ -160,6 +166,13 @@ pub(crate) fn quoted(writing: &Writing, at: usize) -> bool {
     false
 }
 
+/// Whether a list or quote reads right to left, as a browser has it for `dir="auto"`: whether
+/// its first strong letter does.
+pub(crate) fn leftward(writing: &Writing, at: usize) -> bool {
+    let [from, to] = writing.blocks[at].words;
+    writing.words[from as usize..to as usize].split('\n').find_map(crate::bidi::strong_direction) == Some(true)
+}
+
 /// Whether a block has its own text (and so rows).
 pub(crate) fn worded(kind: Kind) -> bool {
     matches!(kind, Kind::Paragraph | Kind::Heading(_) | Kind::Code(_) | Kind::Cell(_))
@@ -200,12 +213,18 @@ fn block_of(writing: &Writing, at: u32) -> usize {
     writing.blocks.partition_point(|block| block.words[0] <= at).saturating_sub(1)
 }
 
-/// Each link's text, by number from 1: from its first piece's start to its last's end.
+/// Each link's text, by number from 1: from its first piece's start to its last's end. (A link
+/// with no text is empty where the one before it ends: the starts stay in order.)
 fn link_words(writing: &Writing, count: usize) -> Vec<[u32; 2]> {
     let mut links = vec![[0; 2]; count];
     for stretch in &writing.pieces {
         if let Some(words) = links.get_mut(stretch.look.link.wrapping_sub(1) as usize) {
             *words = if words[1] == 0 { stretch.words } else { [words[0], stretch.words[1]] };
+        }
+    }
+    for at in 1..links.len() {
+        if links[at][1] == 0 {
+            links[at] = [links[at - 1][1]; 2];
         }
     }
     links
@@ -237,41 +256,43 @@ impl Shown {
         }
         (self.laid, self.areas, self.links) = (Laid::default(), vec![Area::default(); writing.blocks.len()], link_words(writing, doc.links.len()));
         self.kids = children(writing, &mut self.areas);
-        (self.measured, self.sample) = (0, [0.0; 2]);
+        self.sample = [0.0; 2];
         self.fonts.clear();
         self.title = writing.blocks.iter().find(|block| matches!(block.kind, Kind::Heading(_))).map_or([0; 2], |block| block.words);
     }
 
-    /// Starts laying out again, in a document `width` wide.
+    /// Starts laying out again, in a document `width` wide, from the top.
     fn start_layout(&mut self, width: f32, t: &Theme) {
-        (self.width, self.long, self.bottom, self.laid_bytes, self.next) = (width, 0.0, 0.0, 0, 1);
-        (self.laid.rows, self.laid.frags, self.targets) = (Vec::new(), Vec::new(), Vec::new());
-        self.open = vec![Open { block: 0, x: 0.0, w: width, top: 0.0, pen: 0.0, gap: sizes(t).gap, count: 0, lists: 0 }];
+        (self.width, self.long) = (width, 0.0);
         if let Some(page) = self.areas.first_mut() {
             page.rect = rect(0.0, 0.0, width, 0.0);
         }
+        self.restart(1, 0.0, sizes(t).gap);
     }
 
-    /// Measures the text of the blocks up to `last`, in order: each block's pieces, and where
-    /// each character ends.
-    fn measure_through(&mut self, doc: &Markdown, last: usize, given: &mut Given) {
-        let writing = &doc.writing;
-        while self.measured <= last.min(writing.blocks.len().saturating_sub(1)) {
-            let (at, block) = (self.measured, writing.blocks[self.measured]);
-            if let Some(up) = writing.blocks.get(block.parent as usize) {
-                self.areas[at].quoted = up.kind == Kind::Quote || self.areas[block.parent as usize].quoted;
-            }
-            self.measured += 1;
-            let first = self.laid.bits.len();
-            match block.kind {
-                Kind::Code(language) => self.code_bits(doc, at, language, given.t),
-                kind if worded(kind) => self.word_bits(doc, at, given),
-                _ => continue,
-            }
-            let wide = self.laid.measure(first..self.laid.bits.len(), &writing.words, given.system, given.scale, &mut self.fonts);
-            self.areas[at].bits = [first as u32, self.laid.bits.len() as u32];
-            self.sample = [self.sample[0] + wide, self.sample[1] + (block.words[1] - block.words[0]) as f32];
+    /// Drops what is laid out: laying out starts again at block `at`, `y` down, inside the page
+    /// alone (whose blocks are `gap` apart).
+    fn restart(&mut self, at: usize, y: f32, gap: f32) {
+        (self.first, self.next, self.top, self.bottom) = (at, at, y, y);
+        (self.laid.rows, self.laid.frags, self.targets) = (Vec::new(), Vec::new(), Vec::new());
+        self.open = vec![Open { block: 0, x: 0.0, w: self.width, top: 0.0, pen: y, gap, count: 0, lists: 0 }];
+    }
+
+    /// Measures block `at`'s text, once: its pieces, and where each character ends.
+    fn measure(&mut self, doc: &Markdown, at: usize, given: &mut Given) {
+        let (writing, block) = (&doc.writing, doc.writing.blocks[at]);
+        if self.areas[at].measured || !worded(block.kind) {
+            return;
         }
+        self.areas[at].measured = true;
+        let first = self.laid.bits.len();
+        match block.kind {
+            Kind::Code(language) => self.code_bits(doc, at, language, given.t),
+            _ => self.word_bits(doc, at, given),
+        }
+        let wide = self.laid.measure(first..self.laid.bits.len(), &writing.words, given.system, given.scale, &mut self.fonts);
+        self.areas[at].bits = [first as u32, self.laid.bits.len() as u32];
+        self.sample = [self.sample[0] + wide, self.sample[1] + (block.words[1] - block.words[0]) as f32];
     }
 
     /// A text block's pieces: each run in the block's font plus its inline style, in its colour
@@ -351,19 +372,98 @@ impl Shown {
         let laid = &self.laid;
         let links = laid.frags.iter().enumerate().skip(frags).filter(|(_, frag)| laid.bits[frag.bit as usize].link != 0);
         self.targets.extend(links.map(|(at, _)| (row_of(laid, at as u32), at as u32)));
-        self.high = self.areas[0].rect.h.max(self.bottom) + self.estimate(doc, &t);
+        self.high = self.areas[0].rect.h.max(self.bottom) + self.estimate(doc, &t, self.next, count);
     }
 
-    /// The height of what is not laid out yet: its text at the measured text's width a byte, in
-    /// rows of body text, and a gap between every two of its blocks.
-    fn estimate(&self, doc: &Markdown, t: &Theme) -> f32 {
-        let blocks = doc.writing.blocks.len().saturating_sub(self.next) as f32;
+    /// Lays out afresh from block `at` (from its table, in one), where its height is estimated
+    /// to be.
+    fn lay_from(&mut self, doc: &Markdown, given: &mut Given, at: usize) {
+        let y = if at <= 1 { 0.0 } else { self.estimated_y(doc, given.t, at) };
+        let size = sizes(given.t);
+        Laying { shown: self, doc, writing: &doc.writing, size, given }.start_at(at, y);
+    }
+
+    /// Lays out through block `at`: on from what is laid out where `at` is near (within two
+    /// screens below it), else afresh from `at`.
+    fn lay_to(&mut self, doc: &Markdown, given: &mut Given, at: usize) {
+        let blocks = &doc.writing.blocks;
+        if at >= self.first && at < self.next || at < self.first && blocks[at].end as usize > self.first {
+            return;
+        }
+        let near = at >= self.next && self.estimated_y(doc, given.t, at) - self.bottom <= 2.0 * self.screen;
+        if !near {
+            self.lay_from(doc, given, at);
+        }
+        self.lay_more(doc, given, 0.0, at);
+    }
+
+    /// Lays out what `view` shows and a screen above and below it: on from what is laid out, or
+    /// afresh where the view is far from it. Returns how far the view must scroll to keep what
+    /// it shows in place (from laying out afresh above it).
+    fn cover(&mut self, doc: &Markdown, given: &mut Given, view: [f32; 2]) -> f32 {
+        let (t, count) = (given.t, doc.writing.blocks.len());
+        self.screen = (view[1] - view[0]).max(1.0);
+        let [top, bottom] = [view[0] - self.screen, view[1] + self.screen];
+        let far_below = self.next < count && view[0] > self.bottom + 2.0 * self.screen;
+        if far_below || view[1] < self.top {
+            let at = self.block_at(doc, t, top);
+            self.lay_from(doc, given, at);
+        } else if top < self.top && self.first > 1 {
+            // (Laid out afresh from further up, by whatever the estimate above was off: the
+            // first block that showed stays where it showed.)
+            let anchor = self.anchor(&doc.writing, view);
+            let was = anchor.map_or(0.0, |at| self.areas[at].rect.y);
+            let at = self.block_at(doc, t, top - self.screen);
+            self.lay_from(doc, given, at);
+            self.lay_more(doc, given, bottom, anchor.unwrap_or(0));
+            return anchor.map_or(0.0, |at| self.areas[at].rect.y - was);
+        }
+        self.lay_more(doc, given, bottom, 0);
+        0.0
+    }
+
+    /// The first block in view that holds no others (its place is its own, not where laying
+    /// out started).
+    fn anchor(&self, writing: &Writing, view: [f32; 2]) -> Option<usize> {
+        let order = self.in_view(writing, view);
+        order.into_iter().map(|at| at as usize).find(|at| self.areas[*at].kids[0] == self.areas[*at].kids[1])
+    }
+
+    /// The block not laid out that starts at or above `y`, nearest it: above what is laid out,
+    /// or below it.
+    fn block_at(&self, doc: &Markdown, t: &Theme, y: f32) -> usize {
+        let count = doc.writing.blocks.len();
+        let (mut low, mut high) = if y < self.top { (1, self.first) } else { (self.next, count) };
+        let lowest = low;
+        while low < high {
+            let middle = (low + high) / 2;
+            match self.estimated_y(doc, t, middle) <= y {
+                true => low = middle + 1,
+                false => high = middle,
+            }
+        }
+        low.saturating_sub(1).max(lowest).min(count - 1)
+    }
+
+    /// Where a block not laid out is estimated to start: what is laid out, less or plus the
+    /// estimated height between.
+    fn estimated_y(&self, doc: &Markdown, t: &Theme, at: usize) -> f32 {
+        match at < self.first {
+            true => (self.top - self.estimate(doc, t, at, self.first)).max(0.0),
+            false => self.bottom + self.estimate(doc, t, self.next, at),
+        }
+    }
+
+    /// The height of blocks `from` to before `to`, not laid out: their text at the measured
+    /// text's width a byte, in rows of body text, and a gap between every two.
+    fn estimate(&self, doc: &Markdown, t: &Theme, from: usize, to: usize) -> f32 {
+        let blocks = to.saturating_sub(from) as f32;
         if blocks == 0.0 {
             return 0.0;
         }
-        let bytes = doc.writing.words.len().saturating_sub(self.laid_bytes as usize) as f32;
+        let start = |at: usize| doc.writing.blocks.get(at).map_or(doc.writing.words.len(), |block| block.words[0] as usize) as f32;
         let per_byte = if self.sample[1] > 0.0 { self.sample[0] / self.sample[1] } else { t.font.size * 0.5 };
-        let rows = bytes * per_byte / self.width.max(1.0) + blocks * 0.5;
+        let rows = (start(to) - start(from)).max(0.0) * per_byte / self.width.max(1.0) + blocks * 0.5;
         (rows * least(Kind::Paragraph, t.font) + blocks * sizes(t).gap / 2.0).round()
     }
 
@@ -377,8 +477,8 @@ impl Shown {
     /// The blocks in view (`view`, from the top), each container before its content, in
     /// order: in each container from the first child reaching into view, to the last starting
     /// in it.
-    fn in_view(&self, view: [f32; 2]) -> Vec<u32> {
-        let (mut order, mut stack) = (Vec::new(), vec![(0, self.first_in_view(0, view))]);
+    fn in_view(&self, writing: &Writing, view: [f32; 2]) -> Vec<u32> {
+        let (mut order, mut stack) = (Vec::new(), vec![(0, self.first_in_view(writing, 0, view))]);
         while let Some((up, next)) = stack.last_mut() {
             let at = self.kids[*next..self.areas[*up].kids[1] as usize].first().map_or(usize::MAX, |at| *at as usize);
             if at >= self.next || self.areas[at].rect.y > view[1] {
@@ -388,16 +488,17 @@ impl Shown {
             *next += 1;
             order.push(at as u32);
             if self.areas[at].kids[0] < self.areas[at].kids[1] {
-                stack.push((at, self.first_in_view(at, view)));
+                stack.push((at, self.first_in_view(writing, at, view)));
             }
         }
         order
     }
 
     /// Container `up`'s first laid out child that reaches into view, as an index of `kids`.
-    fn first_in_view(&self, up: usize, view: [f32; 2]) -> usize {
+    /// (Children ending before what is laid out are above it.)
+    fn first_in_view(&self, writing: &Writing, up: usize, view: [f32; 2]) -> usize {
         let [from, to] = self.areas[up].kids.map(|at| at as usize);
-        let above = |at: &u32| (*at as usize) < self.next && self.areas[*at as usize].rect.bottom() < view[0];
+        let above = |at: &u32| writing.blocks[*at as usize].end as usize <= self.first || (*at as usize) < self.next && self.areas[*at as usize].rect.bottom() < view[0];
         from + self.kids[from..to].partition_point(above)
     }
 
@@ -411,9 +512,10 @@ impl Shown {
 
     /// The link pieces given boxes, in order: those in view (in the blocks `order`), the link
     /// before them and the one after (so Tab reaches them), and the focused link wherever it
-    /// is. A link with focus or next after the last laid out one, but not laid out itself, is
-    /// returned apart: it gets a box at the end of what is laid out.
-    fn reachable(&self, writing: &Writing, order: &[u32], view: [f32; 2]) -> (Vec<Target>, u32) {
+    /// is. Links not laid out are returned apart, each to get a box of its own: the focused one,
+    /// else the one before what is laid out, and the one after, where no link laid out is
+    /// before or after the view. (0 for none.)
+    fn reachable(&self, writing: &Writing, order: &[u32], view: [f32; 2]) -> (Vec<Target>, [u32; 2]) {
         let worded = order.iter().map(|at| *at as usize).filter(|at| worded(writing.blocks[*at].kind));
         let [low, high] = worded.map(|at| self.rows_in_view(at, view)).fold([usize::MAX, 0], |[low, high], [from, to]| [low.min(from), high.max(to)]);
         let [from, to] = [low, high].map(|row| self.targets.partition_point(|(at, _)| (*at as usize) < row));
@@ -430,14 +532,22 @@ impl Shown {
         {
             picked.insert(at, focused);
         }
-        // (Not laid out yet: the focused link, else the next one where none laid out follows.)
-        let laid = self.targets.last().map_or(0, |target| link_of(self, target));
-        let apart = match after {
-            _ if self.focused > laid => self.focused,
-            None => laid + 1,
+        // (The links before what is laid out, and the first and last laid out.)
+        let start = writing.blocks.get(self.first).map_or(u32::MAX, |block| block.words[0]);
+        let ahead = self.links.partition_point(|words| words[0] < start) as u32;
+        let laid = [self.targets.first().map_or(ahead + 1, |target| link_of(self, target)), self.targets.last().map_or(ahead, |target| link_of(self, target))];
+        let above = match before {
+            _ if self.focused != 0 && self.focused < laid[0] => self.focused,
+            None => ahead,
             Some(_) => 0,
         };
-        (picked.into_iter().map(|at| self.targets[at]).collect(), if (apart as usize) <= self.links.len() { apart } else { 0 })
+        let below = match after {
+            _ if self.focused > laid[1] => self.focused,
+            None => laid[1] + 1,
+            Some(_) => 0,
+        };
+        let below = if (below as usize) <= self.links.len() { below } else { 0 };
+        (picked.into_iter().map(|at| self.targets[at]).collect(), [above, below])
     }
 
     /// The text byte nearest a point (from the document's top left): in the nearest text block
@@ -445,7 +555,7 @@ impl Shown {
     /// block, as scrolled sideways.
     fn hit(&self, text: &str, x: f32, y: f32) -> u32 {
         let mut nearest: Option<([f32; 2], usize)> = None;
-        for (at, area) in self.areas[..self.next.min(self.areas.len())].iter().enumerate().filter(|(_, area)| area.rows[0] < area.rows[1]) {
+        for (at, area) in self.areas.iter().enumerate().take(self.next).skip(self.first).filter(|(_, area)| area.rows[0] < area.rows[1]) {
             let r = area.rect;
             let away = [(r.y - y).max(y - r.bottom()).max(0.0), (r.x - x).max(x - r.right()).max(0.0)];
             if nearest.is_none_or(|(least, _)| away < least) {
@@ -535,6 +645,36 @@ struct Laying<'a, 'b> {
 }
 
 impl Laying<'_, '_> {
+    /// Starts laying out afresh at block `at` (at its table, in one), `y` down: the containers
+    /// around it are opened there, as if laid out down to it.
+    fn start_at(&mut self, at: usize, y: f32) {
+        let blocks = &self.writing.blocks;
+        let mut around = Vec::new();
+        let mut up = blocks[at].parent as usize;
+        while up != 0 && up < blocks.len() {
+            around.push(up);
+            up = blocks[up].parent as usize;
+        }
+        // (A table is laid out whole.)
+        let table = around.iter().rposition(|up| blocks[*up].kind == Kind::Table);
+        let at = table.map_or(at, |table| around[table]);
+        around.drain(..table.map_or(0, |table| table + 1));
+        self.shown.restart(at, y, self.size.gap);
+        for container in around.into_iter().rev() {
+            self.ready_for(container, y);
+            self.block(container);
+        }
+        self.ready_for(at, y);
+    }
+
+    /// Readies the open container for its child `at`, `y` down: as many children before it as
+    /// it has.
+    fn ready_for(&mut self, at: usize, y: f32) {
+        let Some(up) = self.shown.open.last_mut() else { return };
+        let [from, to] = self.shown.areas[up.block].kids.map(|kid| kid as usize);
+        (up.count, up.pen) = (self.shown.kids[from..to].partition_point(|kid| (*kid as usize) < at) as u32, y);
+    }
+
     /// Closes every container that ends before block `at`: it is as high as its content, and
     /// its parent continues below it.
     fn close_ended(&mut self, at: usize) {
@@ -578,10 +718,12 @@ impl Laying<'_, '_> {
             up.count += 1;
         }
         self.shown.areas[at].rect = rect(x, y, w, 0.0);
+        self.shown.areas[at].quoted = self.writing.blocks[up.block].kind == Kind::Quote || self.shown.areas[up.block].quoted;
         match block.kind {
             Kind::Quote => {
                 let inset = self.indent(w, 3.0 + size.inset);
-                self.open(at, [x + inset, w - inset, y], size.gap, up.lists);
+                let leftward = self.leftward(at);
+                self.open(at, [if leftward { x } else { x + inset }, w - inset, y], size.gap, up.lists);
             }
             Kind::List { numbered, tight } => self.list(at, numbered, tight, [x, y, w], up.lists),
             Kind::Item { .. } => {
@@ -610,6 +752,12 @@ impl Laying<'_, '_> {
         if w - by >= narrowest(self.given.t) { by } else { 0.0 }
     }
 
+    /// Whether list or quote `at` reads right to left (see `leftward`), noted in its area.
+    fn leftward(&mut self, at: usize) -> bool {
+        self.shown.areas[at].leftward = leftward(self.writing, at);
+        self.shown.areas[at].leftward
+    }
+
     /// Opens a container block: content at `x`, `w` wide, from `y` down, with `gap` between;
     /// inside `lists` lists.
     fn open(&mut self, at: usize, [x, w, y]: [f32; 3], gap: f32, lists: u32) {
@@ -629,14 +777,15 @@ impl Laying<'_, '_> {
         };
         (self.shown.areas[at].mark, self.shown.areas[at].nth) = (marks, [lists + 1, (to - from) as u32]);
         let inset = self.indent(w, marks);
-        self.open(at, [x + inset, w - inset, y], if tight { self.size.close } else { self.size.gap }, lists + 1);
+        let x = if self.leftward(at) { x } else { x + inset };
+        self.open(at, [x, w - inset, y], if tight { self.size.close } else { self.size.gap }, lists + 1);
     }
 
     /// Wraps block `at`'s text into rows at `x`, `y`, in width `w` (code padded and never
     /// wrapped, a level 1 or 2 heading underlined). Returns its height.
     fn leaf(&mut self, at: usize, x: f32, y: f32, w: f32) -> f32 {
         let given = &mut *self.given;
-        self.shown.measure_through(self.doc, at, given);
+        self.shown.measure(self.doc, at, given);
         let block = self.writing.blocks[at];
         let font = font_of(block.kind, heads(self.writing, at), given.t);
         let [above, below] = heights(given.system, font, given.scale, &mut self.shown.fonts);
@@ -649,7 +798,6 @@ impl Laying<'_, '_> {
         let ([from, to], first) = (self.shown.areas[at].bits, self.shown.laid.rows.len() as u32);
         let high = lay(&mut self.shown.laid, from..to, &self.writing.words, block.words[0], room, y + pad[1], given.scale);
         self.shown.areas[at].rows = [first, self.shown.laid.rows.len() as u32];
-        self.shown.laid_bytes = self.shown.laid_bytes.max(block.words[1]);
         self.shown.long = self.shown.long.max(x + 2.0 * pad[0] + self.shown.long(at));
         let under = if matches!(block.kind, Kind::Heading(1 | 2)) { (font.size * 0.3).round() + 1.0 } else { 0.0 };
         high + 2.0 * pad[1] + under
@@ -659,8 +807,11 @@ impl Laying<'_, '_> {
     /// narrowed alike if that exceeds the room; each row as high as its tallest cell. Returns
     /// the block after it.
     fn table(&mut self, at: usize, [x, y, w]: [f32; 3]) -> usize {
-        let end = self.writing.blocks[at].end as usize;
-        self.shown.measure_through(self.doc, end - 1, self.given);
+        let (end, quoted) = (self.writing.blocks[at].end as usize, self.shown.areas[at].quoted);
+        for inside in at + 1..end {
+            self.shown.areas[inside].quoted = quoted;
+            self.shown.measure(self.doc, inside, self.given);
+        }
         let rows: Vec<usize> = self.kids(at).collect();
         let mut wants: Vec<f32> = Vec::new();
         for row in &rows {
@@ -777,13 +928,13 @@ impl Ui {
         let code_scrolls = page.code_scrolls;
         (shown.used, shown.code_scrolls) = (true, code_scrolls);
         self.document_menu(shown, doc, &whole, &links);
-        self.follow_focus(shown, doc, [links.focused, apart], within, view);
+        self.follow_focus(shown, doc, links.focused, apart, within, view);
         let link = doc.links.get(links.pressed.wrapping_sub(1) as usize).map(|(url, _)| url.as_str());
         let heading = link
             .and_then(|url| url.strip_prefix('#'))
             .and_then(|name| doc.writing.blocks.iter().position(|block| matches!(block.kind, Kind::Heading(_)) && slug(&doc.writing.words[block.words[0] as usize..block.words[1] as usize]) == name));
         if let Some(at) = heading {
-            self.lay_document(shown, doc, 0.0, at);
+            self.lay_document_to(shown, doc, at);
             self.scroll_document(within, shown.areas[at].rect.y - view[0]);
         }
         self.keep_writings(kept);
@@ -791,36 +942,54 @@ impl Ui {
     }
 
     /// Updates a document's cache: started again for another parse, theme or scale, laid out
-    /// again for another width; then laid out to a screen past `view`. Scrolled to its end, it
-    /// stays there as laying out corrects its height.
+    /// again for another width (what showed at the view's top stays there); then laid out
+    /// around `view`. Scrolled to its end, it stays there as laying out corrects its height.
     fn fit_document(&mut self, shown: &mut Shown, doc: &Markdown, width: f32, view: [f32; 2], within: u32) {
         let (t, scale) = (self.theme, self.scale);
-        if shown.serial != doc.serial || shown.theme != Some(t) || shown.scale != scale {
+        let restart = shown.serial != doc.serial || shown.theme != Some(t) || shown.scale != scale;
+        // (Laid out afresh for the same text, the block at the view's top stays where it shows.)
+        let relaid = shown.serial == doc.serial && (restart || shown.width != width);
+        let anchor = relaid.then(|| shown.anchor(&doc.writing, view)).flatten().map(|at| (at, shown.areas[at].rect.y - view[0]));
+        if restart {
             shown.start(doc, &t, scale);
         }
         if shown.width != width {
             shown.start_layout(width, &t);
         }
         let (high, at_end) = (shown.high, shown.high > view[1] - view[0] && view[1] >= shown.high - 0.5);
-        self.lay_document(shown, doc, view[1] + (view[1] - view[0]).max(0.0), 0);
+        let mut by = 0.0;
+        if let Some((at, offset)) = anchor {
+            self.lay_document_to(shown, doc, at);
+            by = shown.areas[at].rect.y - view[0] - offset;
+        }
+        by += self.laying(shown, |shown, given| shown.cover(doc, given, [view[0] + by, view[1] + by]));
         if at_end && shown.high != high {
-            self.scroll_document(within, shown.high - high);
+            by = shown.high - high;
+        }
+        if by != 0.0 {
+            self.scroll_document(within, by);
         }
     }
 
-    /// Lays out more of a document, down to `bottom` and through block `block`.
-    fn lay_document(&mut self, shown: &mut Shown, doc: &Markdown, bottom: f32, block: usize) {
+    /// Runs `work` on a document's layout, with what laying out takes from the window.
+    fn laying<T>(&mut self, shown: &mut Shown, work: impl FnOnce(&mut Shown, &mut Given) -> T) -> T {
         let t = self.theme;
         let mut given = Given { t: &t, system: self.text.as_mut(), scale: self.scale, pictures: &self.pictures };
-        shown.lay_more(doc, &mut given, bottom, block);
+        work(shown, &mut given)
     }
 
-    /// Notes the focused link. One Tab just reached through its stand-in box (`apart`) is laid
-    /// out, and scrolled to (in scroll box `within`, now showing `view`).
-    fn follow_focus(&mut self, shown: &mut Shown, doc: &Markdown, [focused, apart]: [u32; 2], within: u32, view: [f32; 2]) {
+    /// Lays out a document through block `at`: on from what is laid out, or afresh where far.
+    fn lay_document_to(&mut self, shown: &mut Shown, doc: &Markdown, at: usize) {
+        self.laying(shown, |shown, given| shown.lay_to(doc, given, at));
+    }
+
+    /// Notes the focused link. One focus just reached through a stand-in box (links `apart`) is
+    /// laid out, and scrolled to (in scroll box `within`, now showing `view`).
+    fn follow_focus(&mut self, shown: &mut Shown, doc: &Markdown, focused: u32, apart: [u32; 2], within: u32, view: [f32; 2]) {
+        let arrived = shown.focused != focused && apart.contains(&focused);
         shown.focused = focused;
-        let Some(words) = shown.links.get(focused.wrapping_sub(1) as usize).filter(|_| focused == apart) else { return };
-        self.lay_document(shown, doc, 0.0, block_of(&doc.writing, words[0]));
+        let Some(words) = shown.links.get(focused.wrapping_sub(1) as usize).filter(|_| arrived) else { return };
+        self.lay_document_to(shown, doc, block_of(&doc.writing, words[0]));
         let first = shown.targets.partition_point(|target| link_of(shown, target) < focused);
         if let Some((row, _)) = shown.targets.get(first) {
             self.show_document_row(within, view, shown.laid.rows[*row as usize]);
@@ -918,7 +1087,7 @@ impl Ui {
             _ => cursor,
         };
         // Extended out of view, it scrolls there (laid out that far first).
-        self.lay_document(shown, doc, 0.0, block_of(&doc.writing, shown.picked[1]));
+        self.lay_document_to(shown, doc, block_of(&doc.writing, shown.picked[1]));
         if let Some(row) = shown.laid.rows.get(shown.row_at(shown.picked[1])) {
             self.show_document_row(within, view, *row);
         }
@@ -972,14 +1141,15 @@ impl Ui {
     }
 
     /// The document's blocks in view, each a box inside its parent block's box; then its links'
-    /// boxes. Returns what was done to its links, and the link given a stand-in box (0 for none).
-    fn document_blocks(&mut self, page: &mut Page) -> (Links, u32) {
+    /// boxes. Returns what was done to its links, and the links given stand-in boxes, before and
+    /// after the rest (0 for none).
+    fn document_blocks(&mut self, page: &mut Page) -> (Links, [u32; 2]) {
         let (blocks, shown, view, rule) = (&page.writing.blocks, page.shown, page.view, self.theme.line_strong);
-        let order = shown.in_view(view);
+        let order = shown.in_view(page.writing, view);
         let (targets, apart) = shown.reachable(page.writing, &order, view);
         let mut links = self.link_states(&page.shape, &targets);
-        if apart != 0 {
-            links.note(apart, self.link_state(apart, 0));
+        for link in apart.into_iter().filter(|link| *link != 0) {
+            links.note(link, self.link_state(link, 0));
         }
         page.lit = links.lit.clone();
         // The containers entered, innermost last (the page is the document's own box).
@@ -1001,15 +1171,20 @@ impl Ui {
         for _ in 1..open.len() {
             self.close();
         }
+        // (Links not laid out: a box at the top of the view or of what is laid out, and one at
+        // the foot, which Tab reaches in text order.)
+        let [above, below] = apart;
+        self.stand_in_link(page, above, view[0].max(shown.top));
         self.link_boxes(&page.shape, &targets, [0.0; 2]);
-        if apart != 0 {
-            // (A link not laid out yet: a box at the foot of the view, or of what is laid out,
-            // which Tab reaches.)
-            let [from, to] = shown.links[apart as usize - 1];
-            let name = page.writing.words.get(from as usize..to as usize).unwrap_or("");
-            self.titled_link_box(&page.shape, apart, 0, rect(0.0, (view[1].min(shown.bottom) - 1.0).max(0.0), 1.0, 1.0), name);
-        }
+        self.stand_in_link(page, below, (view[1].min(shown.bottom) - 1.0).max(0.0));
         (links, apart)
+    }
+
+    /// A box for link `link` (none for 0), not laid out: a point at `y` that Tab reaches.
+    fn stand_in_link(&mut self, page: &Page, link: u32, y: f32) {
+        let Some([from, to]) = page.shown.links.get(link.wrapping_sub(1) as usize).copied() else { return };
+        let name = page.writing.words.get(from as usize..to as usize).unwrap_or("");
+        self.titled_link_box(&page.shape, link, 0, rect(0.0, y, 1.0, 1.0), name);
     }
 
     /// A container block at `r` in its parent's box: told as what it is, with its marks (a
@@ -1029,7 +1204,8 @@ impl Ui {
         match kind {
             Kind::Quote => {
                 self.tell(&state, Role::Quote, None, "");
-                self.el().size(3.0, r.h).fill(t.line_strong).radius(1.5).show();
+                let bar = if area.leftward { r.w - 3.0 } else { 0.0 };
+                self.el().offset(bar, 0.0).size(3.0, r.h).fill(t.line_strong).radius(1.5).show();
             }
             Kind::List { .. } => self.tell(&state, Role::List, None, ""),
             Kind::Item { number, ticked } => {
@@ -1057,26 +1233,33 @@ impl Ui {
         Some((table, self.plain_columns(columns as usize)))
     }
 
-    /// An item's marker, left of it: a check box for a task, its number in a numbered list,
-    /// else a bullet (disc, circle, square, by depth).
+    /// An item's marker, before it (left of it, or right in a right-to-left list): a check box
+    /// for a task, its number in a numbered list, else a bullet (disc, circle, square, by
+    /// depth). None for an item whose start is not laid out.
     fn document_mark(&mut self, page: &Page, at: usize, number: u32, ticked: Option<bool>) {
+        if at < page.shown.first {
+            return;
+        }
         let t = self.theme;
         let list = page.shown.areas[page.writing.blocks[at].parent as usize];
         let ([room, mark], [depth, _]) = ([list.mark, page.shown.areas[at].mark], list.nth);
         let numbered = matches!(page.writing.blocks[page.writing.blocks[at].parent as usize].kind, Kind::List { numbered: true, .. });
         let [above, _] = heights(self.text.as_mut(), t.font, self.scale, &mut Vec::new());
-        // The x-height's middle on the marker's row.
+        // The x-height's middle on the marker's row; the marker column's left.
         let middle = mark - (above * 0.35).round();
+        let left = if list.leftward { page.shown.areas[at].rect.w } else { -room };
         match (ticked, numbered) {
-            (Some(done), _) => self.document_tick(-room + (room - 14.0) / 2.0, middle - 7.0, done),
+            (Some(done), _) => self.document_tick(left + (room - 14.0) / 2.0, middle - 7.0, done),
             (None, true) => {
-                self.el().text(&format!("{number}."), t.font, t.text_dim).select(None, false).text_align(Align::End).w(Length::Px(room - 6.0)).offset(-room, mark - above).show();
+                // (Right to left, the number reads as a browser shows it: its point first.)
+                let (words, side, x) = if list.leftward { (format!(".{number}"), Align::Start, left + 6.0) } else { (format!("{number}."), Align::End, left) };
+                self.el().text(&words, t.font, t.text_dim).select(None, false).text_align(side).w(Length::Px(room - 6.0)).offset(x, mark - above).show();
                 // Screen readers announce position in the list: the number is not told on its
                 // own, but as part of the item.
                 self.tell_words("", usize::MAX);
             }
             (None, false) => {
-                let dot = self.el().offset(-room / 2.0 - 3.0, middle - 3.0).size(6.0, 6.0).radius(if depth >= 3 { 0.0 } else { 3.0 });
+                let dot = self.el().offset(left + room / 2.0 - 3.0, middle - 3.0).size(6.0, 6.0).radius(if depth >= 3 { 0.0 } else { 3.0 });
                 _ = if depth == 2 { dot.border(t.text_dim, 1.0) } else { dot.fill(t.text_dim) }.show();
             }
         }
@@ -1106,7 +1289,7 @@ impl Ui {
         for cell in &shown.kids[(cells + 1).min(end)..end] {
             self.el().offset(shown.areas[*cell as usize].rect.x - table.rect.x, 0.0).size(1.0, r.h).fill(line).show();
         }
-        for row in &shown.kids[shown.first_in_view(at, page.view).max(from + 1)..to] {
+        for row in &shown.kids[shown.first_in_view(page.writing, at, page.view).max(from + 1)..to] {
             let top = shown.areas[*row as usize].rect.y;
             if top > page.view[1] {
                 break;
@@ -1116,8 +1299,8 @@ impl Ui {
     }
 
     /// A text block at `r` in its parent's box: told as what it is (a heading with its level, a
-    /// paragraph; a header cell, or a cell by its text), with its rows in view and the part of
-    /// the selection in it.
+    /// paragraph, a header cell, a cell), with its rows in view and the part of the selection in
+    /// it.
     fn document_leaf(&mut self, page: &Page, at: usize, r: Rect) {
         let (t, block, area) = (self.theme, page.writing.blocks[at], page.shown.areas[at]);
         let state = self.el().flow(Flow::Stack).offset(r.x, r.y).size(r.w, r.h).open();
@@ -1133,12 +1316,10 @@ impl Ui {
                 let column = page.shown.kids[from as usize..to as usize].iter().position(|cell| *cell as usize == at).unwrap_or(0);
                 self.tell_position(column + 1, (to - from) as usize);
             }
-            Kind::Cell(_) => {}
+            Kind::Cell(_) => self.tell(&state, Role::Cell, None, words),
             _ => self.tell(&state, Role::Paragraph, None, words),
         }
-        if !matches!(block.kind, Kind::Cell(_)) {
-            self.tell_picked(page, at);
-        }
+        self.tell_picked(page, at);
         if matches!(block.kind, Kind::Heading(1 | 2)) {
             self.el().offset(0.0, r.h - 1.0).size(r.w, 1.0).fill(t.line).show();
         }
@@ -1200,6 +1381,7 @@ impl Ui {
 mod tests {
     use super::*;
     use crate::geom::Size;
+    use crate::testing::Trial;
 
     #[test]
     fn only_what_is_in_view_of_a_long_document_is_described() {
@@ -1263,18 +1445,99 @@ mod tests {
         ui.run(&mut build);
         // A screen in view and one below it: some twenty of the ten thousand paragraphs, and an
         // estimate of the rest's height.
-        let (measured, laid, high) = with_shown(&mut ui, |shown| (shown.measured, shown.next, shown.high));
+        let (measured, laid, high) = with_shown(&mut ui, |shown| (measured(shown), shown.next, shown.high));
         assert!(measured < 60 && laid < 60, "{measured} measured, {laid} laid out");
         assert!(high > 300_000.0, "{high}");
-        // At the end, everything is, and the end shows.
-        ui.event(crate::event::Event::Move(crate::geom::pt(200.0, 150.0)));
-        ui.event(crate::event::Event::Wheel(0.0, 1e9));
-        for _ in 0..3 {
-            ui.run(&mut build);
+    }
+
+    /// How many blocks have been measured.
+    fn measured(shown: &Shown) -> usize {
+        shown.areas.iter().filter(|area| area.measured).count()
+    }
+
+    /// Ten thousand short paragraphs, `before` above them and `after` below, in a scroll box
+    /// filling a window 420 by 300.
+    fn long_document(before: &str, after: &str) -> Trial<Markdown> {
+        let lines: String = (0..10_000).map(|n| format!("Line {n} of a long document.\n\n")).collect();
+        let mut trial = Trial::new(Markdown::parse(&format!("{before}{lines}{after}")), |doc: &mut Markdown, ui| {
+            ui.column().grow().scroll().open();
+            ui.markdown(doc);
+            ui.close();
+        });
+        trial.resize(420.0, 300.0, 1.0);
+        trial
+    }
+
+    /// Where paragraph `name` shows: its top in the window.
+    fn top_of(trial: &Trial<Markdown>, name: &str) -> f32 {
+        trial.find(Role::Paragraph, name).rect.y
+    }
+
+    #[test]
+    fn a_jump_to_the_end_lays_out_only_the_end() {
+        let mut trial = long_document("", "");
+        trial.wheel(pt(200.0, 150.0), 0.0, 1e9);
+        let (measured, laid) = with_shown(&mut trial.ui, |shown| (measured(shown), shown.next - shown.first));
+        assert!(measured < 100 && laid < 100, "{measured} measured, {laid} laid out");
+        let last = trial.find(Role::Paragraph, "Line 9999 of a long document.").rect;
+        assert!(last.bottom() <= 300.0 && last.bottom() > 250.0, "the end shows at the foot: {last:?}");
+    }
+
+    #[test]
+    fn scrolled_back_up_from_a_jump_what_shows_stays_in_place() {
+        let mut trial = long_document("", "");
+        trial.wheel(pt(200.0, 150.0), 0.0, 1e9);
+        // Each step up moves every paragraph in view down by the step, though what lies above is
+        // laid out afresh time and again, its estimated height corrected.
+        for _ in 0..40 {
+            let shown = trial.visible_access_nodes().iter().find(|node| node.role == Role::Paragraph && node.rect.y >= 0.0).map(|node| (node.name.clone(), node.rect.y)).expect("a paragraph in view");
+            trial.wheel(pt(200.0, 150.0), 0.0, -60.0);
+            assert_eq!(top_of(&trial, &shown.0), shown.1 + 60.0, "{} moved by other than the step", shown.0);
         }
-        let (measured, count) = with_shown(&mut ui, |shown| (shown.measured, shown.areas.len()));
-        assert_eq!(measured, count);
-        assert!(ui.tree.strings.contains("Line 9999 "));
+        let first = with_shown(&mut trial.ui, |shown| shown.first);
+        assert!(first > 9000, "laid out from {first}: only around the view");
+        // At the top, the first line is where it belongs.
+        trial.wheel(pt(200.0, 150.0), 0.0, -1e9);
+        assert_eq!(top_of(&trial, "Line 0 of a long document."), 0.0);
+    }
+
+    #[test]
+    fn a_link_to_a_far_heading_and_ctrl_shift_end_lay_out_only_around_where_they_go() {
+        let after: String = (0..20).map(|n| format!("More words {n}.\n\n")).collect();
+        let mut trial = long_document("[To the end](#the-end)\n\n", &format!("## The end\n\n{after}Last words.\n"));
+        trial.press(Role::Link, "To the end");
+        let heading = trial.find(Role::Heading, "The end").rect;
+        assert!(heading.y.abs() < 1.0, "the heading is at the top: {heading:?}");
+        assert!(with_shown(&mut trial.ui, measured) < 100);
+        // Back at the top, clicked in, Ctrl+Shift+End selects to the end, which shows.
+        trial.wheel(pt(200.0, 150.0), 0.0, -1e9);
+        trial.click(pt(200.0, 100.0));
+        trial.key("Ctrl+Shift+End");
+        assert!(trial.find(Role::Paragraph, "Last words.").rect.bottom() <= 300.0);
+        assert!(with_shown(&mut trial.ui, measured) < 150);
+    }
+
+    #[test]
+    fn tab_reaches_a_link_above_what_is_laid_out() {
+        let mut trial = long_document("[First link](#a)\n\n", "[Last link](#b)\n");
+        trial.wheel(pt(200.0, 150.0), 0.0, 1e9);
+        assert!(trial.has(Role::Link, "Last link"));
+        // From the document, Tab goes to its first link, at the top: laid out, and shown.
+        trial.key("Tab");
+        trial.key("Tab");
+        let first = trial.find(Role::Link, "First link");
+        assert!(first.focused && first.rect.y >= 0.0 && first.rect.y < 300.0, "{first:?}");
+        assert!(trial.has(Role::Paragraph, "Line 0 of a long document."));
+    }
+
+    #[test]
+    fn a_new_width_keeps_what_shows_at_the_top_there() {
+        let mut trial = long_document("", "");
+        trial.wheel(pt(200.0, 150.0), 0.0, 150_000.0);
+        let shown = trial.visible_access_nodes().iter().find(|node| node.role == Role::Paragraph && node.rect.y >= 0.0).map(|node| (node.name.clone(), node.rect.y)).expect("a paragraph in view");
+        trial.resize(300.0, 300.0, 1.0);
+        assert!((top_of(&trial, &shown.0) - shown.1).abs() < 1.0, "{} moved", shown.0);
+        assert!(with_shown(&mut trial.ui, measured) < 100);
     }
 
     #[cfg(feature = "right-to-left")]
@@ -1297,6 +1560,31 @@ mod tests {
         let [first, italic, latin] = [place("\u{5d0}\u{5d2} "), place("\u{5d2}\u{5d0}"), place("cd")];
         assert!((first[1] - 420.0).abs() < 1.0, "{shown:?}");
         assert!(latin[1] <= italic[0] && italic[1] <= first[0], "{shown:?}");
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn a_right_to_left_list_or_quote_has_its_marks_at_the_right() {
+        let doc = Markdown::parse("- \u{5d0}\u{5d2}\n- \u{5d2}\u{5d0}\n\n1. \u{5d0}\n\n> \u{5d2}\u{5d0}\n\n- ab\n");
+        let mut ui = shown_in_a_window(Box::new(crate::bidi::tests::hebrew_letters()));
+        let mut build = |ui: &mut Ui| _ = ui.markdown(&doc);
+        ui.run(&mut build);
+        ui.run(&mut build);
+        let inset = sizes(&ui.theme).inset;
+        with_shown(&mut ui, |shown| {
+            let kinds = doc.writing.blocks.iter().map(|block| block.kind);
+            let containers: Vec<(Area, Area)> = kinds.enumerate().filter(|(_, kind)| matches!(kind, Kind::List { .. } | Kind::Quote)).map(|(at, _)| (shown.areas[at], shown.areas[at + 1])).collect();
+            let sides: Vec<bool> = containers.iter().map(|(up, _)| up.leftward).collect();
+            assert_eq!(sides, [true, true, true, false], "Hebrew lists and quote read right to left; the Latin list not");
+            for (up, first) in &containers[..2] {
+                assert_eq!([first.rect.x, first.rect.w], [up.rect.x, up.rect.w - up.mark], "items start at the list's left, its marks at the right");
+            }
+            let (quote, inside) = containers[2];
+            assert_eq!([inside.rect.x, inside.rect.w], [quote.rect.x, quote.rect.w - 3.0 - inset]);
+            let (list, item) = containers[3];
+            assert_eq!(item.rect.x, list.rect.x + list.mark);
+        });
+        assert!(ui.tree.strings.contains(".1"), "a number reads point first, right to left");
     }
 
     #[test]
@@ -1337,5 +1625,91 @@ mod tests {
         assert_eq!(rules_for(&doc, "toml"), None);
         doc.set_syntax("TOML", &Syntax::PYTHON);
         assert_eq!(rules_for(&doc, "toml"), Some(&Syntax::PYTHON));
+    }
+}
+
+/// Lists in Hebrew and in Latin, held against Chrome's drawing of the same (`dir="auto"`, the
+/// marker column as wide as the library's), in Arial: each item's text and marker lie where
+/// Chrome puts them, the markers of a right-to-left list at the right.
+#[cfg(all(test, windows, feature = "right-to-left"))]
+mod against_edge {
+    use super::*;
+    use crate::browser_check::{browser, ink_middle, lasting_differences};
+    use crate::font_file::{AppFonts, FontFile};
+
+    /// The text's ink and the markers'.
+    const INKS: [u32; 2] = [0x000000, 0xd00000];
+
+    /// Each list as Markdown and as HTML, and whether it reads right to left.
+    const CASES: [(&str, &str, bool); 4] = [
+        ("- \u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}\n", "<ul dir=auto><li>\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}</li></ul>", true),
+        ("1. \u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}\n", "<ol dir=auto><li>\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}</li></ol>", true),
+        ("- Hello world\n", "<ul dir=auto><li>Hello world</li></ul>", false),
+        ("1. Hello world\n", "<ol dir=auto><li>Hello world</li></ol>", false),
+    ];
+
+    /// Where case `n` is drawn: its left and top.
+    fn place(n: usize) -> [f32; 2] {
+        [10.0, 10.0 + 50.0 * n as f32]
+    }
+
+    /// The cases as a page, in the font at `path`, each list's markers as wide apart from its
+    /// text as the library's (`marks`).
+    fn page(path: &str, marks: f32) -> String {
+        let mut html = format!(
+            "<!doctype html><meta charset=utf-8><style>@font-face {{ font-family: Probe; src: url('file:///{path}'); }} body {{ margin: 0; background: #fff; }} div {{ position: absolute; width: 400px; font: 20px Probe; line-height: 30px; color: #000; font-kerning: none; }} ul, ol {{ margin: 0; padding-inline-start: {marks}px; }} li::marker {{ color: #d00000; }}</style>"
+        );
+        for (n, (_, list, _)) in CASES.iter().enumerate() {
+            let [x, y] = place(n);
+            html += &format!("<div style='left: {x}px; top: {y}px'>{list}</div>");
+        }
+        html
+    }
+
+    #[test]
+    fn markers_of_right_to_left_lists_lie_at_the_right_as_in_chrome() {
+        let Some(browser) = browser() else { return eprintln!("no Edge or Chrome here: not compared") };
+        let path = std::path::Path::new(&std::env::var_os("WINDIR").unwrap_or_default()).join(r"Fonts\arial.ttf");
+        let Some(font) = FontFile::open(&path) else { return eprintln!("no Arial here: not compared") };
+        let size = [440, 220];
+        let mut ui = Ui::new(Box::new(AppFonts::new(font)), Box::new(crate::platform::LocalClipboard::default()));
+        ui.resize(crate::geom::Size { w: size[0] as f32, h: size[1] as f32 }, 1.0);
+        (ui.theme.bg, ui.theme.text, ui.theme.text_dim, ui.theme.font) = (Color::WHITE, Color::rgb(INKS[0]), Color::rgb(INKS[1]), Font::new(20.0));
+        let docs: Vec<Markdown> = CASES.iter().map(|(text, ..)| Markdown::parse(text)).collect();
+        let mut written = |ui: &mut Ui| {
+            ui.el().flow(Flow::Stack).w(Length::Grow(1.0)).h(Length::Grow(1.0)).open();
+            for (n, doc) in docs.iter().enumerate() {
+                let [x, y] = place(n);
+                ui.el().offset(x, y).w(Length::Px(400.0)).open();
+                ui.markdown(doc);
+                ui.close();
+            }
+            ui.close();
+        };
+        ui.run(&mut written);
+        ui.run(&mut written);
+        let ours = crate::surface::Surface::draw(&mut ui, 64).pixels;
+        let differ = |theirs: &[u32]| {
+            let mut wrong = Vec::new();
+            for (n, (text, _, leftward)) in CASES.iter().enumerate() {
+                let [x, y] = place(n);
+                let band = rect(x - 10.0, y - 5.0, 420.0, 40.0);
+                let middles = |pixels: &[u32]| INKS.map(|ink| ink_middle(pixels, size[0], band, ink, &INKS).map(|[x, _]| x));
+                let ([words, marker], [edge_words, edge_marker]) = (middles(&ours), middles(theirs));
+                let (Some(words), Some(marker), Some(edge_words), Some(edge_marker)) = (words, marker, edge_words, edge_marker) else {
+                    wrong.push((format!("{text:?}"), "no text or marker found".into()));
+                    continue;
+                };
+                // (Within 3 for the text; within 8 for a marker: Chrome sets a bullet as a
+                // glyph beside the text, the library centres its dot in the marker column.)
+                if (marker > words) != *leftward || (words - edge_words).abs() > 3.0 || (marker - edge_marker).abs() > 8.0 {
+                    wrong.push((format!("{text:?}"), format!("text at {words}, marker at {marker}; Edge's at {edge_words} and {edge_marker}")));
+                }
+            }
+            wrong
+        };
+        let html = page(&path.to_string_lossy().replace('\\', "/"), sizes(&ui.theme).marks);
+        let wrong = lasting_differences(&browser, &html, size, "list-markers", differ);
+        assert!(wrong.is_empty(), "{} lists lie elsewhere than in Chrome", wrong.len());
     }
 }

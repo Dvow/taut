@@ -570,6 +570,14 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// A video's frame left on the GPU, stretched to `r` with corners of this radius, where a
+    /// GPU records this paint and can draw it from there: whether it does.
+    #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+    pub(crate) fn video_frame(&mut self, frame: &crate::video::FrameOnGpu, r: Rect, radius: f32) -> bool {
+        let (scale, clip) = (self.scale, self.clip);
+        self.list.as_deref_mut().is_some_and(|list| list.video_frame(frame, r, radius, scale, clip))
+    }
+
     /// An image drawn reduced over pixels `x0, y0` to `x1, y1`: each shows the mean of the
     /// image area on it.
     fn shrunk(&mut self, pixels: &[u32], width: usize, [x0, y0, x1, y1]: [i32; 4], radius: f32) {

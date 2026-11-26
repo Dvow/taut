@@ -483,7 +483,8 @@ jobs:
         run: cargo package
 
   # Video through each system's own player (feature `video`), a missing player failing
-  # (TAUT_VIDEO=required): GStreamer's base and good plugins on Ubuntu; on the Mac also the checks
+  # (TAUT_VIDEO=required): GStreamer's base, good and bad plugins and libav on Ubuntu (H.264 and
+  # the captions in its stream); on the Mac also the checks
   # on the main thread, where AVFoundation's run loop turns, and the same in the iOS simulator
   # (tests/video_apple.rs); on Ubuntu the web's player in headless Chrome and under Node
   # (tests/video_web.rs). Android's run on the emulator of the `android` job.
@@ -502,7 +503,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal -t wasm32-unknown-unknown -t aarch64-apple-ios-sim && rustup default stable && rustc -V
       - name: GStreamer
         if: runner.os == 'Linux'
-        run: rustc -O --edition 2024 .github/ci.rs -o ~/ci && ~/ci apt gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+        run: rustc -O --edition 2024 .github/ci.rs -o ~/ci && ~/ci apt gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
       - name: Video tests
         run: cargo test --features video --lib video::tests
       - name: Video on the main thread, and in the iOS simulator

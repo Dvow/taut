@@ -9,6 +9,7 @@ use crate::color::Color;
 use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Tracks, VideoError, VideoSource};
 use crate::video_captions::Cue;
+use crate::video_cea608::Decoder;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -188,6 +189,8 @@ struct Track {
     output_began: bool,
     /// The decoder's output format changed since `format_changed` was last asked.
     new_format: bool,
+    /// The CEA-608 captions read from an H.264 video's samples as they are fed.
+    captions: Option<Decoder>,
 }
 
 // SAFETY: the NDK's extractors and decoders may be used from any thread; a track is used by
@@ -202,7 +205,7 @@ impl Track {
         if extractor.is_null() {
             return Err("no extractor".into());
         }
-        let mut track = Track { media, extractor, held: Held::default(), codec: null_mut(), fed: false, output_began: false, new_format: false };
+        let mut track = Track { media, extractor, held: Held::default(), codec: null_mut(), fed: false, output_began: false, new_format: false, captions: None };
         track.held = open_source(media, extractor, origin)?;
         Ok((track, contents(media, extractor)))
     }
@@ -226,6 +229,7 @@ impl Track {
                 return Err(format!("the decoder for {mime} refused it ({configured})"));
             }
         }
+        self.captions = (mime == "video/avc").then(Decoder::default);
         Ok(())
     }
 
@@ -234,6 +238,9 @@ impl Track {
     /// decodes nothing more: what it gives from before `to` is left to the caller to drop.)
     fn seek(&mut self, to: Duration) {
         self.fed = false;
+        if let Some(captions) = &mut self.captions {
+            captions.sought(to);
+        }
         // SAFETY: a live extractor and a started decoder.
         unsafe {
             (self.media.AMediaExtractor_seekTo)(self.extractor, micros(to), SEEK_PREVIOUS_SYNC);
@@ -249,13 +256,17 @@ impl Track {
     }
     fn feed_one(&mut self) -> bool {
         let m = self.media;
-        // SAFETY: a started decoder, whose lent buffer is written within its room.
+        // SAFETY: a started decoder, whose lent buffer is written within its room and read as
+        // far as written.
         unsafe {
             let Ok(at) = usize::try_from((m.AMediaCodec_dequeueInputBuffer)(self.codec, 0)) else { return false };
             let mut room = 0;
             let buffer = (m.AMediaCodec_getInputBuffer)(self.codec, at, &mut room);
             let size = (m.AMediaExtractor_readSampleData)(self.extractor, buffer, room);
             let time = (m.AMediaExtractor_getSampleTime)(self.extractor);
+            if let Some(captions) = self.captions.as_mut().filter(|_| size > 0) {
+                crate::video_sei::read_captions(captions, std::slice::from_raw_parts(buffer, size as usize), Duration::from_micros(time.max(0) as u64));
+            }
             self.fed = size < 0;
             let flags = if self.fed { END_OF_STREAM } else { 0 };
             (m.AMediaCodec_queueInputBuffer)(self.codec, at, 0, size.max(0) as usize, time.max(0) as u64, flags);
@@ -496,6 +507,12 @@ struct State {
     tracks: Option<Tracks>,
     sound_track: usize,
     cues: Vec<Vec<Cue>>,
+    /// The tracks as last listed, the cues of the captions in the video stream (CEA-608, a
+    /// track after the source's own once their first data came), and whether the tracks
+    /// changed since told.
+    listed: Tracks,
+    in_stream: Option<Vec<Cue>>,
+    tracks_changed: bool,
     /// The newest frame not given yet.
     frame: Option<Frame>,
     /// The sound played its last (or there is none).
@@ -591,7 +608,9 @@ impl Player {
         let sounding = sound && read.as_ref().is_none_or(|(_, contents)| !contents.sound.is_empty());
         let captioned = read.as_ref().is_none_or(|(_, contents)| !contents.captions.is_empty());
         let mut state = State::new(sounding);
-        state.tracks = read.as_ref().map(|(_, contents)| contents.tracks());
+        if let Some((_, contents)) = &read {
+            state.list(contents.tracks());
+        }
         let shared = Arc::new(Shared { state: Mutex::new(state), changed: Condvar::new() });
         let (video_origin, caption_origin) = (origin.clone(), origin.clone());
         let mut threads = vec![spawn(&shared, move |shared| video_thread(media, &video_origin, read, shared))];
@@ -649,7 +668,7 @@ impl Player {
     }
     pub(crate) fn news(&mut self) -> News {
         let mut state = self.shared.lock();
-        News { ended: std::mem::take(&mut state.ended), error: state.error.take(), clears_on_play: false }
+        News { ended: std::mem::take(&mut state.ended), error: state.error.take(), clears_on_play: false, tracks_changed: std::mem::take(&mut state.tracks_changed) }
     }
     /// The newest frame not given yet: its width and time, its pixels in `into`.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
@@ -669,11 +688,13 @@ impl Player {
     pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
         self.captions = nth;
     }
-    /// The chosen caption track's text on show, once its cues are read.
+    /// The chosen caption track's text on show, once its cues are read: the source's own, then
+    /// those in the video stream.
     pub(crate) fn caption(&mut self) -> Option<String> {
-        let at = self.position();
+        let (at, nth) = (self.position(), self.captions?);
         let state = self.shared.lock();
-        crate::video_captions::text_at(state.cues.get(self.captions?)?, at)
+        let in_stream = state.in_stream.as_ref().filter(|_| nth + 1 == state.listed.captions.len());
+        crate::video_captions::text_at(in_stream.or_else(|| state.cues.get(nth))?, at)
     }
 }
 
@@ -690,6 +711,9 @@ impl State {
             tracks: None,
             sound_track: 0,
             cues: Vec::new(),
+            listed: Tracks::default(),
+            in_stream: None,
+            tracks_changed: false,
             frame: None,
             sound_done: !sounding,
             sounding,
@@ -699,6 +723,22 @@ impl State {
             #[cfg(test)]
             heard: (Vec::new(), 0),
         }
+    }
+
+    /// The source's tracks are these, from now on.
+    fn list(&mut self, tracks: Tracks) {
+        (self.listed, self.tracks) = (tracks.clone(), Some(tracks));
+    }
+
+    /// The captions in the video stream are these cues: a track of their own, `CC1`, listed
+    /// after the source's once they first come.
+    fn captions_in_stream(&mut self, cues: Vec<Cue>) {
+        if self.in_stream.is_none() {
+            self.listed.captions.push(crate::video::Track { language: String::new(), name: "CC1".into() });
+            self.listed.sound_chosen = self.listed.sound_chosen.map(|_| self.sound_track);
+            (self.tracks, self.tracks_changed) = (Some(self.listed.clone()), true);
+        }
+        self.in_stream = Some(cues);
     }
 }
 
@@ -810,7 +850,7 @@ fn video_thread(media: &'static Media, origin: &Origin, read: Option<(Track, Con
         let mut state = shared.lock();
         state.length = contents.length;
         if !tracks_known {
-            state.tracks = Some(contents.tracks());
+            state.list(contents.tracks());
         }
         drop(state);
         let mut pictures = Pictures::open(track, contents.video)?;
@@ -869,6 +909,8 @@ struct Pictures {
     /// How its frames become RGB, as the decoder's output format says: read again when that
     /// changes.
     colours: Option<Colours>,
+    /// The captions read in the video stream as last handed on.
+    captions_handed: Vec<Cue>,
 }
 
 impl Pictures {
@@ -878,7 +920,7 @@ impl Pictures {
         let Some((at, mime, size)) = video else { return Ok(None) };
         let reader = Reader::new(track.media, size)?;
         track.decode(at, &mime, reader.window)?;
-        Ok(Some(Pictures { track, reader, seeks: 0, target: Some(Duration::ZERO), before: None, next: None, drained: false, colours: None }))
+        Ok(Some(Pictures { track, reader, seeks: 0, target: Some(Duration::ZERO), before: None, next: None, drained: false, colours: None, captions_handed: Vec::new() }))
     }
 
     /// One step: follows a seek, decodes, shows a frame that is due. Whether all is shown.
@@ -888,6 +930,7 @@ impl Pictures {
         }
         if self.next.is_none() && !self.drained {
             self.decode()?;
+            self.hand_on_captions(shared);
         }
         if let Some(target) = self.target {
             self.land(target, shared);
@@ -902,6 +945,13 @@ impl Pictures {
         let rest = if asked.playing { (at - asked.now).min(Duration::from_millis(20)) } else { Duration::from_millis(50) };
         shared.wait(rest);
         Ok(false)
+    }
+
+    /// Hands the captions read in the video stream on, where there are some and they changed.
+    fn hand_on_captions(&mut self, shared: &Shared) {
+        let Some(captions) = self.track.captions.as_ref().filter(|captions| captions.found() && captions.cues() != self.captions_handed) else { return };
+        self.captions_handed = captions.cues().to_vec();
+        shared.lock().captions_in_stream(self.captions_handed.clone());
     }
 
     /// Goes to the key frame before `to`; frames already decoded are dropped (a flushed decoder

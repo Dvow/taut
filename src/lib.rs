@@ -127,7 +127,7 @@ mod date;
 mod decorations;
 mod dock;
 mod drag_drop;
-#[cfg(all(unix, not(target_vendor = "apple"), any(not(target_os = "android"), feature = "gpu", feature = "video")))]
+#[cfg(all(unix, not(target_vendor = "apple")))]
 mod dynamic_library;
 mod el;
 pub mod emoji;
@@ -347,8 +347,13 @@ mod video_android;
 mod video_apple;
 #[cfg(feature = "video")]
 mod video_captions;
+// (Read by Linux and Android; tested everywhere.)
+#[cfg(all(feature = "video", any(test, all(unix, not(target_vendor = "apple")))))]
+mod video_cea608;
 #[cfg(all(feature = "video", unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod video_gstreamer;
+#[cfg(all(feature = "video", any(test, target_os = "android")))]
+mod video_sei;
 #[cfg(all(feature = "video", target_family = "wasm"))]
 mod video_web;
 #[cfg(all(feature = "video", windows))]

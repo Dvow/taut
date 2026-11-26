@@ -11,7 +11,7 @@ use crate::color::Color;
 use crate::font_file::{FontFile, Set};
 use crate::macos_sys::{CFRange, CFRelease, CFStringCreateWithBytes, NSPoint, NSRect, NSSize, Obj, UTF8, array_items, rust_string, send};
 use crate::macos_sys::{CGBitmapContextCreate, CGColorSpaceCreateDeviceGray, CGColorSpaceRelease, CGContextRelease, CGContextSetGrayFillColor, CGContextSetShouldAntialias};
-use crate::system_fonts::Style;
+use crate::system_fonts::{GLYPHS, Style, cached};
 use crate::text::{Face, Font, Metrics, TextSystem};
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -63,6 +63,8 @@ const FIXED: u32 = 1;
 /// Symbolic traits: italic, bold.
 const ITALIC: u32 = 1;
 const BOLD: u32 = 2;
+/// How many fonts (face and pixel size) [`SystemText`] keeps, as Windows keeps GDI fonts.
+const FONTS: usize = 256;
 
 /// A CoreFoundation object this owns, released where it ends.
 struct Owned(*const c_void);
@@ -201,7 +203,7 @@ impl SystemText {
     /// first asked for.
     fn face(&mut self, font: Font, scale: f32) -> (u32, u32) {
         let key = (font.face.number(), (font.size * scale).round().max(1.0) as u32);
-        self.fonts.entry(key).or_insert_with(|| font_of(font.face, f64::from(key.1)));
+        cached(&mut self.fonts, FONTS, key, || font_of(font.face, f64::from(key.1)));
         key
     }
 
@@ -209,7 +211,7 @@ impl SystemText {
     /// lacks the character), and kept.
     fn glyph(&mut self, (face, pixels): (u32, u32), letter: char) -> &Glyph {
         let font = self.fonts[&(face, pixels)].0;
-        self.glyphs.entry((face, pixels, letter)).or_insert_with(|| match glyph_in(font, letter) {
+        cached(&mut self.glyphs, GLYPHS, (face, pixels, letter), || match glyph_in(font, letter) {
             Some(glyph) => drawn(font, glyph),
             None => fallback(font, letter).map_or_else(|| drawn(font, 0), |(other, glyph)| fallen(drawn(other.0, glyph), font)),
         })
@@ -272,7 +274,7 @@ impl TextSystem for SystemText {
         let Some(other) = drawing else { return false };
         let from = other.as_ref().map_or(face, |other| other.0);
         for (id, [right, down]) in glyphs {
-            let glyph = self.by_id.entry((key.0, key.1, letter, *id)).or_insert_with(|| drawn(from, *id));
+            let glyph = cached(&mut self.by_id, GLYPHS, (key.0, key.1, letter, *id), || drawn(from, *id));
             canvas.cover(x + right.round() as i32 + glyph.left, line + down.round() as i32 - glyph.top, glyph.width, &glyph.cover, color);
         }
         true
@@ -389,5 +391,48 @@ pub(crate) fn sequence(font: &FontFile, letters: &str, glyphs: &mut Vec<Set>) ->
             glyphs.extend(placed.map(|(glyph, at)| Set { glyph, at: [at.x as f32, at.y as f32] }));
         }
         Some(CTLineGetTypographicBounds(line.0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) as f32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Text measured and drawn at every size a pan-and-zoom view zooms through keeps at most
+    /// `FONTS` fonts and `GLYPHS` glyph pictures; what is dropped comes back the same.
+    #[test]
+    fn fonts_and_glyph_pictures_made_at_every_size_are_held_to_a_bound() {
+        let (mut text, mut pixels, word) = (SystemText::new().unwrap(), vec![0u32; 400 * 80], "Wide");
+        let first = text.measure(word, Font::new(14.0), 1.0, None);
+        (1..=600).for_each(|px| _ = text.measure("W", Font::new(px as f32), 1.0, None));
+        assert!(text.fonts.len() <= FONTS, "{} fonts kept", text.fonts.len());
+        let letters: String = (0x21..0x17f).filter_map(char::from_u32).collect();
+        for px in 4..=60 {
+            text.draw(&mut Canvas::new(&mut pixels, 400, 80, (0, 0), 1.0), &letters, 0.0, 0.0, Font::new(px as f32), Color::WHITE);
+            assert!(text.glyphs.len() <= GLYPHS, "{} pictures kept", text.glyphs.len());
+        }
+        assert_eq!(text.measure(word, Font::new(14.0), 1.0, None), first);
+    }
+
+    /// Glyphs drawn by id (`TextSystem::draw_glyphs`) at every size are held to the same bound,
+    /// and one dropped is drawn again the same.
+    #[cfg(feature = "shaping")]
+    #[test]
+    fn glyphs_drawn_by_id_at_every_size_are_held_to_a_bound() {
+        let (mut text, font) = (SystemText::new().unwrap(), Font::new(20.0));
+        let key = text.face(font, 1.0);
+        let own = glyph_in(text.fonts[&key].0, 'a').expect("the system font has a");
+        let ids: Vec<(u16, [f32; 2])> = (1..400).map(|id| (id, [0.0, 0.0])).collect();
+        let drawn = |text: &mut SystemText, font: Font, ids: &[(u16, [f32; 2])]| {
+            let mut pixels = vec![0u32; 80 * 80];
+            assert!(text.draw_glyphs(&mut Canvas::new(&mut pixels, 80, 80, (0, 0), 1.0), font, ('a', own), ids, [10, 60], Color::WHITE));
+            pixels
+        };
+        let first = drawn(&mut text, font, &[(own, [0.0, 0.0])]);
+        for px in 4..=60 {
+            drawn(&mut text, Font::new(px as f32), &ids);
+            assert!(text.by_id.len() <= GLYPHS, "{} pictures kept", text.by_id.len());
+        }
+        assert!(first.iter().any(|pixel| *pixel != 0) && drawn(&mut text, font, &[(own, [0.0, 0.0])]) == first);
     }
 }

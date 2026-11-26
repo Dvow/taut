@@ -421,6 +421,7 @@ mod tests {
             wrong.push(format!("dropping what was composed left {:?}", box_text(out)));
         }
         deleting(out, wrong);
+        deleting_in_code(out, wrong);
         shell("ime reset");
     }
 
@@ -435,6 +436,28 @@ mod tests {
             if shown != format!("{before}{wanted}") {
                 wrong.push(format!("after {key}: {shown:?}, not {before:?} and {wanted:?}"));
             }
+        }
+    }
+
+    /// The app's code editor (its text starts "code").
+    fn code_editor(out: &Path) -> Option<Node> {
+        dump(out, "code").into_iter().find(|node| node.class == "android.widget.EditText" && node.text.starts_with("code"))
+    }
+
+    /// The test keyboard deletes before a selection in the code editor: the selection stays,
+    /// so what it commits next takes the selection's place.
+    fn deleting_in_code(out: &Path, wrong: &mut Vec<String>) {
+        let Some(code) = code_editor(out) else { return wrong.push("no code editor".into()) };
+        tap(&code);
+        shell("input keyevent KEYCODE_MOVE_END");
+        (0..2).for_each(|_| _ = shell("input keycombination KEYCODE_SHIFT_LEFT KEYCODE_DPAD_LEFT"));
+        shell("input keyevent KEYCODE_H");
+        settle(1);
+        shell("input keyevent KEYCODE_G");
+        settle(1);
+        let shown = code_editor(out).map(|node| node.text);
+        if shown.as_deref() != Some("code 😀😀e\u{301}") {
+            wrong.push(format!("deleting before the code editor's selection left {shown:?}, not \"code 😀😀é\""));
         }
     }
 

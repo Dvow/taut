@@ -1017,17 +1017,17 @@ impl CodeEditor {
     // ---- changing the text ----
 
     /// Makes one change, undone as one: each of `edits` replaces a range of the text (in order,
-    /// non-overlapping). With `carets`, a cursor goes into each replacement, that many bytes
-    /// in; else cursors move with the text.
-    fn change(&mut self, edits: Vec<(Range<usize>, String)>, carets: Option<Vec<usize>>, typed: bool) {
+    /// non-overlapping). With `placed`, a cursor and its anchor go into each replacement, at
+    /// those bytes into it; else cursors move with the text.
+    fn change(&mut self, edits: Vec<(Range<usize>, String)>, placed: Option<Vec<Sel>>, typed: bool) {
         if edits.iter().all(|(range, with)| range.is_empty() && with.is_empty()) {
             return;
         }
         let before = self.sels.clone();
         let written: Vec<(usize, String, String)> = edits.iter().map(|(range, with)| (range.start, self.text[range.clone()].to_string(), with.clone())).collect();
         self.apply(&edits);
-        if let Some(carets) = carets {
-            self.sels = self.carets(&edits, &carets);
+        if let Some(placed) = placed {
+            self.sels = self.placed(&edits, &placed);
             self.merge();
         }
         self.changes.truncate(self.changes.len() - self.undone);
@@ -1046,12 +1046,14 @@ impl CodeEditor {
         }
     }
 
-    /// The cursors after `edits`: one in each replacement, `carets` bytes into it.
-    fn carets(&self, edits: &[(Range<usize>, String)], carets: &[usize]) -> Vec<Sel> {
+    /// The cursors after `edits`: one in each replacement, `placed` (bytes into it) moved to
+    /// where that replacement now starts.
+    fn placed(&self, edits: &[(Range<usize>, String)], placed: &[Sel]) -> Vec<Sel> {
         let mut shift = 0isize;
         let mut sels = Vec::with_capacity(edits.len());
-        for ((range, with), caret) in edits.iter().zip(carets) {
-            sels.push(Sel::at(range.start.saturating_add_signed(shift) + caret));
+        for ((range, with), sel) in edits.iter().zip(placed) {
+            let start = range.start.saturating_add_signed(shift);
+            sels.push(Sel { cursor: start + sel.cursor, anchor: start + sel.anchor, column: None });
             shift += with.len() as isize - range.len() as isize;
         }
         sels
@@ -1096,29 +1098,31 @@ impl CodeEditor {
     }
 
     /// Edits at every cursor as `make` says: the range to replace, its replacement, and the
-    /// cursor's offset into it. (Where two cursors' ranges meet, the first's edit wins.)
-    fn each(&mut self, typed: bool, make: impl Fn(&CodeEditor, &Sel) -> (Range<usize>, String, usize)) {
-        let mut made: Vec<(Range<usize>, String, usize)> = self.sels.iter().map(|sel| make(self, sel)).collect();
+    /// cursor and anchor in bytes into it. (Where two cursors' ranges meet, the first's edit
+    /// wins.)
+    fn each(&mut self, typed: bool, make: impl Fn(&CodeEditor, &Sel) -> (Range<usize>, String, Sel)) {
+        let mut made: Vec<(Range<usize>, String, Sel)> = self.sels.iter().map(|sel| make(self, sel)).collect();
         in_order(&mut made, |(range, ..)| range.start);
-        let (mut edits, mut carets, mut end) = (Vec::with_capacity(made.len()), Vec::with_capacity(made.len()), 0);
-        for (nth, (range, with, caret)) in made.into_iter().enumerate() {
+        let (mut edits, mut placed, mut end) = (Vec::with_capacity(made.len()), Vec::with_capacity(made.len()), 0);
+        for (nth, (range, with, sel)) in made.into_iter().enumerate() {
             if nth == 0 || range.start >= end {
                 end = range.end;
                 edits.push((range, with));
-                carets.push(caret);
+                placed.push(sel);
             }
         }
-        self.change(edits, Some(carets), typed);
+        self.change(edits, Some(placed), typed);
     }
 
-    /// Deletes what an input method asks around each selection (Android): each becomes a cursor.
+    /// Deletes what an input method asks around each selection (Android), keeping the
+    /// selections, as text boxes do.
     #[cfg(any(target_os = "android", test))]
     fn delete_around(&mut self, around: crate::text_edit::DeleteAround) {
         self.each(false, |code, sel| {
             let selected = sel.range();
             let kept = code.text[selected.clone()].to_string();
-            let caret = if sel.cursor < sel.anchor { 0 } else { kept.len() };
-            (around.range(&code.text, selected), kept, caret)
+            let (anchor, cursor) = if sel.cursor < sel.anchor { (kept.len(), 0) } else { (0, kept.len()) };
+            (around.range(&code.text, selected), kept, Sel { cursor, anchor, column: None })
         });
     }
 
@@ -1127,13 +1131,13 @@ impl CodeEditor {
     fn put(&mut self, text: &str, typed: bool) {
         let with: String = text.replace("\r\n", "\n").replace('\r', "\n");
         let with = if self.returns { with.replace('\n', "\r\n") } else { with };
-        self.each(typed, |_, sel| (sel.range(), with.clone(), with.len()));
+        self.each(typed, |_, sel| (sel.range(), with.clone(), Sel::at(with.len())));
     }
 
     /// What Enter inserts for a cursor: a line end and the line's indent; after a block opener,
     /// one step more; with the matching closing bracket right after the cursor, that bracket on
     /// its own line below.
-    fn line_break(&self, sel: &Sel) -> (Range<usize>, String, usize) {
+    fn line_break(&self, sel: &Sel) -> (Range<usize>, String, Sel) {
         let range = sel.range();
         let start = self.starts[self.line_of(range.start)] as usize;
         let typed = &self.text[start..range.start];
@@ -1143,14 +1147,14 @@ impl CodeEditor {
         let mut with = format!("{ending}{indent}");
         if !last.is_some_and(|last| self.syntax.indent_after.contains(last)) {
             let caret = with.len();
-            return (range, with, caret);
+            return (range, with, Sel::at(caret));
         }
         with.push_str(&self.indent_step(indent.len() as u32));
         let caret = with.len();
         if last.and_then(closer).is_some_and(|close| self.text[range.end..].starts_with(close)) {
             with.push_str(&format!("{ending}{indent}"));
         }
-        (range, with, caret)
+        (range, with, Sel::at(caret))
     }
 
     /// What Tab inserts at column `column`: a tab, or spaces to the next stop.
@@ -1183,7 +1187,7 @@ impl CodeEditor {
                 let start = code.starts[code.line_of(range.start)] as usize;
                 let step = code.indent_step(columns(&code.text[start..range.start], 0, code.tab_width.max(1) as u32));
                 let caret = step.len();
-                (range, step, caret)
+                (range, step, Sel::at(caret))
             });
         }
         let edits = self.selected_lines().into_iter().filter(|line| !self.line_text(*line).trim().is_empty()).map(|line| {
@@ -1262,7 +1266,7 @@ impl CodeEditor {
     fn edit_key(&mut self, key: Key, mods: Mods, clipboard: &mut dyn Clipboard) -> bool {
         let plain = !mods.ctrl && !mods.alt;
         match key {
-            Key::Backspace | Key::Delete if !mods.alt => self.each(false, |code, sel| (code.doomed(sel, key == Key::Delete, mods.ctrl), String::new(), 0)),
+            Key::Backspace | Key::Delete if !mods.alt => self.each(false, |code, sel| (code.doomed(sel, key == Key::Delete, mods.ctrl), String::new(), Sel::at(0))),
             Key::Enter if plain => self.each(true, CodeEditor::line_break),
             Key::Tab if plain && mods.shift => self.outdent(),
             Key::Tab if plain => self.indent(),
@@ -1270,7 +1274,7 @@ impl CodeEditor {
             Key::Char('c') if mods == Mods::CTRL => self.copy(clipboard),
             Key::Char('x') if mods == Mods::CTRL => {
                 self.copy(clipboard);
-                self.each(false, |_, sel| (sel.range(), String::new(), 0));
+                self.each(false, |_, sel| (sel.range(), String::new(), Sel::at(0)));
             }
             Key::Char('v') if mods == Mods::CTRL => clipboard.get().iter().for_each(|pasted| self.put(pasted, false)),
             Key::Char('z' | 'y') if mods.ctrl && !mods.alt => self.undo(mods.shift || key == Key::Char('y')),
@@ -1491,7 +1495,7 @@ impl CodeEditor {
         if !picked.is_empty() && self.next_match(picked.start, picked.end) == Some(picked.clone()) {
             let with = self.finding.with.clone();
             let caret = with.len();
-            self.change(vec![(picked, with)], Some(vec![caret]), false);
+            self.change(vec![(picked, with)], Some(vec![Sel::at(caret)]), false);
         }
         self.find_next(false);
     }
@@ -1587,6 +1591,9 @@ impl Ui {
     /// any length open, scroll and edit instantly: only what is visible is described and
     /// highlighted.
     pub fn code_editor(&mut self, code: &mut CodeEditor, hint: &str) -> Response {
+        // (Typed into by the system's keyboard, as text boxes are.)
+        #[cfg(target_os = "android")]
+        crate::android_input_method::hand_over();
         let t = self.theme;
         let sizes = self.code_sizes(code);
         if let Some(room) = self.rooms.get(&code.measured) {
@@ -2170,6 +2177,18 @@ mod tests {
         assert_eq!(shown(&code), "a|\nbe|", "half an emoji takes it whole; an accent goes without its letter");
         keys(&mut code, &[(Key::Char('z'), CTRL)]);
         assert_eq!(code.text, "a😀\nbe\u{301}", "undone at once");
+    }
+
+    #[test]
+    fn an_input_method_delete_keeps_every_selection() {
+        let mut code = CodeEditor::new("one two\nthree four", &Syntax::PLAIN);
+        code.sels = vec![Sel { cursor: 7, anchor: 4, column: None }, Sel { cursor: 14, anchor: 18, column: None }];
+        code.delete_around(crate::text_edit::DeleteAround { before: 1, after: 0, in_code_points: false });
+        assert_eq!(shown(&code), "one[two]\nthree[four]");
+        assert_eq!((code.sels[0].anchor, code.sels[0].cursor), (3, 6));
+        assert_eq!((code.sels[1].anchor, code.sels[1].cursor), (16, 12), "made leftward, it stays so");
+        keys(&mut code, &[(Key::Char('z'), CTRL)]);
+        assert_eq!(code.text, "one two\nthree four", "undone at once");
     }
 
     #[test]

@@ -471,7 +471,7 @@ fn structure_methods() -> Vec<(&'static CStr, *const c_void, String)> {
 
 /// Which roles each of those answers for: the rest are not offered to readers.
 fn roles_for(name: &CStr) -> Option<&'static [Role]> {
-    const TEXT: &[Role] = &[Role::TextBox, Role::PasswordBox, Role::Text, Role::Heading, Role::Paragraph, Role::Code];
+    const TEXT: &[Role] = &[Role::TextBox, Role::PasswordBox, Role::Text, Role::Heading, Role::Paragraph, Role::Code, Role::Cell, Role::ColumnHeader];
     const BOXES: &[Role] = &[Role::TextBox, Role::PasswordBox];
     let found: &[Role] = match name.to_bytes() {
         b"accessibilityRowCount" | b"accessibilityColumnCount" | b"accessibilityColumnHeaderUIElements" | b"accessibilityCellForColumn:row:" => &[Role::Table],

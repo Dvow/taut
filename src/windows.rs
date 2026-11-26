@@ -31,13 +31,14 @@ use crate::id::Id;
 use crate::platform::{Clipboard, PicturesAndFiles, Window, WindowPlacement};
 use crate::screens::{OpenAt, Screen, window_origin};
 use crate::second_window::{WindowKind, WindowOpening};
+use crate::system_fonts::{GLYPHS, cached};
 use crate::text::{Face, Font, Metrics, TextSystem};
 use crate::touch_windows::{self, WM_POINTERCAPTURECHANGED, WM_POINTERUPDATE};
 use crate::ui::Ui;
 use crate::uia;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{CStr, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -246,6 +247,8 @@ pub(crate) mod sys {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         pub fn GetModuleHandleW(name: *const u16) -> HANDLE;
+        pub fn LoadLibraryExW(name: *const u16, file: HANDLE, flags: u32) -> HANDLE;
+        pub fn GetProcAddress(library: HANDLE, name: *const u8) -> usize;
         pub fn GlobalAlloc(flags: u32, bytes: usize) -> HANDLE;
         pub fn GlobalLock(mem: HANDLE) -> *mut u16;
         pub fn GlobalUnlock(mem: HANDLE) -> i32;
@@ -493,6 +496,20 @@ pub(crate) fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain([0]).collect()
 }
 
+/// A DLL of the system folder, loaded for good: its handle, 0 if missing.
+pub(crate) fn system_library(name: &str) -> HANDLE {
+    let name = wide(name);
+    // SAFETY: a name ending in a zero; 0x800 (`LOAD_LIBRARY_SEARCH_SYSTEM32`) searches only
+    // the system folder.
+    unsafe { LoadLibraryExW(name.as_ptr(), 0, 0x800) }
+}
+
+/// A function of a loaded library: its address, 0 if missing.
+pub(crate) fn function_in(library: HANDLE, name: &CStr) -> usize {
+    // SAFETY: a name ending in a zero.
+    unsafe { GetProcAddress(library, name.as_ptr().cast()) }
+}
+
 /// The strip the windows are drawn through, and the DC Windows draws letters into it with.
 /// Shared by the windows (each fills and shows it in turn) and the text.
 struct Strip {
@@ -567,8 +584,6 @@ fn font_named(dc: HANDLE, name: &str, px: i32, weight: i32, italic: bool) -> Opt
 
 /// How many GDI fonts are kept at once (see `Fonts::font`).
 const MADE: usize = 256;
-/// How many glyph pictures [`SystemText`] keeps at once.
-const GLYPHS: usize = 8192;
 
 /// GDI fonts by face and pixel size, and text widths in them.
 struct Fonts {
@@ -897,11 +912,7 @@ impl SystemText {
         let (key, code, how) = ((font.face, px, letter, form), if by_id { form as u32 } else { letter as u32 }, if by_id { 6 | 0x80 } else { 6 });
         #[cfg(not(feature = "shaping"))]
         let (key, code, how) = ((font.face, px, letter), letter as u32, 6);
-        // Past `GLYPHS` pictures all are dropped and remade on demand.
-        if self.glyphs.len() >= GLYPHS && !self.glyphs.contains_key(&key) {
-            self.glyphs.clear();
-        }
-        self.glyphs.entry(key).or_insert_with(|| {
+        cached(&mut self.glyphs, GLYPHS, key, || {
             // Upright, unscaled, 65 grey levels (`GGO_GRAY8_BITMAP`, 6), rows padded to four
             // bytes.
             let (mut m, upright) = (GLYPHMETRICS::default(), [0, 1, 0, 0, 0, 0, 0, 1]);

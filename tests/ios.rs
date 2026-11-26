@@ -5,9 +5,10 @@
 //!   keys, typed, corrected and composed text, the keyboard reading the box, the edit menu, a
 //!   screen reader, rotation. `system`: the system's file dialog, a file opened, drops, a drag
 //!   out, files on the clipboard. `notices`: a notification and a click on it. `windows`: a
-//!   second window in a scene of its own (iPad), pressed, closed by the person and by the app.
-//!   `dialog`: a dialog window on an iPhone, which shows none, keeping nothing from input. It
-//!   writes what it saw into its temporary folder.
+//!   second window in a scene of its own (iPad), pressed, typed in; its scene and the first's let
+//!   go of by the system and brought back; closed by the person and by the app. `dialog`: a
+//!   dialog window on an iPhone, which shows none, keeping nothing from input. It writes what it
+//!   saw into its temporary folder.
 //! - On a Mac (`mac`), with `TAUT_IOS_SIMULATOR=1`, it builds that app and the gallery example
 //!   as bundles (`examples/ios_bundle.rs`), boots the newest iPhone simulator, runs them, reads
 //!   their notes, takes the screen (`simctl io screenshot`) and holds it against the same
@@ -336,15 +337,9 @@ mod phone {
     fn view() -> Obj {
         unsafe { send0(root(), c"view") }
     }
-    /// The first window's view controller (the scene of a second window is titled "Second").
+    /// The first window's view controller.
     fn root() -> Obj {
-        unsafe {
-            let app: Obj = send0(class(c"UIApplication"), c"sharedApplication");
-            let scenes = items(send0(send0::<Obj>(app, c"connectedScenes"), c"allObjects"));
-            let first = scenes.into_iter().find(|scene| text_of(send0(*scene, c"title")) != "Second").unwrap_or(std::ptr::null_mut());
-            let window = items(send0(first, c"windows")).first().copied().unwrap_or(std::ptr::null_mut());
-            send0(window, c"rootViewController")
-        }
+        root_in(first_scene())
     }
     /// What the window's controller presents (null for nothing).
     fn presented() -> Obj {
@@ -352,8 +347,11 @@ mod phone {
     }
     /// A subview of the library's view, by class name.
     fn subview(name: &CStr) -> Obj {
-        let views = items(unsafe { send0(view(), c"subviews") });
-        views.into_iter().find(|one| unsafe { send1::<u8, _>(*one, c"isKindOfClass:", class(name)) } != 0).unwrap_or(std::ptr::null_mut())
+        subview_in(view(), name)
+    }
+    /// A subview of a view, by class name (null for none).
+    fn subview_in(of: Obj, name: &CStr) -> Obj {
+        items(unsafe { send0(of, c"subviews") }).into_iter().find(|one| is_of(*one, name)).unwrap_or(std::ptr::null_mut())
     }
     fn input() -> Obj {
         subview(c"TautTextInput")
@@ -575,6 +573,8 @@ mod phone {
     trait Page: std::fmt::Debug {
         const STEPS: &'static [&'static str];
         const NOTE: &'static str;
+        /// How long a step's outcome may take to show.
+        const PATIENCE: Duration = Duration::from_secs(8);
         fn describe(&mut self, ui: &mut Ui);
         fn act(&mut self, script: &mut Script, name: &str, ui: &mut Ui);
         /// Whether the step's outcome shows: yes, or not yet.
@@ -618,7 +618,7 @@ mod phone {
             }
             match page.check(name, ui) {
                 true => note(P::NOTE, &format!("ok {name}")),
-                false if since.elapsed() < Duration::from_secs(8) => return,
+                false if since.elapsed() < P::PATIENCE => return,
                 false => note(P::NOTE, &format!("FAILED {name}: {page:?}; places {:?}, long presses {:?}, edit menus {}", PLACES.take(), LONG_PRESSES.get(), MENUS.get().0)),
             }
             (self.step, self.since, self.acted) = (self.step + 1, Some(Instant::now()), false);
@@ -1338,25 +1338,52 @@ mod phone {
 
     // ---- second windows (iPad) ----
 
-    /// The page of second windows: one opened in a scene of its own, pressed, closed by the
-    /// person (its app hears it), opened again, then closed by the app.
+    /// The page of second windows: one opened in a scene of its own, pressed and typed in, its
+    /// scene let go of by the system and brought back; closed by the person (its app hears it),
+    /// opened again, closed by the app, and opened once more; then the first window pressed, its
+    /// scene let go of and brought back, and closed by the person with the window kept (a new
+    /// scene). What fakes UIKit's calls on the first scene comes last: after it the simulator may
+    /// ignore requests to close or open scenes.
     #[derive(Debug, Default)]
     struct Windows {
         titled: bool,
         second: taut::SecondWindow,
         presses: u32,
         close_requests: u32,
+        note: String,
+        /// Presses on the first window, the close requests it heard, and whether it refuses them.
+        first_presses: u32,
+        first_close_requests: u32,
+        refuse_close: bool,
+        /// Each window's view, and the first scene's delegate, before the system let go of them
+        /// (as numbers).
+        first_view: usize,
+        second_view: usize,
+        first_delegate: usize,
     }
 
     impl Page for Windows {
         const NOTE: &'static str = "windows.txt";
+        // (UIKit can take longer to show a scene asked for just after closing one.)
+        const PATIENCE: Duration = Duration::from_secs(30);
         const STEPS: &'static [&'static str] = &[
+            "reader asked",
             "a second window opens in a scene of its own",
             "a touch on it reaches its interface",
             "it shows its own page",
+            "a touch on its text box gives it the keyboard",
+            "the system lets go of its scene: it stays open",
+            "its scene comes back: it shows as it was, with the keyboard",
+            "typing still reaches its text box",
+            "a touch on it still reaches its interface",
             "the person closing its scene is a close request",
             "it opens again",
             "the app closes it",
+            "it opens once more",
+            "a touch on the first window reaches it",
+            "the system lets go of the first scene and brings it back",
+            "the first window shows as it was and takes the keys",
+            "the person closing the first scene, refused, gets a new scene",
             "",
         ];
 
@@ -1365,8 +1392,14 @@ mod phone {
                 ui.set_title("First");
             }
             ui.label("First window");
+            self.first_presses += ui.button("Press here").clicked as u32;
+            self.first_close_requests += ui.close_requested() as u32;
+            if ui.close_requested() && self.refuse_close {
+                ui.cancel_close("kept open");
+            }
             if ui.window(&mut self.second, "Second") {
                 self.presses += ui.button("Press").clicked as u32;
+                ui.text_box(&mut self.note, "Note");
                 ui.label(&format!("Pressed {}", self.presses));
                 self.close_requests += ui.close_requested() as u32;
                 ui.close();
@@ -1375,33 +1408,55 @@ mod phone {
 
         fn act(&mut self, script: &mut Script, name: &str, ui: &mut Ui) {
             match name {
-                "a second window opens in a scene of its own" | "it opens again" => self.second.open = true,
-                "a touch on it reaches its interface" => {
-                    let Some(id) = ui.windows().find(|(_, title, _)| *title == "Second").map(|(id, ..)| id) else { return };
-                    let button = ui.in_window(id, |ui| ui.visible_access_nodes().iter().find(|node| node.role == Role::Button).map(|node| node.rect));
-                    let (view, rect) = (scene_view("Second"), button.flatten().unwrap_or_default());
-                    let at = origin_in(view);
-                    script.hold_on(view, Point { x: at.x + f64::from(rect.x + rect.w / 2.0), y: at.y + f64::from(rect.y + rect.h / 2.0) }, 0, Duration::ZERO);
+                "reader asked" => _ = elements(),
+                "a second window opens in a scene of its own" | "it opens again" | "it opens once more" => self.second.open = true,
+                "a touch on it reaches its interface" | "a touch on it still reaches its interface" => tap_in_second(script, ui, Role::Button),
+                "a touch on its text box gives it the keyboard" => tap_in_second(script, ui, Role::TextBox),
+                "the system lets go of its scene: it stays open" => {
+                    self.second_view = scene_view("Second") as usize;
+                    after_this_run(Box::new(|| let_go_of(scene_named("Second"))));
                 }
-                "the person closing its scene is a close request" => unsafe {
-                    let session: Obj = send0(scene_named("Second"), c"session");
-                    let app: Obj = send0(class(c"UIApplication"), c"sharedApplication");
-                    let nothing = std::ptr::null_mut::<c_void>();
-                    send3::<(), _, _, _>(app, c"requestSceneSessionDestruction:options:errorHandler:", session, nothing, nothing);
-                },
+                "its scene comes back: it shows as it was, with the keyboard" => after_this_run(Box::new(|| bring_back(scene_named("Second")))),
+                "typing still reaches its text box" => unsafe { send1::<(), _>(subview_in(scene_view("Second"), c"TautTextInput"), c"insertText:", string("back")) },
+                "a touch on the first window reaches it" => script.tap(middle_of(ui, Role::Button, "Press here"), 0),
+                "the person closing the first scene, refused, gets a new scene" => {
+                    (self.refuse_close, self.first_view) = (true, view() as usize);
+                    after_this_run(Box::new(|| close_as_the_person_would(first_scene())));
+                }
+                "the system lets go of the first scene and brings it back" => {
+                    (self.first_view, self.first_delegate) = (view() as usize, unsafe { send0::<Obj>(first_scene(), c"delegate") } as usize);
+                    after_this_run(Box::new(|| {
+                        let scene = first_scene();
+                        let_go_of(scene);
+                        bring_back(scene);
+                    }));
+                }
+                "the person closing its scene is a close request" => destroy_session(scene_named("Second")),
                 "the app closes it" => self.second.open = false,
                 _ => {}
             }
         }
 
-        fn check(&mut self, name: &str, _: &Ui) -> bool {
+        fn check(&mut self, name: &str, ui: &Ui) -> bool {
+            let second = scene_view("Second");
+            let second_keys = || takes_keys(subview_in(second, c"TautTextInput"));
             match name {
-                "a second window opens in a scene of its own" | "it opens again" => scenes().len() == 2 && is_of(scene_view("Second"), c"TautView") && scene_view("Second") != view(),
+                "reader asked" => !ui.visible_access_nodes().is_empty(),
+                "a second window opens in a scene of its own" | "it opens again" | "it opens once more" => scenes().len() == 2 && is_of(second, c"TautView") && second != view(),
                 "a touch on it reaches its interface" => self.presses == 1,
-                "it shows its own page" => unsafe {
-                    let page: Obj = send0(send0::<Obj>(send0::<Obj>(scene_view("Second"), c"layer"), c"sublayers"), c"firstObject");
-                    !send0::<Obj>(page, c"contents").is_null()
-                },
+                "it shows its own page" => shows_page(second),
+                "a touch on its text box gives it the keyboard" => second_keys(),
+                "the system lets go of its scene: it stays open" => second.is_null() && self.second.open && self.close_requests == 0 && ui.windows().count() == 1,
+                "its scene comes back: it shows as it was, with the keyboard" => second as usize == self.second_view && shows_page(second) && second_keys() && self.close_requests == 0,
+                "a touch on it still reaches its interface" => self.presses == 2,
+                "typing still reaches its text box" => self.note == "back",
+                "a touch on the first window reaches it" => self.first_presses == 1,
+                "the person closing the first scene, refused, gets a new scene" => self.first_close_requests == 1 && view() as usize == self.first_view && shown_scenes().len() == 2,
+                "the system lets go of the first scene and brings it back" => {
+                    let delegate = unsafe { send0::<Obj>(first_scene(), c"delegate") } as usize;
+                    delegate != self.first_delegate && view() as usize == self.first_view
+                }
+                "the first window shows as it was and takes the keys" => takes_keys(view()) && shows_page(view()) && self.first_close_requests == 0,
                 "the person closing its scene is a close request" => self.close_requests == 1 && !self.second.open && scenes().len() == 1,
                 "the app closes it" => scenes().len() == 1,
                 _ => true,
@@ -1454,10 +1509,77 @@ mod phone {
     fn scene_named(title: &str) -> Obj {
         scenes().into_iter().find(|scene| text_of(unsafe { send0(*scene, c"title") }) == title).unwrap_or(std::ptr::null_mut())
     }
+    /// The first window's scene: the one showing a window of the library's not titled "Second".
+    fn first_scene() -> Obj {
+        shown_scenes().into_iter().find(|scene| text_of(unsafe { send0(*scene, c"title") }) != "Second").unwrap_or(std::ptr::null_mut())
+    }
+    /// The connected scenes showing a window of the library's.
+    fn shown_scenes() -> Vec<Obj> {
+        scenes().into_iter().filter(|scene| !root_in(*scene).is_null()).collect()
+    }
+    /// The library's view controller in a scene (null where there is none). (The scene may hold
+    /// the keyboard's window too.)
+    fn root_in(scene: Obj) -> Obj {
+        let windows = items(unsafe { send0(scene, c"windows") });
+        windows.into_iter().map(|window| unsafe { send0(window, c"rootViewController") }).find(|root| is_of(*root, c"TautViewController")).unwrap_or(std::ptr::null_mut())
+    }
     /// The library's view in a scene, by its title (null where there is none).
     fn scene_view(title: &str) -> Obj {
-        let windows = items(unsafe { send0(scene_named(title), c"windows") });
-        windows.first().map_or(std::ptr::null_mut(), |window| unsafe { send0(send0::<Obj>(*window, c"rootViewController"), c"view") })
+        unsafe { send0(root_in(scene_named(title)), c"view") }
+    }
+    /// The system letting go of a scene to free memory, as UIKit tells it: its delegate hears
+    /// it disconnect.
+    fn let_go_of(scene: Obj) {
+        unsafe { send1::<(), _>(send0::<Obj>(scene, c"delegate"), c"sceneDidDisconnect:", scene) };
+    }
+    /// The system bringing a scene back with its session, as UIKit does: a delegate of its own
+    /// (one for each connection) hears it connect. The scene keeps the delegate.
+    fn bring_back(scene: Obj) {
+        unsafe {
+            let delegate: Obj = send0(class(c"TautSceneDelegate"), c"new");
+            send1::<(), _>(scene, c"setDelegate:", delegate);
+            send3::<(), _, _, _>(delegate, c"scene:willConnectToSession:options:", scene, send0::<Obj>(scene, c"session"), std::ptr::null_mut::<c_void>());
+        }
+    }
+    /// The person closing a scene: its session destroyed (UIKit disconnects the scene, then
+    /// discards the session).
+    fn destroy_session(scene: Obj) {
+        unsafe {
+            let app: Obj = send0(class(c"UIApplication"), c"sharedApplication");
+            let nothing = std::ptr::null_mut::<c_void>();
+            send3::<(), _, _, _>(app, c"requestSceneSessionDestruction:options:errorHandler:", send0::<Obj>(scene, c"session"), nothing, nothing);
+        }
+    }
+    /// The person closing a scene as UIKit tells it: its delegate hears it disconnect, then the
+    /// app's that its session was discarded. (The simulator ignores
+    /// `requestSceneSessionDestruction` for the app's first scene: no error, no disconnect.)
+    fn close_as_the_person_would(scene: Obj) {
+        let_go_of(scene);
+        unsafe {
+            let app: Obj = send0(class(c"UIApplication"), c"sharedApplication");
+            send2::<(), _, _>(send0::<Obj>(app, c"delegate"), c"application:didDiscardSceneSessions:", app, set_of(send0(scene, c"session")));
+        }
+    }
+    /// Whether a view of the library's shows its page: the page layer has a picture.
+    fn shows_page(view: Obj) -> bool {
+        unsafe {
+            let page: Obj = send0(send0::<Obj>(send0::<Obj>(view, c"layer"), c"sublayers"), c"firstObject");
+            !page.is_null() && !send0::<Obj>(page, c"contents").is_null()
+        }
+    }
+    /// Whether a view takes the keys (is the first responder; false for null).
+    fn takes_keys(view: Obj) -> bool {
+        !view.is_null() && unsafe { send0::<u8>(view, c"isFirstResponder") } != 0
+    }
+    /// A finger tapping the first part of a role in the second window (none where a reader has
+    /// not asked: its parts are not known).
+    fn tap_in_second(script: &mut Script, ui: &mut Ui, role: Role) {
+        let Some(id) = ui.windows().find(|(_, title, _)| *title == "Second").map(|(id, ..)| id) else { return };
+        let found = ui.in_window(id, |ui| ui.visible_access_nodes().iter().find(|node| node.role == role).map(|node| node.rect));
+        let Some(rect) = found.flatten() else { return };
+        let view = scene_view("Second");
+        let at = origin_in(view);
+        script.hold_on(view, Point { x: at.x + f64::from(rect.x + rect.w / 2.0), y: at.y + f64::from(rect.y + rect.h / 2.0) }, 0, Duration::ZERO);
     }
     /// Whether an object is of a class (false for null).
     fn is_of(object: Obj, name: &CStr) -> bool {

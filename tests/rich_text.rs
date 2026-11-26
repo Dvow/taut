@@ -406,3 +406,21 @@ fn a_list_nested_thousands_deep_shows_its_text_wide_enough_to_read() {
     let deep = expect_node_as(&w, Role::Paragraph, "deep");
     assert!(deep.rect.w >= 100.0 && deep.rect.right() <= 420.0, "{:?}", deep.rect);
 }
+
+#[test]
+fn the_selection_in_a_documents_table_is_told_in_each_cell_it_covers() {
+    let mut w = window(1.0);
+    w.set_screen_reader(true);
+    let doc = Markdown::parse("Before.\n\n| Name | Size |\n|---|--:|\n| a *big* one | 1 |\n");
+    settle(&mut w, build(&doc));
+    key(&mut w, Key::Tab, Mods::NONE, build(&doc));
+    key(&mut w, Key::Char('a'), Mods::CTRL, build(&doc));
+    let told = |w: &Window, role: Role, name: &str| expect_node_as(w, role, name).caret;
+    assert_eq!(told(&w, Role::ColumnHeader, "Name"), Some([0, 4]));
+    assert_eq!(told(&w, Role::Cell, "a big one"), Some([0, 9]), "a cell is named by its words, as one text");
+    assert_eq!(told(&w, Role::Cell, "1"), Some([0, 1]));
+    // Shift+Left takes the last letter back out: the last cell holds none of it.
+    key(&mut w, Key::Left, Mods::SHIFT, build(&doc));
+    assert_eq!(told(&w, Role::Cell, "1"), None);
+    assert_eq!(told(&w, Role::Cell, "a big one"), Some([0, 9]));
+}

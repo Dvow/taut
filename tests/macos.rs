@@ -1204,6 +1204,50 @@ mod mac {
         })
     }
 
+    /// A client reads a document's table: all of the document selected by the keys, a cell is
+    /// read as text, all of it selected.
+    fn a_reader_reads_the_part_of_a_documents_selection_in_a_cell() -> Vec<String> {
+        const COMMAND: usize = 1 << 20;
+        let doc = taut::Markdown::parse("| Name | Size |\n|---|--:|\n| a *big* one | 1 |\n");
+        let window = Window { title: "Document", width: 360.0, height: 200.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            ui.markdown(&doc);
+            let Some(window) = window_titled("Document") else { return };
+            match steps.step {
+                0 if steps.waited(300) => {
+                    if unsafe { AXIsProcessTrusted() } == 0 {
+                        println!("    the system does not trust this program to read others: not read");
+                        steps.done = true;
+                        return;
+                    }
+                    send::<()>(window, c"makeKeyAndOrderFront:", (std::ptr::null_mut::<c_void>(),));
+                    send::<()>(app(), c"activateIgnoringOtherApps:", (1u8,));
+                    steps.next();
+                }
+                // Tab to the document; Command+A selects all of it.
+                1 if steps.waited(300) => {
+                    for (code, typed, flags) in [(0x30, "\t", 0), (0x00, "a", COMMAND)] {
+                        post_key(window, code, typed, flags, 10);
+                        post_key(window, code, typed, flags, 11);
+                    }
+                    steps.next();
+                }
+                2 if steps.waited(500) => {
+                    let program = unsafe { AXUIElementCreateApplication(std::process::id() as i32) };
+                    let windows = ask(program, "AXWindows").map(items).unwrap_or_default();
+                    let mut found = Vec::new();
+                    let ours = windows.into_iter().find(|one| ask(*one, "AXTitle").and_then(text_of).as_deref() == Some("Document"));
+                    ours.into_iter().for_each(|one| all_under(one, 0, &mut found));
+                    let cells = found.iter().filter(|(_, role, _)| role == "AXCell").map(|(cell, ..)| *cell);
+                    let read: Vec<(Option<String>, Option<[isize; 2]>)> = cells.map(|cell| (ask(cell, "AXSelectedText").and_then(text_of), range_of(ask(cell, "AXSelectedTextRange")))).collect();
+                    steps.check(read.contains(&(Some("a big one".into()), Some([0, 9]))), || format!("the cells read {read:?}"));
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
     thread_local! {
         /// What a reader asking for a long table's row out of view was given: the row its cell
         /// says it is in, or what went wrong.
@@ -1673,7 +1717,7 @@ mod mac {
     pub fn main() {
         unsafe { objc_setExceptionPreprocessor(thrown) };
         type Check = fn() -> Vec<String>;
-        let checks: [(&str, Check); 19] = [
+        let checks: [(&str, Check); 20] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
             ("metal shows on the screen what the CPU shows", metal_shows_on_the_screen_what_the_cpu_shows),
             ("keys and an input method's text reach the focused box", keys_and_an_input_methods_text_reach_the_focused_box),
@@ -1688,6 +1732,7 @@ mod mac {
             ("a waker on another thread wakes the window", a_waker_on_another_thread_wakes_the_window),
             ("a reader reads the window and presses its button", a_reader_reads_the_window_and_presses_its_button),
             ("a reader reads text by ranges, and tables and trees by rows", a_reader_reads_text_by_ranges_and_tables_and_trees_by_rows),
+            ("a reader reads the part of a document's selection in a cell", a_reader_reads_the_part_of_a_documents_selection_in_a_cell),
             ("a long table's cell out of view comes on the first ask", a_long_tables_cell_out_of_view_comes_on_the_first_ask),
             ("the tray icon is a status item with a menu", the_tray_icon_is_a_status_item_with_a_menu),
             ("a notification from an app bundle reaches the system", a_notification_from_an_app_bundle_reaches_the_system),

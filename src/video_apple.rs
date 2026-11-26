@@ -248,7 +248,7 @@ impl Player {
         let at_end = self.length().is_some_and(|length| self.position() + Duration::from_millis(1) >= length);
         let ended = self.playing && rate == 0.0 && at_end;
         self.playing &= !ended;
-        News { ended, error, clears_on_play: false }
+        News { ended, error, clears_on_play: false, tracks_changed: false }
     }
 
     /// The newest frame where there is one not given yet: its width and time, its pixels in

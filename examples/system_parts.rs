@@ -1,11 +1,12 @@
 //! The system's own parts, each a button away: its file dialog (a file, several, saving), the
-//! clipboard's pictures and files, a notification, a box checked for spelling, faces named by
-//! family, printing, opening a file in another app, and dragging out and dropping in. Under
-//! each, what came of it. At the top, a number, a day and a time in the person's formats.
+//! clipboard's pictures and files, a notification, a box checked for spelling, a code editor,
+//! faces named by family, printing, opening a file in another app, and dragging out and
+//! dropping in. Under each, what came of it. At the top, a number, a day and a time in the
+//! person's formats.
 //!   cargo run --example system_parts
 //!   cargo run --example apk -- system_parts --target x86_64-linux-android
 use std::path::PathBuf;
-use taut::{Color, Date, DragData, Face, FileDialog, Font, Notification, Paper, PrintJob, PrintOutcome, Time, Ui, Window};
+use taut::{CodeEditor, Color, Date, DragData, Face, FileDialog, Font, Length, Notification, Paper, PrintJob, PrintOutcome, Syntax, Time, Ui, Window};
 
 /// What the dialog is up for.
 #[derive(Clone, Copy, PartialEq)]
@@ -20,8 +21,9 @@ pub struct Parts {
     asked: Asked,
     /// Where the app's own files go.
     folder: PathBuf,
-    /// The box checked for spelling.
+    /// The box checked for spelling, and the code editor.
     note: String,
+    code: CodeEditor,
     notification: Option<Notification>,
     printing: Option<PrintJob>,
     /// What came of each part: the files, the clipboard, the notification, printing, drops.
@@ -40,7 +42,16 @@ const PICTURE: [u32; 4] = [0xffff_0000, 0xff00_ff00, 0xff00_00ff, 0xffff_ffff];
 
 pub fn parts() -> Parts {
     let folder = taut::storage::folder("taut-system-parts").unwrap_or_else(std::env::temp_dir);
-    Parts { files: FileDialog::native(), asked: Asked::Open, folder, note: "Speling is hard".into(), notification: None, printing: None, said: Default::default() }
+    Parts {
+        files: FileDialog::native(),
+        asked: Asked::Open,
+        folder,
+        note: "Speling is hard".into(),
+        code: CodeEditor::new("code one", &Syntax::PLAIN),
+        notification: None,
+        printing: None,
+        said: Default::default(),
+    }
 }
 
 pub fn describe(parts: &mut Parts, ui: &mut Ui) {
@@ -72,6 +83,9 @@ pub fn describe(parts: &mut Parts, ui: &mut Ui) {
     ui.label("Spelling:");
     ui.check_spelling(Some("en-US"));
     ui.text_box(&mut parts.note, "Words to check");
+    ui.column().h(Length::Px(64.0)).open();
+    ui.code_editor(&mut parts.code, "Code");
+    ui.close();
     let ink = ui.theme.text;
     for (name, family) in [("Sans", "sans-serif"), ("Serif", "serif"), ("Mono", "monospace")] {
         ui.text(&format!("{name}: Handgloves 123"), Font { face: Face::named(family), ..Font::new(20.0) }, ink);

@@ -83,6 +83,12 @@ mod reader {
         end: c_int,
         content: *mut c_char,
     }
+    /// A selected stretch of a text, as libatspi hands it over: from where to where.
+    #[repr(C)]
+    struct Selected {
+        start: c_int,
+        end: c_int,
+    }
     /// The start of what a listener is handed: the kind of news, of which thing, and two numbers.
     #[repr(C)]
     struct Event {
@@ -158,6 +164,8 @@ mod reader {
         atspi_text_get_caret_offset: Function<Tells<c_int>>,
         atspi_text_get_text: Function<unsafe extern "C" fn(Thing, c_int, c_int, *mut *mut Problem) -> *mut c_char>,
         atspi_text_get_string_at_offset: Function<unsafe extern "C" fn(Thing, c_int, c_int, *mut *mut Problem) -> *mut Stretch>,
+        atspi_text_get_n_selections: Function<Tells<c_int>>,
+        atspi_text_get_selection: Function<TellsOf<*mut Selected>>,
         atspi_editable_text_set_text_contents: Function<unsafe extern "C" fn(Thing, *const c_char, *mut *mut Problem) -> c_int>,
         atspi_editable_text_insert_text: Function<unsafe extern "C" fn(Thing, c_int, *const c_char, c_int, *mut *mut Problem) -> c_int>,
         atspi_event_listener_new: Function<unsafe extern "C" fn(Heard, *mut c_void, *mut c_void) -> *mut c_void>,
@@ -243,6 +251,8 @@ mod reader {
                 atspi_text_get_caret_offset: function(atspi, c"atspi_text_get_caret_offset"),
                 atspi_text_get_text: function(atspi, c"atspi_text_get_text"),
                 atspi_text_get_string_at_offset: function(atspi, c"atspi_text_get_string_at_offset"),
+                atspi_text_get_n_selections: function(atspi, c"atspi_text_get_n_selections"),
+                atspi_text_get_selection: function(atspi, c"atspi_text_get_selection"),
                 atspi_editable_text_set_text_contents: function(atspi, c"atspi_editable_text_set_text_contents"),
                 atspi_editable_text_insert_text: function(atspi, c"atspi_editable_text_insert_text"),
                 atspi_event_listener_new: function(atspi, c"atspi_event_listener_new"),
@@ -284,6 +294,7 @@ mod reader {
     const TREE_ITEM: c_int = 91;
     const APPLICATION: c_int = 75;
     const ENTRY: c_int = 79;
+    const DOCUMENT_TEXT: c_int = 94;
     const SWITCH: c_int = 130;
     const CHECKED: c_int = 4;
     const EDITABLE: c_int = 7;
@@ -301,6 +312,10 @@ mod reader {
     /// The keys that are pressed, by the numbers X gives them.
     const TAB: c_ulong = 0xFF09;
     const ESCAPE: c_ulong = 0xFF1B;
+    const END: c_ulong = 0xFF57;
+    const SHIFT: c_ulong = 0xFFE1;
+    const CONTROL: c_ulong = 0xFFE3;
+    const LETTER_A: c_ulong = 0x61;
     /// The tick box of the first page, and the text that counts the presses, by what they are called.
     const TICK_BOX: &str = "A tick box, which the keyboard can reach with Tab and flip with Space";
     const COUNTED: &str = "Gallery: 60 items, 0 presses counted";
@@ -693,6 +708,11 @@ mod reader {
             Ok(Thing::NONE)
         }
 
+        /// The first thing of a kind in a window, whatever it is called (or none).
+        fn first_of(&self, within: Thing, wanted: c_int) -> Result<Thing, Gone> {
+            Ok(self.below(within)?.into_iter().map(|(thing, _)| thing).find(|thing| self.role(*thing).is_ok_and(|kind| kind == wanted)).unwrap_or(Thing::NONE))
+        }
+
         /// Whether a thing of a kind, called something, is in a window.
         fn has(&self, within: Thing, wanted: c_int, called: &str) -> Result<bool, Gone> {
             Ok(!self.find(within, wanted, called)?.is_none())
@@ -759,6 +779,25 @@ mod reader {
             // `words`), and is not read after this.
             unsafe { (self.glib.g_free)(stretch.cast()) };
             Ok((word, start, end))
+        }
+
+        /// The first selected stretch of a text: from where to where (none where nothing is).
+        fn selected(&self, of: Thing) -> Result<Option<(c_int, c_int)>, Gone> {
+            if self.ask(&self.atspi.atspi_text_get_n_selections, of)? < 1 {
+                return Ok(None);
+            }
+            let stretch = self.ask_of(&self.atspi.atspi_text_get_selection, of, 0)?;
+            if stretch.is_null() {
+                return Ok(None);
+            }
+            // SAFETY: libatspi handed over a range of its own making, the caller's to free with
+            // glib, which is not read after this.
+            let ends = unsafe {
+                let ends = ((*stretch).start, (*stretch).end);
+                (self.glib.g_free)(stretch.cast());
+                ends
+            };
+            Ok(Some(ends))
         }
 
         /// Puts a text into a text box in place of what is there.
@@ -1064,7 +1103,7 @@ mod reader {
     fn a_table(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
         let (atspi, frame) = (&reader.atspi, landmarks.frame);
         reader.press(reader.find(frame, PAGE_TAB, "Table")?)?;
-        let find = |role: c_int| Ok::<Thing, Gone>(reader.below(frame)?.into_iter().map(|(thing, _)| thing).find(|thing| reader.role(*thing).is_ok_and(|kind| kind == role)).unwrap_or(Thing::NONE));
+        let find = |role: c_int| reader.first_of(frame, role);
         check("the page with the table is picked, and the table is told as one", reader.wait(5.0, || Ok(!find(TABLE)?.is_none())), "");
         let table = find(TABLE)?;
         let (rows, columns, selected) =
@@ -1114,7 +1153,7 @@ mod reader {
     fn a_tree(reader: &Reader, landmarks: &Landmarks) -> Result<(), Gone> {
         let (atspi, frame) = (&reader.atspi, landmarks.frame);
         reader.press(reader.find(frame, PAGE_TAB, "Dock")?)?;
-        let find = |role: c_int| Ok::<Thing, Gone>(reader.below(frame)?.into_iter().map(|(thing, _)| thing).find(|thing| reader.role(*thing).is_ok_and(|kind| kind == role)).unwrap_or(Thing::NONE));
+        let find = |role: c_int| reader.first_of(frame, role);
         check("the page of panels is picked, and the tree in it is told as one", reader.wait(5.0, || Ok(!find(TREE)?.is_none())), "");
         let tree = find(TREE)?;
         // How deep an item is, from 1, which one it is of the items beside it, and of how many.
@@ -1207,12 +1246,17 @@ mod reader {
     impl Keys {
         /// A key goes down and comes up, as if the person had pressed it.
         fn key(&self, sym: c_ulong) {
-            // SAFETY: the display is open; the key that X has for the number goes down and
-            // comes up at once, and X is waited for until it has taken that in.
+            self.keys(&[sym]);
+        }
+
+        /// Keys go down in turn and come up the other way round: a key with Control or Shift.
+        fn keys(&self, syms: &[c_ulong]) {
+            // SAFETY: the display is open; the keys that X has for the numbers go down and come
+            // up at once, and X is waited for until it has taken that in.
             unsafe {
-                let key = (self.XKeysymToKeycode)(self.display, sym) as c_uint;
-                (self.XTestFakeKeyEvent)(self.display, key, 1, 0);
-                (self.XTestFakeKeyEvent)(self.display, key, 0, 0);
+                let keys: Vec<c_uint> = syms.iter().map(|sym| (self.XKeysymToKeycode)(self.display, *sym) as c_uint).collect();
+                keys.iter().for_each(|key| _ = (self.XTestFakeKeyEvent)(self.display, *key, 1, 0));
+                keys.iter().rev().for_each(|key| _ = (self.XTestFakeKeyEvent)(self.display, *key, 0, 0));
                 (self.XSync)(self.display, 0);
             }
         }
@@ -1251,6 +1295,26 @@ mod reader {
         let (tick, last) = (reader.find(landmarks.frame, CHECK_BOX, TICK_BOX)?, on.last().copied().unwrap_or(Thing::NONE));
         let went = || reader.wait(5.0, || Ok(reader.heard("object:state-changed:focused", tick, Some(1)) && reader.is(tick, &[FOCUSED])));
         check("the screen reader sends the keyboard to a thing itself", reader.ask(&reader.atspi.atspi_component_grab_focus, tick)? != 0 && went() && !reader.is(last, &[FOCUSED]), "");
+        Ok(())
+    }
+
+    // ---- a document's selection ----
+
+    /// The page with a document: the keyboard sent to it, all of it is selected by the keys and
+    /// the view taken to its end; a cell of its table is read as text, all of it selected.
+    fn a_documents_selection(reader: &Reader, landmarks: &Landmarks, keys: &Keys) -> Result<(), Gone> {
+        let frame = landmarks.frame;
+        reader.press(reader.find(frame, PAGE_TAB, "Writing")?)?;
+        check("the page with a document is picked, and the document is told as one", reader.wait(5.0, || Ok(!reader.first_of(frame, DOCUMENT_TEXT)?.is_none())), "");
+        let document = reader.first_of(frame, DOCUMENT_TEXT)?;
+        let focused = reader.ask(&reader.atspi.atspi_component_grab_focus, document)? != 0 && reader.wait(5.0, || Ok(reader.is(document, &[FOCUSED])));
+        check("  the screen reader sends the keyboard to it", focused, "");
+        keys.keys(&[CONTROL, LETTER_A]);
+        keys.keys(&[CONTROL, SHIFT, END]);
+        let cell = || reader.find(frame, TABLE_CELL, "Rows");
+        check("  all of it is selected by the keys, the view at its end: a cell of its table shows", reader.wait(5.0, || Ok(!cell()?.is_none())), "");
+        let selected = reader.selected(cell()?)?;
+        check("  the cell is read as text, which says all of it is selected", selected == Some((0, 4)), &format!("{selected:?}"));
         Ok(())
     }
 
@@ -1371,6 +1435,7 @@ mod reader {
         text_is_put_in(reader, &landmarks)?;
         let keys = open_keys();
         the_keyboard(reader, &landmarks, &keys)?;
+        a_documents_selection(reader, &landmarks, &keys)?;
         a_menu(reader, &landmarks, &keys)?;
         a_second_window(reader, &landmarks, &keys)?;
         nobody_listens_and_then_someone_again(reader, &landmarks, started.demo.id())?;

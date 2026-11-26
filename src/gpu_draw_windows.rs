@@ -9,14 +9,22 @@
 //!   being how much of each channel is covered. Everything else blends as premultiplied
 //!   colour over what is there.
 use crate::color::Color;
+#[cfg(feature = "video")]
+use crate::gpu_d3d11::TEXTURE;
 use crate::gpu_draw::{DrawList, Fast, SHADING, SIDE};
-use crate::gpu_windows::{function_in, system_library};
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, TextureDescription, function, release};
 use crate::text::Font;
+#[cfg(feature = "video")]
+use crate::video::FrameTexture;
+#[cfg(feature = "video")]
+use crate::video_windows::A_KEYED_MUTEX;
 use crate::windows::sys::{ExtTextOutW, GdiFlush, HANDLE, IntersectClipRect, RestoreDC, SaveDC, SelectObject, SetBkMode, SetTextColor, SetViewportOrgEx};
+use crate::windows::{function_in, system_library};
 use std::ffi::{CStr, c_char, c_void};
 use std::hash::{Hash, Hasher};
 use std::ptr::{null, null_mut};
+#[cfg(feature = "video")]
+use std::sync::{Arc, Weak};
 
 #[link(name = "gdi32")]
 unsafe extern "system" {
@@ -94,6 +102,48 @@ float4 texel(int which, int x, int y) {
 }
 "#;
 
+/// Videos' frames (`gpu_draw::FRAME`) in HLSL, around `PRELUDE` and `SHADING` untouched: a
+/// frame quad is shaded as a picture whose texels come from its frame's texture (`t3` to
+/// `t6`, the quad's `more.w` saying which), opaque. `PRELUDE`'s `texel` and `SHADING`'s
+/// `shade` are renamed, and wrapped.
+#[cfg(feature = "video")]
+const BEFORE_PRELUDE: &str = "#define texel texel_of_part\n";
+#[cfg(feature = "video")]
+const BEFORE_SHADING: &str = r#"
+#undef texel
+Texture2D<float4> frame0 : register(t3);
+Texture2D<float4> frame1 : register(t4);
+Texture2D<float4> frame2 : register(t5);
+Texture2D<float4> frame3 : register(t6);
+static int reading_frame = -1;
+float4 frame_texel(int x, int y) {
+    int3 at = int3(x, y, 0);
+    if (reading_frame == 0) {
+        return frame0.Load(at);
+    } else if (reading_frame == 1) {
+        return frame1.Load(at);
+    } else if (reading_frame == 2) {
+        return frame2.Load(at);
+    }
+    return frame3.Load(at);
+}
+float4 texel(int which, int x, int y) {
+    if (which == 1 && reading_frame >= 0) {
+        return float4(frame_texel(x, y).rgb, 1.0);
+    }
+    return texel_of_part(which, x, y);
+}
+#define shade shade_quad
+"#;
+#[cfg(feature = "video")]
+const BEFORE_MAIN: &str = r#"
+#undef shade
+float4 shade(float2 at, float4 shape, float4 more, float4 source, float4 color, float kind, out float4 covers) {
+    reading_frame = kind == 11.0 ? int(more.w) : -1;
+    return shade_quad(at, shape, more, source, color, kind == 11.0 ? 5.0 : kind, covers);
+}
+"#;
+
 /// What a device draws with: its shaders, blending and rasterizer states, the quads' buffer
 /// (room for `room` quads) and its view, and the cache and patch textures and their views.
 pub(crate) struct Pipeline {
@@ -105,6 +155,9 @@ pub(crate) struct Pipeline {
     room: usize,
     textures: [Com; 2],
     views: [Com; 2],
+    /// Videos' frames opened on this device, as they were drawn.
+    #[cfg(feature = "video")]
+    opened: Vec<OpenedFrame>,
 }
 
 // SAFETY: as its device: made on the device's thread, then used by the windows' alone.
@@ -171,10 +224,23 @@ fn texture(device: Com) -> [Com; 2] {
 impl Pipeline {
     /// What `device` (an `ID3D11Device`) draws with; nothing where any part can't be made.
     pub(crate) fn new(device: Com) -> Option<Pipeline> {
+        #[cfg(not(feature = "video"))]
         let source = format!("{PRELUDE}{SHADING}{MAIN}");
+        #[cfg(feature = "video")]
+        let source = format!("{BEFORE_PRELUDE}{PRELUDE}{BEFORE_SHADING}{SHADING}{BEFORE_MAIN}{MAIN}");
         let (corner, pixel) = (compiled(&source, c"corner", c"vs_4_0")?, compiled(&source, c"pixel", c"ps_4_0")?);
-        let mut made =
-            Pipeline { shaders: [null_mut(); 2], blend: null_mut(), rasterizer: null_mut(), quads: null_mut(), quads_view: null_mut(), room: 0, textures: [null_mut(); 2], views: [null_mut(); 2] };
+        let mut made = Pipeline {
+            shaders: [null_mut(); 2],
+            blend: null_mut(),
+            rasterizer: null_mut(),
+            quads: null_mut(),
+            quads_view: null_mut(),
+            room: 0,
+            textures: [null_mut(); 2],
+            views: [null_mut(); 2],
+            #[cfg(feature = "video")]
+            opened: Vec::new(),
+        };
         // One, one minus the second colour (2, 17), added (1); alpha likewise (2, 19, 1); all
         // four channels.
         let mut blend = [0u32; 66];
@@ -239,6 +305,8 @@ impl Pipeline {
         if target.is_null() || !self.hold(device, list.quads.len()) {
             return false;
         }
+        #[cfg(feature = "video")]
+        let Some(frames) = self.take_frames(device, &list.frames) else { return false };
         for upload in &list.uploads {
             let [left, top, width, height] = upload.at.map(|side| side as u32);
             let place = Box3 { left, top, front: 0, right: left + width, bottom: top + height, back: 1 };
@@ -268,11 +336,93 @@ impl Pipeline {
             function::<unsafe extern "system" fn(Com, u32, *const [f32; 6])>(context, 44)(context, 1, &viewport);
             function::<unsafe extern "system" fn(Com, u32, *const [i32; 4])>(context, 45)(context, 1, &scissor);
             function::<unsafe extern "system" fn(Com, u32, *const Com, Com)>(context, 33)(context, 1, &target, null_mut());
+            #[cfg(feature = "video")]
+            if !frames.is_empty() {
+                let views: Vec<Com> = frames.iter().map(|[view, _]| *view).collect();
+                function::<Views>(context, 8)(context, 3, views.len() as u32, views.as_ptr());
+            }
             function::<unsafe extern "system" fn(Com, u32, u32, u32, u32)>(context, 21)(context, 4, list.quads.len() as u32, 0, 0);
             function::<unsafe extern "system" fn(Com, u32, *const Com, Com)>(context, 33)(context, 0, null(), null_mut());
         }
+        #[cfg(feature = "video")]
+        give_back(&frames);
         true
     }
+
+    /// The views of `frames` on this device, each opened the first time it is drawn, their
+    /// keyed mutexes taken (8: AcquireSync, within 100 ms): none where one can't be, those taken
+    /// given back. Frames gone are let go first.
+    #[cfg(feature = "video")]
+    fn take_frames(&mut self, device: Com, frames: &[Arc<FrameTexture>]) -> Option<Vec<[Com; 2]>> {
+        self.opened.retain(|opened| opened.frame.strong_count() > 0);
+        let mut taken = Vec::with_capacity(frames.len());
+        for frame in frames {
+            let at = self.opened.iter().position(|opened| std::ptr::eq(opened.frame.as_ptr(), Arc::as_ptr(frame))).unwrap_or_else(|| {
+                self.opened.push(OpenedFrame::new(device, frame));
+                self.opened.len() - 1
+            });
+            let OpenedFrame { view, mutex, .. } = self.opened[at];
+            // SAFETY: the mutex, where there is one, is alive; key 0 is the one every device
+            // takes (`S_OK` only: a time-out is a success code).
+            let held = !mutex.is_null() && unsafe { function::<unsafe extern "system" fn(Com, u64, u32) -> i32>(mutex, 8)(mutex, 0, 100) } == 0;
+            if !held {
+                give_back(&taken);
+                return None;
+            }
+            taken.push([view, mutex]);
+        }
+        Some(taken)
+    }
+}
+
+/// A video's frame opened on a device: which frame, its texture there, the texture's view and
+/// its keyed mutex (nulls where it can't be opened there: another adapter's).
+#[cfg(feature = "video")]
+struct OpenedFrame {
+    frame: Weak<FrameTexture>,
+    texture: Com,
+    view: Com,
+    mutex: Com,
+}
+
+#[cfg(feature = "video")]
+impl OpenedFrame {
+    /// `frame` opened on `device` by its shared handle (the device's OpenSharedResource, 28;
+    /// CreateShaderResourceView, 7; the texture's QueryInterface).
+    fn new(device: Com, frame: &Arc<FrameTexture>) -> OpenedFrame {
+        let mut opened = OpenedFrame { frame: Arc::downgrade(frame), texture: null_mut(), view: null_mut(), mutex: null_mut() };
+        if frame.handle == 0 {
+            return opened;
+        }
+        // SAFETY: the handle is the live frame texture's; what is opened is held by this.
+        unsafe {
+            function::<unsafe extern "system" fn(Com, isize, *const [u32; 4], *mut Com) -> i32>(device, 28)(device, frame.handle, &TEXTURE, &mut opened.texture);
+            if opened.texture.is_null() {
+                return opened;
+            }
+            function::<unsafe extern "system" fn(Com, Com, *const c_void, *mut Com) -> i32>(device, 7)(device, opened.texture, null(), &mut opened.view);
+            function::<unsafe extern "system" fn(Com, *const [u32; 4], *mut Com) -> i32>(opened.texture, 0)(opened.texture, &A_KEYED_MUTEX, &mut opened.mutex);
+            if opened.view.is_null() {
+                release(std::mem::replace(&mut opened.mutex, null_mut()));
+            }
+        }
+        opened
+    }
+}
+
+#[cfg(feature = "video")]
+impl Drop for OpenedFrame {
+    fn drop(&mut self) {
+        // SAFETY: each is held once by this, or null.
+        unsafe { [self.mutex, self.view, self.texture].into_iter().for_each(|object| release(object)) };
+    }
+}
+
+/// Gives back keyed mutexes taken (9: ReleaseSync).
+#[cfg(feature = "video")]
+fn give_back(taken: &[[Com; 2]]) {
+    // SAFETY: each mutex is alive and was taken with key 0.
+    unsafe { taken.iter().for_each(|[_, mutex]| _ = function::<unsafe extern "system" fn(Com, u64) -> i32>(*mutex, 9)(*mutex, 0)) };
 }
 
 impl Drop for Pipeline {

@@ -11,10 +11,10 @@
 //!   Direct3D 12. COM methods are called by their place in the vtable, as d3d12.h and
 //!   dxgi1_4.h order them.
 use crate::gpu_d3d11::{ChainDescription, Changed};
-use crate::gpu_windows::{function_in, inside, system_library};
+use crate::gpu_windows::inside;
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, function, release};
-use crate::windows::named;
 use crate::windows::sys::{HANDLE, RECT};
+use crate::windows::{function_in, named, system_library};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};

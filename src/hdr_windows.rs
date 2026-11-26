@@ -15,12 +15,12 @@
 //!   part goes up to.
 //! - The shaders are compiled when first needed by `d3dcompiler_47.dll`: `vs_4_0` and `ps_4_0`
 //!   for Direct3D 11; `vs_5_1`, `ps_5_1` and a root signature for 12.
-use crate::gpu_windows::{Shown, function_in, system_library};
+use crate::gpu_windows::Shown;
 use crate::hdr::{Gains, Screen};
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, TextureDescription, function, release};
 use crate::ui::Ui;
-use crate::windows::named;
 use crate::windows::sys::{HANDLE, InvalidateRect, MonitorFromWindow, RECT};
+use crate::windows::{function_in, named, system_library};
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicU32, Ordering};

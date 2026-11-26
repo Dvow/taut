@@ -333,6 +333,25 @@ pub(crate) const FIXED: f32 = 4.0;
 /// `weight` counts (see `Room::on_grid`).
 const GRID: f32 = 8.0;
 
+/// How many grid cells a kernel unit may make of a pixel, each way (see `Room::on_grid`): a
+/// finer unit counts as this fine. (Beyond, the light on a surface still changes, by up to 22
+/// levels of librsvg's at a twentieth of a pixel.)
+const FINEST: f64 = 8.0;
+
+/// How many grid cells a step works on per pixel of its region (see `Room::on_grid`), drawn
+/// with `table` taking its units to pixels: more than one where its kernel unit is finer than a
+/// pixel, `FINEST` squared at most. (What `weight` counts is per pixel.)
+pub(crate) fn cells_per_pixel(kind: &Kind, table: &Table) -> f32 {
+    let unit = match kind {
+        Kind::Light(lighting) => lighting.unit,
+        Kind::Convolve(convolution) => convolution.unit,
+        _ => None,
+    };
+    let Some([dx, dy]) = unit else { return 1.0 };
+    let sides = [(table[0] * dx + table[2] * dy).abs(), (table[1] * dx + table[3] * dy).abs()];
+    sides.iter().map(|side| if side.is_finite() { 1.0 / side.clamp(1.0 / FINEST as f32, 1.0) } else { 1.0 }).product()
+}
+
 /// The most turbulence octaves: more change nothing 8 bits can show.
 pub(crate) const OCTAVES: u32 = 12;
 
@@ -645,12 +664,12 @@ impl Room {
     /// `kernelUnitLength` asks and librsvg does it: the input resampled onto the grid (cells
     /// laid from the picture's corner), the step run there (given the grid's picture, its width
     /// and part, and its pixels' place in the room: see `lit`), and the result resampled back
-    /// within `part`. A cell finer than a pixel is taken as one pixel. Without a unit, the step
-    /// runs on the input as it is.
+    /// within `part`. A cell finer than a pixel makes more cells than pixels (`FINEST` each way
+    /// at most). Without a unit, the step runs on the input as it is.
     fn on_grid(&self, unit: Option<[f32; 2]>, input: Picture, part: [usize; 4], step: impl Fn(Picture, (usize, [usize; 4]), [f32; 4]) -> Picture) -> Picture {
         let t = self.table;
         let size = unit.map(|[dx, dy]| [(t[0] * f64::from(dx) + t[2] * f64::from(dy)).abs(), (t[1] * f64::from(dx) + t[3] * f64::from(dy)).abs()]);
-        let Some(size) = size.filter(|size| size.iter().all(|side| side.is_finite())).map(|size| size.map(|side| side.clamp(1.0, self.wide.max(self.high).max(1) as f64))) else {
+        let Some(size) = size.filter(|size| size.iter().all(|side| side.is_finite())).map(|size| size.map(|side| side.clamp(1.0 / FINEST, self.wide.max(self.high).max(1) as f64))) else {
             return step(input, (self.wide, part), [1.0, 1.0, 0.0, 0.0]);
         };
         let ([wide, high], phase) = ([self.wide, self.high], [self.corner[0].rem_euclid(size[0]), self.corner[1].rem_euclid(size[1])]);

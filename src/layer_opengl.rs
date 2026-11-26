@@ -25,6 +25,7 @@
 //!
 //! Every call needs the layer's context current on the thread: OpenGL cannot be asked which is,
 //! so the calls are `unsafe`.
+use crate::functions::functions;
 use crate::surface::Surface;
 use crate::ui::Ui;
 use std::ffi::{CStr, c_char, c_void};
@@ -46,25 +47,7 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Declares the OpenGL functions the layer calls, loaded by name.
-macro_rules! functions {
-    ($($name:ident: fn($($arg:ty),*) $(-> $out:ty)?;)*) => {
-        /// The OpenGL functions the layer calls.
-        #[allow(non_snake_case)]
-        struct Gl {
-            $($name: unsafe extern "system" fn($($arg),*) $(-> $out)?,)*
-        }
-        impl Gl {
-            /// Each function, loaded through `find`; or the name of the first missing one.
-            fn load(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Result<Gl, Error> {
-                // SAFETY: each function is declared as OpenGL declares it.
-                Ok(Gl { $($name: unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn($($arg),*) $(-> $out)?>(found(find, concat!(stringify!($name), "\0"))?) },)* })
-            }
-        }
-    };
-}
-
-functions! {
+functions!(Gl {
     glGetIntegerv: fn(u32, *mut i32);
     glGetString: fn(u32) -> *const c_char;
     glIsEnabled: fn(u32) -> u8;
@@ -100,34 +83,27 @@ functions! {
     glViewport: fn(i32, i32, i32, i32);
     glScissor: fn(i32, i32, i32, i32);
     glDrawArrays: fn(u32, i32, i32);
-}
+});
 
 /// `glPolygonMode`, which OpenGL ES lacks.
 type PolygonMode = unsafe extern "system" fn(u32, u32);
 
-/// The function `name` (NUL-terminated) as `find` returns it; on Windows the OpenGL 1.1 ones
+/// The function `name` as `find` returns it (null for none); on Windows the OpenGL 1.1 ones
 /// from opengl32.dll, for which the driver returns nothing (or 1, 2, 3 or -1).
-fn found(find: &mut dyn FnMut(&CStr) -> *const c_void, name: &'static str) -> Result<*const c_void, Error> {
-    let name = CStr::from_bytes_with_nul(name.as_bytes()).unwrap_or_default();
-    #[allow(unused_mut)]
-    let mut found = find(name);
+fn found(find: &mut dyn FnMut(&CStr) -> *const c_void, name: &CStr) -> *const c_void {
+    let found = find(name);
     #[cfg(windows)]
     if matches!(found as isize, -1..=3) {
-        let library: Vec<u16> = "opengl32.dll\0".encode_utf16().collect();
-        // SAFETY: both names are NUL-terminated.
-        found = unsafe { GetProcAddress(GetModuleHandleW(library.as_ptr()), name.as_ptr().cast()) } as *const c_void;
+        // SAFETY: a name ending in a zero.
+        let library = unsafe { crate::windows::sys::GetModuleHandleW(crate::windows::wide("opengl32.dll").as_ptr()) };
+        return crate::windows::function_in(library, name) as *const c_void;
     }
-    match found.is_null() {
-        true => Err(Error { operation: "finding OpenGL's functions", message: format!("this OpenGL has no {}", name.to_string_lossy()) }),
-        false => Ok(found),
-    }
+    found
 }
 
-#[cfg(windows)]
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn GetModuleHandleW(name: *const u16) -> isize;
-    fn GetProcAddress(library: isize, name: *const u8) -> usize;
+/// The error of a function `name` this OpenGL lacks.
+fn missing(name: &str) -> Error {
+    Error { operation: "finding OpenGL's functions", message: format!("this OpenGL has no {name}") }
 }
 
 // OpenGL constants, as glcorearb.h has them.
@@ -228,7 +204,7 @@ impl Layer {
     /// # Safety
     /// A context is current on this thread, and `find` returns its functions.
     pub unsafe fn new(find: &mut dyn FnMut(&CStr) -> *const c_void) -> Result<Layer, Error> {
-        let gl = Gl::load(find)?;
+        let gl = Gl::load(&mut |name| found(find, name)).map_err(missing)?;
         // SAFETY: OpenGL returns its version as NUL-terminated text, or null.
         let version = unsafe { (gl.glGetString)(0x1F02) };
         let version = if version.is_null() { String::new() } else { unsafe { CStr::from_ptr(version) }.to_string_lossy().into_owned() };
@@ -244,7 +220,7 @@ impl Layer {
             return Err(Error { operation: "making the layer", message: said });
         }
         let program = linked(&gl, if embedded { EMBEDDED } else { DESKTOP })?;
-        let polygon_mode = found(find, "glPolygonMode\0").ok().filter(|_| !embedded);
+        let polygon_mode = Some(found(find, c"glPolygonMode")).filter(|function| !embedded && !function.is_null());
         // SAFETY: the function is declared as glcorearb.h declares it.
         let polygon_mode = polygon_mode.map(|function| unsafe { std::mem::transmute::<*const c_void, PolygonMode>(function) });
         let mut layer = Layer { gl, embedded, polygon_mode, program, corners: 0, texture: 0, most: most.max(0) as usize, surface: Surface::default() };

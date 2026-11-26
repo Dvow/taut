@@ -151,6 +151,49 @@ pub fn h264_frame(number: usize) -> Vec<u8> {
     nal(0x65, &slice.end())
 }
 
+
+/// A CEA-608 byte with odd parity, as the stream carries it.
+pub fn odd(byte: u8) -> u8 {
+    byte & 0x7F | if (byte & 0x7F).count_ones().is_multiple_of(2) { 0x80 } else { 0 }
+}
+
+/// CEA-608 byte pairs for caption channel 1 shown by these cues (from and to in tenths of a
+/// second, and their text), three pairs a frame at 10 frames a second: each cue loaded off
+/// screen and shown at its start (pop-on: resume loading, erase what is off screen, row 15,
+/// the text, end of caption), what shows erased at its end; each command twice. Null pairs
+/// between.
+pub fn cea608_pairs(cues: &[(u32, u32, &str)], count: usize) -> Vec<[u8; 3 * 2]> {
+    let mut pairs = vec![[0x80u8, 0x80]; count * 3];
+    let command = |second: u8| [[0x94, odd(second)]; 2];
+    for &(from, to, text) in cues {
+        let mut loading: Vec<[u8; 2]> = [command(0x20), command(0x2E), command(0x70)].concat();
+        let letters: Vec<u8> = text.bytes().map(odd).collect();
+        loading.extend(letters.chunks(2).map(|two| [two[0], two.get(1).copied().unwrap_or(0x80)]));
+        loading.extend(command(0x2F));
+        let first = (from as usize * 3 + 2).saturating_sub(loading.len() - 1);
+        pairs[first..first + loading.len()].copy_from_slice(&loading);
+        let end = to as usize * 3;
+        if end + 2 <= pairs.len() {
+            pairs[end..end + 2].copy_from_slice(&command(0x2C));
+        }
+    }
+    pairs.chunks(3).map(|three| [three[0][0], three[0][1], three[1][0], three[1][1], three[2][0], three[2][1]]).collect()
+}
+
+/// An SEI NAL unit of ATSC A/53 closed captions (`GA94`) carrying three CEA-608 pairs of
+/// field 1.
+pub fn caption_sei(pairs: &[u8; 6]) -> Vec<u8> {
+    let mut payload = vec![0xB5, 0x00, 0x31, b'G', b'A', b'9', b'4', 0x03, 0x40 | 3, 0xFF];
+    for pair in pairs.chunks(2) {
+        payload.extend([0xFC, pair[0], pair[1]]);
+    }
+    payload.push(0xFF);
+    let mut raw = vec![4, payload.len() as u8];
+    raw.extend(payload);
+    raw.push(0x80);
+    nal(0x06, &raw)
+}
+
 /// A sound track of a made file: its language (ISO 639-2, as MP4 keeps it), its name, and its
 /// tone: a square wave of that many Hz, 8 kHz mono (0: silence).
 #[derive(Clone, Copy)]
@@ -210,6 +253,8 @@ struct Trak<'a> {
     timescale: u32,
     duration_ms: u32,
     media_duration: u32,
+    /// Its frames' width and height.
+    size: [u32; 2],
 }
 
 /// A language as MP4 packs it: three letters of five bits.
@@ -224,7 +269,7 @@ impl Trak<'_> {
         tkhd.extend_from_slice(&self.group.to_be_bytes());
         tkhd.extend_from_slice(&[if self.holds == Holds::Sound { 1 } else { 0 }, 0, 0, 0]); // volume, reserved
         tkhd.extend(be32(&MATRIX));
-        tkhd.extend(be32(&if self.holds == Holds::Sound { [0, 0] } else { [64 << 16, 48 << 16] }));
+        tkhd.extend(be32(&if self.holds == Holds::Sound { [0, 0] } else { self.size.map(|side| side << 16) }));
         let mut mdhd = be32(&[0, 0, 0, self.timescale, self.media_duration]);
         mdhd.extend_from_slice(&packed(self.language));
         mdhd.extend_from_slice(&[0, 0]);
@@ -307,6 +352,16 @@ fn caption_samples(cues: &[(u32, u32, &str)], length: u32) -> Vec<(u32, Vec<u8>)
 /// unless another is chosen; sound tracks are one group of alternatives, caption tracks
 /// another.
 pub fn movie(count: usize, rate: u32, jpeg: bool, sounds: &[Sound], captions: &[Captions]) -> Vec<u8> {
+    movie_with(count, rate, jpeg, sounds, captions, &[])
+}
+
+/// The same with CEA-608 captions in the frames' SEI (see `cea608_pairs`): lossless H.264,
+/// at 10 frames a second, no sound.
+pub fn movie_captioned_in_stream(count: usize, cues: &[(u32, u32, &str)]) -> Vec<u8> {
+    movie_with(count, 10, false, &[], &[], cues)
+}
+
+fn movie_with(count: usize, rate: u32, jpeg: bool, sounds: &[Sound], captions: &[Captions], in_stream: &[(u32, u32, &str)]) -> Vec<u8> {
     let duration_ms = count as u32 * 1000 / rate;
     let samples = count as u32 * 8000 / rate;
     let ftyp = atom(b"ftyp", b"isom\0\0\x02\0isomiso2avc1mp41");
@@ -318,7 +373,11 @@ pub fn movie(count: usize, rate: u32, jpeg: bool, sounds: &[Sound], captions: &[
     };
     let frames: Vec<Vec<u8>> = match jpeg {
         true => (0..count).map(|n| taut::jpeg::encode(64, &frame_pixels(n), 90).unwrap()).collect(),
-        false => (0..count).map(h264_frame).map(|f| [(f.len() as u32).to_be_bytes().to_vec(), f].concat()).collect(),
+        false => {
+            let pairs = cea608_pairs(in_stream, count);
+            let sei = |n: usize| if in_stream.is_empty() { Vec::new() } else { length_prefixed(caption_sei(&pairs[n])) };
+            (0..count).map(|n| [sei(n), length_prefixed(h264_frame(n))].concat()).collect()
+        }
     };
     let offsets: Vec<u32> = frames.iter().map(|frame| put(frame)).collect();
     let sizes: Vec<u32> = frames.iter().map(|frame| frame.len() as u32).collect();
@@ -330,7 +389,7 @@ pub fn movie(count: usize, rate: u32, jpeg: bool, sounds: &[Sound], captions: &[
             visual_entry(b"avc1", atom(b"avcC", &avcc))
         }
     };
-    let video = Trak { id: 1, holds: Holds::Frames, enabled: true, group: 0, language: "und", name: "Video", timescale: rate, duration_ms, media_duration: count as u32 };
+    let video = Trak { id: 1, holds: Holds::Frames, enabled: true, group: 0, language: "und", name: "Video", timescale: rate, duration_ms, media_duration: count as u32, size: [64, 48] };
     traks.push(video.atom(entry, table(&sizes, &vec![1; count], &offsets)));
     for (nth, sound) in sounds.iter().enumerate() {
         let bytes: Vec<u8> = tone(sound.tone, samples as usize).iter().flat_map(|sample| sample.to_le_bytes()).collect();
@@ -366,6 +425,97 @@ pub fn movie(count: usize, rate: u32, jpeg: bool, sounds: &[Sound], captions: &[
     mvhd.extend(be32(&[0, 0, 0, 0, 0, 0, traks.len() as u32 + 1]));
     let moov = atoms(b"moov", &[vec![atom(b"mvhd", &mvhd)], traks].concat());
     [ftyp, atom(b"mdat", &mdat), moov].concat()
+}
+
+
+/// H.264's sequence and picture parameters for baseline frames `width` by `height` (each a
+/// multiple of 16 but for a cut of whole pairs of rows at the bottom), level 5.1.
+pub fn parameters_sized(width: usize, height: usize) -> (Vec<u8>, Vec<u8>) {
+    let (across, down) = (width.div_ceil(16), height.div_ceil(16));
+    let mut sps = Bits::default();
+    sps.put(66, 8);
+    sps.put(0xC0, 8);
+    sps.put(51, 8);
+    for value in [0, 0, 2, 1] {
+        sps.ue(value);
+    }
+    sps.put(0, 1);
+    sps.ue(across as u32 - 1);
+    sps.ue(down as u32 - 1);
+    let cut = (down * 16 - height) / 2;
+    sps.put(0b11, 2); // frames only, 8×8 inference
+    sps.put((cut > 0) as u32, 1);
+    if cut > 0 {
+        [0, 0, 0, cut as u32].into_iter().for_each(|side| sps.ue(side));
+    }
+    sps.put(0, 1); // no VUI
+    let (_, pps) = parameters();
+    (nal(0x67, &sps.end()), pps)
+}
+
+/// `frame_pixels` stretched to `width` by `height`.
+pub fn frame_pixels_sized(number: usize, width: usize, height: usize) -> Vec<u32> {
+    let small = frame_pixels(number);
+    (0..width * height).map(|at| small[(at / width * 48 / height) * 64 + at % width * 64 / width]).collect()
+}
+
+/// One frame `width` by `height` (see `parameters_sized`) as an IDR slice of I_PCM
+/// macroblocks: `frame_pixels_sized`, grey.
+pub fn h264_frame_sized(number: usize, width: usize, height: usize) -> Vec<u8> {
+    let pixels = frame_pixels_sized(number, width, height);
+    let (across, down) = (width.div_ceil(16), height.div_ceil(16));
+    let luma = |x: usize, y: usize| {
+        let p = pixels[y.min(height - 1) * width + x.min(width - 1)];
+        let full = (299 * (p >> 16 & 255) + 587 * (p >> 8 & 255) + 114 * (p & 255) + 500) / 1000;
+        (16 + (full * 219 + 127) / 255) as u8
+    };
+    let mut slice = Bits::default();
+    slice.ue(0);
+    slice.ue(7);
+    slice.ue(0);
+    slice.put(0, 4);
+    slice.ue(number as u32 & 0xFFFF);
+    slice.put(0, 2);
+    slice.se(0);
+    for at in 0..across * down {
+        let (mx, my) = (at % across * 16, at / across * 16);
+        slice.ue(25);
+        slice.align();
+        slice.bytes.extend((0..256).map(|i| luma(mx + i % 16, my + i / 16)));
+        slice.bytes.extend([128u8; 128]);
+    }
+    nal(0x65, &slice.end())
+}
+
+/// An MP4 file of `count` frames `width` by `height` at `rate` a second (lossless H.264, see
+/// `h264_frame_sized`), no sound.
+pub fn big_mp4(count: usize, rate: u32, width: usize, height: usize) -> Vec<u8> {
+    let duration_ms = count as u32 * 1000 / rate;
+    let ftyp = atom(b"ftyp", b"isom\0\0\x02\0isomiso2avc1mp41");
+    let frames: Vec<Vec<u8>> = (0..count).map(|n| length_prefixed(h264_frame_sized(n, width, height))).collect();
+    let start = ftyp.len() as u32 + 8;
+    let offsets: Vec<u32> = frames.iter().scan(start, |at, frame| Some(std::mem::replace(at, *at + frame.len() as u32))).collect();
+    let sizes: Vec<u32> = frames.iter().map(|frame| frame.len() as u32).collect();
+    let (sps, pps) = parameters_sized(width, height);
+    let avcc = [&[1, 66, 0xC0, 51, 0xFF, 0xE1][..], &(sps.len() as u16).to_be_bytes(), &sps, &[1], &(pps.len() as u16).to_be_bytes(), &pps].concat();
+    let mut entry = vec![0, 0, 0, 0, 0, 0, 0, 1];
+    entry.extend(be32(&[0, 0, 0, 0]));
+    entry.extend_from_slice(&(width as u16).to_be_bytes());
+    entry.extend_from_slice(&(height as u16).to_be_bytes());
+    entry.extend(be32(&[0x48_0000, 0x48_0000, 0]));
+    entry.extend_from_slice(&[0, 1]);
+    entry.extend_from_slice(&[0; 32]);
+    entry.extend_from_slice(&[0, 24, 0xFF, 0xFF]);
+    entry.extend(atom(b"avcC", &avcc));
+    let video = Trak { id: 1, holds: Holds::Frames, enabled: true, group: 0, language: "und", name: "Video", timescale: rate, duration_ms, media_duration: count as u32, size: [width as u32, height as u32] };
+    let trak = video.atom(atom(b"avc1", &entry), table(&sizes, &vec![1; count], &offsets));
+    let mut mvhd = be32(&[0, 0, 0, 1000, duration_ms, 0x10000]);
+    mvhd.extend_from_slice(&[1, 0, 0, 0]);
+    mvhd.extend(be32(&[0, 0]));
+    mvhd.extend(be32(&MATRIX));
+    mvhd.extend(be32(&[0, 0, 0, 0, 0, 0, 2]));
+    let moov = atoms(b"moov", &[atom(b"mvhd", &mvhd), trak]);
+    [ftyp, atom(b"mdat", &frames.concat()), moov].concat()
 }
 
 /// An MP4 file of `count` frames at `rate` a second (H.264, 64×48, lossless), with a
@@ -518,6 +668,14 @@ pub fn written(name: &str, bytes: &[u8]) -> PathBuf {
     let folder = std::env::temp_dir().join(format!("taut-video-{}", std::process::id()));
     std::fs::create_dir_all(&folder).unwrap();
     let path = folder.join(name);
-    std::fs::write(&path, bytes).unwrap();
+    // (Written once: a player may still hold it open, and Windows lets no one write to it then.)
+    if !std::fs::metadata(&path).is_ok_and(|known| known.len() == bytes.len() as u64) {
+        std::fs::write(&path, bytes).unwrap();
+    }
     path
+}
+
+/// A NAL unit as MP4 keeps it: its length first.
+pub fn length_prefixed(nal: Vec<u8>) -> Vec<u8> {
+    [(nal.len() as u32).to_be_bytes().to_vec(), nal].concat()
 }

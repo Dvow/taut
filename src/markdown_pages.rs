@@ -19,7 +19,7 @@ use crate::color::Color;
 use crate::geom::{Rect, Size, rect};
 use crate::layout::Align;
 use crate::markdown::Markdown;
-use crate::markdown_view::{Sizes, font_of, least, quoted, rules_for, sizes, slug, worded};
+use crate::markdown_view::{Sizes, font_of, least, leftward, quoted, rules_for, sizes, slug, worded};
 use crate::paper::{Mark, Paper};
 use crate::pdf_structure::Tag;
 use crate::rich_text::{Bit, Kind, Laid, Room, THING, TextStyle, Thing, face_of, heights, lay};
@@ -47,7 +47,8 @@ impl TextSystem for Measured<'_> {
 /// An open container block while its content is laid out: its content's x and width, the gap
 /// between children, how many it has had; and where it began (page and y), where a quote's bar
 /// starts. For a list: the width of its item marks, and its nesting depth. How many structure
-/// parts it opened (ended with it); for a numbered item, its label part.
+/// parts it opened (ended with it); for a numbered item, its label part. A list or quote (and
+/// an item of a list) reading right to left has its marks at the right.
 #[derive(Clone, Copy)]
 struct Open {
     block: usize,
@@ -60,6 +61,7 @@ struct Open {
     depth: u32,
     parts: u32,
     label: Option<u32>,
+    leftward: bool,
 }
 
 /// A document being laid out on pages: the paper, the document, its theme and sizes, the page
@@ -91,7 +93,7 @@ impl Paper {
         self.page(size);
         let t = Theme::light();
         let margin = margin.max(0.0).min(size.w.min(size.h) / 3.0);
-        let whole = Open { block: 0, x: margin, w: (size.w - 2.0 * margin).max(1.0), gap: sizes(&t).gap, count: 0, top: (first, margin), marks: 0.0, depth: 0, parts: 0, label: None };
+        let whole = Open { block: 0, x: margin, w: (size.w - 2.0 * margin).max(1.0), gap: sizes(&t).gap, count: 0, top: (first, margin), marks: 0.0, depth: 0, parts: 0, label: None, leftward: false };
         let mut pages = Pages { size: sizes(&t), t, doc, sheet: size, margin, laid: Laid::default(), fonts: Vec::new(), open: vec![whole], page: first, y: margin, mark: None, paper: self };
         let mut at = 1;
         while at < doc.writing.blocks.len() {
@@ -141,7 +143,8 @@ impl Pages<'_> {
         let from = if open.top.0 == self.page { open.top.1 } else { self.margin };
         if to > from {
             self.paper.set_page(self.page);
-            self.paper.rounded(rect(open.x - 3.0 - self.size.inset, from, 3.0, to - from), 1.5, color);
+            let x = if open.leftward { open.x + open.w + self.size.inset } else { open.x - 3.0 - self.size.inset };
+            self.paper.rounded(rect(x, from, 3.0, to - from), 1.5, color);
         }
     }
 
@@ -188,7 +191,9 @@ impl Pages<'_> {
         match block.kind {
             Kind::Quote => {
                 self.paper.begin_tag(Tag::Quote);
-                self.enter(Open { block: at, x: x + 3.0 + size.inset, w: w - 3.0 - size.inset, gap: size.gap, count: 0, top: (self.page, self.y), marks: 0.0, depth: up.depth, parts: 1, label: None });
+                let leftward = leftward(&self.doc.writing, at);
+                let x = if leftward { x } else { x + 3.0 + size.inset };
+                self.enter(Open { block: at, x, w: w - 3.0 - size.inset, gap: size.gap, count: 0, top: (self.page, self.y), marks: 0.0, depth: up.depth, parts: 1, label: None, leftward });
             }
             Kind::List { numbered, tight } => self.list(at, numbered, tight, x, w),
             Kind::Item { .. } => self.item(at, up, x, w),
@@ -212,7 +217,7 @@ impl Pages<'_> {
         let label = numbered.then(|| self.paper.begin_tag(Tag::Label));
         self.paper.open.truncate(self.paper.open.len() - label.is_some() as usize);
         self.paper.begin_tag(Tag::Body);
-        self.enter(Open { block: at, x, w, gap: up.gap, count: 0, top: (self.page, self.y), marks: up.marks, depth: up.depth, parts: 2, label });
+        self.enter(Open { block: at, x, w, gap: up.gap, count: 0, top: (self.page, self.y), marks: up.marks, depth: up.depth, parts: 2, label, leftward: up.leftward });
     }
 
     /// Opens a container block.
@@ -233,7 +238,9 @@ impl Pages<'_> {
         let depth = self.open.last().map_or(0, |up| up.depth) + 1;
         let gap = if tight { self.size.close } else { self.size.gap };
         self.paper.begin_tag(Tag::List);
-        self.enter(Open { block: at, x: x + marks, w: w - marks, gap, count: 0, top: (self.page, self.y), marks, depth, parts: 1, label: None });
+        let leftward = leftward(&self.doc.writing, at);
+        let x = if leftward { x } else { x + marks };
+        self.enter(Open { block: at, x, w: w - marks, gap, count: 0, top: (self.page, self.y), marks, depth, parts: 1, label: None, leftward });
     }
 
     /// The bits of a block of words or code, into `laid` (cleared first).
@@ -425,19 +432,21 @@ impl Pages<'_> {
         let numbered = matches!(blocks[blocks[open.block].parent as usize].kind, Kind::List { numbered: true, .. });
         let [above, _] = heights(&mut Measured(self.paper), t.font, 1.0, &mut self.fonts);
         let (room, middle) = (open.marks, base - (above * 0.35).round());
+        // (The marks' column: left of the item, or right of it right to left.)
+        let left = if open.leftward { open.x + open.w } else { open.x - room };
         match (ticked, numbered) {
-            (Some(done), _) => self.tick(rect(open.x - room + (room - 14.0) / 2.0, middle - 7.0, 14.0, 14.0), done),
+            (Some(done), _) => self.tick(rect(left + (room - 14.0) / 2.0, middle - 7.0, 14.0, 14.0), done),
             (None, true) => {
-                let said = format!("{number}.");
+                let said = if open.leftward { format!(".{number}") } else { format!("{number}.") };
                 let wide = self.paper.measure(&said, t.font);
                 // (Its number is its label.)
                 let depth = self.paper.open.len();
                 self.paper.open.extend(open.label);
-                self.paper.line(&said, open.x - 6.0 - wide, base, t.font, t.text_dim);
+                self.paper.line(&said, if open.leftward { left + 6.0 } else { open.x - 6.0 - wide }, base, t.font, t.text_dim);
                 self.paper.open.truncate(depth);
             }
             (None, false) => {
-                let dot = rect(open.x - room / 2.0 - 3.0, middle - 3.0, 6.0, 6.0);
+                let dot = rect(left + room / 2.0 - 3.0, middle - 3.0, 6.0, 6.0);
                 let (ring, round) = (open.depth == 2, if open.depth >= 3 { 0.0 } else { 3.0 });
                 if ring { self.paper.border(dot, round, 1.0, t.text_dim) } else { self.paper.rounded(dot, round, t.text_dim) }
             }
@@ -612,6 +621,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn a_right_to_left_list_has_its_numbers_at_the_right_on_paper() {
+        let mut paper = Paper::new();
+        paper.markdown(&Markdown::parse("1. \u{5d0}\u{5d2} \u{5d2}\u{5d0}\n\nWords between.\n\n1. ab\n"), Size { w: 420.0, h: 595.0 }, 40.0);
+        let left_of = |words: &crate::paper::Words| words.glyphs.iter().map(|glyph| glyph.at.x).fold(f32::MAX, f32::min);
+        let placed: Vec<(String, f32)> = paper.pages[0].marks.iter().filter_map(|mark| if let Mark::Words(words) = mark { Some((words.text.clone(), left_of(words))) } else { None }).collect();
+        let at = |text: &str| placed.iter().find(|(own, _)| own.contains(text)).map(|(_, x)| *x).unwrap_or_else(|| panic!("{text:?} not in {placed:?}"));
+        assert!(at(".1") > at("\u{5d0}\u{5d2}"), "right to left, the number is right of the item: {placed:?}");
+        assert!(at("1.") < at("ab"), "left to right, left of it");
     }
 
     #[test]

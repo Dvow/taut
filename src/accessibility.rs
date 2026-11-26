@@ -184,8 +184,8 @@ pub struct AccessNode {
     pub grid: Option<[u32; 2]>,
     /// For the column heading the rows are sorted by: whether descending.
     pub sorted: Option<bool>,
-    /// For a text box while focused: the selection anchor and the cursor, in characters from
-    /// its start.
+    /// For a text box while focused, or text (a paragraph, a cell) holding part of a document's
+    /// selection: the selection anchor and the cursor, in characters from its start.
     pub caret: Option<[u32; 2]>,
     /// Where it is in the window. (A table's content may lie outside what the table shows: see
     /// `view`.)
@@ -348,9 +348,9 @@ impl AccessNode {
     }
 
     /// Whether a reader reads its text by line and letter: a text box, plain text, a heading,
-    /// a paragraph, code.
+    /// a paragraph, code, a table cell.
     pub(crate) fn reads_text(&self) -> bool {
-        matches!(self.role, Role::TextBox | Role::PasswordBox | Role::Text | Role::Heading | Role::Paragraph | Role::Code)
+        matches!(self.role, Role::TextBox | Role::PasswordBox | Role::Text | Role::Heading | Role::Paragraph | Role::Code | Role::Cell | Role::ColumnHeader)
     }
     /// The text it is read by: a text box's own (`value`), else its name.
     pub(crate) fn text(&self) -> &str {
@@ -860,7 +860,7 @@ struct NodeBuilder<'a> {
     since_id: u32,
 }
 
-impl NodeBuilder<'_> {
+impl<'a> NodeBuilder<'a> {
     /// Adds the nodes of one box walked: none, a cell, a node, or a cell and a node.
     fn add(&mut self, (at, rect, seen, visible): AccessBox) {
         let end = self.tree.specs[at as usize].end;
@@ -875,9 +875,16 @@ impl NodeBuilder<'_> {
         if note.is_some_and(|note| note.joined) {
             return self.merged = [at, end];
         }
-        // A cell with only text is all; else its content is inside it.
-        if self.add_cell(at, rect, seen, visible).is_some_and(|added| !added || !self.holds_parts(at, end)) {
-            return self.merged = [at, end];
+        // A cell with only text is all; else its content is inside it. (A note told as a cell
+        // is the cell's own: its name and the part of a selection in it.)
+        let own = note.filter(|note| note.role == Role::Cell);
+        if let Some(added) = self.add_cell(at, rect, seen, visible, own) {
+            if !added || !self.holds_parts(at + u32::from(own.is_some()), end) {
+                return self.merged = [at, end];
+            }
+            if own.is_some() {
+                return;
+            }
         }
         let Some(role) = self.role_of(note, at) else { return };
         // (Tree items the app put in no tree are told in one: so readers give their levels.)
@@ -885,9 +892,7 @@ impl NodeBuilder<'_> {
             self.add_tree(at, rect, seen, visible);
         }
         let (name, position) = (self.name_of(note, role, at), self.position_of(note, at));
-        let note_text = self.note_text;
-        let text = |range: [u32; 2]| &note_text[range[0] as usize..range[1] as usize];
-        let (value, shortcut, description) = note.map_or(("", "", ""), |note| (text(note.value), text(note.shortcut), text(note.description)));
+        let (value, shortcut, description) = note.map_or(("", "", ""), |note| (self.words_of(note.value), self.words_of(note.shortcut), self.words_of(note.description)));
         let (id, parent) = (self.tree.specs[at as usize].id, self.groups.last().map(|group| group.node as usize));
         self.nodes.push(AccessNode {
             id: if id != 0 { id } else { hash(("said", self.last_id, self.since_id)) },
@@ -936,18 +941,27 @@ impl NodeBuilder<'_> {
         }
     }
 
-    /// Adds the cell a box in a table row is, in the row's next column, named by its text.
-    /// Says whether it was added: not for a hidden column, which does not show. (None for a box
-    /// not in a table row.)
-    fn add_cell(&mut self, at: u32, rect: Rect, seen: Rect, visible: bool) -> Option<bool> {
+    /// Adds the cell a box in a table row is, in the row's next column, named by its text (or as
+    /// its own note says, with the part of a selection in it). Says whether it was added: not for
+    /// a hidden column, which does not show. (None for a box not in a table row.)
+    fn add_cell(&mut self, at: u32, rect: Rect, seen: Rect, visible: bool, own: Option<&Note>) -> Option<bool> {
         let parent = self.tree.specs[at as usize].frame.parent;
         let row = self.groups.last_mut().filter(|group| group.next_column < group.columns_end && parent == group.start)?;
         row.next_column += 1;
         let (row, column) = (row.node as usize, row.next_column - 1);
         let Some(track) = self.columns.get(column as usize).filter(|track| track.shows) else { return Some(false) };
         let (id, grid) = (hash((self.nodes[row].id, "cell", column)), [self.nodes[row].position.map_or(0, |of| of[0] - 1), track.place]);
-        let name = words_in(self.tree, at, usize::MAX);
-        self.nodes.push(AccessNode { grid: Some(grid), focused: self.focused_cell == Some(at), visible, seen, at, ..AccessNode::plain(id, Role::Cell, name, rect, Some(row)) });
+        let given = own.map_or("", |note| self.words_of(note.name));
+        let name = if given.is_empty() { words_in(self.tree, at, usize::MAX) } else { given.to_string() };
+        self.nodes.push(AccessNode {
+            grid: Some(grid),
+            caret: own.and_then(|note| note.caret),
+            focused: self.focused_cell == Some(at),
+            visible,
+            seen,
+            at,
+            ..AccessNode::plain(id, Role::Cell, name, rect, Some(row))
+        });
         self.groups.push(Group { node: self.nodes.len() as u32 - 1, start: at, end: self.tree.specs[at as usize].end, next_column: 0, columns_end: 0 });
         Some(true)
     }
@@ -987,13 +1001,18 @@ impl NodeBuilder<'_> {
         }
     }
 
+    /// A note's name, value, shortcut or description: its range of the note text.
+    fn words_of(&self, range: [u32; 2]) -> &'a str {
+        self.note_text.get(range[0] as usize..range[1] as usize).unwrap_or_default()
+    }
+
     /// A node's name: as told, else its text: all of it, or for a dialog or group (a card) its
     /// first piece, its title. (A text box, combo box or slider is not named by its content: a
     /// number dragged sideways has its value in it. Nor are containers, except a table row,
     /// named by all its cells' text.) An operable node still without one (a slider, a combo
     /// box, a text box) is named by the text right before it, as system forms label a field.
     fn name_of(&self, note: Option<&Note>, role: Role, at: u32) -> String {
-        let given = note.map_or("", |note| &self.note_text[note.name[0] as usize..note.name[1] as usize]);
+        let given = note.map_or("", |note| self.words_of(note.name));
         let wordy = matches!(role, Role::Dialog | Role::Group | Role::TableRow) || !role.is_container();
         let unnamed = given.is_empty() && wordy && !matches!(role, Role::TextBox | Role::PasswordBox | Role::ComboBox | Role::SpinButton | Role::Slider);
         let mut name = if unnamed { words_in(self.tree, at, if matches!(role, Role::Dialog | Role::Group) { 1 } else { usize::MAX }) } else { given.to_string() };

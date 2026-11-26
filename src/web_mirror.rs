@@ -132,9 +132,9 @@ pub(crate) fn states_of(node: &AccessNode) -> Vec<(&'static str, String)> {
 fn record(node: &AccessNode) -> String {
     let mut out = String::with_capacity(96 + node.name.len());
     let _ = write!(out, "{{\"k\":\"{:x}\",\"r\":\"{}\",\"n\":", node.id, role_of(node));
-    // Plain text shows its name; a text box its text (a password box its dots).
+    // Text and cells show their name; a text box its text (a password box its dots).
     let shown = match node.role {
-        Role::Text | Role::Paragraph | Role::Heading | Role::Code => node.name.as_str(),
+        Role::Text | Role::Paragraph | Role::Heading | Role::Code | Role::Cell | Role::ColumnHeader => node.name.as_str(),
         Role::TextBox | Role::PasswordBox | Role::ComboBox => node.value.as_str(),
         _ => "",
     };

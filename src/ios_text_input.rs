@@ -77,6 +77,8 @@ struct Document {
     editing: bool,
     secret: bool,
     cursor: Option<Rect>,
+    /// The `UIWindow` the input view was in at the last run.
+    window: Obj,
     delegate: Obj,
     tokenizer: Obj,
     style: Obj,
@@ -283,13 +285,16 @@ fn focused(ui: &Ui) -> Focused {
 /// focus, and gives it back to the library's view after; it lies over the page (`area`, in the
 /// view), moved into the front window's view where another window came to the front. Its
 /// document follows the box, and the keyboard hears what the app changed. A password box,
-/// another kind of box, and another window, start the keyboard afresh.
+/// another kind of box, another window, and the view's scene come back in a new `UIWindow`,
+/// start the keyboard afresh.
 pub(crate) fn follow(ui: &mut Ui, area: NSRect) {
     let (input, view) = (INPUT.get(), crate::ios::view());
     // SAFETY: the input view, and what is composed, move into the front window's view; the
     // input view lies over its page.
     unsafe {
-        if send::<Obj>(input, c"superview", ()) != view {
+        let window: Obj = send(view, c"window", ());
+        let new_window = DOCUMENT.with_borrow_mut(|document| std::mem::replace(&mut document.window, window) != window);
+        if send::<Obj>(input, c"superview", ()) != view || new_window {
             // (Moved, it no longer has the keyboard: it starts afresh below.)
             let label = DOCUMENT.with_borrow_mut(|document| {
                 document.editing = false;

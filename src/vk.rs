@@ -21,35 +21,24 @@ pub(crate) type Find = unsafe extern "system" fn(Object, *const c_char) -> *cons
 /// where the system has none.
 #[inline]
 pub(crate) fn loader() -> Option<Find> {
+    // (Never closed: drivers are not safe to unload.)
     #[cfg(windows)]
-    let found = {
-        let name: Vec<u16> = "vulkan-1.dll\0".encode_utf16().collect();
-        // SAFETY: the names end in a zero; the loader comes from the system folder (0x800:
-        // `LOAD_LIBRARY_SEARCH_SYSTEM32`) and is never closed.
-        let library = unsafe { LoadLibraryExW(name.as_ptr(), 0, 0x800) };
-        if library == 0 { std::ptr::null() } else { unsafe { GetProcAddress(library, c"vkGetInstanceProcAddr".as_ptr().cast()) as *const c_void } }
+    let found = match crate::windows::system_library("vulkan-1.dll") {
+        0 => std::ptr::null(),
+        library => crate::windows::function_in(library, c"vkGetInstanceProcAddr") as *const c_void,
     };
-    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     let found = {
-        // (Never closed: drivers are not safe to unload.)
         static LOADER: std::sync::OnceLock<Option<crate::dynamic_library::Library>> = std::sync::OnceLock::new();
-        let loader = LOADER.get_or_init(|| crate::dynamic_library::Library::open("libvulkan.so.1\0"));
+        let file = if cfg!(target_os = "android") { "libvulkan.so\0" } else { "libvulkan.so.1\0" };
+        let loader = LOADER.get_or_init(|| crate::dynamic_library::Library::open(file));
         loader.as_ref().and_then(|loader| loader.symbol(c"vkGetInstanceProcAddr")).unwrap_or(std::ptr::null())
     };
-    #[cfg(target_os = "android")]
-    let found = crate::android::vulkan_loader().cast_const();
     // Apple's systems have no Vulkan of their own, nor has a page.
     #[cfg(any(target_vendor = "apple", target_family = "wasm"))]
     let found = std::ptr::null::<c_void>();
     // SAFETY: the loader's function is declared as vulkan_core.h declares it.
     (!found.is_null()).then(|| unsafe { std::mem::transmute::<*const c_void, Find>(found) })
-}
-
-#[cfg(windows)]
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn LoadLibraryExW(name: *const u16, file: isize, flags: u32) -> isize;
-    fn GetProcAddress(library: isize, name: *const u8) -> usize;
 }
 
 pub(crate) use crate::functions::functions;

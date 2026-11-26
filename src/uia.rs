@@ -2954,6 +2954,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn windows_itself_reads_the_part_of_a_selection_in_a_table_cell() {
+        // Windows' own UI Automation client, only reading: a cell's text pattern and its
+        // selection, a document's selection that runs through it. (No window, no other program.)
+        type Handle = *mut c_void;
+        let core = unsafe { library(c"uiautomationcore.dll") }.unwrap();
+        let (node_of, pattern_of): (unsafe extern "system" fn(*mut Face, *mut Handle) -> i32, unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32) =
+            unsafe { (found(core, c"UiaNodeFromProvider").unwrap(), found(core, c"UiaGetPatternProvider").unwrap()) };
+        let picked_of: unsafe extern "system" fn(Handle, *mut *mut c_void) -> i32 = unsafe { found(core, c"TextPattern_GetSelection").unwrap() };
+        let text_of: unsafe extern "system" fn(Handle, i32, *mut Text) -> i32 = unsafe { found(core, c"TextRange_GetText").unwrap() };
+        let let_go: [unsafe extern "system" fn(Handle) -> i32; 3] = unsafe { [c"UiaTextRangeRelease", c"UiaPatternRelease", c"UiaNodeRelease"].map(|name| found(core, name).unwrap()) };
+        let _alone = WINDOWS_ASKS.lock().unwrap_or_else(|held| held.into_inner());
+        assert!(unsafe { CoInitializeEx(std::ptr::null_mut(), 2) } >= 0);
+        let mut nodes = ledger();
+        nodes[4].caret = Some([2, 5]);
+        let tree = made_tree(nodes);
+        let (face, mut node, mut pattern, mut row, mut text) = (Provider::of(&tree, 5, THING), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        // (The selection comes as variants each holding a range's handle as a number, VT_I8.)
+        let mut first = std::mem::MaybeUninit::<Variant>::zeroed();
+        let stretch = unsafe {
+            assert_eq!((node_of(face, &mut node), pattern_of(node, 10014, &mut pattern), pattern.is_null()), (0, 0, false), "a cell is read as text");
+            assert_eq!((picked_of(pattern, &mut row), SafeArrayGetElement(row, &0, first.as_mut_ptr().cast())), (0, 0));
+            let first = first.assume_init();
+            assert_eq!(first.kind, 20);
+            first.held.object
+        };
+        assert_eq!(unsafe { text_of(stretch, -1, &mut text) }, 0);
+        assert_eq!(read_text(text), "txt", "the part of \"a.txt\" selected");
+        unsafe {
+            [stretch, pattern, node].into_iter().zip(let_go).for_each(|(held, let_go)| _ = let_go(held));
+            SafeArrayDestroy(row);
+            Provider::release(face);
+            CoUninitialize();
+        }
+        tree.hwnd.set(0);
+    }
+
+    #[test]
     fn windows_itself_reads_what_is_off_the_screen_and_the_words_spelt_wrong() {
         // Windows' own UI Automation client, only reading: is offscreen, whether scroll item is
         // supported (without calling it), and annotations on a text box's ranges. (No window,

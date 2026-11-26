@@ -33,7 +33,9 @@ pub(crate) use functions;
 
 /// The functions `names` (each ending in a zero) as `find` gives them, into `found`; or the name
 /// of the first one it gives none for.
-#[inline]
+// (Always inlined: with only the hint, LLVM gave `Library::find_all`, in every Linux program,
+// a copy 147 bytes larger.)
+#[inline(always)]
 pub(crate) fn found_all(find: &mut dyn FnMut(&CStr) -> *const c_void, names: &mut dyn Iterator<Item = &'static str>, found: &mut [*const c_void]) -> Result<(), &'static str> {
     for (name, slot) in names.zip(found) {
         *slot = self::found(find, name)?;

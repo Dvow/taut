@@ -28,12 +28,15 @@
 //! feature `gpu`, Metal shows (`gpu_ios`).
 //!
 //! On iPad each second window is a scene of its own: asked for as the app first describes it
-//! (`requestSceneSessionActivation` with an activity naming the window), shown as it connects,
-//! closed as the app stops describing it. The person closing its scene is a close request
-//! ([`Ui::close_requested`]). A scene the person opens from the system has nothing to show and
-//! closes. What UIKit says of a view goes to its window (`heard_in`); the keyboard, typing and
-//! dialogs are the window in front's (the key window: `view`, `heard`). An iPhone shows one
-//! scene: second windows do nothing there.
+//! (`requestSceneSessionActivation` with an activity naming the window; once more if none
+//! connects in 10 s), shown as it connects, closed as the app stops describing it. The person
+//! closing its scene (its session discarded) is a close request ([`Ui::close_requested`]); for
+//! the first window too, which, kept open, asks for a new scene. A scene the system lets go of to
+//! free memory is no close: the window keeps its view and state, and moves into the scene's new
+//! `UIWindow` as it comes back (same session). A scene the person opens from the system has
+//! nothing to show and closes. What UIKit says of a view goes to its window (`heard_in`); the
+//! keyboard, typing and dialogs are the window in front's (the key window: `view`, `heard`). An
+//! iPhone shows one scene: second windows do nothing there.
 //!
 //! The app hears the program go to the background as its window minimized
 //! ([`Event::Minimized`], [`Ui::window_minimized`]): the moment to save its state. The system's
@@ -144,11 +147,14 @@ pub(crate) enum Heard {
     Ending,
     /// Something only a part knows of (a reader's request).
     Other(Box<dyn FnOnce(&mut Ui) -> bool>),
-    /// A scene connected after the first (iPad): its window and session, and the second window it
-    /// was asked for, if any.
+    /// A scene connected after the first (iPad), or came back: its window and session, and the
+    /// second window it was asked for, if any.
     SceneConnected(Obj, Obj, Option<Id>),
-    /// A scene went (the person closed it, or the app): its window and session.
-    SceneGone(Obj, Obj),
+    /// A scene disconnected (closed, or let go of by the system to free memory): its window.
+    SceneDisconnected(Obj),
+    /// A scene's session was discarded (the person closed it, or the app): the session,
+    /// retained until heard.
+    SessionDiscarded(Obj),
 }
 
 /// What UIKit's calls ask of a window while a turn may be running: its window, view and
@@ -205,6 +211,8 @@ thread_local! {
     /// What parts handed to the window put on each view (drops, drags out, the long press in
     /// text boxes): on every window's as it opens.
     static VIEW_PARTS: RefCell<Vec<fn(Obj)>> = const { RefCell::new(Vec::new()) };
+    /// What those parts forget of a view as its window closes.
+    static VIEW_CLOSED: RefCell<Vec<fn(Obj)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// What a window does after each run for a part an app asked for (see `follow_parts`), with its
@@ -281,6 +289,11 @@ pub(crate) fn view_of(interaction: Obj) -> Obj {
 pub(crate) fn on_every_view(add: fn(Obj)) {
     SEEN.with_borrow(|seen| seen.iter().for_each(|seen| add(seen.view)));
     VIEW_PARTS.with_borrow_mut(|parts| parts.push(add));
+}
+
+/// Has a part forget what it keeps of a view as the view's window closes.
+pub(crate) fn on_view_closed(forget: fn(Obj)) {
+    VIEW_CLOSED.with_borrow_mut(|parts| parts.push(forget));
 }
 
 /// Does work with the front window's interface, unless a turn is running (then none).
@@ -394,10 +407,11 @@ extern "C" fn woken(_: *mut c_void) {
 /// notices.
 fn delegate_class() -> Obj {
     let notice = "v@:@";
-    let methods: [(&CStr, *const c_void, &str); 11] = [
+    let methods: [(&CStr, *const c_void, &str); 12] = [
         (c"application:didFinishLaunchingWithOptions:", launched as *const c_void, "B@:@@"),
         (c"windowBecameKey:", window_became_key as *const c_void, notice),
         (c"application:configurationForConnectingSceneSession:options:", scene_configuration as *const c_void, "@@:@@@"),
+        (c"application:didDiscardSceneSessions:", sessions_discarded as *const c_void, "v@:@@"),
         (c"enteredBackground:", entered_background as *const c_void, notice),
         (c"enteringForeground:", entering_foreground as *const c_void, notice),
         (c"becameActive:", became_active as *const c_void, notice),
@@ -410,11 +424,11 @@ fn delegate_class() -> Obj {
     made_class(c"TautAppDelegate", c"UIResponder", &methods, &[c"UIApplicationDelegate"])
 }
 
-/// The scene delegate's class: the window, made as the scene connects; the scene going.
+/// The scene delegate's class: the window, made as the scene connects; the scene disconnecting.
 fn scene_class() -> Obj {
     let methods: [(&CStr, *const c_void, &str); 4] = [
         (c"scene:willConnectToSession:options:", scene_connected as *const c_void, "v@:@@@"),
-        (c"sceneDidDisconnect:", scene_gone as *const c_void, "v@:@"),
+        (c"sceneDidDisconnect:", scene_disconnected as *const c_void, "v@:@"),
         (c"window", scene_window as *const c_void, "@@:"),
         (c"setWindow:", set_scene_window as *const c_void, "v@:@"),
     ];
@@ -450,10 +464,19 @@ extern "C" fn launched(delegate: Obj, _: Sel, _: Obj, _: Obj) -> Bool {
         if scenes.is_null() {
             let screen: Obj = send(class(c"UIScreen"), c"mainScreen", ());
             let window: Obj = send(send::<Obj>(class(c"UIWindow"), c"alloc", ()), c"initWithFrame:", (send_rect(screen, c"bounds", ()),));
-            open(window);
+            open(window, std::ptr::null_mut());
         }
     }
     1
+}
+
+/// Sessions were discarded: each, retained, for the next turn.
+extern "C" fn sessions_discarded(_: Obj, _: Sel, _: Obj, sessions: Obj) {
+    for session in items_of_set(sessions) {
+        // SAFETY: a session handed in, retained until `Host::discarded` releases it.
+        unsafe { send::<Obj>(session, c"retain", ()) };
+        heard(Heard::SessionDiscarded(session));
+    }
 }
 
 /// A scene's configuration: the library's scene delegate.
@@ -471,15 +494,14 @@ extern "C" fn scene_configuration(_: Obj, _: Sel, _: Obj, session: Obj, _: Obj) 
 /// The kind of activity a second window's scene is asked for with.
 const SECOND_WINDOW: &str = "dev.taut.window";
 
-/// A scene connects: the first opens the program's window; a later one is a second window's
-/// (iPad), the window it was asked for being in its activity.
+/// A scene connects: the first opens the program's window; a later one comes back with its
+/// session, or is a second window's (iPad), the window it was asked for being in its activity.
 extern "C" fn scene_connected(delegate: Obj, _: Sel, scene: Obj, session: Obj, options: Obj) {
-    // SAFETY: a window made for the scene: the first window's is kept for good, a second
-    // window's until it closes.
+    // SAFETY: a window made for the scene, kept until the scene disconnects.
     let window: Obj = unsafe { send(send::<Obj>(class(c"UIWindow"), c"alloc", ()), c"initWithWindowScene:", (scene,)) };
     SCENE_WINDOWS.with_borrow_mut(|windows| windows.push((delegate, window)));
     if STARTING.with_borrow(Option::is_some) {
-        return open(window);
+        return open(window, session);
     }
     heard(Heard::SceneConnected(window, session, asked_window(options)));
 }
@@ -495,14 +517,13 @@ fn asked_window(options: Obj) -> Option<Id> {
     }
 }
 
-/// A scene went: a second window's closes, and the scene's window is let go of (in the next
-/// turn).
-extern "C" fn scene_gone(delegate: Obj, _: Sel, scene: Obj) {
+/// A scene disconnected: its window is let go of in the next turn, the library's window it
+/// showed kept for the scene's return.
+extern "C" fn scene_disconnected(delegate: Obj, _: Sel, _: Obj) {
     let window = SCENE_WINDOWS.with_borrow_mut(|windows| windows.iter().position(|(of, _)| *of == delegate).map(|at| windows.remove(at).1));
-    let Some(window) = window else { return };
-    // SAFETY: a scene answers its session.
-    let session: Obj = unsafe { send(scene, c"session", ()) };
-    heard(Heard::SceneGone(window, session));
+    if let Some(window) = window {
+        heard(Heard::SceneDisconnected(window));
+    }
 }
 
 extern "C" fn scene_window(delegate: Obj, _: Sel) -> Obj {
@@ -698,8 +719,8 @@ fn mods_of(flags: isize) -> Mods {
     Mods { ctrl: flags & (CONTROL | COMMAND) != 0, shift: flags & SHIFT != 0, alt: flags & OPTION != 0 }
 }
 
-/// The touches of a set.
-fn touches_in(set: Obj) -> Vec<Obj> {
+/// The objects of a set: touches, presses, sessions.
+fn items_of_set(set: Obj) -> Vec<Obj> {
     // SAFETY: a set answers its objects.
     array_items(unsafe { send(set, c"allObjects", ()) })
 }
@@ -722,7 +743,7 @@ extern "C" fn touches_cancelled(view: Obj, _: Sel, set: Obj, event: Obj) {
 
 /// Each touch of a set: a pointer's, a pencil's or a finger's.
 fn touched(view: Obj, set: Obj, event: Obj, phase: TouchPhase) {
-    for touch in touches_in(set) {
+    for touch in items_of_set(set) {
         // SAFETY: a touch answers its type.
         match unsafe { send::<isize>(touch, c"type", ()) } {
             POINTER => pointed(view, touch, event, phase),
@@ -948,7 +969,7 @@ fn press_of(press: Obj) -> Option<(isize, isize, Obj)> {
 /// Called on the view and on the text input view.
 pub(crate) extern "C" fn presses_began(view: Obj, _: Sel, presses: Obj, event: Obj) {
     let mut rest = Vec::new();
-    for press in touches_in(presses) {
+    for press in items_of_set(presses) {
         let Some((code, flags, letters)) = press_of(press) else {
             rest.push(press);
             continue;
@@ -988,7 +1009,7 @@ fn pressed(view: Obj, code: isize, flags: isize, letters: Obj) -> bool {
 /// Keys came up.
 pub(crate) extern "C" fn presses_ended(view: Obj, name: Sel, presses: Obj, event: Obj) {
     let mut rest = Vec::new();
-    for press in touches_in(presses) {
+    for press in items_of_set(presses) {
         let Some((code, _, letters)) = press_of(press) else {
             rest.push(press);
             continue;
@@ -1068,19 +1089,33 @@ struct Host {
     /// What is to show each window.
     renderer: crate::platform::Renderer,
     /// Second windows a scene was asked for, not yet connected.
-    asked: Vec<Id>,
+    asked: Vec<Asked>,
     rerun: bool,
     start: Instant,
 }
+
+/// A second window's scene asked for: the window, when, and whether asked once more.
+struct Asked {
+    id: Id,
+    at: Instant,
+    again: bool,
+}
+
+/// A scene asked for and not connected after this is asked for once more.
+const ASK_AGAIN: Duration = Duration::from_secs(10);
 
 /// A window: its view and page, and what its interface last asked of it.
 struct Shown {
     /// The second window it shows (none: the first).
     known: Option<Id>,
+    /// The `UIWindow` it shows in: null while its scene is away.
     window: Obj,
     view: Obj,
+    /// Its view controller (one count is the window's own): moved into the scene's new
+    /// `UIWindow` as the scene comes back.
     controller: Obj,
-    /// Its scene's session (a second window's): what it is closed by.
+    /// Its scene's session: what it is closed by, and found again by as the scene comes back.
+    /// Null without scenes, and for a first window whose session was discarded.
     session: Obj,
     /// The layer showing the pixels, and where it lies in the view: the safe area above the
     /// keyboard, in points.
@@ -1099,21 +1134,20 @@ struct Shown {
     screen: crate::gpu_ios::Screen,
 }
 
-/// Opens the program's window in `window` (its first scene's, or the screen's): the interface,
-/// run once.
-fn open(window: Obj) {
+/// Opens the program's window in `window` (its first scene's, with its session, or the
+/// screen's): the interface, run once.
+fn open(window: Obj, session: Obj) {
     let Some((title, renderer, app)) = STARTING.with_borrow_mut(Option::take) else { return };
     let Some(text) = SystemText::new() else {
         return eprintln!("taut: CoreText has no system font.");
     };
-    let first = Shown::open(window, None, std::ptr::null_mut(), renderer);
+    let first = Shown::open(window, None, session, title, renderer);
     let mut ui = Ui::new(Box::new(text), Box::new(SystemClipboard));
     ui.set_preferences(preferences(first.view));
     ui.set_screens(screens());
     ui.set_native_file_dialog(true);
     crate::ui_accessibility::listen_if_running(first.view);
-    let shown = Shown { title, ..first };
-    HOST.set(Some(Host { app, ui, windows: vec![shown], renderer, asked: Vec::new(), rerun: true, start: Instant::now() }));
+    HOST.set(Some(Host { app, ui, windows: vec![first], renderer, asked: Vec::new(), rerun: true, start: Instant::now() }));
     RUNNING.store(true, Ordering::SeqCst);
     turn();
 }
@@ -1178,8 +1212,8 @@ fn ask_for_scene(id: Id, title: &str, beside: Obj) {
     }
 }
 
-/// Brings a scene forward, by its session.
-fn bring_scene_forward(session: Obj) {
+/// Brings a scene forward, by its session; with none, asks for a new scene.
+fn activate_scene(session: Obj) {
     // SAFETY: the application activates the session's scene.
     unsafe {
         let application: Obj = send(class(c"UIApplication"), c"sharedApplication", ());
@@ -1188,7 +1222,7 @@ fn bring_scene_forward(session: Obj) {
     }
 }
 
-/// Has the system close a scene, by its session; it goes (`scene_gone`) once closed.
+/// Has the system close a scene, by its session: it disconnects, and the session is discarded.
 fn close_scene(session: Obj) {
     // SAFETY: the application destroys the session (and disconnects its scene).
     unsafe {
@@ -1202,9 +1236,9 @@ impl Shown {
     /// Shows a window in `window`: a view controller, the view and its page, what hears the
     /// pointer, and the parts put on every view. It comes forward, and is measured in the next
     /// turn.
-    fn open(window: Obj, known: Option<Id>, session: Obj, renderer: crate::platform::Renderer) -> Shown {
+    fn open(window: Obj, known: Option<Id>, session: Obj, title: String, renderer: crate::platform::Renderer) -> Shown {
         // SAFETY: objects of UIKit and the library's classes made and set up on the main thread;
-        // the controller keeps the view, the window the controller.
+        // the controller keeps the view; the library keeps the controller, given up in `close`.
         let (view, controller, page) = unsafe {
             let bounds = send_rect(window, c"bounds", ());
             let view: Obj = send(send::<Obj>(view_class(), c"alloc", ()), c"initWithFrame:", (bounds,));
@@ -1212,8 +1246,6 @@ impl Shown {
             let controller: Obj = send(send::<Obj>(controller_class(), c"alloc", ()), c"init", ());
             send::<()>(controller, c"setView:", (view,));
             send::<()>(view, c"release", ());
-            send::<()>(window, c"setRootViewController:", (controller,));
-            send::<()>(controller, c"release", ());
             let page: Obj = send(class(c"CALayer"), c"layer", ());
             send::<()>(page, c"setContentsGravity:", (kCAGravityTopLeft,));
             send::<()>(page, c"setOpaque:", (1 as Bool,));
@@ -1226,26 +1258,62 @@ impl Shown {
             FRONT.set(view);
         }
         VIEW_PARTS.with_borrow(|parts| parts.iter().for_each(|add| add(view)));
-        // SAFETY: the window shows and takes the keys (made key, it is the front window); the
-        // view takes the keys of a hardware keyboard.
-        unsafe {
-            send::<()>(window, c"makeKeyAndVisible", ());
-            send::<Bool>(view, c"becomeFirstResponder", ());
-        }
-        heard_in(view, Heard::Resized);
         #[cfg(not(feature = "gpu"))]
         let _ = renderer;
         #[rustfmt::skip]
-        return Shown {
-            known, window, view, controller, session, page, area: NSRect::default(), keyboard: 0.0, scale: 1.0, surface: Surface::default(),
-            background: Color::NONE, pointer, title: String::new(),
+        let mut shown = Shown {
+            known, window: std::ptr::null_mut(), view, controller, session, page, area: NSRect::default(), keyboard: 0.0, scale: 1.0,
+            surface: Surface::default(), background: Color::NONE, pointer, title,
             #[cfg(feature = "gpu")]
             screen: crate::gpu_ios::Screen::new(renderer),
         };
+        shown.show_in(window);
+        shown
     }
 
-    /// Takes in the view's size, safe area and scale now; says whether the page changed.
+    /// Shows in `window`, its scene's (new, or come back): the controller goes into it, it
+    /// comes forward and takes the keys, and is measured in the next turn.
+    fn show_in(&mut self, window: Obj) {
+        self.window = window;
+        // (Known by its window before it is key: `window_became_key`.)
+        change_seen(self.view, |seen| seen.window = window);
+        // SAFETY: the window keeps the controller, shows, and takes the keys (made key, it is the
+        // front window); the view takes the keys of a hardware keyboard.
+        unsafe {
+            send::<()>(window, c"setRootViewController:", (self.controller,));
+            send::<()>(window, c"makeKeyAndVisible", ());
+            send::<Bool>(self.view, c"becomeFirstResponder", ());
+        }
+        if !self.title.is_empty() {
+            self.set_title(self.title.clone());
+        }
+        heard_in(self.view, Heard::Resized);
+    }
+
+    /// Its scene disconnected (closed, or let go of by the system): the controller leaves the
+    /// window, and the window its scene.
+    fn leave_window(&mut self) {
+        // SAFETY: the window gives up the controller (the library keeps its own count) and its
+        // scene (nil for none).
+        unsafe {
+            send::<()>(self.window, c"setRootViewController:", (std::ptr::null_mut::<c_void>(),));
+            send::<()>(self.window, c"setWindowScene:", (std::ptr::null_mut::<c_void>(),));
+        }
+        self.window = std::ptr::null_mut();
+        change_seen(self.view, |seen| seen.window = std::ptr::null_mut());
+    }
+
+    /// Whether its scene is away: disconnected, its session kept or discarded.
+    fn away(&self) -> bool {
+        self.window.is_null()
+    }
+
+    /// Takes in the view's size, safe area and scale now; says whether the page changed. While
+    /// its scene is away, it keeps its size.
     fn measure(&mut self) -> bool {
+        if self.away() {
+            return false;
+        }
         // SAFETY: plain questions of the view.
         let (bounds, insets, scale) = unsafe {
             let traits: Obj = send(self.view, c"traitCollection", ());
@@ -1330,14 +1398,17 @@ impl Shown {
         }
     }
 
-    /// A second window's view is gone: nothing more is kept of it, and the first window is in
-    /// front where this one was. (Its window is let go of as its scene goes.)
+    /// A second window closed: nothing more is kept of its view, and the first window is in
+    /// front where this one was. (A window still shown is let go of as its scene disconnects.)
     fn close(self) {
         SEEN.with_borrow_mut(|seen| seen.retain(|seen| seen.view != self.view));
         crate::ui_accessibility::forget(self.view);
+        VIEW_CLOSED.with_borrow(|parts| parts.iter().for_each(|forget| forget(self.view)));
         if FRONT.get() == self.view {
             FRONT.set(SEEN.with_borrow(|seen| seen.first().map_or(std::ptr::null_mut(), |first| first.view)));
         }
+        // SAFETY: the library's count of the controller, given up.
+        unsafe { send::<()>(self.controller, c"release", ()) };
     }
 }
 
@@ -1374,7 +1445,8 @@ impl Host {
                 self.rerun = true;
             }
             (Heard::SceneConnected(window, session, known), _) => self.connected(window, session, known),
-            (Heard::SceneGone(window, session), _) => self.gone(window, session),
+            (Heard::SceneDisconnected(window), _) => self.disconnected(window),
+            (Heard::SessionDiscarded(session), _) => self.discarded(session),
             (_, None) => {}
             (Heard::Event(event), Some(at)) => self.hear(at, event),
             (Heard::Resized, Some(at)) => self.rerun |= self.windows[at].measure(),
@@ -1395,7 +1467,7 @@ impl Host {
         let blocked = input && self.ui.window_blocked(self.windows[at].known.unwrap_or(0));
         if let Some(dialog) = blocked.then(|| self.shown_dialog()).flatten() {
             if matches!(event, Event::Press(..)) {
-                bring_scene_forward(self.windows[dialog].session);
+                activate_scene(self.windows[dialog].session);
             }
             return;
         }
@@ -1417,37 +1489,89 @@ impl Host {
         }
     }
 
-    /// A scene connected: a second window asked for, still described and not shown, shows in
-    /// it. Another (one the person made, or one the system brought back from an earlier run)
-    /// has nothing to show, and closes.
+    /// A scene connected. A window's scene coming back (by its session) shows it again, as it
+    /// was; a second window asked for, still described and not shown, shows in it; a first
+    /// window whose session was discarded shows in any. Another (one the person made, or one the
+    /// system brought back from an earlier run) has nothing to show, and closes.
     fn connected(&mut self, window: Obj, session: Obj, known: Option<Id>) {
+        if let Some(at) = self.windows.iter().position(|shown| shown.session == session) {
+            return self.show_again(at, window);
+        }
         let described = |id: &Id| self.ui.windows().any(|(of, ..)| of == *id) && self.windows.iter().all(|shown| shown.known != Some(*id));
-        let Some(id) = known.filter(described) else { return close_scene(session) };
-        self.asked.retain(|asked| *asked != id);
+        if let Some(id) = known.filter(described) {
+            return self.open_second(id, window, session);
+        }
+        if self.first_needs_scene() {
+            self.windows[0].session = session;
+            return self.show_again(0, window);
+        }
+        close_scene(session);
+    }
+
+    /// Shows second window `id` in a scene's window.
+    fn open_second(&mut self, id: Id, window: Obj, session: Obj) {
+        self.asked.retain(|asked| asked.id != id);
         if self.ui.listening {
             self.ui.in_window(id, |ui| ui.set_screen_reader(true));
         }
-        let mut shown = Shown::open(window, Some(id), session, self.renderer);
+        let title = self.title_of(id);
+        let mut shown = Shown::open(window, Some(id), session, title, self.renderer);
         shown.measure();
-        if let Some((_, title, _)) = self.ui.windows().find(|(of, ..)| *of == id) {
-            shown.set_title(title.to_string());
-        }
         self.windows.push(shown);
         self.rerun = true;
     }
 
-    /// A scene went: a second window's interface hears its window was closed (if its app keeps
-    /// it, a scene is asked for again). The scene's window is let go of, unless it is the
-    /// first's, kept for good.
-    fn gone(&mut self, window: Obj, session: Obj) {
-        if let Some(at) = self.windows.iter().skip(1).position(|shown| shown.session == session).map(|at| at + 1) {
-            let known = self.windows[at].known;
-            self.rerun |= known.and_then(|id| self.ui.in_window(id, Ui::request_close)).is_some();
-            self.windows.remove(at).close();
+    /// Shows a window again in its scene's new window: its view, page and interface as they
+    /// were.
+    fn show_again(&mut self, at: usize, window: Obj) {
+        let shown = &mut self.windows[at];
+        shown.show_in(window);
+        shown.measure();
+        self.rerun = true;
+    }
+
+    /// Second window `id`'s title, as last described.
+    fn title_of(&self, id: Id) -> String {
+        self.ui.windows().find(|(of, ..)| *of == id).map_or_else(String::new, |(_, title, _)| title.to_string())
+    }
+
+    /// Whether the first window has no scene and no session to come back with: its session was
+    /// discarded and its app kept it open.
+    fn first_needs_scene(&self) -> bool {
+        self.windows[0].away() && self.windows[0].session.is_null()
+    }
+
+    /// A scene disconnected: the window it showed keeps everything, for the scene's return or
+    /// its session's discarding. The scene's window is let go of.
+    fn disconnected(&mut self, window: Obj) {
+        if let Some(shown) = self.windows.iter_mut().find(|shown| shown.window == window) {
+            shown.leave_window();
         }
-        if window != self.windows[0].window {
-            // SAFETY: the window made as the scene connected, released once, after it went.
-            unsafe { send::<()>(window, c"release", ()) };
+        // SAFETY: the window made as the scene connected, released once, after it disconnected.
+        unsafe { send::<()>(window, c"release", ()) };
+    }
+
+    /// A session was discarded (the person closed its scene, or the app): its window's
+    /// interface hears a close request. A second window goes (if its app keeps it, a scene is
+    /// asked for again); the first stays, to close with the program or, kept, to ask for a new
+    /// scene (`describe`). A closed scene disconnects first: a session discarded while its window
+    /// still shows (UIKit says so of the first scene's on some launches) closes nothing.
+    fn discarded(&mut self, session: Obj) {
+        let at = self.windows.iter().position(|shown| shown.session == session && shown.away());
+        // SAFETY: the count `sessions_discarded` took.
+        unsafe { send::<()>(session, c"release", ()) };
+        match at {
+            Some(0) => {
+                self.windows[0].session = std::ptr::null_mut();
+                self.ui.request_close();
+                self.rerun = true;
+            }
+            Some(at) => {
+                let known = self.windows[at].known;
+                self.rerun |= known.and_then(|id| self.ui.in_window(id, Ui::request_close)).is_some();
+                self.windows.remove(at).close();
+            }
+            None => {}
         }
     }
 
@@ -1458,9 +1582,13 @@ impl Host {
         }
         self.ui.run(&mut self.app);
         self.rerun = false;
-        if self.ui.take_closing() == Some(Ok(())) || self.ui.quitting() {
+        let closing = self.ui.take_closing();
+        if closing == Some(Ok(())) || self.ui.quitting() {
             // SAFETY: the program ends, as the app asked.
             unsafe { exit(0) }
+        }
+        if closing.is_some() && self.first_needs_scene() {
+            activate_scene(std::ptr::null_mut());
         }
         self.keep_up();
         (0..self.windows.len()).for_each(|at| self.follow(at));
@@ -1486,15 +1614,35 @@ impl Host {
                 self.windows.remove(at).close();
             }
         }
-        self.asked.retain(|id| self.ui.windows().any(|(of, ..)| of == *id));
+        self.asked.retain(|asked| self.ui.windows().any(|(of, ..)| of == asked.id));
         if !multiple_scenes() {
             return;
         }
-        let shown = |id: &Id| self.asked.contains(id) || self.windows.iter().any(|shown| shown.known == Some(*id));
+        let shown = |id: &Id| self.asked.iter().any(|asked| asked.id == *id) || self.windows.iter().any(|shown| shown.known == Some(*id));
         let new: Vec<(Id, String)> = self.ui.windows().filter(|(id, ..)| !shown(id)).map(|(id, title, _)| (id, title.to_string())).collect();
         for (id, title) in new {
             ask_for_scene(id, &title, self.windows[0].window);
-            self.asked.push(id);
+            self.asked.push(Asked { id, at: Instant::now(), again: false });
+        }
+    }
+
+    /// Asks once more for each scene asked for `ASK_AGAIN` ago that has not connected (UIKit
+    /// drops a request made just after a scene closed); has the timer bring a turn when the
+    /// next is due.
+    fn ask_again(&mut self) {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        for asked in self.asked.iter_mut().filter(|asked| !asked.again) {
+            if now < asked.at + ASK_AGAIN {
+                wake_at(asked.at + ASK_AGAIN);
+                continue;
+            }
+            asked.again = true;
+            due.push(asked.id);
+        }
+        for id in due {
+            let title = self.title_of(id);
+            ask_for_scene(id, &title, self.windows[0].window);
         }
     }
 
@@ -1534,8 +1682,11 @@ impl Host {
     }
 
     /// Draws what changed in a window and shows it: through Metal (feature `gpu`), else by
-    /// handing the pixels to its page.
+    /// handing the pixels to its page. A window whose scene is away is drawn as it comes back.
     fn draw(&mut self, at: usize) {
+        if self.windows[at].away() {
+            return;
+        }
         #[cfg(feature = "gpu")]
         if self.through_gpu(at) {
             return;
@@ -1552,8 +1703,8 @@ impl Host {
         }
     }
 
-    /// One turn: takes in what happened, runs the interface if needed, draws what changed, and
-    /// has the timer bring the next turn the interface asks for.
+    /// One turn: takes in what happened, runs the interface if needed, asks again for scenes not
+    /// come, draws what changed, and has the timer bring the next turn the interface asks for.
     fn turn(&mut self) {
         self.ui.set_time(self.start.elapsed());
         self.rerun |= self.ui.wake_in() == Some(Duration::ZERO);
@@ -1564,6 +1715,7 @@ impl Host {
         if self.rerun {
             self.describe();
         }
+        self.ask_again();
         (0..self.windows.len()).for_each(|at| self.draw(at));
         if let Some(wait) = self.ui.wake_in() {
             wake_at(Instant::now() + wait);

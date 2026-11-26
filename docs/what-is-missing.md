@@ -34,9 +34,9 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   one scene), each a scene the system sizes and places: a second window's size, place, screen
   and kind (tool, dialog, on top) are not used, though a dialog still keeps the windows opened
   before it from input. A scene the person opens from the system has nothing to show and
-  closes. The bundle's `Info.plist` needs `UIApplicationSupportsMultipleScenes` (as
-  `examples/ios_bundle.rs` writes it). Without `touch`, only the first finger works, as the
-  mouse.
+  closes, unless the first window, kept open as the person closed its scene, has none. The
+  bundle's `Info.plist` needs `UIApplicationSupportsMultipleScenes` (as `examples/ios_bundle.rs`
+  writes it). Without `touch`, only the first finger works, as the mouse.
 - iOS: in a password box and the code box the keyboard sees only what an input method composes
   (no corrections). The system's loupe and selection handles don't show: taut draws its own
   selection. Reading what another app put on the clipboard asks the person, except through the
@@ -157,9 +157,7 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Documents (Markdown)
 
-- Jumping far ahead (the scroll bar, Ctrl+End) lays out everything above the view first.
-- Lists and quotes in a right-to-left paragraph keep their markers at the left.
-- The selection is told for the blocks in view only, and not in table cells.
+- The selection is told for the blocks in view only.
 - Right-to-left lines of code start at the left.
 - Past 100 deep, nesting becomes text where blank lines times depth would pass 4 million.
 
@@ -186,7 +184,9 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   with `brahmic` too; system text on the web takes none.
 - `shaping` shapes each line the first time it is seen (15–40 µs in Segoe UI or Calibri: 0.4 s
   for a window of 10,000 new rows) and keeps up to 16 MB of runs; a full draw takes about 40%
-  longer.
+  longer. A program that shapes no app fonts still carries the whole shaper (`hello` on
+  Windows: 158 KB): the system's fonts take their forms and marks from it, as GDI and FreeType
+  can't. Uniscribe could shape them on Windows, with other mark placement.
 - `brahmic`: scripts with no Windows font need an app font. A bare Ubuntu has none.
 - Emoji: `COLR` v1 and SVG only on request; variable emoji fonts at default; sRGB mixing; no
   flags on Windows; no emoji font, plain letters.
@@ -210,20 +210,20 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Lossy WebP decodes about 4× slower than an equivalent JPEG (a 1920×1080 photo: 60 ms against
   14 ms), most of it the loop filter and the boolean decoder, done one pixel and one bit at a
   time.
-- SVG not read: a pattern as a `FillPaint`/`StrokePaint` input (librsvg tiles it), `wallclock()`
-  and focus events in `begin`/`end`. Images in other files only through the app's loader;
-  drawings an image brings, four deep at most. SMIL as frames (`svg::encode_animation`): a
-  minute at most, timed parts only. In a window (`AnimatedDrawing`): the last 4,096 events its
-  file waits for are kept, and each works its timeline out again from the start (the longer it
-  played, the more an event costs); the pointer is over a shape's fill or stroke, clips and
-  masks aside, text as its whole element. A kernel unit finer than a pixel counts as one pixel.
-  Small blurs use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped without
-  `shaping`. Masks and non-box clips multiply edge coverages; two opposite subpaths of one shape
-  can show a hairline. Crisp edges paint pixels more than half covered (librsvg: pixels whose
-  sample point is). Of 2,986 Linux desktop icons, 392 differ visibly from librsvg at 1×, 185 at
-  3×.
+- SVG: images in other files only through the app's loader; drawings an image brings, four
+  deep at most. SMIL as frames (`svg::encode_animation`): a minute at most, timed parts only. In
+  a window (`AnimatedDrawing`): a seek back works its timeline out again from the start with the
+  last 4,096 events; the pointer is over a shape's fill or stroke (masks aside, as in browsers),
+  text as its whole element, nothing where no shape is (browsers: the root); Tab moves focus into
+  the drawing, not between its elements. A kernel unit finer than an eighth of a pixel counts as
+  an eighth. Small blurs use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped
+  without `shaping`. Masks and non-box clips multiply edge coverages; two opposite subpaths of
+  one shape can show a hairline. Crisp edges paint pixels more than half covered (librsvg:
+  pixels whose sample point is). Of 2,986 Linux desktop icons, 392 differ visibly from librsvg
+  at 1×, 185 at 3×.
 - SVG cost beyond the file's budget is skipped; a small file can still take seconds at
-  4096×4096.
+  4096×4096. With a filter's kernel unit finer than a pixel, a picture under 512 pixels across
+  may cost as much as one 512 across (a 389-byte file: 68 ms at 100 pixels).
 - Highly compressible PNGs (30:1+) decode up to 1/7 slower than with an exact buffer.
 - JPEG writing: YCbCr only, no restart markers, no arithmetic coding; XMP up to 64 KB (no
   extended XMP). ICO images past 256 px: Windows reads them as 256 and scales.
@@ -232,22 +232,24 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Video
 
-- Frames are copied through the CPU into a picture on every path, also with `gpu`: a frame
-  decoded on the GPU is read back, then drawn. (Drawing it straight from its texture needs a
-  quad of `gpu-draw` that samples another device's texture.)
-- Captions: their text only, without the file's positions, regions or styles. Captions inside
-  the video stream (CEA-608/708) are not read.
+- Frames are drawn from the decoder's texture only on Windows, with `gpu-draw`, on Direct3D 11
+  (four videos a part; a fifth, or one shown more than 8 times smaller, is read back). On
+  Direct3D 12, Vulkan and OpenGL, and on macOS, iOS, Android, Linux and the web, a frame is read
+  back to the CPU, then drawn.
+- Captions: their text only, without the file's positions, regions or styles. In the video
+  stream: CEA-608 (channel 1 of field 1) in H.264, as a track `CC1` found once its first data
+  plays; not CEA-708's own services, not HEVC's SEI, not on macOS, iOS or the web.
 - Windows: the file's own captions only from Matroska (SRT, SSA, as text): Media Foundation reads
-  no caption track in MP4. The pitch at other speeds is as Media Foundation plays it (not
-  checked). Decoded on the GPU through Direct3D 11 where there is one; without one, in software
-  (MJPEG then only where Windows' decoder writes into a bitmap: not on every machine). AV1 needs
-  Windows' AV1 extension (on the GPU where it decodes AV1). N editions need the Media Feature
-  Pack. `open_silent` plays muted.
+  no caption track in MP4. Decoded on the GPU through Direct3D 11 where there is one; without
+  one, in software (MJPEG then only where Windows' decoder writes into a bitmap: not on every
+  machine). AV1 needs Windows' AV1 extension (on the GPU where it decodes AV1). N editions need
+  the Media Feature Pack. `open_silent` plays muted.
 - Linux: needs GStreamer's `playbin` and `appsink` and the plugins of the file's codecs; a
   missing one is `VideoError::NoPlayer` or `video.error()`. The pitch is kept at other speeds
   with `scaletempo` (plugins-good); without it the pitch moves. The file's captions need its
-  demuxer (`qtdemux` for MP4, `matroskademux`): none with base and bad plugins only. No caption
-  settings to follow: the usual style.
+  demuxer (`qtdemux` for MP4, `matroskademux`): none with base and bad plugins only; those in
+  the video stream a parser that marks them on frames (`h264parse`) and a decoder (`avdec_h264`).
+  No caption settings to follow: the usual style.
 - macOS and iOS: `open_silent` plays muted; bytes are played from a temporary file. iOS: a
   video with sound sets the audio session's category to `Playback` unless the app set one.
   Caption tracks of files only (3GPP timed text, read by an `AVAssetReader`), not of streams.
@@ -257,8 +259,9 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   through an image reader in YUV and are made RGB on the CPU. Volume scales the samples (AAudio
   has none); other speeds are stretched by taut (WSOLA), the last 40 ms of sound not played.
   Captions: 3GPP (MP4), SRT (Matroska), WebVTT (WebM), each until the next (Matroska's durations
-  not read); tracks named by their language. The caption style follows the system's in an app
-  only. Addresses play only in an app's process. No sound device: it plays silent. Checked only
+  not read); tracks named by their language. CEA-608 is read by taut from the samples as they
+  are decoded: after a seek, a caption shows from its next command on. The caption style
+  follows the system's in an app only. Addresses play only in an app's process. No sound device: it plays silent. Checked only
   on an emulator (software decoders); there, a command-line program that ended the moment it
   dropped its last video once aborted in Android's own decoder thread.
 - Web: the browser's formats (H.264 in MP4 in most; VP8, VP9, AV1 in WebM). Sound tracks only

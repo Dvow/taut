@@ -257,6 +257,58 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   `svg::encode_animation`. A `set` with `dur` ends after it (it held for ever).
 - **SVG filters:** `FillPaint` and `StrokePaint` inputs, and `kernelUnitLength` on lighting and
   convolution, as librsvg draws them.
+- **iPad scenes the system lets go of keep their windows.** UIKit may disconnect any scene to
+  free memory and bring it back later with the same session. Before, that closed a second
+  window, and the first scene coming back closed the main window's session. Now the window
+  keeps its view, state and id and moves into the scene's new `UIWindow`; typing into a focused
+  text box carries on. Only a discarded session (the person closing the scene, or the app) is a
+  close request; for the first window too: the program ends, or, kept open (`cancel_close`), the
+  window asks for a new scene.
+- **Fixed (iOS):** a second window whose scene request UIKit dropped (one made just after a
+  scene closed) never showed: a scene not connected 10 s after it was asked for is asked for
+  once more. What a closed window's app takes dropped was kept for good.
+- **Documents jump far cheaply:** Ctrl+End, a link to a far heading, the scroll bar dragged to
+  the end, a width change and Tab to a link out of view lay out only around where they go,
+  estimating what lies between and correcting it as it comes into view; what shows stays in
+  place. A jump to the end of 10,000 lines: 110 ms → 1 ms, held heap 3.4 MB → 0.5 MB.
+- **Documents right to left:** a list or quote whose first letter is Hebrew or Arabic has its
+  markers or bar at the right, on screen and on paper (`dir="auto"`, as Chrome draws it).
+- **Screen readers:** the part of a document's selection in a table cell is told in that cell,
+  as in other blocks; a cell is named by its words as one text. Cells and column headings are
+  read as text by line and letter (UI Automation's text pattern, AT-SPI's Text, macOS, the web).
+- **Code editor on Android:** an input method's deletes keep each selection, as in text boxes;
+  the code editor takes the system's keyboard without a text box beside it.
+- **Fixed:** the system's text on Linux and macOS kept every glyph picture it drew, so text
+  drawn at every size (a pan-and-zoom view) grew memory without end. Each of its glyph caches
+  now holds at most 8,192 pictures, as on Windows, and macOS at most 256 fonts.
+- **Video frames drawn from the decoder's texture** (Windows, `gpu-draw`, Direct3D 11): a frame
+  Media Foundation decodes on the GPU is drawn from its texture, shared with the window's device
+  under a keyed mutex; it is read back only where the CPU draws it. A 1080p H.264 video took
+  2.6 to 3.9 ms of CPU a frame instead of 4.3 to 7.6.
+- **Captions in the video stream** (CEA-608 in H.264, feature `video`): a caption track `CC1`,
+  found once its first data plays. Windows reads them through Media Foundation's timed text;
+  Android and Linux through taut's own decoder (from the extractor's samples; from GStreamer's
+  caption meta).
+- **Windows video:** Media Foundation starts once for the program, not per video (40 opens now
+  take half the time); the device videos decode on is made again after a GPU reset (before, every
+  video after one failed). Media Foundation keeps the pitch at other speeds: checked at 0.5, 1.5
+  and 2 times.
+- **SVG animation in a window (`AnimatedDrawing`)** keeps its timeline as it plays and adds
+  each event to it: an event costs the same after an hour as at the start (the same schedule as
+  before). None is forgotten: before, a file waiting for `mousemove` lost an early `click` after
+  4,096 moves, and what it began undid itself. A seek back works the timeline out again with
+  the last 4,096 events. Each event also allows a little more scheduling work, so a pointer
+  moving at frame rate no longer uses up a minute's budget.
+- **SVG in a window, as in browsers:** the pointer counts only within clip paths and viewports
+  (not masks); an event at what a `<use>` brings bubbles through the `<use>`, not where the
+  element lies in the file; `focus`, `blur`, `focusin` and `focusout` come as focus moves (a
+  press gives it to the nearest element with a `tabindex`, a link or a focus event waited for;
+  by keyboard, the first Tab reaches), and the box takes focus where the file waits for them.
+  `wallclock()` begin and end times count from when the drawing first shows.
+- **SVG filters:** a pattern as a `FillPaint` or `StrokePaint` input tiles the filter region,
+  as librsvg does at the file's size (librsvg does not scale it with the drawing; taut does). A
+  kernel unit finer than a pixel runs on a finer grid, as librsvg does, down to an eighth of a
+  pixel (before: one pixel); its cost counts the cells in a picture 512 pixels across.
 
 ## 0.3.0 (2026-11-24)
 

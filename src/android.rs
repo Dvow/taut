@@ -1086,12 +1086,3 @@ pub(crate) fn open_link(link: &str) -> bool {
 pub(crate) fn last_activity() -> Obj {
     LAST_ACTIVITY.load(Ordering::SeqCst)
 }
-
-/// Vulkan's loader (`libvulkan.so`), for layers: its `vkGetInstanceProcAddr`, or null.
-pub(crate) fn vulkan_loader() -> *mut c_void {
-    // SAFETY: the name is a C string (2: `RTLD_NOW`); the library is never closed.
-    unsafe {
-        let library = dlopen(c"libvulkan.so".as_ptr(), 2);
-        if library.is_null() { library } else { dlsym(library, c"vkGetInstanceProcAddr".as_ptr()) }
-    }
-}

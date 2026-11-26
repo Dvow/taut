@@ -192,6 +192,21 @@ pub(crate) fn within_line(top: i32, width: usize, cover: &[u8], [ascent, descent
     (top - first, kept)
 }
 
+/// How many glyph pictures each cache of the system's text keeps.
+#[cfg(any(windows, all(unix, not(target_os = "android"))))]
+pub(crate) const GLYPHS: usize = 8192;
+
+/// The value `cache` keeps under `key`, made by `make` if missing. A cache holding `most` is
+/// dropped first: what it held is made again on demand.
+#[cfg(any(windows, all(unix, not(target_os = "android"))))]
+pub(crate) fn cached<K: Eq + std::hash::Hash, V>(cache: &mut std::collections::HashMap<K, V>, most: usize, key: K, make: impl FnOnce() -> V) -> &mut V {
+    // (A new map, not `clear`: it frees the table too, and costs less code.)
+    if cache.len() >= most {
+        *cache = std::collections::HashMap::new();
+    }
+    cache.entry(key).or_insert_with(make)
+}
+
 /// Whether every font is taken to have a character, which is never looked up elsewhere: ASCII,
 /// and anything invisible.
 #[cfg(windows)]
