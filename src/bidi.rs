@@ -324,14 +324,14 @@ impl Order {
     /// whole (kept for its next line), then the line's end reset (rule L1). Leaves the line's in
     /// `levels`.
     pub fn of_line(&mut self, line: &str, paragraph: Paragraph) {
-        let Paragraph { leftward, before, after } = paragraph;
+        let Paragraph { right_to_left, before, after } = paragraph;
         if !self.holds(line, paragraph) {
             let Order { letters, written, paragraph: (whole, direction), .. } = self;
             *whole = [before, line, after].concat();
-            *direction = leftward;
+            *direction = right_to_left;
             *letters = whole.chars().collect();
             *written = letters.iter().map(|letter| kind(*letter)).collect();
-            self.resolve(Some(leftward));
+            self.resolve(Some(right_to_left));
             self.paragraph_levels.clone_from(&self.levels);
         }
         let skip = before.chars().count();
@@ -339,14 +339,14 @@ impl Order {
         self.levels.extend(self.paragraph_levels.iter().skip(skip).take(line.chars().count()));
         self.written.clear();
         self.written.extend(line.chars().map(kind));
-        self.line_end(leftward as u8);
+        self.line_end(right_to_left as u8);
     }
 
     /// Whether the paragraph last resolved is this line's.
-    fn holds(&self, line: &str, Paragraph { leftward, before, after }: Paragraph) -> bool {
+    fn holds(&self, line: &str, Paragraph { right_to_left, before, after }: Paragraph) -> bool {
         let (whole, direction) = (&self.paragraph.0, self.paragraph.1);
         let long = whole.len() == before.len() + line.len() + after.len();
-        direction == leftward && long && whole.starts_with(before) && whole[before.len()..].starts_with(line) && whole.ends_with(after)
+        direction == right_to_left && long && whole.starts_with(before) && whole[before.len()..].starts_with(line) && whole.ends_with(after)
     }
 
     /// Resolves every character's level in a line: of a right-to-left paragraph (`Some(true)`),
@@ -922,11 +922,10 @@ impl BidiText {
         }
     }
 
-    /// Whether a line goes to the inner system as it is: it has no right-to-left letters, none
-    /// of scripts shaped here by syllable, and no forms of its language the inner system leaves
-    /// out.
-    fn passes(&mut self, text: &str, face: Face) -> bool {
-        plain(text) && !self.forms_here(face, text)
+    /// Whether a line of `paragraph` goes to the inner system as it is: it shows as typed (see
+    /// `Paragraph::plain`), and has no forms of its language the inner system leaves out.
+    fn passes(&mut self, text: &str, face: Face, paragraph: Paragraph) -> bool {
+        paragraph.plain(text) && !self.forms_here(face, text)
     }
 
     /// Whether a line is shaped here for its language's forms (see `system_forms`): only where
@@ -1461,7 +1460,7 @@ impl TextSystem for BidiText {
     }
 
     fn measure(&mut self, text: &str, font: Font, scale: f32, stops: Option<&mut Vec<f32>>) -> f32 {
-        if self.passes(text, font.face) {
+        if self.passes(text, font.face, Paragraph::whole(false)) {
             return self.text.measure(text, font, scale, stops);
         }
         let Some(stops) = stops else { return self.lay(text, font, scale, None, None) / scale };
@@ -1481,14 +1480,14 @@ impl TextSystem for BidiText {
     }
 
     fn draw(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color) {
-        match self.passes(text, font.face) {
+        match self.passes(text, font.face, Paragraph::whole(false)) {
             true => self.text.draw(canvas, text, x, y, font, color),
             false => self.write(canvas, text, [x, y], font, color, None),
         }
     }
 
     fn places(&mut self, text: &str, font: Font, scale: f32, paragraph: Paragraph<'_>, places: &mut Vec<[f32; 2]>) -> f32 {
-        if paragraph.plain(text) && !self.forms_here(font.face, text) {
+        if self.passes(text, font.face, paragraph) {
             places.clear();
             self.stops.clear();
             let wide = self.text.measure(text, font, scale, Some(&mut self.stops));
@@ -1501,7 +1500,7 @@ impl TextSystem for BidiText {
     }
 
     fn draw_line(&mut self, canvas: &mut Canvas, text: &str, x: f32, y: f32, font: Font, color: Color, paragraph: Paragraph<'_>) {
-        match paragraph.plain(text) && !self.forms_here(font.face, text) {
+        match self.passes(text, font.face, paragraph) {
             true => self.text.draw(canvas, text, x, y, font, color),
             false => self.write(canvas, text, [x, y], font, color, Some(paragraph)),
         }
@@ -1936,7 +1935,7 @@ pub(crate) mod tests {
         let before = &whole[..whole.len() - line.len()];
         let left_of = |places: &[[f32; 2]], one: usize, other: usize| places[one][0] < places[other][0];
         let mut places = Vec::new();
-        ordered.places(line, font, 1.0, Paragraph { leftward: false, before, after: "" }, &mut places);
+        ordered.places(line, font, 1.0, Paragraph { right_to_left: false, before, after: "" }, &mut places);
         assert!(left_of(&places, 3, 0), "wrapped: {places:?}");
         ordered.places(line, font, 1.0, Paragraph::whole(false), &mut places);
         assert!(left_of(&places, 0, 3), "alone: {places:?}");
@@ -1946,7 +1945,7 @@ pub(crate) mod tests {
             ordered.draw_line(&mut Canvas::new(&mut pixels, 200, 20, (0, 0), 1.0), line, 0.0, 0.0, font, Color::WHITE, paragraph);
             pixels
         };
-        assert_ne!(drawn(Paragraph { leftward: false, before, after: "" }), drawn(Paragraph::whole(false)));
+        assert_ne!(drawn(Paragraph { right_to_left: false, before, after: "" }), drawn(Paragraph::whole(false)));
     }
 
     #[test]
@@ -2072,7 +2071,7 @@ pub(crate) mod tests {
             for cut in whole.char_indices().map(|(at, _)| at).skip(1) {
                 for (from, to) in [(0, cut), (cut, whole.len())] {
                     let (first, count) = (whole[..from].chars().count(), whole[from..to].chars().count());
-                    order.of_line(&whole[from..to], Paragraph { leftward: paragraph == 1, before: &whole[..from], after: &whole[to..] });
+                    order.of_line(&whole[from..to], Paragraph { right_to_left: paragraph == 1, before: &whole[..from], after: &whole[to..] });
                     let mut expected: Vec<&str> = levels[first..first + count].to_vec();
                     let trailing = letters[first..first + count].iter().rev().take_while(|letter| ends_line(kind(**letter))).count();
                     expected[count - trailing..].iter_mut().filter(|level| **level != "x").for_each(|level| *level = if paragraph == 1 { "1" } else { "0" });
@@ -2086,6 +2085,38 @@ pub(crate) mod tests {
         }
         println!("{lines} lines, {} wrong", wrong.len());
         assert!(wrong.is_empty(), "{} of {lines} lines wrong:\n{}", wrong.len(), wrong[..wrong.len().min(20)].join("\n"));
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn a_line_of_a_left_to_right_paragraph_with_nothing_right_to_left_up_to_its_end_shows_as_typed() {
+        // Whatever follows it: each character of a left-to-right case that `Paragraph::plain`
+        // passes as a line, looking only at it and the text before it, is at an even level in
+        // Unicode's test.
+        let Some(folder) = unicode() else { return };
+        let text = std::fs::read_to_string(folder.join("BidiCharacterTest.txt")).unwrap();
+        let (exact, mut characters, mut wrong) = (listed(&folder), 0, Vec::new());
+        for line in text.lines().filter(|line| !line.is_empty() && !line.starts_with('#')) {
+            let fields: Vec<&str> = line.split(';').collect();
+            let letters: Vec<char> = fields[0].split_whitespace().map(|code| char::from_u32(u32::from_str_radix(code, 16).unwrap()).unwrap()).collect();
+            if fields[2] != "0" || letters.iter().any(|letter| kind(*letter) != exact[*letter as usize]) {
+                continue;
+            }
+            let (whole, levels): (String, Vec<&str>) = (letters.iter().collect(), fields[3].split_whitespace().collect());
+            for (n, (from, letter)) in whole.char_indices().enumerate() {
+                let to = from + letter.len_utf8();
+                let paragraph = Paragraph { right_to_left: false, before: &whole[..from], after: &whole[to..] };
+                if !paragraph.plain(&whole[from..to]) {
+                    continue;
+                }
+                characters += 1;
+                if levels[n].parse::<u8>().is_ok_and(|level| level % 2 == 1) {
+                    wrong.push(format!("{}: character {n}", fields[0]));
+                }
+            }
+        }
+        println!("{characters} characters, {} wrong", wrong.len());
+        assert!(characters > 0 && wrong.is_empty(), "{} of {characters} characters wrong:\n{}", wrong.len(), wrong[..wrong.len().min(20)].join("\n"));
     }
 
     /// The glyphs of the runs a line is shaped in here, as drawn.

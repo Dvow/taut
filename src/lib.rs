@@ -127,7 +127,7 @@ mod date;
 mod decorations;
 mod dock;
 mod drag_drop;
-#[cfg(any(all(unix, not(any(target_vendor = "apple", target_os = "android"))), all(target_os = "android", feature = "video")))]
+#[cfg(all(unix, not(target_vendor = "apple"), any(not(target_os = "android"), feature = "gpu", feature = "video")))]
 mod dynamic_library;
 mod el;
 pub mod emoji;

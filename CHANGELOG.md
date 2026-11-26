@@ -229,13 +229,14 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   while a window is in EDR is gone.
 - **Fixed (`hdr`):** an Ultra HDR JPEG with a start of a JPEG that can't be measured before its
   gain map is read with its map, not as SDR.
-- X11's and Android's Vulkan paths share one module, their EGL paths another; OpenGL's and
-  Vulkan's function tables are found by one loader.
+- X11's and Android's Vulkan paths share one module, their EGL paths another. System libraries
+  are opened at run time by one loader, EGL and OpenGL ES on Android too (no longer linked);
+  every function table is filled by one loop.
 - **Bidi by paragraph:** a wrapped line of mixed-direction text is ordered as its whole paragraph
   orders it (UAX #9), so numbers and punctuation at a line's ends take the direction they would
-  unwrapped. `TextSystem::places` and `TextSystem::draw_line` take a `Paragraph` (the line's
-  direction and the text around it) in place of `leftward: bool`; `Paragraph::whole(leftward)`
-  is the old meaning.
+  unwrapped. `TextSystem::places` and `TextSystem::draw_line` take a `Paragraph` (its
+  `right_to_left` and the text around the line) in place of `leftward: bool`;
+  `Paragraph::whole(right_to_left)` is the old meaning.
 - **Shaped forms drawn by the system:** with `shaping`, a line shaped for its language's forms
   in the system's fonts is drawn by GDI, FreeType or CoreText glyph by glyph
   (`TextSystem::draw_glyphs`), not by taut's rasterizer: its letters look like the system's own
@@ -249,11 +250,11 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - **Line breaks:** a no-break space after a hyphen may start a line (UAX #14 LB12a).
 - **SVG animation in a window:** `svg::AnimatedDrawing` plays a file's SMIL animation in a box
   (`ui.animated_drawing`), only that box redrawn per frame. Clicks, presses, pointer moves over
-  its shapes and `accessKey(x)` begin and end what waits for them; the app can seek, pause and
-  begin or end an element. `animateMotion` (a path, an `<mpath>` or points, `keyPoints`,
-  `rotate`); animations begun and ended by others (`a.end+1s`, `a.begin`, `a.repeat(2)`), several
-  begins, `restart`, `min` and `max`, here and in `svg::encode_animation`. A `set` with `dur`
-  ends after it (it held for ever).
+  its shapes and `accessKey(x)` begin and end what waits for them; the app can seek, pause,
+  begin or end an element and send events. `animateMotion` (a path, an `<mpath>` or points,
+  `keyPoints`, `rotate`); animations begun and ended by others (`a.end+1s`, `a.begin`,
+  `a.repeat(2)`), several begins, `restart`, `min` and `max`, here and in
+  `svg::encode_animation`. A `set` with `dur` ends after it (it held for ever).
 - **SVG filters:** `FillPaint` and `StrokePaint` inputs, and `kernelUnitLength` on lighting and
   convolution, as librsvg draws them.
 

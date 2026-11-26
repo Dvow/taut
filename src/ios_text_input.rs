@@ -840,7 +840,7 @@ impl LaidOut {
         let line = *self.lines.get(row)?;
         let Ui { tree, text, scale, edit, .. } = ui;
         let paragraph = crate::text::Paragraph::of(&tree.strings[self.start..self.end], line.start - self.start..line.end - self.start);
-        let leftward = paragraph.leftward;
+        let leftward = paragraph.right_to_left;
         let words = &tree.strings[line.start..line.end];
         let carets = crate::text::marks(text.as_mut(), words, line.start, line.width, self.font, *scale, paragraph, selection, cursor, edit.after, pieces);
         let shift = ((self.inside.w - line.width).max(0.0) * if leftward { 1.0 - self.side } else { self.side }).round();

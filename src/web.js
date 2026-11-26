@@ -1184,7 +1184,7 @@ export class Page {
 
     // Lists the person's fonts, where the browser can (asking the person the first time): a line
     // a font, its family and style. Asked `again` after a refusal, only from a press or a key:
-    // 0 where it wasn't asked for that reason, else 1. (Chrome and Edge refuse with no fonts.)
+    // 0 where it wasn't asked for that reason, else 1.
     askFonts(again) {
         if (typeof queryLocalFonts !== "function") {
             return 1;
@@ -1192,10 +1192,9 @@ export class Page {
         if (again && !navigator.userActivation?.isActive) {
             return 0;
         }
-        const refused = () => this.heard(HEARD.fontsRefused);
         queryLocalFonts().then(
-            (fonts) => (fonts.length ? this.heard(HEARD.fontsListed, 0, 0, 0, fonts.map((font) => `${font.family}\t${font.style}`).join("\n")) : refused()),
-            refused,
+            (fonts) => this.heard(HEARD.fontsListed, 0, 0, 0, fonts.map((font) => `${font.family}\t${font.style}`).join("\n")),
+            () => this.heard(HEARD.fontsRefused),
         );
         return 1;
     }

@@ -95,10 +95,6 @@ struct Libraries {
     gobject: GObject,
     glib: GLib,
 }
-// SAFETY: the libraries' functions may be called from any thread.
-unsafe impl Send for Libraries {}
-// SAFETY: as above; nothing in it changes after it is made.
-unsafe impl Sync for Libraries {}
 
 fn libraries() -> Result<&'static Libraries, VideoError> {
     static OPENED: OnceLock<Option<Libraries>> = OnceLock::new();

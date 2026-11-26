@@ -6,12 +6,14 @@
 //!   screen reader, rotation. `system`: the system's file dialog, a file opened, drops, a drag
 //!   out, files on the clipboard. `notices`: a notification and a click on it. `windows`: a
 //!   second window in a scene of its own (iPad), pressed, closed by the person and by the app.
-//!   It writes what it saw into its temporary folder.
+//!   `dialog`: a dialog window on an iPhone, which shows none, keeping nothing from input. It
+//!   writes what it saw into its temporary folder.
 //! - On a Mac (`mac`), with `TAUT_IOS_SIMULATOR=1`, it builds that app and the gallery example
 //!   as bundles (`examples/ios_bundle.rs`), boots the newest iPhone simulator, runs them, reads
 //!   their notes, takes the screen (`simctl io screenshot`) and holds it against the same
 //!   interface drawn on the Mac; switches the simulator to dark mode, and sends the app to the
-//!   background and back; then drives `windows` on the newest iPad simulator. Without that variable it does nothing (a simulator takes minutes).
+//!   background and back; drives `dialog` there, then `windows` on the newest iPad simulator.
+//!   Without that variable it does nothing (a simulator takes minutes).
 //!
 //! `TAUT_SHOTS` names a folder for the pictures: the screen, and the Mac's drawing.
 //! Run without libtest's harness (`harness = false`): UIKit runs only on the main thread.
@@ -447,6 +449,7 @@ mod phone {
             "system" => drive(window, System::new()),
             "notices" => drive(window, Notices::default()),
             "windows" => drive(window, Windows::default()),
+            "dialog" => drive(window, PhoneDialog::default()),
             _ => {
                 let mut app = super::gallery::app();
                 let mut shown = Shown::default();
@@ -1392,25 +1395,64 @@ mod phone {
         }
 
         fn check(&mut self, name: &str, _: &Ui) -> bool {
-            let scenes = || items(unsafe { send0(send0::<Obj>(send0::<Obj>(class(c"UIApplication"), c"sharedApplication"), c"connectedScenes"), c"allObjects") }).len();
             match name {
-                "a second window opens in a scene of its own" | "it opens again" => scenes() == 2 && is_of(scene_view("Second"), c"TautView") && scene_view("Second") != view(),
+                "a second window opens in a scene of its own" | "it opens again" => scenes().len() == 2 && is_of(scene_view("Second"), c"TautView") && scene_view("Second") != view(),
                 "a touch on it reaches its interface" => self.presses == 1,
                 "it shows its own page" => unsafe {
                     let page: Obj = send0(send0::<Obj>(send0::<Obj>(scene_view("Second"), c"layer"), c"sublayers"), c"firstObject");
                     !send0::<Obj>(page, c"contents").is_null()
                 },
-                "the person closing its scene is a close request" => self.close_requests == 1 && !self.second.open && scenes() == 1,
-                "the app closes it" => scenes() == 1,
+                "the person closing its scene is a close request" => self.close_requests == 1 && !self.second.open && scenes().len() == 1,
+                "the app closes it" => scenes().len() == 1,
                 _ => true,
             }
         }
     }
 
+    /// A dialog window on an iPhone, which shows one scene: it never shows, and keeps nothing
+    /// from input.
+    #[derive(Debug, Default)]
+    struct PhoneDialog {
+        dialog: taut::SecondWindow,
+        presses: u32,
+    }
+
+    impl Page for PhoneDialog {
+        const NOTE: &'static str = "dialog.txt";
+        const STEPS: &'static [&'static str] = &["a dialog is asked for", "a touch on the first window still reaches it", ""];
+
+        fn describe(&mut self, ui: &mut Ui) {
+            self.presses += ui.button("Press").clicked as u32;
+            if ui.window(&mut self.dialog, "Dialog") {
+                ui.label("A question");
+                ui.close();
+            }
+        }
+
+        fn act(&mut self, script: &mut Script, name: &str, ui: &mut Ui) {
+            match name {
+                "a dialog is asked for" => self.dialog = taut::SecondWindow { kind: taut::WindowKind::Dialog, open: true, ..Default::default() },
+                "a touch on the first window still reaches it" => script.tap(middle_of(ui, Role::Button, "Press"), 0),
+                _ => {}
+            }
+        }
+
+        fn check(&mut self, name: &str, ui: &Ui) -> bool {
+            match name {
+                "a dialog is asked for" => ui.windows().count() == 1 && scenes().len() == 1,
+                "a touch on the first window still reaches it" => self.presses == 1,
+                _ => true,
+            }
+        }
+    }
+
+    /// The app's connected scenes.
+    fn scenes() -> Vec<Obj> {
+        items(unsafe { send0(send0::<Obj>(send0::<Obj>(class(c"UIApplication"), c"sharedApplication"), c"connectedScenes"), c"allObjects") })
+    }
     /// A connected scene, by its title.
     fn scene_named(title: &str) -> Obj {
-        let scenes = items(unsafe { send0(send0::<Obj>(send0::<Obj>(class(c"UIApplication"), c"sharedApplication"), c"connectedScenes"), c"allObjects") });
-        scenes.into_iter().find(|scene| text_of(unsafe { send0(*scene, c"title") }) == title).unwrap_or(std::ptr::null_mut())
+        scenes().into_iter().find(|scene| text_of(unsafe { send0(*scene, c"title") }) == title).unwrap_or(std::ptr::null_mut())
     }
     /// The library's view in a scene, by its title (null where there is none).
     fn scene_view(title: &str) -> Obj {
@@ -1765,6 +1807,7 @@ mod mac {
         // dims the screen while it asks).
         failed.extend(gpu_checks(&device)?);
         failed.extend(driven(&device, "notices")?);
+        failed.extend(driven(&device, "dialog")?);
         failed.extend(ipad_windows(&check)?);
         for log in std::fs::read_dir(built()).map_err(|error| error.to_string())?.flatten() {
             let path = log.path();

@@ -38,11 +38,17 @@ pub(crate) fn listed(family: Option<&str>) -> Vec<(String, Style)> {
     })
 }
 
-/// The browser's list: a line a font, its family and style name apart by a tab. Or it refused:
-/// it is asked again at the next call (from a press or a key).
+/// The browser's list: a line a font, its family and style name apart by a tab. Or it refused
+/// (Chrome and Edge list none until the person allows it): it is asked again at the next call
+/// (from a press or a key).
 fn heard(_: &mut Ui, heard: Heard) -> (Then, u32) {
-    REFUSED.set(heard.what == REFUSED_TO_LIST);
-    if heard.what != LISTED {
+    let refused = match heard.what {
+        LISTED => heard.bytes.is_empty(),
+        REFUSED_TO_LIST => true,
+        _ => return (Then::Wait, 0),
+    };
+    REFUSED.set(refused);
+    if refused {
         LOCAL_FONTS.set(None);
         return (Then::Wait, 0);
     }

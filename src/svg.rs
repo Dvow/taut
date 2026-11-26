@@ -969,21 +969,23 @@ struct Picture {
 }
 
 /// What a drawing holds besides shapes, if any: its filters and images, the drawings waiting to
-/// be read once the file's own is (see `Reading::read_later`), and where in a window it was
-/// last shown, where noted (see `ParsedDrawing::show_noted`).
+/// be read once the file's own is (see `Reading::read_later`), where in a window it was last
+/// shown, where noted (see `ParsedDrawing::show_noted`), and what lies where in it, where read
+/// with hits (see `ParsedDrawing::read_with_hits`).
 #[derive(Default)]
 struct More {
     filters: Vec<Filter>,
     pictures: Vec<Picture>,
     later: Vec<Later>,
     shown: Option<Rect>,
+    hits: Hits,
 }
 
 /// What lies where in a drawing, to find the element under the pointer: each shape kept for an
 /// element, in drawing order, and the `<use>` elements that brought them (each shape's range of
 /// them, innermost first).
 #[derive(Default)]
-pub(crate) struct Hits {
+struct Hits {
     shapes: Vec<Hit>,
     uses: Vec<u32>,
 }
@@ -1116,10 +1118,9 @@ struct Reading<'a> {
     /// waiting once the walk is done, where any wait.
     depth: u8,
     later: Option<fn(&mut Reading<'a>)>,
-    /// What notes the shapes kept for each element, where asked (see `ParsedDrawing::read_with_hits`),
-    /// and what it noted.
+    /// What notes the shapes kept for each element, where asked (see
+    /// `ParsedDrawing::read_with_hits`).
     noting: Option<Noting<'a>>,
-    hits: Hits,
 }
 
 /// A text piece (the text element itself, a `<tspan>` or a `<textPath>`) while its letters are
@@ -1313,8 +1314,8 @@ impl ParsedDrawing {
     }
 
     /// Reads a file, noting what lies where in it (see `element_at`).
-    pub(crate) fn read_with_hits(text: &str) -> Option<(ParsedDrawing, Hits)> {
-        Reading::noted(text).map(|reading| (reading.parsed, reading.hits))
+    pub(crate) fn read_with_hits(text: &str) -> Option<ParsedDrawing> {
+        Reading::noted(text).map(|reading| reading.parsed)
     }
 
     /// Shows the drawing as `show` does, noting where (see `element_at`).
@@ -1337,8 +1338,9 @@ impl ParsedDrawing {
     /// noted showing), topmost first, of those `takes` says take the pointer (given an element
     /// and the `<use>` elements that brought it): it, and those `<use>` elements. A shape takes
     /// the pointer where its fill or stroke would paint, clips and masks aside.
-    pub(crate) fn element_at<'h>(&self, hits: &'h Hits, at: Point, takes: impl Fn(usize, &[u32]) -> bool) -> Option<(usize, &'h [u32])> {
-        let within = self.noted()?;
+    pub(crate) fn element_at(&self, at: Point, takes: impl Fn(usize, &[u32]) -> bool) -> Option<(usize, &[u32])> {
+        let More { shown, hits, .. } = self.held()?;
+        let within = (*shown)?;
         let back = undone(&both(&[1.0, 0.0, 0.0, 1.0, within.x, within.y], &self.fit([within.w, within.h])))?;
         let point = through(&back, at);
         let uses = |hit: &Hit| &hits.uses[hit.uses[0] as usize..hit.uses[1] as usize];
@@ -1918,7 +1920,6 @@ impl<'a> Reading<'a> {
             depth: 0,
             later: None,
             noting: None,
-            hits: Hits::default(),
         }
     }
 
@@ -2099,19 +2100,21 @@ impl<'a> Reading<'a> {
         if walks.iter().any(|walk| walk.keep.is_some() || walk.style.clipping || matches!(named(walk), Some("pattern" | "marker"))) {
             return;
         }
-        let from = self.hits.uses.len() as u32;
+        let mut hits = std::mem::take(&mut self.parsed.more().hits);
+        let from = hits.uses.len() as u32;
         for (n, walk) in walks.iter().enumerate().skip(1).rev() {
             let Some(brought) = walk.used else { continue };
-            self.hits.uses.extend(self.user(brought, walks[n - 1].at).map(|user| user as u32));
+            hits.uses.extend(self.user(brought, walks[n - 1].at).map(|user| user as u32));
         }
-        let uses = [from, self.hits.uses.len() as u32];
+        let uses = [from, hits.uses.len() as u32];
         for item in &self.parsed.items[first.min(self.parsed.items.len())..] {
             let Item::Shape(shape) = item else { continue };
             let stroke = if shape.line == Ink::None { 0.0 } else { self.parsed.pens[shape.pen as usize].width };
             let (path, table, filled, even_odd) = (shape.path, shape.table, shape.fill != Ink::None, shape.even_odd);
             let reach = reach_of(&self.parsed.paths[path as usize], &table, stroke);
-            self.hits.shapes.push(Hit { element: at as u32, uses, path, table, filled, even_odd, stroke, reach });
+            hits.shapes.push(Hit { element: at as u32, uses, path, table, filled, even_odd, stroke, reach });
         }
+        self.parsed.more().hits = hits;
     }
 
     /// The `<use>` element that brought `brought`, the walk around it being past it at `after`:

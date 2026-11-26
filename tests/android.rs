@@ -238,7 +238,7 @@ mod phone {
     }
 
     impl Reader {
-        /// The library's view (a \`taut.Host\` in one of the app's windows), and its provider.
+        /// The library's view (a `taut.Host` in one of the app's windows), and its provider.
         fn find() -> Option<Reader> {
             let jni = Jni::get()?;
             let roots = jni.call_static(c"android/view/inspector/WindowInspector", c"getGlobalWindowViews", c"()Ljava/util/List;", &[]);
@@ -277,7 +277,7 @@ mod phone {
             }
             bundle
         }
-        /// The place on the screen of each of a node's first \`count\` letters (left, top, right,
+        /// The place on the screen of each of a node's first `count` letters (left, top, right,
         /// bottom), as a reader asks for them; none for one that does not show.
         fn letter_places(&self, id: i32, count: i32) -> Vec<Option<[f32; 4]>> {
             let (jni, node, key) = (self.jni, self.node(id), self.jni.string(LETTER_PLACES));
@@ -559,7 +559,7 @@ mod host {
         text
     }
 
-    /// One node of a \`uiautomator dump\`: class, text, focused, scrollable, bounds.
+    /// One node of a `uiautomator dump`: class, text, focused, scrollable, bounds.
     #[derive(Clone, Debug, Default)]
     struct Node {
         class: String,

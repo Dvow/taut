@@ -1045,7 +1045,7 @@ fn lay_letters(tree: &Tree, text: &mut dyn TextSystem, scale: f32, (at, r): (u32
         letters.places.extend(std::iter::repeat_n(after, tree.strings[done..line.start.max(done)].chars().count()));
         letters.lines.push(letters.places.len() as u32);
         let paragraph = crate::text::Paragraph::of(&tree.strings[start..end], line.start - start..line.end - start);
-        let leftward = paragraph.leftward;
+        let leftward = paragraph.right_to_left;
         let x = inside.x + ((inside.w - line.width).max(0.0) * if leftward { 1.0 - before } else { before }).round();
         text.places(&tree.strings[line.start..line.end], font, scale, paragraph, &mut edges);
         letters.places.extend(edges.iter().map(|[left, right]| rect(x + left, y, right - left, high)));

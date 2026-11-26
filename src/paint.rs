@@ -524,7 +524,7 @@ impl Painter<'_> {
             // starts at the right.
             let (own, first) = (&tree.strings[start as usize..end as usize], start as usize);
             let paragraph = Paragraph::of(own, line.start - first..line.end - first);
-            let leftward = paragraph.leftward;
+            let leftward = paragraph.right_to_left;
             let x = inside.x + ((inside.w - line.width).max(0.0) * if leftward { 1.0 - before } else { before }).round();
             // The line's selected part (several pieces where it runs both ways), and where the
             // cursor shows on it.

@@ -615,10 +615,10 @@ impl Fonts {
     /// The font is open and sized.
     unsafe fn load_glyph(&self, font: *mut FaceRec, glyph: u16) -> bool {
         type Load = unsafe extern "C" fn(*mut FaceRec, c_uint, c_int) -> c_int;
-        let Some(load) = self.ft.library.symbol("FT_Load_Glyph\0") else { return true };
+        let Some(load) = self.ft.library.symbol(c"FT_Load_Glyph") else { return true };
         // SAFETY: the function is FreeType's, declared as it documents it; the font is as the
         // caller promises.
-        unsafe { std::mem::transmute::<*mut c_void, Load>(load)(font, glyph as c_uint, 4 | 8) != 0 }
+        unsafe { std::mem::transmute::<*const c_void, Load>(load)(font, glyph as c_uint, 4 | 8) != 0 }
     }
 
     /// The open font drawing a character of `face` (font `at`, or its fallback), if its glyph

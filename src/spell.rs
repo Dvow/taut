@@ -777,19 +777,19 @@ impl View {
         Paragraph::of(&strings[self.start..self.end], line.start - self.start..line.end - self.start)
     }
 
-    /// Line `line`'s horizontal start: as `Painter::words` has it.
-    fn line_start(&self, ui: &Ui, line: &Line) -> f32 {
-        let leftward = self.paragraph(&ui.tree.strings, line).leftward;
-        self.inside.x + ((self.inside.w - line.width).max(0.0) * if leftward { 1.0 - self.side } else { self.side }).round()
+    /// Line `line`'s horizontal start, in a paragraph running right to left or not: as
+    /// `Painter::words` has it.
+    fn line_start(&self, line: &Line, right_to_left: bool) -> f32 {
+        self.inside.x + ((self.inside.w - line.width).max(0.0) * if right_to_left { 1.0 - self.side } else { self.side }).round()
     }
 
     /// The horizontally visible byte range of a very long line, rounded to whole characters.
     fn across(&self, ui: &mut Ui, line: &Line) -> Option<Range<usize>> {
-        let x = self.line_start(ui, line);
-        let text = &ui.tree.strings[line.start..line.end];
-        if !self.paragraph(&ui.tree.strings, line).plain(text) {
+        let (text, paragraph) = (&ui.tree.strings[line.start..line.end], self.paragraph(&ui.tree.strings, line));
+        if !paragraph.plain(text) {
             return None;
         }
+        let x = self.line_start(line, paragraph.right_to_left);
         let mut stops = Vec::new();
         ui.text.measure(text, self.font, ui.scale, Some(&mut stops));
         let (from, to) = (self.area.x - x, self.area.right() - x);
@@ -803,15 +803,14 @@ impl View {
         if wrong.is_empty() {
             return;
         }
-        let x = self.line_start(ui, line);
-        let y = self.top + row as f32 * self.line_height;
+        let paragraph = self.paragraph(&ui.tree.strings, line);
+        let (x, y) = (self.line_start(line, paragraph.right_to_left), self.top + row as f32 * self.line_height);
         let metrics = ui.text.metrics(self.font, ui.scale);
         // (Just under the baseline, never below the line's own height.)
         let middle = (y - self.lift + metrics.ascent + RISE + 1.0).min(y + self.line_height - RISE - 0.5);
         // (A line shown as typed is measured once, each character after the previous. Other
         // text a word at a time, as displayed.)
         let text = &ui.tree.strings[line.start..line.end];
-        let paragraph = self.paragraph(&ui.tree.strings, line);
         let (plain, mut stops, mut pieces) = (paragraph.plain(text), Vec::new(), Vec::new());
         if plain {
             ui.text.measure(text, self.font, ui.scale, Some(&mut stops));
@@ -1107,23 +1106,14 @@ fn own_language() -> String {
     if matches!(name, "" | "C" | "POSIX") { "en_US".to_owned() } else { name.to_owned() }
 }
 
-/// Enchant as it stays loaded (see `enchant`).
-#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
-struct Loaded(Enchant);
-// SAFETY: it is a library's function table, which Enchant allows from any thread: each checker
-// has its own broker, used only by the checking thread.
-#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
-unsafe impl Send for Loaded {}
-#[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
-unsafe impl Sync for Loaded {}
-
 /// Enchant, loaded on the first checker request and never unloaded: loading registers GObject
 /// types, and GLib, which stays, cannot register them twice (the program would abort). None
-/// where missing.
+/// where missing. (Enchant is called from any thread: each checker has its own broker, used
+/// only by the checking thread.)
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 fn enchant() -> Option<&'static Enchant> {
-    static LOADED: std::sync::OnceLock<Option<Loaded>> = std::sync::OnceLock::new();
-    LOADED.get_or_init(|| Enchant::open().map(Loaded)).as_ref().map(|loaded| &loaded.0)
+    static LOADED: std::sync::OnceLock<Option<Enchant>> = std::sync::OnceLock::new();
+    LOADED.get_or_init(Enchant::open).as_ref()
 }
 
 /// Enchant's checker for one language: its broker, and the dictionary it found.
@@ -1598,16 +1588,14 @@ pub(crate) mod tests {
     fn enchant_brought() {
         use std::os::unix::ffi::OsStrExt;
         let Some(prefix) = std::env::var_os("TAUT_ENCHANT_PREFIX") else { return };
+        library!(Prefix, ["libenchant-2.so.2"], {
+            fn enchant_set_prefix_dir(*const c_char);
+        });
         let prefix = std::ffi::CString::new(prefix.as_bytes()).unwrap();
-        // SAFETY: the library is opened (never closed), and its prefix function called as
-        // declared, with a NUL-terminated name.
-        unsafe {
-            let library = crate::dynamic_library::dlopen(c"libenchant-2.so.2".as_ptr(), crate::dynamic_library::NOW);
-            let set = (!library.is_null()).then(|| crate::dynamic_library::symbol(library, "enchant_set_prefix_dir\0")).flatten();
-            if let Some(set) = set {
-                std::mem::transmute::<*mut c_void, unsafe extern "C" fn(*const c_char)>(set)(prefix.as_ptr());
-            }
-        }
+        let Some(enchant) = Prefix::open() else { return };
+        // SAFETY: as declared, with a NUL-terminated name.
+        unsafe { (enchant.enchant_set_prefix_dir)(prefix.as_ptr()) };
+        std::mem::forget(enchant);
     }
 
     #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]

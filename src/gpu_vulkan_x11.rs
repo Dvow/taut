@@ -113,10 +113,13 @@ impl Xlib {
         let connection = Connection::open()?;
         // SAFETY: Xlib's documented calls; the name is the open display's own.
         let x = unsafe { (connection.XOpenDisplay)((connection.XDisplayString)(windows)) };
-        #[cfg(test)]
-        let xlib = Xlib { calls, connection, x, chosen: (false, false) };
-        #[cfg(not(test))]
-        let xlib = Xlib { calls, connection, x };
+        let xlib = Xlib {
+            calls,
+            connection,
+            x,
+            #[cfg(test)]
+            chosen: (false, false),
+        };
         (!x.is_null()).then_some(xlib)
     }
 

@@ -7,62 +7,15 @@
 //! - A context made robust where EGL can (`EGL_EXT_create_context_robustness`) says when the
 //!   device was reset: then it is lost.
 //! - Swaps name what changed where the display can (`EGL_KHR_swap_buffers_with_damage`).
-//! - libEGL and libGLESv3 are linked on Android (every Android has them); on Linux, libEGL and
-//!   libGLESv2 are opened by name when a window first asks for the GPU, so a program builds and
-//!   starts without them. Once opened they stay: drivers are not safe to unload.
+//! - libEGL and libGLESv2 (Android's libGLESv3) are opened by name when a window first asks for
+//!   the GPU (`libraries`), so a program builds and starts without them. Once opened they stay:
+//!   drivers are not safe to unload.
+use crate::dynamic_library::library;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::ptr::{null, null_mut};
+use std::sync::OnceLock;
 
-/// Declares a table of a system library's functions: linked to it on Android (`$link`), opened
-/// at run time by its file's name elsewhere (the first of `$files` there is) and never closed.
-/// The table is laid out as the list of their addresses: one loop finds them.
-macro_rules! system_library {
-    ($set:ident, $link:literal, [$($file:literal),+], { $(fn $name:ident($($argument:ty),*) $(-> $result:ty)?;)* }) => {
-        /// The library's functions.
-        #[allow(non_snake_case)] // (The library's own names.)
-        #[repr(C)]
-        pub(crate) struct $set {
-            $(pub(crate) $name: unsafe extern "C" fn($($argument),*) $(-> $result)?,)*
-        }
-        #[cfg(target_os = "android")]
-        #[link(name = $link)]
-        unsafe extern "C" {
-            $(fn $name($(_: $argument),*) $(-> $result)?;)*
-        }
-        impl $set {
-            /// The functions, linked.
-            #[cfg(target_os = "android")]
-            pub(crate) fn open() -> Option<$set> {
-                Some($set { $($name,)* })
-            }
-
-            /// The functions, from the library opened; nothing where it or one of them is
-            /// missing.
-            #[cfg(not(target_os = "android"))]
-            pub(crate) fn open() -> Option<$set> {
-                const COUNT: usize = [$(stringify!($name),)*].len();
-                let mut found = [std::ptr::null_mut::<c_void>(); COUNT];
-                $crate::gpu_egl::opened(&[$(concat!($file, "\0")),+], &[$(concat!(stringify!($name), "\0"),)*], &mut found)?;
-                // SAFETY: the table is `repr(C)`, a function pointer for each name in order, each
-                // declared as its header declares it; every address found is one (not null).
-                Some(unsafe { std::mem::transmute::<[*mut c_void; COUNT], $set>(found) })
-            }
-        }
-    };
-}
-#[cfg(not(target_os = "android"))]
-pub(crate) use system_library;
-
-/// Opens the first of `files` there is (each name ending in a zero), for good, and finds `names`
-/// in it (each ending in a zero) into `found`. Nothing where it or one of them is missing.
-#[cfg(not(target_os = "android"))]
-pub(crate) fn opened(files: &[&str], names: &[&str], found: &mut [*mut c_void]) -> Option<()> {
-    // SAFETY: each name ends in a zero; the library is never closed.
-    let library = files.iter().map(|name| unsafe { crate::dynamic_library::dlopen(name.as_ptr().cast(), crate::dynamic_library::NOW) }).find(|library| !library.is_null())?;
-    names.iter().zip(found).try_for_each(|(name, slot)| crate::dynamic_library::symbol(library, name).map(|address| *slot = address))
-}
-
-system_library!(Egl, "EGL", ["libEGL.so.1", "libEGL.so"], {
+library!(pub(crate) Egl, ["libEGL.so.1", "libEGL.so"], {
     fn eglGetProcAddress(*const c_char) -> *mut c_void;
     fn eglInitialize(Handle, *mut c_int, *mut c_int) -> c_uint;
     fn eglTerminate(Handle) -> c_uint;
@@ -79,7 +32,7 @@ system_library!(Egl, "EGL", ["libEGL.so.1", "libEGL.so"], {
     fn eglReleaseThread() -> c_uint;
 });
 
-system_library!(Gles, "GLESv3", ["libGLESv2.so.2", "libGLESv2.so"], {
+library!(pub(crate) Gles, ["libGLESv2.so.2", "libGLESv3.so", "libGLESv2.so"], {
     fn glGetError() -> c_uint;
     fn glGetString(c_uint) -> *const c_char;
     fn glGetIntegerv(c_uint, *mut c_int);
@@ -106,6 +59,13 @@ system_library!(Gles, "GLESv3", ["libGLESv2.so.2", "libGLESv2.so"], {
     fn glViewport(c_int, c_int, c_int, c_int);
     fn glDrawArrays(c_uint, c_int, c_int);
 });
+
+/// EGL and OpenGL ES 3, opened the first time a window asks for the GPU and never closed:
+/// drivers are not safe to unload. Nothing where either is missing.
+pub(crate) fn libraries() -> Option<&'static (Egl, Gles)> {
+    static OPENED: OnceLock<Option<(Egl, Gles)>> = OnceLock::new();
+    OPENED.get_or_init(|| Some((Egl::open()?, Gles::open()?))).as_ref()
+}
 
 /// EGL's handles: display, config, context, surface.
 pub(crate) type Handle = *mut c_void;
@@ -166,8 +126,8 @@ type ResetStatus = unsafe extern "C" fn() -> c_uint;
 /// The GPU windows are shown through: EGL's display, one OpenGL ES 3 context, the program
 /// drawing a window's texture, and what the system keeps (`system`).
 pub(crate) struct Gpu<S> {
-    pub(crate) egl: Egl,
-    pub(crate) gl: Gles,
+    pub(crate) egl: &'static Egl,
+    pub(crate) gl: &'static Gles,
     pub(crate) display: Handle,
     pub(crate) config: Handle,
     context: Handle,
@@ -210,10 +170,11 @@ pub(crate) struct Shows<W> {
 }
 
 impl<S> Gpu<S> {
-    /// EGL's `display` (of `egl` and `gl`) initialized, with a config of `wanted` (a list ending
-    /// in `NONE`) whose native visual is `visual`, and an OpenGL ES 3.0 context. Nothing where any
-    /// of it is missing.
-    pub(crate) fn make(egl: Egl, gl: Gles, display: Handle, (wanted, visual): (&[c_int], usize), system: S) -> Option<Gpu<S>> {
+    /// EGL's `display` initialized, with a config of `wanted` (a list ending in `NONE`) whose
+    /// native visual is `visual`, and an OpenGL ES 3.0 context. Nothing where any of it is
+    /// missing.
+    pub(crate) fn make(display: Handle, (wanted, visual): (&[c_int], usize), system: S) -> Option<Gpu<S>> {
+        let (egl, gl) = libraries()?;
         let mut gpu = Gpu {
             egl,
             gl,

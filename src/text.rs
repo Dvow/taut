@@ -117,8 +117,8 @@ impl Metrics {
 /// punctuation and spaces at a line's ends take the direction they would unwrapped.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Paragraph<'a> {
-    /// Whether it runs right to left.
-    pub leftward: bool,
+    /// Whether it runs right to left (its base direction).
+    pub right_to_left: bool,
     /// Its text before the line.
     pub before: &'a str,
     /// Its text after the line.
@@ -126,9 +126,9 @@ pub struct Paragraph<'a> {
 }
 
 impl<'a> Paragraph<'a> {
-    /// A line that is a whole paragraph, running right to left (`leftward`) or left to right.
-    pub const fn whole(leftward: bool) -> Self {
-        Paragraph { leftward, before: "", after: "" }
+    /// A line that is a whole paragraph, running right to left or left to right.
+    pub const fn whole(right_to_left: bool) -> Self {
+        Paragraph { right_to_left, before: "", after: "" }
     }
 
     /// The paragraph of bytes `line` of `text`: from the line break before it to the one after
@@ -140,15 +140,15 @@ impl<'a> Paragraph<'a> {
         }
         let start = text[..line.start].rfind('\n').map_or(0, |at| at + 1);
         let end = text[line.end..].find('\n').map_or(text.len(), |at| line.end + at);
-        Paragraph { leftward: crate::bidi::leftward(&text[start..]), before: &text[start..line.start], after: &text[line.end..end] }
+        Paragraph { right_to_left: crate::bidi::leftward(&text[start..]), before: &text[start..line.start], after: &text[line.end..end] }
     }
 
     /// Whether a line of it shows as typed: the paragraph runs left to right, and no character
-    /// in it is drawn otherwise (see `bidi::plain`). (Without `right-to-left`, every paragraph
-    /// runs left to right.)
+    /// of the line or before it is drawn otherwise (see `bidi::plain`). What follows can't
+    /// reorder it then. (Without `right-to-left`, every paragraph runs left to right.)
     pub(crate) fn plain(&self, line: &str) -> bool {
-        let ahead = !cfg!(feature = "right-to-left") || !self.leftward;
-        ahead && crate::bidi::plain(line) && crate::bidi::plain(self.before) && crate::bidi::plain(self.after)
+        let ahead = !cfg!(feature = "right-to-left") || !self.right_to_left;
+        ahead && crate::bidi::plain(line) && crate::bidi::plain(self.before)
     }
 }
 
@@ -188,12 +188,12 @@ pub trait TextSystem {
         let _ = (face, letter);
         None
     }
-    /// Draws glyphs by id from the system font that draws `letter.0` in `font`'s face, at
-    /// `font.size` (not fitted to the face's line): each glyph at its place, in pixels right of
-    /// and below the pen at `pen`, on the baseline. Text shaped for its language's forms in the
-    /// system's fonts is drawn so. `letter.1` is its glyph in the font shaped with. Whether it
-    /// drew them: not where this system draws no glyphs by id, nor where its font gives the
-    /// letter another glyph (another font). (By default: no.)
+    /// Draws glyphs by id, at `font.size` (not fitted to the face's line), in the system font
+    /// that draws `letter.0` in `font`'s face: each at its place in pixels, right of and below
+    /// the pen `pen` on the baseline. Lines shaped for their language's forms in the system's
+    /// fonts are drawn so. `letter.1` is the letter's glyph in the font they were shaped in.
+    /// `false`, drawing nothing, where this system's font gives the letter another glyph (it is
+    /// another font) or the system draws no glyphs by id. (By default: `false`.)
     fn draw_glyphs(&mut self, canvas: &mut Canvas, font: Font, letter: (char, u16), glyphs: &[(u16, [f32; 2])], pen: [i32; 2], color: Color) -> bool {
         let _ = (canvas, font, letter, glyphs, pen, color);
         false
@@ -664,7 +664,7 @@ pub(crate) fn marks(
     marked.clear();
     let end = start + line.len();
     let selected = from < to && from <= end && to > start;
-    let leftward = paragraph.leftward;
+    let leftward = paragraph.right_to_left;
     // A line shown as typed: each character after the previous, as measured.
     if paragraph.plain(line) {
         let mut width = |to: usize| text.measure(&line[..to.saturating_sub(start).min(line.len())], font, scale, None);

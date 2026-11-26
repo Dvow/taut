@@ -35,7 +35,7 @@ use crate::color::Color;
 use crate::el::El;
 use crate::geom::{Point, pt};
 use crate::path::{Path, Step};
-use crate::svg::{Drawing, File, Hits, ParsedDrawing, Track, color, number, numbers};
+use crate::svg::{Drawing, File, ParsedDrawing, Track, color, number, numbers};
 use crate::ui::{Response, Ui};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -101,11 +101,13 @@ const LONGEST: f32 = 60.0;
 /// intervals of up to `LONGEST` that comes again and again.
 const AHEAD: f32 = 3.0 * LONGEST;
 
-/// How many moments (begins, ends, repeats told) a schedule may take per minute worked out: so
-/// many, and so many more per animation. Past them it stops: a chain of animations beginning
-/// each other at no distance would never end.
+/// How much work a schedule may do per minute worked out: so many moments taken (begins, ends,
+/// repeats told) and told to the animations waiting on them, and so many more per animation.
+/// Past them it stops: a chain of animations beginning each other at no distance would never
+/// end, and one moment told to every animation of the file, again and again, would cost the
+/// square of its length.
 const MOMENTS: usize = 1024;
-const MOMENTS_EACH: usize = 64;
+const MOMENTS_EACH: usize = 256;
 
 /// How often a drawing in a window is drawn anew while something in it moves.
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -153,13 +155,15 @@ enum Condition<'a> {
 }
 
 /// When an animation runs: what begins and ends it, each cycle `simple` seconds long (none: no
-/// end, and no change), for `active` seconds in all from each begin (maybe infinite), and
+/// end, and no change), repeated for `active` seconds from each begin (maybe infinite), each
+/// interval's length bound by `min` and `max` (0 and infinite where `min` exceeds `max`), and
 /// whether it may begin again.
 struct Timing<'a> {
     begins: Vec<Condition<'a>>,
     ends: Vec<Condition<'a>>,
     simple: Option<f32>,
     active: f32,
+    bounds: [f32; 2],
     restart: Restart,
 }
 
@@ -288,21 +292,20 @@ impl<'a> Timeline<'a> {
 
     /// When each animation runs up to `until` seconds, given what happened in a window: each
     /// moment (a begin, an end, a repeat told) is taken in time order, telling the animations
-    /// waiting on it, at most `MOMENTS` and `MOMENTS_EACH` per animation per minute.
+    /// waiting on it, as much as `MOMENTS` and `MOMENTS_EACH` allow.
     pub(crate) fn schedule(&self, fired: &[Fired], until: f32) -> Schedule {
         let mut scheduling = Scheduling::new(self, fired);
         let minutes = (until / 60.0).ceil().clamp(1.0, 1e6) as usize;
         let most = (MOMENTS + MOMENTS_EACH * self.animations.len()).saturating_mul(minutes);
-        let (mut taken, mut unfinished) = (0, false);
+        let mut unfinished = false;
         while let Some(due) = scheduling.due.pop() {
             if due.version != scheduling.clocks[due.animation].version {
                 continue;
             }
-            if due.time > until || taken >= most {
+            if due.time > until || scheduling.work >= most {
                 unfinished = due.time.is_finite();
                 break;
             }
-            taken += 1;
             scheduling.take(due);
         }
         let changing = self.animations.iter().map(|animation| animation.timing.simple.is_some() && animation.values.len() > 1).collect();
@@ -460,13 +463,14 @@ impl Ord for Due {
 
 /// A schedule being worked out (see `Timeline::schedule`): each animation's clock and
 /// intervals so far; who waits on each one's moments (the animation waiting, whether as its
-/// end, which moment, the offset); and the moments due.
+/// end, which moment, the offset); the moments due; and the work done (see `MOMENTS`).
 struct Scheduling<'t, 'a> {
     timeline: &'t Timeline<'a>,
     clocks: Vec<Clock>,
     intervals: Vec<Vec<[f32; 2]>>,
     waiting: Vec<Vec<(usize, bool, Moment, f32)>>,
     due: BinaryHeap<Due>,
+    work: usize,
 }
 
 impl<'t, 'a> Scheduling<'t, 'a> {
@@ -482,13 +486,14 @@ impl<'t, 'a> Scheduling<'t, 'a> {
             ends.sort_by(f32::total_cmp);
             clocks.push(Clock { begins, ends, running: None, done: f32::NEG_INFINITY, version: 0 });
         }
-        let mut scheduling = Scheduling { timeline, clocks, intervals: vec![Vec::new(); count], waiting: waiting(timeline), due: BinaryHeap::new() };
+        let mut scheduling = Scheduling { timeline, clocks, intervals: vec![Vec::new(); count], waiting: waiting(timeline), due: BinaryHeap::new(), work: 0 };
         (0..count).for_each(|n| scheduling.plan(n));
         scheduling
     }
 
     /// Takes a moment due.
     fn take(&mut self, due: Due) {
+        self.work += 1;
         let n = due.animation;
         match due.next {
             Next::Begin => self.begin(n, due.time),
@@ -537,18 +542,20 @@ impl<'t, 'a> Scheduling<'t, 'a> {
     }
 
     /// Where an interval of animation `n` begun at `begin` ends: at its first end time after
-    /// the begin, or when its active time is up, whichever comes first. Nothing where its end
-    /// list holds clock values only and none after the begin: it does not begin then (as SMIL
-    /// says).
+    /// the begin, or when its active time is up, whichever comes first, then held within `min`
+    /// and `max`. Nothing where its end list holds clock values only and none after the begin:
+    /// it does not begin then (as SMIL says).
     fn end_of(&self, n: usize, begin: f32) -> Option<f32> {
         let (timing, ends) = (&self.timeline.animations[n].timing, &self.clocks[n].ends);
         let first = ends.get(ends.partition_point(|end| *end <= begin)).copied();
         let timed = !timing.ends.is_empty() && timing.ends.iter().all(|end| matches!(end, Condition::Clock(_)));
-        match first {
-            Some(end) => Some(end.min(begin + timing.active)),
-            None if timed => None,
-            None => Some(begin + timing.active),
-        }
+        let end = match first {
+            Some(end) => end.min(begin + timing.active),
+            None if timed => return None,
+            None => begin + timing.active,
+        };
+        let [least, most] = timing.bounds;
+        Some(begin + (end - begin).max(least).min(most))
     }
 
     /// Begins an interval of animation `n` at `time` (its begin times up to then are used).
@@ -586,6 +593,7 @@ impl<'t, 'a> Scheduling<'t, 'a> {
         for at in 0..self.waiting[n].len() {
             let (waiting, as_end, heard, offset) = self.waiting[n][at];
             if heard == moment || (heard == Moment::Repeat(0) && matches!(moment, Moment::Repeat(_))) {
+                self.work += 1;
                 let list = if as_end { &mut self.clocks[waiting].ends } else { &mut self.clocks[waiting].begins };
                 list.insert(list.partition_point(|other| *other <= time + offset), time + offset);
                 self.plan(waiting);
@@ -652,12 +660,15 @@ fn heard(condition: &Condition, what: &Happened) -> Option<f32> {
 impl Animation<'_> {
     /// Its value at `seconds` as its intervals run it, with the begin of the interval it is
     /// from: running, or frozen at the end of the last before. Nothing where it does not apply.
+    /// (Past its repeats, in an interval `min` made longer, it is frozen or gone as after its
+    /// end, as Edge has it.)
     fn value_at(&self, intervals: &[[f32; 2]], seconds: f32) -> Option<(f32, String)> {
         let [begin, end] = *intervals.get(intervals.partition_point(|[begin, _]| *begin <= seconds).checked_sub(1)?)?;
-        if seconds >= end && !self.freeze {
+        let active = (end - begin).min(self.timing.active);
+        if seconds - begin >= active && !self.freeze {
             return None;
         }
-        Some((begin, self.at(seconds - begin, end - begin)?))
+        Some((begin, self.at(seconds - begin, active)?))
     }
 
     /// Its value `local` seconds into an interval `active` seconds long (with its accumulated
@@ -946,14 +957,14 @@ fn timing<'a>(file: &File<'a>, at: usize, target: usize) -> Timing<'a> {
         (Some(simple), None, None) => simple,
         (Some(simple), count, span) => (simple * count.unwrap_or(f32::INFINITY)).min(span.unwrap_or(f32::INFINITY)),
     };
-    let (least, most) = (attr("min").and_then(clock).unwrap_or(0.0), attr("max").and_then(clock).unwrap_or(f32::INFINITY));
-    let active = if least <= most { active.max(least).min(most) } else { active };
+    let bounds = [attr("min").and_then(clock).unwrap_or(0.0), attr("max").and_then(clock).unwrap_or(f32::INFINITY)];
+    let bounds = if bounds[0] <= bounds[1] { bounds } else { [0.0, f32::INFINITY] };
     let restart = match attr("restart") {
         Some("never") => Restart::Never,
         Some("whenNotActive") => Restart::WhenNotActive,
         _ => Restart::Always,
     };
-    Timing { begins, ends, simple, active: active.max(0.0), restart }
+    Timing { begins, ends, simple, active: active.max(0.0), bounds, restart }
 }
 
 /// A `begin` or `end` list's entries (see `condition`), those it cannot wait for left out.
@@ -1296,12 +1307,11 @@ pub struct AnimatedDrawing {
     paused: bool,
     /// The schedule last worked out, and how much had happened then.
     schedule: Option<(Schedule, usize)>,
-    /// The frame on show: its text, when it is (seconds, and how much had happened), its
-    /// drawing in the window, and what lies where in it.
+    /// The frame on show: its text, when it is (seconds, and how much had happened), and its
+    /// drawing in the window.
     shown: String,
     shown_for: Option<(f32, usize)>,
     drawing: Option<Drawing>,
-    hits: Hits,
     /// The elements under the pointer, as an event there comes to them.
     under: Vec<usize>,
 }
@@ -1329,20 +1339,19 @@ impl AnimatedDrawing {
             shown: String::new(),
             shown_for: None,
             drawing: None,
-            hits: Hits::default(),
             under: Vec::new(),
         })
     }
 
-    /// Where its clock stands: seconds since it began.
-    pub fn seconds(&self) -> f32 {
-        self.seconds
+    /// Where its clock stands: the time since it began.
+    pub fn position(&self) -> Duration {
+        Duration::try_from_secs_f32(self.seconds).unwrap_or(Duration::MAX)
     }
 
     /// Sets its clock, as `setCurrentTime` does: it shows as it is then, with what happened so
     /// far.
-    pub fn seek(&mut self, seconds: f32) {
-        self.seconds = if seconds.is_finite() { seconds.max(0.0) } else { 0.0 };
+    pub fn seek(&mut self, to: Duration) {
+        self.seconds = to.as_secs_f32();
     }
 
     /// Stops its clock, as `pauseAnimations` does.
@@ -1355,9 +1364,9 @@ impl AnimatedDrawing {
         self.paused = false;
     }
 
-    /// Whether its clock stands still.
-    pub fn is_paused(&self) -> bool {
-        self.paused
+    /// Whether its clock runs (not paused).
+    pub fn playing(&self) -> bool {
+        !self.paused
     }
 
     /// Begins the animation element with this id now, as its `beginElement()` does. False where
@@ -1377,7 +1386,7 @@ impl AnimatedDrawing {
     /// Sends a pointer event (`click`, `mousedown`, `mouseover` and the others a window gives)
     /// to the element with this id now, as `dispatchEvent` does: it comes to that element and
     /// to those it lies in. False where no element has the id, or the event is none of those.
-    pub fn dispatch(&mut self, id: &str, event: &str) -> bool {
+    pub fn dispatch_event(&mut self, id: &str, event: &str) -> bool {
         let element = File::read(&self.text).named.get(id).copied();
         let (Some(element), Some(name)) = (element, EVENTS.iter().find(|name| **name == event)) else { return false };
         self.fire(Happened::Event(name, bubbling(&self.listening.parents, element, &[])));
@@ -1445,7 +1454,7 @@ impl AnimatedDrawing {
     fn under_pointer(&self, ui: &Ui) -> Vec<usize> {
         let kept = self.drawing.and_then(|drawing| ui.drawings.get(drawing.0));
         let takes = |element: usize, uses: &[u32]| self.listening.takes_pointer(element, uses);
-        let found = kept.zip(ui.input.pointer).and_then(|(kept, at)| kept.element_at(&self.hits, at, takes));
+        let found = kept.zip(ui.input.pointer).and_then(|(kept, at)| kept.element_at(at, takes));
         found.map_or_else(Vec::new, |(element, uses)| bubbling(&self.listening.parents, element, uses))
     }
 
@@ -1466,7 +1475,7 @@ impl AnimatedDrawing {
         if showing.is_some() && frame == self.shown {
             return;
         }
-        let Some((mut parsed, hits)) = ParsedDrawing::read_with_hits(&frame) else { return };
+        let Some(mut parsed) = ParsedDrawing::read_with_hits(&frame) else { return };
         if let Some(within) = noted {
             parsed.note(within);
         }
@@ -1474,7 +1483,7 @@ impl AnimatedDrawing {
         if let Some(last) = self.drawing.replace(drawing) {
             ui.drawings.take(last.0);
         }
-        (self.shown, self.hits) = (frame, hits);
+        self.shown = frame;
     }
 
     /// How long until the drawing next changes (the schedule being that of the frame on show):
@@ -1543,13 +1552,11 @@ impl Ui {
         }
     }
 
-    /// Frees an animated drawing's last frame: where it still shows, nothing does (until it is
-    /// shown again).
-    pub fn drop_animated_drawing(&mut self, drawing: &mut AnimatedDrawing) {
-        if let Some(shown) = drawing.drawing.take() {
+    /// Drops an animated drawing: its last frame is freed.
+    pub fn drop_animated_drawing(&mut self, drawing: AnimatedDrawing) {
+        if let Some(shown) = drawing.drawing {
             self.drop_drawing(shown);
         }
-        (drawing.shown, drawing.shown_for) = (String::new(), None);
     }
 }
 
@@ -1718,6 +1725,16 @@ mod tests {
     }
 
     #[test]
+    fn min_holds_an_interval_past_its_end_and_its_fill_applies_past_its_repeats() {
+        // As Edge draws it: ended at 1s, held to 2s; repeats done at 1s, gone until 3s.
+        let file = r#"<svg><rect><animate attributeName="x" values="0;10" dur="5s" end="1s" min="2s" fill="freeze"/><animate attributeName="y" values="0;10" dur="1s" min="3s"/></rect></svg>"#;
+        assert_eq!(intervals(file, &[]), [[[0.0, 2.0]], [[0.0, 3.0]]]);
+        let read = |name: &str| [0.5, 1.5, 2.5].map(|seconds| value_at(file, 1, name, seconds));
+        assert_eq!(read("x").each_ref().map(Option::as_deref), [Some("1"), Some("3"), Some("4")]);
+        assert_eq!(read("y").each_ref().map(Option::as_deref), [Some("5"), None, None]);
+    }
+
+    #[test]
     fn an_end_of_clock_values_before_a_begin_keeps_it_from_beginning() {
         // Begun at 0 and 5, ended at 3: the second begin has no end after it.
         let file = r#"<svg><rect><animate attributeName="x" values="0;1" dur="10s" begin="0s;5s" end="3s"/><animate attributeName="y" values="0;1" dur="2s" end="click"/></rect></svg>"#;
@@ -1804,6 +1821,18 @@ mod tests {
     }
 
     #[test]
+    fn each_animation_told_of_a_moment_counts_against_the_budget() {
+        // One animation repeating every millisecond, 300 waiting for each repeat: 300 tellings a
+        // millisecond use the budget up within the first second, not after 20 s of tellings.
+        let mut text = String::from(r#"<svg><rect><animate id="a" attributeName="x" values="0;1" dur="1ms" repeatCount="indefinite"/>"#);
+        text += &r#"<animate attributeName="y" values="0;1" dur="10s" begin="a.repeatEvent" restart="whenNotActive"/>"#.repeat(300);
+        text += "</rect></svg>";
+        let schedule = Timeline::read(&text).schedule(&[], 60.0);
+        let last = schedule.intervals.iter().flatten().map(|[begin, _]| *begin).fold(0.0, f32::max);
+        assert!(schedule.unfinished && last < 1.0, "{last}");
+    }
+
+    #[test]
     fn a_move_of_the_pointer_makes_out_over_leave_and_enter() {
         // From over the circle (in the group) to over the rectangle (in the group too).
         let events = crossed(&[3, 1, 0], &[2, 1, 0]);
@@ -1878,33 +1907,27 @@ mod window_tests {
     fn the_app_begins_and_seeks_what_it_names() {
         let named = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><rect width="100" height="100" fill="#ff0000"><animate id="a" attributeName="fill" from="#ff0000" to="#0000ff" dur="2s" begin="indefinite" fill="freeze"/></rect></svg>"##;
         let mut drawing = AnimatedDrawing::new(named).unwrap();
-        assert!(!drawing.begin_element("nothing") && !drawing.dispatch("a", "wobble"));
-        drawing.seek(1.0);
+        assert!(!drawing.begin_element("nothing") && !drawing.dispatch_event("a", "wobble"));
+        drawing.seek(Duration::from_secs(1));
         assert!(drawing.begin_element("a"));
-        drawing.seek(2.0);
+        drawing.seek(Duration::from_secs(2));
         let (_, pixels) = drawing.decode(4, 4).unwrap();
         assert_eq!(pixels[5], 0xff800080);
-        drawing.seek(9.0);
+        drawing.seek(Duration::from_secs(9));
         assert_eq!(drawing.decode(4, 4).unwrap().1[5], 0xff0000ff);
     }
-}
-
-#[cfg(test)]
-mod pointer_tests {
-    use super::*;
-    use crate::testing::Trial;
 
     #[test]
     fn a_click_on_what_a_use_brings_comes_to_the_use_and_passes_through_what_takes_no_pointer() {
         // The left half: a symbol brought by a `<use>`; over it, a shape taking no pointer. The
         // right half: plain.
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><defs><symbol id="s"><rect width="50" height="100" fill="#ff0000"/></symbol></defs><use id="u" href="#s"/><rect width="50" height="100" fill="#000000" fill-opacity="0.01" pointer-events="none"/><rect id="r" x="50" width="50" height="100" fill="#00ff00"/><set href="#r" attributeName="fill" to="#0000ff" begin="u.click"/></svg>"##;
-        let mut trial = Trial::new(AnimatedDrawing::new(svg).unwrap(), |drawing, ui| _ = ui.animated_drawing(drawing, Color::BLACK).show());
-        let within = trial.app.drawing.and_then(|drawing| trial.ui.drawings.get(drawing.0)).and_then(ParsedDrawing::noted).unwrap();
-        let right = |trial: &Trial<AnimatedDrawing>| trial.screen.pixels[(within.y as usize + 50) * trial.screen.width + within.x as usize + 75] & 0xff_ffff;
-        trial.click(pt(within.x + 75.0, within.y + 50.0));
-        assert_eq!(right(&trial), 0x00ff00, "a click on the right half is not on the use");
-        trial.click(pt(within.x + 25.0, within.y + 50.0));
-        assert_eq!(right(&trial), 0x0000ff);
+        let mut trial = shown(svg);
+        let right = place(&trial, 75.0, 50.0);
+        trial.click(right);
+        assert_eq!(color_at(&trial, 75.0, 50.0), 0x00ff00, "a click on the right half is not on the use");
+        let left = place(&trial, 25.0, 50.0);
+        trial.click(left);
+        assert_eq!(color_at(&trial, 75.0, 50.0), 0x0000ff);
     }
 }

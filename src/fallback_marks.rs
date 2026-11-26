@@ -134,7 +134,8 @@ fn place_around(font: &FontFile, glyphs: &mut [Laid], direction: Direction) {
     let (mut part_box, mut stack, mut last_part, mut last_class) = (own, own, None, None);
     for laid in &mut glyphs[1..] {
         let Some(class) = laid.combining.filter(|class| *class != 0) else {
-            pen = [pen[0] + back(laid)[0], pen[1] + back(laid)[1]];
+            let [x, y] = back(laid);
+            pen = [pen[0] + x, pen[1] + y];
             continue;
         };
         if parts > 1 {

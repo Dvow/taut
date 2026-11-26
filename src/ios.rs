@@ -147,7 +147,7 @@ pub(crate) enum Heard {
     /// A scene connected after the first (iPad): its window and session, and the second window it
     /// was asked for, if any.
     SceneConnected(Obj, Obj, Option<Id>),
-    /// A scene went (the person closed it, or the app): its session, and its window.
+    /// A scene went (the person closed it, or the app): its window and session.
     SceneGone(Obj, Obj),
 }
 
@@ -499,11 +499,10 @@ fn asked_window(options: Obj) -> Option<Id> {
 /// turn).
 extern "C" fn scene_gone(delegate: Obj, _: Sel, scene: Obj) {
     let window = SCENE_WINDOWS.with_borrow_mut(|windows| windows.iter().position(|(of, _)| *of == delegate).map(|at| windows.remove(at).1));
+    let Some(window) = window else { return };
     // SAFETY: a scene answers its session.
     let session: Obj = unsafe { send(scene, c"session", ()) };
-    if let Some(window) = window {
-        heard(Heard::SceneGone(session, window));
-    }
+    heard(Heard::SceneGone(window, session));
 }
 
 extern "C" fn scene_window(delegate: Obj, _: Sel) -> Obj {
@@ -1348,45 +1347,64 @@ impl Host {
         self.windows.iter().position(|shown| shown.view == FRONT.get()).unwrap_or(0)
     }
 
-    /// One thing UIKit said of the window of `view` (or of the front window).
+    /// The window of `view` (or of the view it lies in: the text input view's keys): the front
+    /// window for none, nothing for a window closed meanwhile.
+    fn window_of(&self, view: Obj) -> Option<usize> {
+        if view.is_null() {
+            return Some(self.front());
+        }
+        // SAFETY: a view answers the view it lies in (nil for none).
+        let around: Obj = unsafe { send(view, c"superview", ()) };
+        self.windows.iter().position(|shown| shown.view == view || shown.view == around)
+    }
+
+    /// One thing UIKit said: of the program, or of the window of `view` (dropped for a window
+    /// closed meanwhile).
     fn take(&mut self, view: Obj, what: Heard) {
-        let at = self.windows.iter().position(|shown| shown.view == view).unwrap_or_else(|| self.front());
-        match what {
-            Heard::Event(event) => self.hear(at, event),
-            Heard::Resized => self.rerun |= self.windows[at].measure(),
-            Heard::Looks => self.rerun |= self.ui.set_preferences(preferences(self.windows[0].view)) | self.ui.set_screens(screens()),
-            Heard::Locale => {
+        let at = self.window_of(view);
+        match (what, at) {
+            (Heard::Looks, _) => self.rerun |= self.ui.set_preferences(preferences(self.windows[0].view)) | self.ui.set_screens(screens()),
+            (Heard::Locale, _) => {
                 crate::locale::changed();
                 self.rerun = true;
             }
-            Heard::Keyboard(covered) => {
-                self.windows[at].keyboard = covered;
-                self.rerun |= self.windows[at].measure();
-            }
-            Heard::Background(away) => self.background_changed(away),
-            Heard::Active(on) => self.hear(at, Event::Focused(on)),
-            Heard::Ending => {
+            (Heard::Background(away), _) => self.background_changed(away),
+            (Heard::Ending, _) => {
                 self.ui.request_close();
                 self.rerun = true;
             }
-            Heard::Other(work) => self.rerun |= within(&mut self.ui, self.windows[at].known, work) == Some(true),
-            Heard::SceneConnected(window, session, known) => self.connected(window, session, known),
-            Heard::SceneGone(session, window) => self.gone(session, window),
+            (Heard::SceneConnected(window, session, known), _) => self.connected(window, session, known),
+            (Heard::SceneGone(window, session), _) => self.gone(window, session),
+            (_, None) => {}
+            (Heard::Event(event), Some(at)) => self.hear(at, event),
+            (Heard::Resized, Some(at)) => self.rerun |= self.windows[at].measure(),
+            (Heard::Keyboard(covered), Some(at)) => {
+                self.windows[at].keyboard = covered;
+                self.rerun |= self.windows[at].measure();
+            }
+            (Heard::Active(on), Some(at)) => self.hear(at, Event::Focused(on)),
+            (Heard::Other(work), Some(at)) => self.rerun |= within(&mut self.ui, self.windows[at].known, work) == Some(true),
         }
     }
 
     /// Passes what the person did in a window to its interface, noting whether it must run. A
-    /// window a dialog keeps from input hears none; a press on it brings the dialog forward.
+    /// window a dialog shown keeps from input hears none; a press on it brings the dialog
+    /// forward. (A dialog not shown, as on an iPhone, keeps nothing from input.)
     fn hear(&mut self, at: usize, event: Event) {
-        let blocked = self.ui.window_blocked(self.windows[at].known.unwrap_or(0));
-        if blocked && !matches!(event, Event::Focused(_) | Event::Minimized(_) | Event::Leave) {
-            let dialog = |shown: &&Shown| shown.known.and_then(|id| self.ui.window_opening(id)).is_some_and(|opening| opening.kind == WindowKind::Dialog);
-            if let (Event::Press(..), Some(dialog)) = (&event, self.windows.iter().rev().find(dialog)) {
-                bring_scene_forward(dialog.session);
+        let input = !matches!(event, Event::Focused(_) | Event::Minimized(_) | Event::Leave);
+        let blocked = input && self.ui.window_blocked(self.windows[at].known.unwrap_or(0));
+        if let Some(dialog) = blocked.then(|| self.shown_dialog()).flatten() {
+            if matches!(event, Event::Press(..)) {
+                bring_scene_forward(self.windows[dialog].session);
             }
             return;
         }
         self.rerun |= within(&mut self.ui, self.windows[at].known, |ui| ui.event(event)) == Some(true);
+    }
+
+    /// The dialog shown last, in a scene of its own.
+    fn shown_dialog(&self) -> Option<usize> {
+        self.windows.iter().rposition(|shown| shown.known.and_then(|id| self.ui.window_opening(id)).is_some_and(|opening| opening.kind == WindowKind::Dialog))
     }
 
     /// The program went to the background, or came back: every window's interface hears it as
@@ -1421,7 +1439,7 @@ impl Host {
     /// A scene went: a second window's interface hears its window was closed (if its app keeps
     /// it, a scene is asked for again). The scene's window is let go of, unless it is the
     /// first's, kept for good.
-    fn gone(&mut self, session: Obj, window: Obj) {
+    fn gone(&mut self, window: Obj, session: Obj) {
         if let Some(at) = self.windows.iter().skip(1).position(|shown| shown.session == session).map(|at| at + 1) {
             let known = self.windows[at].known;
             self.rerun |= known.and_then(|id| self.ui.in_window(id, Ui::request_close)).is_some();

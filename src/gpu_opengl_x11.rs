@@ -16,18 +16,19 @@
 //! such as llvmpipe; an X server without DRI3, such as Xvfb, VNC or a VM's) Mesa copies every
 //! frame whole through X, which costs more than the CPU's own drawing: the CPU shows the
 //! windows. Any other choice of the GPU takes the device either way.
+use crate::dynamic_library::library;
 use crate::gpu_egl::*;
 use crate::gpu_x11::{KEPT, has_dri3, note, places};
 use std::ffi::{CStr, c_int, c_uint, c_ulong, c_void};
 use std::ptr::null;
 
-system_library!(PlatformEgl, "EGL", ["libEGL.so.1", "libEGL.so"], {
+library!(PlatformEgl, ["libEGL.so.1", "libEGL.so"], {
     fn eglGetPlatformDisplay(c_uint, *mut c_void, *const isize) -> Handle;
     fn eglCreatePlatformWindowSurface(Handle, Handle, *mut c_void, *const isize) -> Handle;
     fn eglQuerySurface(Handle, Handle, c_int, *mut c_int) -> c_uint;
 });
 
-system_library!(Scissors, "GLESv3", ["libGLESv2.so.2", "libGLESv2.so"], {
+library!(Scissors, ["libGLESv2.so.2", "libGLESv2.so"], {
     fn glEnable(c_uint);
     fn glScissor(c_int, c_int, c_int, c_int);
 });
@@ -88,7 +89,7 @@ impl Gpu {
     /// # Safety
     /// `x` is an open X display, and `id` one of its windows, alive, of `visual`.
     pub(crate) unsafe fn open(x: *mut c_void, visual: *mut c_void, id: c_ulong, size: [c_int; 2], any: bool) -> Option<(Gpu, Shows)> {
-        let (egl, gl, platform, scissors) = (Egl::open()?, Gles::open()?, PlatformEgl::open()?, Scissors::open()?);
+        let (platform, scissors) = (PlatformEgl::open()?, Scissors::open()?);
         // SAFETY: EGL's documented call, for an X display (EGL_EXT_platform_x11). A `Visual`
         // starts with a pointer, then its id (Xlib.h).
         let (display, visual) = unsafe { ((platform.eglGetPlatformDisplay)(PLATFORM_X11, x, null()), *visual.cast::<c_ulong>().add(1)) };
@@ -96,7 +97,7 @@ impl Gpu {
             return None;
         }
         let wanted = [SURFACE_TYPE, WINDOW_BIT, RENDERABLE_TYPE, OPENGL_ES3_BIT, RED_SIZE, 8, GREEN_SIZE, 8, BLUE_SIZE, 8, NONE];
-        let mut gpu = Gpu::make(egl, gl, display, (&wanted, visual as usize), X11 { platform, scissors, aged: false })?;
+        let mut gpu = Gpu::make(display, (&wanted, visual as usize), X11 { platform, scissors, aged: false })?;
         gpu.system.aged = gpu.offers("EGL_EXT_buffer_age");
         let shows = gpu.window(id, size)?;
         #[cfg(feature = "gpu-draw")]

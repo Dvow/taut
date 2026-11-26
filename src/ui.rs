@@ -1711,7 +1711,7 @@ impl Ui {
         // (A line runs the way its paragraph does; a right-to-left one starts at the right, as
         // `Painter::words` draws it.)
         let paragraph = crate::text::Paragraph::of(&self.tree.strings[start..end as usize], line.start - start..line.end - start);
-        let leftward = paragraph.leftward;
+        let leftward = paragraph.right_to_left;
         let (text, after) = (&self.tree.strings[line.start..line.end], self.edit.after);
         let carets = crate::text::marks(self.text.as_mut(), text, line.start, line.width, font, self.scale, paragraph, [0; 2], Some(cursor), after, &mut Vec::new()).unwrap_or_default();
         #[cfg(feature = "right-to-left")]

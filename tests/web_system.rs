@@ -625,7 +625,8 @@ window.page = await start("page.wasm", { element: document.getElementById("app")
         tab.browser.set_permission(address, "local-fonts", "denied");
         tab.eval("window.heardLog = []; const told = page.heard.bind(page); page.heard = (what, ...rest) => (heardLog.push(what.join()), told(what, ...rest)); true");
         tab.click("Fonts");
-        tab.until("the fonts refused", "heardLog.includes('5,1')");
+        // (Refused with an error, or with no fonts: Chrome and Edge list none until allowed.)
+        tab.until("the fonts refused", "heardLog.some((what) => what.startsWith('5,'))");
         assert_eq!(tab.said("Fonts:", ""), "Fonts: 0 families");
         tab.browser.set_permission(address, "local-fonts", "granted");
         tab.click("Fonts");

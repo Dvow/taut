@@ -167,11 +167,7 @@ impl Vulkan {
         let (instance, api) = instance(&global, &names)?;
         // SAFETY: the instance was just made.
         let Ok(calls) = InstanceCalls::load(&mut |name| unsafe { find(instance, name.as_ptr()) }) else {
-            // SAFETY: as above; nothing of it is used after.
-            let destroy = unsafe { find(instance, c"vkDestroyInstance".as_ptr()) };
-            if !destroy.is_null() {
-                unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn(Object, *const c_void)>(destroy)(instance, null()) };
-            }
+            destroy(find, instance, c"vkDestroyInstance");
             return None;
         };
         Some((Vulkan { instance, calls, find, lasting: false }, api))
@@ -226,6 +222,17 @@ impl Drop for Vulkan {
             // SAFETY: nothing made from it is used after.
             unsafe { (self.calls.vkDestroyInstance)(self.instance, null()) };
         }
+    }
+}
+
+/// Destroys `object` (an instance or a device, just made and not used after) by its function
+/// `name`, found through `find`; nothing where there is none.
+fn destroy(find: Find, object: Object, name: &CStr) {
+    // SAFETY: the object is the function's own; the name ends in a zero.
+    let found = unsafe { find(object, name.as_ptr()) };
+    if !found.is_null() {
+        // SAFETY: as vulkan_core.h declares `vkDestroyInstance` and `vkDestroyDevice`.
+        unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn(Object, *const c_void)>(found)(object, null()) };
     }
 }
 
@@ -301,11 +308,7 @@ impl<S> Gpu<S> {
     /// Lets go of a device whose functions could not all be found, then of its instance:
     /// nothing.
     fn unmade(find: Find, device: Object, vulkan: Vulkan) -> Option<Gpu<S>> {
-        // SAFETY: the device was just made and is not used after.
-        let destroy = unsafe { find(device, c"vkDestroyDevice".as_ptr()) };
-        if !destroy.is_null() {
-            unsafe { std::mem::transmute::<*const c_void, unsafe extern "system" fn(Object, *const c_void)>(destroy)(device, null()) };
-        }
+        destroy(find, device, c"vkDestroyDevice");
         drop(vulkan);
         None
     }

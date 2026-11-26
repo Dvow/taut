@@ -27,21 +27,22 @@ pub(crate) fn loader() -> Option<Find> {
         // SAFETY: the names end in a zero; the loader comes from the system folder (0x800:
         // `LOAD_LIBRARY_SEARCH_SYSTEM32`) and is never closed.
         let library = unsafe { LoadLibraryExW(name.as_ptr(), 0, 0x800) };
-        if library == 0 { std::ptr::null_mut() } else { unsafe { GetProcAddress(library, c"vkGetInstanceProcAddr".as_ptr().cast()) as *mut c_void } }
+        if library == 0 { std::ptr::null() } else { unsafe { GetProcAddress(library, c"vkGetInstanceProcAddr".as_ptr().cast()) as *const c_void } }
     };
     #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
     let found = {
-        // SAFETY: the name ends in a zero; the library is never closed.
-        let library = unsafe { crate::dynamic_library::dlopen(c"libvulkan.so.1".as_ptr(), crate::dynamic_library::NOW) };
-        (!library.is_null()).then(|| crate::dynamic_library::symbol(library, "vkGetInstanceProcAddr\0")).flatten().unwrap_or(std::ptr::null_mut())
+        // (Never closed: drivers are not safe to unload.)
+        static LOADER: std::sync::OnceLock<Option<crate::dynamic_library::Library>> = std::sync::OnceLock::new();
+        let loader = LOADER.get_or_init(|| crate::dynamic_library::Library::open("libvulkan.so.1\0"));
+        loader.as_ref().and_then(|loader| loader.symbol(c"vkGetInstanceProcAddr")).unwrap_or(std::ptr::null())
     };
     #[cfg(target_os = "android")]
-    let found = crate::android::vulkan_loader();
+    let found = crate::android::vulkan_loader().cast_const();
     // Apple's systems have no Vulkan of their own, nor has a page.
     #[cfg(any(target_vendor = "apple", target_family = "wasm"))]
-    let found = std::ptr::null_mut::<c_void>();
+    let found = std::ptr::null::<c_void>();
     // SAFETY: the loader's function is declared as vulkan_core.h declares it.
-    (!found.is_null()).then(|| unsafe { std::mem::transmute::<*const c_void, Find>(found.cast_const()) })
+    (!found.is_null()).then(|| unsafe { std::mem::transmute::<*const c_void, Find>(found) })
 }
 
 #[cfg(windows)]

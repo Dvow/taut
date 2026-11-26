@@ -172,11 +172,11 @@ impl Contents {
     }
 }
 
-/// An extractor of a source, and the decoder of one of its tracks.
-/// (Tests: how many times a decoder's output format was read.)
+/// How many times a decoder's output format was read (for tests).
 #[cfg(test)]
 pub(crate) static FORMAT_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// An extractor of a source, and the decoder of one of its tracks.
 struct Track {
     media: &'static Media,
     extractor: Object,

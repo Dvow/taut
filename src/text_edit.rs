@@ -344,7 +344,7 @@ impl Edit {
     fn offset_in(&mut self, text: &str, row: usize, x: f32, places: Places) -> (usize, bool) {
         let span = self.span(text, row);
         let paragraph = self.paragraph(text, span.clone());
-        let x = x - self.indent(row, paragraph.leftward);
+        let x = x - self.indent(row, paragraph.right_to_left);
         if self.secret || paragraph.plain(&text[span.clone()]) {
             return (self.ahead_offset(text, span, x, places), false);
         }
@@ -375,15 +375,8 @@ impl Edit {
         if leftward { (self.room - wide).max(0.0).round() } else { 0.0 }
     }
 
-    /// Whether the paragraph containing byte `at` is RTL. (A password box shows dots, which run
-    /// left to right.)
-    fn leftward(&self, text: &str, at: usize) -> bool {
-        let start = text[..at].rfind('\n').map_or(0, |end| end + 1);
-        !self.secret && crate::bidi::leftward(&text[start..])
-    }
-
-    /// The paragraph of byte range `span` (one line), as `Paragraph::of` finds it. (A password
-    /// box shows dots, which run left to right.)
+    /// The paragraph of byte range `span` (a line, or the cursor), as `Paragraph::of` finds it. (A
+    /// password box shows dots, which run left to right.)
     fn paragraph<'a>(&self, text: &'a str, span: Range<usize>) -> Paragraph<'a> {
         if self.secret { Paragraph::whole(false) } else { Paragraph::of(text, span) }
     }
@@ -391,7 +384,7 @@ impl Edit {
     /// The characters of byte range `span` (one line of `paragraph`), as shown.
     fn clusters(&mut self, text: &str, span: Range<usize>, paragraph: Paragraph, places: Places) -> Vec<ShownCluster> {
         places(&text[span.clone()], paragraph, &mut self.places);
-        shown_clusters(&text[span.clone()], span.start, &self.places, paragraph.leftward)
+        shown_clusters(&text[span.clone()], span.start, &self.places, paragraph.right_to_left)
     }
 
     /// The x where the cursor at byte `at` shows on its line, from the line's left.
@@ -410,7 +403,7 @@ impl Edit {
     fn beside(&mut self, text: &str, at: usize, right: bool, places: Places) -> (usize, bool) {
         let (row, span) = self.row(text, at);
         let paragraph = self.paragraph(text, span.clone());
-        let forward = right != paragraph.leftward;
+        let forward = right != paragraph.right_to_left;
         if self.secret || paragraph.plain(&text[span.clone()]) {
             return (step(text, at, forward), false);
         }
@@ -497,7 +490,7 @@ impl Edit {
     fn go(&mut self, text: &str, key: Key, mods: Mods, many: bool, places: Places) -> Option<(usize, bool)> {
         let (at, selected) = (self.cursor, self.selection());
         let column = self.column.take();
-        let on = (key == Key::Right) != self.leftward(text, at);
+        let on = (key == Key::Right) != self.paragraph(text, at..at).right_to_left;
         Some(match key {
             Key::Left | Key::Right if mods.ctrl => (self.word(text, at, on), false),
             Key::Left | Key::Right if !mods.shift && !selected.is_empty() => (if on { selected.end } else { selected.start }, false),
@@ -530,7 +523,7 @@ impl Edit {
         let (row, line) = self.row(text, at);
         let x = match column {
             Some(x) => x,
-            None => self.caret_in(text, line.clone(), at, places) + self.indent(row, self.leftward(text, line.start)),
+            None => self.caret_in(text, line.clone(), at, places) + self.indent(row, self.paragraph(text, line).right_to_left),
         };
         self.column = Some(x);
         match up {

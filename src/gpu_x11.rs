@@ -35,7 +35,7 @@ pub(crate) fn asked(asked: Renderer) -> Option<Asked> {
 /// The GPU a program's windows are shown through.
 pub(crate) enum Gpu {
     OpenGL(crate::gpu_opengl_x11::Gpu),
-    Vulkan(crate::gpu_vulkan_x11::Gpu),
+    Vulkan(Box<crate::gpu_vulkan_x11::Gpu>),
 }
 
 /// A window shown through the GPU.
@@ -97,7 +97,7 @@ impl Gpu {
         // SAFETY: as the caller promises.
         if renderer == Renderer::Vulkan {
             let (gpu, shows) = unsafe { crate::gpu_vulkan_x11::Gpu::open(x, visual, id, size, any) }?;
-            return Some((Gpu::Vulkan(gpu), Shows::Vulkan(shows)));
+            return Some((Gpu::Vulkan(Box::new(gpu)), Shows::Vulkan(shows)));
         }
         let (gpu, shows) = unsafe { crate::gpu_opengl_x11::Gpu::open(x, visual, id, size, any) }?;
         Some((Gpu::OpenGL(gpu), Shows::OpenGL(shows)))

@@ -1,5 +1,6 @@
 //! Tables of functions found by name at run time, as Vulkan's and OpenGL's loaders give them
 //! (`vkGetInstanceProcAddr`, `eglGetProcAddress`, `wglGetProcAddress`): nothing links to either.
+//! A system library's table (`dynamic_library::library!`) is filled by the same loop (`found_all`).
 // Every function here is `#[inline]`: only a program that calls one compiles it.
 use std::ffi::{CStr, c_void};
 
@@ -20,7 +21,7 @@ macro_rules! functions {
                 const COUNT: usize = [$($(#[$only])? stringify!($name),)*].len();
                 let names: [&'static str; COUNT] = [$($(#[$only])? concat!(stringify!($name), "\0"),)*];
                 let mut found = [std::ptr::null::<std::ffi::c_void>(); COUNT];
-                $crate::functions::found_all(find, &names, &mut found)?;
+                $crate::functions::found_all(find, &mut names.iter().copied(), &mut found)?;
                 // SAFETY: the table is `repr(C)`, a function pointer for each name in order, each
                 // declared as its header declares it; every address found is one (not null).
                 Ok(unsafe { std::mem::transmute::<[*const std::ffi::c_void; COUNT], $set>(found) })
@@ -33,8 +34,8 @@ pub(crate) use functions;
 /// The functions `names` (each ending in a zero) as `find` gives them, into `found`; or the name
 /// of the first one it gives none for.
 #[inline]
-pub(crate) fn found_all(find: &mut dyn FnMut(&CStr) -> *const c_void, names: &[&'static str], found: &mut [*const c_void]) -> Result<(), &'static str> {
-    for (name, slot) in names.iter().zip(found) {
+pub(crate) fn found_all(find: &mut dyn FnMut(&CStr) -> *const c_void, names: &mut dyn Iterator<Item = &'static str>, found: &mut [*const c_void]) -> Result<(), &'static str> {
+    for (name, slot) in names.zip(found) {
         *slot = self::found(find, name)?;
     }
     Ok(())

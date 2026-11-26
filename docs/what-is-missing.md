@@ -214,12 +214,14 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   and focus events in `begin`/`end`. Images in other files only through the app's loader;
   drawings an image brings, four deep at most. SMIL as frames (`svg::encode_animation`): a
   minute at most, timed parts only. In a window (`AnimatedDrawing`): the last 4,096 events its
-  file waits for are kept; the pointer is over a shape's fill or stroke, clips and masks aside,
-  text as its whole element. A kernel unit finer than a pixel counts as one pixel. Small blurs
-  use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped without `shaping`.
-  Masks and non-box clips multiply edge coverages; two opposite subpaths of one shape can show
-  a hairline. Crisp edges paint pixels more than half covered (librsvg: pixels whose sample
-  point is). Of 2,986 Linux desktop icons, 392 differ visibly from librsvg at 1×, 185 at 3×.
+  file waits for are kept, and each works its timeline out again from the start (the longer it
+  played, the more an event costs); the pointer is over a shape's fill or stroke, clips and
+  masks aside, text as its whole element. A kernel unit finer than a pixel counts as one pixel.
+  Small blurs use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped without
+  `shaping`. Masks and non-box clips multiply edge coverages; two opposite subpaths of one shape
+  can show a hairline. Crisp edges paint pixels more than half covered (librsvg: pixels whose
+  sample point is). Of 2,986 Linux desktop icons, 392 differ visibly from librsvg at 1×, 185 at
+  3×.
 - SVG cost beyond the file's budget is skipped; a small file can still take seconds at
   4096×4096.
 - Highly compressible PNGs (30:1+) decode up to 1/7 slower than with an exact buffer.

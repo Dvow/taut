@@ -285,10 +285,10 @@ mod tests {
         type Get = unsafe extern "C" fn(*mut c_void) -> c_int;
         type Set = unsafe extern "C" fn(*mut c_void, c_int);
         let xkb = &keyboard.xkb.library;
-        let (Some(get), Some(set)) = (xkb.symbol("xkb_context_get_log_level\0"), xkb.symbol("xkb_context_set_log_level\0")) else { return read(keyboard) };
+        let (Some(get), Some(set)) = (xkb.symbol(c"xkb_context_get_log_level"), xkb.symbol(c"xkb_context_set_log_level")) else { return read(keyboard) };
         // SAFETY: both are libxkbcommon's functions, declared as it documents them, and called
         // on the keyboard's own context, which outlives this.
-        let (get, set) = unsafe { (std::mem::transmute::<*mut c_void, Get>(get), std::mem::transmute::<*mut c_void, Set>(set)) };
+        let (get, set) = unsafe { (std::mem::transmute::<*const c_void, Get>(get), std::mem::transmute::<*const c_void, Set>(set)) };
         // SAFETY: as above.
         let was = unsafe { get(keyboard.context) };
         // SAFETY: as above.

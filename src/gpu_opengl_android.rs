@@ -8,29 +8,28 @@
 //!
 //! - The surface is the activity's window; it goes with the window, the context stays.
 //! - A swap that finds the window gone says that.
-//! - libEGL and libGLESv3 are the system's own, linked (`gpu_egl`, which holds what X11's path
-//!   shares).
+//! - libEGL and libGLESv3 are opened by name when the window first asks for the GPU (`gpu_egl`,
+//!   which holds what X11's path shares).
 //!
 //! `Auto` takes the GPU only where it is not the CPU at work (SwiftShader, llvmpipe).
 use crate::android_sys::RGBA_8888;
+use crate::dynamic_library::library;
 use crate::gpu_android::Block;
 use crate::gpu_egl::*;
 use std::ffi::{CStr, c_int, c_uint, c_void};
 use std::ptr::{null, null_mut};
 
-#[link(name = "EGL")]
-unsafe extern "C" {
-    fn eglGetDisplay(native: *mut c_void) -> Handle;
-    fn eglCreateWindowSurface(display: Handle, config: Handle, window: *mut c_void, asked: *const c_int) -> Handle;
+library!(AndroidEgl, ["libEGL.so"], {
+    fn eglGetDisplay(*mut c_void) -> Handle;
+    fn eglCreateWindowSurface(Handle, Handle, *mut c_void, *const c_int) -> Handle;
     fn eglGetError() -> c_int;
-}
+});
 
-#[link(name = "GLESv3")]
-unsafe extern "C" {
-    fn glUniform2i(at: c_int, x: c_int, y: c_int);
-    fn glClearColor(red: f32, green: f32, blue: f32, alpha: f32);
-    fn glClear(what: c_uint);
-}
+library!(AndroidGles, ["libGLESv3.so"], {
+    fn glUniform2i(c_int, c_int, c_int);
+    fn glClearColor(f32, f32, f32, f32);
+    fn glClear(c_uint);
+});
 
 // From EGL's and OpenGL ES 3's headers (egl.h, gl3.h).
 const ALPHA_SIZE: c_int = 0x3021;
@@ -56,13 +55,17 @@ void main() {
 
 /// The GPU the window is shown through: EGL's display, one OpenGL ES 3 context, and the program
 /// drawing the window's texture.
-pub(crate) type Gpu = crate::gpu_egl::Gpu<Placing>;
+pub(crate) type Gpu = crate::gpu_egl::Gpu<Android>;
 
 /// The window shown through the GPU.
 pub(crate) type Shows = crate::gpu_egl::Shows<Frame>;
 
-/// Where the program's `at` is: where the texture lies in the window.
-pub(crate) struct Placing {
+/// What the window keeps of EGL: its functions for Android's windows, and for clearing around
+/// the texture and placing it; where the program's `at` is (where the texture lies in the
+/// window).
+pub(crate) struct Android {
+    egl: AndroidEgl,
+    gl: AndroidGles,
     at: c_int,
 }
 
@@ -120,14 +123,15 @@ impl Gpu {
     /// # Safety
     /// `window` is an `ANativeWindow`, alive until the window is let go of (`forget`).
     pub(crate) unsafe fn open(window: *mut c_void, any: bool) -> Option<(Gpu, Shows)> {
+        let (egl, gl) = (AndroidEgl::open()?, AndroidGles::open()?);
         // SAFETY: EGL's documented call, on the default display.
-        let display = unsafe { eglGetDisplay(null_mut()) };
+        let display = unsafe { (egl.eglGetDisplay)(null_mut()) };
         if display.is_null() {
             return None;
         }
         // (`ANativeWindow`'s 8-bit red, green, blue and alpha.)
         let wanted = [SURFACE_TYPE, WINDOW_BIT, RENDERABLE_TYPE, OPENGL_ES3_BIT, RED_SIZE, 8, GREEN_SIZE, 8, BLUE_SIZE, 8, ALPHA_SIZE, 8, NONE];
-        let mut gpu = Gpu::make(Egl::open()?, Gles::open()?, display, (&wanted, RGBA_8888 as usize), Placing { at: -1 })?;
+        let mut gpu = Gpu::make(display, (&wanted, RGBA_8888 as usize), Android { egl, gl, at: -1 })?;
         // SAFETY: as the caller promises.
         let shows = unsafe { gpu.window(window) }?;
         let software = gpu.software();
@@ -151,7 +155,7 @@ impl Gpu {
     /// As `open`.
     pub(crate) unsafe fn window(&mut self, window: *mut c_void) -> Option<Shows> {
         // SAFETY: the window is alive (the caller's promise).
-        let surface = unsafe { eglCreateWindowSurface(self.display, self.config, window, null()) };
+        let surface = unsafe { (self.system.egl.eglCreateWindowSurface)(self.display, self.config, window, null()) };
         if surface.is_null() {
             return None;
         }
@@ -225,12 +229,12 @@ impl Gpu {
             (gl.glDisable)(BLEND);
             (gl.glDisable)(DITHER);
             (gl.glViewport)(0, 0, width, height);
-            glClearColor(red, green, blue, 1.0);
-            glClear(COLOR_BUFFER_BIT);
+            (self.system.gl.glClearColor)(red, green, blue, 1.0);
+            (self.system.gl.glClear)(COLOR_BUFFER_BIT);
             (gl.glViewport)(left, height - top - high, wide, high);
             (gl.glUseProgram)(self.program);
             (gl.glBindTexture)(TEXTURE_2D, shows.texture);
-            glUniform2i(self.system.at, left, top);
+            (self.system.gl.glUniform2i)(self.system.at, left, top);
             (gl.glUniform1i)(self.height, height);
             (gl.glDrawArrays)(TRIANGLES, 0, 3);
         }
@@ -246,7 +250,7 @@ impl Gpu {
         let damage: Vec<c_int> = changed.iter().flat_map(|[l, t, r, b]| [l + left, height - (b + top), r - l, b - t]).collect();
         let swapped = self.swap(shows, named.then_some(damage.as_slice()));
         // SAFETY: EGL's own question, of this thread's last call.
-        let error = if swapped { 0 } else { unsafe { eglGetError() } };
+        let error = if swapped { 0 } else { unsafe { (self.system.egl.eglGetError)() } };
         shows.system.gone |= WINDOW_GONE.contains(&error);
         self.lost |= !swapped && !shows.system.gone;
         #[cfg(test)]

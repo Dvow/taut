@@ -191,10 +191,12 @@ mod connection {
     /// Deletes `before` and `after` the focused box's selection, whole characters (its own text
     /// as the connection keeps it, too); nothing for a count below zero.
     fn delete_around(env: Env, connection: Obj, [before, after]: [c_int; 2], in_code_points: bool) -> u8 {
-        let (Ok(before), Ok(after)) = (usize::try_from(before), usize::try_from(after)) else { return 0 };
+        let around = match (usize::try_from(before), usize::try_from(after)) {
+            (Ok(before), Ok(after)) => DeleteAround { before, after, in_code_points },
+            _ => return 0,
+        };
         let method = if in_code_points { c"deleteSurroundingTextInCodePoints" } else { c"deleteSurroundingText" };
-        env.call_super(connection, CONNECTION, method, c"(II)Z", &[Value::int(before as c_int), Value::int(after as c_int)]);
-        let around = DeleteAround { before, after, in_code_points };
+        env.call_super(connection, CONNECTION, method, c"(II)Z", &[Value::int(before), Value::int(after)]);
         heard(Heard::Other(Box::new(move |ui: &mut Ui| {
             ui.input.strokes.push(Stroke::DeleteAround(around));
             true

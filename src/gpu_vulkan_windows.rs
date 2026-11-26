@@ -575,7 +575,7 @@ impl Shown {
         {
             self.described = None;
         }
-        self.lit_targets(device)
+        self.lit_targets()
     }
 
     /// The swap chain's format, colour space and further use: B8G8R8A8 in sRGB, copied into.
@@ -597,7 +597,7 @@ impl Shown {
     /// Readies the HDR pass for the swap chain just made, while presented in HDR. Says whether
     /// that worked (it does where there is nothing to do).
     #[cfg(feature = "hdr")]
-    fn lit_targets(&mut self, _: &Device) -> bool {
+    fn lit_targets(&mut self) -> bool {
         let (Some(Some(pass)), Some(kind)) = (self.pass.as_mut(), self.kind.filter(|_| self.hdr.on)) else { return true };
         pass.target(&self.images, kind.format, self.extent)
     }
@@ -619,7 +619,7 @@ impl Shown {
 
     #[cfg(not(feature = "hdr"))]
     #[inline]
-    fn lit_targets(&mut self, _: &Device) -> bool {
+    fn lit_targets(&mut self) -> bool {
         true
     }
 
@@ -721,8 +721,6 @@ impl Shown {
         if !self.go_hdr(device) {
             return false;
         }
-        #[cfg(feature = "hdr")]
-        self.describe(device);
         match self.present_once(device, inside(dirty, self.size)) {
             Some(true) => true,
             Some(false) => self.chained(device, self.size) && self.present_once(device, &[]) == Some(true),
@@ -732,6 +730,8 @@ impl Shown {
 
     /// One present: whether it worked; `Some(false)` where the swap chain is out of date.
     fn present_once(&mut self, device: &Device, dirty: &[RECT]) -> Option<bool> {
+        #[cfg(feature = "hdr")]
+        self.describe(device);
         let (calls, mut at) = (self.owner.calls.clone(), 0);
         // SAFETY: the swap chain is this window's; the semaphore is free (every frame is waited for).
         let taken = unsafe { (calls.vkAcquireNextImageKHR)(self.owner.device, self.chain, 1_000_000_000, device.taken, 0, &mut at) };
