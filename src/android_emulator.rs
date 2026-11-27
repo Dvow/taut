@@ -358,6 +358,31 @@ mod tests {
         }
     }
 
+    /// What the input method was told of the box it types into: its `inputType`, as `dumpsys
+    /// input_method` writes it.
+    fn input_type() -> String {
+        let said = shell("dumpsys input_method");
+        let told = said.split_once("mInputEditorInfo:").map_or("", |(_, after)| after);
+        told.split_whitespace().find_map(|word| word.strip_prefix("inputType=")).unwrap_or_default().to_string()
+    }
+
+    /// Input methods are told the code editor holds code (no suggestions: 0x80001) and the text
+    /// box text they correct (0x8001), the first box focused with the keyboard down too.
+    fn input_types(out: &Path, wrong: &mut Vec<String>) {
+        let nodes = dump(out, "input types");
+        let boxes = (find(&nodes, "android.widget.EditText", "code"), find(&nodes, "android.widget.EditText", "Speling"), named(&nodes, "Spelling:"));
+        let (Some(code), Some(text), Some(label)) = boxes else { return wrong.push("no code editor, text box or label".into()) };
+        for (node, wanted) in [(code, "0x80001"), (text, "0x8001"), (code, "0x80001")] {
+            tap(node);
+            let told = input_type();
+            if told != wanted {
+                wrong.push(format!("{:?} told input methods {told}, not {wanted}", node.text));
+            }
+        }
+        // (A tap on a label takes focus, and the keyboard, away.)
+        tap(label);
+    }
+
     /// Misspelled words typed into the box are marked, and its menu offers the right word.
     fn spelling(out: &Path, wrong: &mut Vec<String>) {
         let Some(edit) = find(&dump(out, "spelling"), "android.widget.EditText", "").cloned() else { return wrong.push("no box to spell in".into()) };
@@ -461,17 +486,52 @@ mod tests {
         }
     }
 
-    /// The document picker, from the folder Downloads: taps the card of the file `name`.
-    fn pick_card(out: &Path, name: &str, hold: bool) {
+    /// Puts files (name and text) in Downloads, kept in `out` too, and waits (60 s at most) until
+    /// MediaStore lists them, as the document picker shows only what it lists: on a fresh
+    /// emulator a pushed file can stay unlisted for a while. Asks for each to be scanned
+    /// meanwhile. Whether all are listed.
+    fn into_downloads(out: &Path, files: &[(&str, &str)]) -> bool {
+        for (name, text) in files {
+            std::fs::write(out.join(name), text).unwrap();
+            adb(&["push", &out.join(name).to_string_lossy(), &format!("/sdcard/Download/{name}")]);
+        }
+        let listed = || {
+            let listed = shell("content query --uri content://media/external/downloads --projection _display_name");
+            files.iter().all(|(name, _)| listed.lines().any(|line| line.trim_end().ends_with(&format!("_display_name={name}"))))
+        };
+        let until = Instant::now() + Duration::from_secs(60);
+        while !listed() && Instant::now() < until {
+            files.iter().for_each(|(name, _)| _ = shell(&format!("am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download/{name}")));
+            settle(2);
+        }
+        listed()
+    }
+
+    /// Presses Back (five times at most) until the app is in front again: a part that failed
+    /// with a dialog still up does not fail the parts after it.
+    fn back_to_app() {
+        for _ in 0..5 {
+            if in_front().contains("taut.example.system_parts/") {
+                return;
+            }
+            shell("input keyevent KEYCODE_BACK");
+            settle(2);
+        }
+    }
+
+    /// The document picker: taps the file `name` where it is listed (held, it is chosen among
+    /// several).
+    fn pick(out: &Path, name: &str, hold: bool) {
         let Some(label) = wait_for(out, name) else { return };
-        let (x, y) = (label.middle().0, label.bounds[1] - 150);
+        let (x, y) = label.middle();
         shell(&if hold { format!("input swipe {x} {y} {x} {y} 1200") } else { format!("input tap {x} {y}") });
         settle(1);
     }
 
-    /// Goes to Downloads in the document picker.
+    /// Goes to Downloads in the document picker, once the list of roots shows it.
     fn to_downloads(out: &Path) {
         tap_named(out, "Show roots");
+        wait_for(out, "Downloads");
         let nodes = dump(out, "roots");
         // (The list of roots names Downloads, as does the chip above the files.)
         if let Some(downloads) = nodes.iter().filter(|node| node.text == "Downloads").max_by_key(|node| node.bounds[2] - node.bounds[0]) {
@@ -480,7 +540,9 @@ mod tests {
     }
 
     /// Opens a file, then two, then saves one, through the system's dialog; the saved document
-    /// holds what the app wrote to its copy.
+    /// holds what the app wrote to its copy. The files are picked from Recent, where the picker
+    /// opens: its Downloads is sometimes shown empty on a fresh emulator, although MediaStore
+    /// lists them there (and Recent shows them).
     fn file_dialog(out: &Path, wrong: &mut Vec<String>) {
         let mut check = |said: &str| {
             if wait_for(out, said).is_none() {
@@ -488,15 +550,15 @@ mod tests {
             }
         };
         tap_named(out, "Open");
-        to_downloads(out);
-        pick_card(out, "a.txt", false);
+        pick(out, "a.txt", false);
         check("Files: opened a.txt (First line of a)");
         tap_named(out, "Open several");
-        pick_card(out, "a.txt", true);
-        pick_card(out, "b.txt", false);
+        pick(out, "a.txt", true);
+        pick(out, "b.txt", false);
         tap_named(out, "Select");
         check("Files: opened a.txt (First line of a), b.txt (First line of b)");
         tap_named(out, "Save");
+        to_downloads(out);
         tap_named(out, "SAVE");
         check("Files: saved notes.txt");
         if shell("cat /sdcard/Download/notes.txt").trim() != "Saved by the system parts" {
@@ -561,7 +623,12 @@ mod tests {
     /// The app's own file opens in another app (HTML Viewer), read through the provider.
     fn open_file(out: &Path, wrong: &mut Vec<String>) {
         tap_named(out, "Open in another app");
-        tap_named(out, "HTML Viewer");
+        // (The chooser lists the apps; once one was chosen before, it offers that one alone, as
+        // "Open with HTML Viewer".)
+        wait_for(out, "Just once");
+        if let Some(listed) = named(&dump(out, "chooser"), "HTML Viewer").cloned() {
+            tap(&listed);
+        }
         tap_named(out, "Just once");
         if wait_for(out, "A page of the system parts").is_none() {
             wrong.push("the page did not open in HTML Viewer".into());
@@ -626,6 +693,15 @@ mod tests {
         }
     }
 
+    /// A part of the system parts test: its name, and its checks, which note what went wrong.
+    /// Where one fails, the screen and the window as told are kept as `after-<name>`.
+    type Part<'a> = (&'a str, &'a dyn Fn(&mut Vec<String>));
+
+    /// The window that has the focus, as the window manager tells it.
+    fn in_front() -> String {
+        shell("dumpsys window | grep -m1 mCurrentFocus").trim().to_owned()
+    }
+
     #[test]
     fn xml_escapes_in_a_dump_are_undone() {
         assert_eq!(unescaped("a&lt;b&amp;&quot;c&#128512;&#x1F600;"), "a<b&\"c😀😀");
@@ -657,9 +733,8 @@ mod tests {
         for one in [&apk, &other] {
             install(Path::new(one)).unwrap_or_else(|said| panic!("{} was not installed: {said}", one.to_string_lossy()));
         }
-        for (name, text) in [("a.txt", "First line of a\nmore\n"), ("b.txt", "First line of b\n")] {
-            std::fs::write(out.join(name), text).unwrap();
-            adb(&["push", &out.join(name).to_string_lossy(), &format!("/sdcard/Download/{name}")]);
+        if !into_downloads(&out, &[("a.txt", "First line of a\nmore\n"), ("b.txt", "First line of b\n")]) {
+            wrong.push("MediaStore does not list a.txt and b.txt in Downloads after 60 s".into());
         }
         shell("rm -f /sdcard/Download/notes.txt '/sdcard/Download/System parts.pdf'; settings put global hide_error_dialogs 1");
         adb(&["logcat", "-c"]);
@@ -667,17 +742,30 @@ mod tests {
         if wait_for(&out, "Drag me").is_none() {
             panic!("the app did not show");
         }
-        formats(&out, &mut wrong);
-        named_faces(&out, &mut wrong);
-        spelling(&out, &mut wrong);
-        composing(&out, &keystore, &mut wrong);
-        file_dialog(&out, &mut wrong);
-        clipboard(&out, &mut wrong);
-        notification(&out, &mut wrong);
-        printing(&out, &mut wrong);
-        open_file(&out, &mut wrong);
-        drag_back(&out, &mut wrong);
-        drag_across(&out, "taut.example.parts2", &mut wrong);
+        let parts: [Part; 12] = [
+            ("input-types", &|wrong| input_types(&out, wrong)),
+            ("formats", &|wrong| formats(&out, wrong)),
+            ("faces", &|wrong| named_faces(&out, wrong)),
+            ("spelling", &|wrong| spelling(&out, wrong)),
+            ("composing", &|wrong| composing(&out, &keystore, wrong)),
+            ("files", &|wrong| file_dialog(&out, wrong)),
+            ("clipboard", &|wrong| clipboard(&out, wrong)),
+            ("notification", &|wrong| notification(&out, wrong)),
+            ("printing", &|wrong| printing(&out, wrong)),
+            ("opening", &|wrong| open_file(&out, wrong)),
+            ("dragging", &|wrong| drag_back(&out, wrong)),
+            ("dragging-between", &|wrong| drag_across(&out, "taut.example.parts2", wrong)),
+        ];
+        for (name, part) in parts {
+            let (since, before) = (Instant::now(), wrong.len());
+            part(&mut wrong);
+            println!("{name}: {} s", since.elapsed().as_secs());
+            if wrong.len() > before {
+                let _ = (screen(&out, &format!("after-{name}")), dump(&out, &format!("after-{name}")));
+                wrong.push(format!("after {name}, in front: {}", in_front()));
+                back_to_app();
+            }
+        }
         let log = String::from_utf8_lossy(&adb(&["logcat", "-d"])).into_owned();
         let _ = std::fs::write(out.join("logcat.txt"), &log);
         assert!(!crashed(&["taut.example.system", "taut.example.parts2"]), "an app crashed: see logcat.txt");

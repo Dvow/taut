@@ -469,34 +469,34 @@ fn structure_methods() -> Vec<(&'static CStr, *const c_void, String)> {
     ]
 }
 
-/// Which roles each of those answers for: the rest are not offered to readers.
-fn roles_for(name: &CStr) -> Option<&'static [Role]> {
-    const TEXT: &[Role] = &[Role::TextBox, Role::PasswordBox, Role::Text, Role::Heading, Role::Paragraph, Role::Code, Role::Cell, Role::ColumnHeader];
-    const BOXES: &[Role] = &[Role::TextBox, Role::PasswordBox];
-    let found: &[Role] = match name.to_bytes() {
-        b"accessibilityRowCount" | b"accessibilityColumnCount" | b"accessibilityColumnHeaderUIElements" | b"accessibilityCellForColumn:row:" => &[Role::Table],
-        b"accessibilityRows" | b"accessibilityVisibleRows" | b"accessibilitySelectedRows" => &[Role::Table, Role::Tree],
-        b"accessibilityIndex" => &[Role::TableRow, Role::TreeItem],
-        b"accessibilityRowIndexRange" => &[Role::Cell],
-        b"accessibilityColumnIndexRange" => &[Role::Cell, Role::ColumnHeader],
-        b"accessibilitySortDirection" => &[Role::ColumnHeader],
-        b"accessibilityDisclosureLevel" | b"isAccessibilityDisclosed" | b"setAccessibilityDisclosed:" | b"accessibilityDisclosedByRow" | b"accessibilityDisclosedRows" => &[Role::TreeItem],
-        b"accessibilityStringForRange:" | b"accessibilityAttributedStringForRange:" | b"accessibilityFrameForRange:" | b"accessibilityRangeForPosition:" => TEXT,
-        b"accessibilityLineForIndex:" | b"accessibilityRangeForLine:" | b"accessibilityRangeForIndex:" => TEXT,
-        b"accessibilityNumberOfCharacters" | b"accessibilityVisibleCharacterRange" => TEXT,
-        b"accessibilitySelectedTextRange" | b"accessibilitySelectedText" => TEXT,
-        b"setAccessibilitySelectedTextRange:" | b"accessibilityInsertionPointLineNumber" => BOXES,
+/// Which elements each of those answers for, by role: the rest are not offered to readers.
+fn answered_by(name: &CStr) -> Option<fn(&AccessNode) -> bool> {
+    let by: fn(&AccessNode) -> bool = match name.to_bytes() {
+        b"accessibilityRowCount" | b"accessibilityColumnCount" | b"accessibilityColumnHeaderUIElements" | b"accessibilityCellForColumn:row:" => |node| node.role == Role::Table,
+        b"accessibilityRows" | b"accessibilityVisibleRows" | b"accessibilitySelectedRows" => |node| matches!(node.role, Role::Table | Role::Tree),
+        b"accessibilityIndex" => |node| matches!(node.role, Role::TableRow | Role::TreeItem),
+        b"accessibilityRowIndexRange" => |node| node.role == Role::Cell,
+        b"accessibilityColumnIndexRange" => |node| matches!(node.role, Role::Cell | Role::ColumnHeader),
+        b"accessibilitySortDirection" => |node| node.role == Role::ColumnHeader,
+        b"accessibilityDisclosureLevel" | b"isAccessibilityDisclosed" | b"setAccessibilityDisclosed:" | b"accessibilityDisclosedByRow" | b"accessibilityDisclosedRows" => {
+            |node| node.role == Role::TreeItem
+        }
+        b"accessibilityStringForRange:" | b"accessibilityAttributedStringForRange:" | b"accessibilityFrameForRange:" | b"accessibilityRangeForPosition:" => AccessNode::reads_text,
+        b"accessibilityLineForIndex:" | b"accessibilityRangeForLine:" | b"accessibilityRangeForIndex:" => AccessNode::reads_text,
+        b"accessibilityNumberOfCharacters" | b"accessibilityVisibleCharacterRange" => AccessNode::reads_text,
+        b"accessibilitySelectedTextRange" | b"accessibilitySelectedText" => AccessNode::reads_text,
+        b"setAccessibilitySelectedTextRange:" | b"accessibilityInsertionPointLineNumber" => |node| matches!(node.role, Role::TextBox | Role::PasswordBox),
         _ => return None,
     };
-    Some(found)
+    Some(by)
 }
 
 /// Whether the element answers a method: those above only for their roles.
 extern "C" fn allowed(element: Obj, _: Sel, asked: Sel) -> Bool {
     // SAFETY: a method name is a string the runtime keeps.
     let name = unsafe { CStr::from_ptr(sel_getName(asked)) };
-    let Some(roles) = roles_for(name) else { return 1 };
-    state(element, |node| roles.contains(&node.role))
+    let Some(answers) = answered_by(name) else { return 1 };
+    state(element, answers)
 }
 
 /// The text of a text box or of plain text, if the element is one.

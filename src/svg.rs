@@ -991,26 +991,31 @@ struct More {
 }
 
 /// What lies where in a drawing, to find the element under the pointer: each shape kept for an
-/// element, in drawing order, and the `<use>` elements that brought them (each shape's range of
-/// them, innermost first); and the clips on them, each with its outlines (by which clip). A
-/// shape takes the pointer only within every clip on it, as in browsers: clip paths and
-/// viewports, not masks.
+/// element, in drawing order, with the `<use>` elements that brought it (its range of `uses`,
+/// innermost first) and the clips on it (its range of `clips_on`); and the clips, each with its
+/// outlines (by which clip, in clip order once read). A shape takes the pointer only within
+/// every clip on it, as in browsers: clip paths and viewports, not masks.
 #[derive(Default)]
 struct Hits {
     shapes: Vec<Hit>,
     uses: Vec<u32>,
+    clips_on: Vec<u32>,
+    /// The clips on the element noted last (a range of `clips_on`): shared by the next one where
+    /// the same, and where its clips are found while its walks go on.
+    last_clips: [u32; 2],
     clips: Vec<HitClip>,
     outlines: Vec<(u32, Hit)>,
 }
 
 /// A shape of an element as it takes the pointer: its outline (which kept one) and transform,
 /// whether its fill counts (with its rule), its stroke's width (0: none), how far it reaches
-/// (left, top, right, bottom in drawing units, its stroke included), and the kept box aligned
-/// with the picture that clips it.
+/// (left, top, right, bottom in drawing units, its stroke included), the kept box aligned with
+/// the picture that clips it, and the other clips on it (see `Hits`).
 #[derive(Clone, Copy)]
 struct Hit {
     element: u32,
     uses: [u32; 2],
+    clips: [u32; 2],
     path: u32,
     table: Table,
     filled: bool,
@@ -1020,12 +1025,34 @@ struct Hit {
     boxed: Option<u32>,
 }
 
-/// A clip on the shapes a walk drew, as they take the pointer: which of them (a range of
-/// `Hits::shapes`), the walk (by the first item of its block) and which of its cuts.
+/// A clip on the shapes a walk drew, as they take the pointer: the walk (by the first item of
+/// its block) and which of its cuts.
 struct HitClip {
-    shapes: [u32; 2],
     walk: u32,
     cut: u8,
+}
+
+impl Hits {
+    /// The range of `clips_on` holding `clips`: the last element's where the same, else new.
+    /// They are the last element's clips now.
+    fn clips_of(&mut self, clips: &[u32]) -> [u32; 2] {
+        let [from, to] = self.last_clips;
+        if self.clips_on[from as usize..to as usize] != *clips {
+            let from = self.clips_on.len() as u32;
+            self.clips_on.extend_from_slice(clips);
+            self.last_clips = [from, self.clips_on.len() as u32];
+        }
+        self.last_clips
+    }
+
+    /// The clip already noted for a walk's cut `n` (the walk by the first item of its block),
+    /// if any: while a walk goes on, every element noted within it has its clips, so the last
+    /// one's are looked through, not all.
+    fn open_clip(&self, walk: usize, n: usize) -> Option<u32> {
+        let [from, to] = self.last_clips;
+        let open = self.clips_on[from as usize..to as usize].iter().rev();
+        open.copied().find(|clip| self.clips[*clip as usize].walk as usize == walk && self.clips[*clip as usize].cut as usize == n)
+    }
 }
 
 /// Notes the shapes a reading kept for an element (see `Reading::note_hits`).
@@ -1380,20 +1407,22 @@ impl ParsedDrawing {
         let back = undone(&both(&[1.0, 0.0, 0.0, 1.0, within.x, within.y], &self.fit([within.w, within.h])))?;
         let point = through(&back, at);
         let uses = |hit: &Hit| &hits.uses[hit.uses[0] as usize..hit.uses[1] as usize];
-        let near = |(_, hit): &(usize, &Hit)| point.x >= hit.reach[0] && point.y >= hit.reach[1] && point.x <= hit.reach[2] && point.y <= hit.reach[3];
-        let found = |(n, hit): &(usize, &Hit)| self.lies_in(hit, point) && self.unclipped(hits, *n, point) && takes(hit.element as usize, uses(hit));
-        let (_, hit) = hits.shapes.iter().enumerate().rev().filter(near).find(found)?;
+        let near = |hit: &&Hit| point.x >= hit.reach[0] && point.y >= hit.reach[1] && point.x <= hit.reach[2] && point.y <= hit.reach[3];
+        let found = |hit: &&Hit| self.lies_in(hit, point) && self.unclipped(hits, hit, point) && takes(hit.element as usize, uses(hit));
+        let hit = hits.shapes.iter().rev().filter(near).find(found)?;
         Some((hit.element as usize, uses(hit)))
     }
 
-    /// Whether a point (in drawing units) lies within every clip on hit shape `n`: its box
-    /// aligned with the picture, and each clip noted on it (within any of its outlines).
-    fn unclipped(&self, hits: &Hits, n: usize, point: Point) -> bool {
-        let boxed = hits.shapes[n].boxed.and_then(|boxed| self.boxes.get(boxed as usize));
+    /// Whether a point (in drawing units) lies within every clip on a hit shape: its box aligned
+    /// with the picture, and each clip noted on it (within any of its outlines).
+    fn unclipped(&self, hits: &Hits, hit: &Hit, point: Point) -> bool {
+        let boxed = hit.boxed.and_then(|boxed| self.boxes.get(boxed as usize));
         let in_box = boxed.is_none_or(|[left, top, right, bottom]| point.x >= *left && point.y >= *top && point.x <= *right && point.y <= *bottom);
-        let on_it = |clip: &(usize, &HitClip)| (clip.1.shapes[0] as usize..clip.1.shapes[1] as usize).contains(&n);
-        let within = |(at, _): (usize, &HitClip)| hits.outlines.iter().any(|(clip, outline)| *clip as usize == at && self.lies_in(outline, point));
-        in_box && hits.clips.iter().enumerate().filter(on_it).all(within)
+        let within = |clip: &u32| {
+            let from = hits.outlines.partition_point(|(of, _)| of < clip);
+            hits.outlines[from..].iter().take_while(|(of, _)| of == clip).any(|(_, outline)| self.lies_in(outline, point))
+        };
+        in_box && hits.clips_on[hit.clips[0] as usize..hit.clips[1] as usize].iter().all(within)
     }
 
     /// Whether a point (in drawing units) lies in a shape's fill, where it is filled, or within
@@ -1883,7 +1912,10 @@ impl<'a> Reading<'a> {
     fn noted(text: &'a str) -> Option<Reading<'a>> {
         let (mut reading, start) = Reading::prepared(text, None)?;
         reading.noting = Some(Reading::note_hits);
-        Some(reading.walked(start))
+        let mut reading = reading.walked(start);
+        // (In clip order, each clip's outlines are found by halves: see `unclipped`.)
+        reading.parsed.more().hits.outlines.sort_by_key(|(clip, _)| *clip);
+        Some(reading)
     }
 
     /// Walks a prepared file from element `start`, then reads the drawings it brings.
@@ -2163,51 +2195,48 @@ impl<'a> Reading<'a> {
     /// Notes the shapes kept for element `at` from item `first` on, with the `<use>` elements
     /// that brought it and the clips on it (see `note_hits`).
     fn note_shapes(&mut self, at: usize, first: usize, walks: &[Walk]) {
+        let cuts = walks.iter().flat_map(|walk| walk.cuts.iter().enumerate().filter_map(move |(n, cut)| Some((walk, n, (*cut)?))));
+        let clips: Vec<u32> = cuts.filter(|(.., cut)| !matches!(cut, Cut::Mask(_))).map(|cut| self.note_clip(cut)).collect();
         let mut hits = std::mem::take(&mut self.parsed.more().hits);
+        let clips = hits.clips_of(&clips);
         let from = hits.uses.len() as u32;
         for (n, walk) in walks.iter().enumerate().skip(1).rev() {
             let Some(brought) = walk.used else { continue };
             hits.uses.extend(self.user(brought, walks[n - 1].at).map(|user| user as u32));
         }
-        let (uses, noted) = ([from, hits.uses.len() as u32], hits.shapes.len() as u32);
+        let uses = [from, hits.uses.len() as u32];
         for shape in self.shapes_from(first) {
             let stroke = if shape.line == Ink::None { 0.0 } else { self.parsed.pens[shape.pen as usize].width };
-            hits.shapes.push(Hit { element: at as u32, uses, filled: shape.fill != Ink::None, ..self.outline_of(shape, stroke) });
+            hits.shapes.push(Hit { element: at as u32, uses, clips, filled: shape.fill != Ink::None, ..self.outline_of(shape, stroke) });
         }
-        let shapes = [noted, hits.shapes.len() as u32];
         self.parsed.more().hits = hits;
-        let cuts = walks.iter().flat_map(|walk| walk.cuts.iter().enumerate().filter_map(move |(n, cut)| Some((walk, n, (*cut)?))));
-        for (walk, n, cut) in cuts.filter(|(.., cut)| !matches!(cut, Cut::Mask(_))) {
-            self.note_clip((walk, n, cut), shapes);
-        }
     }
 
-    /// Notes that a walk's clip (`n` of its cuts) clips shapes just noted (a range of
-    /// `Hits::shapes`, see `HitClip`): a box's outline at once, a clip path's as its walk keeps
-    /// them. Not a mask: in browsers the pointer goes through masks.
-    fn note_clip(&mut self, (walk, n, cut): (&Walk, usize, Cut), shapes: [u32; 2]) {
+    /// The clip a walk's cut `n` makes (see `HitClip`), noted now if new: a box's outline at
+    /// once, a clip path's as its walk keeps them. Not a mask: in browsers the pointer goes
+    /// through masks.
+    fn note_clip(&mut self, (walk, n, cut): (&Walk, usize, Cut)) -> u32 {
         let hits = &mut self.parsed.more().hits;
-        if let Some(noted) = hits.clips.iter_mut().rev().find(|noted| noted.walk as usize == walk.first && noted.cut as usize == n) {
-            noted.shapes[1] = shapes[1];
-            return;
+        if let Some(clip) = hits.open_clip(walk.first, n) {
+            return clip;
         }
         let clip = hits.clips.len() as u32;
-        hits.clips.push(HitClip { shapes, walk: walk.first as u32, cut: n as u8 });
-        if !matches!(cut, Cut::Box(_) | Cut::DrawingBox(_)) {
-            return;
+        hits.clips.push(HitClip { walk: walk.first as u32, cut: n as u8 });
+        if matches!(cut, Cut::Box(_) | Cut::DrawingBox(_)) {
+            let (place, table) = self.box_cut(cut, walk.units);
+            let path = self.kept_path(rect(place, [None; 2]));
+            let outline = self.hit(path, table, 0.0);
+            self.parsed.more().hits.outlines.push((clip, outline));
         }
-        let (place, table) = self.box_cut(cut, walk.units);
-        let path = self.kept_path(rect(place, [None; 2]));
-        let outline = self.hit(path, table, 0.0);
-        self.parsed.more().hits.outlines.push((clip, outline));
+        clip
     }
 
     /// Notes the shapes kept from item `first` on as outlines of the clip path on the walk whose
     /// block begins at item `clipped` (see `HitClip`): filled by their rule, strokes aside.
     fn note_outlines(&mut self, clipped: usize, first: usize) {
         let mut hits = std::mem::take(&mut self.parsed.more().hits);
-        if let Some(clip) = hits.clips.iter().rposition(|noted| noted.walk as usize == clipped && noted.cut == 0) {
-            hits.outlines.extend(self.shapes_from(first).map(|shape| (clip as u32, self.outline_of(shape, 0.0))));
+        if let Some(clip) = hits.open_clip(clipped, 0) {
+            hits.outlines.extend(self.shapes_from(first).map(|shape| (clip, self.outline_of(shape, 0.0))));
         }
         self.parsed.more().hits = hits;
     }
@@ -2227,7 +2256,7 @@ impl<'a> Reading<'a> {
     /// and stroked as wide as `stroke`; of no element.
     fn hit(&self, path: u32, table: Table, stroke: f32) -> Hit {
         let reach = reach_of(&self.parsed.paths[path as usize], &table, stroke);
-        Hit { element: 0, uses: [0; 2], path, table, filled: true, even_odd: false, stroke, reach, boxed: None }
+        Hit { element: 0, uses: [0; 2], clips: [0; 2], path, table, filled: true, even_odd: false, stroke, reach, boxed: None }
     }
 
     /// The `<use>` element that brought `brought`, the walk around it being past it at `after`:
@@ -5651,5 +5680,30 @@ mod tests {
         assert_eq!(runs(&letters, &[Some(0); 3], 0).first(), Some(&(0..3)));
         // Another font is another run.
         assert_eq!(runs(&given("abc"), &[Some(0), Some(1), Some(1)], 0), [0..1, 1..3]);
+    }
+
+    /// Finding what lies under the pointer costs as much where each of thousands of shapes has
+    /// a clip of its own as where one clips them all: each shape's own clips are looked through,
+    /// not every clip with every outline (which took 170 ms a hit for 8,000 shapes, ~1 MB).
+    #[test]
+    fn a_hit_looks_through_its_shapes_own_clips_only() {
+        let clip = |k: usize| format!(r#"<clipPath id="c{k}"><rect x="300" y="300" width="400" height="400" transform="rotate(10 500 500)"/></clipPath>"#);
+        let rect = |clip: &str| format!(r#"<rect width="1000" height="1000"{clip}/>"#);
+        let own = (0..4000).map(clip).collect::<String>() + &(0..4000).map(|k| rect(&format!(r#" clip-path="url(#c{k})""#))).collect::<String>();
+        let shared = clip(0) + r#"<g clip-path="url(#c0)">"# + &rect("").repeat(4000) + "</g>";
+        let cost = |shapes: &str| {
+            let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">{shapes}</svg>"#);
+            let mut parsed = ParsedDrawing::read_with_hits(&svg).unwrap();
+            parsed.note(Rect { x: 0.0, y: 0.0, w: 1000.0, h: 1000.0 });
+            // (Nothing takes the pointer: every shape under it is looked at. The least of five.)
+            let hit = || {
+                let start = std::time::Instant::now();
+                assert!(parsed.element_at(pt(500.0, 500.0), |_, _| false).is_none());
+                start.elapsed()
+            };
+            (0..5).map(|_| hit()).min().unwrap()
+        };
+        let (own, shared) = (cost(&own), cost(&shared));
+        assert!(own < 4 * shared, "a clip each {own:?}, one for all {shared:?}");
     }
 }

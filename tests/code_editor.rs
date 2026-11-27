@@ -61,6 +61,23 @@ fn tab_indents_and_escape_then_tab_goes_on() {
 }
 
 #[test]
+fn code_is_typed_in_the_editor_and_text_in_a_text_box() {
+    let mut code = CodeEditor::new("fn main() {}", &Syntax::RUST);
+    let mut other = String::new();
+    let mut w = window(1.0);
+    let mut both = |ui: &mut Ui| {
+        ui.code_editor(&mut code, "Source");
+        ui.text_box(&mut other, "After it");
+    };
+    settle(&mut w, &mut both);
+    click(&mut w, pt(300.0, 14.0), &mut both);
+    assert!(w.code_focused() && !w.password_focused(), "input methods offer no suggestions in code");
+    key(&mut w, Key::Escape, Mods::NONE, &mut both);
+    key(&mut w, Key::Tab, Mods::NONE, &mut both);
+    assert!(w.ime_area().is_some() && !w.code_focused(), "a text box keeps them");
+}
+
+#[test]
 fn find_opens_its_bar_and_selects_what_it_finds() {
     let mut code = CodeEditor::new("one two\nthree two\n", &Syntax::PLAIN);
     let mut w = window(1.0);

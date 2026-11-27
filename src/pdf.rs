@@ -487,8 +487,14 @@ fn content(paper: &Paper, page: usize, shared: &mut Shared, marked: &crate::pdf_
             open = None;
         }
         if let Some(number) = now.filter(|now| open != Some(*now)) {
-            let tag = marked.owner[page][place].map_or("", |part| paper.parts[part as usize].tag.name());
-            out.push_str(&if number == u32::MAX { "/Artifact BMC\n".to_string() } else { format!("/{tag} << /MCID {number} >> BDC\n") });
+            let part = marked.owner[page][place].map(|part| &paper.parts[part as usize]);
+            // (Readers take ActualText from a span: such a part's content is one, its structure
+            // still its own by number.)
+            let (tag, actual) = match part {
+                Some(part) if !part.actual.is_empty() => ("Span", format!(" /ActualText {}", text(&part.actual))),
+                _ => (part.map_or("", |part| part.tag.name()), String::new()),
+            };
+            out.push_str(&if number == u32::MAX { "/Artifact BMC\n".to_string() } else { format!("/{tag} << /MCID {number}{actual} >> BDC\n") });
             open = Some(number);
         }
         match mark {

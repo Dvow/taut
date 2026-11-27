@@ -437,11 +437,13 @@ impl Pages<'_> {
         match (ticked, numbered) {
             (Some(done), _) => self.tick(rect(left + (room - 14.0) / 2.0, middle - 7.0, 14.0, 14.0), done),
             (None, true) => {
-                let said = if open.leftward { format!(".{number}") } else { format!("{number}.") };
+                let written = format!("{number}.");
+                let said = if open.leftward { format!(".{number}") } else { written.clone() };
                 let wide = self.paper.measure(&said, t.font);
-                // (Its number is its label.)
+                // (Its number is its label. Drawn right to left, it reads as written.)
                 let depth = self.paper.open.len();
                 self.paper.open.extend(open.label);
+                self.paper.read_as(if open.leftward { &written } else { "" });
                 self.paper.line(&said, if open.leftward { left + 6.0 } else { open.x - 6.0 - wide }, base, t.font, t.text_dim);
                 self.paper.open.truncate(depth);
             }
@@ -633,6 +635,26 @@ mod tests {
         let at = |text: &str| placed.iter().find(|(own, _)| own.contains(text)).map(|(_, x)| *x).unwrap_or_else(|| panic!("{text:?} not in {placed:?}"));
         assert!(at(".1") > at("\u{5d0}\u{5d2}"), "right to left, the number is right of the item: {placed:?}");
         assert!(at("1.") < at("ab"), "left to right, left of it");
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn a_right_to_left_list_number_drawn_otherwise_reads_as_written() {
+        use crate::pdf::tests::{objects, streamed};
+        let mut paper = Paper::new();
+        paper.markdown(&Markdown::parse("1. \u{5d0}\u{5d2} \u{5d2}\u{5d0}\n\nWords between.\n\n1. ab\n"), Paper::A4, 72.0);
+        let file = paper.to_pdf();
+        // Drawn `.1`, its label reads `1.` (ActualText: a span's in the page, and its element's);
+        // drawn `1.`, it needs none.
+        let objects = objects(&file);
+        let contents: Vec<String> = objects.iter().filter_map(|(_, object)| streamed(object)).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).collect();
+        let labels: Vec<&str> = contents.iter().flat_map(|content| content.lines()).filter(|line| line.contains("/MCID") && (line.starts_with("/Lbl") || line.starts_with("/Span"))).collect();
+        assert!(labels.len() == 2 && labels[0].starts_with("/Span << /MCID 0 /ActualText <FEFF0031002E> >>") && labels[1].starts_with("/Lbl"), "{labels:?}");
+        let elements = objects.iter().map(|(_, object)| String::from_utf8_lossy(object)).filter(|object| object.contains("/S /Lbl"));
+        assert_eq!(elements.filter(|element| element.contains("/ActualText <FEFF0031002E>")).count(), 1);
+        let Some(read) = crate::pdf::readers::text_of(&file) else { return eprintln!("no pdftotext here: not read back") };
+        let first = read.lines().next().unwrap_or_default();
+        assert!(first.contains("1.") && !first.contains(".1"), "copied out: {read:?}");
     }
 
     #[test]

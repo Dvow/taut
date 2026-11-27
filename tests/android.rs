@@ -12,6 +12,9 @@
 //!   it does nothing.
 //!
 //! `TAUT_PICTURES` names a folder for the dumps and the log.
+#[cfg(not(target_os = "android"))]
+mod on_android;
+
 fn main() {
     #[cfg(target_os = "android")]
     phone::main();
@@ -503,8 +506,8 @@ mod phone {
 #[cfg(not(target_os = "android"))]
 mod host {
     use super::NOTES;
+    use super::on_android;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
     use std::time::{Duration, Instant};
 
     const PACKAGE: &str = "taut.example.android";
@@ -512,51 +515,13 @@ mod host {
     /// How long the emulator may stay out of reach before the checks give up on it.
     const OUT_OF_REACH: Duration = Duration::from_secs(120);
 
-    /// `adb`: what it printed. The emulator's connection drops now and then (on a busy runner)
-    /// and comes back: a command that never reached it is sent again once it is back.
+    /// `adb`: what it printed (sent again whenever it never reached the emulator).
     fn adb(args: &[&str]) -> String {
-        adb_said(args).0
-    }
-
-    /// `adb`: what it printed, and its errors.
-    fn adb_said(args: &[&str]) -> (String, String) {
-        let tools = std::env::var_os("ANDROID_HOME").map(|home| PathBuf::from(home).join("platform-tools").join("adb"));
-        let program = tools.filter(|path| path.exists() || path.with_extension("exe").exists()).unwrap_or_else(|| "adb".into());
-        let since = Instant::now();
-        loop {
-            let done = Command::new(&program).args(args).output().expect("adb runs");
-            let (said, errors) = (String::from_utf8_lossy(&done.stdout).into_owned(), String::from_utf8_lossy(&done.stderr).into_owned());
-            if !never_reached(&errors) {
-                return (said, errors);
-            }
-            assert!(since.elapsed() < OUT_OF_REACH, "the emulator stayed out of reach: adb {args:?}: {errors}");
-            std::thread::sleep(Duration::from_secs(1));
-        }
-    }
-
-    /// Whether `adb`'s errors say it never reached the emulator, so the command did nothing there.
-    fn never_reached(errors: &str) -> bool {
-        // (After "error: " from most commands, "adb: " or "adb.exe: " from installs.)
-        let said = errors.lines().next().and_then(|line| line.split_once(": ")).map_or("", |(_, said)| said.trim_end());
-        said == "device offline" || said == "no devices/emulators found" || (said.starts_with("device '") && said.ends_with("' not found"))
+        on_android::said(&on_android::program(), args).0
     }
 
     fn shell(command: &str) -> String {
         adb(&["shell", command])
-    }
-
-    /// The emulator's file `path`, whole, by `pull`, again until it comes so. (What `exec-out`
-    /// prints can end early and still exit 0.)
-    fn read(path: &str) -> String {
-        let copy = std::env::temp_dir().join(format!("taut-adb-{}", std::process::id()));
-        let since = Instant::now();
-        while !adb_said(&["pull", path, &copy.to_string_lossy()]).1.contains("1 file pulled") {
-            assert!(since.elapsed() < OUT_OF_REACH, "{path} was not copied");
-            std::thread::sleep(Duration::from_secs(1));
-        }
-        let text = std::fs::read_to_string(&copy).unwrap_or_default();
-        let _ = std::fs::remove_file(copy);
-        text
     }
 
     /// One node of a `uiautomator dump`: class, text, focused, scrollable, bounds.
@@ -583,7 +548,7 @@ mod host {
             assert!(since.elapsed() < OUT_OF_REACH, "uiautomator dumped nothing");
             std::thread::sleep(Duration::from_secs(1));
         }
-        let xml = read("/sdcard/taut-ui.xml");
+        let xml = String::from_utf8_lossy(&on_android::read(&on_android::program(), "/sdcard/taut-ui.xml")).into_owned();
         let _ = std::fs::write(out.join(format!("{name}.xml")), &xml);
         let node = |tag: &str| {
             let corners: Vec<i32> = attribute(tag, "bounds").split(|c: char| !c.is_ascii_digit()).filter_map(|part| part.parse().ok()).collect();
@@ -615,7 +580,7 @@ mod host {
         let out = std::env::var_os("TAUT_PICTURES").map_or_else(|| std::env::temp_dir().join("taut-android-readers"), PathBuf::from);
         std::fs::create_dir_all(&out).unwrap();
         let mut failed: Vec<String> = Vec::new();
-        let (said, errors) = adb_said(&["install", "-r", &apk.to_string_lossy()]);
+        let (said, errors) = on_android::said(&on_android::program(), &["install", "-r", &apk.to_string_lossy()]);
         assert!(said.contains("Success"), "the app was not installed: {said}{errors}");
         adb(&["logcat", "-c"]);
         shell("settings put global hide_error_dialogs 1; settings put system accelerometer_rotation 0; settings put system user_rotation 0");

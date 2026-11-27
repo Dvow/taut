@@ -663,7 +663,7 @@ pub(crate) fn set_clipboard_text(env: Env, activity: Obj, text: &str) {
 }
 
 /// Shows or hides the soft keyboard for the library's view; `again` restarts its input (text
-/// focus moved to another box).
+/// focus came to a box).
 pub(crate) fn soft_keyboard(env: Env, activity: Obj, view: Obj, show: bool, again: bool) {
     env.frame(|| {
         let methods = service(env, activity, "input_method");

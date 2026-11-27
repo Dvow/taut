@@ -59,7 +59,7 @@ const GOES: usize = 8;
 /// it.
 pub(crate) const PAGE_ID: Id = 1;
 /// How far Left or Right scrolls sideways with nothing focused: a line, a third of a wheel notch.
-const LINE: f32 = 16.0;
+pub(crate) const LINE: f32 = 16.0;
 /// The height of a layer over every panel: a menu, a tooltip, a dialog.
 const OVER: u64 = 1 << 32;
 
@@ -231,6 +231,8 @@ pub(crate) struct Input {
     /// the wheel consumes it, and nothing scrolls by it then.)
     pub wheel: [f32; 2],
     pub strokes: Vec<Stroke>,
+    /// Tab moved focus since the last run: `Some(true)` with Shift, backward.
+    pub tabbed: Option<bool>,
     /// The keys down now; and whether that was asked during the last run (only then does a key
     /// release run the interface).
     pub held: Vec<Key>,
@@ -642,9 +644,10 @@ pub struct Ui {
     pub(crate) again_key: Option<(Key, Mods)>,
     /// The next box to get focus selects all its text.
     pub(crate) select_all: bool,
-    /// The box that takes Tab as its own key while focused, as of the last run (a code editor,
-    /// which indents with it); 0 for none. Elsewhere Tab moves focus.
-    pub(crate) takes_tab: Id,
+    /// The box that takes Tab as its own key while focused, and the one that takes Shift+Tab, as
+    /// of the last run (0 for none): a code editor both (it indents with them), an animated
+    /// drawing those that move between its elements. Elsewhere Tab moves focus.
+    pub(crate) takes_tab: [Id; 2],
     /// The box focused when something covered it (a dialog, a menu): focus returns there once
     /// all of that is gone.
     covered_from: Id,
@@ -863,7 +866,7 @@ impl Ui {
             reveal: false,
             again_key: None,
             select_all: false,
-            takes_tab: 0,
+            takes_tab: [0; 2],
             covered_from: 0,
             paged: None,
             stretched_to: 0,
@@ -1013,6 +1016,11 @@ impl Ui {
     pub fn password_focused(&self) -> bool {
         self.ime_area.is_some() && self.edit.secret
     }
+    /// Whether code is being typed (a code editor). A window tells input methods: they offer no
+    /// suggestions and make no capitals there.
+    pub fn code_focused(&self) -> bool {
+        self.ime_area.is_some() && self.edit.code
+    }
 
     /// For a program sharing the pointer with the interface (a game under an overlay, another
     /// program's window a DLL draws into): whether the pointer is the interface's now. It is
@@ -1075,7 +1083,9 @@ impl Ui {
             Event::Press(button, mods) => self.press_button(button, mods),
             Event::Release(button) => (self.input.down[button as usize], self.input.released[button as usize]) = (false, true),
             Event::Wheel(dx, dy) => self.input.wheel = [self.input.wheel[0] + dx, self.input.wheel[1] + dy],
-            Event::Key(Key::Tab, mods) if !mods.ctrl && !mods.alt && (self.takes_tab == 0 || self.focus != self.takes_tab) && !self.grids.keeps_tab(self.focus) => self.move_focus(!mods.shift),
+            Event::Key(Key::Tab, mods) if !mods.ctrl && !mods.alt && (self.focus == 0 || self.takes_tab[mods.shift as usize] != self.focus) && !self.grids.keeps_tab(self.focus) => {
+                self.move_focus(!mods.shift)
+            }
             Event::Key(key, mods) => {
                 // A held key keeps reporting presses: it is held once.
                 self.input.held.retain(|held| *held != key);
@@ -1242,7 +1252,7 @@ impl Ui {
         self.asks.begin();
         (self.shapes_used, self.enabled, self.join_next, self.cells_next, self.pointer_shown, self.moves_wanted, self.hiding) = (0, true, false, false, false, false, None);
         self.input.held_asked = false;
-        (self.again, self.cursor, self.wake, self.window_state.title_bar, self.takes_tab) = (false, Cursor::Arrow, None, 0, 0);
+        (self.again, self.cursor, self.wake, self.window_state.title_bar, self.takes_tab) = (false, Cursor::Arrow, None, 0, [0; 2]);
         // A screen reader's selection request goes into the text box once it has focus: now, or
         // after the one run that moves focus there.
         match self.reader_selects.take() {
@@ -1400,7 +1410,7 @@ impl Ui {
     /// pass.
     fn forget_handled_input(&mut self) {
         let input = &mut self.input;
-        (input.pressed, input.released, input.wheel, input.moved) = ([false; 3], [false; 3], [0.0; 2], false);
+        (input.pressed, input.released, input.wheel, input.moved, input.tabbed) = ([false; 3], [false; 3], [0.0; 2], false, None);
         input.strokes.clear();
         input.strokes.extend(self.again_key.take().map(|(key, mods)| Stroke::Key(key, mods)));
         self.files.clear();
@@ -2148,7 +2158,7 @@ impl Ui {
         let left = self.rover(self.focus).map(|rover| rover.group);
         let mut steps = (1..=count).map(|step| stops[if forward { (from + step) % count } else { (from + 2 * count - step) % count }]);
         if let Some(onto) = steps.find(|id| self.stops_at(*id, left)) {
-            (self.focus, self.focus_shown, self.reveal, self.again) = (onto, true, true, true);
+            (self.focus, self.focus_shown, self.reveal, self.again, self.input.tabbed) = (onto, true, true, true, Some(!forward));
         }
     }
     /// Box `id` as a member of a roving group, if it is one.

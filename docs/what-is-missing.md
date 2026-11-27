@@ -214,9 +214,7 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   deep at most. SMIL as frames (`svg::encode_animation`): a minute at most, timed parts only. In
   a window (`AnimatedDrawing`): a seek back works its timeline out again from the start with the
   last 4,096 events; the pointer is over a shape's fill or stroke (masks aside, as in browsers),
-  text as its whole element, nothing where no shape is (browsers: the root); Tab moves focus into
-  the drawing, not between its elements. A kernel unit finer than an eighth of a pixel counts as
-  an eighth. Small blurs use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped
+  text as its whole element. A kernel unit finer than an eighth of a pixel counts as an eighth. Small blurs use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped
   without `shaping`. Masks and non-box clips multiply edge coverages; two opposite subpaths of
   one shape can show a hairline. Crisp edges paint pixels more than half covered (librsvg:
   pixels whose sample point is). Of 2,986 Linux desktop icons, 392 differ visibly from librsvg

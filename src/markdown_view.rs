@@ -21,7 +21,7 @@ use crate::code_editor::Syntax;
 use crate::color::Color;
 use crate::event::{Cursor, Key, Mods};
 use crate::geom::{Point, Rect, pt, rect};
-use crate::id::hash;
+use crate::id::{Id, hash};
 use crate::layout::{Align, Flow, Length};
 use crate::markdown::Markdown;
 use crate::rich_text::{Bit, Kind, Laid, Links, NO_WRAP, Room, Shape, THING, Target, TextStyle, Thing, Writing, face_of, heights, lay, row_of};
@@ -29,7 +29,7 @@ use crate::slots::Slots;
 use crate::text::{Decoration, Face, Font, TextSystem};
 use crate::text_edit::{step, word, word_edge};
 use crate::theme::Theme;
-use crate::ui::{Measure, Response, Stored, Stroke, Ui};
+use crate::ui::{LINE, Measure, Response, Stored, Stroke, Ui};
 use std::time::Duration;
 
 /// How often the view scrolls while a selection is dragged past its edge.
@@ -81,8 +81,10 @@ pub(crate) struct Shown {
     picked: [u32; 2],
     clicks: u8,
     grabbed: [u32; 2],
-    /// The link with keyboard focus, and the one its context menu is for (0 for none).
+    /// The link with keyboard focus and its box, and the link its context menu is for (0 for
+    /// none).
     focused: u32,
+    focused_box: Id,
     menu_link: u32,
     /// Each code block described last run, and how far it was scrolled sideways.
     code_scrolls: Vec<(u32, f32)>,
@@ -528,10 +530,10 @@ impl Shown {
     }
 
     /// The link pieces given boxes, in order: those in view (in the blocks `order`), the link
-    /// before them and the one after, and the focused link and those either side of it, wherever
-    /// they are: so Tab and Shift+Tab move on in text order. Links not laid out are returned
-    /// apart, in order, those above what is laid out and those below, each to get a box of its
-    /// own.
+    /// before them and the one after, the focused link and those either side of it, and the
+    /// first and last links, wherever they are: so Tab and Shift+Tab move on in text order, and
+    /// wrap round. Links not laid out are returned apart, in order, those above what is laid out
+    /// and those below, each to get a box of its own.
     fn reachable(&self, writing: &Writing, order: &[u32], view: [f32; 2]) -> (Vec<Target>, [Vec<u32>; 2]) {
         let worded = order.iter().map(|at| *at as usize).filter(|at| worded(writing.blocks[*at].kind));
         let [low, high] = worded.map(|at| self.rows_in_view(at, view)).fold([usize::MAX, 0], |[low, high], [from, to]| [low.min(from), high.max(to)]);
@@ -548,8 +550,9 @@ impl Shown {
         let last = self.targets.last().map_or(ahead, |target| link_of(self, target));
         let next_to = [if before.is_none() { ahead } else { 0 }, if after.is_none() { last + 1 } else { 0 }];
         let focus = if self.focused == 0 { [0; 3] } else { [self.focused - 1, self.focused, self.focused + 1] };
+        let ends = [1, self.links.len() as u32];
         let mut apart = [Vec::new(), Vec::new()];
-        for link in next_to.into_iter().chain(focus).filter(|link| *link != 0 && *link as usize <= self.links.len()) {
+        for link in next_to.into_iter().chain(focus).chain(ends).filter(|link| *link != 0 && *link as usize <= self.links.len()) {
             self.pick_link(link, ahead, &mut picked, &mut apart);
         }
         (picked.into_iter().map(|at| self.targets[at]).collect(), apart)
@@ -594,6 +597,22 @@ impl Shown {
     /// The row text byte `at` is on.
     fn row_at(&self, at: u32) -> usize {
         self.laid.rows.partition_point(|row| row.words[0] <= at).saturating_sub(1)
+    }
+
+    /// Whether a link starts on a row below the focused link (`down`), or above it. A link not
+    /// laid out counts as on another row.
+    fn link_beyond(&self, down: bool) -> bool {
+        let end = if down { self.links.len() as u32 } else { 1 };
+        if self.focused == 0 || self.focused == end {
+            return false;
+        }
+        let rows = &self.laid.rows;
+        let laid = |at: u32| rows.first().is_some_and(|first| first.words[0] <= at) && rows.last().is_some_and(|last| at < last.words[1]);
+        let row = |link: u32| Some(self.links[link as usize - 1][0]).filter(|at| laid(*at)).map(|at| self.row_at(at));
+        match (row(self.focused), row(end)) {
+            (Some(here), Some(there)) => here != there,
+            _ => true,
+        }
     }
 
     /// A pointer press at text byte `at`: the first of `clicks` presses, with Shift or not; or,
@@ -900,12 +919,14 @@ impl Ui {
     /// described, and only what is around it is laid out (a jump to the end lays out the end).
     ///
     /// Select with the pointer (double click: word, triple: block, Shift extends; dragged past
-    /// the view's edge, it scrolls) or, once focused, with the keys (Shift+arrows, Home/End;
-    /// Ctrl+Shift for words and the ends; Ctrl+A); Ctrl+C copies. Its context menu copies,
-    /// selects all, and on a link copies the link. Tab visits it, each code block (arrows
-    /// scroll it), then each link; a link's title shows while it is hovered or focused. Screen
-    /// readers get a document: headings with levels, paragraphs, lists and items, quotes, code,
-    /// tables with their headings, links with their titles, and the selection.
+    /// the view's edge, it scrolls) or, once it or a link of it is focused, with the keys
+    /// (Shift+arrows, Home/End; Ctrl+Shift for words and the ends; Ctrl+A); Ctrl+C copies. Its
+    /// context menu copies, selects all, and on a link copies the link. Tab visits it, each code
+    /// block (arrows scroll it), then each link, and wraps round. On a link, Up and Down go to
+    /// the link above or below, or with none, scroll a line. A link's title shows while it is
+    /// hovered or focused. Screen readers get a document: headings with levels, paragraphs,
+    /// lists and items, quotes, code, tables with their headings, links with their titles, and
+    /// the selection.
     ///
     /// Returns the target of a clicked link. A link to one of its own headings
     /// (`#what-it-says`) is followed by the document itself, which scrolls to the heading.
@@ -926,8 +947,12 @@ impl Ui {
         let corner = self.document_corner(&state, within, seen[2]);
         self.document_pointer(shown, doc, &state, corner);
         self.drag_past_edge(shown, &state, within);
-        if state.focused {
+        let on_link = shown.focused != 0 && self.focus == shown.focused_box;
+        if state.focused || on_link {
             self.document_keys(shown, doc, within, view);
+        }
+        if on_link {
+            self.link_arrows(shown, within);
         }
         // Its height is its blocks', so layout's result is known ahead: its width and its place
         // in the scroll box are read back, and it is described again if either differs.
@@ -1004,7 +1029,7 @@ impl Ui {
     /// laid out, and scrolled to (in scroll box `within`, now showing `view`).
     fn follow_focus(&mut self, shown: &mut Shown, doc: &Markdown, focused: u32, apart: &[Vec<u32>; 2], within: u32, view: [f32; 2]) {
         let arrived = shown.focused != focused && apart.iter().flatten().any(|link| *link == focused);
-        shown.focused = focused;
+        (shown.focused, shown.focused_box) = (focused, if focused == 0 { 0 } else { self.focus });
         let Some(words) = shown.links.get(focused.wrapping_sub(1) as usize).filter(|_| arrived) else { return };
         self.lay_document_to(shown, doc, block_of(&doc.writing, words[0]));
         let first = shown.targets.partition_point(|target| link_of(shown, target) < focused);
@@ -1107,6 +1132,16 @@ impl Ui {
         self.lay_document_to(shown, doc, block_of(&doc.writing, shown.picked[1]));
         if let Some(row) = shown.laid.rows.get(shown.row_at(shown.picked[1])) {
             self.show_document_row(within, view, *row);
+        }
+    }
+
+    /// Up and Down (Ctrl too) on a focused link with no link that way: the view scrolls a line.
+    /// (Arrow navigation would scroll on, pass after pass, looking for one.)
+    fn link_arrows(&mut self, shown: &Shown, within: u32) {
+        for (key, by) in [(Key::Up, -LINE), (Key::Down, LINE)] {
+            if !shown.link_beyond(key == Key::Down) && (self.key(key, Mods::NONE) || self.key(key, Mods::CTRL)) {
+                self.scroll_document(within, by);
+            }
         }
     }
 
@@ -1587,6 +1622,55 @@ mod tests {
         assert!(trial.has(Role::Paragraph, "Line 1500 link 1."));
         trial.key("Shift+Tab");
         assert!(trial.find(Role::Link, "link 0").focused);
+    }
+
+    #[test]
+    fn tab_and_shift_tab_wrap_round_a_documents_links() {
+        let text: String = (0..3000).map(|n| if n % 1000 == 500 { format!("Line {n} [link {}](#a).\n\n", n / 1000) } else { format!("Line {n}.\n\n") }).collect();
+        let mut trial = scrolled_document(&text);
+        // From the document, Shift+Tab wraps to its last link, laid out and shown; Tab back.
+        trial.key("Tab");
+        trial.key("Shift+Tab");
+        let last = trial.find(Role::Link, "link 2");
+        assert!(last.focused && last.rect.y >= 0.0 && last.rect.bottom() <= 300.0, "{last:?}");
+        trial.key("Tab");
+        assert!(trial.find(Role::Document, "").focused);
+        // From the document scrolled to its middle, Tab goes to its first link; Down to the next.
+        trial.wheel(pt(200.0, 150.0), 0.0, 40_000.0);
+        trial.key("Tab");
+        assert!(trial.find(Role::Link, "link 0").focused);
+        trial.key("Down");
+        assert!(trial.find(Role::Link, "link 1").focused);
+    }
+
+    #[test]
+    fn shift_up_and_down_on_a_focused_link_select_in_one_run() {
+        let mut trial = long_document("[First link](#a)\n\n", "");
+        trial.key("Tab");
+        trial.key("Tab");
+        // (Trial fails a key that has not settled after a run.)
+        trial.key("Shift+Down");
+        trial.key("Shift+Down");
+        let picked = with_shown(&mut trial.ui, |shown| shown.picked);
+        assert!(picked[1] > picked[0], "{picked:?}");
+        trial.key("Shift+Up");
+        assert!(with_shown(&mut trial.ui, |shown| shown.picked[1]) < picked[1]);
+        assert!(trial.find(Role::Link, "First link").focused);
+    }
+
+    #[test]
+    fn up_and_down_on_a_link_with_none_that_way_scroll_a_line_in_one_run() {
+        let mut trial = long_document("[First link](#a)\n\n", "");
+        trial.key("Tab");
+        trial.key("Tab");
+        let top = top_of(&trial, "Line 0 of a long document.");
+        trial.key("Down");
+        assert_eq!(top_of(&trial, "Line 0 of a long document."), top - LINE);
+        trial.key("Ctrl+Down");
+        assert_eq!(top_of(&trial, "Line 0 of a long document."), top - 2.0 * LINE);
+        trial.key("Up");
+        assert_eq!(top_of(&trial, "Line 0 of a long document."), top - LINE);
+        assert!(trial.find(Role::Link, "First link").focused);
     }
 
     #[test]

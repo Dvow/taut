@@ -1672,8 +1672,8 @@ impl Ui {
         // The box stands for the edited text: the context menu, and screen reader selection,
         // use it.
         let primary = code.sels[0];
-        (self.edit.id, self.edit.secret, self.edit.cursor, self.edit.anchor) = (state.id, false, primary.cursor, primary.anchor);
-        self.takes_tab = if code.escaped { 0 } else { state.id };
+        (self.edit.id, self.edit.secret, self.edit.code, self.edit.cursor, self.edit.anchor) = (state.id, false, true, primary.cursor, primary.anchor);
+        self.takes_tab = [if code.escaped { 0 } else { state.id }; 2];
     }
 
     /// The pointer in a code editor: on the text it places the cursor (dragging selects); on

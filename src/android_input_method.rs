@@ -43,7 +43,7 @@ pub(crate) fn panel(ui: &mut Ui, text: &str, insets: [i32; 2]) -> Option<Panel> 
 #[cfg(target_os = "android")]
 mod connection {
     use super::Panel;
-    use crate::android::{Heard, activity, classes, heard, kick, typing_password, view};
+    use crate::android::{Heard, Typed, activity, classes, heard, kick, typed, view};
     use crate::android_jni::{self as jni, Env, Native, Obj, Value};
     use crate::android_sys::WindowBuffer;
     use crate::event::{Event, Key, Mods};
@@ -97,11 +97,18 @@ mod connection {
         }
     }
 
-    /// An input method connects: plain text (a password's, with no suggestions), the keyboard
-    /// never full screen, the cursor at the start of what it types; the connection takes it.
+    /// An input method connects: plain text (a password's, or code with no suggestions; no
+    /// capitals made), the keyboard never full screen, the cursor at the start of what it types;
+    /// the connection takes it.
     fn connect(env: Env, view: Obj, info: Obj) -> Obj {
-        // Text: a password (0x81), or auto-corrected (0x8001); no full-screen editor.
-        env.set_int_field(info, c"inputType", if typing_password() { 0x81 } else { 0x8001 });
+        // Text: a password (0x81), code with no suggestions (0x80001), or auto-corrected
+        // (0x8001); no full-screen editor.
+        let input_type = match typed() {
+            Typed::Password => 0x81,
+            Typed::Code => 0x8_0001,
+            Typed::Text => 0x8001,
+        };
+        env.set_int_field(info, c"inputType", input_type);
         env.set_int_field(info, c"imeOptions", 0x1200_0000);
         env.set_int_field(info, c"initialSelStart", 0);
         env.set_int_field(info, c"initialSelEnd", 0);

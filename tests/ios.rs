@@ -1894,17 +1894,33 @@ mod mac {
     }
 
     /// The screen, upright, once it shows `here` (at most `share` of its pixels more than `apart`
-    /// levels off), or as it is after 30 s: on a busy runner an app can be slow to show, or to
-    /// finish turning.
+    /// levels off), or as it is 30 s after it left the launch screen (180 s at most): on a busy
+    /// runner an app can be slow to show or to finish turning, a debug build's first frame can
+    /// take a minute, and a screenshot half a minute.
     fn screen_showing(device: &str, name: &str, page: &Page, here: &Surface, apart: u32, share: f64) -> Result<(usize, Vec<u32>), String> {
-        let since = Instant::now();
+        let (since, mut drawn) = (Instant::now(), None);
         loop {
             let shown = upright(screen(device, name)?, page, here);
-            if compared(&shown, page, here, name, apart).0 <= share || since.elapsed() > Duration::from_secs(30) {
+            drawn = if plain(&shown, page) { None } else { drawn.or(Some(Instant::now())) };
+            let matched = compared(&shown, page, here, name, apart).0 <= share;
+            let settled = drawn.is_some_and(|drawn| drawn.elapsed() > Duration::from_secs(30));
+            if matched || settled || since.elapsed() > Duration::from_secs(180) {
+                let left = drawn.map_or_else(|| "never".into(), |drawn| format!("{:.1} s", (drawn - since).as_secs_f32()));
+                println!("{name}: taken at {:.1} s, past the launch screen from {left}", since.elapsed().as_secs_f32());
                 return Ok(shown);
             }
             std::thread::sleep(Duration::from_secs(2));
         }
+    }
+
+    /// Whether the page's part of the screen is nearly all one colour: the launch screen iOS
+    /// shows until the app draws its first frame (only the home indicator on it).
+    fn plain(screen: &(usize, Vec<u32>), page: &Page) -> bool {
+        let (width, pixels) = screen;
+        let top = (page.at[1] * page.scale).round() as usize * width;
+        let shown = pixels.get(top..).unwrap_or_default();
+        let first = shown.first().copied().unwrap_or_default();
+        shown.iter().filter(|pixel| **pixel == first).count() as f64 >= 0.98 * shown.len() as f64
     }
 
     /// Everything, in order; the failures.

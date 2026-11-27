@@ -88,15 +88,15 @@ Popovers anchored to their button.
 ## Code, inspector, rich text
 
 - **Code box:** syntax colouring from data (`Syntax`: Rust, C, Python, JavaScript, custom),
-  multiple cursors, undo, folding; the system's keyboard on Android (its deletes keep each
-  selection); cost is the visible lines.
+  multiple cursors, undo, folding; the system's keyboard on Android (no suggestions or capitals;
+  its deletes keep each selection); cost is the visible lines.
 - **Inspector:** an app value as name/editor rows; folding sections, editable lists, filter,
   changed marks, reset, undo, several values at once.
 - **Rich text:** styled pieces with links, icons and pictures in one wrapping paragraph.
 - **Markdown:** CommonMark plus GitHub tables, task lists and strikethrough; highlighted code
   that scrolls sideways, app pictures, any nesting depth; Hebrew and Arabic right to left, with
   list markers and quote bars at the right; selectable, copyable, a context menu, keyboard links
-  with titles, heading links scroll; a document to screen readers, tables as tables, the
+  with titles (Tab wraps round them; Shift+arrows select from one), heading links scroll; a document to screen readers, tables as tables, the
   selection told, in cells too; laid out only around what is seen, a far jump (Ctrl+End, a
   heading link, the scroll bar) included: cost is the visible part.
 
@@ -186,7 +186,8 @@ Popovers anchored to their button.
   lighting, `BackgroundImage`, paint inputs (patterns too) and kernel units included; about 90
   KB), pictures and nested SVG (in the file, or through the app's loader). SMIL animation,
   motion along paths included: as frames, or playing in a window (`AnimatedDrawing`), where the
-  pointer (within clip paths), keys, focus and the wall clock begin and end what waits for them;
+  pointer (within clip paths; the root where no shape is), keys, focus (Tab and Shift+Tab between
+  elements in `tabindex` order) and the wall clock begin and end what waits for them;
   an event costs the same however long it has played. Drawing cost is bounded by file length.
   Windows' system fonts are read a glyph at a time (a page of CJK text peaks at 6 MB, not 51).
 - 3D meshes: filled, lit, coloured or outlined, with depth; all CPU cores, only on change; a
@@ -194,9 +195,9 @@ Popovers anchored to their button.
 - PDF: pages up to 200 inches, shapes, searchable shaped text with subset fonts (as their
   licences allow), colour emoji (`emoji`), pictures with their colour profiles, links, Markdown
   layout.
-  Tagged (PDF/UA-1: structure, reading order, alt text, table headings, language), with an
-  outline of its headings; PDF/A-2b; form fields; AES-256 encryption. Passes veraPDF; readable by
-  Poppler, Ghostscript and xpdf.
+  Tagged (PDF/UA-1: structure, reading order, alt text, table headings, language; right-to-left
+  list numbers read as written), with an outline of its headings; PDF/A-2b; form fields; AES-256
+  encryption. Passes veraPDF; readable by Poppler, Ghostscript and xpdf.
 - Printing through the system dialog, laid out for the paper picked where asked. Windows: shapes
   and text, blending what GDI can't draw; oversized pages on several sheets. Linux: the portal's
   dialog over the window. The web: the browser's dialog, each page a picture at 288 dpi.

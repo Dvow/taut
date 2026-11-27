@@ -115,6 +115,8 @@ pub(crate) struct Edit {
     /// The box hides its text: nothing goes to the clipboard, and the cursor sees no words
     /// (which would reveal where they end).
     pub secret: bool,
+    /// The box edits code: input methods offer no suggestions or capitals.
+    pub code: bool,
     /// Enter without Shift goes to the app ([`Ui::enter_submits`]).
     enter_left: bool,
     /// Cursor and anchor, in bytes: the text between is selected.

@@ -29,14 +29,16 @@
 //!
 //! In a window, as in browsers: the pointer is over the topmost shape whose fill or stroke would
 //! paint there within its clip paths and viewports (masks aside; text as its whole element),
-//! unless `pointer-events` is `none`; an event at what a `<use>` brings bubbles through the
-//! `<use>`; a press gives focus to the nearest element that takes it (a `tabindex`, a link, or
-//! focus events waited for), and focus come by keyboard goes to the first that Tab reaches.
+//! unless `pointer-events` is `none`, and where none is, over the root `<svg>`; an event at what a
+//! `<use>` brings bubbles through the `<use>`; a press gives focus to the nearest element that
+//! takes it (a `tabindex`, a link, or focus events waited for); Tab and Shift+Tab go from one to
+//! the next in Tab order (positive `tabindex`es first), leaving the drawing at its ends.
 //!
 //! Deliberate difference from Edge: a fixed `rotate` angle turns the element, as the spec says
 //! and Firefox does (Edge ignores it). (Edge reads no `wallclock()` at all.)
 use crate::color::Color;
 use crate::el::El;
+use crate::event::{Key, Mods};
 use crate::geom::{Point, pt};
 use crate::path::{Path, Step};
 use crate::svg::{Drawing, File, ParsedDrawing, Track, color, number, numbers};
@@ -374,15 +376,17 @@ impl<'a> Timeline<'a> {
         let count = file.elements.len();
         let pointer = (0..count).map(|at| file.own_property(at, "pointer-events").map(|said| said != "none")).collect();
         let brings = (0..count).map(|at| if file.elements[at].name == "use" { file.linked(at).unwrap_or(at) } else { at }).collect();
-        let (focusable, first_stop) = self.focus_stops(&conditions);
+        let (focusable, stops) = self.focus_stops(&conditions);
+        let root = file.elements.iter().position(|element| element.name == "svg");
         let (behind, reach) = (behind.fold(0.0, f32::max), synced.fold(0.0, f32::max) * self.animations.len() as f32);
-        Listening { parents: self.parents.clone(), brings, pointer, events, keys, focusable, first_stop, behind, reach }
+        Listening { parents: self.parents.clone(), brings, pointer, root, events, keys, focusable, stops, behind, reach }
     }
 
     /// Which elements take focus, as in browsers: those with a `tabindex`, links, and those whose
-    /// focus events `conditions` wait for; and the first Tab reaches: the one with the lowest
-    /// positive `tabindex`, else the first in the file whose `tabindex` is not negative.
-    fn focus_stops(&self, conditions: &[Condition]) -> (Vec<bool>, Option<usize>) {
+    /// focus events `conditions` wait for; and those Tab stops at, in its order: the positive
+    /// `tabindex`es, lowest first, then the rest whose `tabindex` is not negative, each in the
+    /// file's order.
+    fn focus_stops(&self, conditions: &[Condition]) -> (Vec<bool>, Vec<usize>) {
         let file = &self.file;
         let tab_index = |at: usize| file.attribute(at, "tabindex").and_then(|index| index.trim().parse::<i32>().ok());
         let link = |at: usize| file.elements[at].name == "a" && (file.attribute(at, "href").is_some() || file.attribute(at, "xlink:href").is_some());
@@ -392,12 +396,13 @@ impl<'a> Timeline<'a> {
                 focusable[*element] |= FOCUS_EVENTS.contains(name);
             }
         }
-        let order = |at: &usize| match tab_index(*at) {
-            Some(index) if index > 0 => (0, index),
-            _ => (1, 0),
-        };
-        let first_stop = (0..focusable.len()).filter(|at| focusable[*at] && tab_index(*at).is_none_or(|index| index >= 0)).min_by_key(order);
-        (focusable, first_stop)
+        let order = |at: usize| tab_index(at).filter(|index| *index > 0).unwrap_or(i32::MAX);
+        let mut stops: Vec<usize> = Vec::new();
+        // (Each goes after those of its order or lower: a stable sort, with no sort's code.)
+        for at in (0..focusable.len()).filter(|at| focusable[*at] && tab_index(*at).is_none_or(|index| index >= 0)) {
+            stops.insert(stops.partition_point(|stop| order(*stop) <= order(at)), at);
+        }
+        (focusable, stops)
     }
 
     /// The animation element named `id`, if there is one.
@@ -1453,19 +1458,21 @@ fn bubbling((parents, brings): (&[usize], &[usize]), element: usize, uses: &[u32
 
 /// What a drawing in a window needs to know of its file between frames: each element's parent
 /// and what it brings, where a `<use>` (see `bubbling`); whether it says it takes the pointer
-/// (`pointer-events`: `none`, another value, or nothing said); the events and keys its
-/// animations wait for; which elements take focus (those with a `tabindex`, links, and those
-/// whose focus events it waits for, as in browsers) and the first that Tab reaches; how far
-/// before an event its offsets reach (seconds); and how far before a moment a chain of moments
-/// told with negative offsets can reach (see `Scheduling::forget`).
+/// (`pointer-events`: `none`, another value, or nothing said); the root `<svg>`, which has the
+/// pointer where no shape is; the events and keys its animations wait for; which elements take
+/// focus (those with a `tabindex`, links, and those whose focus events it waits for, as in
+/// browsers) and those Tab stops at, in its order; how far before an event its offsets reach
+/// (seconds); and how far before a moment a chain of moments told with negative offsets can
+/// reach (see `Scheduling::forget`).
 struct Listening {
     parents: Vec<usize>,
     brings: Vec<usize>,
     pointer: Vec<Option<bool>>,
+    root: Option<usize>,
     events: Vec<&'static str>,
     keys: bool,
     focusable: Vec<bool>,
-    first_stop: Option<usize>,
+    stops: Vec<usize>,
     behind: f32,
     reach: f32,
 }
@@ -1496,6 +1503,27 @@ impl Listening {
     /// to the nearest that takes focus, as an event there comes to it. Nowhere where none does.
     fn focus_under(&self, under: &[usize]) -> Vec<usize> {
         under.iter().position(|at| self.focusable[*at]).map_or_else(Vec::new, |at| under[at..].to_vec())
+    }
+
+    /// Where Tab coming into the drawing goes: to its first stop (Shift+Tab, `back`: its last).
+    fn entry_stop(&self, back: bool) -> Option<usize> {
+        if back { self.stops.last() } else { self.stops.first() }.copied()
+    }
+
+    /// Where Tab (Shift+Tab: `back`) goes from element `from`, as in Edge: from a stop, on in Tab
+    /// order; from another element, to the nearest stop that way in the file; from none (a press
+    /// where nothing takes focus), as from before the first element. None past the last.
+    fn next_stop(&self, from: Option<usize>, back: bool) -> Option<usize> {
+        if let Some(n) = from.and_then(|at| self.stops.iter().position(|stop| *stop == at)) {
+            return if back { n.checked_sub(1).map(|n| self.stops[n]) } else { self.stops.get(n + 1).copied() };
+        }
+        let stops = self.stops.iter().copied();
+        match (from, back) {
+            (Some(at), true) => stops.filter(|stop| *stop < at).max(),
+            (Some(at), false) => stops.filter(|stop| *stop > at).min(),
+            (None, true) => None,
+            (None, false) => stops.min(),
+        }
     }
 
     /// The elements `focus` and `blur` at the first of `chain` come to: it, and each `<use>`
@@ -1737,11 +1765,11 @@ impl AnimatedDrawing {
         let under = if response.hovered { self.under_pointer(ui) } else { Vec::new() };
         let mut events = crossed(&self.under, &under);
         let on = |happened: bool| happened && !under.is_empty();
-        let input = &ui.input;
-        let happened = [(on(input.moved), "mousemove"), (on(response.hovered && input.pressed[0]), "mousedown"), (on(response.hovered && input.released[0]), "mouseup")];
+        let (input, pressed) = (&ui.input, response.hovered && ui.input.pressed[0]);
+        let happened = [(on(input.moved), "mousemove"), (on(pressed), "mousedown"), (on(response.hovered && input.released[0]), "mouseup")];
         events.extend(happened.into_iter().filter(|(happened, _)| *happened).map(|(_, name)| (name, under.clone())));
         if self.listening.follows_focus() {
-            events.extend(self.move_focus(response, response.hovered && input.pressed[0], &under));
+            events.extend(self.move_focus(ui, response, pressed, &under));
         }
         if on(response.clicked) {
             events.extend(["click", "activate", "DOMActivate"].map(|name| (name, under.clone())));
@@ -1756,16 +1784,22 @@ impl AnimatedDrawing {
 
     /// Moves focus within the drawing as browsers do: with the box's focus gone, from the
     /// element that had it; on a press (`pressed`, over the elements `under`), to the nearest
-    /// there that takes focus; with focus come to the box otherwise (by keyboard), to the first
-    /// element Tab reaches. Gives the events that makes: `blur` and `focusout`, then `focus`
-    /// and `focusin`.
-    fn move_focus(&mut self, response: &Response, pressed: bool, under: &[usize]) -> Vec<(&'static str, Vec<usize>)> {
+    /// there that takes focus; with focus come to the box otherwise, to its first stop (by
+    /// Shift+Tab, its last); by Tab or Shift+Tab the box kept (see `tab_ways`), to the next stop
+    /// that way. Gives the events that makes: `blur` and `focusout`, then `focus` and `focusin`.
+    fn move_focus(&mut self, ui: &mut Ui, response: &Response, pressed: bool, under: &[usize]) -> Vec<(&'static str, Vec<usize>)> {
         let had = std::mem::replace(&mut self.had_focus, response.focused);
-        let next = match (response.focused, pressed, had) {
+        // (Tab from the box onto itself, the window's only stop, comes in afresh.)
+        let (tabbed, entered) = (ui.input.tabbed, !had || ui.input.tabbed.is_some());
+        let chain_of = |stop: Option<usize>| stop.map_or_else(Vec::new, |at| self.listening.chain(at, &[]));
+        let next = match (response.focused, pressed, entered) {
             (false, ..) => Vec::new(),
             (true, true, _) => self.listening.focus_under(under),
-            (true, false, false) => self.listening.first_stop.map_or_else(Vec::new, |first| self.listening.chain(first, &[])),
-            (true, false, true) => return Vec::new(),
+            (true, false, true) => chain_of(self.listening.entry_stop(tabbed == Some(true))),
+            (true, false, false) => match self.tabbed_to(ui) {
+                Some(to) => chain_of(Some(to)),
+                None => return Vec::new(),
+            },
         };
         if next == self.focused {
             return Vec::new();
@@ -1781,13 +1815,36 @@ impl AnimatedDrawing {
         events
     }
 
+    /// The stop Tab or Shift+Tab, kept by the box, goes to; none if neither was pressed.
+    fn tabbed_to(&self, ui: &mut Ui) -> Option<usize> {
+        let back = if ui.key(Key::Tab, Mods::NONE) {
+            false
+        } else if ui.key(Key::Tab, Mods::SHIFT) {
+            true
+        } else {
+            return None;
+        };
+        self.listening.next_stop(self.focused.first().copied(), back)
+    }
+
+    /// Which of Tab and Shift+Tab the box keeps, to move focus within it: each with a stop that
+    /// way.
+    fn tab_ways(&self) -> [bool; 2] {
+        let from = self.focused.first().copied();
+        [false, true].map(|back| self.listening.next_stop(from, back).is_some())
+    }
+
     /// The elements under the pointer, the one it is over first, then those an event there comes
-    /// to (none where it is over nothing that takes the pointer).
+    /// to. Where no shape that takes the pointer is, the root `<svg>` has it, as in browsers
+    /// (none where that takes none either).
     fn under_pointer(&self, ui: &Ui) -> Vec<usize> {
         let kept = self.drawing.and_then(|drawing| ui.drawings.get(drawing.0));
+        let (Some(kept), Some(at)) = (kept, ui.input.pointer) else { return Vec::new() };
         let takes = |element: usize, uses: &[u32]| self.listening.takes_pointer(element, uses);
-        let found = kept.zip(ui.input.pointer).and_then(|(kept, at)| kept.element_at(at, takes));
-        found.map_or_else(Vec::new, |(element, uses)| self.listening.chain(element, uses))
+        match kept.element_at(at, takes) {
+            Some((element, uses)) => self.listening.chain(element, uses),
+            None => self.listening.root.filter(|root| self.listening.takes_pointer(*root, &[])).map_or_else(Vec::new, |root| self.listening.chain(root, &[])),
+        }
     }
 
     /// Puts the frame at the clock's time on show, where the time or what happened changed:
@@ -1855,9 +1912,9 @@ impl Ui {
     /// A box showing an animated drawing at its clock, at the drawing's own size unless sized
     /// after: `ui.animated_drawing(&mut drawing, color).grow().show()`. `color` is
     /// `currentColor`. The pointer over it, keys while it has focus, and focus moving within it
-    /// (where the file waits for keys or focus, it takes focus) begin and end the animations
-    /// waiting for them. Only this box is redrawn per frame, and none while nothing in it
-    /// changes.
+    /// (where the file waits for keys or focus, it takes focus, and keeps Tab and Shift+Tab while
+    /// they move between its elements) begin and end the animations waiting for them. Only this
+    /// box is redrawn per frame, and none while nothing in it changes.
     pub fn animated_drawing(&mut self, drawing: &mut AnimatedDrawing, color: Color) -> El<'_> {
         let key = ("taut animated drawing", drawing.serial);
         let id = self.id(key);
@@ -1865,6 +1922,9 @@ impl Ui {
         let response = self.interact(id);
         if !drawing.listening.events.is_empty() || drawing.listening.keys {
             drawing.take_input(self, &response);
+        }
+        if response.focused && drawing.listening.follows_focus() {
+            self.takes_tab = drawing.tab_ways().map(|kept| if kept { id } else { 0 });
         }
         if response.hovered && drawing.listening.follows() {
             self.follow_pointer();
@@ -2339,7 +2399,7 @@ mod tests {
     fn tab_reaches_the_lowest_positive_tabindex_first_as_in_browsers() {
         let first = |file: &str| {
             let timeline = Timeline::read(file);
-            timeline.listening().first_stop.and_then(|at| timeline.file.attribute(at, "id").map(str::to_string))
+            timeline.listening().entry_stop(false).and_then(|at| timeline.file.attribute(at, "id").map(str::to_string))
         };
         let positive = r##"<svg><rect id="a" tabindex="0"/><rect id="b" tabindex="3"/><rect id="c" tabindex="2"/><rect id="d" tabindex="2"/></svg>"##;
         assert_eq!(first(positive).as_deref(), Some("c"));
@@ -2392,6 +2452,7 @@ mod tests {
 #[cfg(test)]
 mod window_tests {
     use super::*;
+    use crate::accessibility::Role;
     use crate::testing::Trial;
 
     /// A trial window showing a drawing; the colour at a point of the drawing (in its units, it
@@ -2487,6 +2548,90 @@ mod window_tests {
         trial.key("Tab");
         assert_ne!(trial.ui.focus(), 0, "the drawing takes focus where it waits for focus moving");
         assert_eq!(color_at(&trial, 25.0, 50.0), 0x0000ff);
+    }
+
+    /// Five elements Tab stops at, and `d`, which takes focus but no Tab (`tabindex="-1"`).
+    const STOPS: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" id="root" viewBox="0 0 100 100" width="100" height="100"><rect id="a" width="20" height="20" tabindex="0"/><rect id="b" x="30" width="20" height="20" tabindex="2"/><rect id="c" x="60" width="20" height="20" tabindex="1"/><rect id="d" y="40" width="20" height="20" tabindex="-1"/><rect id="f" x="40" y="40" width="20" height="20" tabindex="0"/><a id="e" href="#a"><rect y="70" width="20" height="20"/></a></svg>"##;
+
+    #[test]
+    fn tab_and_shift_tab_go_between_elements_as_in_edge() {
+        // As Edge goes (nav2 `tools/probes/stops.svg`): positive tabindexes, lowest first, then
+        // the rest in the file's order; from `d`, or a press on nothing, by the file's order.
+        let timeline = Timeline::read(STOPS);
+        let listening = timeline.listening();
+        let (file, named) = (&timeline.file, |id: &str| timeline.file.named.get(id).copied());
+        let id = |at: Option<usize>| at.and_then(|at| file.attribute(at, "id"));
+        let order: Vec<&str> = listening.stops.iter().filter_map(|at| file.attribute(*at, "id")).collect();
+        assert_eq!(order, ["c", "b", "a", "f", "e"]);
+        assert_eq!([id(listening.entry_stop(false)), id(listening.entry_stop(true))], [Some("c"), Some("e")]);
+        assert_eq!([false, true].map(|back| id(listening.next_stop(named("b"), back))), [Some("a"), Some("c")]);
+        assert_eq!([false, true].map(|back| id(listening.next_stop(named("d"), back))), [Some("f"), Some("c")]);
+        assert_eq!([false, true].map(|back| id(listening.next_stop(None, back))), [Some("a"), None]);
+        assert_eq!([false, true].map(|back| id(listening.next_stop(named("e"), back))), [None, Some("f")]);
+    }
+
+    /// `STOPS` waiting for focus to move within it, in a window with `buttons` before and after.
+    fn stops_shown(buttons: bool) -> Trial<AnimatedDrawing> {
+        let svg = STOPS.replace("</svg>", r##"<set href="#a" attributeName="fill" to="#0000ff" begin="a.focusin" end="a.focusout"/></svg>"##);
+        Trial::new(AnimatedDrawing::new(&svg).unwrap(), move |drawing, ui| {
+            if buttons {
+                ui.button("before");
+            }
+            ui.animated_drawing(drawing, Color::BLACK).show();
+            if buttons {
+                ui.button("after");
+            }
+        })
+    }
+
+    /// What has focus: a button, by its name, or an element of the drawing, by its id.
+    fn focused_at(trial: &Trial<AnimatedDrawing>) -> String {
+        if let Some(button) = ["before", "after"].into_iter().find(|name| trial.has(Role::Button, name) && trial.find(Role::Button, name).focused) {
+            return button.to_string();
+        }
+        let file = File::read(&trial.app.text);
+        trial.app.focused.first().and_then(|at| file.attribute(*at, "id")).unwrap_or_default().to_string()
+    }
+
+    /// Where focus goes after each of `keys`.
+    fn tabbed(trial: &mut Trial<AnimatedDrawing>, keys: &[&str]) -> Vec<String> {
+        keys.iter().map(|key| (trial.key(key), focused_at(trial)).1).collect()
+    }
+
+    #[test]
+    fn tab_and_shift_tab_move_between_a_drawings_elements_and_leave_it_at_its_ends() {
+        let mut trial = stops_shown(true);
+        let went = tabbed(&mut trial, &["Tab"; 7]);
+        assert_eq!(went, ["before", "c", "b", "a", "f", "e", "after"]);
+        let went = tabbed(&mut trial, &["Shift+Tab"; 7]);
+        assert_eq!(went, ["e", "f", "a", "b", "c", "before", "after"]);
+        // After a press on nothing in the drawing, Tab goes by the file's order; Shift+Tab leaves.
+        let nothing = place(&trial, 90.0, 90.0);
+        trial.click(nothing);
+        assert_eq!(tabbed(&mut trial, &["Tab"]), ["a"]);
+        trial.click(nothing);
+        assert_eq!(tabbed(&mut trial, &["Shift+Tab"]), ["before"]);
+    }
+
+    #[test]
+    fn tab_wraps_round_a_drawing_alone_in_its_window() {
+        let mut trial = stops_shown(false);
+        let went = tabbed(&mut trial, &["Tab", "Tab", "Tab", "Tab", "Tab", "Tab", "Shift+Tab"]);
+        assert_eq!(went, ["c", "b", "a", "f", "e", "c", "e"]);
+    }
+
+    #[test]
+    fn the_root_svg_has_the_pointer_where_no_shape_is_as_in_edge() {
+        // As Edge (nav2 `tools/probes/stops.svg`): a click beside every shape comes to the root.
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" id="root" viewBox="0 0 100 100" width="100" height="100"><rect width="50" height="50" fill="#ff0000"><set attributeName="fill" to="#0000ff" begin="root.click"/></rect></svg>"##;
+        let mut trial = shown(svg);
+        let beside = place(&trial, 75.0, 75.0);
+        trial.click(beside);
+        assert_eq!(color_at(&trial, 25.0, 25.0), 0x0000ff);
+        // Unless it takes no pointer.
+        let mut trial = shown(&svg.replace("id=\"root\"", "id=\"root\" pointer-events=\"none\""));
+        trial.click(beside);
+        assert_eq!(color_at(&trial, 25.0, 25.0), 0xff0000);
     }
 
     #[test]

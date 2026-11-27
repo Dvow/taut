@@ -317,6 +317,21 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   as librsvg does at the file's size (librsvg does not scale it with the drawing; taut does). A
   kernel unit finer than a pixel runs on a finer grid, as librsvg does, down to an eighth of a
   pixel (before: one pixel); its cost counts the cells in a picture 512 pixels across.
+- **Fixed (SVG in a window):** finding the element under the pointer looked through every clip
+  and every clip outline for each shape there: 170 ms a pointer move over 8,000 shapes clipped
+  each on its own (a 1 MB file). Each shape's own clips are looked at now (3 ms), and reading
+  such a file for the pointer is a third faster.
+- **Markdown links and the keyboard:** Tab and Shift+Tab wrap round a document's links (Shift+Tab
+  from the document reaches its last link, however far). With a link focused, Shift+arrows,
+  Shift+Home/End and Ctrl+A select as with the document focused, and Up or Down with no link that
+  way scroll a line: each in one run (before, arrow navigation scrolled 20 px a run).
+- **SVG drawings in a window** (`AnimatedDrawing`): Tab and Shift+Tab move between the drawing's
+  elements in `tabindex` order, as Edge does, and leave it at its ends; where no shape is, the
+  root `<svg>` has the pointer (its `click`, `mouseover` and the rest).
+- **PDF:** a right-to-left list number, drawn `.1`, reads and copies as `1.` (`ActualText`).
+- **Android:** the code editor tells input methods it holds code: no suggestions, no capitals
+  (`Ui::code_focused`, new, beside `password_focused`). Fixed: the first box focused with the
+  keyboard down kept the input type the input method was given before (plain text).
 
 ## 0.3.0 (2026-11-24)
 

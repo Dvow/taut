@@ -90,13 +90,14 @@ impl Tag {
 }
 
 /// A part of the pages: what it is, the part it is in, what it shows where it is a picture
-/// (or says where it is a form field), its language (BCP 47), and what it holds in reading
-/// order.
+/// (or says where it is a form field), the text it reads as where what is drawn reads otherwise,
+/// its language (BCP 47), and what it holds in reading order.
 #[derive(Debug)]
 pub(crate) struct Part {
     pub tag: Tag,
     pub up: u32,
     pub alt: String,
+    pub actual: String,
     pub language: String,
     pub held: Vec<Held>,
 }
@@ -158,6 +159,14 @@ impl Paper {
             self.parts[part as usize].alt = words.to_string();
         }
     }
+    /// Says what the part opened last reads as, where what it draws reads otherwise: a
+    /// right-to-left list number drawn `.1` reads `1.` (its marked content's ActualText). Empty:
+    /// as drawn.
+    pub(crate) fn read_as(&mut self, words: &str) {
+        if let Some(part) = self.open.last().copied() {
+            self.parts[part as usize].actual = words.to_string();
+        }
+    }
     /// Closes the part opened last. A heading's words become a bookmark.
     pub fn end(&mut self) {
         let Some(part) = self.open.pop() else { return };
@@ -181,7 +190,7 @@ impl Paper {
     pub(crate) fn begin_tag(&mut self, tag: Tag) -> u32 {
         let up = self.innermost();
         let tag = if self.parts[up as usize].tag == Tag::Decoration { Tag::Decoration } else { tag };
-        self.parts.push(Part { tag, up, alt: String::new(), language: self.said.clone(), held: Vec::new() });
+        self.parts.push(Part { tag, up, alt: String::new(), actual: String::new(), language: self.said.clone(), held: Vec::new() });
         let part = self.parts.len() as u32 - 1;
         self.parts[up as usize].held.push(Held::Part(part));
         self.open.push(part);
@@ -191,7 +200,7 @@ impl Paper {
     /// The part open innermost: the document where none is (made at first need).
     fn innermost(&mut self) -> u32 {
         if self.parts.is_empty() {
-            self.parts.push(Part { tag: Tag::Document, up: 0, alt: String::new(), language: self.said.clone(), held: Vec::new() });
+            self.parts.push(Part { tag: Tag::Document, up: 0, alt: String::new(), actual: String::new(), language: self.said.clone(), held: Vec::new() });
         }
         self.open.last().copied().unwrap_or(0)
     }
@@ -283,6 +292,9 @@ pub(crate) fn write_structure(file: &mut File, paper: &Paper, marked: &Marked, k
         let mut said = format!("<< /Type /StructElem /S /{} /P {up} 0 R /K [{held}]", part.tag.name());
         if !part.alt.is_empty() {
             said.push_str(&format!(" /Alt {}", text(&part.alt)));
+        }
+        if !part.actual.is_empty() {
+            said.push_str(&format!(" /ActualText {}", text(&part.actual)));
         }
         let above = if at == 0 { "" } else { paper.parts[part.up as usize].language.as_str() };
         if !part.language.is_empty() && part.language != above && at > 0 {

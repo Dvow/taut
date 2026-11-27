@@ -76,9 +76,9 @@ struct Shell {
     insets: [i32; 4],
     /// The activity is in the foreground.
     resumed: bool,
-    /// A text box has focus, and whether it is a password's.
+    /// A text box has focus, and what it holds.
     typing: bool,
-    password: bool,
+    typed: Typed,
     /// The mouse buttons held, and the finger acting as the mouse (without the feature
     /// `touch`).
     buttons: i32,
@@ -100,7 +100,7 @@ thread_local! {
         insets: [0; 4],
         resumed: false,
         typing: false,
-        password: false,
+        typed: Typed::Text,
         buttons: 0,
         finger: None,
         dragging_out: false,
@@ -718,9 +718,17 @@ extern "C" fn connection(env: Env, view: Obj, info: Obj) -> Obj {
     INPUT_METHOD.get().map_or(std::ptr::null_mut(), |typing| (typing.connect)(env, view, info))
 }
 
-/// Whether the focused text box is a password's.
-pub(crate) fn typing_password() -> bool {
-    SHELL.with_borrow(|shell| shell.password)
+/// What a text box holds, as its input method is told.
+#[derive(Clone, Copy)]
+pub(crate) enum Typed {
+    Text,
+    Password,
+    Code,
+}
+
+/// What the focused text box holds.
+pub(crate) fn typed() -> Typed {
+    SHELL.with_borrow(|shell| shell.typed)
 }
 
 /// The insets changed: what the system bars, the cutout and the keyboard cover now.
@@ -885,21 +893,25 @@ impl<App: FnMut(&mut Ui)> Host<App> {
     }
 
     /// The soft keyboard shows while a text box has focus (again as it is pressed, should the
-    /// person have put it away), and goes with it. Focus moving to another box starts its
-    /// input afresh, dropping what was composed.
+    /// person have put it away), and goes with it. Focus coming to a box starts its input
+    /// afresh (the input method learns what it holds), dropping what was composed.
     fn keyboard(&mut self) {
         let now = self.ui.ime_area().map(|_| self.ui.focus());
         let (was, pressed) = (std::mem::replace(&mut self.typed_in, now), std::mem::take(&mut self.pressed));
-        let password = self.ui.password_focused();
+        let typed = match (self.ui.password_focused(), self.ui.code_focused()) {
+            (true, _) => Typed::Password,
+            (_, true) => Typed::Code,
+            _ => Typed::Text,
+        };
         let view = SHELL.with_borrow_mut(|shell| {
-            (shell.typing, shell.password) = (now.is_some(), password);
+            (shell.typing, shell.typed) = (now.is_some(), typed);
             shell.view
         });
         if was != now {
             drop_composed();
         }
         if (was != now || pressed && now.is_some()) && !view.is_null() {
-            jni::soft_keyboard(env(), activity(), view, now.is_some(), was.is_some() && now.is_some() && was != now);
+            jni::soft_keyboard(env(), activity(), view, now.is_some(), now.is_some() && was != now);
         }
     }
 

@@ -26,7 +26,6 @@ fn main() {
 mod host {
     use super::on_android;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
     use std::time::{Duration, Instant};
 
     const PACKAGE: &str = "taut.example.gallery";
@@ -66,26 +65,11 @@ mod host {
     }
 
     fn run(adb: &Path, args: &[&str]) -> String {
-        Command::new(adb).args(args).output().map(|done| String::from_utf8_lossy(&done.stdout).into_owned()).unwrap_or_default()
+        on_android::said(adb, args).0
     }
 
     fn shell(adb: &Path, command: &str) -> String {
         run(adb, &["shell", command])
-    }
-
-    /// The emulator's file `path`, whole, by `pull` (30 tries at most). (What `exec-out` prints
-    /// can end early and still exit 0.)
-    fn read(adb: &Path, path: &str) -> Vec<u8> {
-        let copy = std::env::temp_dir().join(format!("taut-adb-{}", std::process::id()));
-        for _ in 0..30 {
-            if Command::new(adb).args(["pull", path, &copy.to_string_lossy()]).output().is_ok_and(|done| done.status.success()) {
-                break;
-            }
-            settle(1);
-        }
-        let bytes = std::fs::read(&copy).unwrap_or_default();
-        let _ = std::fs::remove_file(copy);
-        bytes
     }
 
     fn settle(seconds: u64) {
@@ -101,7 +85,7 @@ mod host {
     /// its width; the whole screen kept in `out` as `name`.
     fn screen(adb: &Path, out: &Path, name: &str) -> (usize, Vec<u32>) {
         shell(adb, "screencap -p /sdcard/taut-gpu.png");
-        let png = read(adb, "/sdcard/taut-gpu.png");
+        let png = on_android::read(adb, "/sdcard/taut-gpu.png");
         let _ = std::fs::write(out.join(format!("{name}.png")), &png);
         let (width, pixels) = taut::png::decode(&png).unwrap_or_default();
         let numbers = window_numbers(adb);
@@ -138,7 +122,7 @@ mod host {
     /// The centre of the gallery's tick box, as `uiautomator` reads the window.
     fn tick_box(adb: &Path) -> Option<[i32; 2]> {
         shell(adb, "uiautomator dump /sdcard/taut-gpu.xml");
-        let xml = String::from_utf8_lossy(&read(adb, "/sdcard/taut-gpu.xml")).into_owned();
+        let xml = String::from_utf8_lossy(&on_android::read(adb, "/sdcard/taut-gpu.xml")).into_owned();
         let node = xml.split("<node ").find(|node| node.contains("class=\"android.widget.CheckBox\""))?;
         let bounds = node.split("bounds=\"").nth(1)?.split('"').next()?;
         let corners: Vec<i32> = bounds.split(|c: char| !c.is_ascii_digit()).filter_map(|part| part.parse().ok()).collect();
