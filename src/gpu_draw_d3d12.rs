@@ -8,9 +8,16 @@
 //!   an upload buffer, copied into the cache and patch textures.
 //! - Everything is recorded into the device's command list, after the window's waiting copies:
 //!   the caller runs it and waits.
+//! - With `video`, videos' frames are read from the decoder's texture, opened here, in views
+//!   four to seven of the table (`t3` to `t6`); the queue waits for the decoder's fence first
+//!   (`gpu_frames_windows`).
 use crate::gpu_draw::{DrawList, Quad, SIDE};
-use crate::gpu_draw_windows::{MAIN, PRELUDE, TEXEL, compiled};
+use crate::gpu_draw_windows::{compiled, source};
+#[cfg(feature = "video")]
+use crate::gpu_frames_windows::OpenedFrames;
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, function, release};
+#[cfg(feature = "video")]
+use crate::video::FrameTexture;
 use crate::windows::named;
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
@@ -22,6 +29,8 @@ const HEAP: [u32; 4] = named(0x8EFB_471D, 0x616C, 0x4F49, [0x90, 0xF7, 0x12, 0x7
 const RESOURCE: [u32; 4] = named(0x6964_42BE, 0xA72E, 0x4059, [0xBC, 0x79, 0x5B, 0x5C, 0x98, 0x04, 0x0F, 0xAD]);
 
 // Resource states, as d3d12.h has them.
+#[cfg(feature = "video")]
+const COMMON: u32 = 0;
 pub(crate) const RENDER_TARGET: u32 = 0x4;
 const PIXEL_SHADER_RESOURCE: u32 = 0x80;
 const COPY_DESTINATION: u32 = 0x400;
@@ -31,8 +40,16 @@ pub(crate) const DRAWN_INTO: u32 = 0x1;
 /// Rows copied from a buffer start a multiple of this apart, and each copy at twice it.
 const PITCH: usize = 256;
 /// The root signature: one table of three views, the quads (t0), the cache (t1) and the
-/// patches (t2), seen by every stage.
+/// patches (t2), seen by every stage; with `video`, four more: videos' frames (t3 to t6).
+#[cfg(not(feature = "video"))]
 const SIGNATURE: &str = "#define ROOT \"DescriptorTable(SRV(t0, numDescriptors = 3))\"\n";
+#[cfg(feature = "video")]
+const SIGNATURE: &str = "#define ROOT \"DescriptorTable(SRV(t0, numDescriptors = 7))\"\n";
+/// How many views the table has.
+const VIEWS: usize = if cfg!(feature = "video") { 7 } else { 3 };
+/// `ID3D12Fence`.
+#[cfg(feature = "video")]
+const FENCE: [u32; 4] = named(0x0A75_3DCF, 0xC4D8, 0x4B91, [0xAD, 0xF6, 0xBE, 0x5A, 0x60, 0xD9, 0x5A, 0x76]);
 
 /// `D3D12_HEAP_PROPERTIES`.
 #[repr(C)]
@@ -207,6 +224,55 @@ pub(crate) struct Pipeline {
     readied: bool,
     staging: Option<Written>,
     quads: Option<Written>,
+    /// Videos' frames opened on this device; those the prepared list draws.
+    #[cfg(feature = "video")]
+    opened: OpenedFrames<OpenedFrame>,
+    #[cfg(feature = "video")]
+    frames: Vec<Taken>,
+}
+
+/// A video's frame opened on a device: its texture and the decoder's fence.
+#[cfg(feature = "video")]
+struct OpenedFrame {
+    texture: Com,
+    fence: Com,
+}
+
+#[cfg(feature = "video")]
+impl OpenedFrame {
+    /// `frame`'s texture and fence opened on `device` by their NT handles (OpenSharedHandle, 32);
+    /// nothing where either can't be (another adapter's).
+    fn new(device: Com, frame: &FrameTexture) -> Option<OpenedFrame> {
+        let mut opened = OpenedFrame { texture: null_mut(), fence: null_mut() };
+        if frame.handle == 0 || frame.fence_handle == 0 {
+            return None;
+        }
+        type Open = unsafe extern "system" fn(Com, isize, *const [u32; 4], *mut Com) -> i32;
+        // SAFETY: the handles are the live frame's; what is opened is held by this.
+        unsafe {
+            function::<Open>(device, 32)(device, frame.handle, &RESOURCE, &mut opened.texture);
+            function::<Open>(device, 32)(device, frame.fence_handle, &FENCE, &mut opened.fence);
+        }
+        (!opened.texture.is_null() && !opened.fence.is_null()).then_some(opened)
+    }
+}
+
+#[cfg(feature = "video")]
+impl Drop for OpenedFrame {
+    fn drop(&mut self) {
+        // SAFETY: each is held once by this, or null; the device is done with them.
+        unsafe { [self.fence, self.texture].into_iter().for_each(|object| release(object)) };
+    }
+}
+
+/// A frame the prepared list draws: its texture here, and the fence and value the queue waits
+/// for before.
+#[cfg(feature = "video")]
+#[derive(Clone, Copy)]
+pub(crate) struct Taken {
+    texture: Com,
+    pub(crate) fence: Com,
+    pub(crate) value: u64,
 }
 
 // SAFETY: as its device: made on the device's thread, then used by the windows' alone.
@@ -246,10 +312,24 @@ fn start_of(heap: Com) -> usize {
 impl Pipeline {
     /// What `device` (an `ID3D12Device`) draws with; nothing where any part can't be made.
     pub(crate) fn new(device: Com) -> Option<Pipeline> {
-        let source = format!("{PRELUDE}{TEXEL}{}{MAIN}", crate::gpu_draw::SHADING);
+        let source = source();
         let (corner, pixel) = (compiled(&source, c"corner", c"vs_5_1")?, compiled(&source, c"pixel", c"ps_5_1")?);
         let signature = compiled(SIGNATURE, c"ROOT", c"rootsig_1_0")?;
-        let mut made = Pipeline { root: null_mut(), pipeline: null_mut(), views: null_mut(), targets: null_mut(), step: 0, textures: [null_mut(); 2], readied: false, staging: None, quads: None };
+        let mut made = Pipeline {
+            root: null_mut(),
+            pipeline: null_mut(),
+            views: null_mut(),
+            targets: null_mut(),
+            step: 0,
+            textures: [null_mut(); 2],
+            readied: false,
+            staging: None,
+            quads: None,
+            #[cfg(feature = "video")]
+            opened: OpenedFrames::default(),
+            #[cfg(feature = "video")]
+            frames: Vec::new(),
+        };
         type MakeRoot = unsafe extern "system" fn(Com, u32, *const u32, usize, *const [u32; 4], *mut Com) -> i32;
         // SAFETY: the device's CreateRootSignature (16) from compiled words; its
         // GetDescriptorHandleIncrementSize (15) of views (0).
@@ -260,21 +340,31 @@ impl Pipeline {
             made.step = function::<unsafe extern "system" fn(Com, u32) -> u32>(device, 15)(device, 0) as usize;
         }
         made.pipeline = pipeline(device, made.root, &corner, &pixel)?;
-        (made.views, made.targets) = (heap(device, 0, 3, true)?, heap(device, 2, 1, false)?);
+        (made.views, made.targets) = (heap(device, 0, VIEWS as u32, true)?, heap(device, 2, 1, false)?);
         made.textures = [texture(device)?, texture(device)?];
-        let start = start_of(made.views);
-        for (at, texture) in made.textures.iter().enumerate() {
-            // SAFETY: the device's CreateShaderResourceView (18), the whole texture, into the
-            // heap's second and third places.
-            unsafe { function::<unsafe extern "system" fn(Com, Com, *const c_void, usize)>(device, 18)(device, *texture, null(), start + (at + 1) * made.step) };
+        // The cache and patches in the second and third places; the cache in the frames' too,
+        // until frames are drawn.
+        for at in 1..VIEWS {
+            made.view(device, made.textures[(at == 2) as usize], at);
         }
         Some(made)
+    }
+
+    /// A view of all of `texture` in the heap's place `at` (the device's
+    /// CreateShaderResourceView, 18).
+    fn view(&self, device: Com, texture: Com, at: usize) {
+        // SAFETY: the texture is alive; the place lies in the heap.
+        unsafe { function::<unsafe extern "system" fn(Com, Com, *const c_void, usize)>(device, 18)(device, texture, null(), start_of(self.views) + at * self.step) };
     }
 
     /// Readies `list` to be recorded: its texels and quads written to the upload buffers, made
     /// larger where they must be. (The device is done with them: each frame is waited for.)
     /// Says whether they hold it.
     pub(crate) fn prepare(&mut self, device: Com, list: &DrawList) -> bool {
+        #[cfg(feature = "video")]
+        if !self.take_frames(device, &list.frames) {
+            return false;
+        }
         let staged = list.uploads.iter().map(|upload| (upload.at[2] as usize * 4).next_multiple_of(PITCH) * upload.at[3] as usize + 2 * PITCH).sum::<usize>();
         let quads = list.quads.len().max(1) * size_of::<Quad>();
         let grown = self.quads.is_none_or(|written| written.room < quads);
@@ -295,6 +385,34 @@ impl Pipeline {
             offset = (offset + pitch * height).next_multiple_of(2 * PITCH);
         }
         true
+    }
+
+    /// Readies `frames` to be drawn: each opened the first time, viewed in its place (four to
+    /// seven, the places left the cache's), its fence's value now noted. Says whether all could
+    /// be.
+    #[cfg(feature = "video")]
+    fn take_frames(&mut self, device: Com, frames: &[std::sync::Arc<FrameTexture>]) -> bool {
+        self.frames.clear();
+        let Some(opened) = self.opened.opened(frames, |frame| OpenedFrame::new(device, frame), drop) else { return false };
+        let opened: Vec<[Com; 2]> = opened.iter().map(|opened| [opened.texture, opened.fence]).collect();
+        for (at, ([texture, fence], frame)) in opened.into_iter().zip(frames).enumerate() {
+            self.view(device, texture, 3 + at);
+            self.frames.push(Taken { texture, fence, value: frame.fence_value.load(std::sync::atomic::Ordering::Acquire) });
+        }
+        (3 + frames.len()..VIEWS).for_each(|at| self.view(device, self.textures[0], at));
+        true
+    }
+
+    /// The frames the prepared list draws.
+    #[cfg(feature = "video")]
+    pub(crate) fn frames(&self) -> &[Taken] {
+        &self.frames
+    }
+
+    /// Whether a video's frame could not be opened on this device.
+    #[cfg(feature = "video")]
+    pub(crate) fn refuses_frames(&self) -> bool {
+        self.opened.refused
     }
 
     /// The upload buffer `written`, made at least `bytes` big where it is not.
@@ -346,11 +464,27 @@ impl Pipeline {
             function::<unsafe extern "system" fn(Com, u32, *const [f32; 6])>(commands, 21)(commands, 1, &viewport);
             function::<unsafe extern "system" fn(Com, u32, *const [i32; 4])>(commands, 22)(commands, 1, &area);
             function::<unsafe extern "system" fn(Com, u32, *const usize, i32, *const usize)>(commands, 46)(commands, 1, &target, 0, null());
+            #[cfg(feature = "video")]
+            self.frames_to(commands, COMMON, PIXEL_SHADER_RESOURCE);
             if !list.quads.is_empty() {
                 function::<unsafe extern "system" fn(Com, u32, u32, u32, u32)>(commands, 12)(commands, 4, list.quads.len() as u32, 0, 0);
             }
+            #[cfg(feature = "video")]
+            self.frames_to(commands, PIXEL_SHADER_RESOURCE, COMMON);
             function::<Barriers>(commands, 26)(commands, 1, &after);
         }
+    }
+
+    /// Records the frames drawn moved from state `before` to `after`: read by shaders, or back
+    /// to the state shared textures are in between.
+    #[cfg(feature = "video")]
+    fn frames_to(&self, commands: Com, before: u32, after: u32) {
+        let barriers: Vec<Barrier> = self.frames.iter().map(|frame| barrier(frame.texture, before, after)).collect();
+        if barriers.is_empty() {
+            return;
+        }
+        // SAFETY: the list's ResourceBarrier (26); each texture is alive, opened on this device.
+        unsafe { function::<unsafe extern "system" fn(Com, u32, *const Barrier)>(commands, 26)(commands, barriers.len() as u32, barriers.as_ptr()) };
     }
 
     /// Records the list's texels copied from the upload buffer into the textures, which are

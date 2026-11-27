@@ -163,6 +163,8 @@ mod gpu_draw_vulkan;
 mod gpu_draw_windows;
 #[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
 mod gpu_egl;
+#[cfg(all(windows, feature = "gpu-draw", feature = "video"))]
+mod gpu_frames_windows;
 #[cfg(all(target_os = "ios", feature = "gpu"))]
 mod gpu_ios;
 #[cfg(all(target_vendor = "apple", feature = "gpu"))]
@@ -362,7 +364,7 @@ mod video_read_ahead;
 mod video_sei;
 #[cfg(all(feature = "video", not(target_family = "wasm")))]
 mod video_stream_captions;
-#[cfg(all(feature = "video", feature = "gpu-draw", unix, not(target_vendor = "apple")))]
+#[cfg(all(feature = "video", feature = "gpu-draw", any(windows, all(unix, not(target_vendor = "apple")))))]
 mod video_vulkan;
 #[cfg(all(feature = "video", target_family = "wasm"))]
 mod video_web;

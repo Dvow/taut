@@ -232,7 +232,10 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 - Frames are drawn from the decoder's buffer only with `gpu-draw`, four videos a part (a fifth,
   or one shown more than 8 times smaller, is read back), by:
-  - Windows: Direct3D 11 (not 12, Vulkan or OpenGL).
+  - Windows: Direct3D 11 and 12; Vulkan where the GPU has `VK_KHR_external_memory_win32`,
+    `VK_KHR_win32_keyed_mutex` and `dualSrcBlend`; OpenGL where the driver has
+    `WGL_NV_DX_interop2`, through a copy on the GPU (the interop refuses a texture opened from
+    another device's). A window on another adapter than the decoder's reads them back.
   - macOS and iOS: Metal.
   - Android: Vulkan and OpenGL ES; not a frame whose visible part starts off its top left.
     OpenGL ES makes it RGB by the driver's matrix (on the emulator 2 levels off the CPU's), and

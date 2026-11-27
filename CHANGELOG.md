@@ -345,6 +345,13 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   macOS and iOS read them now (and QuickTime closed-caption tracks, as `CC1`); Windows reads
   them through a source reader of its own instead of Media Foundation's timed text; Linux also
   from `h265parse` and from caption distribution packets.
+- **Video frames drawn from the decoder's texture on Direct3D 12, Vulkan and OpenGL** (Windows,
+  `gpu-draw`), as on Direct3D 11: Direct3D 12 opens the texture and waits for the decoder's
+  fence; Vulkan imports it (`VK_KHR_external_memory_win32`) and takes its keyed mutex in the
+  submit (`VK_KHR_win32_keyed_mutex`); OpenGL copies it on the GPU and draws the copy through
+  `WGL_NV_DX_interop2`. A device that can't open a frame reads frames back from then on. CPU a
+  1080p H.264 frame (RTX 2080 Ti): Direct3D 12 2.2 ms instead of 5.9, Vulkan 1.5 instead of 6.0,
+  OpenGL 2.7 instead of 7.7. The decoder's texture is now shared by an NT handle.
 
 ## 0.3.0 (2026-11-24)
 

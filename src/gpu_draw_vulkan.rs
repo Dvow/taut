@@ -147,7 +147,7 @@ pub(crate) struct Pipeline {
     copies: [Vec<VkBufferImageCopy>; 2],
     /// What draws videos' frames from the decoder's buffers, where the device imports them
     /// (`video_vulkan`).
-    #[cfg(all(feature = "video", unix))]
+    #[cfg(all(feature = "video", any(unix, windows)))]
     pub(crate) frames: Option<Box<crate::video_vulkan::Frames>>,
 }
 
@@ -193,7 +193,7 @@ impl Pipeline {
             quads: Written::default(),
             target: (0, [0; 2], 0, 0),
             copies: [Vec::new(), Vec::new()],
-            #[cfg(all(feature = "video", unix))]
+            #[cfg(all(feature = "video", any(unix, windows)))]
             frames: None,
         });
         let textures = [made.texture()?, made.texture()?];
@@ -214,7 +214,7 @@ impl Pipeline {
     }
 
     /// The layout of the descriptor set naming the cache and patches (set 0 of every pipeline).
-    #[cfg(all(feature = "video", unix))]
+    #[cfg(all(feature = "video", any(unix, windows)))]
     pub(crate) fn set_layout(&self) -> Handle {
         self.set_layout
     }
@@ -533,7 +533,7 @@ impl Pipeline {
             std::ptr::copy_nonoverlapping(list.quads.as_ptr(), self.quads.at.cast::<Quad>(), list.quads.len());
         }
         self.put_up(commands, list);
-        #[cfg(all(feature = "video", unix))]
+        #[cfg(all(feature = "video", any(unix, windows)))]
         if !self.ready_frames(commands, list) {
             return false;
         }
@@ -544,7 +544,7 @@ impl Pipeline {
         self.draw(commands, frame, size, list, area);
         // SAFETY: as above.
         unsafe { (self.calls.vkCmdPipelineBarrier)(commands, STAGE_COLOUR, STAGE_TRANSFER, 0, 0, null(), 0, null(), 1, &to_copy) };
-        #[cfg(all(feature = "video", target_os = "android"))]
+        #[cfg(all(feature = "video", any(target_os = "android", windows)))]
         if let Some(frames) = &self.frames {
             frames.give_back(commands);
         }
@@ -553,7 +553,7 @@ impl Pipeline {
 
     /// Readies the list's videos' frames for the shaders (see `video_vulkan`): whether they
     /// are, or it has none.
-    #[cfg(all(feature = "video", unix))]
+    #[cfg(all(feature = "video", any(unix, windows)))]
     fn ready_frames(&mut self, commands: Object, list: &DrawList) -> bool {
         let Some(mut frames) = self.frames.take() else { return list.frames.is_empty() };
         let ready = frames.ready(self, commands, &list.frames);
@@ -596,7 +596,7 @@ impl Pipeline {
     /// Binds the pipeline and what it reads into `commands` (in a render pass): the one of the
     /// videos' frames where the part has some.
     fn bind(&self, commands: Object) {
-        #[cfg(all(feature = "video", unix))]
+        #[cfg(all(feature = "video", any(unix, windows)))]
         if self.frames.as_ref().is_some_and(|frames| frames.bind(commands, self.set)) {
             return;
         }
@@ -632,7 +632,7 @@ impl Pipeline {
 impl Drop for Pipeline {
     /// Lets go of everything. (The device is done with all of it.)
     fn drop(&mut self) {
-        #[cfg(all(feature = "video", unix))]
+        #[cfg(all(feature = "video", any(unix, windows)))]
         drop(self.frames.take());
         self.forget_target();
         [self.staging, self.quads].into_iter().for_each(|written| self.unwritten(written));

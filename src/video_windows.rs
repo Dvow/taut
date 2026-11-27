@@ -20,6 +20,8 @@ use crate::video_stream_captions::ClosedCaptions;
 use crate::windows::{Com, function_in, named, system_library, wide};
 use std::ffi::{CStr, c_void};
 use std::ptr::{null, null_mut};
+#[cfg(feature = "gpu-draw")]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -28,6 +30,11 @@ use std::time::Duration;
 unsafe extern "system" {
     fn PropVariantClear(value: *mut PropVariant) -> i32;
     fn CoTaskMemFree(memory: *mut c_void);
+}
+#[cfg(feature = "gpu-draw")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn CloseHandle(handle: usize) -> i32;
 }
 
 const ENGINE_FACTORY: [u32; 4] = named(0xB443_92DA, 0x499B, 0x446B, [0xA4, 0xCB, 0x00, 0x5F, 0xEA, 0xD0, 0xE6, 0xD5]);
@@ -149,6 +156,9 @@ struct Gpu {
     device: *mut Com,
     context: *mut Com,
     manager: *mut Com,
+    /// The context as `ID3D11DeviceContext4`, which signals fences; null before Windows 10 1703.
+    #[cfg(feature = "gpu-draw")]
+    signaller: *mut Com,
 }
 
 // SAFETY: the device is multithread protected (`ID3D10Multithread`): Direct3D takes a lock
@@ -168,7 +178,11 @@ impl Gpu {
 impl Drop for Gpu {
     fn drop(&mut self) {
         // SAFETY: each is held once, by this.
-        unsafe { release_all(&[self.manager, self.context, self.device]) };
+        unsafe {
+            #[cfg(feature = "gpu-draw")]
+            release_all(&[self.signaller]);
+            release_all(&[self.manager, self.context, self.device]);
+        }
     }
 }
 
@@ -207,7 +221,15 @@ fn make_gpu(functions: &Functions) -> Option<Gpu> {
             return None;
         }
     }
-    Some(Gpu { device, context, manager })
+    #[cfg(not(feature = "gpu-draw"))]
+    return Some(Gpu { device, context, manager });
+    #[cfg(feature = "gpu-draw")]
+    {
+        let mut signaller = null_mut();
+        // SAFETY: the context is alive; what it gives is held by the `Gpu`.
+        unsafe { call!(context, 0, Ask, &A_SIGNALLING_CONTEXT, &mut signaller) };
+        Some(Gpu { device, context, manager, signaller })
+    }
 }
 
 /// `QueryInterface`.
@@ -1092,7 +1114,7 @@ impl Frames {
         // the texture held by this device while drawn into.
         let sent = unsafe {
             match self {
-                Frames::Gpu { texture: Some(texture), .. } => texture.held(|| call!(engine, 43, Transfer, texture.drawn, null(), whole, null()) >= 0),
+                Frames::Gpu { texture: Some(texture), .. } => texture.held(|| texture.filled(call!(engine, 43, Transfer, texture.drawn, null(), whole, null()) >= 0)),
                 Frames::Gpu { texture: None, .. } => Ok(false),
                 Frames::Bitmap { bitmap, .. } => Ok(call!(engine, 43, Transfer, *bitmap, null(), whole, null()) >= 0),
             }
@@ -1120,17 +1142,29 @@ impl Frames {
 
 /// A frame on the GPU: the texture the engine draws it into, and a copy the CPU reads it from.
 /// With `gpu-draw` the texture is shared with windows' devices, which draw the frame from it:
-/// a keyed mutex orders the devices' work on it.
+/// a keyed mutex orders the devices' work on it; Direct3D 12, which has none, waits for a
+/// fence the decoder's device signals once each frame is in.
 pub(crate) struct FrameTexture {
     gpu: Arc<Gpu>,
     drawn: *mut Com,
     readable: *mut Com,
-    /// Its keyed mutex (`IDXGIKeyedMutex`), and the handle other devices open it by: null and 0
-    /// where the device could not share it.
+    /// Its keyed mutex (`IDXGIKeyedMutex`), and the NT handle other devices open it by: null and
+    /// 0 where the device could not share it.
     #[cfg(feature = "gpu-draw")]
     mutex: *mut Com,
     #[cfg(feature = "gpu-draw")]
     pub(crate) handle: isize,
+    /// The fence (`ID3D11Fence`), its NT handle, and the value it is signalled to once the
+    /// newest frame is in: null and 0 where there is none.
+    #[cfg(feature = "gpu-draw")]
+    fence: *mut Com,
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fence_handle: isize,
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fence_value: AtomicU64,
+    /// Its number among the textures made, which no other has (a handle's may be used again).
+    #[cfg(feature = "gpu-draw")]
+    serial: u64,
     /// Its width and height.
     pub(crate) size: (u32, u32),
 }
@@ -1146,19 +1180,34 @@ unsafe impl Sync for FrameTexture {}
 #[cfg(feature = "gpu-draw")]
 pub(crate) const FRAME_WAIT: u32 = 100;
 const WAIT_TIMEOUT: i32 = 0x102;
+/// How many frame textures were made (each one's `serial`).
+#[cfg(feature = "gpu-draw")]
+static MADE: AtomicU64 = AtomicU64::new(1);
 
-/// `IDXGIKeyedMutex` and `IDXGIResource`.
+/// `IDXGIKeyedMutex`, `IDXGIResource1`, `ID3D11Device5`, `ID3D11DeviceContext4` and
+/// `ID3D11Fence`.
 #[cfg(feature = "gpu-draw")]
 pub(crate) const A_KEYED_MUTEX: [u32; 4] = named(0x9D8E_1289, 0xD7B3, 0x465F, [0x81, 0x26, 0x25, 0x0E, 0x34, 0x9A, 0xF8, 0x5D]);
 #[cfg(feature = "gpu-draw")]
-const A_DXGI_RESOURCE: [u32; 4] = named(0x035F_3AB4, 0x482E, 0x4E50, [0xB4, 0x1F, 0x8A, 0x7F, 0x8B, 0xD8, 0x96, 0x0B]);
+const A_DXGI_RESOURCE: [u32; 4] = named(0x3096_1379, 0x4609, 0x4A41, [0x99, 0x8E, 0x54, 0xFE, 0x56, 0x7E, 0xE0, 0xC1]);
+#[cfg(feature = "gpu-draw")]
+const A_FENCE_MAKER: [u32; 4] = named(0x8FFD_E202, 0xA0E7, 0x45DF, [0x9E, 0x01, 0xE8, 0x37, 0x80, 0x1B, 0x5E, 0xA0]);
+#[cfg(feature = "gpu-draw")]
+const A_SIGNALLING_CONTEXT: [u32; 4] = named(0x9176_00DA, 0xF58C, 0x4C33, [0x98, 0xD8, 0x3E, 0x15, 0xB3, 0x90, 0xFA, 0x24]);
+#[cfg(feature = "gpu-draw")]
+const A_FENCE: [u32; 4] = named(0xAFFD_E9D1, 0x1DF7, 0x4BB7, [0x8A, 0x34, 0x0F, 0x46, 0x25, 0x1D, 0xAB, 0x80]);
+
+/// `CreateSharedHandle`: an NT handle to open by from any device of this process, read and
+/// written (`DXGI_SHARED_RESOURCE_READ | WRITE`; `GENERIC_ALL` for a fence).
+#[cfg(feature = "gpu-draw")]
+type MakeHandle = unsafe extern "system" fn(*mut Com, *const c_void, u32, *const u16, *mut isize) -> i32;
 
 impl FrameTexture {
     /// The two textures, this size, on `gpu`; none where they can't be made. (0x28: a render
-    /// and shader target, with `gpu-draw` shared with a keyed mutex, 0x100, where the device
-    /// can; 3, 0x20000: staging, read by the CPU.)
+    /// and shader target, with `gpu-draw` shared by an NT handle with a keyed mutex, 0x900, where
+    /// the device can; 3, 0x20000: staging, read by the CPU.)
     fn new(gpu: &Arc<Gpu>, (width, height): (u32, u32)) -> Option<FrameTexture> {
-        let shared = if cfg!(feature = "gpu-draw") { 0x100 } else { 0 };
+        let shared = if cfg!(feature = "gpu-draw") { 0x900 } else { 0 };
         // SAFETY: the device is alive.
         let (mut drawn, readable) = unsafe { (texture(gpu, width, height, [0, 0x28, 0, shared]), texture(gpu, width, height, [3, 0, 0x20000, 0])) };
         if drawn.is_null() {
@@ -1168,12 +1217,24 @@ impl FrameTexture {
         #[cfg(not(feature = "gpu-draw"))]
         let made = FrameTexture { gpu: gpu.clone(), drawn, readable, size: (width, height) };
         #[cfg(feature = "gpu-draw")]
-        let made = FrameTexture { gpu: gpu.clone(), drawn, readable, mutex: null_mut(), handle: 0, size: (width, height) }.shared();
+        let made = FrameTexture {
+            gpu: gpu.clone(),
+            drawn,
+            readable,
+            mutex: null_mut(),
+            handle: 0,
+            fence: null_mut(),
+            fence_handle: 0,
+            fence_value: AtomicU64::new(0),
+            serial: MADE.fetch_add(1, Ordering::Relaxed),
+            size: (width, height),
+        }
+        .shared();
         (!made.drawn.is_null() && !made.readable.is_null()).then_some(made)
     }
 
-    /// The same with its keyed mutex and shared handle (of `IDXGIResource`, 8: GetSharedHandle),
-    /// where it is shared: else windows' devices can't open it, and its frames are read back.
+    /// The same with its keyed mutex and NT handle (of `IDXGIResource1`, 13), where it is
+    /// shared, and its fence: else windows' devices can't open it, and its frames are read back.
     #[cfg(feature = "gpu-draw")]
     fn shared(mut self) -> FrameTexture {
         if self.drawn.is_null() {
@@ -1185,11 +1246,55 @@ impl FrameTexture {
             call!(self.drawn, 0, Ask, &A_KEYED_MUTEX, &mut self.mutex);
             call!(self.drawn, 0, Ask, &A_DXGI_RESOURCE, &mut resource);
             if !resource.is_null() {
-                call!(resource, 8, unsafe extern "system" fn(*mut Com, *mut isize) -> i32, &mut self.handle);
+                call!(resource, 13, MakeHandle, null(), 0x8000_0001, null(), &mut self.handle);
                 Com::release(resource);
             }
         }
+        if self.handle != 0 && !self.gpu.signaller.is_null() {
+            self.with_fence();
+        }
         self
+    }
+
+    /// Makes the fence and its NT handle (`ID3D11Device5::CreateFence`, 68, shared: 0x2; the
+    /// fence's CreateSharedHandle, 7).
+    #[cfg(feature = "gpu-draw")]
+    fn with_fence(&mut self) {
+        let mut maker = null_mut();
+        // SAFETY: the device is alive; what it gives is released, the fence with this.
+        unsafe {
+            call!(self.gpu.device, 0, Ask, &A_FENCE_MAKER, &mut maker);
+            if maker.is_null() {
+                return;
+            }
+            call!(maker, 68, unsafe extern "system" fn(*mut Com, u64, u32, *const [u32; 4], *mut *mut Com) -> i32, 0, 0x2, &A_FENCE, &mut self.fence);
+            Com::release(maker);
+            if !self.fence.is_null() {
+                call!(self.fence, 7, MakeHandle, null(), 0x1000_0000, null(), &mut self.fence_handle);
+            }
+        }
+    }
+
+    /// After a frame was put in (`sent`), has the fence signalled once that is done, after all
+    /// the device was given (`ID3D11DeviceContext4::Signal`, 147). Gives `sent`.
+    fn filled(&self, sent: bool) -> bool {
+        #[cfg(feature = "gpu-draw")]
+        if sent && self.fence_handle != 0 {
+            let next = self.fence_value.load(Ordering::Relaxed) + 1;
+            // SAFETY: the context and fence are alive; the context is multithread protected.
+            let signalled = unsafe { call!(self.gpu.signaller, 147, unsafe extern "system" fn(*mut Com, *mut Com, u64) -> i32, self.fence, next) } >= 0;
+            if signalled {
+                self.fence_value.store(next, Ordering::Release);
+            }
+        }
+        sent
+    }
+
+    /// What tells it apart from the decoder's other textures (`video_vulkan` keeps imports by
+    /// it).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn key(&self) -> Option<u64> {
+        Some(self.serial)
     }
 
     /// Does `work` on the texture drawn into, holding its keyed mutex (8: AcquireSync, 9:
@@ -1240,12 +1345,24 @@ impl FrameTexture {
     }
 }
 
+#[cfg(all(test, feature = "gpu-draw"))]
+impl FrameTexture {
+    /// A frame of no texture on no device, standing in for one.
+    pub(crate) fn stand_in() -> FrameTexture {
+        let gpu = Arc::new(Gpu { device: null_mut(), context: null_mut(), manager: null_mut(), signaller: null_mut() });
+        FrameTexture { gpu, drawn: null_mut(), readable: null_mut(), mutex: null_mut(), handle: 0, fence: null_mut(), fence_handle: 0, fence_value: AtomicU64::new(0), serial: 0, size: (0, 0) }
+    }
+}
+
 impl Drop for FrameTexture {
     fn drop(&mut self) {
-        // SAFETY: each is held once, or null (the handle goes with the texture).
+        // SAFETY: each is held once, or null; the handles are this texture's own.
         unsafe {
             #[cfg(feature = "gpu-draw")]
-            release_all(&[self.mutex]);
+            {
+                release_all(&[self.mutex, self.fence]);
+                [self.handle, self.fence_handle].into_iter().filter(|handle| *handle != 0).for_each(|handle| _ = CloseHandle(handle as usize));
+            }
             release_all(&[self.drawn, self.readable]);
         }
     }

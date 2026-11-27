@@ -12,6 +12,8 @@
 //! - With the feature `hdr`, the windows of a device made while a screen is HDR are given a
 //!   float pixel format and presented in scRGB (`hdr_opengl`).
 use crate::functions::functions;
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+use crate::layer_d3d11::{Com, release};
 use crate::windows::sys::{CreateWindowExW, DestroyWindow, GetModuleHandleW, HANDLE};
 use crate::windows::{function_in, system_library};
 use std::cell::Cell;
@@ -180,6 +182,10 @@ pub(crate) struct Device {
     reset: Option<unsafe extern "system" fn() -> u32>,
     /// A reset was told, or a swap failed.
     lost: Cell<bool>,
+    /// What draws videos' frames from the decoder's texture, where the driver has
+    /// `WGL_NV_DX_interop2`.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    frames: Option<Frames>,
 }
 
 impl Device {
@@ -271,6 +277,8 @@ impl Device {
         let offered_float = float_format(&wgl, dc);
         #[cfg(not(feature = "hdr"))]
         let _ = dc;
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        let frames = Interop::load(&mut |name| wgl.function(name)).ok().map(Frames::new);
         let wgl = Arc::new(wgl);
         // SAFETY: let go of on this thread, to be made current on the windows' thread.
         unsafe { (wgl.current)(0, 0) };
@@ -280,10 +288,32 @@ impl Device {
             return None;
         };
         let owner = Owner { gl: Arc::new(gl), wgl, context, current: Arc::new(AtomicIsize::new(0)) };
-        #[cfg(feature = "hdr")]
-        return Some(Device { owner, format, float: offered_float == Some(format), offered_float, interval, reset, lost: Cell::new(false) });
-        #[cfg(not(feature = "hdr"))]
-        Some(Device { owner, format, interval, reset, lost: Cell::new(false) })
+        Some(Device {
+            owner,
+            format,
+            #[cfg(feature = "hdr")]
+            float: offered_float == Some(format),
+            #[cfg(feature = "hdr")]
+            offered_float,
+            interval,
+            reset,
+            lost: Cell::new(false),
+            #[cfg(all(feature = "gpu-draw", feature = "video"))]
+            frames,
+        })
+    }
+
+    /// Whether the driver has `WGL_NV_DX_interop2`: videos' frames are drawn from the decoder's
+    /// texture.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    pub(crate) fn imports_frames(&self) -> bool {
+        self.frames.is_some()
+    }
+
+    /// Whether a video's frame could not be opened.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    pub(crate) fn refuses_frames(&self) -> bool {
+        self.frames.as_ref().is_some_and(|frames| frames.opened.refused)
     }
 
     /// Whether the GPU was reset (a robust context says so), or a swap failed.
@@ -340,10 +370,193 @@ unsafe impl Send for Device {}
 
 impl Drop for Device {
     fn drop(&mut self) {
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        if let Some(frames) = self.frames.take() {
+            frames.close();
+        }
         // SAFETY: the context is this device's alone; current nowhere after.
         unsafe {
             (self.owner.wgl.current)(0, 0);
             (self.owner.wgl.delete)(self.owner.context);
+        }
+    }
+}
+
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+functions!(Interop {
+    wglDXOpenDeviceNV: fn(*mut c_void) -> HANDLE;
+    wglDXCloseDeviceNV: fn(HANDLE) -> i32;
+    wglDXRegisterObjectNV: fn(HANDLE, *mut c_void, u32, u32, u32) -> HANDLE;
+    wglDXUnregisterObjectNV: fn(HANDLE, HANDLE) -> i32;
+    wglDXLockObjectsNV: fn(HANDLE, i32, *const HANDLE) -> i32;
+    wglDXUnlockObjectsNV: fn(HANDLE, i32, *const HANDLE) -> i32;
+});
+
+/// What draws videos' frames from the decoder's texture (see `gpu_frames_windows`): WGL's interop
+/// with Direct3D 11, a Direct3D 11 device of its own made the first time a frame is drawn, and
+/// the frames opened on it.
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+struct Frames {
+    interop: Interop,
+    direct3d: Option<Option<Direct3d>>,
+    opened: crate::gpu_frames_windows::OpenedFrames<OpenedFrame>,
+}
+
+/// A Direct3D 11 device on the default adapter (the decoder's), its immediate context and its
+/// interop handle.
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+#[derive(Clone, Copy)]
+struct Direct3d {
+    device: Com,
+    context: Com,
+    handle: HANDLE,
+}
+
+/// A video's frame opened on the Direct3D 11 device: its texture there and keyed mutex; a copy
+/// of the device's own, the OpenGL texture that is seen as, and its interop handle. (The interop
+/// refuses a texture opened from another device's: `ERROR_OPEN_FAILED`, NVIDIA.)
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+struct OpenedFrame {
+    texture: Com,
+    mutex: Com,
+    copy: Com,
+    name: u32,
+    object: HANDLE,
+}
+
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+impl Frames {
+    fn new(interop: Interop) -> Frames {
+        Frames { interop, direct3d: None, opened: Default::default() }
+    }
+
+    /// Has `draw` draw with `frames` seen as OpenGL textures (given their names, in order): each
+    /// opened the first time, copied on the GPU (its keyed mutex taken meanwhile), and the
+    /// interop's lock held while it draws. The context is current. Says whether it drew: not
+    /// where a frame can't be opened or taken.
+    fn drawn(&mut self, gl: &Gl, frames: &[std::sync::Arc<crate::video::FrameTexture>], draw: impl FnOnce(&[u32]) -> bool) -> bool {
+        let Frames { interop, direct3d, opened } = self;
+        let Some(direct3d) = *direct3d.get_or_insert_with(|| made_direct3d(interop)) else {
+            opened.refused = true;
+            return false;
+        };
+        let open = |frame: &crate::video::FrameTexture| OpenedFrame::new(interop, gl, direct3d, frame);
+        let Some(taken) = opened.opened(frames, open, |gone| gone.let_go(interop, Some(gl), direct3d.handle)) else { return false };
+        if !copied(direct3d.context, &taken) {
+            return false;
+        }
+        let (names, objects): (Vec<u32>, Vec<HANDLE>) = taken.iter().map(|frame| (frame.name, frame.object)).unzip();
+        let count = objects.len() as i32;
+        // SAFETY: the interop handle and objects are alive, registered on it.
+        let locked = unsafe { (interop.wglDXLockObjectsNV)(direct3d.handle, count, objects.as_ptr()) } != 0;
+        let drawn = locked && draw(&names);
+        if locked {
+            // SAFETY: as above, locked just now.
+            unsafe { (interop.wglDXUnlockObjectsNV)(direct3d.handle, count, objects.as_ptr()) };
+        }
+        drawn
+    }
+
+    /// Lets go of every frame and the Direct3D 11 device, with no context current (OpenGL's
+    /// textures go with the context).
+    fn close(mut self) {
+        let Some(Some(direct3d)) = self.direct3d else { return };
+        let interop = &self.interop;
+        self.opened.let_go_of_all(|frame| frame.let_go(interop, None, direct3d.handle));
+        // SAFETY: the interop handle is this one's; the device and context are held once, by it.
+        unsafe {
+            (interop.wglDXCloseDeviceNV)(direct3d.handle);
+            [direct3d.context, direct3d.device].into_iter().for_each(|object| release(object));
+        }
+    }
+}
+
+/// Copies each of `frames` into its copy on the device of `context` (CopyResource, 47), their
+/// keyed mutexes taken meanwhile. Says whether all could be taken.
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+fn copied(context: Com, frames: &[&OpenedFrame]) -> bool {
+    let mutexes: Vec<Com> = frames.iter().map(|frame| frame.mutex).collect();
+    if !crate::gpu_frames_windows::take_all(&mutexes) {
+        return false;
+    }
+    // SAFETY: the context and textures are alive, of one device, each pair of one size and format.
+    unsafe { frames.iter().for_each(|frame| crate::layer_d3d11::function::<unsafe extern "system" fn(Com, Com, Com)>(context, 47)(context, frame.copy, frame.texture)) };
+    crate::gpu_frames_windows::give_back(&mutexes);
+    true
+}
+
+/// A Direct3D 11 device on the default adapter and its interop handle; nothing where either can't
+/// be made (OpenGL on another adapter).
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+fn made_direct3d(interop: &Interop) -> Option<Direct3d> {
+    type MakeDevice = unsafe extern "system" fn(*mut c_void, u32, isize, u32, *const u32, u32, u32, *mut Com, *mut u32, *mut Com) -> i32;
+    let make = function_in(system_library("d3d11.dll"), c"D3D11CreateDevice");
+    let mut made = Direct3d { device: null_mut(), context: null_mut(), handle: 0 };
+    // SAFETY: as d3d11.h declares it: a hardware device (1) taking BGRA (0x20), SDK version 7;
+    // released where the interop can't open it.
+    unsafe {
+        if make == 0 || std::mem::transmute::<usize, MakeDevice>(make)(null_mut(), 1, 0, 0x20, null(), 0, 7, &mut made.device, null_mut(), &mut made.context) < 0 {
+            return None;
+        }
+        made.handle = (interop.wglDXOpenDeviceNV)(made.device);
+        if made.handle == 0 {
+            [made.context, made.device].into_iter().for_each(|object| release(object));
+            return None;
+        }
+    }
+    Some(made)
+}
+
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+impl OpenedFrame {
+    /// `frame` opened on the Direct3D 11 device, with a copy (a shader resource, 0x8) registered
+    /// with the interop as a new OpenGL texture, read only (`WGL_ACCESS_READ_ONLY_NV`, 0);
+    /// nothing where it can't be.
+    fn new(interop: &Interop, gl: &Gl, direct3d: Direct3d, frame: &crate::video::FrameTexture) -> Option<OpenedFrame> {
+        let [texture, mutex] = crate::gpu_frames_windows::opened_on_direct3d_11(direct3d.device, frame)?;
+        let mut opened = OpenedFrame { texture, mutex, copy: null_mut(), name: 0, object: 0 };
+        let (width, height) = frame.size;
+        let described = crate::layer_d3d11::TextureDescription {
+            width,
+            height,
+            mip_levels: 1,
+            array_size: 1,
+            format: crate::layer_d3d11::B8G8R8A8_UNORM,
+            sample_count: 1,
+            sample_quality: 0,
+            usage: 0,
+            bind_flags: 0x8,
+            cpu_access_flags: 0,
+            misc_flags: 0,
+        };
+        type MakeTexture = unsafe extern "system" fn(Com, *const crate::layer_d3d11::TextureDescription, *const c_void, *mut Com) -> i32;
+        // SAFETY: the device is alive (CreateTexture2D, 5); the context is current.
+        unsafe {
+            crate::layer_d3d11::function::<MakeTexture>(direct3d.device, 5)(direct3d.device, &described, null(), &mut opened.copy);
+            (gl.glGenTextures)(1, &mut opened.name);
+            if !opened.copy.is_null() {
+                opened.object = (interop.wglDXRegisterObjectNV)(direct3d.handle, opened.copy, opened.name, TEXTURE_2D, 0);
+            }
+        }
+        if opened.object == 0 {
+            opened.let_go(interop, Some(gl), direct3d.handle);
+            return None;
+        }
+        Some(opened)
+    }
+
+    /// Lets go of it: unregistered, its OpenGL texture deleted where `gl` (the context current),
+    /// its Direct3D objects released.
+    fn let_go(self, interop: &Interop, gl: Option<&Gl>, handle: HANDLE) {
+        // SAFETY: each is held once, by this, or 0.
+        unsafe {
+            if self.object != 0 {
+                (interop.wglDXUnregisterObjectNV)(handle, self.object);
+            }
+            if let Some(gl) = gl.filter(|_| self.name != 0) {
+                (gl.glDeleteTextures)(1, &self.name);
+            }
+            [self.copy, self.mutex, self.texture].into_iter().for_each(|object| release(object));
         }
     }
 }
@@ -477,15 +690,23 @@ impl Shown {
     }
 
     /// Draws a recorded paint into the texture, inside `area` (left, top, right, bottom), with
-    /// what `drawing` holds: made here the first time (nothing, if it can't be). Says whether it
-    /// could: if not, the CPU is to.
+    /// what `drawing` holds: made here the first time (nothing, if it can't be); videos' frames
+    /// as `device` opens them. Says whether it could: if not, the CPU is to.
     #[cfg(feature = "gpu-draw")]
-    pub(crate) fn draw(&mut self, drawing: &mut Option<Option<crate::gpu_draw_opengl::Pipeline>>, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
+    pub(crate) fn draw(&mut self, device: &mut Device, drawing: &mut Option<Option<crate::gpu_draw_opengl::Pipeline>>, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
         if self.size[0] <= 0 || !self.owner.with(self.dc) {
             return false;
         }
         let made = drawing.get_or_insert_with(|| crate::gpu_draw_opengl::Pipeline::new(&mut |name| self.owner.wgl.function(name), true));
-        made.as_mut().is_some_and(|pipeline| pipeline.draw(self.texture, self.size, list, area))
+        let Some(pipeline) = made.as_mut() else { return false };
+        #[cfg(feature = "video")]
+        if !list.frames.is_empty() {
+            let (texture, size, gl) = (self.texture, self.size, &self.owner.gl);
+            return device.frames.as_mut().is_some_and(|frames| frames.drawn(gl, &list.frames, |names| pipeline.draw_with_frames(texture, size, list, area, names)));
+        }
+        #[cfg(not(feature = "video"))]
+        let _ = device;
+        pipeline.draw(self.texture, self.size, list, area)
     }
 
     /// Puts the texture in the back buffer and swaps it, at the screen's next refresh. Says

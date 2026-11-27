@@ -96,6 +96,34 @@ const ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
 const ONE_MINUS_SRC1_COLOR: c_uint = 0x88FA;
 const ONE_MINUS_SRC1_ALPHA: c_uint = 0x88FB;
 
+/// WGL's textures with videos' frames: frame n is texture 2 + n, red first (the decoder's
+/// B8G8R8A8 as OpenGL sees it), opaque; the cache and patches as `TEXTURES` reads them.
+#[cfg(all(feature = "video", windows))]
+const FRAME_TEXTURES: &str = r#"
+#define as_float uintBitsToFloat
+uniform highp sampler2D cache;
+uniform highp sampler2D patches;
+uniform highp sampler2D frame0;
+uniform highp sampler2D frame1;
+uniform highp sampler2D frame2;
+uniform highp sampler2D frame3;
+vec4 texel(int which, int x, int y) {
+    ivec2 at = ivec2(x, y);
+    if (which == 0) {
+        return texelFetch(cache, at, 0).bgra;
+    } else if (which == 1) {
+        return texelFetch(patches, at, 0).bgra;
+    } else if (which == 2) {
+        return vec4(texelFetch(frame0, at, 0).rgb, 1.0);
+    } else if (which == 3) {
+        return vec4(texelFetch(frame1, at, 0).rgb, 1.0);
+    } else if (which == 4) {
+        return vec4(texelFetch(frame2, at, 0).rgb, 1.0);
+    }
+    return vec4(texelFetch(frame3, at, 0).rgb, 1.0);
+}
+"#;
+
 /// OpenGL ES's precisions, after its version and extensions (the frames' program's).
 #[cfg(all(feature = "video", unix))]
 const PRECISION: &str = "precision highp float;\nprecision highp int;\n";
@@ -177,16 +205,16 @@ pub(crate) struct Pipeline {
     frame: c_uint,
     dual: bool,
     /// What draws videos' frames from the decoder's buffers, where EGL imports them
-    /// (`video_opengl`), and the program that reads them: made when a part first has frames
-    /// (0 before; `FAILED` where it didn't compile).
+    /// (`video_opengl`; WGL's are given by `gpu_opengl_windows`), and the program that reads
+    /// them: made when a part first has frames (0 before; `FAILED` where it didn't compile).
     #[cfg(all(feature = "video", unix))]
     pub(crate) frames: Option<Box<crate::video_opengl::Frames>>,
-    #[cfg(all(feature = "video", unix))]
+    #[cfg(all(feature = "video", any(unix, windows)))]
     framing: c_uint,
 }
 
 /// A program that could not be made: nothing is drawn with it, and it isn't tried again.
-#[cfg(all(feature = "video", unix))]
+#[cfg(all(feature = "video", any(unix, windows)))]
 const FAILED: c_uint = c_uint::MAX;
 
 impl std::fmt::Debug for Pipeline {
@@ -216,7 +244,7 @@ impl Pipeline {
             gl,
             #[cfg(all(feature = "video", unix))]
             frames: None,
-            #[cfg(all(feature = "video", unix))]
+            #[cfg(all(feature = "video", any(unix, windows)))]
             framing: 0,
         };
         made.program = made.program(&corner, &pixel);
@@ -347,13 +375,62 @@ impl Pipeline {
         made
     }
 
+    /// `draw`, with videos' frames (`list.frames`) in WGL's textures `frames` (in order): their
+    /// program made the first time, the textures on units 2 to 5 meanwhile.
+    #[cfg(all(feature = "video", windows))]
+    pub(crate) fn draw_with_frames(&mut self, texture: c_uint, size: [c_int; 2], list: &DrawList, area: [c_int; 4], frames: &[c_uint]) -> bool {
+        if self.framing == 0 {
+            self.framing = self.framing_program();
+        }
+        if self.framing == FAILED {
+            return false;
+        }
+        self.bind_frames(frames);
+        let drawn = self.draw(texture, size, list, area);
+        self.bind_frames(&[]);
+        drawn
+    }
+
+    /// WGL's program that draws videos' frames too, its samplers told their units; `FAILED`
+    /// where it can't be made.
+    #[cfg(all(feature = "video", windows))]
+    fn framing_program(&mut self) -> c_uint {
+        let head = "#version 330 core\n#define DUAL\n";
+        let (corner, pixel) = (format!("{head}{CORNER}\0"), format!("{head}{FRAME_TEXTURES}{SHADING}{PIXEL}\0"));
+        let (made, gl) = (self.program(&corner, &pixel), &self.gl);
+        if made == 0 {
+            return FAILED;
+        }
+        let units = [c"cache", c"patches", c"frame0", c"frame1", c"frame2", c"frame3"];
+        // SAFETY: OpenGL's documented calls on the current context; the names end in zeros.
+        unsafe {
+            (gl.glUseProgram)(made);
+            units.iter().enumerate().for_each(|(unit, name)| (gl.glUniform1i)((gl.glGetUniformLocation)(made, name.as_ptr()), unit as c_int));
+        }
+        made
+    }
+
+    /// Binds `frames` to units 2 to 5, and nothing to those left.
+    #[cfg(all(feature = "video", windows))]
+    fn bind_frames(&self, frames: &[c_uint]) {
+        let gl = &self.gl;
+        // SAFETY: OpenGL's documented calls on the current context; each texture is alive.
+        unsafe {
+            for unit in 0..4 {
+                (gl.glActiveTexture)(TEXTURE0 + 2 + unit as c_uint);
+                (gl.glBindTexture)(TEXTURE_2D, frames.get(unit).copied().unwrap_or(0));
+            }
+            (gl.glActiveTexture)(TEXTURE0);
+        }
+    }
+
     /// The program a part is drawn with: the one reading frames where it has any.
     fn program_for(&self, list: &DrawList) -> c_uint {
-        #[cfg(all(feature = "video", unix))]
+        #[cfg(all(feature = "video", any(unix, windows)))]
         if !list.frames.is_empty() {
             return self.framing;
         }
-        #[cfg(not(all(feature = "video", unix)))]
+        #[cfg(not(all(feature = "video", any(unix, windows))))]
         let _ = list;
         self.program
     }

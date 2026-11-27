@@ -23,15 +23,33 @@ enum Made {
     Gl(gpu_opengl_windows::Device),
 }
 
-/// Whether a device of this path draws videos' frames from their own textures: Direct3D 11 on a
-/// GPU, where the decoder's device shares them.
+/// Whether a device of this path draws videos' frames from the decoder's own texture (see
+/// `gpu_frames_windows`): Direct3D 11 on a GPU, Direct3D 12, Vulkan and OpenGL where the driver
+/// imports it.
 #[cfg(all(feature = "gpu-draw", feature = "video"))]
 fn takes_frames(made: &Made) -> bool {
-    let shares = matches!(made, Made::D3d11(device) if device.gpu);
+    let imports = match made {
+        Made::D3d11(device) => device.gpu,
+        Made::D3d12(device) => device.drawing.is_some(),
+        Made::Vulkan(device) => device.drawing.as_ref().is_some_and(|drawing| drawing.frames.is_some()),
+        Made::Gl(device) => device.imports_frames(),
+    };
     #[cfg(test)]
-    return shares && !tests::faked().read_back;
+    return imports && !tests::faked().read_back;
     #[cfg(not(test))]
-    shares
+    imports
+}
+
+/// Whether a video's frame could not be opened on the device: from then on its frames are read
+/// back.
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+fn refuses_frames(made: &Made) -> bool {
+    match made {
+        Made::D3d11(device) => device.drawing.as_ref().is_some_and(|drawing| drawing.refuses_frames()),
+        Made::D3d12(device) => device.drawing.as_ref().is_some_and(|drawing| drawing.refuses_frames()),
+        Made::Vulkan(device) => device.drawing.as_ref().and_then(|drawing| drawing.frames.as_ref()).is_some_and(|frames| frames.refused),
+        Made::Gl(device) => device.refuses_frames(),
+    }
 }
 
 /// The device the windows are shown with.
@@ -213,16 +231,21 @@ impl Shown {
     }
 
     /// Draws a recorded paint into what shows the window, inside `area` (left, top, right,
-    /// bottom). Says whether it could: if not, the CPU is to.
+    /// bottom). Says whether it could: if not, the CPU is to. A device that refused a video's
+    /// frame records none from then on.
     #[cfg(feature = "gpu-draw")]
-    pub(crate) fn draw(&mut self, device: &mut Device, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
+    pub(crate) fn draw(&mut self, device: &mut Device, list: &mut crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
         let drawn = match (self, &mut device.made) {
             (Shown::D3d11(shown), Made::D3d11(device)) => shown.draw(device, list, area),
             (Shown::D3d12(shown), Made::D3d12(device)) => shown.draw(device, list, area),
             (Shown::Vulkan(shown), Made::Vulkan(device)) => shown.draw(device, list, area),
-            (Shown::Gl(shown), Made::Gl(_)) => shown.draw(&mut device.opengl, list, area),
+            (Shown::Gl(shown), Made::Gl(gl)) => shown.draw(gl, &mut device.opengl, list, area),
             _ => false,
         };
+        #[cfg(feature = "video")]
+        if !drawn && refuses_frames(&device.made) {
+            list.takes_frames = false;
+        }
         #[cfg(test)]
         tests::DRAWN.set(tests::DRAWN.get() + drawn as u32);
         drawn
@@ -717,6 +740,90 @@ pub(crate) mod tests {
         }
     }
 
+    /// The two videos a window shows.
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    type Videos = Rc<RefCell<[crate::Video; 2]>>;
+
+    /// `videos` shown in a window by `path` (faked as `usual`), then played a moment. Returns the
+    /// window, its videos and how many frames were read back while playing.
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn played(path: Renderer, usual: Faked, videos: [crate::Video; 2]) -> (HANDLE, Videos, u32) {
+        fake(usual);
+        let on_gpu = Rc::new(RefCell::new(videos));
+        let gpu = showing(path, 0, on_gpu.clone());
+        pumped_until("the first frames", || on_gpu.borrow().iter().all(|video| video.frames_shown() > 0));
+        let read_back = played_on(gpu, &on_gpu);
+        (gpu, on_gpu, read_back)
+    }
+
+    /// Plays the videos of window `gpu`, looping, until each showed eight frames more. Gives how
+    /// many were read back meanwhile.
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn played_on(gpu: HANDLE, videos: &Videos) -> u32 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (before, shown) = (crate::video::READ_BACK.load(Relaxed), videos.borrow().each_ref().map(|video| video.frames_shown()));
+        for video in videos.borrow_mut().iter_mut() {
+            video.set_looping(true);
+            video.play();
+        }
+        wake(gpu);
+        pumped_until("a second's frames", || videos.borrow().iter().zip(shown).all(|(video, before)| video.frames_shown() >= before + 8));
+        crate::video::READ_BACK.load(Relaxed) - before
+    }
+
+    /// Pauses window `gpu`'s videos at frame 12 and opens a window drawn by the CPU showing the
+    /// same, once both show it: that window.
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn paused_beside_the_cpu(gpu: HANDLE, on_gpu: &Videos) -> HANDLE {
+        use std::sync::atomic::Ordering::Relaxed;
+        let before = crate::video::READ_BACK.load(Relaxed);
+        for video in on_gpu.borrow_mut().iter_mut() {
+            video.pause();
+            video.seek(std::time::Duration::from_millis(1200));
+        }
+        wake(gpu);
+        let on_cpu = Rc::new(RefCell::new(two_videos().expect("the same player again")));
+        let cpu = showing(Renderer::Cpu, 900, on_cpu.clone());
+        let at_frame = |videos: &Videos| videos.borrow().iter().all(|video| !video.playing() && video.position() == std::time::Duration::from_millis(1200) && video.frames_shown() > 0);
+        pumped_until("frame 12 in both windows", || at_frame(on_gpu) && at_frame(&on_cpu));
+        pumped_until("the frame read back", || crate::video::READ_BACK.load(Relaxed) >= before + 2);
+        wake(gpu);
+        wake(cpu);
+        cpu
+    }
+
+    /// Videos' frames drawn by `path` on this computer's GPU: while playing, every one from the
+    /// decoder's texture, none read back; paused, the pixels the CPU shows of the frame read back;
+    /// once the window's device was lost and made again, from the texture again. (On a desktop of
+    /// its own the picture of a window shown by WGL is never one of its frames: for OpenGL only
+    /// what is presented is compared.)
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn frames_from_the_decoders_texture_by(path: Renderer) {
+        use std::sync::atomic::Ordering::Relaxed;
+        assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no window is shown on it");
+        let Some(videos) = two_videos() else { return println!("no video player here: skipped") };
+        let usual = Faked { keep: true, ..Faked::default() };
+        fake(usual);
+        if !Device::of(path).is_some_and(|made| takes_frames(&made)) {
+            return println!("no {path:?} GPU that imports the decoder's texture here: skipped");
+        }
+        let (gpu, on_gpu, read_back) = played(path, usual, videos);
+        assert_eq!(read_back, 0, "{path:?}: frames were read back while playing");
+        assert!(DRAWN.get() > 8, "{path:?}: the GPU drew {} parts", DRAWN.get());
+        let cpu = paused_beside_the_cpu(gpu, &on_gpu);
+        let read = crate::video::READ_BACK.load(Relaxed);
+        assert!(path == Renderer::OpenGL || same(gpu, cpu), "{path:?}: the windows differ: {}", differ(gpu, cpu));
+        assert!(presented_as(&last_presented(gpu), cpu), "{path:?}: the frame presented differs");
+        assert_eq!(crate::video::READ_BACK.load(Relaxed), read, "{path:?}: the GPU's window read a frame back");
+        fake(Faked { lose: true, ..usual });
+        assert_eq!(played_on(gpu, &on_gpu), 0, "{path:?}: frames were read back once the device was made again");
+        assert!(!faked().lose, "{path:?}: the device was never lost");
+        for hwnd in [gpu, cpu] {
+            unsafe { DestroyWindow(hwnd) };
+        }
+        fake(Faked::default());
+    }
+
     #[test]
     #[cfg(all(feature = "video", feature = "gpu-draw"))]
     fn direct3d_11_draws_video_frames_from_the_decoders_texture() {
@@ -726,49 +833,81 @@ pub(crate) mod tests {
     #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
     #[cfg(all(feature = "video", feature = "gpu-draw"))]
     fn on_a_desktop_nobody_sees_direct3d_11_draws_video_frames_from_the_decoders_texture() {
-        use std::sync::atomic::Ordering::Relaxed;
+        if std::env::var_os(ALONE).is_some() {
+            frames_from_the_decoders_texture_by(Renderer::Direct3D11);
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn direct3d_12_draws_video_frames_from_the_decoders_texture() {
+        on_a_desktop_of_its_own("gpu_windows::tests::on_a_desktop_nobody_sees_direct3d_12_draws_video_frames_from_the_decoders_texture");
+    }
+    #[test]
+    #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn on_a_desktop_nobody_sees_direct3d_12_draws_video_frames_from_the_decoders_texture() {
+        if std::env::var_os(ALONE).is_some() {
+            frames_from_the_decoders_texture_by(Renderer::Direct3D12);
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn vulkan_draws_video_frames_from_the_decoders_texture() {
+        on_a_desktop_of_its_own("gpu_windows::tests::on_a_desktop_nobody_sees_vulkan_draws_video_frames_from_the_decoders_texture");
+    }
+    #[test]
+    #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn on_a_desktop_nobody_sees_vulkan_draws_video_frames_from_the_decoders_texture() {
+        if std::env::var_os(ALONE).is_some() {
+            frames_from_the_decoders_texture_by(Renderer::Vulkan);
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn opengl_draws_video_frames_from_the_decoders_texture() {
+        on_a_desktop_of_its_own("gpu_windows::tests::on_a_desktop_nobody_sees_opengl_draws_video_frames_from_the_decoders_texture");
+    }
+    #[test]
+    #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn on_a_desktop_nobody_sees_opengl_draws_video_frames_from_the_decoders_texture() {
+        if std::env::var_os(ALONE).is_some() {
+            frames_from_the_decoders_texture_by(Renderer::OpenGL);
+        }
+    }
+
+    #[test]
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn a_device_that_cant_import_frames_reads_them_back() {
+        on_a_desktop_of_its_own("gpu_windows::tests::on_a_desktop_nobody_sees_a_device_that_cant_import_frames_reads_them_back");
+    }
+    #[test]
+    #[ignore = "run by the test before it, in a process of its own that is started on a desktop of its own"]
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn on_a_desktop_nobody_sees_a_device_that_cant_import_frames_reads_them_back() {
         if std::env::var_os(ALONE).is_none() {
             return;
         }
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no window is shown on it");
-        let Some(videos) = two_videos() else { return println!("no video player here: skipped") };
-        let usual = Faked { keep: true, ..Faked::default() };
-        fake(usual);
-        if !matches!(Device::of(Renderer::Direct3D11), Some(Made::D3d11(device)) if device.gpu) {
-            return println!("no Direct3D 11 GPU here: skipped");
+        // Software devices: Direct3D 12's WARP takes frames but can't open the decoder's (the
+        // GPU's); SwiftShader's Vulkan can't import them at all.
+        for path in [Renderer::Direct3D12, Renderer::Vulkan] {
+            let Some(usual) = tested_with(path).filter(|usual| usual.software) else { continue };
+            let Some(videos) = two_videos() else { return println!("no video player here: skipped") };
+            let (gpu, on_gpu, read_back) = played(path, usual, videos);
+            assert!(read_back >= 8, "{path:?}: only {read_back} frames read back");
+            let cpu = paused_beside_the_cpu(gpu, &on_gpu);
+            assert!(same(gpu, cpu), "{path:?}: the windows differ: {}", differ(gpu, cpu));
+            assert!(presented_as(&last_presented(gpu), cpu), "{path:?}: the frame presented differs");
+            for hwnd in [gpu, cpu] {
+                unsafe { DestroyWindow(hwnd) };
+            }
+            fake(Faked::default());
         }
-        // Played a moment on the GPU: every frame drawn from the decoder's texture, none read
-        // back.
-        let on_gpu = Rc::new(RefCell::new(videos));
-        let gpu = showing(Renderer::Direct3D11, 0, on_gpu.clone());
-        pumped_until("the first frames", || on_gpu.borrow().iter().all(|video| video.frames_shown() > 0));
-        on_gpu.borrow_mut().iter_mut().for_each(|video| video.play());
-        wake(gpu);
-        pumped_until("a second's frames", || on_gpu.borrow().iter().all(|video| video.frames_shown() >= 8));
-        assert_eq!(crate::video::READ_BACK.load(Relaxed), 0, "frames were read back");
-        assert!(DRAWN.get() > 8, "the GPU drew {} parts", DRAWN.get());
-        // At one frame, it shows what the CPU shows of the frame read back.
-        for video in on_gpu.borrow_mut().iter_mut() {
-            video.pause();
-            video.seek(std::time::Duration::from_millis(1200));
-        }
-        wake(gpu);
-        let on_cpu = Rc::new(RefCell::new(two_videos().expect("the same player again")));
-        let cpu = showing(Renderer::Cpu, 900, on_cpu.clone());
-        let at_frame =
-            |videos: &Rc<RefCell<[crate::Video; 2]>>| videos.borrow().iter().all(|video| !video.playing() && video.position() == std::time::Duration::from_millis(1200) && video.frames_shown() > 0);
-        pumped_until("frame 12 in both windows", || at_frame(&on_gpu) && at_frame(&on_cpu));
-        pumped_until("the frame read back", || crate::video::READ_BACK.load(Relaxed) >= 2);
-        let read_back = crate::video::READ_BACK.load(Relaxed);
-        wake(gpu);
-        wake(cpu);
-        assert!(same(gpu, cpu), "the windows differ: {}", differ(gpu, cpu));
-        assert!(presented_as(&last_presented(gpu), cpu), "the frame presented differs");
-        assert_eq!(crate::video::READ_BACK.load(Relaxed), read_back, "the GPU's window read a frame back");
-        for hwnd in [gpu, cpu] {
-            unsafe { DestroyWindow(hwnd) };
-        }
-        fake(Faked::default());
     }
 
     /// The CPU time this process has used so far (`GetProcessTimes`: kernel and user).
@@ -805,30 +944,45 @@ pub(crate) mod tests {
         // frames made here, three megabytes each.)
         let made = std::env::var_os("TAUT_VIDEO_FILES").map(|folder| std::path::PathBuf::from(folder).join("1080p-x264.mp4")).filter(|file| file.exists());
         let file = made.unwrap_or_else(|| written("1080p.mp4", &big_mp4(30, 30, 1920, 1080)));
-        for read_back in [true, false] {
-            fake(Faked { read_back, ..Faked::default() });
-            let mut video = crate::Video::open_silent(file.as_path()).expect("a player");
-            video.set_looping(true);
-            video.play();
-            let video = Rc::new(RefCell::new(video));
-            let shown = video.clone();
-            let before = CAME.get();
-            let app = move |ui: &mut Ui| _ = ui.video(&mut shown.borrow_mut()).show();
-            let hwnd = open(Window { renderer: Renderer::Direct3D11, position: Some((0, 0)), width: 1920.0, height: 1080.0, ..Window::default() }, Box::new(app));
-            unsafe { ShowWindow(hwnd, 4) };
-            until_the_device_came(before);
-            pumped_until("a second of frames", || video.borrow().frames_shown() >= 30);
-            let (start, cpu, frames) = (std::time::Instant::now(), cpu_time(), video.borrow().frames_shown());
-            while start.elapsed() < std::time::Duration::from_secs(4) {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                pump();
+        for path in Renderer::Gpu.tried() {
+            if !Device::of(path).is_some_and(|made| takes_frames(&made)) {
+                println!("{path:?}: no GPU that imports the decoder's texture here");
+                continue;
             }
-            let (used, shown) = (cpu_time() - cpu, video.borrow().frames_shown() - frames);
-            let how = if read_back { "read back" } else { "from their textures" };
-            println!("{}, frames {how}: {shown} frames in {:?}, {:?} of CPU a frame", file.display(), start.elapsed(), used / shown.max(1) as u32);
-            unsafe { DestroyWindow(hwnd) };
+            for read_back in [true, false] {
+                let (shown, took, used) = cpu_time_playing(&file, path, read_back);
+                let how = if read_back { "read back" } else { "from their textures" };
+                println!("{path:?}, {}, frames {how}: {shown} frames in {took:?}, {:?} of CPU a frame", file.display(), used / shown.max(1));
+            }
         }
         fake(Faked::default());
+    }
+
+    /// `file` played four seconds, looping, in a 1080p window shown by `path`, its frames
+    /// `read_back` or not: frames shown, time taken, and CPU used.
+    #[cfg(all(feature = "video", feature = "gpu-draw"))]
+    fn cpu_time_playing(file: &std::path::Path, path: Renderer, read_back: bool) -> (u32, std::time::Duration, std::time::Duration) {
+        fake(Faked { read_back, ..Faked::default() });
+        let mut video = crate::Video::open_silent(file).expect("a player");
+        video.set_looping(true);
+        video.play();
+        let video = Rc::new(RefCell::new(video));
+        let shown = video.clone();
+        let before = CAME.get();
+        let app = move |ui: &mut Ui| _ = ui.video(&mut shown.borrow_mut()).show();
+        let hwnd = open(Window { renderer: path, position: Some((0, 0)), width: 1920.0, height: 1080.0, ..Window::default() }, Box::new(app));
+        unsafe { ShowWindow(hwnd, 4) };
+        until_the_device_came(before);
+        pumped_until("a second of frames", || video.borrow().frames_shown() >= 30);
+        let (start, cpu, frames) = (std::time::Instant::now(), cpu_time(), video.borrow().frames_shown());
+        while start.elapsed() < std::time::Duration::from_secs(4) {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            pump();
+        }
+        let measured = ((video.borrow().frames_shown() - frames) as u32, start.elapsed(), cpu_time() - cpu);
+        unsafe { DestroyWindow(hwnd) };
+        pump();
+        measured
     }
 
     #[test]

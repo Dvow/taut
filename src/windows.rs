@@ -2462,7 +2462,7 @@ impl State {
         self.in_window(at, |ui, _| ui.paint(&mut canvas));
         drop(canvas);
         let drawn = match (self.device.as_mut(), self.windows[at].shown.as_mut()) {
-            (Some(device), Some(shown)) => !list.failed && shown.draw(device, &list, place),
+            (Some(device), Some(shown)) => !list.failed && shown.draw(device, &mut list, place),
             _ => false,
         };
         list.finish(drawn);

@@ -342,6 +342,14 @@ impl Device {
         mark.value
     }
 
+    /// Has the queue wait until `fence` (another device's, opened here) reaches `value` before
+    /// what it is given next (Wait, 15). Says whether that was taken.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    fn wait_on(&self, fence: Com, value: u64) -> bool {
+        // SAFETY: the queue is this device's; the fence is alive, opened on this device.
+        unsafe { function::<unsafe extern "system" fn(Com, Com, u64) -> i32>(self.queue, 15)(self.queue, fence, value) >= 0 }
+    }
+
     /// Signals the fence after what the queue has (Signal, 14). Says whether that was taken.
     fn run_nothing(&self) -> bool {
         self.signalled.set(self.signalled.get() + 1);
@@ -564,6 +572,8 @@ impl Shown {
         let Some(mut drawing) = device.drawing.take() else { return false };
         let (picture, size) = (self.picture, self.size);
         let ready = !picture.is_null() && drawing.prepare(device.device, list);
+        #[cfg(feature = "video")]
+        let ready = ready && drawing.frames().iter().all(|frame| device.wait_on(frame.fence, frame.value));
         let record = |commands: Com| drawing.record(device.device, commands, picture, size, list, area);
         let drawn = ready && self.copy_waiting(device, Some(&record)) && device.wait();
         if drawn {

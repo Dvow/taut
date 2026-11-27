@@ -74,6 +74,28 @@ functions!(Calls {
     vkQueueSubmit: fn(Object, u32, *const VkSubmitInfo, Handle) -> i32;
 });
 
+// Keyed mutexes taken by a submit (vulkan_win32.h).
+#[cfg(all(feature = "gpu-draw", feature = "video"))]
+structures! {
+    VkWin32KeyedMutexAcquireReleaseInfoKHR {
+        kind: u32,
+        next: *const c_void,
+        acquire_count: u32,
+        acquire_syncs: *const Handle,
+        acquire_keys: *const u64,
+        acquire_timeouts: *const u32,
+        release_count: u32,
+        release_syncs: *const Handle,
+        release_keys: *const u64,
+    }
+}
+
+/// The Vulkan version asked for: 1.0; 1.1 where videos' frames are imported, whose external and
+/// dedicated memory it holds.
+const API_VERSION: u32 = if cfg!(all(feature = "gpu-draw", feature = "video")) { 1 << 22 | 1 << 12 } else { 1 << 22 };
+/// The device extensions videos' frames are imported with.
+const IMPORTS: [&std::ffi::CStr; 2] = [c"VK_KHR_external_memory_win32", c"VK_KHR_win32_keyed_mutex"];
+
 /// What a Vulkan device's objects are let go of with: its functions, the instance and the device;
 /// and how its functions are found.
 #[derive(Clone)]
@@ -112,6 +134,9 @@ pub(crate) struct Device {
     pub(crate) drawing: Option<Box<crate::gpu_draw_vulkan::Pipeline>>,
     #[cfg(feature = "gpu-draw")]
     dual: bool,
+    /// It was made with `IMPORTS`: it draws videos' frames from the decoder's texture.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    imports: bool,
 }
 
 impl Device {
@@ -124,7 +149,7 @@ impl Device {
         let find = loader()?;
         // (With `hdr`, HDR colour spaces too, where the loader has them.)
         let extensions = [c"VK_KHR_surface".as_ptr(), c"VK_KHR_win32_surface".as_ptr(), c"VK_EXT_swapchain_colorspace".as_ptr()];
-        let application = VkApplicationInfo { name: c"taut".as_ptr(), api_version: 1 << 22, ..Default::default() };
+        let application = VkApplicationInfo { name: c"taut".as_ptr(), api_version: API_VERSION, ..Default::default() };
         let asked = |count| VkInstanceCreateInfo { kind: 1, application: &application, extension_count: count, extensions: extensions.as_ptr(), ..Default::default() };
         let mut instance = null_mut();
         // SAFETY: with no instance, the loader gives the functions that make one.
@@ -156,6 +181,13 @@ impl Device {
             let (made, memory, dual) = (device.owner.device, device.memory, device.dual);
             // SAFETY: the instance is alive.
             device.drawing = crate::gpu_draw_vulkan::Pipeline::new(&mut |name| unsafe { find(instance, name.as_ptr()) }, made, &memory, dual);
+            // Videos' frames where it imports them and blends per channel, as their shader does
+            // (every GPU that imports them does).
+            #[cfg(feature = "video")]
+            if let Some(drawing) = device.drawing.as_mut().filter(|drawing| device.imports && drawing.dual) {
+                // SAFETY: as above.
+                drawing.frames = crate::video_vulkan::Frames::new(&mut |name| unsafe { find(instance, name.as_ptr()) }, made, device.family);
+            }
         }
         Some(device)
     }
@@ -167,18 +199,17 @@ impl Device {
         // SAFETY: the instance is alive; the list has room for as many as is said.
         unsafe { (calls.vkEnumeratePhysicalDevices)(owner.instance, &mut count, physical.as_mut_ptr()) };
         let found = physical[..count.min(8) as usize].iter().find_map(|physical| Device::queue_on(&calls, *physical).map(|(family, offered)| (*physical, family, offered)));
-        let Some((physical, family, [regions, metadata])) = found else {
+        let Some((physical, family, [regions, metadata, imports])) = found else {
             // SAFETY: nothing else holds the instance.
             unsafe { (calls.vkDestroyInstance)(owner.instance, null()) };
             return None;
         };
-        // Swap chains; changed rectangles named, and HDR metadata, where the device has them.
+        // Swap chains; changed rectangles named, HDR metadata, and videos' frames imported, where
+        // the device has them.
         let metadata = metadata && cfg!(feature = "hdr");
-        let (mut names, mut count) = ([null(); 3], 0);
-        for (name, _) in [(c"VK_KHR_swapchain", true), (c"VK_KHR_incremental_present", regions), (c"VK_EXT_hdr_metadata", metadata)].iter().filter(|(_, had)| *had) {
-            names[count] = name.as_ptr();
-            count += 1;
-        }
+        let wanted = [(c"VK_KHR_swapchain", true), (c"VK_KHR_incremental_present", regions), (c"VK_EXT_hdr_metadata", metadata), (IMPORTS[0], imports), (IMPORTS[1], imports)];
+        let names: Vec<*const c_char> = wanted.iter().filter(|(_, had)| *had).map(|(name, _)| name.as_ptr()).collect();
+        let count = names.len();
         let priority = 1.0f32;
         let queue = VkDeviceQueueCreateInfo { kind: 2, family, count: 1, priorities: &priority, ..Default::default() };
         let features = Device::features(&calls, physical);
@@ -209,6 +240,8 @@ impl Device {
             drawing: None,
             #[cfg(feature = "gpu-draw")]
             dual: features[7] != 0,
+            #[cfg(all(feature = "gpu-draw", feature = "video"))]
+            imports,
         };
         #[cfg(feature = "hdr")]
         if metadata {
@@ -233,9 +266,10 @@ impl Device {
     }
 
     /// The first queue family of `physical`'s that draws and presents to windows, and whether it
-    /// names changed rectangles on present and sets HDR metadata: if it is a GPU (not a CPU
-    /// device, unless a test asks for one) with swap chains.
-    fn queue_on(calls: &Calls, physical: Object) -> Option<(u32, [bool; 2])> {
+    /// names changed rectangles on present, sets HDR metadata and imports videos' frames (with
+    /// `gpu-draw` and `video`: Vulkan 1.1 and `IMPORTS`): if it is a GPU (not a CPU device,
+    /// unless a test asks for one) with swap chains.
+    fn queue_on(calls: &Calls, physical: Object) -> Option<(u32, [bool; 3])> {
         let (mut properties, mut families, mut count) = (VkPhysicalDeviceProperties::default(), [VkQueueFamilyProperties::default(); 16], 16);
         let (mut extensions, mut known) = (vec![VkExtensionProperties::default(); 512], 512);
         // SAFETY: the physical device is the instance's; each list has room for as many as is
@@ -258,7 +292,8 @@ impl Device {
         let family = (0..count.min(16)).find(presents)?;
         #[cfg(test)]
         println!("Vulkan on {}", String::from_utf8_lossy(name(&properties.name)));
-        Some((family, [has(b"VK_KHR_incremental_present"), has(b"VK_EXT_hdr_metadata")]))
+        let imports = cfg!(all(feature = "gpu-draw", feature = "video")) && properties.api_version >= API_VERSION && IMPORTS.iter().all(|import| has(import.to_bytes()));
+        Some((family, [has(b"VK_KHR_incremental_present"), has(b"VK_EXT_hdr_metadata"), imports]))
     }
 
     /// Makes the queue's command pool, its command buffer, the fence and the semaphores. Says
@@ -366,9 +401,16 @@ impl Device {
     /// Hands the recorded command buffer to the queue, waiting on `wait` (a semaphore, or 0) and
     /// signalling `signal`, and says whether it was taken.
     fn submit(&self, wait: Handle, signal: Handle) -> bool {
+        self.submit_with(wait, signal, null()) >= 0
+    }
+
+    /// `submit`, with `next` chained to the submit's description: what Vulkan gave (`VK_SUCCESS`,
+    /// 0, where it was taken).
+    fn submit_with(&self, wait: Handle, signal: Handle, next: *const c_void) -> i32 {
         let stage = STAGE_TRANSFER | STAGE_COLOUR;
         let submit = VkSubmitInfo {
             kind: 4,
+            next,
             wait_count: (wait != 0) as u32,
             waits: &wait,
             wait_stages: &stage,
@@ -376,10 +418,42 @@ impl Device {
             buffers: &self.commands,
             signal_count: (signal != 0) as u32,
             signals: &signal,
+        };
+        // SAFETY: the buffer was recorded; the fence is this device's and not in use; what `next`
+        // points to lives through the call.
+        let ended = unsafe { (self.owner.calls.vkEndCommandBuffer)(self.commands) };
+        if !self.succeeded(ended) {
+            return ended;
+        }
+        // SAFETY: as above.
+        let submitted = unsafe { (self.owner.calls.vkQueueSubmit)(self.queue, 1, &submit, self.fence) };
+        self.succeeded(submitted);
+        submitted
+    }
+
+    /// Submits what draws videos' frames, their keyed mutexes taken for it (within
+    /// `FRAME_WAIT`) and given back after (`VkWin32KeyedMutexAcquireReleaseInfoKHR`). Says
+    /// whether it was taken: not where a mutex wasn't (a time-out, `VK_TIMEOUT`, is a success
+    /// code).
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    fn submit_frames(&self, memories: &[Handle]) -> bool {
+        if memories.is_empty() {
+            return self.submit(0, 0);
+        }
+        let (keys, waits) = (vec![0u64; memories.len()], vec![crate::video_windows::FRAME_WAIT; memories.len()]);
+        let count = memories.len() as u32;
+        let mutexes = VkWin32KeyedMutexAcquireReleaseInfoKHR {
+            kind: 1_000_075_000,
+            acquire_count: count,
+            acquire_syncs: memories.as_ptr(),
+            acquire_keys: keys.as_ptr(),
+            acquire_timeouts: waits.as_ptr(),
+            release_count: count,
+            release_syncs: memories.as_ptr(),
+            release_keys: keys.as_ptr(),
             ..Default::default()
         };
-        // SAFETY: the buffer was recorded; the fence is this device's and not in use.
-        unsafe { self.succeeded((self.owner.calls.vkEndCommandBuffer)(self.commands)) && self.succeeded((self.owner.calls.vkQueueSubmit)(self.queue, 1, &submit, self.fence)) }
+        self.submit_with(0, 0, (&raw const mutexes).cast()) == 0
     }
 
     /// Waits for the last submit (two seconds at most), and readies the fence for the next.
@@ -683,7 +757,11 @@ impl Shown {
     #[cfg(feature = "gpu-draw")]
     pub(crate) fn draw(&mut self, device: &mut Device, list: &crate::gpu_draw::DrawList, area: [i32; 4]) -> bool {
         let Some(mut drawing) = device.drawing.take() else { return false };
-        let drawn = self.picture != 0 && device.begin() && self.draw_with(device, &mut drawing, list, area) && device.submit(0, 0) && device.wait();
+        #[cfg(not(feature = "video"))]
+        let submitted = |device: &Device, _: &crate::gpu_draw_vulkan::Pipeline| device.submit(0, 0);
+        #[cfg(feature = "video")]
+        let submitted = |device: &Device, drawing: &crate::gpu_draw_vulkan::Pipeline| device.submit_frames(&drawing.frames.as_ref().map_or(Vec::new(), |frames| frames.memories()));
+        let drawn = self.picture != 0 && device.begin() && self.draw_with(device, &mut drawing, list, area) && submitted(device, &drawing) && device.wait();
         drawing.forget_target();
         device.drawing = Some(drawing);
         drawn
