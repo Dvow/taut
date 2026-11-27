@@ -549,6 +549,10 @@ impl Gpu {
 
     /// Lets go of a window: its layer leaves its view.
     pub(crate) fn forget(&mut self, shows: Shows) {
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        if let Some(pipeline) = self.pipeline.as_mut().filter(|_| !shows.frame.is_null()) {
+            pipeline.let_go_of_frames_of(shows.frame);
+        }
         // SAFETY: what the window held, released once (nil answers nothing); a frame never
         // committed is let go as it is.
         unsafe {

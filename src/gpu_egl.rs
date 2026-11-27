@@ -389,16 +389,17 @@ impl<S> Gpu<S> {
         let egl = &self.egl;
         // SAFETY: the name ends in a zero.
         let mut find = |name: &CStr| unsafe { (egl.eglGetProcAddress)(name.as_ptr()) }.cast_const();
-        #[cfg(feature = "video")]
         if self.pipeline.is_none() {
-            let mut made = crate::gpu_draw_opengl::Pipeline::new(&mut find, false).map(Box::new);
-            if let Some(pipeline) = made.as_mut() {
+            let made = crate::gpu_draw_opengl::Pipeline::new(&mut find, false).map(Box::new);
+            // (With `video`, videos' frames are drawn from the decoder's buffers where EGL imports them.)
+            #[cfg(feature = "video")]
+            let made = made.map(|mut pipeline| {
                 pipeline.frames = crate::video_opengl::Frames::new(&mut find, self.display, self.said(EXTENSIONS));
-            }
+                pipeline
+            });
             self.pipeline = Some(made);
         }
-        let made = self.pipeline.get_or_insert_with(|| crate::gpu_draw_opengl::Pipeline::new(&mut find, false).map(Box::new));
-        made.as_mut().is_some_and(|pipeline| pipeline.draw(shows.texture, shows.size, list, place))
+        self.pipeline.as_mut().and_then(Option::as_mut).is_some_and(|pipeline| pipeline.draw(shows.texture, shows.size, list, place))
     }
 
     /// Swaps a window's back buffer in (it is current), naming `damage` where the display can

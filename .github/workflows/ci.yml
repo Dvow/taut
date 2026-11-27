@@ -508,7 +508,7 @@ jobs:
         run: cargo test --features video --lib video::tests
       - name: Video tests, frames left on the GPU (read back where the CPU draws); drawn from there by Direct3D 11, Metal, and from dmabufs by Vulkan and EGL
         if: ${{ !cancelled() }}
-        run: cargo test --features video,gpu-draw --lib video::tests video_gstreamer video_vulkan video_opengl direct3d_11_draws_video_frames gpu_draw_metal
+        run: cargo test --features video,gpu-draw --lib -- video::tests video_gstreamer video_vulkan video_opengl direct3d_11_draws_video_frames gpu_draw_metal
       - name: Video on the main thread, and in the iOS simulator
         if: ${{ runner.os == 'macOS' && !cancelled() }}
         run: TAUT_IOS_SIMULATOR=1 cargo test --features video --test video_apple

@@ -66,6 +66,7 @@ const TAKEN: &str = "texture2d<float> cache, texture2d<float> patches, array<tex
 const PASSED: &str = "cache, patches, frames, ";
 #[cfg(feature = "video")]
 const TEXEL: &str = r#"
+#define FRAMES
 float4 texel(texture2d<float> cache, texture2d<float> patches, array<texture2d<float>, 4> frames, int which, int x, int y) {
     if (which == 0) {
         return cache.read(uint2(x, y));
@@ -362,6 +363,15 @@ impl Pipeline {
     #[cfg(feature = "video")]
     pub(crate) fn takes_frames(&self) -> bool {
         self.frames.is_some()
+    }
+
+    /// Lets go of the frames `commands` held: a window's commands it let go of uncommitted, which
+    /// the GPU never reads.
+    #[cfg(feature = "video")]
+    pub(crate) fn let_go_of_frames_of(&mut self, commands: Obj) {
+        if let Some(frames) = self.frames.as_mut() {
+            frames.held.retain(|held| held.commands != commands);
+        }
     }
 
     /// Metal textures of `frames` (as the shaders read them, frame n at texture 2 + n), held

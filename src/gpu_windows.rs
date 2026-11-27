@@ -772,11 +772,12 @@ pub(crate) mod tests {
     }
 
     /// Pauses window `gpu`'s videos at frame 12 and opens a window drawn by the CPU showing the
-    /// same, once both show it: that window.
+    /// same, once both show it: that window. (A seek sets the position at once: the frame after
+    /// it is waited for.)
     #[cfg(all(feature = "video", feature = "gpu-draw"))]
     fn paused_beside_the_cpu(gpu: HANDLE, on_gpu: &Videos) -> HANDLE {
         use std::sync::atomic::Ordering::Relaxed;
-        let before = crate::video::READ_BACK.load(Relaxed);
+        let (before, shown) = (crate::video::READ_BACK.load(Relaxed), on_gpu.borrow().each_ref().map(|video| video.frames_shown()));
         for video in on_gpu.borrow_mut().iter_mut() {
             video.pause();
             video.seek(std::time::Duration::from_millis(1200));
@@ -784,8 +785,10 @@ pub(crate) mod tests {
         wake(gpu);
         let on_cpu = Rc::new(RefCell::new(two_videos().expect("the same player again")));
         let cpu = showing(Renderer::Cpu, 900, on_cpu.clone());
-        let at_frame = |videos: &Videos| videos.borrow().iter().all(|video| !video.playing() && video.position() == std::time::Duration::from_millis(1200) && video.frames_shown() > 0);
-        pumped_until("frame 12 in both windows", || at_frame(on_gpu) && at_frame(&on_cpu));
+        let at_frame = |videos: &Videos, shown: [u64; 2]| {
+            videos.borrow().iter().zip(shown).all(|(video, shown)| !video.playing() && video.position() == std::time::Duration::from_millis(1200) && video.frames_shown() > shown)
+        };
+        pumped_until("frame 12 in both windows", || at_frame(on_gpu, shown) && at_frame(&on_cpu, [0; 2]));
         pumped_until("the frame read back", || crate::video::READ_BACK.load(Relaxed) >= before + 2);
         wake(gpu);
         wake(cpu);

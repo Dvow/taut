@@ -100,6 +100,7 @@ const ONE_MINUS_SRC1_ALPHA: c_uint = 0x88FB;
 /// B8G8R8A8 as OpenGL sees it), opaque; the cache and patches as `TEXTURES` reads them.
 #[cfg(all(feature = "video", windows))]
 const FRAME_TEXTURES: &str = r#"
+#define FRAMES
 #define as_float uintBitsToFloat
 uniform highp sampler2D cache;
 uniform highp sampler2D patches;

@@ -51,6 +51,7 @@ const FIRST_UNIT: c_uint = 2;
 pub(crate) const EXTENSION: &str = "#extension GL_OES_EGL_image_external_essl3 : require\n";
 #[cfg(target_os = "android")]
 const TEXTURES: &str = r#"
+#define FRAMES
 #define as_float uintBitsToFloat
 uniform highp sampler2D cache;
 uniform highp sampler2D patches;
@@ -81,6 +82,7 @@ vec4 texel(int which, int x, int y) {
 pub(crate) const EXTENSION: &str = "";
 #[cfg(not(target_os = "android"))]
 const UNIFORMS: &str = r#"
+#define FRAMES
 #define as_float uintBitsToFloat
 uniform highp sampler2D cache;
 uniform highp sampler2D patches;

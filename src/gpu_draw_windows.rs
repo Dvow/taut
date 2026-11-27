@@ -109,6 +109,7 @@ float4 texel(int which, int x, int y) {
 /// opaque.
 #[cfg(feature = "video")]
 const TEXEL_OR_FRAME: &str = r#"
+#define FRAMES
 Texture2D<float4> frame0 : register(t3);
 Texture2D<float4> frame1 : register(t4);
 Texture2D<float4> frame2 : register(t5);

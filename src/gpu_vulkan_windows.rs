@@ -456,11 +456,20 @@ impl Device {
         self.submit_with(0, 0, (&raw const mutexes).cast()) == 0
     }
 
-    /// Waits for the last submit (two seconds at most), and readies the fence for the next.
+    /// Waits for the last submit (two seconds at most), and readies the fence for the next. Says
+    /// whether it could: if not, the device is lost.
     fn wait(&self) -> bool {
         let (calls, device) = (&self.owner.calls, self.owner.device);
         // SAFETY: the fence is this device's.
-        unsafe { self.succeeded((calls.vkWaitForFences)(device, 1, &self.fence, 1, 2_000_000_000)) && self.succeeded((calls.vkResetFences)(device, 1, &self.fence)) }
+        let waited = unsafe { (calls.vkWaitForFences)(device, 1, &self.fence, 1, 2_000_000_000) };
+        // (Not done in time, `VK_TIMEOUT`, the submit still runs: its fence and commands can't be
+        // used again, and the device is taken as lost, as X11's and Wayland's are.)
+        if waited != 0 {
+            self.lost.set(true);
+            return false;
+        }
+        // SAFETY: as above; the fence is signalled.
+        unsafe { self.succeeded((calls.vkResetFences)(device, 1, &self.fence)) }
     }
 
     /// Starts recording the command buffer. (The device is done with it: each submit is waited

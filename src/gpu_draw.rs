@@ -686,7 +686,7 @@ impl Drawing {
 
 /// The shaders' work per pixel, in the common part of HLSL and GLSL: each language's prelude
 /// defines `vec2`/`vec4`/`ivec2`/`fract`, `texel(which, x, y)` (0 to 1, red first; `which` 0
-/// the cache, 1 the patches, 2 + n video frame n, opaque, where the path draws frames),
+/// the cache, 1 the patches, 2 + n video frame n, opaque, where the prelude defines `FRAMES`),
 /// `place` (the quad's rows, flat), and the pixel's centre `at`. `shade` gives the colour to
 /// blend in (premultiplied) and, for GDI's runs, how much of each channel it covers.
 pub(crate) const SHADING: &str = r#"
@@ -912,7 +912,11 @@ vec4 shade(vec2 at, vec4 shape, vec4 more, vec4 source, vec4 color, float kind, 
     } else if (kind == 10.0) {
         drawn = laid(color, stroke_cover(shape, source, p));
     } else if (kind == 5.0 || kind == 11.0) {
+#ifdef FRAMES
         int which = kind == 11.0 ? 2 + int(more.w) : 1;
+#else
+        int which = 1;
+#endif
         vec4 pixel = more.y > 1.0 || more.z > 1.0 ? reduced(which, shape, more, source, p) : enlarged(which, shape, more, source, p);
         float radius = min(min(more.x, (shape.z - shape.x) / 2.0), (shape.w - shape.y) / 2.0);
         float cover = radius > 0.0 ? floor(inside_of(p, shape, radius) * 255.0) : 255.0;
