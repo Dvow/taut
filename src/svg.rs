@@ -993,8 +993,8 @@ struct More {
 /// What lies where in a drawing, to find the element under the pointer: each shape kept for an
 /// element, in drawing order, with the `<use>` elements that brought it (its range of `uses`,
 /// innermost first) and the clips on it (its range of `clips_on`); and the clips, each with its
-/// outlines (by which clip, in clip order once read). A shape takes the pointer only within
-/// every clip on it, as in browsers: clip paths and viewports, not masks.
+/// outlines (its range of `outlines`). A shape takes the pointer only within every clip on it,
+/// as in browsers: clip paths and viewports, not masks.
 #[derive(Default)]
 struct Hits {
     shapes: Vec<Hit>,
@@ -1004,7 +1004,7 @@ struct Hits {
     /// the same, and where its clips are found while its walks go on.
     last_clips: [u32; 2],
     clips: Vec<HitClip>,
-    outlines: Vec<(u32, Hit)>,
+    outlines: Vec<Hit>,
 }
 
 /// A shape of an element as it takes the pointer: its outline (which kept one) and transform,
@@ -1026,10 +1026,11 @@ struct Hit {
 }
 
 /// A clip on the shapes a walk drew, as they take the pointer: the walk (by the first item of
-/// its block) and which of its cuts.
+/// its block), which of its cuts, and its outlines (a range of `Hits::outlines`).
 struct HitClip {
     walk: u32,
     cut: u8,
+    outlines: [u32; 2],
 }
 
 impl Hits {
@@ -1052,6 +1053,18 @@ impl Hits {
         let [from, to] = self.last_clips;
         let open = self.clips_on[from as usize..to as usize].iter().rev();
         open.copied().find(|clip| self.clips[*clip as usize].walk as usize == walk && self.clips[*clip as usize].cut as usize == n)
+    }
+
+    /// Adds outlines to clip `clip`. A clip's outlines come together (a box's at once, a clip
+    /// path's while its walk keeps them), so they stay one range.
+    fn add_outlines(&mut self, clip: u32, outlines: impl Iterator<Item = Hit>) {
+        let start = self.outlines.len() as u32;
+        self.outlines.extend(outlines);
+        let range = &mut self.clips[clip as usize].outlines;
+        if range[0] == range[1] {
+            range[0] = start;
+        }
+        range[1] = self.outlines.len() as u32;
     }
 }
 
@@ -1419,8 +1432,8 @@ impl ParsedDrawing {
         let boxed = hit.boxed.and_then(|boxed| self.boxes.get(boxed as usize));
         let in_box = boxed.is_none_or(|[left, top, right, bottom]| point.x >= *left && point.y >= *top && point.x <= *right && point.y <= *bottom);
         let within = |clip: &u32| {
-            let from = hits.outlines.partition_point(|(of, _)| of < clip);
-            hits.outlines[from..].iter().take_while(|(of, _)| of == clip).any(|(_, outline)| self.lies_in(outline, point))
+            let [from, to] = hits.clips[*clip as usize].outlines;
+            hits.outlines[from as usize..to as usize].iter().any(|outline| self.lies_in(outline, point))
         };
         in_box && hits.clips_on[hit.clips[0] as usize..hit.clips[1] as usize].iter().all(within)
     }
@@ -1912,10 +1925,7 @@ impl<'a> Reading<'a> {
     fn noted(text: &'a str) -> Option<Reading<'a>> {
         let (mut reading, start) = Reading::prepared(text, None)?;
         reading.noting = Some(Reading::note_hits);
-        let mut reading = reading.walked(start);
-        // (In clip order, each clip's outlines are found by halves: see `unclipped`.)
-        reading.parsed.more().hits.outlines.sort_by_key(|(clip, _)| *clip);
-        Some(reading)
+        Some(reading.walked(start))
     }
 
     /// Walks a prepared file from element `start`, then reads the drawings it brings.
@@ -2221,12 +2231,12 @@ impl<'a> Reading<'a> {
             return clip;
         }
         let clip = hits.clips.len() as u32;
-        hits.clips.push(HitClip { walk: walk.first as u32, cut: n as u8 });
+        hits.clips.push(HitClip { walk: walk.first as u32, cut: n as u8, outlines: [0; 2] });
         if matches!(cut, Cut::Box(_) | Cut::DrawingBox(_)) {
             let (place, table) = self.box_cut(cut, walk.units);
             let path = self.kept_path(rect(place, [None; 2]));
             let outline = self.hit(path, table, 0.0);
-            self.parsed.more().hits.outlines.push((clip, outline));
+            self.parsed.more().hits.add_outlines(clip, std::iter::once(outline));
         }
         clip
     }
@@ -2236,7 +2246,7 @@ impl<'a> Reading<'a> {
     fn note_outlines(&mut self, clipped: usize, first: usize) {
         let mut hits = std::mem::take(&mut self.parsed.more().hits);
         if let Some(clip) = hits.open_clip(clipped, 0) {
-            hits.outlines.extend(self.shapes_from(first).map(|shape| (clip, self.outline_of(shape, 0.0))));
+            hits.add_outlines(clip, self.shapes_from(first).map(|shape| self.outline_of(shape, 0.0)));
         }
         self.parsed.more().hits = hits;
     }

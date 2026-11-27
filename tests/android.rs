@@ -506,14 +506,11 @@ mod phone {
 #[cfg(not(target_os = "android"))]
 mod host {
     use super::NOTES;
-    use super::on_android;
+    use super::on_android::{self, OUT_OF_REACH};
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     const PACKAGE: &str = "taut.example.android";
-
-    /// How long the emulator may stay out of reach before the checks give up on it.
-    const OUT_OF_REACH: Duration = Duration::from_secs(120);
 
     /// `adb`: what it printed (sent again whenever it never reached the emulator).
     fn adb(args: &[&str]) -> String {

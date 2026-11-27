@@ -11,7 +11,7 @@ pub const TARGET: &str = "x86_64-linux-android";
 /// Where the checks go on the emulator.
 const THERE: &str = "/data/local/tmp";
 /// How long the emulator may stay out of reach before a check gives up on it.
-const OUT_OF_REACH: Duration = Duration::from_secs(120);
+pub const OUT_OF_REACH: Duration = Duration::from_secs(120);
 
 /// The SDK's `adb` (`$ANDROID_HOME/platform-tools`, `adb.exe` on Windows), else the path's.
 pub fn program() -> PathBuf {

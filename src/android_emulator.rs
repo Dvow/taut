@@ -359,11 +359,18 @@ mod tests {
     }
 
     /// What the input method was told of the box it types into: its `inputType`, as `dumpsys
-    /// input_method` writes it.
-    fn input_type() -> String {
-        let said = shell("dumpsys input_method");
-        let told = said.split_once("mInputEditorInfo:").map_or("", |(_, after)| after);
-        told.split_whitespace().find_map(|word| word.strip_prefix("inputType=")).unwrap_or_default().to_string()
+    /// input_method` writes it, once it is `wanted` (10 s at most).
+    fn input_type(wanted: &str) -> String {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            let said = shell("dumpsys input_method");
+            let told = said.split_once("mInputEditorInfo:").map_or("", |(_, after)| after);
+            let told = told.split_whitespace().find_map(|word| word.strip_prefix("inputType=")).unwrap_or_default();
+            if told == wanted || Instant::now() >= until {
+                return told.to_string();
+            }
+            settle(1);
+        }
     }
 
     /// Input methods are told the code editor holds code (no suggestions: 0x80001) and the text
@@ -374,7 +381,7 @@ mod tests {
         let (Some(code), Some(text), Some(label)) = boxes else { return wrong.push("no code editor, text box or label".into()) };
         for (node, wanted) in [(code, "0x80001"), (text, "0x8001"), (code, "0x80001")] {
             tap(node);
-            let told = input_type();
+            let told = input_type(wanted);
             if told != wanted {
                 wrong.push(format!("{:?} told input methods {told}, not {wanted}", node.text));
             }

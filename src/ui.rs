@@ -1016,8 +1016,8 @@ impl Ui {
     pub fn password_focused(&self) -> bool {
         self.ime_area.is_some() && self.edit.secret
     }
-    /// Whether code is being typed (a code editor). A window tells input methods: they offer no
-    /// suggestions and make no capitals there.
+    /// Whether code is being typed (a code editor). Android's window tells its input methods:
+    /// they offer no suggestions and make no capitals there.
     pub fn code_focused(&self) -> bool {
         self.ime_area.is_some() && self.edit.code
     }
