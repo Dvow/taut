@@ -625,14 +625,12 @@ mod tests {
         }
         let _ = screen(&out, "parts");
         // The screen turns: the window is told its new size.
-        match turn(Turn::Sideways) {
-            Some(turned) => {
-                settle(2);
-                let picture = screen(&out, "turned");
-                if picture.0 != turned.size[0] {
-                    wrong.push(format!("after turning the window is {:?} and the screen {} wide", turned.size, picture.0));
-                }
-            }
+        let turned = turn(Turn::Sideways);
+        settle(2);
+        let wide = screen(&out, "turned").0;
+        match turned {
+            Some(turned) if wide != turned.size[0] => wrong.push(format!("after turning the window is {:?} and the screen {wide} wide", turned.size)),
+            Some(_) => {}
             None => wrong.push(format!("after turning the screen the window is still {:?}", window_said().map(|said| said.size))),
         }
         let _ = dump(&out, "turned");
