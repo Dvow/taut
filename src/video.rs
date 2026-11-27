@@ -1623,33 +1623,54 @@ pub(crate) mod tests {
         }
     }
 
-    /// Two CEA-608 captions in the video stream: from 0.5 s to 1.2 s, and from 1.8 s to 2.6 s.
-    const IN_STREAM: &[(u32, u32, &str)] = &[(5, 12, "Hello there"), (18, 26, "Second line")];
+    /// Whether GStreamer here reads `coding`'s frames in MP4 and hands over their captions;
+    /// said where not.
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+    fn reads_in_stream(coding: Coding) -> bool {
+        use crate::video_gstreamer::has_element;
+        let (parser, decoders) = match coding {
+            Coding::Hevc => (c"h265parse", [c"avdec_h265", c"libde265dec"]),
+            _ => (c"h264parse", [c"avdec_h264", c"openh264dec"]),
+        };
+        let reads = has_element(c"qtdemux") && has_element(parser) && decoders.iter().any(|decoder| has_element(decoder));
+        skipped(reads, &format!("GStreamer here reads no such video in MP4 (qtdemux, {parser:?})"))
+    }
+    /// Every other system's player reads both.
+    #[cfg(not(all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
+    fn reads_in_stream(_: Coding) -> bool {
+        true
+    }
 
     #[test]
     #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
-    fn captions_in_the_video_stream_are_a_caption_track_shown_at_their_times() {
+    fn cea608_and_cea708_in_h264_and_hevc_streams_are_caption_tracks_shown_at_their_times() {
         let _alone = alone();
-        #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
-        {
-            use crate::video_gstreamer::has_element;
-            let reads = has_element(c"qtdemux") && has_element(c"h264parse") && (has_element(c"avdec_h264") || has_element(c"openh264dec"));
-            if !skipped(reads, "GStreamer here reads no H.264 in MP4 (qtdemux, h264parse, avdec_h264)") {
-                return;
+        for (coding, name) in [(Coding::H264, "in-stream.mp4"), (Coding::Hevc, "in-stream-hevc.mp4")] {
+            if !reads_in_stream(coding) {
+                continue;
             }
-        }
-        let file = written("in-stream.mp4", &movie_captioned_in_stream(30, IN_STREAM));
-        let Some(video) = player(Video::open_silent(file)) else { return };
-        let mut trial = trial(video, false);
-        until(&mut trial, "the first frame", |video| video.size().is_some());
-        trial.app.play();
-        // (Found once their first data plays.)
-        until(&mut trial, "a caption track", |video| !video.caption_tracks().is_empty());
-        assert_eq!(trial.app.caption_tracks()[0].name, "CC1");
-        trial.app.set_caption_track(Some(0));
-        for (at, caption) in [(0.7, Some("Hello there")), (1.45, None), (2.1, Some("Second line")), (2.85, None)] {
-            until(&mut trial, "the time", |video| video.position() >= Duration::from_secs_f32(at));
-            assert_eq!(trial.app.caption(), caption, "at {:?}", trial.app.position());
+            let file = written(name, &movie_captioned_in_stream(30, coding, &IN_STREAM, Carried::InSei));
+            let Some(video) = player(Video::open_silent(file)) else { return };
+            let mut trial = trial(video, false);
+            until(&mut trial, "the first frame", |video| video.size().is_some() || video.error().is_some());
+            if let Some(why) = trial.app.error() {
+                assert!(coding == Coding::Hevc && cfg!(windows), "{name}: {why}");
+                eprintln!("{name}: {why} (no HEVC decoder?): skipped");
+                continue;
+            }
+            // (The frames as made: the HEVC writer's too.)
+            assert_eq!(shown(&trial), 0, "{name}");
+            trial.app.play();
+            // (Found once their first data is read.)
+            until(&mut trial, "two caption tracks", |video| video.caption_tracks().len() >= 2);
+            let names: Vec<&str> = trial.app.caption_tracks().iter().map(|track| track.name.as_str()).collect();
+            assert_eq!(names, ["CC1", "Service 1"], "{name}");
+            for (at, track, caption) in IN_STREAM_SHOWN {
+                until(&mut trial, "the time", |video| video.position() >= Duration::from_secs_f32(at));
+                trial.app.set_caption_track(trial.app.caption_tracks().iter().position(|found| found.name == track));
+                trial.run();
+                assert_eq!(trial.app.caption(), caption, "{name}, {track} at {:?}", trial.app.position());
+            }
         }
     }
 

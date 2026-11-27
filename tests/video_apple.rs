@@ -112,6 +112,8 @@ mod checks {
         println!("bytes");
         tracks_captions_and_speed();
         println!("tracks, captions and speed");
+        captions_in_the_video_stream();
+        println!("captions in the video stream");
         many_opens(&with_sound);
     }
 
@@ -140,6 +142,29 @@ mod checks {
         pass(&mut trial, Duration::from_millis(600));
         let rate = (trial.app.position() - from).as_secs_f32() / start.elapsed().as_secs_f32();
         assert!((rate - 2.0).abs() < 0.4, "at 2× the time moved {rate} s a second");
+    }
+
+    /// CEA-608 and CEA-708 in H.264's and HEVC's SEI (read by taut), and CEA-608 in a QuickTime
+    /// closed-caption track: tracks shown at their times; the HEVC file's frames as made.
+    fn captions_in_the_video_stream() {
+        let files = [(Coding::H264, Carried::InSei, "in-stream.mp4"), (Coding::Hevc, Carried::InSei, "in-stream-hevc.mp4"), (Coding::H264, Carried::InCaptionTrack, "closed-captions.mov")];
+        for (coding, carried, name) in files {
+            let file = written(name, &movie_captioned_in_stream(30, coding, &IN_STREAM, carried));
+            let mut trial = trial(Video::open_silent(file).unwrap(), false);
+            until(&mut trial, "the first frame", |video| video.size().is_some());
+            assert_eq!(shown(&trial), 0, "{name}");
+            trial.app.play();
+            let wanted: &[&str] = if carried == Carried::InSei { &["CC1", "Service 1"] } else { &["CC1"] };
+            until(&mut trial, "the caption tracks", |video| video.caption_tracks().len() >= wanted.len());
+            let names: Vec<&str> = trial.app.caption_tracks().iter().map(|track| track.name.as_str()).collect();
+            assert_eq!(names, wanted, "{name}");
+            for (at, track, caption) in IN_STREAM_SHOWN.into_iter().filter(|(_, track, _)| wanted.contains(track)) {
+                until(&mut trial, "the time", |video| video.position() >= Duration::from_secs_f32(at));
+                trial.app.set_caption_track(trial.app.caption_tracks().iter().position(|found| found.name == track));
+                trial.run();
+                assert_eq!(trial.app.caption(), caption, "{name}, {track} at {:?}", trial.app.position());
+            }
+        }
     }
 
     fn frames_show_at_their_times(file: &std::path::Path) {

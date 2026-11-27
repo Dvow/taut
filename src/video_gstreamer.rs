@@ -2,12 +2,13 @@
 //! as 32-bit BGRx, the file's captions from another as text; with no sound, audio goes to a
 //! `fakesink`. Sound and caption tracks are `playbin`'s streams, named by their tags. Speed is a
 //! seek at that rate, the pitch kept by `scaletempo` where it is installed. Captions in the
-//! video stream (CEA-608) come from the caption meta parsers put on frames (`h264parse`), read by
-//! a probe on the frame sink. A system without GStreamer, or without `playbin`, is told so.
+//! video stream (CEA-608, CEA-708) come from the caption meta parsers put on frames
+//! (`h264parse`, `h265parse`), read by taut (`video_stream_captions`) through a probe on the
+//! frame sink. A system without GStreamer, or without `playbin`, is told so.
 
 use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
-use crate::video_cea608::Decoder;
+use crate::video_stream_captions::ClosedCaptions;
 #[cfg(feature = "gpu-draw")]
 use crate::video_yuv::Colours;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
@@ -123,10 +124,12 @@ struct CaptionMeta {
 }
 
 /// Caption data as pairs of field 1 (`GST_VIDEO_CAPTION_TYPE_CEA608_RAW`), as triplets with
-/// the field first (`..._CEA608_S334_1A`), as A/53 `cc_data` (`..._CEA708_RAW`).
+/// the field first (`..._CEA608_S334_1A`), as A/53 `cc_data` (`..._CEA708_RAW`), as SMPTE
+/// 334-2 caption distribution packets (`..._CEA708_CDP`).
 const CEA608_PAIRS: c_uint = 1;
 const CEA608_FIELD_TRIPLETS: c_uint = 2;
 const CC_DATA: c_uint = 3;
+const CDP: c_uint = 4;
 /// A probe of buffers, which lets each pass.
 const PROBE_BUFFERS: c_uint = 1 << 4;
 const PROBE_OK: c_int = 1;
@@ -263,10 +266,9 @@ pub(crate) struct Player {
     /// a flushing seek after hangs in `playbin`'s input selector.)
     sound_wanted: Option<usize>,
     /// The captions in the video stream, read by the frame sink's probe (freed after the
-    /// player); whether they were listed as a track, and whether they are shown.
+    /// player), and which of their tracks is shown.
     in_stream: Box<InStream>,
-    in_stream_listed: bool,
-    in_stream_shown: bool,
+    in_stream_shown: Option<usize>,
 }
 
 /// The captions read from the caption meta of each frame that reaches the frame sink.
@@ -274,12 +276,12 @@ struct InStream {
     lib: &'static Libraries,
     /// `GstVideoCaptionMetaAPI`'s type, once registered (by the first such meta).
     meta_kind: AtomicUsize,
-    decoder: Mutex<Decoder>,
+    captions: Mutex<ClosedCaptions>,
 }
 
 impl InStream {
-    fn decoder(&self) -> MutexGuard<'_, Decoder> {
-        self.decoder.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn captions(&self) -> MutexGuard<'_, ClosedCaptions> {
+        self.captions.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// `GstVideoCaptionMetaAPI`'s type, once registered; 0 before.
@@ -306,14 +308,25 @@ impl InStream {
         let Some(meta) = meta.filter(|meta| time != u64::MAX && !meta.data.is_null()) else { return };
         // SAFETY: as above.
         let data = unsafe { std::slice::from_raw_parts(meta.data, meta.size) };
-        let (mut decoder, at) = (self.decoder(), Duration::from_nanos(time));
+        let (mut captions, at) = (self.captions(), Duration::from_nanos(time));
         match meta.kind {
-            CC_DATA => decoder.read_cc_data(data, at),
-            CEA608_PAIRS => data.as_chunks::<2>().0.iter().for_each(|pair| decoder.read_pair(*pair, at)),
-            CEA608_FIELD_TRIPLETS => data.as_chunks::<3>().0.iter().filter(|three| three[0] & 0x80 != 0).for_each(|three| decoder.read_pair([three[1], three[2]], at)),
+            CC_DATA => captions.read_cc_data(data, at),
+            CDP => captions.read_cc_data(cc_data_of_cdp(data).unwrap_or_default(), at),
+            CEA608_PAIRS => data.as_chunks::<2>().0.iter().for_each(|pair| captions.read_cea608_pair(*pair, at)),
+            CEA608_FIELD_TRIPLETS => data.as_chunks::<3>().0.iter().filter(|three| three[0] & 0x80 != 0).for_each(|three| captions.read_cea608_pair([three[1], three[2]], at)),
             _ => {}
         }
     }
+}
+
+/// The `cc_data` triplets of a SMPTE 334-2 caption distribution packet: after its header
+/// (`96 69`, length, frame rate, flags, sequence) and time code where it has one, a section
+/// `72` of `cc_count` triplets; none where it has none.
+fn cc_data_of_cdp(cdp: &[u8]) -> Option<&[u8]> {
+    let [0x96, 0x69, _, _, flags, _, _, rest @ ..] = cdp else { return None };
+    let rest = if flags & 0x80 != 0 { rest.get(5..)? } else { rest };
+    let [0x72, count, triplets @ ..] = rest else { return None };
+    (flags & 0x40 != 0).then(|| triplets.get(..(count & 0x1F) as usize * 3)).flatten()
 }
 
 /// A frame reached the frame sink: its captions are read.
@@ -337,8 +350,7 @@ impl Player {
         }
         // SAFETY: the bus of a live element, held until the player is dropped.
         let bus = unsafe { (lib.gst.gst_element_get_bus)(playbin) };
-        let in_stream = Box::new(InStream { lib, meta_kind: AtomicUsize::new(0), decoder: Mutex::new(Decoder::default()) });
-        let (in_stream_listed, in_stream_shown) = (false, false);
+        let in_stream = Box::new(InStream { lib, meta_kind: AtomicUsize::new(0), captions: Mutex::default() });
         let mut player = Player {
             lib,
             playbin,
@@ -354,8 +366,7 @@ impl Player {
             captions: false,
             sound_wanted: None,
             in_stream,
-            in_stream_listed,
-            in_stream_shown,
+            in_stream_shown: None,
         };
         player.read_captions_in_stream();
         player.set_sinks(sound, make(c"fakesink"), make(c"scaletempo"));
@@ -459,7 +470,7 @@ impl Player {
     pub(crate) fn seek(&mut self, to: Duration) {
         // (At the very end there is no frame to show: just before it, the last.)
         let to = self.length().map_or(to, |length| to.min(length.saturating_sub(Duration::from_millis(1))));
-        self.in_stream.decoder().sought(to);
+        self.in_stream.captions().sought(to);
         let to = to.as_nanos().min(i64::MAX as u128) as i64;
         self.last = None;
         // SAFETY: a live element; flushing, to the exact frame, at the speed it plays.
@@ -508,7 +519,7 @@ impl Player {
             // SAFETY: popped, so ours.
             unsafe { (self.lib.gst.gst_mini_object_unref)(message) };
         }
-        news.tracks_changed = self.ready && !self.in_stream_listed && self.in_stream.decoder().found();
+        news.tracks_changed = self.ready && self.in_stream.captions().unlisted();
         news
     }
     /// The player finished a change: a seek asked before may go now.
@@ -588,10 +599,7 @@ impl Player {
         let sound = self.streams(c"n-audio", c"get-audio-tags");
         let chosen = usize::try_from(self.number(c"current-audio")).ok().filter(|at| *at < sound.len());
         let mut captions = self.streams(c"n-text", c"get-text-tags");
-        self.in_stream_listed = self.in_stream.decoder().found();
-        if self.in_stream_listed {
-            captions.push(Track { language: String::new(), name: "CC1".into() });
-        }
+        captions.extend(self.in_stream.captions().tracks());
         Some(Tracks { sound, captions, sound_chosen: chosen })
     }
     /// Each stream of a kind, named by its tags.
@@ -634,10 +642,11 @@ impl Player {
         // SAFETY: an int property, the list ending in a null.
         unsafe { (self.lib.gobject.g_object_set)(self.playbin, c"current-audio".as_ptr(), nth as c_int, std::ptr::null::<c_char>()) };
     }
-    /// Shows the `nth` caption stream (the captions in the video stream after them), or none.
+    /// Shows the `nth` caption stream (the tracks in the video stream after them), or none.
     pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
-        self.in_stream_shown = self.in_stream_listed && nth == usize::try_from(self.number(c"n-text")).ok();
-        let nth = nth.filter(|_| !self.in_stream_shown);
+        let streams = usize::try_from(self.number(c"n-text")).unwrap_or(0);
+        self.in_stream_shown = nth.and_then(|nth| nth.checked_sub(streams));
+        let nth = nth.filter(|nth| *nth < streams);
         self.captions = nth.is_some();
         if let Some(nth) = nth {
             // SAFETY: an int property, the list ending in a null.
@@ -647,9 +656,9 @@ impl Player {
     /// The caption on show: the text sink's last sample, while its span holds the position; or
     /// the captions in the video stream's at the position.
     pub(crate) fn caption(&mut self) -> Option<String> {
-        if self.in_stream_shown {
+        if let Some(track) = self.in_stream_shown {
             let at = self.position();
-            return crate::video_captions::text_at(self.in_stream.decoder().cues(), at);
+            return self.in_stream.captions().text_at(track, at);
         }
         if !self.captions {
             return None;
@@ -1251,5 +1260,20 @@ pub(crate) mod tests {
         assert!(frame.read(&mut read));
         assert!(read == rgb_of((64, 48), Colours::new(BT709, false)), "read back as the CPU makes its samples RGB");
         assert_eq!(frame.for_shaders(), Colours::new(BT709, false).for_shaders((64, 48)));
+    }
+}
+
+#[cfg(test)]
+mod caption_tests {
+    use super::*;
+
+    #[test]
+    fn a_caption_distribution_packets_cc_data_is_found_after_its_time_code() {
+        let triplets = [0xFC, 0x94, 0x20, 0xFF, 0x02, 0x21];
+        let with_time_code = [&[0x96, 0x69, 20, 0x4F, 0xC3, 0, 1, 0x71, 0, 0, 0, 0, 0x72, 0xE2][..], &triplets, &[0x74, 0, 1, 0]].concat();
+        let without = [&[0x96, 0x69, 15, 0x4F, 0x43, 0, 1, 0x72, 0xE2][..], &triplets].concat();
+        assert_eq!(cc_data_of_cdp(&with_time_code), Some(&triplets[..]));
+        assert_eq!(cc_data_of_cdp(&without), Some(&triplets[..]));
+        assert_eq!(cc_data_of_cdp(&[0x96, 0x69, 9, 0x4F, 0x03, 0, 1, 0x72, 0xE2]), None);
     }
 }

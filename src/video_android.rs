@@ -9,7 +9,7 @@ use crate::color::Color;
 use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Tracks, VideoError, VideoSource};
 use crate::video_captions::Cue;
-use crate::video_sei::Captions;
+use crate::video_sei::{Codec, StreamCaptions};
 use crate::video_yuv::{BT601, BT709, BT2020, Colours, Plane};
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::os::fd::AsRawFd;
@@ -190,8 +190,9 @@ struct Track {
     output_began: bool,
     /// The decoder's output format changed since `format_changed` was last asked.
     new_format: bool,
-    /// The CEA-608 captions in an H.264 video's samples, taken as they are fed.
-    captions: Option<Captions>,
+    /// The captions in an H.264 or HEVC video's samples, taken as they are fed (shared with
+    /// the app's side once found), and the video's codec.
+    captions: Option<(Arc<Mutex<StreamCaptions>>, Codec)>,
 }
 
 // SAFETY: the NDK's extractors and decoders may be used from any thread; a track is used by
@@ -230,7 +231,7 @@ impl Track {
                 return Err(format!("the decoder for {mime} refused it ({configured})"));
             }
         }
-        self.captions = (mime == "video/avc").then(Captions::default);
+        self.captions = codec_of(mime).map(|codec| (Arc::default(), codec));
         Ok(())
     }
 
@@ -239,8 +240,8 @@ impl Track {
     /// decodes nothing more: what it gives from before `to` is left to the caller to drop.)
     fn seek(&mut self, to: Duration) {
         self.fed = false;
-        if let Some(captions) = &mut self.captions {
-            captions.sought(to);
+        if let Some((captions, _)) = &self.captions {
+            held(captions).sought(to);
         }
         // SAFETY: a live extractor and a started decoder.
         unsafe {
@@ -265,8 +266,8 @@ impl Track {
             let buffer = (m.AMediaCodec_getInputBuffer)(self.codec, at, &mut room);
             let size = (m.AMediaExtractor_readSampleData)(self.extractor, buffer, room);
             let time = (m.AMediaExtractor_getSampleTime)(self.extractor);
-            if let Some(captions) = self.captions.as_mut().filter(|_| size > 0) {
-                captions.fed(std::slice::from_raw_parts(buffer, size as usize), Duration::from_micros(time.max(0) as u64));
+            if let Some((captions, codec)) = self.captions.as_ref().filter(|_| size > 0) {
+                held(captions).fed(std::slice::from_raw_parts(buffer, size as usize), *codec, Duration::from_micros(time.max(0) as u64));
             }
             self.fed = size < 0;
             let flags = if self.fed { END_OF_STREAM } else { 0 };
@@ -507,11 +508,10 @@ struct State {
     tracks: Option<Tracks>,
     sound_track: usize,
     cues: Vec<Vec<Cue>>,
-    /// The tracks as last listed, the cues of the captions in the video stream (CEA-608, a
-    /// track after the source's own once their first data came), and whether the tracks
-    /// changed since told.
+    /// The source's own tracks, the captions in the video stream (tracks after those once
+    /// their first data came), and whether the tracks changed since told.
     listed: Tracks,
-    in_stream: Option<Vec<Cue>>,
+    in_stream: Option<Arc<Mutex<StreamCaptions>>>,
     tracks_changed: bool,
     /// The newest frame not given yet.
     frame: Option<Frame>,
@@ -723,8 +723,10 @@ impl Player {
     pub(crate) fn caption(&mut self) -> Option<String> {
         let (at, nth) = (self.position(), self.captions?);
         let state = self.shared.lock();
-        let in_stream = state.in_stream.as_ref().filter(|_| nth + 1 == state.listed.captions.len());
-        crate::video_captions::text_at(in_stream.or_else(|| state.cues.get(nth))?, at)
+        match nth.checked_sub(state.listed.captions.len()) {
+            None => crate::video_captions::text_at(state.cues.get(nth)?, at),
+            Some(in_stream) => held(state.in_stream.as_ref()?).tracks.text_at(in_stream, at),
+        }
     }
 }
 
@@ -755,23 +757,41 @@ impl State {
         }
     }
 
-    /// The source's tracks are these, from now on.
+    /// The source's own tracks are these, from now on.
     fn list(&mut self, tracks: Tracks) {
-        (self.listed, self.tracks) = (tracks.clone(), Some(tracks));
+        self.listed = tracks;
+        self.tracks = Some(self.all_tracks());
     }
 
-    /// The captions in the video stream are these cues from the `from`th on (those before it
-    /// stay): a track of their own, `CC1`, listed after the source's once they first come.
-    fn captions_in_stream(&mut self, from: usize, cues: &[Cue]) {
-        if self.in_stream.is_none() {
-            self.listed.captions.push(crate::video::Track { language: String::new(), name: "CC1".into() });
-            self.listed.sound_chosen = self.listed.sound_chosen.map(|_| self.sound_track);
-            (self.tracks, self.tracks_changed) = (Some(self.listed.clone()), true);
-        }
-        let kept = self.in_stream.get_or_insert_default();
-        kept.truncate(from);
-        kept.extend_from_slice(cues);
+    /// The captions in the video stream found new tracks: they are listed after the source's.
+    fn captions_in_stream(&mut self, captions: &Arc<Mutex<StreamCaptions>>) {
+        self.in_stream = Some(Arc::clone(captions));
+        (self.tracks, self.tracks_changed) = (Some(self.all_tracks()), true);
     }
+
+    /// The source's tracks, then those in the video stream; the sound track playing.
+    fn all_tracks(&self) -> Tracks {
+        let mut all = self.listed.clone();
+        all.sound_chosen = all.sound_chosen.map(|_| self.sound_track);
+        if let Some(captions) = &self.in_stream {
+            all.captions.extend(held(captions).tracks.tracks());
+        }
+        all
+    }
+}
+
+/// The codec whose SEI is read, of a video track of this type.
+fn codec_of(mime: &str) -> Option<Codec> {
+    match mime {
+        "video/avc" => Some(Codec::H264),
+        "video/hevc" => Some(Codec::Hevc),
+        _ => None,
+    }
+}
+
+/// The captions in a video stream, locked.
+fn held(captions: &Mutex<StreamCaptions>) -> MutexGuard<'_, StreamCaptions> {
+    captions.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Drop for Player {
@@ -977,10 +997,11 @@ impl Pictures {
         Ok(false)
     }
 
-    /// Hands on what changed of the captions read in the video stream.
+    /// Tells the app's side of tracks found in the video stream. (Locks: the shared state before
+    /// the captions, never the other way.)
     fn hand_on_captions(&mut self, shared: &Shared) {
-        let Some((from, cues)) = self.track.captions.as_mut().and_then(Captions::changes) else { return };
-        shared.lock().captions_in_stream(from, cues);
+        let Some((captions, _)) = self.track.captions.as_ref().filter(|(captions, _)| held(captions).tracks.unlisted()) else { return };
+        shared.lock().captions_in_stream(captions);
     }
 
     /// Goes to the key frame before `to`; frames already decoded are dropped (a flushed decoder
@@ -997,8 +1018,8 @@ impl Pictures {
         let Some((at, info)) = self.track.output(Duration::from_millis(10))? else { return Ok(()) };
         let ended = info.flags & END_OF_STREAM != 0;
         let time = if ended { Duration::MAX } else { Duration::from_micros(info.time_us.max(0) as u64) };
-        if let Some(captions) = &mut self.track.captions {
-            captions.decoded(time);
+        if let Some((captions, _)) = &self.track.captions {
+            held(captions).decoded(time);
         }
         if ended {
             self.track.release(at, false);

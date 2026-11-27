@@ -246,43 +246,52 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   Vulkan reads frames of one kind a part (their sampler Y′CbCr conversion is part of the
   pipeline): a part showing two kinds at once is drawn by the CPU.
 - Captions: their text only, without the file's positions, regions or styles. In the video
-  stream: CEA-608 (channel 1 of field 1) in H.264, as a track `CC1` found once its first data
-  plays; not CEA-708's own services, not HEVC's SEI, not on macOS, iOS or the web.
+  stream (the SEI of H.264 and HEVC), read by taut: CEA-608's channel 1 of field 1 (`CC1`) and
+  each CEA-708 service (`Service 1`…), tracks once their first data is read; not CC2 to CC4 or
+  CEA-608's text channels. CEA-708 gives its windows' text, the highest first: not their
+  colours, fonts, sizes, borders or places on the screen. After a seek, a caption shows from its
+  next command on (CEA-608 and CEA-708 say only what changes). Not on the web.
 - Windows: the file's own captions only from Matroska (SRT, SSA, as text): Media Foundation reads
-  no caption track in MP4. Decoded on the GPU through Direct3D 11 where there is one; without
-  one, in software (MJPEG then only where Windows' decoder writes into a bitmap: not on every
-  machine). AV1 needs Windows' AV1 extension (on the GPU where it decodes AV1). N editions need
-  the Media Feature Pack. `open_silent` plays muted.
+  no caption track in MP4. Captions in the video stream come from a source reader of their own
+  (the video stream read twice, up to 5 s ahead of the video). Decoded on the GPU through
+  Direct3D 11 where there is one; without one, in software (MJPEG then only where Windows'
+  decoder writes into a bitmap: not on every machine). AV1 needs Windows' AV1 extension (on
+  the GPU where it decodes AV1). N editions need the Media Feature Pack. `open_silent` plays
+  muted.
 - Linux: needs GStreamer's `playbin` and `appsink` and the plugins of the file's codecs; a
   missing one is `VideoError::NoPlayer` or `video.error()`. The pitch is kept at other speeds
   with `scaletempo` (plugins-good); without it the pitch moves. The file's captions need its
   demuxer (`qtdemux` for MP4, `matroskademux`): none with base and bad plugins only; those in
-  the video stream a parser that marks them on frames (`h264parse`) and a decoder (`avdec_h264`).
-  No caption settings to follow: the usual style.
+  the video stream a parser that marks them on frames (`h264parse`, `h265parse`) and a decoder
+  (`avdec_h264`, `avdec_h265`). No caption settings to follow: the usual style.
 - macOS and iOS: `open_silent` plays muted; bytes are played from a temporary file. iOS: a
   video with sound sets the audio session's category to `Playback` unless the app set one.
-  Caption tracks of files only (3GPP timed text, read by an `AVAssetReader`), not of streams.
-  Tracks are named by their language only. Checked only on GitHub's runner and in the iOS
-  simulator.
+  Caption tracks of files only (3GPP timed text; QuickTime closed-caption tracks, CEA-608 read by
+  taut; each read by an `AVAssetReader`), not of streams; the captions in a file's video stream
+  are read by taut through another (up to 5 s ahead of the video), not those of a stream (HLS).
+  The file's tracks are named by their language only. Checked only on GitHub's runner and in
+  the iOS simulator.
 - Android: what the system's decoders read, through the NDK (no `MediaPlayer`); frames come
   through an image reader in YUV and are made RGB on the CPU (with `gpu-draw`, where the CPU
   draws them). Volume scales the samples (AAudio
   has none); other speeds are stretched by taut (WSOLA), the last 40 ms of sound not played.
   Captions: 3GPP (MP4), SRT (Matroska), WebVTT (WebM), each until the next (Matroska's durations
-  not read); tracks named by their language. CEA-608 is read by taut from the samples as they
-  are decoded: after a seek, a caption shows from its next command on. The caption style
-  follows the system's in an app only. Addresses play only in an app's process. No sound device: it plays silent. Checked only
-  on an emulator (software decoders); there, a command-line program that ended the moment it
-  dropped its last video once aborted in Android's own decoder thread.
+  not read); tracks named by their language. Those in the video stream are read from the
+  samples as they are decoded. The caption style follows the system's in an app only.
+  Addresses play only in an app's process. No sound device: it plays silent. Checked only on an
+  emulator (software decoders); there, a command-line program that ended the moment it dropped
+  its last video once aborted in Android's own decoder thread.
 - Web: the browser's formats (H.264 in MP4 in most; VP8, VP9, AV1 in WebM). Sound tracks only
   where the browser lists them (Safari; not Chrome, Edge or Firefox), and the file's captions
-  only where it reads them (Safari); the app's captions everywhere. A page can't read the
+  only where it reads them (Safari, whose text tracks also hold a QuickTime closed-caption
+  track's and an HLS stream's CEA-608; not checked here); the app's captions everywhere. A page
+  gets no samples: taut reads no captions in the video stream there. A page can't read the
   system's caption settings: the usual style. Sound plays only after a press on the page:
   before, `play` gives `error()`, cleared at the next `play`; muted, it plays. Another site's
   address needs CORS headers, or its frames can't be read. A path is an address relative to
   the page. Under Node there is no player.
-- Tested with small made files (lossless H.264, MJPEG, Theora; HEVC, VP9 and AV1 made by
-  ffmpeg); playback of large files not measured.
+- Tested with small made files (lossless H.264 and HEVC, MJPEG, Theora; HEVC, VP9 and AV1 made
+  by ffmpeg); playback of large files not measured.
 
 ## PDF and printing
 

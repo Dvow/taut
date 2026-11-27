@@ -14,6 +14,9 @@ use crate::color::Color;
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Pixels, TextureDescription};
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
 use crate::video_captions::Cue;
+use crate::video_read_ahead::{ReadAhead, Step};
+use crate::video_sei::Codec;
+use crate::video_stream_captions::ClosedCaptions;
 use crate::windows::{Com, function_in, named, system_library, wide};
 use std::ffi::{CStr, c_void};
 use std::ptr::{null, null_mut};
@@ -53,6 +56,16 @@ const AUDIO: [u32; 4] = named(0x7364_7561, 0x0000, 0x0010, [0x80, 0x00, 0x00, 0x
 const A_SERVICE_GETTER: [u32; 4] = named(0xFA99_3888, 0x4383, 0x415A, [0xA9, 0x30, 0xDD, 0x47, 0x2A, 0x8C, 0xF6, 0xF7]);
 const TIMED_TEXT: [u32; 4] = named(0x805E_A411, 0x92E0, 0x4E59, [0x9B, 0x6E, 0x5C, 0x7D, 0x79, 0x15, 0xE6, 0x4F]);
 const A_TIMED_TEXT: [u32; 4] = named(0x1F2A_94C9, 0xA3DF, 0x430D, [0x9D, 0x0F, 0xAC, 0xD8, 0x5D, 0xDC, 0x29, 0xAF]);
+/// A media type's `MF_MT_SUBTYPE`; `MFVideoFormat_H264` and `MFVideoFormat_HEVC`.
+const SUBTYPE: [u32; 4] = named(0xF7E3_4C9A, 0x42E8, 0x4714, [0xB7, 0x4B, 0xCB, 0x29, 0xD7, 0x2C, 0x35, 0xE5]);
+const H264: [u32; 4] = named(0x3436_3248, 0x0000, 0x0010, [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]);
+const HEVC: [u32; 4] = named(0x4356_4548, 0x0000, 0x0010, [0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71]);
+/// `MFSubtitleFormat_ATSC`: the data format of the timed text's own track of the captions in
+/// the video stream.
+const ATSC: [u32; 4] = named(0x7FA7_FAA3, 0xFEAE, 0x4E16, [0xAE, 0xDF, 0x36, 0xB9, 0xAC, 0xFB, 0xB0, 0x99]);
+/// A source reader's first video stream, and all its streams.
+const FIRST_VIDEO: u32 = 0xFFFF_FFFC;
+const ALL_STREAMS: u32 = 0xFFFF_FFFE;
 
 /// The functions of Media Foundation and its helpers that are not methods.
 struct Functions {
@@ -63,6 +76,10 @@ struct Functions {
     memory_stream: unsafe extern "system" fn(*const u8, u32) -> *mut Com,
     text: unsafe extern "system" fn(*const u16) -> *mut u16,
     free_text: unsafe extern "system" fn(*mut u16),
+    /// `MFCreateSourceReaderFromURL` and `MFCreateSourceReaderFromByteStream`: the captions in a
+    /// video stream are read through a reader of their own.
+    reader_from_url: unsafe extern "system" fn(*const u16, *mut Com, *mut *mut Com) -> i32,
+    reader_from_stream: unsafe extern "system" fn(*mut Com, *mut Com, *mut *mut Com) -> i32,
     /// `D3D11CreateDevice`; none without Direct3D 11.
     make_device: Option<MakeDevice>,
 }
@@ -86,6 +103,7 @@ fn media_foundation_started(functions: &Functions) -> i32 {
 
 fn load() -> Option<Functions> {
     let (mf, ole, shell, d3d11) = (system_library("mfplat.dll"), system_library("oleaut32.dll"), system_library("shlwapi.dll"), system_library("d3d11.dll"));
+    let reader = system_library("mfreadwrite.dll");
     let found = |library: isize, name: &CStr| {
         let at = function_in(library, name);
         (library != 0 && at != 0).then_some(at)
@@ -100,6 +118,8 @@ fn load() -> Option<Functions> {
             memory_stream: function(found(shell, c"SHCreateMemStream")?),
             text: function(found(ole, c"SysAllocString")?),
             free_text: function(found(ole, c"SysFreeString")?),
+            reader_from_url: function(found(reader, c"MFCreateSourceReaderFromURL")?),
+            reader_from_stream: function(found(reader, c"MFCreateSourceReaderFromByteStream")?),
             make_device: found(d3d11, c"D3D11CreateDevice").map(|at| function(at)),
         })
     }
@@ -377,6 +397,9 @@ pub(crate) struct Player {
     timed_text: *mut Com,
     caption_ids: Vec<u32>,
     captions: Option<usize>,
+    /// The captions in the video stream, read by a thread of their own (listed after the
+    /// timed text's tracks).
+    in_stream: Arc<ReadAhead>,
     /// (Tests: the effect that hears what plays, or null.)
     #[cfg(test)]
     hearing: *mut Listener<Mutex<hearing::Hearing>>,
@@ -430,6 +453,7 @@ impl Player {
             timed_text: null_mut(),
             caption_ids: Vec::new(),
             captions: None,
+            in_stream: Arc::new(ReadAhead::new()),
             #[cfg(test)]
             hearing: null_mut(),
         })
@@ -484,14 +508,15 @@ impl Player {
     }
 
     /// Gives the engine its source: a path or address as text (6: SetSource), bytes as a
-    /// stream (45: `IMFMediaEngineEx::SetSourceFromByteStream`), named for their kind.
+    /// stream (45: `IMFMediaEngineEx::SetSourceFromByteStream`), named for their kind. The
+    /// captions in its video stream are read from it too.
     fn set_source(&mut self, source: VideoSource) -> Result<(), VideoError> {
         let (address, bytes) = match source {
             VideoSource::File(path) => (std::path::absolute(&path).unwrap_or(path).display().to_string(), None),
             VideoSource::Url(url) => (url, None),
             VideoSource::Bytes(bytes) => (format!("memory.{}", crate::video::kind_of(&bytes)), Some(bytes)),
         };
-        let address = wide(&address);
+        let (address, from_bytes) = (wide(&address), bytes.is_some());
         // SAFETY: the text is made and freed around the call; the stream holds a copy of the
         // bytes, and the engine its own reference to it.
         let done = unsafe {
@@ -503,18 +528,22 @@ impl Player {
             (self.functions.free_text)(text);
             done
         };
-        match done < 0 {
-            true => Err(VideoError::Refused(format!("the source was refused ({:#010x})", done as u32))),
-            false => Ok(()),
+        if done < 0 {
+            return Err(VideoError::Refused(format!("the source was refused ({:#010x})", done as u32)));
         }
+        if !from_bytes {
+            self.read_in_stream(ReaderSource::Address(address));
+        }
+        Ok(())
     }
 
     /// # Safety
     /// `name` is a `BSTR`.
     unsafe fn set_bytes(&mut self, bytes: &[u8], name: *mut u16) -> i32 {
-        let mut stream = null_mut();
+        let (mut stream, mut copy) = (null_mut(), null_mut());
         // SAFETY: a stream is made over a copy of the bytes, and released after the engine
-        // took it.
+        // took it; its clone (13: Clone, sharing the bytes, reading on its own) goes to the
+        // captions' reader.
         unsafe {
             let memory = (self.functions.memory_stream)(bytes.as_ptr(), bytes.len() as u32);
             if memory.is_null() {
@@ -525,9 +554,18 @@ impl Player {
                 true => -1,
                 false => call!(self.ex, 45, unsafe extern "system" fn(*mut Com, *mut Com, *mut u16) -> i32, stream, name),
             };
+            if done >= 0 && call!(memory, 13, unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32, &mut copy) >= 0 && !copy.is_null() {
+                self.read_in_stream(ReaderSource::Stream(copy));
+            }
             release_all(&[stream, memory]);
             done
         }
+    }
+
+    /// Starts the thread that reads the captions in the source's video stream.
+    fn read_in_stream(&self, source: ReaderSource) {
+        let (functions, in_stream) = (self.functions, Arc::clone(&self.in_stream));
+        std::thread::spawn(move || read_captions_in_stream(functions, source, &in_stream));
     }
 
     /// Calls a method that takes nothing more and returns `R`.
@@ -550,9 +588,13 @@ impl Player {
     pub(crate) fn seek(&mut self, to: Duration) {
         self.last = None;
         self.set(17, to.as_secs_f64());
+        self.in_stream.seek(to);
     }
+    /// Where it plays (the captions' reader reads on from there).
     pub(crate) fn position(&mut self) -> Duration {
-        Duration::try_from_secs_f64(self.call::<f64>(16)).unwrap_or_default()
+        let position = Duration::try_from_secs_f64(self.call::<f64>(16)).unwrap_or_default();
+        self.in_stream.played_to(position);
+        position
     }
     pub(crate) fn length(&mut self) -> Option<Duration> {
         // (Not a number until known; infinite for a live stream.)
@@ -579,6 +621,7 @@ impl Player {
         let error = (said & FAILED != 0).then(|| format!("the player stopped: {} ({:#010x})", self.error_words(), code as u32));
         // SAFETY: as above.
         let tracks_changed = unsafe { (*self.showing).told.tracks_changed.swap(false, Ordering::AcqRel) };
+        let tracks_changed = tracks_changed || self.in_stream.with_tracks(|tracks| tracks.unlisted());
         News { ended: said & ENDED != 0, error, clears_on_play: false, tracks_changed }
     }
     /// The engine's error as words (3: GetError; of the error, 3: GetErrorCode).
@@ -661,6 +704,7 @@ impl Player {
             tracks.sound.push(Track { language: text(&LANGUAGE), name: text(&STREAM_NAME) });
         }
         (self.caption_ids, tracks.captions) = self.caption_tracks();
+        tracks.captions.extend(self.in_stream.with_tracks(ClosedCaptions::tracks));
         Some(tracks)
     }
 
@@ -722,22 +766,28 @@ impl Player {
         found
     }
 
-    /// Shows the `nth` caption track (of the timed text, 4: SelectTrack), or none.
+    /// Shows the `nth` caption track (of the timed text, 4: SelectTrack; or of the video
+    /// stream, after them), or none.
     pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
         if let Some(id) = self.captions.and_then(|at| self.caption_ids.get(at)) {
             // SAFETY: the timed text is alive, and the id one of its tracks'.
             unsafe { call!(self.timed_text, 4, unsafe extern "system" fn(*mut Com, u32, i32) -> i32, *id, 0) };
         }
-        self.captions = nth.filter(|at| *at < self.caption_ids.len());
-        if let Some(at) = self.captions {
+        self.captions = nth;
+        if let Some(id) = nth.and_then(|at| self.caption_ids.get(at)) {
             // SAFETY: as above.
-            unsafe { call!(self.timed_text, 4, unsafe extern "system" fn(*mut Com, u32, i32) -> i32, self.caption_ids[at], 1) };
+            unsafe { call!(self.timed_text, 4, unsafe extern "system" fn(*mut Com, u32, i32) -> i32, *id, 1) };
         }
     }
 
-    /// The chosen caption track's text on show now: its cues the timed text says are on show.
+    /// The chosen caption track's text on show now: its cues the timed text says are on show,
+    /// or those read in the video stream.
     pub(crate) fn caption(&mut self) -> Option<String> {
-        let id = *self.caption_ids.get(self.captions?)?;
+        let nth = self.captions?;
+        let Some(&id) = self.caption_ids.get(nth) else {
+            let (at, in_stream) = (self.position(), nth - self.caption_ids.len());
+            return self.in_stream.with_tracks(|tracks| tracks.text_at(in_stream, at));
+        };
         // SAFETY: ours is one of its references.
         let shown = unsafe { (*self.showing).told.cues() };
         let mut cues: Vec<&Cue> = shown.iter().filter(|(_, track, _)| *track == id).map(|(_, _, cue)| cue).collect();
@@ -747,17 +797,20 @@ impl Player {
     }
 }
 
-/// The `at`th track of a timed text's track list, unless it holds metadata (kind 3): its id, and
-/// what it is (of the list, 4: GetTrack; of the track, 3: GetId, 4: GetLabel, 6: GetLanguage,
-/// 7: GetTrackKind).
+/// The `at`th track of a timed text's track list, unless it holds metadata (kind 3) or is the
+/// engine's own reading of the captions in the video stream (data format
+/// `MFSubtitleFormat_ATSC`; taut reads those itself): its id, and what it is (of the list, 4:
+/// GetTrack; of the track, 3: GetId, 4: GetLabel, 6: GetLanguage, 7: GetTrackKind,
+/// 13: GetDataFormat).
 fn caption_track(list: *mut Com, at: u32) -> Option<(u32, Track)> {
-    let mut track = null_mut();
+    let (mut track, mut format) = (null_mut(), [0u32; 4]);
     // SAFETY: a live list; the track it gives is read and released.
     unsafe {
         if call!(list, 4, unsafe extern "system" fn(*mut Com, u32, *mut *mut Com) -> i32, at, &mut track) < 0 || track.is_null() {
             return None;
         }
-        let captions = call!(track, 7, unsafe extern "system" fn(*mut Com) -> u32) != 3;
+        call!(track, 13, unsafe extern "system" fn(*mut Com, *mut [u32; 4]) -> i32, &mut format);
+        let captions = call!(track, 7, unsafe extern "system" fn(*mut Com) -> u32) != 3 && format != ATSC;
         let found = captions.then(|| (call!(track, 3, unsafe extern "system" fn(*mut Com) -> u32), Track { language: owned_text(track, 6), name: owned_text(track, 4) }));
         Com::release(track);
         found
@@ -815,6 +868,162 @@ unsafe fn text_at(text: *const u16) -> String {
     unsafe {
         let length = (0..).take_while(|at| *text.add(*at) != 0).count();
         String::from_utf16_lossy(std::slice::from_raw_parts(text, length))
+    }
+}
+
+// ---- the captions in the video stream ----
+
+/// What the captions' reader reads: the source's address (or path, ending in a zero), or a
+/// clone of the bytes' stream.
+enum ReaderSource {
+    Address(Vec<u16>),
+    Stream(*mut Com),
+}
+
+// SAFETY: a memory stream (`SHCreateMemStream`) may be used from any thread; its clone moves to
+// the reader's thread, which alone uses it.
+unsafe impl Send for ReaderSource {}
+
+impl Drop for ReaderSource {
+    fn drop(&mut self) {
+        if let ReaderSource::Stream(stream) = *self {
+            // SAFETY: held once.
+            unsafe { Com::release(stream) };
+        }
+    }
+}
+
+/// The captions' thread: reads the samples of the source's video stream as stored (an
+/// `IMFSourceReader`, no decoder), where it is H.264 or HEVC, a little ahead of where it plays,
+/// until the player goes.
+fn read_captions_in_stream(functions: &Functions, source: ReaderSource, in_stream: &ReadAhead) {
+    // SAFETY: COM for this thread, multithreaded (0), ended with it.
+    unsafe { crate::windows::sys::CoInitializeEx(null_mut(), 0) };
+    if let Some(reader) = source_reader(functions, &source) {
+        if let Some(codec) = video_codec(reader) {
+            read_samples(reader, codec, in_stream);
+        }
+        // SAFETY: held once.
+        unsafe { Com::release(reader) };
+    }
+    drop(source);
+    // SAFETY: started above.
+    unsafe { crate::windows::sys::CoUninitialize() };
+}
+
+/// A source reader of `source`, with only its first video stream chosen (4:
+/// SetStreamSelection); none where it can't be read.
+fn source_reader(functions: &Functions, source: &ReaderSource) -> Option<*mut Com> {
+    let mut reader = null_mut();
+    // SAFETY: the address ends in a zero, the stream is alive; the reader made is ours.
+    unsafe {
+        let made = match *source {
+            ReaderSource::Address(ref address) => (functions.reader_from_url)(address.as_ptr(), null_mut(), &mut reader),
+            ReaderSource::Stream(stream) => stream_reader(functions, stream, &mut reader),
+        };
+        if made < 0 || reader.is_null() {
+            return None;
+        }
+        call!(reader, 4, unsafe extern "system" fn(*mut Com, u32, i32) -> i32, ALL_STREAMS, 0);
+        call!(reader, 4, unsafe extern "system" fn(*mut Com, u32, i32) -> i32, FIRST_VIDEO, 1);
+    }
+    Some(reader)
+}
+
+/// Makes a source reader of a stream, through a byte stream over it (released once the
+/// reader holds it): its `HRESULT`.
+///
+/// # Safety
+/// `stream` is a live `IStream`.
+unsafe fn stream_reader(functions: &Functions, stream: *mut Com, reader: &mut *mut Com) -> i32 {
+    let mut bytes = null_mut();
+    // SAFETY: as the caller promises; the byte stream is ours.
+    unsafe {
+        let made = (functions.on_stream)(stream, &mut bytes);
+        if made < 0 || bytes.is_null() {
+            return -1;
+        }
+        let made = (functions.reader_from_stream)(bytes, null_mut(), reader);
+        Com::release(bytes);
+        made
+    }
+}
+
+/// The codec of the reader's video stream, where its SEI is read (6: GetCurrentMediaType; of
+/// the type, 10: GetGUID).
+fn video_codec(reader: *mut Com) -> Option<Codec> {
+    let (mut kind, mut subtype) = (null_mut(), [0u32; 4]);
+    // SAFETY: a live reader; the type it gives is read and released.
+    unsafe {
+        if call!(reader, 6, unsafe extern "system" fn(*mut Com, u32, *mut *mut Com) -> i32, FIRST_VIDEO, &mut kind) < 0 || kind.is_null() {
+            return None;
+        }
+        call!(kind, 10, unsafe extern "system" fn(*mut Com, *const [u32; 4], *mut [u32; 4]) -> i32, &SUBTYPE, &mut subtype);
+        Com::release(kind);
+    }
+    match subtype {
+        H264 => Some(Codec::H264),
+        HEVC => Some(Codec::Hevc),
+        _ => None,
+    }
+}
+
+/// Reads the video stream's samples as the player's side lets it, following its seeks.
+fn read_samples(reader: *mut Com, codec: Codec, in_stream: &ReadAhead) {
+    let mut read_to = Duration::ZERO;
+    loop {
+        match in_stream.next(read_to) {
+            Step::Stop => return,
+            Step::Seek(to) => read_to = seek_reader(reader, to),
+            Step::Read => read_to = read_sample(reader, codec, in_stream),
+        }
+    }
+}
+
+/// Goes to the key frame at or before `to` (8: SetCurrentPosition, in 100 ns as `VT_I8`).
+fn seek_reader(reader: *mut Com, to: Duration) -> Duration {
+    let position = PropVariant { kind: 20, reserved: [0; 3], data: (to.as_nanos() / 100).min(i64::MAX as u128) as i64 as *mut c_void, more: 0 };
+    // SAFETY: a live reader; the time format is GUID_NULL, 100 ns.
+    unsafe { call!(reader, 8, unsafe extern "system" fn(*mut Com, *const [u32; 4], *const PropVariant) -> i32, &[0; 4], &position) };
+    to
+}
+
+/// Reads the next sample into the captions (9: ReadSample; of the sample, 41:
+/// ConvertToContiguousBuffer): its time; at the end (or a failure), `Duration::MAX`, the
+/// captions waiting read.
+fn read_sample(reader: *mut Com, codec: Codec, in_stream: &ReadAhead) -> Duration {
+    let (mut flags, mut time, mut sample, mut buffer) = (0u32, 0i64, null_mut(), null_mut());
+    // SAFETY: a live reader; the sample and its buffer are read and released.
+    unsafe {
+        let read = call!(reader, 9, unsafe extern "system" fn(*mut Com, u32, u32, *mut u32, *mut u32, *mut i64, *mut *mut Com) -> i32, FIRST_VIDEO, 0, null_mut(), &mut flags, &mut time, &mut sample);
+        // (1: an error, 2: the end of the stream.)
+        if read < 0 || flags & 3 != 0 {
+            release_all(&[sample]);
+            in_stream.ended();
+            return Duration::MAX;
+        }
+        let at = Duration::from_nanos(time.max(0) as u64 * 100);
+        if !sample.is_null() && call!(sample, 41, unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32, &mut buffer) >= 0 && !buffer.is_null() {
+            locked(buffer, |bytes| in_stream.read(bytes, codec, at));
+        }
+        release_all(&[buffer, sample]);
+        at
+    }
+}
+
+/// What `read` makes of a media buffer's bytes, locked while it reads them (3: Lock, 4: Unlock).
+///
+/// # Safety
+/// `buffer` is a live `IMFMediaBuffer`.
+unsafe fn locked(buffer: *mut Com, read: impl FnOnce(&[u8])) {
+    let (mut bytes, mut length) = (null_mut::<u8>(), 0u32);
+    // SAFETY: as the caller promises; the bytes are read within their length while locked.
+    unsafe {
+        if call!(buffer, 3, unsafe extern "system" fn(*mut Com, *mut *mut u8, *mut u32, *mut u32) -> i32, &mut bytes, null_mut(), &mut length) < 0 || bytes.is_null() {
+            return;
+        }
+        read(std::slice::from_raw_parts(bytes, length as usize));
+        call!(buffer, 4, unsafe extern "system" fn(*mut Com) -> i32);
     }
 }
 
@@ -1156,6 +1365,7 @@ impl Drop for Frames {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        self.in_stream.stop();
         // SAFETY: the engine, where it was made, is shut down (42) and released with its
         // interfaces; then our references to what tells us.
         unsafe {
@@ -1206,10 +1416,9 @@ mod hearing {
     //! nothing reaches the speakers.
     use super::*;
 
-    /// `IMFTransform`; a media type's `MF_MT_SUBTYPE`, `MF_MT_AUDIO_NUM_CHANNELS`,
-    /// `MF_MT_AUDIO_SAMPLES_PER_SECOND`; `MFAudioFormat_PCM` and `MFAudioFormat_Float`.
+    /// `IMFTransform`; a media type's `MF_MT_AUDIO_NUM_CHANNELS`, `MF_MT_AUDIO_SAMPLES_PER_SECOND`;
+    /// `MFAudioFormat_PCM` and `MFAudioFormat_Float`.
     const A_TRANSFORM: [u32; 4] = named(0xBF94_C121, 0x5B05, 0x4E6F, [0x80, 0x00, 0xBA, 0x59, 0x89, 0x61, 0x41, 0x4D]);
-    const SUBTYPE: [u32; 4] = named(0xF7E3_4C9A, 0x42E8, 0x4714, [0xB7, 0x4B, 0xCB, 0x29, 0xD7, 0x2C, 0x35, 0xE5]);
     const CHANNELS: [u32; 4] = named(0x37E4_8BF5, 0x645E, 0x4C5B, [0x89, 0xDE, 0xAD, 0xA9, 0xE2, 0x9B, 0x69, 0x6A]);
     const RATE: [u32; 4] = named(0x5FAE_EAE7, 0x0290, 0x4C31, [0x9E, 0x8A, 0xC5, 0x34, 0xF6, 0x8D, 0x9D, 0xBA]);
     const PCM: [u32; 4] = named(1, 0, 0x0010, [0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71]);

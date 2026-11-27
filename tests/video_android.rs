@@ -1,5 +1,5 @@
-//! Videos on Android: the unit tests of the video files (`video::tests`, `video_android`,
-//! `video_captions`; and with `gpu-draw`, frames left in the decoder's buffers and read back
+//! Videos on Android: the unit tests of the video files (`video::tests`, `video_android`, the
+//! caption readers; and with `gpu-draw`, frames left in the decoder's buffers and read back
 //! where the CPU draws) built for an x86-64 emulator, pushed with `adb` and run there as a
 //! command-line program (the player needs no app). Needs the NDK (`ANDROID_NDK_HOME`, else the
 //! newest in `$ANDROID_HOME/ndk`) and an emulator that `adb` reaches; says why and passes

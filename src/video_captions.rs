@@ -1,6 +1,7 @@
-//! Captions read by taut: an app's WebVTT or SRT text made into cues, and the cue on show at a
-//! time (also for cues a system's player hands over). Text only: tags are dropped, entities
-//! read, a cue's lines kept; positions, regions and styles are not.
+//! Captions read by taut: an app's WebVTT or SRT text made into cues, the text on show over time
+//! kept as cues (for the decoders of captions in a video stream), and the cue on show at a time
+//! (also for cues a system's player hands over). Text only: tags are dropped, entities read, a
+//! cue's lines kept; positions, regions and styles are not.
 
 use std::time::Duration;
 
@@ -109,6 +110,56 @@ fn markup(text: &str) -> Option<(&'static str, usize)> {
         _ => return None,
     };
     Some((shown, end + 1))
+}
+
+/// The text on show over time, kept as cues: each change ends the cue on show and starts the
+/// next. For decoders that say only what changes (CEA-608, CEA-708).
+#[cfg(not(target_family = "wasm"))]
+#[derive(Default)]
+pub(crate) struct CueRecorder {
+    /// The cues so far, in time order, the last one open (its end not yet known) while its text
+    /// shows.
+    cues: Vec<Cue>,
+    open: bool,
+    /// The earliest time the next change can take: the last change's, or where a seek went
+    /// (data read again from the key frame before it changes the text from there).
+    not_before: Duration,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl CueRecorder {
+    /// The text on show is `text` from `at` (or `not_before`, if later), none where empty. A cue
+    /// changed again at the moment it started is replaced.
+    pub(crate) fn show(&mut self, text: String, at: Duration) {
+        let open = self.cues.last_mut().filter(|_| self.open);
+        if open.as_ref().is_some_and(|cue| cue.text == text) || (!self.open && text.is_empty()) {
+            return;
+        }
+        let at = at.max(self.not_before);
+        match open {
+            Some(cue) if cue.from == at => _ = self.cues.pop(),
+            Some(cue) => cue.to = at,
+            None => {}
+        }
+        (self.open, self.not_before) = (!text.is_empty(), at);
+        if self.open {
+            self.cues.push(Cue { from: at, to: Duration::MAX, text });
+        }
+    }
+
+    /// Starts again at `to` after a seek: cues from there on are dropped (read again as it
+    /// plays), the one on show ends there.
+    pub(crate) fn sought(&mut self, to: Duration) {
+        self.cues.truncate(self.cues.partition_point(|cue| cue.from < to));
+        self.cues.iter_mut().for_each(|cue| cue.to = cue.to.min(to));
+        (self.open, self.not_before) = (false, to);
+    }
+
+    /// The cues so far: each text that showed, and when; the last one ends when the text after
+    /// it starts (or never, while it shows).
+    pub(crate) fn cues(&self) -> &[Cue] {
+        &self.cues
+    }
 }
 
 /// The text on show at `at` of cues sorted by their start: each cue whose span holds it, one

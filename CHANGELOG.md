@@ -339,6 +339,12 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   BGRx). No frame is read back while it plays; the CPU reads one only where it draws it. Vulkan
   reads each frame's bytes through a Y′CbCr conversion and makes them RGB with the CPU's own
   numbers: the same pixels.
+- **Captions in the video stream, everywhere but the web** (feature `video`): CEA-708 caption
+  services are read too, each a track `Service 1`, `Service 2`… after `CC1` (windows, their pen,
+  delays, word wrap, the four print directions; text only), from H.264's and from HEVC's SEI.
+  macOS and iOS read them now (and QuickTime closed-caption tracks, as `CC1`); Windows reads
+  them through a source reader of its own instead of Media Foundation's timed text; Linux also
+  from `h265parse` and from caption distribution packets.
 
 ## 0.3.0 (2026-11-24)
 

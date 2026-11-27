@@ -125,14 +125,15 @@ pub fn parameters() -> (Vec<u8>, Vec<u8>) {
     (nal(0x67, &sps.end()), nal(0x68, &pps.end()))
 }
 
+/// A pixel's luma, in video range.
+fn luma(pixel: u32) -> u8 {
+    let full = (299 * (pixel >> 16 & 255) + 587 * (pixel >> 8 & 255) + 114 * (pixel & 255) + 500) / 1000;
+    (16 + (full * 219 + 127) / 255) as u8
+}
+
 /// One frame as an IDR slice of I_PCM macroblocks: its samples as they are, no loss.
 pub fn h264_frame(number: usize) -> Vec<u8> {
     let pixels = frame_pixels(number);
-    let luma = |x: usize, y: usize| {
-        let p = pixels[y * 64 + x];
-        let full = (299 * (p >> 16 & 255) + 587 * (p >> 8 & 255) + 114 * (p & 255) + 500) / 1000;
-        (16 + (full * 219 + 127) / 255) as u8
-    };
     let mut slice = Bits::default();
     slice.ue(0); // first macroblock
     slice.ue(7); // all I
@@ -145,10 +146,198 @@ pub fn h264_frame(number: usize) -> Vec<u8> {
         let (mx, my) = (at % 4 * 16, at / 4 * 16);
         slice.ue(25);
         slice.align();
-        slice.bytes.extend((0..256).map(|i| luma(mx + i % 16, my + i / 16)));
+        slice.bytes.extend((0..256).map(|i| luma(pixels[(my + i / 16) * 64 + mx + i % 16])));
         slice.bytes.extend([128u8; 128]);
     }
     nal(0x65, &slice.end())
+}
+
+/// An HEVC NAL unit: its two header bytes (its type; layer 0, temporal id 0) and its bytes
+/// with a 3 after any two zeros before a byte up to 3.
+pub fn hevc_nal(kind: u8, raw: &[u8]) -> Vec<u8> {
+    let mut unit = nal(kind << 1, raw);
+    unit.insert(1, 1);
+    unit
+}
+
+/// HEVC's general profile, tier and level: Main, level 1, progressive frames.
+fn hevc_profile(bits: &mut Bits) {
+    bits.put(1, 8); // profile space 0, main tier, Main
+    bits.put(0x6000_0000, 32); // compatible with Main and Main 10
+    bits.put(0b1001, 4); // progressive, frames only
+    bits.put(0, 32); // reserved: 44 bits
+    bits.put(0, 12);
+    bits.put(30, 8);
+}
+
+/// HEVC's video, sequence and picture parameters for 64×48 frames: coding blocks of 16 that
+/// may be PCM, no loop filters.
+pub fn hevc_parameters() -> [Vec<u8>; 3] {
+    let mut vps = Bits::default();
+    vps.put(0b00_0011, 6); // id 0, base layer internal and available
+    vps.put(0, 6); // one layer
+    vps.put(0b0001, 4); // one sub-layer, temporal ids nested
+    vps.put(0xFFFF, 16);
+    hevc_profile(&mut vps);
+    vps.put(1, 1);
+    for value in [0, 0, 0] {
+        vps.ue(value); // one picture buffered, none reordered
+    }
+    vps.put(0, 6); // highest layer id
+    vps.ue(0); // one layer set
+    vps.put(0, 2); // no timing, no extension
+    let mut sps = Bits::default();
+    sps.put(0b0000_0001, 8); // parameters 0, one sub-layer, nested
+    hevc_profile(&mut sps);
+    for value in [0, 1, 64, 48] {
+        sps.ue(value); // id, 4:2:0, 64×48
+    }
+    sps.put(0, 1); // no cropping
+    for value in [0, 0, 4] {
+        sps.ue(value); // 8 bits, picture order in 8 bits
+    }
+    sps.put(1, 1);
+    for value in [0, 0, 0, 1, 0, 0, 2, 0, 0] {
+        sps.ue(value); // one picture buffered; coding blocks of 16 only, transforms 4 to 16
+    }
+    sps.put(0b0001, 4); // no scaling lists, asymmetric parts or offsets; PCM
+    sps.put(0x77, 8); // PCM samples of 8 bits
+    sps.ue(1); // PCM blocks of 16
+    sps.ue(0);
+    sps.put(1, 1); // no loop filter on PCM
+    sps.ue(0); // no reference picture sets
+    sps.put(0, 5); // no long-term references, motion vector prediction, smoothing, VUI, extension
+    let mut pps = Bits::default();
+    pps.ue(0);
+    pps.ue(0);
+    pps.put(0, 7); // no dependent slices, output flags, extra bits, sign hiding, CABAC init
+    for value in [0, 0] {
+        pps.ue(value);
+    }
+    pps.se(0);
+    pps.put(0, 3); // no constrained intra, transform skip, QP deltas
+    pps.se(0);
+    pps.se(0);
+    pps.put(0, 7); // no slice offsets, weighted prediction, bypass, tiles, rows, filtering across
+    pps.put(0b101, 3); // deblocking control: not overridden, off
+    pps.put(0, 2); // no scaling lists, list changes
+    pps.ue(0);
+    pps.put(0, 2); // no extensions
+    [hevc_nal(32, &vps.end()), hevc_nal(33, &sps.end()), hevc_nal(34, &pps.end())]
+}
+
+/// HEVC's arithmetic coder, as far as these frames need: bins of the most probable value, and
+/// terminating bins.
+struct Cabac {
+    bits: Bits,
+    low: u32,
+    range: u32,
+    outstanding: u32,
+    first: bool,
+}
+
+impl Cabac {
+    fn new(bits: Bits) -> Cabac {
+        Cabac { bits, low: 0, range: 510, outstanding: 0, first: true }
+    }
+    /// Starts afresh (after PCM samples).
+    fn restart(&mut self) {
+        (self.low, self.range, self.outstanding, self.first) = (0, 510, 0, true);
+    }
+    fn put_bit(&mut self, bit: u32) {
+        if !std::mem::take(&mut self.first) {
+            self.bits.put(bit, 1);
+        }
+        for _ in 0..std::mem::take(&mut self.outstanding) {
+            self.bits.put(1 - bit, 1);
+        }
+    }
+    fn renormalize(&mut self) {
+        while self.range < 256 {
+            if self.low < 256 {
+                self.put_bit(0);
+            } else if self.low >= 512 {
+                self.low -= 512;
+                self.put_bit(1);
+            } else {
+                self.low -= 256;
+                self.outstanding += 1;
+            }
+            (self.range, self.low) = (self.range << 1, self.low << 1);
+        }
+    }
+    /// A bin of the most probable value in a context in this state (from 0, moving on).
+    fn most_probable(&mut self, state: &mut usize) {
+        const LEAST_PROBABLE: [[u32; 4]; 12] = [
+            [128, 176, 208, 240],
+            [128, 167, 197, 227],
+            [128, 158, 187, 216],
+            [123, 150, 178, 205],
+            [116, 142, 169, 195],
+            [111, 135, 160, 185],
+            [105, 128, 152, 175],
+            [100, 122, 144, 166],
+            [95, 116, 137, 158],
+            [90, 110, 130, 150],
+            [85, 104, 123, 142],
+            [81, 99, 117, 135],
+        ];
+        self.range -= LEAST_PROBABLE[*state][(self.range >> 6 & 3) as usize];
+        *state += 1;
+        self.renormalize();
+    }
+    /// A terminating bin: 1 flushes the coder, its last bit a 1 (the stop bit at a slice's end).
+    fn terminate(&mut self, one: bool) {
+        self.range -= 2;
+        if !one {
+            return self.renormalize();
+        }
+        self.low += self.range;
+        self.range = 2;
+        self.renormalize();
+        self.put_bit(self.low >> 9 & 1);
+        self.bits.put((self.low >> 7 & 3) | 1, 2);
+    }
+}
+
+/// One frame as an HEVC IDR slice of PCM coding blocks: its samples as they are, no loss.
+pub fn hevc_frame(number: usize) -> Vec<u8> {
+    let pixels = frame_pixels(number);
+    let mut slice = Bits::default();
+    slice.put(0b10, 2); // the first slice, earlier pictures kept
+    slice.ue(0); // parameters 0
+    slice.ue(2); // I
+    slice.se(0); // QP 26
+    slice.put(1, 1);
+    slice.align();
+    // (Each block of 16: its part mode 2N×2N, a context starting at its most probable value
+    // 1; PCM; then the slice's end, or not.)
+    let (mut cabac, mut part_mode) = (Cabac::new(slice), 0);
+    for at in 0..12 {
+        let (x, y) = (at % 4 * 16, at / 4 * 16);
+        cabac.most_probable(&mut part_mode);
+        cabac.terminate(true);
+        cabac.bits.align();
+        cabac.bits.bytes.extend((0..256).map(|i| luma(pixels[(y + i / 16) * 64 + x + i % 16])));
+        cabac.bits.bytes.extend([128u8; 128]);
+        cabac.restart();
+        cabac.terminate(at == 11);
+    }
+    hevc_nal(19, &cabac.bits.bytes)
+}
+
+/// HEVC's decoder configuration (`hvcC`): Main, level 1, 4:2:0 in 8 bits, lengths in 4
+/// bytes, and the parameters.
+fn hvcc() -> Vec<u8> {
+    let mut config = vec![1, 0x01];
+    config.extend(be32(&[0x6000_0000]));
+    config.extend([0x90, 0, 0, 0, 0, 0, 30, 0xF0, 0x00, 0xFC, 0xFD, 0xF8, 0xF8, 0, 0, 0x0F, 3]);
+    for unit in hevc_parameters() {
+        config.extend([0x80 | unit[0] >> 1, 0, 1]);
+        config.extend((unit.len() as u16).to_be_bytes());
+        config.extend(unit);
+    }
+    config
 }
 
 
@@ -180,18 +369,92 @@ pub fn cea608_pairs(cues: &[(u32, u32, &str)], count: usize) -> Vec<[u8; 3 * 2]>
     pairs.chunks(3).map(|three| [three[0][0], three[0][1], three[1][0], three[1][1], three[2][0], three[2][1]]).collect()
 }
 
-/// An SEI NAL unit of ATSC A/53 closed captions (`GA94`) carrying three CEA-608 pairs of
-/// field 1.
-pub fn caption_sei(pairs: &[u8; 6]) -> Vec<u8> {
-    let mut payload = vec![0xB5, 0x00, 0x31, b'G', b'A', b'9', b'4', 0x03, 0x40 | 3, 0xFF];
-    for pair in pairs.chunks(2) {
-        payload.extend([0xFC, pair[0], pair[1]]);
-    }
+/// An SEI NAL unit of ATSC A/53 closed captions (`GA94`) carrying these `cc_data` triplets
+/// (at most 31): H.264's, or HEVC's prefix SEI.
+pub fn caption_sei(triplets: &[u8], hevc: bool) -> Vec<u8> {
+    let mut payload = vec![0xB5, 0x00, 0x31, b'G', b'A', b'9', b'4', 0x03, 0x40 | (triplets.len() / 3) as u8, 0xFF];
+    payload.extend_from_slice(triplets);
     payload.push(0xFF);
     let mut raw = vec![4, payload.len() as u8];
     raw.extend(payload);
     raw.push(0x80);
-    nal(0x06, &raw)
+    if hevc { hevc_nal(39, &raw) } else { nal(0x06, &raw) }
+}
+
+/// Captions in the video stream of a made file (from and to in tenths of a second, and the
+/// text, at 10 frames a second): CEA-608's channel 1, and CEA-708 services by their number.
+#[derive(Clone, Copy)]
+pub struct InStream<'a> {
+    pub cea608: Cues<'a>,
+    pub services: &'a [(u8, Cues<'a>)],
+}
+
+/// Cues: from and to in tenths of a second, and the text.
+pub type Cues<'a> = &'a [(u32, u32, &'a str)];
+
+/// Captions in the video stream of the in-stream test files: CEA-608's from 0.5 s to 1.2 s and
+/// from 1.8 s to 2.6 s, and CEA-708 service 1's from 0.8 s to 2.2 s.
+pub const IN_STREAM: InStream = InStream { cea608: &[(5, 12, "Hello there"), (18, 26, "Second line")], services: &[(1, &[(8, 22, "Service one")])] };
+
+/// What each in-stream track (`CC1`, `Service 1`) shows at times through `IN_STREAM`'s file,
+/// each well within a cue or a gap.
+pub const IN_STREAM_SHOWN: [(f32, &str, Option<&str>); 6] = [
+    (0.7, "CC1", Some("Hello there")),
+    (0.95, "Service 1", Some("Service one")),
+    (1.5, "CC1", None),
+    (1.55, "Service 1", Some("Service one")),
+    (2.05, "CC1", Some("Second line")),
+    (2.45, "Service 1", None),
+];
+
+/// The `cc_data` triplets of each of `count` frames: three CEA-608 pairs of field 1 (see
+/// `cea608_pairs`), then the CEA-708 packets due (see `cea708_packets`), ten pairs a frame at
+/// most.
+pub fn cc_data(in_stream: &InStream, count: usize) -> Vec<Vec<u8>> {
+    let pairs = cea608_pairs(in_stream.cea608, count);
+    let (mut waiting, mut next) = (std::collections::VecDeque::new(), cea708_packets(in_stream.services).into_iter().peekable());
+    let mut frames = Vec::new();
+    for (frame, pairs) in pairs.iter().enumerate() {
+        let mut triplets: Vec<u8> = pairs.chunks(2).flat_map(|pair| [0xFC, pair[0], pair[1]]).collect();
+        while let Some((_, packet)) = next.next_if(|(due, _)| *due <= frame) {
+            waiting.extend(packet.chunks(2).enumerate().map(|(nth, pair)| [if nth == 0 { 0xFF } else { 0xFE }, pair[0], pair[1]]));
+        }
+        triplets.extend(waiting.drain(..waiting.len().min(10)).flatten());
+        frames.push(triplets);
+    }
+    frames
+}
+
+/// CEA-708 packets for these services' cues, each with the frame it is due at: a window
+/// defined hidden and written three frames before the cue (window 0 of one row, 32 columns,
+/// near the bottom), shown at its start, deleted at its end.
+pub fn cea708_packets(services: &[(u8, Cues)]) -> Vec<(usize, Vec<u8>)> {
+    let mut blocks = Vec::new();
+    for &(number, cues) in services {
+        for &(from, to, text) in cues {
+            let define = [0x98, 0x00, 0x80 | 90, 50, 0x70, 31, 0x09];
+            blocks.push(((from as usize).saturating_sub(3), number, [&define[..], text.as_bytes()].concat()));
+            blocks.push((from as usize, number, vec![0x89, 0x01]));
+            blocks.push((to as usize, number, vec![0x8C, 0x01]));
+        }
+    }
+    blocks.sort_by_key(|(frame, _, _)| *frame);
+    blocks.into_iter().zip(0..).map(|((frame, number, block), sequence)| (frame, cea708_packet(sequence, number, &block))).collect()
+}
+
+/// A DTVCC packet of one service block: its header (sequence number, size in pairs), the
+/// block's header (with the extended number from service 7), its bytes, padded to whole pairs.
+pub fn cea708_packet(sequence: u8, service: u8, block: &[u8]) -> Vec<u8> {
+    let header = match service {
+        0..=6 => vec![service << 5 | block.len() as u8],
+        _ => vec![7 << 5 | block.len() as u8, service],
+    };
+    let mut packet = [&[0][..], &header, block].concat();
+    if packet.len() % 2 == 1 {
+        packet.push(0);
+    }
+    packet[0] = (sequence & 3) << 6 | (packet.len() / 2 % 64) as u8;
+    packet
 }
 
 /// A sound track of a made file: its language (ISO 639-2, as MP4 keeps it), its name, and its
@@ -239,6 +502,7 @@ enum Holds {
     Frames,
     Sound,
     Captions,
+    ClosedCaptions,
 }
 
 /// A track's header, media header and handler, as written around its sample entry.
@@ -277,6 +541,8 @@ impl Trak<'_> {
             Holds::Frames => (b"vide", atom(b"vmhd", &be32(&[1, 0, 0]))),
             Holds::Sound => (b"soun", atom(b"smhd", &be32(&[0, 0]))),
             Holds::Captions => (b"sbtl", atom(b"nmhd", &be32(&[0]))),
+            // (QuickTime's base media header, its graphics mode copy.)
+            Holds::ClosedCaptions => (b"clcp", atoms(b"gmhd", &[atom(b"gmin", &[0, 0, 0, 0, 0, 0x40, 0x80, 0, 0x80, 0, 0x80, 0, 0, 0, 0, 0])])),
         };
         let mut hdlr = be32(&[0, 0]);
         hdlr.extend_from_slice(kind);
@@ -352,45 +618,74 @@ fn caption_samples(cues: &[(u32, u32, &str)], length: u32) -> Vec<(u32, Vec<u8>)
 /// unless another is chosen; sound tracks are one group of alternatives, caption tracks
 /// another.
 pub fn movie(count: usize, rate: u32, jpeg: bool, sounds: &[Sound], captions: &[Captions]) -> Vec<u8> {
-    movie_with(count, rate, jpeg, sounds, captions, &[])
+    let coding = if jpeg { Coding::Jpeg } else { Coding::H264 };
+    movie_with(count, rate, coding, sounds, captions, None)
 }
 
-/// The same with CEA-608 captions in the frames' SEI (see `cea608_pairs`): lossless H.264,
-/// at 10 frames a second, no sound.
-pub fn movie_captioned_in_stream(count: usize, cues: &[(u32, u32, &str)]) -> Vec<u8> {
-    movie_with(count, 10, false, &[], &[], cues)
+/// How a made file's frames are coded.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Coding {
+    Jpeg,
+    H264,
+    Hevc,
 }
 
-fn movie_with(count: usize, rate: u32, jpeg: bool, sounds: &[Sound], captions: &[Captions], in_stream: &[(u32, u32, &str)]) -> Vec<u8> {
+/// Where a made file's captions in the stream go: the frames' SEI, or (CEA-608's) a QuickTime
+/// closed-caption track.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Carried {
+    InSei,
+    InCaptionTrack,
+}
+
+/// A file of `count` frames at 10 a second (lossless H.264 or HEVC), no sound, with these
+/// captions in the stream (see `cc_data`): an MP4 file, or a QuickTime movie with a
+/// closed-caption track.
+pub fn movie_captioned_in_stream(count: usize, coding: Coding, in_stream: &InStream, carried: Carried) -> Vec<u8> {
+    movie_with(count, 10, coding, &[], &[], Some((in_stream, carried)))
+}
+
+fn movie_with(count: usize, rate: u32, coding: Coding, sounds: &[Sound], captions: &[Captions], in_stream: Option<(&InStream, Carried)>) -> Vec<u8> {
     let duration_ms = count as u32 * 1000 / rate;
     let samples = count as u32 * 8000 / rate;
-    let ftyp = atom(b"ftyp", b"isom\0\0\x02\0isomiso2avc1mp41");
+    let caption_track = in_stream.filter(|(_, carried)| *carried == Carried::InCaptionTrack).map(|(captions, _)| captions);
+    let ftyp = match caption_track {
+        Some(_) => atom(b"ftyp", b"qt  \0\0\x02\0qt  "),
+        None => atom(b"ftyp", b"isom\0\0\x02\0isomiso2avc1mp41"),
+    };
     let (mut mdat, mut traks) = (Vec::new(), Vec::new());
     let start = ftyp.len() as u32 + 8;
     let mut put = |bytes: &[u8]| {
         mdat.extend_from_slice(bytes);
         start + (mdat.len() - bytes.len()) as u32
     };
-    let frames: Vec<Vec<u8>> = match jpeg {
-        true => (0..count).map(|n| taut::jpeg::encode(64, &frame_pixels(n), 90).unwrap()).collect(),
-        false => {
-            let pairs = cea608_pairs(in_stream, count);
-            let sei = |n: usize| if in_stream.is_empty() { Vec::new() } else { length_prefixed(caption_sei(&pairs[n])) };
-            (0..count).map(|n| [sei(n), length_prefixed(h264_frame(n))].concat()).collect()
-        }
+    let in_sei = in_stream.filter(|(_, carried)| *carried == Carried::InSei).map(|(captions, _)| cc_data(captions, count));
+    let sei = |n: usize| in_sei.as_ref().map_or(Vec::new(), |triplets| length_prefixed(caption_sei(&triplets[n], coding == Coding::Hevc)));
+    let frames: Vec<Vec<u8>> = match coding {
+        Coding::Jpeg => (0..count).map(|n| taut::jpeg::encode(64, &frame_pixels(n), 90).unwrap()).collect(),
+        Coding::H264 => (0..count).map(|n| [sei(n), length_prefixed(h264_frame(n))].concat()).collect(),
+        Coding::Hevc => (0..count).map(|n| [sei(n), length_prefixed(hevc_frame(n))].concat()).collect(),
     };
     let offsets: Vec<u32> = frames.iter().map(|frame| put(frame)).collect();
     let sizes: Vec<u32> = frames.iter().map(|frame| frame.len() as u32).collect();
-    let entry = match jpeg {
-        true => visual_entry(b"jpeg", Vec::new()),
-        false => {
+    let entry = match coding {
+        Coding::Jpeg => visual_entry(b"jpeg", Vec::new()),
+        Coding::H264 => {
             let (sps, pps) = parameters();
             let avcc = [&[1, 66, 0xC0, 30, 0xFF, 0xE1][..], &(sps.len() as u16).to_be_bytes(), &sps, &[1], &(pps.len() as u16).to_be_bytes(), &pps].concat();
             visual_entry(b"avc1", atom(b"avcC", &avcc))
         }
+        Coding::Hevc => visual_entry(b"hvc1", atom(b"hvcC", &hvcc())),
     };
     let video = Trak { id: 1, holds: Holds::Frames, enabled: true, group: 0, language: "und", name: "Video", timescale: rate, duration_ms, media_duration: count as u32, size: [64, 48] };
     traks.push(video.atom(entry, table(&sizes, &vec![1; count], &offsets)));
+    if let Some(captions) = caption_track {
+        let samples: Vec<Vec<u8>> = cea608_pairs(captions.cea608, count).iter().map(|pairs| atom(b"cdat", pairs)).collect();
+        let offsets: Vec<u32> = samples.iter().map(|sample| put(sample)).collect();
+        let sizes: Vec<u32> = samples.iter().map(|sample| sample.len() as u32).collect();
+        let trak = Trak { id: 2, holds: Holds::ClosedCaptions, enabled: true, group: 0, language: "eng", name: "Closed captions", ..video };
+        traks.push(trak.atom(atom(b"c608", &[0, 0, 0, 0, 0, 0, 0, 1]), table(&sizes, &vec![1; count], &offsets)));
+    }
     for (nth, sound) in sounds.iter().enumerate() {
         let bytes: Vec<u8> = tone(sound.tone, samples as usize).iter().flat_map(|sample| sample.to_le_bytes()).collect();
         let at = put(&bytes);

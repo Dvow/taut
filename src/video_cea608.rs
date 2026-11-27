@@ -1,12 +1,11 @@
-//! CEA-608 captions carried in a video stream (ATSC A/53 `cc_data`, as in H.264's SEI) made
-//! into cues, for players that hand over the caption data but do not read it: the NDK's
-//! extractor on Android (`video_sei`), GStreamer's caption meta on Linux.
+//! CEA-608 captions carried in a video stream (ATSC A/53 `cc_data`, as in H.264's and HEVC's
+//! SEI) or in a QuickTime closed-caption track, made into cues (see `video_stream_captions`).
 //!
 //! Channel 1 of field 1 (`CC1`) is read: pop-on, roll-up and paint-on captions, the standard,
 //! special and extended characters. Colours, italics and underlines are not kept: text only,
 //! as the app's captions are.
 
-use crate::video_captions::Cue;
+use crate::video_captions::{Cue, CueRecorder};
 use std::time::Duration;
 
 /// Rows and columns of the caption screen.
@@ -40,32 +39,15 @@ pub(crate) struct Decoder {
     /// The channel of the last control pair (data of channel 2 is skipped until channel 1 is
     /// named again).
     on_channel_one: bool,
-    /// The cues so far, in time order, the last one open (its end not yet known) while its text
-    /// shows.
-    cues: Vec<Cue>,
-    open: bool,
-    /// The earliest time the next change can take: the last change's, or where a seek went
-    /// (data read again from the key frame before it changes the screen from there).
-    not_before: Duration,
+    /// The text on show over time.
+    recorder: CueRecorder,
     /// Whether any caption data came.
     found: bool,
 }
 
 impl Default for Decoder {
     fn default() -> Self {
-        Decoder {
-            mode: Mode::PopOn,
-            shown: blank(),
-            hidden: blank(),
-            row: ROWS - 1,
-            column: 0,
-            last_control: None,
-            on_channel_one: true,
-            cues: Vec::new(),
-            open: false,
-            not_before: Duration::ZERO,
-            found: false,
-        }
+        Decoder { mode: Mode::PopOn, shown: blank(), hidden: blank(), row: ROWS - 1, column: 0, last_control: None, on_channel_one: true, recorder: CueRecorder::default(), found: false }
     }
 }
 
@@ -123,10 +105,9 @@ impl Decoder {
     /// plays, the caption on show then ends there (608 says what shows only as it changes).
     /// Data from before `to` (from the key frame before it) changes the screen from `to`.
     pub(crate) fn sought(&mut self, to: Duration) {
-        let mut cues = std::mem::take(&mut self.cues);
-        cues.truncate(cues.partition_point(|cue| cue.from < to));
-        cues.iter_mut().for_each(|cue| cue.to = cue.to.min(to));
-        *self = Decoder { cues, not_before: to, found: self.found, ..Decoder::default() };
+        let mut recorder = std::mem::take(&mut self.recorder);
+        recorder.sought(to);
+        *self = Decoder { recorder, found: self.found, ..Decoder::default() };
     }
 
     /// Whether any caption data came (not only padding): the stream has captions.
@@ -137,7 +118,7 @@ impl Decoder {
     /// The cues read so far: each caption that showed, and when; the last one ends when the
     /// text after it starts (or never, while it shows).
     pub(crate) fn cues(&self) -> &[Cue] {
-        &self.cues
+        self.recorder.cues()
     }
 
     /// A control pair of channel 1 (its first byte as channel 1 names it).
@@ -243,24 +224,9 @@ impl Decoder {
         self.column = (column + 1).min(COLUMNS - 1);
     }
 
-    /// Ends the open cue and starts one where the text on the screen changed, at `at` (or
-    /// `not_before`, if later). A cue changed again at the moment it started is replaced.
+    /// The text on the screen may have changed at `at`.
     fn shown_changed(&mut self, at: Duration) {
-        let text = text_of(&self.shown);
-        let open = self.cues.last_mut().filter(|_| self.open);
-        if open.as_ref().is_some_and(|cue| cue.text == text) || (!self.open && text.is_empty()) {
-            return;
-        }
-        let at = at.max(self.not_before);
-        match open {
-            Some(cue) if cue.from == at => _ = self.cues.pop(),
-            Some(cue) => cue.to = at,
-            None => {}
-        }
-        (self.open, self.not_before) = (!text.is_empty(), at);
-        if self.open {
-            self.cues.push(Cue { from: at, to: Duration::MAX, text });
-        }
+        self.recorder.show(text_of(&self.shown), at);
     }
 }
 
@@ -315,7 +281,7 @@ mod tests {
     fn decoded(pairs: &[[u8; 2]]) -> Vec<Cue> {
         let mut decoder = Decoder::default();
         (0..).zip(pairs).for_each(|(tenth, pair)| decoder.read_pair(*pair, at(tenth)));
-        decoder.cues
+        decoder.cues().to_vec()
     }
 
     /// A control pair of channel 1, as sent: twice.
