@@ -230,10 +230,21 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Video
 
-- Frames are drawn from the decoder's texture only on Windows, with `gpu-draw`, on Direct3D 11
-  (four videos a part; a fifth, or one shown more than 8 times smaller, is read back). On
-  Direct3D 12, Vulkan and OpenGL, and on macOS, iOS, Android, Linux and the web, a frame is read
-  back to the CPU, then drawn.
+- Frames are drawn from the decoder's buffer only with `gpu-draw`, four videos a part (a fifth,
+  or one shown more than 8 times smaller, is read back), by:
+  - Windows: Direct3D 11 (not 12, Vulkan or OpenGL).
+  - macOS and iOS: Metal.
+  - Android: Vulkan and OpenGL ES; not a frame whose visible part starts off its top left.
+    OpenGL ES makes it RGB by the driver's matrix (on the emulator 2 levels off the CPU's), and
+    compiles the shader that reads frames when a part first shows one (20 s in the emulator's
+    software OpenGL ES; not measured on a phone).
+  - Linux: Vulkan and EGL, from a linear dmabuf of NV12, I420 or YV12 in one file, as VA-API's
+    decoders give through GStreamer. A tiled dmabuf, or a software decoder's frame, is read back.
+    Not seen here with a real decoder: the import is checked with a file GStreamer takes as a
+    dmabuf (lavapipe, llvmpipe), and on GitHub's runner.
+  - Not on the web: a frame is read back to the canvas, then drawn.
+  Vulkan reads frames of one kind a part (their sampler Y′CbCr conversion is part of the
+  pipeline): a part showing two kinds at once is drawn by the CPU.
 - Captions: their text only, without the file's positions, regions or styles. In the video
   stream: CEA-608 (channel 1 of field 1) in H.264, as a track `CC1` found once its first data
   plays; not CEA-708's own services, not HEVC's SEI, not on macOS, iOS or the web.
@@ -254,7 +265,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   Tracks are named by their language only. Checked only on GitHub's runner and in the iOS
   simulator.
 - Android: what the system's decoders read, through the NDK (no `MediaPlayer`); frames come
-  through an image reader in YUV and are made RGB on the CPU. Volume scales the samples (AAudio
+  through an image reader in YUV and are made RGB on the CPU (with `gpu-draw`, where the CPU
+  draws them). Volume scales the samples (AAudio
   has none); other speeds are stretched by taut (WSOLA), the last 40 ms of sound not played.
   Captions: 3GPP (MP4), SRT (Matroska), WebVTT (WebM), each until the next (Matroska's durations
   not read); tracks named by their language. CEA-608 is read by taut from the samples as they

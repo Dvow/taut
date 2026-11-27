@@ -9,7 +9,7 @@
 //! - Everything is recorded into the device's command list, after the window's waiting copies:
 //!   the caller runs it and waits.
 use crate::gpu_draw::{DrawList, Quad, SIDE};
-use crate::gpu_draw_windows::{MAIN, PRELUDE, compiled};
+use crate::gpu_draw_windows::{MAIN, PRELUDE, TEXEL, compiled};
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, function, release};
 use crate::windows::named;
 use std::ffi::c_void;
@@ -246,7 +246,7 @@ fn start_of(heap: Com) -> usize {
 impl Pipeline {
     /// What `device` (an `ID3D12Device`) draws with; nothing where any part can't be made.
     pub(crate) fn new(device: Com) -> Option<Pipeline> {
-        let source = format!("{PRELUDE}{}{MAIN}", crate::gpu_draw::SHADING);
+        let source = format!("{PRELUDE}{TEXEL}{}{MAIN}", crate::gpu_draw::SHADING);
         let (corner, pixel) = (compiled(&source, c"corner", c"vs_5_1")?, compiled(&source, c"pixel", c"ps_5_1")?);
         let signature = compiled(SIGNATURE, c"ROOT", c"rootsig_1_0")?;
         let mut made = Pipeline { root: null_mut(), pipeline: null_mut(), views: null_mut(), targets: null_mut(), step: 0, textures: [null_mut(); 2], readied: false, staging: None, quads: None };

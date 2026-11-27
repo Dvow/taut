@@ -1,7 +1,8 @@
 //! The GPU on Android, on an emulator that `adb` reaches, with the NDK at hand:
 //!
 //! - The library's GPU checks, built for the emulator and run there (`gpu_android`, `gpu_draw`,
-//!   `vk`), with and without `gpu-draw`; and the layers' (`tests/renderers.rs`: Vulkan, OpenGL ES).
+//!   `vk`), with and without `gpu-draw`, and videos' frames drawn from the decoder's buffers
+//!   (`video` too); and the layers' (`tests/renderers.rs`: Vulkan, OpenGL ES).
 //! - With `TAUT_ANDROID_GPU_APK` naming the gallery packed with `gpu-draw` (`cargo run --example
 //!   apk -- gallery --features gpu-draw,touch`): the gallery shown by the CPU, then by Vulkan and
 //!   OpenGL ES (`debug.taut.renderer`), each only showing or also drawing every part
@@ -46,7 +47,7 @@ mod host {
         std::fs::create_dir_all(&out).unwrap();
         ask(&adb, "", "");
         let mut failed = Vec::new();
-        for (features, filters) in [("gpu", "gpu_android"), ("gpu-draw", "gpu_android gpu_draw vk::")] {
+        for (features, filters) in [("gpu", "gpu_android"), ("gpu-draw", "gpu_android gpu_draw vk::"), ("gpu-draw,video", "videos_frames video_vulkan video_yuv")] {
             let program = on_android::built(&linker, &["--lib"], features, &format!("gpu-android-{features}"));
             let (said, passed) = on_android::ran(&adb, &program, "taut-gpu-checks", "", &format!("{filters} --test-threads=1 --nocapture"));
             println!("the library's checks with {features}:\n{said}");

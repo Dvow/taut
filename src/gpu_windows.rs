@@ -745,7 +745,7 @@ pub(crate) mod tests {
         on_gpu.borrow_mut().iter_mut().for_each(|video| video.play());
         wake(gpu);
         pumped_until("a second's frames", || on_gpu.borrow().iter().all(|video| video.frames_shown() >= 8));
-        assert_eq!(crate::video_windows::READ_BACK.load(Relaxed), 0, "frames were read back");
+        assert_eq!(crate::video::READ_BACK.load(Relaxed), 0, "frames were read back");
         assert!(DRAWN.get() > 8, "the GPU drew {} parts", DRAWN.get());
         // At one frame, it shows what the CPU shows of the frame read back.
         for video in on_gpu.borrow_mut().iter_mut() {
@@ -758,13 +758,13 @@ pub(crate) mod tests {
         let at_frame =
             |videos: &Rc<RefCell<[crate::Video; 2]>>| videos.borrow().iter().all(|video| !video.playing() && video.position() == std::time::Duration::from_millis(1200) && video.frames_shown() > 0);
         pumped_until("frame 12 in both windows", || at_frame(&on_gpu) && at_frame(&on_cpu));
-        pumped_until("the frame read back", || crate::video_windows::READ_BACK.load(Relaxed) >= 2);
-        let read_back = crate::video_windows::READ_BACK.load(Relaxed);
+        pumped_until("the frame read back", || crate::video::READ_BACK.load(Relaxed) >= 2);
+        let read_back = crate::video::READ_BACK.load(Relaxed);
         wake(gpu);
         wake(cpu);
         assert!(same(gpu, cpu), "the windows differ: {}", differ(gpu, cpu));
         assert!(presented_as(&last_presented(gpu), cpu), "the frame presented differs");
-        assert_eq!(crate::video_windows::READ_BACK.load(Relaxed), read_back, "the GPU's window read a frame back");
+        assert_eq!(crate::video::READ_BACK.load(Relaxed), read_back, "the GPU's window read a frame back");
         for hwnd in [gpu, cpu] {
             unsafe { DestroyWindow(hwnd) };
         }

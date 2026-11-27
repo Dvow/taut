@@ -572,7 +572,7 @@ impl<'a> Canvas<'a> {
 
     /// A video's frame left on the GPU, stretched to `r` with corners of this radius, where a
     /// GPU records this paint and can draw it from there: whether it does.
-    #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+    #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
     pub(crate) fn video_frame(&mut self, frame: &crate::video::FrameOnGpu, r: Rect, radius: f32) -> bool {
         let (scale, clip) = (self.scale, self.clip);
         self.list.as_deref_mut().is_some_and(|list| list.video_frame(frame, r, radius, scale, clip))

@@ -493,6 +493,17 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    impl Reader {
+        /// Lets go of the frames that came, unread (so the window takes more).
+        fn drop_latest(&mut self) {
+            let mut image = std::ptr::null_mut();
+            if unsafe { AImageReader_acquireLatestImage(self.reader, &mut image) } == 0 {
+                unsafe { AImage_delete(image) };
+            }
+        }
+    }
+
     /// The insets of the test window: left, top, right, bottom.
     const INSETS: [i32; 4] = [6, 30, 10, 14];
     const BACKGROUND: u32 = 0xff30_4050;
@@ -817,6 +828,112 @@ mod tests {
             };
             assert!(drawn, "{renderer:?} drew the parts itself");
             bench.check(&frame, crate::gpu_draw::tests::TOLERANCE, &format!("{renderer:?}, drawn by the GPU"));
+        }
+    }
+
+    /// A video three times its size with round corners, on the window's ground.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    fn showing(video: std::rc::Rc<std::cell::RefCell<crate::Video>>) -> Box<dyn FnMut(&mut Ui)> {
+        Box::new(move |ui: &mut Ui| {
+            ui.row().pad(10.0).open();
+            ui.video(&mut video.borrow_mut()).size(192.0, 144.0).radius(14.0).show();
+            ui.close();
+        })
+    }
+
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    impl Bench {
+        /// Runs and draws until `done`, the interface's time counted from `started`, the window's
+        /// frames let go of unread. Fails where ten seconds pass first (checked between draws: a
+        /// first draw that compiles shaders may take longer).
+        fn until(&mut self, started: std::time::Instant, what: &str, done: impl Fn() -> bool) {
+            let waiting = std::time::Instant::now();
+            while !done() {
+                assert!(waiting.elapsed() < Duration::from_secs(10), "{what} did not happen");
+                std::thread::sleep(Duration::from_millis(5));
+                self.ui.set_time(started.elapsed());
+                self.run();
+                self.draw(false, [None, None]);
+                self.reader.drop_latest();
+            }
+        }
+    }
+
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    #[test]
+    fn each_renderer_draws_a_videos_frames_from_the_decoders_buffers() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _one = one();
+        let file = crate::video::tests::test_file(false).expect("the test file");
+        for renderer in BOTH {
+            let video = std::rc::Rc::new(std::cell::RefCell::new(crate::Video::open_silent(file.as_path()).expect("a player")));
+            video.borrow_mut().seek(Duration::from_millis(1200));
+            let mut bench = Bench::new(renderer, [INSETS[0] + INSETS[2] + 212, INSETS[1] + INSETS[3] + 164], 1.0, showing(video.clone()));
+            bench.draw(false, [None, None]);
+            bench.draw_every_part();
+            let started = std::time::Instant::now();
+            bench.until(started, "the first frame", || video.borrow().frames_shown() > 0);
+            // Played a moment: every frame drawn from the decoder's buffer, none read back.
+            let read_back = crate::video::READ_BACK.load(Relaxed);
+            video.borrow_mut().play();
+            bench.until(started, "eight frames", || video.borrow().frames_shown() >= 8);
+            assert_eq!(crate::video::READ_BACK.load(Relaxed), read_back, "{renderer:?}: frames were read back while playing");
+            // At one frame, it shows what the CPU shows of the frame read back.
+            video.borrow_mut().pause();
+            video.borrow_mut().seek(Duration::from_millis(1200));
+            let shown = video.borrow().frames_shown();
+            bench.until(started, "the frame at 1.2 s", || video.borrow().frames_shown() > shown);
+            bench.screen.window_gone();
+            (bench.reader, bench.count) = (Reader::new(bench.reader.size), 0);
+            bench.draw(false, [None, None]);
+            let frame = bench.shown();
+            bench.check(&frame, crate::gpu_draw::tests::TOLERANCE, &format!("{renderer:?}, a video's frame drawn from the decoder's buffer"));
+        }
+    }
+
+    /// The CPU time this process has used so far (`CLOCK_PROCESS_CPUTIME_ID`).
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    fn cpu_time() -> Duration {
+        unsafe extern "C" {
+            fn clock_gettime(clock: std::ffi::c_int, time: *mut [std::ffi::c_long; 2]) -> std::ffi::c_int;
+        }
+        let mut time = [0; 2];
+        unsafe { clock_gettime(2, &mut time) };
+        Duration::new(time[0] as u64, time[1] as u32)
+    }
+
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    #[test]
+    #[ignore = "a measure, run alone: the CPU time per frame of a 720p video drawn by Vulkan, its frames read back or drawn from the decoder's buffers"]
+    fn cpu_time_per_frame_of_a_720p_video() {
+        use crate::video::tests::files::{big_mp4, written};
+        let _one = one();
+        let file = written("720p.mp4", &big_mp4(30, 30, 1280, 720));
+        for read_back in [true, false] {
+            let video = std::rc::Rc::new(std::cell::RefCell::new(crate::Video::open_silent(file.as_path()).expect("a player")));
+            video.borrow_mut().set_looping(true);
+            video.borrow_mut().play();
+            let shown = video.clone();
+            let app = Box::new(move |ui: &mut Ui| _ = ui.video(&mut shown.borrow_mut()).show());
+            let mut bench = Bench::new(Renderer::Vulkan, [INSETS[0] + INSETS[2] + 1280, INSETS[1] + INSETS[3] + 720], 1.0, app);
+            bench.draw(false, [None, None]);
+            bench.draw_every_part();
+            if let (true, Some(Gpu::Vulkan(gpu))) = (read_back, bench.screen.gpu.as_mut()) {
+                gpu.list.takes_frames = false;
+            }
+            let started = std::time::Instant::now();
+            bench.until(started, "the first frames", || video.borrow().frames_shown() >= 3);
+            let (cpu, frames, measured) = (cpu_time(), video.borrow().frames_shown(), std::time::Instant::now());
+            while measured.elapsed() < Duration::from_secs(4) {
+                std::thread::sleep(Duration::from_millis(2));
+                bench.ui.set_time(started.elapsed());
+                bench.run();
+                bench.draw(false, [None, None]);
+                bench.reader.drop_latest();
+            }
+            let (used, count) = (cpu_time() - cpu, video.borrow().frames_shown() - frames);
+            let how = if read_back { "read back" } else { "drawn from the decoder's buffers" };
+            println!("720p, frames {how}: {count} frames in {:?}, {:?} of CPU a frame", measured.elapsed(), used / count.max(1) as u32);
         }
     }
 }

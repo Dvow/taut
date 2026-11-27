@@ -45,7 +45,8 @@ impl CMTime {
 
 /// CoreVideo's functions for reading a pixel buffer, and its key for their format; CoreMedia's
 /// for reading a sample buffer; AVFoundation's name of the time-pitch algorithm that keeps the
-/// pitch at any rate.
+/// pitch at any rate. With `gpu-draw`, CoreVideo's keys asking for buffers Metal reads and its
+/// cache of Metal textures of them.
 struct Functions {
     lock: unsafe extern "C" fn(*mut c_void, u64) -> i32,
     unlock: unsafe extern "C" fn(*mut c_void, u64) -> i32,
@@ -61,6 +62,21 @@ struct Functions {
     data_length: unsafe extern "C" fn(*mut c_void) -> usize,
     copy_data: unsafe extern "C" fn(*mut c_void, usize, usize, *mut u8) -> i32,
     spectral: Obj,
+    #[cfg(feature = "gpu-draw")]
+    metal: MetalTextures,
+}
+
+/// `kCVPixelBufferMetalCompatibilityKey` and `kCVPixelBufferIOSurfacePropertiesKey`;
+/// `CVMetalTextureCacheCreate`, `CVMetalTextureCacheCreateTextureFromImage`,
+/// `CVMetalTextureGetTexture` and `CVMetalTextureCacheFlush`.
+#[cfg(feature = "gpu-draw")]
+struct MetalTextures {
+    compatible_key: Obj,
+    surface_key: Obj,
+    new_cache: unsafe extern "C" fn(*const c_void, *const c_void, Obj, *const c_void, *mut *mut c_void) -> i32,
+    new_texture: unsafe extern "C" fn(*const c_void, *mut c_void, *mut c_void, *const c_void, usize, usize, usize, usize, *mut *mut c_void) -> i32,
+    texture_of: unsafe extern "C" fn(*mut c_void) -> Obj,
+    flush: unsafe extern "C" fn(*mut c_void, u64),
 }
 // SAFETY: functions, and a constant string object that lives as long as the program.
 unsafe impl Send for Functions {}
@@ -104,6 +120,15 @@ fn load() -> Option<Functions> {
             data_length: function(found(media, c"CMBlockBufferGetDataLength")?),
             copy_data: function(found(media, c"CMBlockBufferCopyDataBytes")?),
             spectral: *found(av, c"AVAudioTimePitchAlgorithmSpectral")?.cast::<Obj>(),
+            #[cfg(feature = "gpu-draw")]
+            metal: MetalTextures {
+                compatible_key: *found(video, c"kCVPixelBufferMetalCompatibilityKey")?.cast::<Obj>(),
+                surface_key: *found(video, c"kCVPixelBufferIOSurfacePropertiesKey")?.cast::<Obj>(),
+                new_cache: function(found(video, c"CVMetalTextureCacheCreate")?),
+                new_texture: function(found(video, c"CVMetalTextureCacheCreateTextureFromImage")?),
+                texture_of: function(found(video, c"CVMetalTextureGetTexture")?),
+                flush: function(found(video, c"CVMetalTextureCacheFlush")?),
+            },
         })
     }
 }
@@ -164,15 +189,13 @@ impl Player {
         let _pool = Pool::new();
         let (url, written) = url_of(source)?;
         // SAFETY: each class answers these messages; what is kept is retained, the rest
-        // autoreleased into the pool. 'BGRA' is the pixel format asked.
+        // autoreleased into the pool.
         unsafe {
             let item: Obj = send(class(c"AVPlayerItem"), c"playerItemWithURL:", (url,));
             if item.is_null() {
                 return Err(VideoError::Refused("AVFoundation made no item of it".into()));
             }
-            let format: Obj = send(class(c"NSNumber"), c"numberWithUnsignedInt:", (0x4247_5241u32,));
-            let wanted: Obj = send(class(c"NSDictionary"), c"dictionaryWithObject:forKey:", (format, functions.format_key));
-            let output: Obj = send(send::<Obj>(class(c"AVPlayerItemVideoOutput"), c"alloc", ()), c"initWithPixelBufferAttributes:", (wanted,));
+            let output: Obj = send(send::<Obj>(class(c"AVPlayerItemVideoOutput"), c"alloc", ()), c"initWithPixelBufferAttributes:", (buffers_wanted(functions),));
             send::<()>(item, c"addOutput:", (output,));
             let player: Obj = send(send::<Obj>(class(c"AVPlayer"), c"alloc", ()), c"initWithPlayerItem:", (item,));
             send::<Obj>(item, c"retain", ());
@@ -254,12 +277,43 @@ impl Player {
     /// The newest frame where there is one not given yet: its width and time, its pixels in
     /// `into`. None before the item is ready (its length known) and its first seek is over.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
+        let (buffer, shown) = self.new_buffer()?;
+        let width = read(self.functions, buffer, into);
+        // SAFETY: copied, so ours.
+        unsafe { (self.functions.release)(buffer) };
+        if width == 0 {
+            return None;
+        }
+        self.last = Some(shown.value);
+        Some((width, shown.known().unwrap_or_default()))
+    }
+
+    /// Whether frames are given as textures (`frame_texture`): always, with `gpu-draw`.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn decodes_on_gpu(&self) -> bool {
+        true
+    }
+    /// The newest frame where there is one not given yet, left where AVFoundation decoded it:
+    /// its pixel buffer and time.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn frame_texture(&mut self) -> Option<(std::sync::Arc<FrameTexture>, Duration)> {
+        let (buffer, shown) = self.new_buffer()?;
+        let f = self.functions;
+        // SAFETY: a live pixel buffer, copied, so ours: the frame holds it.
+        let size = unsafe { ((f.width)(buffer) as u32, (f.height)(buffer) as u32) };
+        self.last = Some(shown.value);
+        Some((std::sync::Arc::new(FrameTexture { functions: f, buffer, size }), shown.known().unwrap_or_default()))
+    }
+
+    /// The newest pixel buffer not given yet (+1), and its time; none before the item is ready
+    /// (its length known) and its first seek is over.
+    fn new_buffer(&mut self) -> Option<(*mut c_void, CMTime)> {
         if !self.ready || self.seeked.held.load(Ordering::Acquire) != self.seeks {
             return None;
         }
         let _pool = Pool::new();
         let mut shown = CMTime::default();
-        // SAFETY: live objects; the buffer copied is ours and released.
+        // SAFETY: live objects; the buffer copied is ours.
         let buffer: *mut c_void = unsafe {
             let now: CMTime = send_large(self.player, c"currentTime", ());
             if send::<Bool>(self.output, c"hasNewPixelBufferForItemTime:", (now,)) == 0 {
@@ -270,33 +324,12 @@ impl Player {
         if buffer.is_null() {
             return None;
         }
-        let width = self.read(buffer, into);
-        // SAFETY: copied, so ours.
-        unsafe { (self.functions.release)(buffer) };
-        let at = shown.known().unwrap_or_default();
-        if width == 0 || self.last == Some(shown.value) {
+        if self.last == Some(shown.value) {
+            // SAFETY: copied, so ours.
+            unsafe { (self.functions.release)(buffer) };
             return None;
         }
-        self.last = Some(shown.value);
-        Some((width, at))
-    }
-    /// A BGRA pixel buffer's pixels, opaque, into `into`; its width.
-    fn read(&self, buffer: *mut c_void, into: &mut Vec<u32>) -> usize {
-        let f = self.functions;
-        // SAFETY: the buffer is locked for reading while its rows are copied.
-        unsafe {
-            if (f.lock)(buffer, 1) != 0 {
-                return 0;
-            }
-            let (base, row, width, height) = ((f.base)(buffer), (f.row)(buffer), (f.width)(buffer), (f.height)(buffer));
-            into.clear();
-            if !base.is_null() && row >= width * 4 {
-                let bytes = std::slice::from_raw_parts(base, row * height);
-                into.extend(bytes.chunks(row).flat_map(|line| line[..width * 4].as_chunks::<4>().0).map(|p| u32::from_le_bytes([p[0], p[1], p[2], 0xFF])));
-            }
-            (f.unlock)(buffer, 1);
-            if into.is_empty() { 0 } else { width }
-        }
+        Some((buffer, shown))
     }
 
     // ---- tracks ----
@@ -391,6 +424,116 @@ impl Player {
             }
             Some(Cue { from, to: from + length.unwrap_or(Duration::MAX - from), text: timed_text(&bytes)? })
         }
+    }
+}
+
+/// A BGRA pixel buffer's pixels, opaque, into `into`; its width (0 where it can't be read).
+fn read(f: &Functions, buffer: *mut c_void, into: &mut Vec<u32>) -> usize {
+    // SAFETY: the buffer is locked for reading while its rows are copied.
+    unsafe {
+        if (f.lock)(buffer, 1) != 0 {
+            return 0;
+        }
+        let (base, row, width, height) = ((f.base)(buffer), (f.row)(buffer), (f.width)(buffer), (f.height)(buffer));
+        into.clear();
+        if !base.is_null() && row >= width * 4 {
+            let bytes = std::slice::from_raw_parts(base, row * height);
+            into.extend(bytes.chunks(row).flat_map(|line| line[..width * 4].as_chunks::<4>().0).map(|p| u32::from_le_bytes([p[0], p[1], p[2], 0xFF])));
+        }
+        (f.unlock)(buffer, 1);
+        if into.is_empty() { 0 } else { width }
+    }
+}
+
+/// The pixel buffers asked of the video output (autoreleased): 32-bit BGRA ('BGRA'); with
+/// `gpu-draw` on an IOSurface, so Metal reads them where they are.
+fn buffers_wanted(f: &Functions) -> Obj {
+    // SAFETY: the classes answer these messages with autoreleased objects; the keys are
+    // CoreVideo's constants.
+    unsafe {
+        let format: Obj = send(class(c"NSNumber"), c"numberWithUnsignedInt:", (0x4247_5241u32,));
+        #[cfg(not(feature = "gpu-draw"))]
+        let (values, keys) = ([format], [f.format_key]);
+        #[cfg(feature = "gpu-draw")]
+        let (values, keys) = {
+            let (yes, none): (Obj, Obj) = (send(class(c"NSNumber"), c"numberWithBool:", (1 as Bool,)), send(class(c"NSDictionary"), c"dictionary", ()));
+            ([format, yes, none], [f.format_key, f.metal.compatible_key, f.metal.surface_key])
+        };
+        send(class(c"NSDictionary"), c"dictionaryWithObjects:forKeys:count:", (values.as_ptr(), keys.as_ptr(), keys.len()))
+    }
+}
+
+/// A frame as AVFoundation decoded it, with `gpu-draw`: its BGRA pixel buffer on an IOSurface
+/// (held until dropped), which Metal draws from (`metal_texture`), and its size.
+#[cfg(feature = "gpu-draw")]
+pub(crate) struct FrameTexture {
+    functions: &'static Functions,
+    buffer: *mut c_void,
+    pub(crate) size: (u32, u32),
+}
+
+// SAFETY: a pixel buffer may be retained, released, locked and read from any thread.
+#[cfg(feature = "gpu-draw")]
+unsafe impl Send for FrameTexture {}
+// SAFETY: as above.
+#[cfg(feature = "gpu-draw")]
+unsafe impl Sync for FrameTexture {}
+
+#[cfg(feature = "gpu-draw")]
+impl FrameTexture {
+    /// Reads its pixels into `into`, opaque: whether it could.
+    pub(crate) fn read(&self, into: &mut Vec<u32>) -> bool {
+        #[cfg(test)]
+        crate::video::READ_BACK.fetch_add(1, Ordering::Relaxed);
+        read(self.functions, self.buffer, into) != 0
+    }
+
+    /// A Metal texture of its pixels, BGRA, through `cache` (see `metal_texture_cache`): the
+    /// CoreVideo texture holding them (+1; release it once the GPU is done) and the Metal
+    /// texture it gives. None where it can't be made.
+    pub(crate) fn metal_texture(&self, cache: *mut c_void) -> Option<(*mut c_void, Obj)> {
+        let (m, mut made) = (&self.functions.metal, std::ptr::null_mut());
+        let [width, height] = [self.size.0 as usize, self.size.1 as usize];
+        // SAFETY: a live cache and pixel buffer; plane 0 of a BGRA buffer, as big as it.
+        unsafe {
+            let done = (m.new_texture)(std::ptr::null(), cache, self.buffer, std::ptr::null(), crate::gpu_metal::BGRA8, width, height, 0, &mut made);
+            if done != 0 || made.is_null() {
+                return None;
+            }
+            let texture = (m.texture_of)(made);
+            if texture.is_null() {
+                crate::macos_sys::CFRelease(made);
+                return None;
+            }
+            Some((made, texture))
+        }
+    }
+}
+
+#[cfg(feature = "gpu-draw")]
+impl Drop for FrameTexture {
+    fn drop(&mut self) {
+        // SAFETY: copied for this frame, so its own.
+        unsafe { (self.functions.release)(self.buffer) };
+    }
+}
+
+/// CoreVideo's cache of Metal textures of pixel buffers, on `device` (+1, `CFRelease` it);
+/// none where AVFoundation is missing or it can't be made.
+#[cfg(feature = "gpu-draw")]
+pub(crate) fn metal_texture_cache(device: Obj) -> Option<*mut c_void> {
+    let (m, mut cache) = (&functions()?.metal, std::ptr::null_mut());
+    // SAFETY: a live device; no attributes.
+    let made = unsafe { (m.new_cache)(std::ptr::null(), std::ptr::null(), device, std::ptr::null(), &mut cache) };
+    (made == 0 && !cache.is_null()).then_some(cache)
+}
+
+/// Lets `cache` free the textures no longer used.
+#[cfg(feature = "gpu-draw")]
+pub(crate) fn flush_metal_textures(cache: *mut c_void) {
+    if let Some(f) = functions() {
+        // SAFETY: a live cache; no options.
+        unsafe { (f.metal.flush)(cache, 0) };
     }
 }
 
@@ -505,5 +648,30 @@ impl Drop for Player {
         if let Some(path) = self.written.take() {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+#[cfg(all(test, feature = "gpu-draw"))]
+pub(crate) mod tests {
+    use super::*;
+
+    /// A frame of `pixels` (`width` a row, `0xAARRGGBB`) in a BGRA pixel buffer on an IOSurface,
+    /// as the video output gives them; none where CoreVideo is missing.
+    pub(crate) fn frame_of(width: usize, pixels: &[u32]) -> Option<std::sync::Arc<FrameTexture>> {
+        let (f, height, _pool) = (functions()?, pixels.len() / width, Pool::new());
+        let mut buffer = std::ptr::null_mut();
+        unsafe {
+            let video = dlopen(c"/System/Library/Frameworks/CoreVideo.framework/CoreVideo".as_ptr(), 1);
+            let create: unsafe extern "C" fn(*const c_void, usize, usize, u32, Obj, *mut *mut c_void) -> i32 = function(dlsym(video, c"CVPixelBufferCreate".as_ptr()));
+            assert_eq!(create(std::ptr::null(), width, height, 0x4247_5241, buffers_wanted(f), &mut buffer), 0, "a pixel buffer");
+            assert_eq!((f.lock)(buffer, 0), 0);
+            let (base, row) = ((f.base)(buffer).cast_mut(), (f.row)(buffer));
+            for (y, line) in pixels.chunks(width).enumerate() {
+                let to = std::slice::from_raw_parts_mut(base.add(y * row), width * 4);
+                to.copy_from_slice(&line.iter().flat_map(|pixel| pixel.to_le_bytes()).collect::<Vec<u8>>());
+            }
+            (f.unlock)(buffer, 0);
+        }
+        Some(std::sync::Arc::new(FrameTexture { functions: f, buffer, size: (width as u32, height as u32) }))
     }
 }

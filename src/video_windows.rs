@@ -1024,14 +1024,10 @@ impl FrameTexture {
         // SAFETY: mapped above.
         unsafe { call!(self.gpu.context, 15, unsafe extern "system" fn(*mut Com, *mut Com, u32), self.readable, 0) };
         #[cfg(test)]
-        READ_BACK.fetch_add(1, Ordering::Relaxed);
+        crate::video::READ_BACK.fetch_add(1, Ordering::Relaxed);
         true
     }
 }
-
-/// (Tests: frames read back from the GPU so far.)
-#[cfg(test)]
-pub(crate) static READ_BACK: AtomicU32 = AtomicU32::new(0);
 
 impl Drop for FrameTexture {
     fn drop(&mut self) {

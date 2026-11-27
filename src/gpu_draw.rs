@@ -42,12 +42,13 @@ pub(crate) const KEPT: f32 = 7.0;
 pub(crate) const GRADIENT: f32 = 8.0;
 pub(crate) const PATH: f32 = 9.0;
 pub(crate) const STROKE: f32 = 10.0;
-/// A video's frame on the GPU: a picture whose texels are the frame's own texture, given only to
-/// a path that reads it (`DrawList::takes_frames`).
-#[cfg(all(feature = "video", windows))]
+/// A video's frame on the GPU: a picture whose texels are the frame's own texture (`texel`'s
+/// texture 2 + its place in `DrawList::frames`), given only to a path that reads it
+/// (`DrawList::takes_frames`).
+#[cfg(all(feature = "video", not(target_family = "wasm")))]
 pub(crate) const FRAME: f32 = 11.0;
 /// The most videos' frames one part draws from their textures; others are read back.
-#[cfg(all(feature = "video", windows))]
+#[cfg(all(feature = "video", not(target_family = "wasm")))]
 pub(crate) const MOST_FRAMES: usize = 4;
 
 /// Rows of pixels a path's quads cover each, each quad reading only the edges that reach them.
@@ -150,10 +151,10 @@ pub(crate) struct DrawList {
     pub(crate) no_runs: bool,
     /// Videos' frames on the GPU this part draws (`MOST_FRAMES` at most), each quad of one
     /// naming it by its place here.
-    #[cfg(all(feature = "video", windows))]
+    #[cfg(all(feature = "video", not(target_family = "wasm")))]
     pub(crate) frames: Vec<std::sync::Arc<crate::video::FrameTexture>>,
     /// The device draws videos' frames from their own textures.
-    #[cfg(all(feature = "video", windows))]
+    #[cfg(all(feature = "video", not(target_family = "wasm")))]
     pub(crate) takes_frames: bool,
     /// What a patch is drawn into first.
     scratch: Vec<u32>,
@@ -220,7 +221,7 @@ impl DrawList {
         self.quads.clear();
         self.uploads.clear();
         self.staging.clear();
-        #[cfg(all(feature = "video", windows))]
+        #[cfg(all(feature = "video", not(target_family = "wasm")))]
         self.frames.clear();
     }
 
@@ -597,7 +598,7 @@ impl DrawList {
     /// pixels but read from the frame's own texture, where the device can: whether it is. Not
     /// where it is reduced more than `MOST_REDUCED` times, or the part draws `MOST_FRAMES`
     /// others: then the CPU reads it back.
-    #[cfg(all(feature = "video", windows))]
+    #[cfg(all(feature = "video", not(target_family = "wasm")))]
     pub(crate) fn video_frame(&mut self, frame: &crate::video::FrameOnGpu, r: Rect, radius: f32, scale: f32, clip: [i32; 4]) -> bool {
         let [left, top, width, height] = frame.crop.map(|side| side as f32);
         let shape = [r.x, r.y, r.right(), r.bottom()].map(|side| whole(side * scale));
@@ -684,7 +685,8 @@ impl Drawing {
 }
 
 /// The shaders' work per pixel, in the common part of HLSL and GLSL: each language's prelude
-/// defines `vec2`/`vec4`/`ivec2`/`fract`, `texel(which, x, y)` (0 to 1, red first),
+/// defines `vec2`/`vec4`/`ivec2`/`fract`, `texel(which, x, y)` (0 to 1, red first; `which` 0
+/// the cache, 1 the patches, 2 + n video frame n, opaque, where the path draws frames),
 /// `place` (the quad's rows, flat), and the pixel's centre `at`. `shade` gives the colour to
 /// blend in (premultiplied) and, for GDI's runs, how much of each channel it covers.
 pub(crate) const SHADING: &str = r#"
@@ -721,7 +723,7 @@ vec4 bytes(int which, float x, float y) {
 vec4 mixed(vec4 a, vec4 b, float t) {
     return floor((a * (256.0 - t) + b * t) / 256.0);
 }
-vec4 enlarged(vec4 shape, vec4 more, vec4 source, vec2 p) {
+vec4 enlarged(int which, vec4 shape, vec4 more, vec4 source, vec2 p) {
     float v = clamp((p.y - shape.y) * more.z - 0.5, 0.0, source.w - 1.0);
     float u = clamp((p.x - shape.x) * more.y - 0.5, 0.0, source.z - 1.0);
     float above = floor(v);
@@ -730,11 +732,11 @@ vec4 enlarged(vec4 shape, vec4 more, vec4 source, vec2 p) {
     float right = min(left + 1.0, source.z - 1.0);
     float down = floor(fract(v) * 256.0);
     float along = floor(fract(u) * 256.0);
-    vec4 top = mixed(bytes(1, source.x + left, source.y + above), bytes(1, source.x + right, source.y + above), along);
-    vec4 bottom = mixed(bytes(1, source.x + left, source.y + below), bytes(1, source.x + right, source.y + below), along);
+    vec4 top = mixed(bytes(which, source.x + left, source.y + above), bytes(which, source.x + right, source.y + above), along);
+    vec4 bottom = mixed(bytes(which, source.x + left, source.y + below), bytes(which, source.x + right, source.y + below), along);
     return mixed(top, bottom, down);
 }
-vec4 reduced(vec4 shape, vec4 more, vec4 source, vec2 p) {
+vec4 reduced(int which, vec4 shape, vec4 more, vec4 source, vec2 p) {
     vec2 stride = more.yz;
     vec2 most = vec2(max(stride.x, 1.0), max(stride.y, 1.0));
     vec2 from = (p - shape.xy) * stride - most / 2.0;
@@ -754,7 +756,7 @@ vec4 reduced(vec4 shape, vec4 more, vec4 source, vec2 p) {
             if (x >= ceil(right)) {
                 break;
             }
-            vec4 pixel = bytes(1, source.x + x, source.y + y);
+            vec4 pixel = bytes(which, source.x + x, source.y + y);
             float solid = pixel.a * high * (min(right, x + 1.0) - max(left, x));
             sum += vec4(pixel.rgb * solid, solid);
             x += 1.0;
@@ -909,8 +911,9 @@ vec4 shade(vec2 at, vec4 shape, vec4 more, vec4 source, vec4 color, float kind, 
         drawn = laid(color, path_cover(shape, source, p));
     } else if (kind == 10.0) {
         drawn = laid(color, stroke_cover(shape, source, p));
-    } else if (kind == 5.0) {
-        vec4 pixel = more.y > 1.0 || more.z > 1.0 ? reduced(shape, more, source, p) : enlarged(shape, more, source, p);
+    } else if (kind == 5.0 || kind == 11.0) {
+        int which = kind == 11.0 ? 2 + int(more.w) : 1;
+        vec4 pixel = more.y > 1.0 || more.z > 1.0 ? reduced(which, shape, more, source, p) : enlarged(which, shape, more, source, p);
         float radius = min(min(more.x, (shape.z - shape.x) / 2.0), (shape.w - shape.y) / 2.0);
         float cover = radius > 0.0 ? floor(inside_of(p, shape, radius) * 255.0) : 255.0;
         drawn = laid(pixel, cover);
@@ -930,6 +933,30 @@ pub(crate) mod tests {
 
     /// The most a channel of a pixel the GPU drew differs from the CPU's.
     pub(crate) const TOLERANCE: u32 = 4;
+
+    /// Where the frame checks (Linux, Apple) draw a 64 × 48 frame in a part 220 × 170:
+    /// enlarged three times, as it is, and halved.
+    #[cfg(all(feature = "video", unix, not(target_os = "android")))]
+    pub(crate) const FRAME_PLACES: [Rect; 3] = [Rect { x: 10.0, y: 10.0, w: 192.0, h: 144.0 }, Rect { x: 4.0, y: 6.0, w: 64.0, h: 48.0 }, Rect { x: 30.0, y: 20.0, w: 32.0, h: 24.0 }];
+
+    /// A part `size` pixels big with a frame drawn at `r` with round corners:
+    /// from its texture (`video_frame`), or its pixels read back as a picture.
+    #[cfg(all(feature = "video", unix, not(target_os = "android")))]
+    pub(crate) fn frame_part(frame: &std::sync::Arc<crate::video::FrameTexture>, size: [i32; 2], r: Rect, from_texture: bool) -> DrawList {
+        let (mut list, clip) = (DrawList::default(), [0, 0, size[0], size[1]]);
+        list.takes_frames = true;
+        list.begin(size);
+        let [width, height] = [frame.size.0 as usize, frame.size.1 as usize];
+        if from_texture {
+            let shown = crate::video::FrameOnGpu { texture: frame.clone(), crop: [0, 0, width, height], read: false };
+            assert!(list.video_frame(&shown, r, 6.0, 1.0, clip), "the frame is drawn from its texture");
+        } else {
+            let mut pixels = Vec::new();
+            assert!(frame.read(&mut pixels));
+            list.picture(&pixels, width, r, 6.0, 1.0, clip);
+        }
+        list
+    }
 
     /// A window of every kind of thing the GPU draws, as the CPU drew it.
     pub(crate) struct Scene {

@@ -352,12 +352,18 @@ mod video_captions;
 mod video_cea608;
 #[cfg(all(feature = "video", unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod video_gstreamer;
+#[cfg(all(feature = "video", feature = "gpu-draw", unix, not(target_vendor = "apple")))]
+mod video_opengl;
 #[cfg(all(feature = "video", any(test, target_os = "android")))]
 mod video_sei;
+#[cfg(all(feature = "video", feature = "gpu-draw", unix, not(target_vendor = "apple")))]
+mod video_vulkan;
 #[cfg(all(feature = "video", target_family = "wasm"))]
 mod video_web;
 #[cfg(all(feature = "video", windows))]
 mod video_windows;
+#[cfg(all(feature = "video", any(target_os = "android", all(feature = "gpu-draw", unix, not(target_vendor = "apple")))))]
+mod video_yuv;
 mod visible_boxes;
 mod vk;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]

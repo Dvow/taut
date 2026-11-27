@@ -94,6 +94,10 @@ pub(crate) const PRELUDE: &str = r#"
 Buffer<float4> quads : register(t0);
 Texture2D<float4> cache : register(t1);
 Texture2D<float4> patches : register(t2);
+"#;
+
+/// How `SHADING` reads a texel: the cache's or the patches'.
+pub(crate) const TEXEL: &str = r#"
 float4 texel(int which, int x, int y) {
     if (which == 0) {
         return cache.Load(int3(x, y, 0));
@@ -102,45 +106,28 @@ float4 texel(int which, int x, int y) {
 }
 "#;
 
-/// Videos' frames (`gpu_draw::FRAME`) in HLSL, around `PRELUDE` and `SHADING` untouched: a
-/// frame quad is shaded as a picture whose texels come from its frame's texture (`t3` to
-/// `t6`, the quad's `more.w` saying which), opaque. `PRELUDE`'s `texel` and `SHADING`'s
-/// `shade` are renamed, and wrapped.
+/// The same, and videos' frames (`gpu_draw::FRAME`): texture 2 + n is frame n (`t3` to `t6`),
+/// opaque.
 #[cfg(feature = "video")]
-const BEFORE_PRELUDE: &str = "#define texel texel_of_part\n";
-#[cfg(feature = "video")]
-const BEFORE_SHADING: &str = r#"
-#undef texel
+const TEXEL_OR_FRAME: &str = r#"
 Texture2D<float4> frame0 : register(t3);
 Texture2D<float4> frame1 : register(t4);
 Texture2D<float4> frame2 : register(t5);
 Texture2D<float4> frame3 : register(t6);
-static int reading_frame = -1;
-float4 frame_texel(int x, int y) {
-    int3 at = int3(x, y, 0);
-    if (reading_frame == 0) {
-        return frame0.Load(at);
-    } else if (reading_frame == 1) {
-        return frame1.Load(at);
-    } else if (reading_frame == 2) {
-        return frame2.Load(at);
-    }
-    return frame3.Load(at);
-}
 float4 texel(int which, int x, int y) {
-    if (which == 1 && reading_frame >= 0) {
-        return float4(frame_texel(x, y).rgb, 1.0);
+    int3 at = int3(x, y, 0);
+    if (which == 0) {
+        return cache.Load(at);
+    } else if (which == 1) {
+        return patches.Load(at);
+    } else if (which == 2) {
+        return float4(frame0.Load(at).rgb, 1.0);
+    } else if (which == 3) {
+        return float4(frame1.Load(at).rgb, 1.0);
+    } else if (which == 4) {
+        return float4(frame2.Load(at).rgb, 1.0);
     }
-    return texel_of_part(which, x, y);
-}
-#define shade shade_quad
-"#;
-#[cfg(feature = "video")]
-const BEFORE_MAIN: &str = r#"
-#undef shade
-float4 shade(float2 at, float4 shape, float4 more, float4 source, float4 color, float kind, out float4 covers) {
-    reading_frame = kind == 11.0 ? int(more.w) : -1;
-    return shade_quad(at, shape, more, source, color, kind == 11.0 ? 5.0 : kind, covers);
+    return float4(frame3.Load(at).rgb, 1.0);
 }
 "#;
 
@@ -225,9 +212,9 @@ impl Pipeline {
     /// What `device` (an `ID3D11Device`) draws with; nothing where any part can't be made.
     pub(crate) fn new(device: Com) -> Option<Pipeline> {
         #[cfg(not(feature = "video"))]
-        let source = format!("{PRELUDE}{SHADING}{MAIN}");
+        let source = format!("{PRELUDE}{TEXEL}{SHADING}{MAIN}");
         #[cfg(feature = "video")]
-        let source = format!("{BEFORE_PRELUDE}{PRELUDE}{BEFORE_SHADING}{SHADING}{BEFORE_MAIN}{MAIN}");
+        let source = format!("{PRELUDE}{TEXEL_OR_FRAME}{SHADING}{MAIN}");
         let (corner, pixel) = (compiled(&source, c"corner", c"vs_4_0")?, compiled(&source, c"pixel", c"ps_4_0")?);
         let mut made = Pipeline {
             shaders: [null_mut(); 2],

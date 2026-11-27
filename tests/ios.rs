@@ -1843,7 +1843,7 @@ mod mac {
     /// background and back, and turned sideways. And the library's GPU checks in the simulator.
     fn gpu_checks(device: &str) -> Result<Vec<String>, String> {
         let mut failed = Vec::new();
-        for features in ["gpu", "gpu-draw"] {
+        for features in ["gpu", "gpu-draw", "gpu-draw,video"] {
             failed.extend((!gpu_library(device, features)?).then(|| format!("the library's GPU checks with {features} failed in the simulator")));
         }
         let app = check_app("touch,gpu-draw", GPU_ID, "ios-gpu")?;

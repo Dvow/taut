@@ -10,6 +10,7 @@ use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Tracks, VideoError, VideoSource};
 use crate::video_captions::Cue;
 use crate::video_sei::Captions;
+use crate::video_yuv::{BT601, BT709, BT2020, Colours, Plane};
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -485,10 +486,9 @@ impl Clock {
     }
 }
 
-/// A frame made RGB: its width, pixels and time.
+/// A frame as the reader gave it, and its time.
 struct Frame {
-    width: usize,
-    pixels: Vec<u32>,
+    image: Image,
     at: Duration,
 }
 
@@ -670,11 +670,41 @@ impl Player {
         let mut state = self.shared.lock();
         News { ended: std::mem::take(&mut state.ended), error: state.error.take(), clears_on_play: false, tracks_changed: std::mem::take(&mut state.tracks_changed) }
     }
-    /// The newest frame not given yet: its width and time, its pixels in `into`.
+    /// The newest frame not given yet, made RGB: its width and time, its pixels in `into`.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
-        let frame = self.shared.lock().frame.take()?;
-        *into = frame.pixels;
-        Some((frame.width, frame.at))
+        let mut state = self.shared.lock();
+        match state.frame.take()? {
+            Frame { image: Image::Pixels(width, pixels), at } => {
+                *into = pixels;
+                Some((width, at))
+            }
+            // (A frame `frame_texture` gives.)
+            #[cfg(feature = "gpu-draw")]
+            texture => {
+                state.frame = Some(texture);
+                None
+            }
+        }
+    }
+
+    /// Whether frames may come as textures (`frame_texture`): always, with `gpu-draw` (those of
+    /// a reader the GPU can't sample come made RGB).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn decodes_on_gpu(&self) -> bool {
+        true
+    }
+    /// The newest frame not given yet where it was left where the decoder put it: it and its
+    /// time. (One the GPU can't import is left for `frame`.)
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn frame_texture(&mut self) -> Option<(Arc<FrameTexture>, Duration)> {
+        let mut state = self.shared.lock();
+        match state.frame.take()? {
+            Frame { image: Image::Texture(texture), at } => Some((texture, at)),
+            pixels => {
+                state.frame = Some(pixels);
+                None
+            }
+        }
     }
 
     /// The source's tracks, once read.
@@ -899,7 +929,7 @@ fn keep_time(asked: Asked, shared: &Shared) {
 /// The video's track, the image reader it decodes into, and where it is.
 struct Pictures {
     track: Track,
-    reader: Reader,
+    reader: Arc<Reader>,
     /// The seeks followed so far; the time a seek asked, until its frame is shown.
     seeks: u32,
     target: Option<Duration>,
@@ -1005,49 +1035,94 @@ impl Pictures {
         self.next = None;
     }
 
-    /// Shows a decoded frame: into the reader, then made RGB for the app's side, unless a seek
-    /// came meanwhile.
+    /// Shows a decoded frame: into the reader, then for the app's side (made RGB, or left on the
+    /// GPU), unless a seek came meanwhile.
     fn show(&mut self, (at, time): (usize, Duration), shared: &Shared) {
         self.track.release(at, true);
         if self.track.format_changed() {
             self.colours = None;
         }
-        let colours = *self.colours.get_or_insert_with(|| Colours::of(&self.track));
-        let Some((width, pixels)) = self.reader.take(time, colours) else { return };
+        let colours = *self.colours.get_or_insert_with(|| colours_of(&self.track));
+        let Some(image) = self.reader.take(time, colours) else { return };
         let mut state = shared.lock();
         if state.seeks == self.seeks {
-            state.frame = Some(Frame { width, pixels, at: time });
+            state.frame = Some(Frame { image, at: time });
         }
     }
 }
 
-/// An image reader a decoder draws into.
+/// An image reader a decoder draws into, shared with the frames that hold its images (it goes
+/// once they have): with `gpu-draw`, of buffers the GPU samples (`gpu`), where it can be.
 struct Reader {
     media: &'static Media,
     reader: Object,
     window: Object,
+    #[cfg(feature = "gpu-draw")]
+    gpu: bool,
+}
+
+// SAFETY: an image reader may be used, and its images deleted, from any thread.
+unsafe impl Send for Reader {}
+// SAFETY: as above.
+unsafe impl Sync for Reader {}
+
+/// A frame as the reader gave it: made RGB (its width and pixels), or with `gpu-draw` left
+/// where the decoder put it.
+enum Image {
+    Pixels(usize, Vec<u32>),
+    #[cfg(feature = "gpu-draw")]
+    Texture(Arc<FrameTexture>),
 }
 
 impl Reader {
-    fn new(media: &'static Media, [width, height]: [i32; 2]) -> Result<Reader, String> {
-        let (mut reader, mut window) = (null_mut(), null_mut());
-        // SAFETY: a new reader, deleted with this; its window is its own.
-        unsafe {
-            if (media.AImageReader_new)(width.max(1), height.max(1), YUV_420_888, 4, &mut reader) != 0 {
-                return Err(format!("no image reader of {width}×{height}"));
-            }
-            (media.AImageReader_getWindow)(reader, &mut window);
+    fn new(media: &'static Media, [width, height]: [i32; 2]) -> Result<Arc<Reader>, String> {
+        let (width, height) = (width.max(1), height.max(1));
+        #[cfg(feature = "gpu-draw")]
+        if let Some(reader) = Reader::sampled(media, [width, height]) {
+            return Ok(Arc::new(reader));
         }
-        Ok(Reader { media, reader, window })
+        let mut reader = null_mut();
+        // SAFETY: a new reader, deleted with this.
+        if unsafe { (media.AImageReader_new)(width, height, YUV_420_888, 4, &mut reader) } != 0 {
+            return Err(format!("no image reader of {width}×{height}"));
+        }
+        Ok(Arc::new(Reader::of(media, reader, false)))
     }
 
-    /// The image drawn for the frame at `time`, made RGB: its width and pixels. Images of
-    /// other times are dropped; it waits up to half a second.
-    fn take(&self, time: Duration, colours: Colours) -> Option<(usize, Vec<u32>)> {
+    /// A reader of buffers the GPU samples and the CPU reads (`AHARDWAREBUFFER_USAGE_*`:
+    /// `GPU_SAMPLED_IMAGE`, `CPU_READ_OFTEN`); none where there is none. (Room for five images: the
+    /// decoder's, the one shown and those being drawn.)
+    #[cfg(feature = "gpu-draw")]
+    fn sampled(media: &'static Media, [width, height]: [i32; 2]) -> Option<Reader> {
+        let buffers = BUFFERS.get_or_init(MediaBuffers::open).as_ref()?;
+        let mut reader = null_mut();
+        // SAFETY: a new reader, deleted with this.
+        let made = unsafe { (buffers.AImageReader_newWithUsage)(width, height, YUV_420_888, 0x100 | 0x3, 5, &mut reader) };
+        (made == 0 && !reader.is_null()).then(|| Reader::of(media, reader, true))
+    }
+
+    /// A reader made, with its window.
+    #[cfg_attr(not(feature = "gpu-draw"), allow(unused_variables))]
+    fn of(media: &'static Media, reader: Object, gpu: bool) -> Reader {
+        let mut window = null_mut();
+        // SAFETY: a live reader: its window is its own.
+        unsafe { (media.AImageReader_getWindow)(reader, &mut window) };
+        Reader {
+            media,
+            reader,
+            window,
+            #[cfg(feature = "gpu-draw")]
+            gpu,
+        }
+    }
+
+    /// The image drawn for the frame at `time`: made RGB, or with `gpu-draw` held as it is.
+    /// Images of other times are dropped; it waits up to half a second.
+    fn take(self: &Arc<Reader>, time: Duration, colours: Colours) -> Option<Image> {
         let started = Instant::now();
         while started.elapsed() < Duration::from_millis(500) {
             let mut image = null_mut();
-            // SAFETY: a live reader; an image it gives is deleted once read.
+            // SAFETY: a live reader; an image it gives is deleted once read, or held by a frame.
             if unsafe { (self.media.AImageReader_acquireNextImage)(self.reader, &mut image) } != 0 {
                 std::thread::sleep(Duration::from_millis(1));
                 continue;
@@ -1055,34 +1130,143 @@ impl Reader {
             let mut stamp = 0;
             // SAFETY: as above.
             unsafe { (self.media.AImage_getTimestamp)(image, &mut stamp) };
-            let pixels = (stamp == time.as_nanos() as i64).then(|| rgb_of(self.media, image, colours)).flatten();
+            if stamp == time.as_nanos() as i64 {
+                return self.image_of(image, colours);
+            }
             // SAFETY: as above.
             unsafe { (self.media.AImage_delete)(image) };
-            if pixels.is_some() {
-                return pixels;
-            }
         }
         None
+    }
+
+    /// What a frame's image (handed over) is shown as: held where the GPU samples it, else made
+    /// RGB.
+    fn image_of(self: &Arc<Reader>, image: Object, colours: Colours) -> Option<Image> {
+        #[cfg(feature = "gpu-draw")]
+        if self.gpu {
+            return FrameTexture::of(self, image, colours).map(Image::Texture);
+        }
+        let pixels = rgb_of(self.media, image, colours);
+        // SAFETY: a live image, read.
+        unsafe { (self.media.AImage_delete)(image) };
+        pixels.map(|(width, pixels)| Image::Pixels(width, pixels))
     }
 }
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        // SAFETY: the reader is this one's; its decoder is gone (the track drops first).
+        // SAFETY: the reader is this one's; its decoder is gone (the track drops first), and so
+        // are the frames that held its images.
         unsafe { (self.media.AImageReader_delete)(self.reader) };
     }
 }
 
-/// One plane of an image: its bytes, and the steps between rows and between samples.
-struct Plane<'a> {
-    bytes: &'a [u8],
-    row: usize,
-    step: usize,
+// The image reader asked for buffers the GPU samples, and the hardware buffers of its images
+// (`gpu-draw`).
+#[cfg(feature = "gpu-draw")]
+library!(MediaBuffers, ["libmediandk.so"], {
+    fn AImageReader_newWithUsage(i32, i32, i32, u64, i32, *mut Object) -> i32;
+    fn AImage_getHardwareBuffer(Object, *mut Object) -> i32;
+});
+#[cfg(feature = "gpu-draw")]
+static BUFFERS: OnceLock<Option<MediaBuffers>> = OnceLock::new();
+
+/// A frame left where the decoder put it, with `gpu-draw`: its image (held, so its buffer is the
+/// frame's until dropped), the image's hardware buffer, which the GPU imports, how its YUV becomes
+/// RGB, and its size (visible, all of the buffer).
+#[cfg(feature = "gpu-draw")]
+pub(crate) struct FrameTexture {
+    reader: Arc<Reader>,
+    image: Object,
+    pub(crate) buffer: Object,
+    colours: Colours,
+    pub(crate) size: (u32, u32),
+    pub(crate) whole: (u32, u32),
 }
 
-impl Plane<'_> {
-    fn at(&self, x: usize, y: usize) -> u8 {
-        self.bytes.get(y * self.row + x * self.step).copied().unwrap_or(0)
+// SAFETY: an image may be read and deleted from any thread; its reader lives as long as it.
+#[cfg(feature = "gpu-draw")]
+unsafe impl Send for FrameTexture {}
+// SAFETY: as above.
+#[cfg(feature = "gpu-draw")]
+unsafe impl Sync for FrameTexture {}
+
+#[cfg(feature = "gpu-draw")]
+impl FrameTexture {
+    /// A frame of `image` (handed over: deleted with the frame), shown from its top left; none
+    /// where it has no hardware buffer, or its visible part starts elsewhere (then it is
+    /// deleted).
+    fn of(reader: &Arc<Reader>, image: Object, colours: Colours) -> Option<Arc<FrameTexture>> {
+        let (media, mut buffer) = (reader.media, null_mut());
+        let ([width, height], crop) = visible(media, image);
+        let found = BUFFERS.get().and_then(Option::as_ref).is_some_and(|buffers| {
+            // SAFETY: a live image; the buffer it lends lives as long as it.
+            unsafe { (buffers.AImage_getHardwareBuffer)(image, &mut buffer) == 0 && !buffer.is_null() }
+        });
+        if !found || crop[0] != 0 || crop[1] != 0 {
+            // SAFETY: a live image, handed over.
+            unsafe { (media.AImage_delete)(image) };
+            return None;
+        }
+        let (size, whole) = (((crop[2] - crop[0]) as u32, (crop[3] - crop[1]) as u32), (width as u32, height as u32));
+        Some(Arc::new(FrameTexture { reader: reader.clone(), image, buffer, colours, size, whole }))
+    }
+
+    /// Reads its visible part into `into`, made RGB: whether it could.
+    pub(crate) fn read(&self, into: &mut Vec<u32>) -> bool {
+        #[cfg(test)]
+        crate::video::READ_BACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some((_, pixels)) = rgb_of(self.reader.media, self.image, self.colours) else { return false };
+        *into = pixels;
+        true
+    }
+
+    /// How the shaders make its YUV RGB, for all of its buffer (`video_yuv::FROM_YUV`).
+    pub(crate) fn for_shaders(&self) -> [f32; 8] {
+        self.colours.for_shaders(self.whole)
+    }
+
+    /// What tells its buffer apart from the decoder's others: the hardware buffer.
+    pub(crate) fn key(&self) -> Option<u64> {
+        Some(self.buffer as u64)
+    }
+
+    /// Its hardware buffer, held until what this gives is dropped (by an import of it).
+    pub(crate) fn hold_buffer(&self) -> HeldBuffer {
+        // SAFETY: a live buffer: the image holds it.
+        unsafe { AHardwareBuffer_acquire(self.buffer) };
+        HeldBuffer(self.buffer)
+    }
+}
+
+/// A hardware buffer held (`AHardwareBuffer_acquire`) until dropped.
+#[cfg(feature = "gpu-draw")]
+pub(crate) struct HeldBuffer(Object);
+
+// SAFETY: a hardware buffer may be released from any thread.
+#[cfg(feature = "gpu-draw")]
+unsafe impl Send for HeldBuffer {}
+
+#[cfg(feature = "gpu-draw")]
+impl Drop for HeldBuffer {
+    fn drop(&mut self) {
+        // SAFETY: acquired when this was made.
+        unsafe { AHardwareBuffer_release(self.0) };
+    }
+}
+
+#[cfg(feature = "gpu-draw")]
+#[link(name = "nativewindow")]
+unsafe extern "C" {
+    fn AHardwareBuffer_acquire(buffer: Object);
+    fn AHardwareBuffer_release(buffer: Object);
+}
+
+#[cfg(feature = "gpu-draw")]
+impl Drop for FrameTexture {
+    fn drop(&mut self) {
+        // SAFETY: the image is this frame's; its reader is alive (this holds it).
+        unsafe { (self.reader.media.AImage_delete)(self.image) };
     }
 }
 
@@ -1102,8 +1286,8 @@ fn plane<'a>(media: &'static Media, image: &'a Object, number: i32) -> Option<Pl
     }
 }
 
-/// A YUV 4:2:0 image's visible part, made RGB: its width and pixels.
-fn rgb_of(media: &'static Media, image: Object, colours: Colours) -> Option<(usize, Vec<u32>)> {
+/// A live image's size, and its visible part in it: left, top, right, bottom.
+fn visible(media: &'static Media, image: Object) -> ([i32; 2], [usize; 4]) {
     let (mut width, mut height, mut crop) = (0, 0, [0; 4]);
     // SAFETY: a live image.
     unsafe {
@@ -1111,60 +1295,32 @@ fn rgb_of(media: &'static Media, image: Object, colours: Colours) -> Option<(usi
         (media.AImage_getHeight)(image, &mut height);
         (media.AImage_getCropRect)(image, &mut crop);
     }
-    let [left, top, right, bottom] = match crop {
+    let shown = match crop {
         [left, top, right, bottom] if right > left && bottom > top => [left, top, right.min(width), bottom.min(height)],
         _ => [0, 0, width, height],
-    }
-    .map(|edge| edge.max(0) as usize);
+    };
+    ([width, height], shown.map(|edge| edge.max(0) as usize))
+}
+
+/// A YUV 4:2:0 image's visible part, made RGB: its width and pixels.
+fn rgb_of(media: &'static Media, image: Object, colours: Colours) -> Option<(usize, Vec<u32>)> {
+    let (_, shown) = visible(media, image);
     let [Some(y), Some(u), Some(v)] = [0, 1, 2].map(|number| plane(media, &image, number)) else { return None };
-    let rows = (top..bottom).flat_map(|row| (left..right).map(move |column| (column, row)));
-    let pixels = rows.map(|(x, row)| colours.rgb(y.at(x, row), u.at(x / 2, row / 2), v.at(x / 2, row / 2))).collect();
-    Some((right - left, pixels))
+    Some((shown[2] - shown[0], colours.pixels([&y, &u, &v], shown)))
 }
 
-/// How YUV becomes RGB: by BT.601, BT.709 or BT.2020, in limited or full range, in 14-bit
-/// fixed point.
-#[derive(Clone, Copy)]
-struct Colours {
-    black: i32,
-    luma: i32,
-    red_v: i32,
-    green_u: i32,
-    green_v: i32,
-    blue_u: i32,
-}
-
-impl Colours {
-    /// As the decoder's output format says (`color-standard`, `color-range`); else BT.601 below
-    /// 720 lines and BT.709 from there, limited range.
-    fn of(track: &Track) -> Colours {
-        let [height, standard, range] = track.output_numbers([c"height", c"color-standard", c"color-range"]);
-        let (kr, kb) = match standard {
-            Some(1) => (0.2126, 0.0722),
-            Some(6) => (0.2627, 0.0593),
-            Some(2 | 4) => (0.299, 0.114),
-            _ if height.unwrap_or(0) >= 720 => (0.2126, 0.0722),
-            _ => (0.299, 0.114),
-        };
-        let full = range == Some(1);
-        let (luma, chroma) = if full { (1.0, 1.0) } else { (255.0 / 219.0, 255.0 / 224.0) };
-        let (fixed, kg) = (|value: f32| (value * 16384.0).round() as i32, 1.0 - kr - kb);
-        Colours {
-            black: if full { 0 } else { 16 },
-            luma: fixed(luma),
-            red_v: fixed(2.0 * (1.0 - kr) * chroma),
-            green_u: fixed(2.0 * (1.0 - kb) * kb / kg * chroma),
-            green_v: fixed(2.0 * (1.0 - kr) * kr / kg * chroma),
-            blue_u: fixed(2.0 * (1.0 - kb) * chroma),
-        }
-    }
-
-    fn rgb(&self, y: u8, u: u8, v: u8) -> u32 {
-        let y = (i32::from(y) - self.black) * self.luma;
-        let (u, v) = (i32::from(u) - 128, i32::from(v) - 128);
-        let channel = |value: i32| ((value + 8192) >> 14).clamp(0, 255) as u32;
-        0xFF00_0000 | channel(y + self.red_v * v) << 16 | channel(y - self.green_u * u - self.green_v * v) << 8 | channel(y + self.blue_u * u)
-    }
+/// How a decoder's frames become RGB, as its output format says (`color-standard`,
+/// `color-range`); else BT.601 below 720 lines and BT.709 from there, limited range.
+fn colours_of(track: &Track) -> Colours {
+    let [height, standard, range] = track.output_numbers([c"height", c"color-standard", c"color-range"]);
+    let weights = match standard {
+        Some(1) => BT709,
+        Some(6) => BT2020,
+        Some(2 | 4) => BT601,
+        _ if height.unwrap_or(0) >= 720 => BT709,
+        _ => BT601,
+    };
+    Colours::new(weights, range == Some(1))
 }
 
 // ---- the sound's thread ----

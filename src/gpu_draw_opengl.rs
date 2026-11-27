@@ -96,6 +96,10 @@ const ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
 const ONE_MINUS_SRC1_COLOR: c_uint = 0x88FA;
 const ONE_MINUS_SRC1_ALPHA: c_uint = 0x88FB;
 
+/// OpenGL ES's precisions, after its version and extensions (the frames' program's).
+#[cfg(all(feature = "video", unix))]
+const PRECISION: &str = "precision highp float;\nprecision highp int;\n";
+
 /// Each quad's six rows in, its corner placed from the vertex id; what the pixels need passed
 /// on unchanged.
 const CORNER: &str = r#"
@@ -172,7 +176,18 @@ pub(crate) struct Pipeline {
     textures: [c_uint; 2],
     frame: c_uint,
     dual: bool,
+    /// What draws videos' frames from the decoder's buffers, where EGL imports them
+    /// (`video_opengl`), and the program that reads them: made when a part first has frames
+    /// (0 before; `FAILED` where it didn't compile).
+    #[cfg(all(feature = "video", unix))]
+    pub(crate) frames: Option<Box<crate::video_opengl::Frames>>,
+    #[cfg(all(feature = "video", unix))]
+    framing: c_uint,
 }
+
+/// A program that could not be made: nothing is drawn with it, and it isn't tried again.
+#[cfg(all(feature = "video", unix))]
+const FAILED: c_uint = c_uint::MAX;
 
 impl std::fmt::Debug for Pipeline {
     #[inline]
@@ -190,7 +205,20 @@ impl Pipeline {
         let head = if desktop { "#version 330 core\n#define DUAL\n" } else { "#version 300 es\nprecision highp float;\nprecision highp int;\n" };
         let corner = format!("{head}{CORNER}\0");
         let pixel = format!("{head}{TEXTURES}{SHADING}{PIXEL}\0");
-        let mut made = Pipeline { program: 0, array: 0, buffer: 0, room: 0, textures: [0; 2], frame: 0, dual: desktop, gl };
+        let mut made = Pipeline {
+            program: 0,
+            array: 0,
+            buffer: 0,
+            room: 0,
+            textures: [0; 2],
+            frame: 0,
+            dual: desktop,
+            gl,
+            #[cfg(all(feature = "video", unix))]
+            frames: None,
+            #[cfg(all(feature = "video", unix))]
+            framing: 0,
+        };
         made.program = made.program(&corner, &pixel);
         let gl = &made.gl;
         // SAFETY: OpenGL's documented calls on the current context; the names end in zeros.
@@ -273,12 +301,61 @@ impl Pipeline {
             (gl.glFramebufferTexture2D)(FRAMEBUFFER, COLOR_ATTACHMENT0, TEXTURE_2D, texture, 0);
             (gl.glCheckFramebufferStatus)(FRAMEBUFFER) == FRAMEBUFFER_COMPLETE
         };
+        #[cfg(all(feature = "video", unix))]
+        let complete = complete && self.ready_frames(list);
         if complete && !list.quads.is_empty() {
             self.quads(list, size, area);
         }
         self.put_back(kept);
         // SAFETY: as above.
         complete && unsafe { (self.gl.glGetError)() } == 0
+    }
+
+    /// Readies the list's videos' frames for the shaders (see `video_opengl`), their program
+    /// made the first time: whether they are, or it has none.
+    #[cfg(all(feature = "video", unix))]
+    fn ready_frames(&mut self, list: &DrawList) -> bool {
+        if list.frames.is_empty() {
+            return true;
+        }
+        if self.framing == 0 {
+            self.framing = self.framing_program();
+        }
+        let (Some(frames), true) = (self.frames.as_mut(), self.framing != FAILED) else { return false };
+        // SAFETY: OpenGL's documented call on the current context (`put_back` puts back the
+        // program that was).
+        unsafe { (self.gl.glUseProgram)(self.framing) };
+        frames.ready(&list.frames)
+    }
+
+    /// The program that draws videos' frames too, its samplers told their units; `FAILED`
+    /// where it can't be made.
+    #[cfg(all(feature = "video", unix))]
+    fn framing_program(&mut self) -> c_uint {
+        use crate::video_opengl::{EXTENSION, textures};
+        let corner = format!("#version 300 es\n{PRECISION}{CORNER}\0");
+        let pixel = format!("#version 300 es\n{EXTENSION}{PRECISION}{}{SHADING}{PIXEL}\0", textures());
+        let (made, gl) = (self.program(&corner, &pixel), &self.gl);
+        let Some(frames) = self.frames.as_mut().filter(|_| made != 0) else { return FAILED };
+        // SAFETY: OpenGL's documented calls on the current context; the names end in zeros.
+        unsafe {
+            (gl.glUseProgram)(made);
+            (gl.glUniform1i)((gl.glGetUniformLocation)(made, c"cache".as_ptr()), 0);
+            (gl.glUniform1i)((gl.glGetUniformLocation)(made, c"patches".as_ptr()), 1);
+        }
+        frames.learn(made);
+        made
+    }
+
+    /// The program a part is drawn with: the one reading frames where it has any.
+    fn program_for(&self, list: &DrawList) -> c_uint {
+        #[cfg(all(feature = "video", unix))]
+        if !list.frames.is_empty() {
+            return self.framing;
+        }
+        #[cfg(not(all(feature = "video", unix)))]
+        let _ = list;
+        self.program
     }
 
     /// What drawing changes in the context, as it is: the program, framebuffer, vertex array,
@@ -344,7 +421,7 @@ impl Pipeline {
                 (gl.glBufferData)(ARRAY_BUFFER, (room * size_of::<Quad>()) as isize, null(), STREAM_DRAW);
             }
             (gl.glBufferSubData)(ARRAY_BUFFER, 0, bytes, list.quads.as_ptr().cast());
-            (gl.glUseProgram)(self.program);
+            (gl.glUseProgram)(self.program_for(list));
             (gl.glActiveTexture)(TEXTURE0 + 1);
             (gl.glBindTexture)(TEXTURE_2D, self.textures[1]);
             (gl.glActiveTexture)(TEXTURE0);

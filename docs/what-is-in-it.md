@@ -179,8 +179,11 @@ Popovers anchored to their button.
   chosen; captions (the file's own, those in the video stream (CEA-608, track `CC1`), and the
   app's WebVTT or SRT) drawn over the video in the system's caption style and said by screen
   readers; controls for keyboard and screen readers. Windows decodes on the GPU (DXVA) what the
-  GPU decodes (checked: H.264, HEVC, VP9); with `gpu-draw` on Direct3D 11, frames are drawn
-  from the decoder's texture, never read back (1080p H.264: 3 ms of CPU a frame instead of 6).
+  GPU decodes (checked: H.264, HEVC, VP9). With `gpu-draw`, frames are drawn from the decoder's
+  own buffer, never read back while they play: Direct3D 11 from Windows' texture (1080p H.264:
+  3 ms of CPU a frame instead of 6), Metal from AVFoundation's pixel buffer, Vulkan and OpenGL
+  ES from Android's hardware buffer, Vulkan and EGL from a Linux decoder's dmabuf. The same
+  pixels as read back (Android's OpenGL ES: within 2 levels).
 - SVG: clip paths, masks, patterns, markers, symbols; on request, `shape-rendering`, seamless
   clip paths and masks, text (on paths too; shaped with `shaping`), filters (every primitive,
   lighting, `BackgroundImage`, paint inputs (patterns too) and kernel units included; about 90

@@ -204,6 +204,10 @@ impl<S> Gpu<S> {
         gpu.config = gpu.config(wanted, visual)?;
         gpu.context = gpu.context()?;
         gpu.learn();
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        {
+            gpu.list.takes_frames = crate::video_opengl::imports(gpu.said(EXTENSIONS));
+        }
         Some(gpu)
     }
 
@@ -385,6 +389,14 @@ impl<S> Gpu<S> {
         let egl = &self.egl;
         // SAFETY: the name ends in a zero.
         let mut find = |name: &CStr| unsafe { (egl.eglGetProcAddress)(name.as_ptr()) }.cast_const();
+        #[cfg(feature = "video")]
+        if self.pipeline.is_none() {
+            let mut made = crate::gpu_draw_opengl::Pipeline::new(&mut find, false).map(Box::new);
+            if let Some(pipeline) = made.as_mut() {
+                pipeline.frames = crate::video_opengl::Frames::new(&mut find, self.display, self.said(EXTENSIONS));
+            }
+            self.pipeline = Some(made);
+        }
         let made = self.pipeline.get_or_insert_with(|| crate::gpu_draw_opengl::Pipeline::new(&mut find, false).map(Box::new));
         made.as_mut().is_some_and(|pipeline| pipeline.draw(shows.texture, shows.size, list, place))
     }

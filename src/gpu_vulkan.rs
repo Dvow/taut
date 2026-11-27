@@ -104,6 +104,9 @@ pub(crate) struct Gpu<S> {
     pub(crate) list: Box<crate::gpu_draw::DrawList>,
     #[cfg(feature = "gpu-draw")]
     pub(crate) pipeline: Option<Option<Box<crate::gpu_draw_vulkan::Pipeline>>>,
+    /// The device imports videos' frames from the decoder's buffers (`video_vulkan`).
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    imports_frames: bool,
     /// Tests: every frame from now on says the device was lost.
     #[cfg(test)]
     pub(crate) faked: bool,
@@ -253,11 +256,23 @@ impl<S> Gpu<S> {
     /// the device's functions. Nothing where any of it can't be made.
     pub(crate) fn make(vulkan: Vulkan, (physical, family): (Object, u32), waited: u64, system: impl FnOnce(&mut dyn FnMut(&CStr) -> *const c_void) -> Option<S>) -> Option<Gpu<S>> {
         let regions = vulkan.offers(physical, c"VK_KHR_incremental_present");
-        let extensions = [c"VK_KHR_swapchain".as_ptr(), c"VK_KHR_incremental_present".as_ptr()];
+        let mut extensions = vec![c"VK_KHR_swapchain".as_ptr()];
+        if regions {
+            extensions.push(c"VK_KHR_incremental_present".as_ptr());
+        }
         let priority = 1.0f32;
         let queue = VkDeviceQueueCreateInfo { kind: 2, family, count: 1, priorities: &priority, ..Default::default() };
-        let count = if regions { 2 } else { 1 };
-        let asked = VkDeviceCreateInfo { kind: 3, queue_count: 1, queues: &queue, extension_count: count, extensions: extensions.as_ptr(), ..Default::default() };
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        let (imports_frames, conversions) = (crate::video_vulkan::imports(&vulkan, physical), crate::video_vulkan::conversions_on());
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        if imports_frames {
+            extensions.extend(crate::video_vulkan::extensions().map(CStr::as_ptr));
+        }
+        #[cfg(not(all(feature = "gpu-draw", feature = "video")))]
+        let next = null();
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        let next = if imports_frames { (&raw const conversions).cast() } else { null() };
+        let asked = VkDeviceCreateInfo { kind: 3, next, queue_count: 1, queues: &queue, extension_count: extensions.len() as u32, extensions: extensions.as_ptr(), ..Default::default() };
         let (mut device, mut memory) = (null_mut(), VkPhysicalDeviceMemoryProperties::default());
         // SAFETY: Vulkan fills in the device's memory, and makes the device; the names end in
         // zeros.
@@ -292,10 +307,16 @@ impl<S> Gpu<S> {
             list: Box::default(),
             #[cfg(feature = "gpu-draw")]
             pipeline: None,
+            #[cfg(all(feature = "gpu-draw", feature = "video"))]
+            imports_frames,
             #[cfg(test)]
             faked: false,
             system,
         };
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        {
+            gpu.list.takes_frames = imports_frames;
+        }
         let pool = VkCommandPoolCreateInfo { kind: 39, flags: 0x2, family, ..Default::default() };
         // SAFETY: the device's queue 0 of the family it was made with; and a pool for it.
         let made = unsafe {
@@ -596,7 +617,16 @@ impl<S> Gpu<S> {
         let (find, device, mut memory) = (self.vulkan.calls.vkGetDeviceProcAddr, self.device, VkPhysicalDeviceMemoryProperties::default());
         // SAFETY: Vulkan fills in the device's memory; the names end in zeros.
         unsafe { (self.vulkan.calls.vkGetPhysicalDeviceMemoryProperties)(self.physical, &mut memory) };
-        crate::gpu_draw_vulkan::Pipeline::new(&mut |name| unsafe { find(device, name.as_ptr()) }, device, &memory, false)
+        // SAFETY: the device is alive; the names end in zeros.
+        let mut found = |name: &CStr| unsafe { find(device, name.as_ptr()) };
+        let pipeline = crate::gpu_draw_vulkan::Pipeline::new(&mut found, device, &memory, false)?;
+        #[cfg(feature = "video")]
+        let mut pipeline = pipeline;
+        #[cfg(feature = "video")]
+        if self.imports_frames {
+            pipeline.frames = crate::video_vulkan::Frames::new(&mut found, device, self.family, &self.vulkan, self.physical);
+        }
+        Some(pipeline)
     }
 
     /// Tests: whether it has drawn windows itself (see `gpu_draw`).

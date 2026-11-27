@@ -36,10 +36,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[cfg(all(feature = "gpu-draw", target_os = "android"))]
+pub(crate) use crate::video_android::FrameTexture;
 #[cfg(target_os = "android")]
 use crate::video_android::{Player, caption_style};
+#[cfg(all(feature = "gpu-draw", target_vendor = "apple"))]
+pub(crate) use crate::video_apple::FrameTexture;
 #[cfg(target_vendor = "apple")]
 use crate::video_apple::{Player, caption_style};
+#[cfg(all(feature = "gpu-draw", unix, not(any(target_vendor = "apple", target_os = "android"))))]
+pub(crate) use crate::video_gstreamer::FrameTexture;
 #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
 use crate::video_gstreamer::{Player, caption_style};
 #[cfg(target_family = "wasm")]
@@ -48,6 +54,10 @@ use crate::video_web::{Player, caption_style};
 pub(crate) use crate::video_windows::FrameTexture;
 #[cfg(windows)]
 use crate::video_windows::{Player, caption_style};
+
+/// (Tests: videos' frames read back from the GPU so far.)
+#[cfg(all(test, any(windows, feature = "gpu-draw"), not(target_family = "wasm")))]
+pub(crate) static READ_BACK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Where a video comes from: a file, an address (`https://`, `file://`), or the file's bytes.
 /// Text with `://` in it is an address, any other a path. On the web a path is an address
@@ -520,12 +530,11 @@ impl Video {
     /// Takes the player's newest frame, if it has one: left on the GPU where it decodes there,
     /// else as pixels.
     fn take_frame(&mut self, ui: &mut Ui) {
-        #[cfg(all(feature = "gpu-draw", windows))]
-        if self.player.decodes_on_gpu() {
-            if let Some((texture, at)) = self.player.frame_texture() {
-                self.show_texture(ui, texture, at);
-            }
-            return;
+        #[cfg(all(feature = "gpu-draw", not(target_family = "wasm")))]
+        if self.player.decodes_on_gpu()
+            && let Some((texture, at)) = self.player.frame_texture()
+        {
+            return self.show_texture(ui, texture, at);
         }
         let mut pixels = Vec::new();
         if let Some((width, at)) = self.player.frame(&mut pixels) {
@@ -552,7 +561,7 @@ impl Video {
         }
     }
     /// Shows a new frame left on the GPU, taken at `at`: its middle when filling.
-    #[cfg(all(feature = "gpu-draw", windows))]
+    #[cfg(all(feature = "gpu-draw", not(target_family = "wasm")))]
     fn show_texture(&mut self, ui: &mut Ui, texture: std::sync::Arc<FrameTexture>, at: Duration) {
         let size = (texture.size.0 as usize, texture.size.1 as usize);
         self.came(at, size);
@@ -593,14 +602,14 @@ fn middle((width, height): (usize, usize), (wide, high): (f32, f32)) -> [usize; 
 /// A video's frame left on the GPU, shown by a picture: its texture, the part shown (left,
 /// top, width, height), and whether the picture's pixels hold it yet (read back only for the
 /// CPU).
-#[cfg(all(feature = "gpu-draw", windows))]
+#[cfg(all(feature = "gpu-draw", not(target_family = "wasm")))]
 pub(crate) struct FrameOnGpu {
     pub texture: std::sync::Arc<FrameTexture>,
     pub crop: [usize; 4],
     pub read: bool,
 }
 
-#[cfg(all(feature = "gpu-draw", windows))]
+#[cfg(all(feature = "gpu-draw", not(target_family = "wasm")))]
 impl FrameOnGpu {
     /// Reads the part shown back into `into`: whether it could.
     pub(crate) fn read_into(&self, into: &mut Vec<u32>) -> bool {

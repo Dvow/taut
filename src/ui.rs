@@ -107,7 +107,7 @@ pub(crate) struct Stored {
     icon_images: Vec<IconImage>,
     /// A video's frame left on the GPU, which this picture shows: its pixels are read back
     /// only where the CPU draws it.
-    #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+    #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
     pub frame: Option<crate::video::FrameOnGpu>,
 }
 
@@ -125,7 +125,7 @@ impl Stored {
     /// (So a large photo shown small is drawn from about as many pixels as show, each averaging
     /// all of the photo under it.)
     pub fn shown(&mut self, wide: f32, high: f32) -> (&[u32], usize) {
-        #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+        #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
         self.read_frame();
         let fits = |image: &&mut IconImage| image.width as f32 >= wide && (image.pixels.len() / image.width.max(1)) as f32 >= high;
         match self.icon_images.iter_mut().rev().find(fits) {
@@ -134,7 +134,7 @@ impl Stored {
         }
     }
     /// Reads the frame this picture shows back into its pixels, where they don't hold it yet.
-    #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+    #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
     fn read_frame(&mut self) {
         let Some(frame) = self.frame.as_mut().filter(|frame| !frame.read) else { return };
         frame.read = frame.read_into(&mut self.pixels);
@@ -2232,7 +2232,7 @@ impl Ui {
             version: 0,
             smaller: Vec::new(),
             icon_images: Vec::new(),
-            #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+            #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
             frame: None,
         }))
     }
@@ -2269,7 +2269,7 @@ impl Ui {
                 version: 0,
                 smaller: Vec::new(),
                 icon_images,
-                #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+                #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
                 frame: None,
             })));
         }
@@ -2344,7 +2344,7 @@ impl Ui {
         // (Only a size change invalidates the boxes so far.)
         self.again |= (width, pixels.len()) != (stored.width, stored.pixels.len());
         (stored.width, stored.pixels, stored.version) = (width, pixels, stored.version + 1);
-        #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+        #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
         stored.frame.take();
         stored.smaller.clear();
         stored.icon_images.clear();
@@ -2353,14 +2353,14 @@ impl Ui {
     }
     /// Takes a video's frame left on the GPU in, as a picture: a GPU path that can read it
     /// draws it from there; the CPU reads it back.
-    #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+    #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
     pub(crate) fn add_picture_texture(&mut self, frame: crate::video::FrameOnGpu) -> Picture {
         let picture = self.add_picture(frame.crop[2], vec![0; frame.crop[2] * frame.crop[3]]);
         self.set_picture_texture(picture, frame);
         picture
     }
     /// Shows a video's frame left on the GPU wherever this picture shows.
-    #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+    #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
     pub(crate) fn set_picture_texture(&mut self, picture: Picture, frame: crate::video::FrameOnGpu) {
         let Some(stored) = self.pictures.get_mut(picture.0) else { return };
         let [_, _, width, height] = frame.crop;

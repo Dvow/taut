@@ -332,6 +332,13 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - **Android:** the code editor tells input methods it holds code: no suggestions, no capitals
   (`Ui::code_focused`, new, beside `password_focused`). Fixed: the first box focused with the
   keyboard down kept the input type the input method was given before (plain text).
+- **Video frames drawn from the decoder's buffer on Apple, Android and Linux** (`video` with
+  `gpu-draw`), as on Windows' Direct3D 11: Metal reads AVFoundation's pixel buffer (on an
+  IOSurface); Vulkan and OpenGL ES import Android's hardware buffer; Vulkan and EGL import a
+  Linux decoder's linear dmabuf (GStreamer is now offered dmabufs of NV12, I420 or YV12 before
+  BGRx). No frame is read back while it plays; the CPU reads one only where it draws it. Vulkan
+  reads each frame's bytes through a Y′CbCr conversion and makes them RGB with the CPU's own
+  numbers: the same pixels.
 
 ## 0.3.0 (2026-11-24)
 

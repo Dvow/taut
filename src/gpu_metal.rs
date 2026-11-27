@@ -252,6 +252,14 @@ impl Gpu {
         let drawing = crate::gpu_draw::Drawing::chosen(!any, true, std::env::var("TAUT_DRAW").ok().as_deref());
         #[cfg(feature = "gpu-draw")]
         let pipeline = (drawing != crate::gpu_draw::Drawing::Never).then(|| crate::gpu_draw_metal::Pipeline::new(device)).flatten();
+        #[cfg(feature = "gpu-draw")]
+        let list = Box::<crate::gpu_draw::DrawList>::default();
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        let mut list = list;
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        {
+            list.takes_frames = pipeline.as_ref().is_some_and(crate::gpu_draw_metal::Pipeline::takes_frames);
+        }
         Some(Gpu {
             device,
             queue,
@@ -259,7 +267,7 @@ impl Gpu {
             #[cfg(feature = "gpu-draw")]
             drawing: if pipeline.is_some() { drawing } else { crate::gpu_draw::Drawing::Never },
             #[cfg(feature = "gpu-draw")]
-            list: Box::default(),
+            list,
             #[cfg(feature = "gpu-draw")]
             pipeline,
             #[cfg(feature = "gpu-draw")]

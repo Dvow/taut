@@ -452,9 +452,9 @@ impl Painter<'_> {
                 let to = self.pictures.get(picture).map_or(inside, |stored| fit_aspect(inside, [stored.width as f32, (stored.pixels.len() / stored.width.max(1)) as f32], keep));
                 // (A video's frame left on the GPU is drawn from there where the GPU records this
                 // paint and can.)
-                #[cfg(all(feature = "video", feature = "gpu-draw", windows))]
+                #[cfg(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm")))]
                 let lay = self.shows.picture.filter(|_| !self.pictures.get(picture).and_then(|stored| stored.frame.as_ref()).is_some_and(|frame| canvas.video_frame(frame, to, spec.radius)));
-                #[cfg(not(all(feature = "video", feature = "gpu-draw", windows)))]
+                #[cfg(not(all(feature = "video", feature = "gpu-draw", not(target_family = "wasm"))))]
                 let lay = self.shows.picture;
                 let shown = lay.zip(self.pictures.get_mut(picture)).map(|(lay, stored)| (lay, stored.shown(to.w * scale, to.h * scale)));
                 shown.map_or((), |(lay, (pixels, width))| lay(canvas, pixels, width, to, spec.radius))
