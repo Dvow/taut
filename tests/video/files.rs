@@ -443,8 +443,10 @@ pub fn cea708_packets(services: &[(u8, Cues)]) -> Vec<(usize, Vec<u8>)> {
 }
 
 /// A DTVCC packet of one service block: its header (sequence number, size in pairs), the
-/// block's header (with the extended number from service 7), its bytes, padded to whole pairs.
+/// block's header (with the extended number from service 7), its bytes (31 at most), padded
+/// to whole pairs.
 pub fn cea708_packet(sequence: u8, service: u8, block: &[u8]) -> Vec<u8> {
+    assert!(block.len() < 32, "a service block of {} bytes", block.len());
     let header = match service {
         0..=6 => vec![service << 5 | block.len() as u8],
         _ => vec![7 << 5 | block.len() as u8, service],

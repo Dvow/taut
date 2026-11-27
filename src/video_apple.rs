@@ -547,11 +547,11 @@ fn read_captions_in_stream(functions: &Functions, url: &Retained, in_stream: &Re
     // SAFETY: as above.
     let Some(&track) = array_items(unsafe { send(asset, c"tracksWithMediaType:", (ns_string("vide"),)) }).first() else { return };
     let Some(codec) = codec_of(functions, track) else { return };
-    let (mut reading, mut read_to) = (TrackReading::from(asset, track, Duration::ZERO), Duration::ZERO);
+    let (mut reading, mut read_to) = (TrackReading::start(asset, track, Duration::ZERO), Duration::ZERO);
     loop {
         match in_stream.next(read_to) {
             Step::Stop => return,
-            Step::Seek(to) => (reading, read_to) = (TrackReading::from(asset, track, to), to),
+            Step::Seek(to) => (reading, read_to) = (TrackReading::start(asset, track, to), to),
             Step::Read => read_to = read_next(reading.as_ref(), functions, codec, in_stream),
         }
     }
@@ -576,8 +576,8 @@ struct TrackReading {
 }
 
 impl TrackReading {
-    /// Reads from `from`; none where it can't.
-    fn from(asset: Obj, track: Obj, from: Duration) -> Option<TrackReading> {
+    /// Starts reading at `from`; none where it can't.
+    fn start(asset: Obj, track: Obj, from: Duration) -> Option<TrackReading> {
         let _pool = Pool::new();
         let (reader, output) = stored_samples(asset, track, from)?;
         // SAFETY: a live reader, which keeps its output.
@@ -608,7 +608,7 @@ impl TrackReading {
 
 impl Drop for TrackReading {
     fn drop(&mut self) {
-        // SAFETY: retained once, by `from`.
+        // SAFETY: retained once, by `start`.
         unsafe {
             send::<()>(self.reader, c"cancelReading", ());
             send::<()>(self.reader, c"release", ());

@@ -10,9 +10,6 @@
 use crate::video_captions::{Cue, CueRecorder};
 use std::time::Duration;
 
-/// The rows and columns a window may have (a 4-bit and a 6-bit count, plus one).
-const MOST_ROWS: usize = 16;
-const MOST_COLUMNS: usize = 64;
 /// A service's input buffer (CEA-708 8.4.2): a delay ends early once this much waits.
 const BUFFER: usize = 128;
 
@@ -133,6 +130,8 @@ impl Service {
     fn run(&mut self, at: Duration) {
         loop {
             let from = match self.delay_until {
+                // (Nothing to act on: the text stays as it is.)
+                None if self.input.is_empty() => return,
                 None => at,
                 Some(until) if until <= at => until,
                 Some(_) if self.delay_cancelled() => at,
@@ -204,8 +203,8 @@ fn extended_length(bytes: &[u8]) -> Option<usize> {
         0x18..=0x1F => 4,
         0x80..=0x87 => 5,
         0x88..=0x8F => 6,
-        // (Variable length: a byte giving the length, then that many.)
-        0x90..=0x9F => 2 + (*bytes.get(1)? & 0x3F) as usize,
+        // (Variable length: a header byte, its low 5 bits the length, then that many.)
+        0x90..=0x9F => 2 + (*bytes.get(1)? & 0x1F) as usize,
         _ => 1,
     })
 }
@@ -237,7 +236,7 @@ impl Direction {
     }
 }
 
-/// A service's windows, the one written into, and the pen's text tag.
+/// A service's windows, and the one written into.
 #[derive(Default)]
 struct Screen {
     windows: [Window; 8],
@@ -409,9 +408,9 @@ impl Default for Window {
 }
 
 impl Window {
-    /// Gives it this many rows and columns, keeping the text that fits and the pen in it.
+    /// Gives it this many rows and columns (1 to 16, 1 to 64), keeping the text that fits and
+    /// the pen in it.
     fn resize(&mut self, rows: usize, columns: usize) {
-        let (rows, columns) = (rows.min(MOST_ROWS), columns.min(MOST_COLUMNS));
         let mut cells = vec![' '; rows * columns];
         for row in 0..rows.min(self.rows) {
             let kept = columns.min(self.columns);
@@ -701,6 +700,8 @@ mod tests {
 
     #[test]
     fn right_to_left_and_ticker_windows_are_read_as_written() {
+        // (SetWindowAttributes: print right to left, scroll up; then a form feed takes the pen
+        // to the right.)
         let right_to_left = [0x97, 0, 0, 0x1C, 0, 0x0C];
         let decoder = fed(&[&define(0, true, 1, 80, 1), &right_to_left, b"abc"]);
         assert_eq!(texts(&decoder), ["abc"]);

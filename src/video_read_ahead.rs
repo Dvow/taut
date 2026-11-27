@@ -84,7 +84,7 @@ impl ReadAhead {
                 state.recent.clear();
                 return Step::Seek(to);
             }
-            if read_to <= state.position + LEAD {
+            if read_to <= state.position.saturating_add(LEAD) {
                 return Step::Read;
             }
             state = self.wake.wait(state).unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -174,5 +174,13 @@ mod tests {
         thread.join().unwrap();
         read_ahead.stop();
         assert!(matches!(read_ahead.next(Duration::MAX), Step::Stop));
+    }
+
+    #[test]
+    fn a_seek_to_the_latest_time_is_followed() {
+        let read_ahead = ReadAhead::new();
+        read_ahead.seek(Duration::MAX);
+        assert!(matches!(read_ahead.next(Duration::ZERO), Step::Seek(Duration::MAX)));
+        assert!(matches!(read_ahead.next(Duration::MAX), Step::Read));
     }
 }

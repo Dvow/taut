@@ -897,8 +897,8 @@ impl Drop for ReaderSource {
 /// `IMFSourceReader`, no decoder), where it is H.264 or HEVC, a little ahead of where it plays,
 /// until the player goes.
 fn read_captions_in_stream(functions: &Functions, source: ReaderSource, in_stream: &ReadAhead) {
-    // SAFETY: COM for this thread, multithreaded (0), ended with it.
-    unsafe { crate::windows::sys::CoInitializeEx(null_mut(), 0) };
+    // SAFETY: COM for this thread, multithreaded (0), ended with it where it started.
+    let com = unsafe { crate::windows::sys::CoInitializeEx(null_mut(), 0) } >= 0;
     if let Some(reader) = source_reader(functions, &source) {
         if let Some(codec) = video_codec(reader) {
             read_samples(reader, codec, in_stream);
@@ -907,8 +907,10 @@ fn read_captions_in_stream(functions: &Functions, source: ReaderSource, in_strea
         unsafe { Com::release(reader) };
     }
     drop(source);
-    // SAFETY: started above.
-    unsafe { crate::windows::sys::CoUninitialize() };
+    if com {
+        // SAFETY: started above.
+        unsafe { crate::windows::sys::CoUninitialize() };
+    }
 }
 
 /// A source reader of `source`, with only its first video stream chosen (4:
