@@ -230,13 +230,14 @@ Popovers anchored to their button.
 - Open files and links with the default program.
 - **iOS and iPadOS** (UIKit): a window filling its scene, the safe area and keyboard kept
   clear; on iPad each second window a scene of its own; a scene the system lets go of to free
-  memory keeps its window and state, the person closing one is a close request; rotation, Split
-  View and Stage Manager sizes; dark mode, Dynamic Type, more contrast, less motion; fingers,
-  Apple Pencil, trackpad and mouse, hardware keyboards, input methods, the system's keyboard
-  reading text boxes (corrections, predictions, capitals) and its edit menu; the document picker
-  as the system file dialog (several files, folders, saving); files opened in the system's
-  preview; files, pictures and text dropped in; drag out; files on the clipboard; VoiceOver;
-  going to the background heard as minimized. `examples/ios_bundle.rs` makes an example an app
+  memory keeps its window and state, the person closing one is a close request, the app closing
+  the one in front brings the first forward; rotation, Split View and Stage Manager sizes; dark
+  mode, Dynamic Type, more contrast, less motion; fingers, Apple Pencil, trackpad and mouse,
+  hardware keyboards, input methods, the system's keyboard reading text boxes (corrections,
+  predictions, capitals) and its edit menu; the document picker as the system file dialog
+  (several files, folders, saving); files opened in the system's preview; files, pictures and
+  text dropped in; drag out; files on the clipboard; VoiceOver; going to the background heard as
+  minimized. `examples/ios_bundle.rs` makes an example an app
   for the simulator or a device.
 - Tray icon with native menu, system notifications (on macOS and iOS for app bundles), global
   hotkeys, single instance. Unused, none of it is compiled in.

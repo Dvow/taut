@@ -104,13 +104,35 @@ mod host {
         let png = read(adb, "/sdcard/taut-gpu.png");
         let _ = std::fs::write(out.join(format!("{name}.png")), &png);
         let (width, pixels) = taut::png::decode(&png).unwrap_or_default();
-        let log = run(adb, &["logcat", "-d", "-s", "taut:I"]);
-        let line = log.lines().rev().find_map(|line| line.split("window ").nth(1)).unwrap_or_default();
-        let numbers: Vec<usize> = line.split_whitespace().filter_map(|word| word.parse().ok()).collect();
+        let numbers = window_numbers(adb);
         let [_, height, left, top, right, bottom] = numbers.get(..6).and_then(|numbers| numbers.try_into().ok()).unwrap_or([0; 6]);
         let inner = width.saturating_sub(left + right);
         let rows = (top..height.saturating_sub(bottom)).filter_map(|row| pixels.get(row * width + left..row * width + left + inner));
         (inner, rows.flatten().copied().collect())
+    }
+
+    /// The numbers of the last window line the app logged: its width and height, then its insets.
+    fn window_numbers(adb: &Path) -> Vec<usize> {
+        let log = run(adb, &["logcat", "-d", "-s", "taut:I"]);
+        let line = log.lines().rev().find_map(|line| line.split("window ").nth(1)).unwrap_or_default();
+        line.split_whitespace().filter_map(|word| word.parse().ok()).collect()
+    }
+
+    /// Turns the screen (`rotation` 0 upright, 1 sideways) and waits, 30 s at most, for the app
+    /// to log a window of that shape: whether it did. Each ask (again every 5 s) also locks
+    /// rotation: on a fresh emulator SystemUI's rotation-lock controller can undo an earlier lock,
+    /// and unlocked, `user_rotation` is ignored.
+    fn turn(adb: &Path, rotation: u8) -> bool {
+        for second in 0..30 {
+            if second % 5 == 0 {
+                shell(adb, &format!("settings put system accelerometer_rotation 0; settings put system user_rotation {rotation}"));
+            }
+            settle(1);
+            if matches!(window_numbers(adb)[..], [width, height, ..] if (width > height) == (rotation == 1)) {
+                return true;
+            }
+        }
+        false
     }
 
     /// The centre of the gallery's tick box, as `uiautomator` reads the window.
@@ -143,11 +165,14 @@ mod host {
         shell(adb, &format!("input tap {x} {y}"));
         settle(2);
         taken.push(screen(adb, out, &format!("{name}-ticked")));
-        shell(adb, "settings put system user_rotation 1");
-        settle(5);
+        if !turn(adb, 1) {
+            return Err(format!("{name}: the window did not turn sideways"));
+        }
+        settle(2);
         taken.push(screen(adb, out, &format!("{name}-turned")));
-        shell(adb, "settings put system user_rotation 0");
-        settle(4);
+        if !turn(adb, 0) {
+            return Err(format!("{name}: the window did not come back upright"));
+        }
         shell(adb, "input keyevent KEYCODE_HOME");
         settle(3);
         shell(adb, &format!("am start -W -n {PACKAGE}/taut.Activity"));

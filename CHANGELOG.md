@@ -266,7 +266,12 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   window asks for a new scene.
 - **Fixed (iOS):** a second window whose scene request UIKit dropped (one made just after a
   scene closed) never showed: a scene not connected 10 s after it was asked for is asked for
-  once more. What a closed window's app takes dropped was kept for good.
+  once more. What a closed window's app takes dropped was kept for good. The first window's new
+  scene, after the person closed its scene and the app kept it open, is asked for once more
+  the same way.
+- **Fixed (iOS):** on an iPad showing one scene at a time, an app closing the second window in
+  front went to the background, and the system soon stopped it. The first window's scene now
+  comes forward.
 - **Documents jump far cheaply:** Ctrl+End, a link to a far heading, the scroll bar dragged to
   the end, a width change and Tab to a link out of view lay out only around where they go,
   estimating what lies between and correcting it as it comes into view; what shows stays in

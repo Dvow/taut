@@ -115,7 +115,7 @@ mod phone {
     fn sel(name: &CStr) -> *const c_void {
         unsafe { sel_registerName(name.as_ptr()) }
     }
-    /// `objc_msgSend` as a method of no arguments, one, two, three.
+    /// `objc_msgSend` as a method of no arguments, one, two, three, four.
     unsafe fn send0<R>(to: Obj, name: &CStr) -> R {
         let call: unsafe extern "C" fn(Obj, *const c_void) -> R = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
         unsafe { call(to, sel(name)) }
@@ -131,6 +131,10 @@ mod phone {
     unsafe fn send3<R, A, B, C>(to: Obj, name: &CStr, a: A, b: B, c: C) -> R {
         let call: unsafe extern "C" fn(Obj, *const c_void, A, B, C) -> R = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
         unsafe { call(to, sel(name), a, b, c) }
+    }
+    unsafe fn send4<R, A, B, C, D>(to: Obj, name: &CStr, a: A, b: B, c: C, d: D) -> R {
+        let call: unsafe extern "C" fn(Obj, *const c_void, A, B, C, D) -> R = unsafe { std::mem::transmute(objc_msgSend as unsafe extern "C" fn()) };
+        unsafe { call(to, sel(name), a, b, c, d) }
     }
     fn string(text: &str) -> Obj {
         let text = std::ffi::CString::new(text).unwrap();
@@ -1076,17 +1080,19 @@ mod phone {
 
         fn check(&mut self, name: &str, ui: &Ui) -> bool {
             let picker = || unsafe { send1::<u8, _>(presented(), c"isKindOfClass:", class(c"UIDocumentPickerViewController")) } != 0;
+            // (A picker still coming up ignores being put away.)
+            let picker_up = || picker() && unsafe { send0::<u8>(presented(), c"isBeingPresented") } == 0;
             let several = || unsafe { send0::<u8>(presented(), c"allowsMultipleSelection") } != 0;
             let saving = || std::fs::read_dir(std::env::temp_dir().join("taut-save")).into_iter().flatten().flatten().any(|folder| folder.path().join("notes.txt").exists());
             let named = |files: &[PathBuf]| files.iter().map(|file| file.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect::<Vec<_>>();
             let board = || unsafe { send0::<Obj>(class(c"UIPasteboard"), c"generalPasteboard") };
             match name {
                 "reader asked" => !ui.visible_access_nodes().is_empty(),
-                "the system's dialog opens for several files" => picker() && several(),
+                "the system's dialog opens for several files" => picker_up() && several(),
                 "two files are picked" => self.answers == [folder().join("one.txt")] && self.files.chosen == [folder().join("one.txt"), folder().join("two.txt")] && presented().is_null(),
-                "the system's dialog saves" => picker() && saving(),
+                "the system's dialog saves" => picker_up() && saving(),
                 "where it was saved is the answer" => self.answers.last() == Some(&folder().join("moved").join("notes.txt")) && presented().is_null(),
-                "the system's dialog opens for a file" => picker() && !several(),
+                "the system's dialog opens for a file" => picker_up() && !several(),
                 "it is closed without a choice" => !self.files.shown && self.answers.len() == 2 && presented().is_null(),
                 "a file opens in the system's preview" => !presented().is_null() && !picker(),
                 "the preview is put away" => presented().is_null(),
@@ -1339,8 +1345,9 @@ mod phone {
     // ---- second windows (iPad) ----
 
     /// The page of second windows: one opened in a scene of its own, pressed and typed in, its
-    /// scene let go of by the system and brought back; closed by the person (its app hears it),
-    /// opened again, closed by the app, and opened once more; then the first window pressed, its
+    /// scene let go of by the system and brought back; closed by the person (its app hears it;
+    /// the person goes back to the first window), opened again, closed by the app (the first
+    /// window comes forward), and opened once more; then the first window pressed, its
     /// scene let go of and brought back, and closed by the person with the window kept (a new
     /// scene). What fakes UIKit's calls on the first scene comes last: after it the simulator may
     /// ignore requests to close or open scenes.
@@ -1378,7 +1385,7 @@ mod phone {
             "a touch on it still reaches its interface",
             "the person closing its scene is a close request",
             "it opens again",
-            "the app closes it",
+            "the app closes it: the first window comes forward",
             "it opens once more",
             "a touch on the first window reaches it",
             "the system lets go of the first scene and brings it back",
@@ -1431,8 +1438,12 @@ mod phone {
                         bring_back(scene);
                     }));
                 }
-                "the person closing its scene is a close request" => destroy_session(scene_named("Second")),
-                "the app closes it" => self.second.open = false,
+                "the person closing its scene is a close request" => {
+                    let first = first_scene();
+                    destroy_session(scene_named("Second"));
+                    activate(first);
+                }
+                "the app closes it: the first window comes forward" => self.second.open = false,
                 _ => {}
             }
         }
@@ -1458,7 +1469,7 @@ mod phone {
                 }
                 "the first window shows as it was and takes the keys" => takes_keys(view()) && shows_page(view()) && self.first_close_requests == 0,
                 "the person closing its scene is a close request" => self.close_requests == 1 && !self.second.open && scenes().len() == 1,
-                "the app closes it" => scenes().len() == 1,
+                "the app closes it: the first window comes forward" => scenes().len() == 1 && in_foreground(first_scene()),
                 _ => true,
             }
         }
@@ -1551,6 +1562,15 @@ mod phone {
             send3::<(), _, _, _>(app, c"requestSceneSessionDestruction:options:errorHandler:", send0::<Obj>(scene, c"session"), nothing, nothing);
         }
     }
+    /// The person going to a scene of the app (where the system shows one scene at a time, an
+    /// app whose scene in front closed is in the background, and the system soon stops it).
+    fn activate(scene: Obj) {
+        unsafe {
+            let app: Obj = send0(class(c"UIApplication"), c"sharedApplication");
+            let nothing = std::ptr::null_mut::<c_void>();
+            send4::<(), _, _, _, _>(app, c"requestSceneSessionActivation:userActivity:options:errorHandler:", send0::<Obj>(scene, c"session"), nothing, nothing, nothing);
+        }
+    }
     /// The person closing a scene as UIKit tells it: its delegate hears it disconnect, then the
     /// app's that its session was discarded. (The simulator ignores
     /// `requestSceneSessionDestruction` for the app's first scene: no error, no disconnect.)
@@ -1560,6 +1580,10 @@ mod phone {
             let app: Obj = send0(class(c"UIApplication"), c"sharedApplication");
             send2::<(), _, _>(send0::<Obj>(app, c"delegate"), c"application:didDiscardSceneSessions:", app, set_of(send0(scene, c"session")));
         }
+    }
+    /// Whether a scene is in the foreground, active or not (false for null).
+    fn in_foreground(scene: Obj) -> bool {
+        !scene.is_null() && matches!(unsafe { send0::<isize>(scene, c"activationState") }, 0 | 1)
     }
     /// Whether a view of the library's shows its page: the page layer has a picture.
     fn shows_page(view: Obj) -> bool {
@@ -1654,8 +1678,11 @@ mod mac {
         launch_with(device, id, mode, &[])
     }
 
-    /// Starts an app on the device in a mode, with variables (`TAUT_RENDERER`, …).
+    /// Starts an app on the device in a mode, with variables (`TAUT_RENDERER`, …). The notes of
+    /// its last start are gone first: a slow start can't be mistaken for having written them.
     fn launch_with(device: &str, id: &str, mode: &str, variables: &[(&str, &str)]) -> Result<(), String> {
+        _ = simctl(&["terminate", device, id]);
+        _ = std::fs::remove_dir_all(notes(device, id)?);
         let logs = built().join(format!("{id}-{mode}"));
         let (out, err) = (format!("--stdout={}.out", logs.display()), format!("--stderr={}.err", logs.display()));
         let mut command = Command::new("xcrun");
@@ -1664,11 +1691,16 @@ mod mac {
         ios_bundle::ran(&mut command).map(drop)
     }
 
+    /// The folder app `id` writes its notes in (`folder` on the device).
+    fn notes(device: &str, id: &str) -> Result<PathBuf, String> {
+        let container = simctl(&["get_app_container", device, id, "data"])?;
+        Ok(Path::new(container.trim()).join("tmp").join("taut-check"))
+    }
+
     /// A note the app wrote, once it holds `until` (or the wait is over).
     fn note(device: &str, id: &str, file: &str, until: impl Fn(&str) -> bool, wait: Duration) -> Result<String, String> {
         let since = Instant::now();
-        let container = simctl(&["get_app_container", device, id, "data"])?;
-        let path = Path::new(container.trim()).join("tmp").join("taut-check").join(file);
+        let path = notes(device, id)?.join(file);
         loop {
             let text = std::fs::read_to_string(&path).unwrap_or_default();
             if until(&text) {
@@ -1683,16 +1715,21 @@ mod mac {
 
     /// Runs the check app on a page it drives (`mode`), and gives back the steps that failed.
     fn driven(device: &str, mode: &str) -> Result<Vec<String>, String> {
+        let file = format!("{mode}.txt");
         launch(device, CHECK_ID, mode)?;
-        let said = note(device, CHECK_ID, &format!("{mode}.txt"), |text| text.contains("done"), Duration::from_secs(240));
+        // (A launch simctl takes may never start the app: no output files, no notes.)
+        if note(device, CHECK_ID, &file, |text| !text.is_empty(), Duration::from_secs(60)).is_err() {
+            println!("{mode}: nothing written in 60 s; launched once more");
+            launch(device, CHECK_ID, mode)?;
+        }
+        let said = note(device, CHECK_ID, &file, |text| text.contains("done"), Duration::from_secs(240));
         let said = said.unwrap_or_else(|error| error);
         println!("{mode}:\n{said}");
         Ok(said.lines().filter(|line| line.starts_with("FAILED") || line.contains("after")).map(str::to_owned).collect())
     }
 
     fn signal(device: &str, id: &str, file: &str) -> Result<(), String> {
-        let container = simctl(&["get_app_container", device, id, "data"])?;
-        std::fs::write(Path::new(container.trim()).join("tmp").join("taut-check").join(file), "").map_err(|error| error.to_string())
+        std::fs::write(notes(device, id)?.join(file), "").map_err(|error| error.to_string())
     }
 
     /// The screen, as pixels.
@@ -1723,8 +1760,7 @@ mod mac {
 
     /// What app `id` drew of its window itself, as the Mac reads it (`drawn.png`).
     fn drawn_by_app(device: &str, id: &str) -> Result<Surface, String> {
-        let container = simctl(&["get_app_container", device, id, "data"])?;
-        let png = std::fs::read(Path::new(container.trim()).join("tmp").join("taut-check").join("drawn.png")).map_err(|error| error.to_string())?;
+        let png = std::fs::read(notes(device, id)?.join("drawn.png")).map_err(|error| error.to_string())?;
         let (width, pixels) = taut::png::decode(&png).ok_or("the app drew nothing")?;
         Ok(Surface { width, height: pixels.len() / width.max(1), pixels })
     }
@@ -1828,17 +1864,19 @@ mod mac {
                 }
             };
             let phone = drawn_by_app(device, GPU_ID)?;
-            check(screen(device, &format!("metal-{draw}"))?, &page, &phone, &format!("metal-{draw}"));
+            let shown = screen_showing(device, &format!("metal-{draw}"), &page, &phone, tolerance, 0.001)?;
+            check(shown, &page, &phone, &format!("metal-{draw}"));
             simctl(&["launch", device, "com.apple.Preferences"])?;
             std::thread::sleep(Duration::from_secs(4));
             simctl(&["launch", device, GPU_ID])?;
             std::thread::sleep(Duration::from_secs(4));
-            check(screen(device, &format!("metal-{draw}-back"))?, &page, &phone, &format!("metal-{draw}, back from the background"));
+            let back = screen_showing(device, &format!("metal-{draw}-back"), &page, &phone, tolerance, 0.001)?;
+            check(back, &page, &phone, &format!("metal-{draw}, back from the background"));
             signal(device, GPU_ID, "turn")?;
             let turned = note(device, GPU_ID, "turned.txt", |text| text.ends_with('\n'), Duration::from_secs(60))?;
             let (page, phone) = (page_of(&turned)?, drawn_by_app(device, GPU_ID)?);
-            let shot = upright(screen(device, &format!("metal-{draw}-turned"))?, &page, &phone);
-            check(shot, &page, &phone, &format!("metal-{draw}, turned"));
+            let turned = screen_showing(device, &format!("metal-{draw}-turned"), &page, &phone, tolerance, 0.001)?;
+            check(turned, &page, &phone, &format!("metal-{draw}, turned"));
             _ = simctl(&["terminate", device, GPU_ID]);
         }
         Ok(failed)
@@ -1853,6 +1891,20 @@ mod mac {
         let failed = driven(&device, "windows")?;
         _ = simctl(&["terminate", &device, CHECK_ID]);
         Ok(failed)
+    }
+
+    /// The screen, upright, once it shows `here` (at most `share` of its pixels more than `apart`
+    /// levels off), or as it is after 30 s: on a busy runner an app can be slow to show, or to
+    /// finish turning.
+    fn screen_showing(device: &str, name: &str, page: &Page, here: &Surface, apart: u32, share: f64) -> Result<(usize, Vec<u32>), String> {
+        let since = Instant::now();
+        loop {
+            let shown = upright(screen(device, name)?, page, here);
+            if compared(&shown, page, here, name, apart).0 <= share || since.elapsed() > Duration::from_secs(30) {
+                return Ok(shown);
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
     }
 
     /// Everything, in order; the failures.
@@ -1874,7 +1926,8 @@ mod mac {
         let page = page_of(&ready)?;
         println!("page {}x{} at {:?}, scale {}", page.size.w, page.size.h, page.at, page.scale);
         let here = drawn_here(&page);
-        let shown = screen(&device, "check-gallery")?;
+        let phone = drawn_by_app(&device, CHECK_ID)?;
+        let shown = screen_showing(&device, "check-gallery", &page, &phone, 32, 0.001)?;
         let (share, most) = compared(&shown, &page, &here, "check-gallery", 32);
         println!("the screen against the Mac's drawing: {:.2}% of pixels apart, at most {most}", share * 100.0);
         if share > 0.03 {
@@ -1882,7 +1935,6 @@ mod mac {
         }
         // The same against the app's own drawing, made on the phone: the screen shows its pixels
         // as they are, where they belong.
-        let phone = drawn_by_app(&device, CHECK_ID)?;
         let (share, most) = compared(&shown, &page, &phone, "check-gallery-phone", 32);
         println!("the screen against the phone's own drawing: {:.3}% of pixels apart, at most {most}", share * 100.0);
         if share > 0.001 {
@@ -1919,8 +1971,7 @@ mod mac {
 
         // The gallery example itself.
         launch(&device, "dev.taut.gallery", "")?;
-        std::thread::sleep(Duration::from_secs(6));
-        let shown = screen(&device, "gallery")?;
+        let shown = screen_showing(&device, "gallery", &page, &here, 32, 0.03)?;
         let (share, most) = compared(&shown, &page, &here, "gallery", 32);
         println!("the gallery example against the Mac's drawing: {:.2}% of pixels apart, at most {most}", share * 100.0);
         if share > 0.03 {

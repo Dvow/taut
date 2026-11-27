@@ -29,14 +29,15 @@
 //!
 //! On iPad each second window is a scene of its own: asked for as the app first describes it
 //! (`requestSceneSessionActivation` with an activity naming the window; once more if none
-//! connects in 10 s), shown as it connects, closed as the app stops describing it. The person
-//! closing its scene (its session discarded) is a close request ([`Ui::close_requested`]); for
-//! the first window too, which, kept open, asks for a new scene. A scene the system lets go of to
-//! free memory is no close: the window keeps its view and state, and moves into the scene's new
-//! `UIWindow` as it comes back (same session). A scene the person opens from the system has
-//! nothing to show and closes. What UIKit says of a view goes to its window (`heard_in`); the
-//! keyboard, typing and dialogs are the window in front's (the key window: `view`, `heard`). An
-//! iPhone shows one scene: second windows do nothing there.
+//! connects in 10 s), shown as it connects, closed as the app stops describing it (closed in
+//! front, the first window's scene comes forward). The person closing its scene (its session
+//! discarded) is a close request ([`Ui::close_requested`]); for the first window too, which, kept
+//! open, asks for a new scene (also once more). A scene the system lets go of to free memory is
+//! no close: the window keeps its view and state, and moves into the scene's new `UIWindow` as it
+//! comes back (same session). A scene the person opens from the system has nothing to show and
+//! closes. What UIKit says of a view goes to its window (`heard_in`); the keyboard, typing and
+//! dialogs are the window in front's (the key window: `view`, `heard`). An iPhone shows one
+//! scene: second windows do nothing there.
 //!
 //! The app hears the program go to the background as its window minimized
 //! ([`Event::Minimized`], [`Ui::window_minimized`]): the moment to save its state. The system's
@@ -1088,15 +1089,16 @@ struct Host {
     windows: Vec<Shown>,
     /// What is to show each window.
     renderer: crate::platform::Renderer,
-    /// Second windows a scene was asked for, not yet connected.
+    /// Scenes asked for, not yet connected.
     asked: Vec<Asked>,
     rerun: bool,
     start: Instant,
 }
 
-/// A second window's scene asked for: the window, when, and whether asked once more.
+/// A scene asked for: the second window it is for (none: a new scene for the first window),
+/// when, and whether asked once more.
 struct Asked {
-    id: Id,
+    window: Option<Id>,
     at: Instant,
     again: bool,
 }
@@ -1114,8 +1116,8 @@ struct Shown {
     /// Its view controller (one count is the window's own): moved into the scene's new
     /// `UIWindow` as the scene comes back.
     controller: Obj,
-    /// Its scene's session: what it is closed by, and found again by as the scene comes back.
-    /// Null without scenes, and for a first window whose session was discarded.
+    /// Its scene's session (retained): what it is closed by, and found again by as the scene
+    /// comes back. Null without scenes, and for a first window whose session was discarded.
     session: Obj,
     /// The layer showing the pixels, and where it lies in the view: the safe area above the
     /// keyboard, in points.
@@ -1262,13 +1264,25 @@ impl Shown {
         let _ = renderer;
         #[rustfmt::skip]
         let mut shown = Shown {
-            known, window: std::ptr::null_mut(), view, controller, session, page, area: NSRect::default(), keyboard: 0.0, scale: 1.0,
-            surface: Surface::default(), background: Color::NONE, pointer, title,
+            known, window: std::ptr::null_mut(), view, controller, session: std::ptr::null_mut(), page, area: NSRect::default(),
+            keyboard: 0.0, scale: 1.0, surface: Surface::default(), background: Color::NONE, pointer, title,
             #[cfg(feature = "gpu")]
             screen: crate::gpu_ios::Screen::new(renderer),
         };
+        shown.keep_session(session);
         shown.show_in(window);
         shown
+    }
+
+    /// Keeps `session` (null: none) as its scene's, retained; the one kept before is let go of.
+    fn keep_session(&mut self, session: Obj) {
+        // SAFETY: a count of the new session taken and the old one's given up (a message to nil
+        // does nothing).
+        unsafe {
+            send::<Obj>(session, c"retain", ());
+            send::<()>(self.session, c"release", ());
+        }
+        self.session = session;
     }
 
     /// Shows in `window`, its scene's (new, or come back): the controller goes into it, it
@@ -1407,8 +1421,11 @@ impl Shown {
         if FRONT.get() == self.view {
             FRONT.set(SEEN.with_borrow(|seen| seen.first().map_or(std::ptr::null_mut(), |first| first.view)));
         }
-        // SAFETY: the library's count of the controller, given up.
-        unsafe { send::<()>(self.controller, c"release", ()) };
+        // SAFETY: the library's counts of the controller and the session, given up.
+        unsafe {
+            send::<()>(self.controller, c"release", ());
+            send::<()>(self.session, c"release", ());
+        }
     }
 }
 
@@ -1502,7 +1519,8 @@ impl Host {
             return self.open_second(id, window, session);
         }
         if self.first_needs_scene() {
-            self.windows[0].session = session;
+            self.asked.retain(|asked| asked.window.is_some());
+            self.windows[0].keep_session(session);
             return self.show_again(0, window);
         }
         close_scene(session);
@@ -1510,7 +1528,7 @@ impl Host {
 
     /// Shows second window `id` in a scene's window.
     fn open_second(&mut self, id: Id, window: Obj, session: Obj) {
-        self.asked.retain(|asked| asked.id != id);
+        self.asked.retain(|asked| asked.window != Some(id));
         if self.ui.listening {
             self.ui.in_window(id, |ui| ui.set_screen_reader(true));
         }
@@ -1562,7 +1580,7 @@ impl Host {
         unsafe { send::<()>(session, c"release", ()) };
         match at {
             Some(0) => {
-                self.windows[0].session = std::ptr::null_mut();
+                self.windows[0].keep_session(std::ptr::null_mut());
                 self.ui.request_close();
                 self.rerun = true;
             }
@@ -1588,7 +1606,8 @@ impl Host {
             unsafe { exit(0) }
         }
         if closing.is_some() && self.first_needs_scene() {
-            activate_scene(std::ptr::null_mut());
+            self.asked.retain(|asked| asked.window.is_some());
+            self.ask_for(None);
         }
         self.keep_up();
         (0..self.windows.len()).for_each(|at| self.follow(at));
@@ -1610,19 +1629,46 @@ impl Host {
     fn keep_up(&mut self) {
         for at in (1..self.windows.len()).rev() {
             if !self.ui.windows().any(|(id, ..)| Some(id) == self.windows[at].known) {
-                close_scene(self.windows[at].session);
-                self.windows.remove(at).close();
+                self.close_second(at);
             }
         }
-        self.asked.retain(|asked| self.ui.windows().any(|(of, ..)| of == asked.id));
+        let first_needs_scene = self.first_needs_scene();
+        self.asked.retain(|asked| asked.window.map_or(first_needs_scene, |id| self.ui.windows().any(|(of, ..)| of == id)));
         if !multiple_scenes() {
             return;
         }
-        let shown = |id: &Id| self.asked.iter().any(|asked| asked.id == *id) || self.windows.iter().any(|shown| shown.known == Some(*id));
-        let new: Vec<(Id, String)> = self.ui.windows().filter(|(id, ..)| !shown(id)).map(|(id, title, _)| (id, title.to_string())).collect();
-        for (id, title) in new {
-            ask_for_scene(id, &title, self.windows[0].window);
-            self.asked.push(Asked { id, at: Instant::now(), again: false });
+        let shown = |id: &Id| self.asked.iter().any(|asked| asked.window == Some(*id)) || self.windows.iter().any(|shown| shown.known == Some(*id));
+        let new: Vec<Id> = self.ui.windows().map(|(id, ..)| id).filter(|id| !shown(id)).collect();
+        for id in new {
+            self.ask_for(Some(id));
+        }
+    }
+
+    /// Closes second window `at` and its scene, as its app stopped describing it. Closed in
+    /// front, the first window's scene comes forward: where the system shows one scene at a time
+    /// (an iPad in full screen), the app would go to the background otherwise.
+    fn close_second(&mut self, at: usize) {
+        let in_front = self.windows[at].view == FRONT.get();
+        close_scene(self.windows[at].session);
+        self.windows.remove(at).close();
+        let first = self.windows[0].session;
+        if in_front && !first.is_null() {
+            activate_scene(first);
+        }
+    }
+
+    /// Asks for a scene for a window (`Asked`), noting it to ask once more if none connects.
+    fn ask_for(&mut self, window: Option<Id>) {
+        self.request_scene(window);
+        self.asked.push(Asked { window, at: Instant::now(), again: false });
+    }
+
+    /// Asks the system for a scene: for second window `id`, beside the first window's; for none,
+    /// a new one for the first window.
+    fn request_scene(&self, window: Option<Id>) {
+        match window {
+            Some(id) => ask_for_scene(id, &self.title_of(id), self.windows[0].window),
+            None => activate_scene(std::ptr::null_mut()),
         }
     }
 
@@ -1638,11 +1684,10 @@ impl Host {
                 continue;
             }
             asked.again = true;
-            due.push(asked.id);
+            due.push(asked.window);
         }
-        for id in due {
-            let title = self.title_of(id);
-            ask_for_scene(id, &title, self.windows[0].window);
+        for window in due {
+            self.request_scene(window);
         }
     }
 

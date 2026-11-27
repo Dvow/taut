@@ -483,6 +483,31 @@ mod tests {
         log.lines().rev().find_map(said)
     }
 
+    /// Which way the screen is turned: its `user_rotation`.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Turn {
+        Upright = 0,
+        Sideways = 1,
+    }
+
+    /// Turns the screen and waits, 30 s at most, for the app to log a window of that shape: that
+    /// window. Each ask (again every 5 s) also locks rotation: on a fresh emulator SystemUI's
+    /// rotation-lock controller can undo the test's earlier lock, and unlocked, `user_rotation` is
+    /// ignored.
+    fn turn(way: Turn) -> Option<Said> {
+        let shaped = |said: &Said| (said.size[0] > said.size[1]) == (way == Turn::Sideways);
+        for second in 0..30 {
+            if second % 5 == 0 {
+                shell(&format!("settings put system accelerometer_rotation 0; settings put system user_rotation {}", way as u8));
+            }
+            settle(1);
+            if let Some(said) = window_said().filter(shaped) {
+                return Some(said);
+            }
+        }
+        None
+    }
+
     /// The gallery as the app drew it, the same size and scale, with the emulator's own fonts
     /// pulled into `out` and its settings: the pixels inside the insets, and how many differ.
     fn linux_frame(out: &Path, said: &Said, (width, shown): &(usize, Vec<u32>)) -> usize {
@@ -600,16 +625,20 @@ mod tests {
         }
         let _ = screen(&out, "parts");
         // The screen turns: the window is told its new size.
-        shell("settings put system user_rotation 1");
-        settle(5);
-        let turned = window_said().expect("the window after turning");
-        let picture = screen(&out, "turned");
-        if turned.size[0] <= turned.size[1] || picture.0 != turned.size[0] {
-            wrong.push(format!("after turning the window is {:?}", turned.size));
+        match turn(Turn::Sideways) {
+            Some(turned) => {
+                settle(2);
+                let picture = screen(&out, "turned");
+                if picture.0 != turned.size[0] {
+                    wrong.push(format!("after turning the window is {:?} and the screen {} wide", turned.size, picture.0));
+                }
+            }
+            None => wrong.push(format!("after turning the screen the window is still {:?}", window_said().map(|said| said.size))),
         }
         let _ = dump(&out, "turned");
-        shell("settings put system user_rotation 0");
-        settle(5);
+        if turn(Turn::Upright).is_none() {
+            wrong.push("the window did not come back upright".into());
+        }
         // Away to the home screen and back: the interface is as it was.
         shell("input keyevent KEYCODE_HOME");
         settle(3);
