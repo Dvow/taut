@@ -30,8 +30,6 @@ type Text = *mut u16;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn LoadLibraryExA(name: *const u8, file: HANDLE, how: u32) -> HANDLE;
-    fn GetProcAddress(library: HANDLE, name: *const u8) -> usize;
     fn GetCurrentThreadId() -> u32;
 }
 #[link(name = "user32")]
@@ -203,7 +201,7 @@ impl Automation {
         // documents for its name. The libraries stay loaded for the program's life, and so do
         // the functions.
         unsafe {
-            let (core, ole) = (library(c"uiautomationcore.dll")?, library(c"oleaut32.dll")?);
+            let (core, ole) = (library("uiautomationcore.dll")?, library("oleaut32.dll")?);
             Some(Automation {
                 give: found(core, c"UiaReturnRawElementProvider")?,
                 host: found(core, c"UiaHostProviderFromHwnd")?,
@@ -247,10 +245,9 @@ impl Automation {
     }
 }
 
-/// A system library, loaded only from the system folder (`LOAD_LIBRARY_SEARCH_SYSTEM32`).
-unsafe fn library(name: &CStr) -> Option<HANDLE> {
-    // SAFETY: the name is NUL-terminated.
-    let library = unsafe { LoadLibraryExA(name.as_ptr().cast(), 0, 0x800) };
+/// A system library, loaded only from the system folder.
+fn library(name: &str) -> Option<HANDLE> {
+    let library = crate::windows::system_library(name);
     (library != 0).then_some(library)
 }
 
@@ -259,9 +256,8 @@ unsafe fn library(name: &CStr) -> Option<HANDLE> {
 /// # Safety
 /// `F` is the function type the library has under that name.
 unsafe fn found<F: Copy>(library: HANDLE, name: &CStr) -> Option<F> {
-    // SAFETY: the name is NUL-terminated. A function pointer is an address the size of `F`, as
-    // the caller promises.
-    let at = unsafe { GetProcAddress(library, name.as_ptr().cast()) };
+    let at = crate::windows::function_in(library, name);
+    // SAFETY: a function pointer is an address the size of `F`, as the caller promises.
     (at != 0 && size_of::<F>() == size_of::<usize>()).then(|| unsafe { std::mem::transmute_copy(&at) })
 }
 
@@ -2876,7 +2872,7 @@ pub(crate) mod tests {
         // grid pattern, and the table's and cell's properties, which it gets from the patterns.
         // (No window, no other program.)
         type Handle = *mut c_void;
-        let core = unsafe { library(c"uiautomationcore.dll") }.unwrap();
+        let core = library("uiautomationcore.dll").unwrap();
         let (node_of, pattern_of): (unsafe extern "system" fn(*mut Face, *mut Handle) -> i32, unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32) =
             unsafe { (found(core, c"UiaNodeFromProvider").unwrap(), found(core, c"UiaGetPatternProvider").unwrap()) };
         let item_of: unsafe extern "system" fn(Handle, i32, i32, *mut Handle) -> i32 = unsafe { found(core, c"GridPattern_GetItem").unwrap() };
@@ -2913,7 +2909,7 @@ pub(crate) mod tests {
         // Windows' own UI Automation client, handed a text box's provider: the text pattern and
         // ranges, by the IIDs and vtable order it knows. (No window, no other program.)
         type Handle = *mut c_void;
-        let core = unsafe { library(c"uiautomationcore.dll") }.unwrap();
+        let core = library("uiautomationcore.dll").unwrap();
         let (node_of, pattern_of): (unsafe extern "system" fn(*mut Face, *mut Handle) -> i32, unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32) =
             unsafe { (found(core, c"UiaNodeFromProvider").unwrap(), found(core, c"UiaGetPatternProvider").unwrap()) };
         let all_of: unsafe extern "system" fn(Handle, *mut Handle) -> i32 = unsafe { found(core, c"TextPattern_get_DocumentRange").unwrap() };
@@ -2958,7 +2954,7 @@ pub(crate) mod tests {
         // Windows' own UI Automation client, only reading: a cell's text pattern and its
         // selection, a document's selection that runs through it. (No window, no other program.)
         type Handle = *mut c_void;
-        let core = unsafe { library(c"uiautomationcore.dll") }.unwrap();
+        let core = library("uiautomationcore.dll").unwrap();
         let (node_of, pattern_of): (unsafe extern "system" fn(*mut Face, *mut Handle) -> i32, unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32) =
             unsafe { (found(core, c"UiaNodeFromProvider").unwrap(), found(core, c"UiaGetPatternProvider").unwrap()) };
         let picked_of: unsafe extern "system" fn(Handle, *mut *mut c_void) -> i32 = unsafe { found(core, c"TextPattern_GetSelection").unwrap() };
@@ -2996,7 +2992,7 @@ pub(crate) mod tests {
         // supported (without calling it), and annotations on a text box's ranges. (No window,
         // no other program.)
         type Handle = *mut c_void;
-        let core = unsafe { library(c"uiautomationcore.dll") }.unwrap();
+        let core = library("uiautomationcore.dll").unwrap();
         let (node_of, pattern_of): (unsafe extern "system" fn(*mut Face, *mut Handle) -> i32, unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32) =
             unsafe { (found(core, c"UiaNodeFromProvider").unwrap(), found(core, c"UiaGetPatternProvider").unwrap()) };
         let value_of: unsafe extern "system" fn(Handle, i32, *mut Variant) -> i32 = unsafe { found(core, c"UiaGetPropertyValue").unwrap() };
@@ -3281,7 +3277,7 @@ pub(crate) mod tests {
         // got from the patterns; and expanding and selecting through them. (No window but a
         // hearing one, no other program.)
         type Handle = *mut c_void;
-        let core = unsafe { library(c"uiautomationcore.dll") }.unwrap();
+        let core = library("uiautomationcore.dll").unwrap();
         let (node_of, pattern_of): (unsafe extern "system" fn(*mut Face, *mut Handle) -> i32, unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32) =
             unsafe { (found(core, c"UiaNodeFromProvider").unwrap(), found(core, c"UiaGetPatternProvider").unwrap()) };
         let value_of: unsafe extern "system" fn(Handle, i32, *mut Variant) -> i32 = unsafe { found(core, c"UiaGetPropertyValue").unwrap() };

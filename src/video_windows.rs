@@ -14,18 +14,12 @@ use crate::color::Color;
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Pixels, TextureDescription};
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
 use crate::video_captions::Cue;
-use crate::windows::{Com, named, wide};
-use std::ffi::c_void;
+use crate::windows::{Com, function_in, named, system_library, wide};
+use std::ffi::{CStr, c_void};
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn LoadLibraryExW(name: *const u16, file: isize, flags: u32) -> isize;
-    fn GetProcAddress(library: isize, name: *const u8) -> usize;
-}
 
 #[link(name = "ole32")]
 unsafe extern "system" {
@@ -91,28 +85,22 @@ fn media_foundation_started(functions: &Functions) -> i32 {
 }
 
 fn load() -> Option<Functions> {
-    let library = |name: &str| {
-        let name = wide(name);
-        // SAFETY: a name ending in a zero; 0x800 searches only the system folder.
-        unsafe { LoadLibraryExW(name.as_ptr(), 0, 0x800) }
-    };
-    let (mf, ole, shell, d3d11) = (library("mfplat.dll"), library("oleaut32.dll"), library("shlwapi.dll"), library("d3d11.dll"));
-    let found = |library: isize, name: &[u8]| {
-        // SAFETY: a name ending in a zero, of a loaded library (or 0, which finds nothing).
-        let at = unsafe { GetProcAddress(library, name.as_ptr()) };
+    let (mf, ole, shell, d3d11) = (system_library("mfplat.dll"), system_library("oleaut32.dll"), system_library("shlwapi.dll"), system_library("d3d11.dll"));
+    let found = |library: isize, name: &CStr| {
+        let at = function_in(library, name);
         (library != 0 && at != 0).then_some(at)
     };
     // SAFETY: each is the function of that name, of the type its header gives.
     unsafe {
         Some(Functions {
-            startup: function(found(mf, b"MFStartup\0")?),
-            attributes: function(found(mf, b"MFCreateAttributes\0")?),
-            on_stream: function(found(mf, b"MFCreateMFByteStreamOnStream\0")?),
-            device_manager: function(found(mf, b"MFCreateDXGIDeviceManager\0")?),
-            memory_stream: function(found(shell, b"SHCreateMemStream\0")?),
-            text: function(found(ole, b"SysAllocString\0")?),
-            free_text: function(found(ole, b"SysFreeString\0")?),
-            make_device: found(d3d11, b"D3D11CreateDevice\0").map(|at| function(at)),
+            startup: function(found(mf, c"MFStartup")?),
+            attributes: function(found(mf, c"MFCreateAttributes")?),
+            on_stream: function(found(mf, c"MFCreateMFByteStreamOnStream")?),
+            device_manager: function(found(mf, c"MFCreateDXGIDeviceManager")?),
+            memory_stream: function(found(shell, c"SHCreateMemStream")?),
+            text: function(found(ole, c"SysAllocString")?),
+            free_text: function(found(ole, c"SysFreeString")?),
+            make_device: found(d3d11, c"D3D11CreateDevice").map(|at| function(at)),
         })
     }
 }
@@ -886,16 +874,26 @@ impl Frames {
     }
 
     /// Has the engine transfer its frame into the target, `whole` its rectangle (43:
-    /// TransferVideoFrame): whether it did.
-    fn transfer(&self, engine: *mut Com, whole: &[i32; 4]) -> bool {
+    /// TransferVideoFrame): whether it did. A texture whose keyed mutex was abandoned (a
+    /// device lost while holding it) is dropped, to be made again.
+    fn transfer(&mut self, engine: *mut Com, whole: &[i32; 4]) -> bool {
         // SAFETY: the engine is alive; the target is a live texture or bitmap of that size,
         // the texture held by this device while drawn into.
-        unsafe {
+        let sent = unsafe {
             match self {
                 Frames::Gpu { texture: Some(texture), .. } => texture.held(|| call!(engine, 43, Transfer, texture.drawn, null(), whole, null()) >= 0),
-                Frames::Gpu { texture: None, .. } => false,
-                Frames::Bitmap { bitmap, .. } => call!(engine, 43, Transfer, *bitmap, null(), whole, null()) >= 0,
+                Frames::Gpu { texture: None, .. } => Ok(false),
+                Frames::Bitmap { bitmap, .. } => Ok(call!(engine, 43, Transfer, *bitmap, null(), whole, null()) >= 0),
             }
+        };
+        match (sent, self) {
+            (Ok(sent), _) => sent,
+            (Err(taken), Frames::Gpu { texture, .. }) if taken != WAIT_TIMEOUT => {
+                *texture = None;
+                false
+            }
+            // (Timed out: the next tick tries again.)
+            (Err(_), _) => false,
         }
     }
 
@@ -931,6 +929,12 @@ pub(crate) struct FrameTexture {
 unsafe impl Send for FrameTexture {}
 // SAFETY: as above.
 unsafe impl Sync for FrameTexture {}
+
+/// How long a device waits for another's work on a frame's texture, in ms (`AcquireSync`), and
+/// what it gives when that passes.
+#[cfg(feature = "gpu-draw")]
+pub(crate) const FRAME_WAIT: u32 = 100;
+const WAIT_TIMEOUT: i32 = 0x102;
 
 /// `IDXGIKeyedMutex` and `IDXGIResource`.
 #[cfg(feature = "gpu-draw")]
@@ -978,20 +982,23 @@ impl FrameTexture {
     }
 
     /// Does `work` on the texture drawn into, holding its keyed mutex (8: AcquireSync, 9:
-    /// ReleaseSync): other devices' work on it is done first, and theirs waits for this.
-    fn held<R>(&self, work: impl FnOnce() -> R) -> R {
+    /// ReleaseSync): other devices' work on it is done first, and theirs waits for this. Not
+    /// where the mutex can't be taken within `FRAME_WAIT`: what `AcquireSync` gave instead.
+    fn held<R>(&self, work: impl FnOnce() -> R) -> Result<R, i32> {
         #[cfg(feature = "gpu-draw")]
         if !self.mutex.is_null() {
-            // SAFETY: the mutex is alive; key 0 is the one every device takes.
-            unsafe { call!(self.mutex, 8, unsafe extern "system" fn(*mut Com, u64, u32) -> i32, 0, u32::MAX) };
-        }
-        let done = work();
-        #[cfg(feature = "gpu-draw")]
-        if !self.mutex.is_null() {
+            // SAFETY: the mutex is alive; key 0 is the one every device takes (`S_OK` only: a
+            // time-out and an abandoned mutex are success codes).
+            let taken = unsafe { call!(self.mutex, 8, unsafe extern "system" fn(*mut Com, u64, u32) -> i32, 0, FRAME_WAIT) };
+            if taken != 0 {
+                return Err(taken);
+            }
+            let done = work();
             // SAFETY: taken above.
             unsafe { call!(self.mutex, 9, unsafe extern "system" fn(*mut Com, u64) -> i32, 0) };
+            return Ok(done);
         }
-        done
+        Ok(work())
     }
 
     /// Copies the frame to the readable texture and reads its rows into `into`, opaque:
@@ -1002,8 +1009,9 @@ impl FrameTexture {
         let mut mapped = Pixels { first: null(), row_pitch: 0, slice_pitch: 0 };
         // SAFETY: two live textures of one size and format; the copy is mapped for reading.
         let mapped_now = unsafe {
-            self.held(|| call!(self.gpu.context, 47, unsafe extern "system" fn(*mut Com, *mut Com, *mut Com), self.readable, self.drawn));
-            call!(self.gpu.context, 14, Map, self.readable, 0, 1, 0, &mut mapped) >= 0 && !mapped.first.is_null()
+            self.held(|| call!(self.gpu.context, 47, unsafe extern "system" fn(*mut Com, *mut Com, *mut Com), self.readable, self.drawn)).is_ok()
+                && call!(self.gpu.context, 14, Map, self.readable, 0, 1, 0, &mut mapped) >= 0
+                && !mapped.first.is_null()
         };
         if !mapped_now {
             return false;
@@ -1107,13 +1115,11 @@ pub(crate) fn caption_style() -> CaptionStyle {
 /// The statics of `Windows.Media.ClosedCaptioning.ClosedCaptionProperties`, from combase's
 /// `RoGetActivationFactory`; null where there are none.
 fn caption_settings() -> *mut Com {
-    let combase = wide("combase.dll");
-    // SAFETY: a name ending in a zero, searched only in the system folder; the functions found
-    // have the types combase's headers give; the class name is made and deleted around the
-    // call.
+    let library = system_library("combase.dll");
+    let found = |name: &CStr| function_in(library, name);
+    // SAFETY: the functions found have the types combase's headers give; the class name is made
+    // and deleted around the call.
     unsafe {
-        let library = LoadLibraryExW(combase.as_ptr(), 0, 0x800);
-        let found = |name: &std::ffi::CStr| GetProcAddress(library, name.as_ptr().cast());
         let (make, factory, delete) = (found(c"WindowsCreateString"), found(c"RoGetActivationFactory"), found(c"WindowsDeleteString"));
         if library == 0 || make == 0 || factory == 0 || delete == 0 {
             return null_mut();

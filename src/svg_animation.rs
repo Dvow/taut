@@ -362,24 +362,42 @@ impl<'a> Timeline<'a> {
         let conditions: Vec<Condition> = self.animations.iter().flat_map(|animation| animation.timing.begins.iter().chain(&animation.timing.ends)).copied().collect();
         let events = EVENTS.into_iter().filter(|name| conditions.iter().any(|condition| matches!(condition, Condition::Event(_, said, _) if said == name))).collect();
         let keys = conditions.iter().any(|condition| matches!(condition, Condition::Key(..)));
-        let offsets = |synced: bool| {
-            let offset = |condition: &Condition| match *condition {
-                Condition::Synced(.., offset) if synced => Some(-offset),
-                Condition::Event(.., offset) | Condition::Key(_, offset) if !synced => Some(-offset),
-                _ => None,
-            };
-            conditions.iter().filter_map(offset).fold(0.0, f32::max)
-        };
+        // How far before an event, and before another animation's moment, an offset reaches.
+        let behind = conditions.iter().filter_map(|condition| match *condition {
+            Condition::Event(.., offset) | Condition::Key(_, offset) => Some(-offset),
+            _ => None,
+        });
+        let synced = conditions.iter().filter_map(|condition| match *condition {
+            Condition::Synced(.., offset) => Some(-offset),
+            _ => None,
+        });
         let count = file.elements.len();
         let pointer = (0..count).map(|at| file.own_property(at, "pointer-events").map(|said| said != "none")).collect();
         let brings = (0..count).map(|at| if file.elements[at].name == "use" { file.linked(at).unwrap_or(at) } else { at }).collect();
-        let link = |at: usize| file.elements[at].name == "a" && (file.attribute(at, "href").is_some() || file.attribute(at, "xlink:href").is_some());
-        let listened = |at: usize| conditions.iter().any(|condition| matches!(condition, Condition::Event(element, name, _) if *element == at && FOCUS_EVENTS.contains(name)));
-        let focusable: Vec<bool> = (0..count).map(|at| file.attribute(at, "tabindex").is_some() || link(at) || listened(at)).collect();
-        let tab_stop = |at: &usize| focusable[*at] && !file.attribute(*at, "tabindex").and_then(|index| index.trim().parse::<i32>().ok()).is_some_and(|index| index < 0);
-        let first_stop = (0..count).find(tab_stop);
-        let (behind, reach) = (offsets(false), offsets(true) * self.animations.len() as f32);
+        let (focusable, first_stop) = self.focus_stops(&conditions);
+        let (behind, reach) = (behind.fold(0.0, f32::max), synced.fold(0.0, f32::max) * self.animations.len() as f32);
         Listening { parents: self.parents.clone(), brings, pointer, events, keys, focusable, first_stop, behind, reach }
+    }
+
+    /// Which elements take focus, as in browsers: those with a `tabindex`, links, and those whose
+    /// focus events `conditions` wait for; and the first Tab reaches: the one with the lowest
+    /// positive `tabindex`, else the first in the file whose `tabindex` is not negative.
+    fn focus_stops(&self, conditions: &[Condition]) -> (Vec<bool>, Option<usize>) {
+        let file = &self.file;
+        let tab_index = |at: usize| file.attribute(at, "tabindex").and_then(|index| index.trim().parse::<i32>().ok());
+        let link = |at: usize| file.elements[at].name == "a" && (file.attribute(at, "href").is_some() || file.attribute(at, "xlink:href").is_some());
+        let mut focusable: Vec<bool> = (0..file.elements.len()).map(|at| tab_index(at).is_some() || link(at)).collect();
+        for condition in conditions {
+            if let Condition::Event(element, name, _) = condition {
+                focusable[*element] |= FOCUS_EVENTS.contains(name);
+            }
+        }
+        let order = |at: &usize| match tab_index(*at) {
+            Some(index) if index > 0 => (0, index),
+            _ => (1, 0),
+        };
+        let first_stop = (0..focusable.len()).filter(|at| focusable[*at] && tab_index(*at).is_none_or(|index| index >= 0)).min_by_key(order);
+        (focusable, first_stop)
     }
 
     /// The animation element named `id`, if there is one.
@@ -543,8 +561,8 @@ impl Scheduling {
     /// Takes in an event after the start, as `new` takes those fired before it: the begin and
     /// end times it gives each animation waiting for it, which plans that animation's next
     /// moment again. Where it ends the interval running sooner, that interval's end is as `new`
-    /// would have found it. (Each moment before the event's times must be taken already, and
-    /// none after: the schedule is then the one `new` makes with the event among those fired.)
+    /// would have found it. (No moment at or after the times it gives may be taken yet: the
+    /// schedule is then the one `new` makes with the event among those fired.)
     fn hear(&mut self, timeline: &Timeline, event: &Fired) {
         let fired = std::slice::from_ref(event);
         let (begun, ended) = (by_app(fired, false), by_app(fired, true));
@@ -708,9 +726,13 @@ impl Scheduling {
     }
 }
 
-/// Puts a time into a list of times in order.
+/// Puts a time into a list of times in order, once: listed twice, it begins or ends nothing more
+/// (and events while paused, all at one time, would pile up).
 fn insert(list: &mut Vec<f32>, time: f32) {
-    list.insert(list.partition_point(|other| *other <= time), time);
+    let at = list.partition_point(|other| *other <= time);
+    if list[..at].last() != Some(&time) {
+        list.insert(at, time);
+    }
 }
 
 /// Who waits on each animation's moments (see `Scheduling`): for each, the animations whose
@@ -777,7 +799,7 @@ fn time_of_day(text: &str) -> Option<(f64, Option<f64>)> {
         Some(at) => (&text[..at], Some(&text[at..])),
         None => (text, None),
     };
-    let parts: Vec<f64> = clock.split(':').map(|part| part.parse().ok()).collect::<Option<Vec<f64>>>()?;
+    let parts: Vec<f64> = clock.split(':').map(|part| part.parse::<f64>().ok().filter(|part| part.is_finite())).collect::<Option<Vec<f64>>>()?;
     let ([hours, minutes] | [hours, minutes, _]) = parts[..] else { return None };
     let of_day = hours * 3600.0 + minutes * 60.0 + parts.get(2).copied().unwrap_or(0.0);
     let zone = match zone {
@@ -1179,7 +1201,7 @@ fn offset(text: &str) -> Option<f32> {
 fn clock(text: &str) -> Option<f32> {
     let text = text.trim().trim_start_matches('+');
     if text.contains(':') {
-        let parts: Vec<f32> = text.split(':').map(|part| part.trim().parse::<f32>().ok()).collect::<Option<Vec<f32>>>()?;
+        let parts: Vec<f32> = text.split(':').map(|part| part.trim().parse::<f32>().ok().filter(|part| part.is_finite())).collect::<Option<Vec<f32>>>()?;
         return match parts[..] {
             [minutes, seconds] => Some(minutes * 60.0 + seconds),
             [hours, minutes, seconds] => Some(hours * 3600.0 + minutes * 60.0 + seconds),
@@ -1640,7 +1662,7 @@ impl AnimatedDrawing {
         self.heard += 1;
         if self.pending.len() >= KEPT_EVENTS {
             let text = self.text.clone();
-            self.catch_up(&Timeline::read(&text));
+            self.schedule(&Timeline::read(&text));
         }
     }
 
@@ -1651,7 +1673,7 @@ impl AnimatedDrawing {
         let last = self.last.replace(now);
         if last.is_none() {
             self.started = Some(crate::platform::unix_time() - f64::from(self.seconds));
-            self.playing = None;
+            (self.playing, self.schedule) = (None, None);
         }
         if let Some(last) = last.filter(|_| !self.paused) {
             self.seconds += now.saturating_sub(last).as_secs_f32();
@@ -1662,21 +1684,17 @@ impl AnimatedDrawing {
     /// went back, or it nears where the last one ends (it reaches a minute further).
     fn schedule(&mut self, timeline: &Timeline) -> &Schedule {
         let (seconds, heard) = (self.seconds, self.heard);
-        if self.schedule.as_ref().is_some_and(|(schedule, known, from)| *known != heard || seconds < *from || seconds >= schedule.until - 1.0) {
-            self.schedule = None;
-        }
-        if self.schedule.is_none() {
-            let schedule = self.look_ahead(timeline);
-            self.schedule = Some((schedule, heard, seconds));
-        }
-        let Some((schedule, ..)) = &self.schedule else { unreachable!() };
-        schedule
+        let kept = self.schedule.take().filter(|(schedule, known, from)| *known == heard && seconds >= *from && seconds < schedule.until - 1.0);
+        let kept = kept.unwrap_or_else(|| (self.look_ahead(timeline), heard, seconds));
+        &self.schedule.insert(kept).0
     }
 
     /// Plays the timeline on to the clock's time and works out the minute after: every moment
     /// before the clock (less how far before an event its offsets reach) is taken for good, and
     /// what can no longer matter forgotten; a copy goes on a minute further. The schedule is the
-    /// one worked out from the start with every event (see `Scheduling::hear`).
+    /// one worked out from the start with every event (see `Scheduling::hear`). The copy does
+    /// no more work than its span worked out from the start with the last minute's events may:
+    /// not all the budget saved up while it played.
     fn look_ahead(&mut self, timeline: &Timeline) -> Schedule {
         let (seconds, until, reach) = (self.seconds, self.seconds + LONGEST, self.listening.reach);
         let most = timeline.budget(until, self.heard);
@@ -1684,12 +1702,14 @@ impl AnimatedDrawing {
         if settled < self.settled {
             self.playing = None;
         }
+        let recent = self.fired.iter().rev().take_while(|event| event.seconds >= settled - LONGEST).count();
         let playing = self.catch_up(timeline);
         playing.run(timeline, |time| time >= settled, most);
         playing.forget(timeline, settled, reach);
+        let ahead_most = most.min(playing.work.saturating_add(timeline.budget(until - settled, recent)));
         let mut ahead = playing.clone();
         self.settled = settled;
-        let unfinished = ahead.run(timeline, |time| time > until, most);
+        let unfinished = ahead.run(timeline, |time| time > until, ahead_most);
         ahead.into_schedule(timeline, until, unfinished)
     }
 
@@ -2156,7 +2176,7 @@ mod tests {
         // A time alone is on the day the clock started; without a zone, in local time.
         assert_eq!(at("12:00Z"), Some(day + 43_200.0));
         assert_eq!(at("14:30"), Some(day + 52_200.0 - crate::date::ahead_of_greenwich((day + 52_200.0) as i64) as f64));
-        assert_eq!(["2026-13-01", "noon", "12", "", "2026-11-26T14", "14:30+x"].map(at), [None; 6]);
+        assert_eq!(["2026-13-01", "noon", "12", "", "2026-11-26T14", "14:30+x", "NaN:00", "inf:00"].map(at), [None; 8]);
     }
 
     #[test]
@@ -2249,6 +2269,82 @@ mod tests {
         }
         drawing.frame();
         assert!(drawing.playing.as_ref().unwrap().held() < 16, "{}", drawing.playing.as_ref().unwrap().held());
+    }
+
+    #[test]
+    fn a_wall_clock_time_counts_from_the_first_show_after_an_earlier_frame() {
+        // A frame drawn before it shows has no wall clock: showing works the timeline out again.
+        let file = r#"<svg viewBox="0 0 4 4"><rect width="4" height="4"><set attributeName="width" to="1" begin="wallclock(2026-11-26T12:00:02Z)"/></rect></svg>"#;
+        let mut drawing = AnimatedDrawing::new(file).unwrap();
+        drawing.frame();
+        drawing.advance(Duration::ZERO);
+        drawing.started = Some(crate::date::Date::new(2026, 11, 26).days() as f64 * 86_400.0 + 43_200.0);
+        drawing.seek(Duration::from_millis(2500));
+        assert_eq!(File::read(&drawing.frame()).own_property(1, "width"), Some("1"));
+    }
+
+    /// A file whose moves over its shape each begin an animation.
+    const MOVED: &str =
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect id="r" width="5" height="5"><animate attributeName="x" values="0;1" dur="0.1s" begin="mousemove"/></rect></svg>"##;
+
+    #[test]
+    fn moves_over_a_paused_drawing_keep_its_timeline_small() {
+        let mut drawing = AnimatedDrawing::new(MOVED).unwrap();
+        drawing.seek(Duration::from_secs(1));
+        drawing.pause();
+        for _ in 0..1000 {
+            drawing.dispatch_event("r", "mousemove");
+            drawing.frame();
+        }
+        assert!(drawing.playing.as_ref().unwrap().held() < 16, "{}", drawing.playing.as_ref().unwrap().held());
+    }
+
+    #[test]
+    fn events_with_no_frame_drawn_keep_its_timeline_small() {
+        let mut drawing = AnimatedDrawing::new(MOVED).unwrap();
+        for n in 0..3 * KEPT_EVENTS {
+            drawing.seek(Duration::from_secs_f32(n as f32 * 0.01));
+            drawing.dispatch_event("r", "mousemove");
+        }
+        let held = drawing.playing.as_ref().map_or(0, Scheduling::held);
+        assert!(held < KEPT_EVENTS, "{held}");
+    }
+
+    #[test]
+    fn the_minute_ahead_costs_no_more_after_hours_of_play() {
+        // Clicked, it repeats at no distance (the clock's step is coarser than its cycle) until
+        // the budget is spent: not the budget of all the hours played, on every event.
+        let file = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect id="r" width="5" height="5"/>
+            <animate id="a" href="#r" attributeName="x" values="0;5" dur="0.000001s" repeatCount="indefinite" begin="r.click+30s"/>
+            <animate href="#r" attributeName="y" values="0;5" dur="1s" begin="a.repeat(1)"/></svg>"##;
+        // (Before, ten hours in, an event took 170 times as long as a minute in.)
+        let event = |played: u64| {
+            let mut drawing = AnimatedDrawing::new(file).unwrap();
+            drawing.seek(Duration::from_secs(played));
+            drawing.dispatch_event("r", "click");
+            drawing.frame();
+            drawing.seek(Duration::from_secs(played + 1));
+            drawing.dispatch_event("r", "mousedown");
+            let started = std::time::Instant::now();
+            drawing.frame();
+            assert!(drawing.schedule.as_ref().is_some_and(|(schedule, ..)| schedule.unfinished), "the budget runs out");
+            started.elapsed()
+        };
+        let best = |played: u64| (0..3).map(|_| event(played)).min().unwrap_or_default();
+        let (minute, hours) = (best(60), best(36_000));
+        assert!(hours < 10 * minute.max(Duration::from_millis(2)), "a minute in {minute:?}, ten hours in {hours:?}");
+    }
+
+    #[test]
+    fn tab_reaches_the_lowest_positive_tabindex_first_as_in_browsers() {
+        let first = |file: &str| {
+            let timeline = Timeline::read(file);
+            timeline.listening().first_stop.and_then(|at| timeline.file.attribute(at, "id").map(str::to_string))
+        };
+        let positive = r##"<svg><rect id="a" tabindex="0"/><rect id="b" tabindex="3"/><rect id="c" tabindex="2"/><rect id="d" tabindex="2"/></svg>"##;
+        assert_eq!(first(positive).as_deref(), Some("c"));
+        let none = r##"<svg><rect id="a" tabindex="-1"/><a id="b" href="#a"/><rect id="c" tabindex="0"/></svg>"##;
+        assert_eq!(first(none).as_deref(), Some("b"));
     }
 
     #[test]

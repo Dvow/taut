@@ -9,7 +9,7 @@ use crate::color::Color;
 use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Tracks, VideoError, VideoSource};
 use crate::video_captions::Cue;
-use crate::video_cea608::Decoder;
+use crate::video_sei::Captions;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -189,8 +189,8 @@ struct Track {
     output_began: bool,
     /// The decoder's output format changed since `format_changed` was last asked.
     new_format: bool,
-    /// The CEA-608 captions read from an H.264 video's samples as they are fed.
-    captions: Option<Decoder>,
+    /// The CEA-608 captions in an H.264 video's samples, taken as they are fed.
+    captions: Option<Captions>,
 }
 
 // SAFETY: the NDK's extractors and decoders may be used from any thread; a track is used by
@@ -229,7 +229,7 @@ impl Track {
                 return Err(format!("the decoder for {mime} refused it ({configured})"));
             }
         }
-        self.captions = (mime == "video/avc").then(Decoder::default);
+        self.captions = (mime == "video/avc").then(Captions::default);
         Ok(())
     }
 
@@ -265,7 +265,7 @@ impl Track {
             let size = (m.AMediaExtractor_readSampleData)(self.extractor, buffer, room);
             let time = (m.AMediaExtractor_getSampleTime)(self.extractor);
             if let Some(captions) = self.captions.as_mut().filter(|_| size > 0) {
-                crate::video_sei::read_captions(captions, std::slice::from_raw_parts(buffer, size as usize), Duration::from_micros(time.max(0) as u64));
+                captions.fed(std::slice::from_raw_parts(buffer, size as usize), Duration::from_micros(time.max(0) as u64));
             }
             self.fed = size < 0;
             let flags = if self.fed { END_OF_STREAM } else { 0 };
@@ -730,15 +730,17 @@ impl State {
         (self.listed, self.tracks) = (tracks.clone(), Some(tracks));
     }
 
-    /// The captions in the video stream are these cues: a track of their own, `CC1`, listed
-    /// after the source's once they first come.
-    fn captions_in_stream(&mut self, cues: Vec<Cue>) {
+    /// The captions in the video stream are these cues from the `from`th on (those before it
+    /// stay): a track of their own, `CC1`, listed after the source's once they first come.
+    fn captions_in_stream(&mut self, from: usize, cues: &[Cue]) {
         if self.in_stream.is_none() {
             self.listed.captions.push(crate::video::Track { language: String::new(), name: "CC1".into() });
             self.listed.sound_chosen = self.listed.sound_chosen.map(|_| self.sound_track);
             (self.tracks, self.tracks_changed) = (Some(self.listed.clone()), true);
         }
-        self.in_stream = Some(cues);
+        let kept = self.in_stream.get_or_insert_default();
+        kept.truncate(from);
+        kept.extend_from_slice(cues);
     }
 }
 
@@ -909,8 +911,6 @@ struct Pictures {
     /// How its frames become RGB, as the decoder's output format says: read again when that
     /// changes.
     colours: Option<Colours>,
-    /// The captions read in the video stream as last handed on.
-    captions_handed: Vec<Cue>,
 }
 
 impl Pictures {
@@ -920,7 +920,7 @@ impl Pictures {
         let Some((at, mime, size)) = video else { return Ok(None) };
         let reader = Reader::new(track.media, size)?;
         track.decode(at, &mime, reader.window)?;
-        Ok(Some(Pictures { track, reader, seeks: 0, target: Some(Duration::ZERO), before: None, next: None, drained: false, colours: None, captions_handed: Vec::new() }))
+        Ok(Some(Pictures { track, reader, seeks: 0, target: Some(Duration::ZERO), before: None, next: None, drained: false, colours: None }))
     }
 
     /// One step: follows a seek, decodes, shows a frame that is due. Whether all is shown.
@@ -947,11 +947,10 @@ impl Pictures {
         Ok(false)
     }
 
-    /// Hands the captions read in the video stream on, where there are some and they changed.
+    /// Hands on what changed of the captions read in the video stream.
     fn hand_on_captions(&mut self, shared: &Shared) {
-        let Some(captions) = self.track.captions.as_ref().filter(|captions| captions.found() && captions.cues() != self.captions_handed) else { return };
-        self.captions_handed = captions.cues().to_vec();
-        shared.lock().captions_in_stream(self.captions_handed.clone());
+        let Some((from, cues)) = self.track.captions.as_mut().and_then(Captions::changes) else { return };
+        shared.lock().captions_in_stream(from, cues);
     }
 
     /// Goes to the key frame before `to`; frames already decoded are dropped (a flushed decoder
@@ -961,16 +960,22 @@ impl Pictures {
         self.track.seek(to);
     }
 
-    /// Feeds the decoder and takes its next frame, if it has one: as `next`.
+    /// Feeds the decoder and takes its next frame, if it has one: as `next`. The captions fed
+    /// up to that frame are read.
     fn decode(&mut self) -> Result<(), String> {
         self.track.feed();
         let Some((at, info)) = self.track.output(Duration::from_millis(10))? else { return Ok(()) };
-        if info.flags & END_OF_STREAM != 0 {
+        let ended = info.flags & END_OF_STREAM != 0;
+        let time = if ended { Duration::MAX } else { Duration::from_micros(info.time_us.max(0) as u64) };
+        if let Some(captions) = &mut self.track.captions {
+            captions.decoded(time);
+        }
+        if ended {
             self.track.release(at, false);
             self.drained = true;
             return Ok(());
         }
-        self.next = Some((at, Duration::from_micros(info.time_us.max(0) as u64)));
+        self.next = Some((at, time));
         Ok(())
     }
 

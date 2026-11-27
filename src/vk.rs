@@ -1,10 +1,11 @@
 //! Vulkan's definitions, as vulkan_core.h declares them, for what in taut uses Vulkan: the layer
 //! over a program's own Vulkan, and windows shown through Vulkan.
 //!
-//! Nothing is linked. `loader` opens the system's loader (vulkan-1.dll, libvulkan.so.1) and
-//! gives its `vkGetInstanceProcAddr`; every other function is found by name through it, into a
-//! table each user declares with `functions!`. Structures are declared with `structures!`: each
-//! starts all zero, which leaves every pointer null, every flag off and nothing chained.
+//! Nothing is linked. `loader` opens the system's loader (vulkan-1.dll, libvulkan.so.1,
+//! Android's libvulkan.so) and gives its `vkGetInstanceProcAddr`; every other function is found
+//! by name through it, into a table each user declares with `functions!`. Structures are
+//! declared with `structures!`: each starts all zero, which leaves every pointer null, every
+//! flag off and nothing chained.
 // Every function here is `#[inline]`: only a program that calls one compiles it. (Compiled in
 // the library itself, even unused, this code moved how the rest is grouped and optimised.)
 use std::ffi::{c_char, c_void};

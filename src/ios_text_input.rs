@@ -77,7 +77,7 @@ struct Document {
     editing: bool,
     secret: bool,
     cursor: Option<Rect>,
-    /// The `UIWindow` the input view was in at the last run.
+    /// The `UIWindow` of the front window's view at the last run.
     window: Obj,
     delegate: Obj,
     tokenizer: Obj,
@@ -285,8 +285,8 @@ fn focused(ui: &Ui) -> Focused {
 /// focus, and gives it back to the library's view after; it lies over the page (`area`, in the
 /// view), moved into the front window's view where another window came to the front. Its
 /// document follows the box, and the keyboard hears what the app changed. A password box,
-/// another kind of box, another window, and the view's scene come back in a new `UIWindow`,
-/// start the keyboard afresh.
+/// another kind of box, another window, or the view moved into a new `UIWindow` (its scene come
+/// back) starts the keyboard afresh.
 pub(crate) fn follow(ui: &mut Ui, area: NSRect) {
     let (input, view) = (INPUT.get(), crate::ios::view());
     // SAFETY: the input view, and what is composed, move into the front window's view; the

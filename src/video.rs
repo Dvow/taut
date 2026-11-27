@@ -457,14 +457,16 @@ impl Video {
     }
 
     /// Asks the player what changed and takes its newest frame, once per moment of the
-    /// interface (a rerun shows the same); asks to run again when the next is due.
+    /// interface (a rerun shows the same); asks to run again in half the time between frames.
+    /// (Asked once a gap, one frame missed doubles the gap seen, and from then on every other
+    /// frame is missed: a 30 fps video showed 10 fps.)
     fn update(&mut self, ui: &mut Ui) {
         if self.asked != Some(ui.now) {
             self.ask(ui);
         }
         let waits = self.error.is_none() && (self.playing || self.awaited);
         if waits && !ui.window_minimized() {
-            ui.wake_after(if self.playing { self.gap.div_f32(self.speed) } else { Duration::from_millis(10) });
+            ui.wake_after(if self.playing { (self.gap / 2).div_f32(self.speed) } else { Duration::from_millis(10) });
         }
     }
     /// Takes the source's tracks once the player knows them: they come before the app's
@@ -1066,6 +1068,19 @@ pub(crate) mod tests {
             seen.push(number);
         }
         assert!(seen.windows(2).all(|two| two[0] <= two[1]) && seen.last() >= Some(&25), "frames shown: {seen:?}");
+    }
+
+    #[test]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
+    fn a_playing_video_asks_again_sooner_than_its_frame_time() {
+        let _alone = alone();
+        let Some(video) = opened(false) else { return };
+        let mut trial = trial(video, false);
+        until(&mut trial, "the first frame", |video| video.size().is_some());
+        trial.app.play();
+        until(&mut trial, "frames", |video| video.frames_shown() >= 3);
+        // (Frames come every 100 ms: asked once a gap seen, a frame missed would be every other.)
+        assert!(trial.ui.wake_in().is_some_and(|wait| wait < Duration::from_millis(100)), "asks again in {:?}", trial.ui.wake_in());
     }
 
     #[test]

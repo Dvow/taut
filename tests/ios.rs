@@ -1538,6 +1538,7 @@ mod phone {
         unsafe {
             let delegate: Obj = send0(class(c"TautSceneDelegate"), c"new");
             send1::<(), _>(scene, c"setDelegate:", delegate);
+            send0::<()>(delegate, c"release");
             send3::<(), _, _, _>(delegate, c"scene:willConnectToSession:options:", scene, send0::<Obj>(scene, c"session"), std::ptr::null_mut::<c_void>());
         }
     }

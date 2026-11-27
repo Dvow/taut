@@ -2,11 +2,12 @@
 //! a page, selectable and copyable by pointer, keys and its context menu, and told to screen
 //! readers as a document.
 //!
-//! It is laid out as a page, not box by box, and only as far as it is seen. Blocks are placed
-//! top down and their text wrapped into rows (`rich_text.rs`), each text run measured as its
-//! block is first laid out: down to a screen past what shows. Below that the height is
-//! estimated from the text's length, and laid out for real as it scrolls into view; a new width
-//! lays it out again the same way. Only blocks in view are described, found by halving each
+//! It is laid out as a page, not box by box, and only around what is seen. Blocks are placed
+//! top down and their text wrapped into rows (`rich_text.rs`), each text run measured once, as
+//! its block is first laid out: a stretch from a screen above what shows to a screen below,
+//! which may start at any block. Above and below it the height is estimated from the text's
+//! length; a far jump lays out a new stretch where the estimate puts it, and what shows stays in
+//! place as the estimate is corrected. Only blocks in view are described, found by halving each
 //! container's children, each a box inside its parent block's box: a document of any length
 //! costs a screenful each run. Boxes nest as blocks do, so screen readers get each block as what
 //! it is, and a table as rows and cells under its headings. Links in view get boxes after the
@@ -213,6 +214,18 @@ fn block_of(writing: &Writing, at: u32) -> usize {
     writing.blocks.partition_point(|block| block.words[0] <= at).saturating_sub(1)
 }
 
+/// The table block `at` is, or is in.
+fn table_around(writing: &Writing, at: usize) -> Option<usize> {
+    let mut up = at;
+    while up != 0 && up < writing.blocks.len() {
+        if writing.blocks[up].kind == Kind::Table {
+            return Some(up);
+        }
+        up = writing.blocks[up].parent as usize;
+    }
+    None
+}
+
 /// Each link's text, by number from 1: from its first piece's start to its last's end. (A link
 /// with no text is empty where the one before it ends: the starts stay in order.)
 fn link_words(writing: &Writing, count: usize) -> Vec<[u32; 2]> {
@@ -375,9 +388,10 @@ impl Shown {
         self.high = self.areas[0].rect.h.max(self.bottom) + self.estimate(doc, &t, self.next, count);
     }
 
-    /// Lays out afresh from block `at` (from its table, in one), where its height is estimated
-    /// to be.
+    /// Lays out afresh from block `at` (from its table, in one: a table is laid out whole), where
+    /// its height is estimated to be.
     fn lay_from(&mut self, doc: &Markdown, given: &mut Given, at: usize) {
+        let at = table_around(&doc.writing, at).unwrap_or(at);
         let y = if at <= 1 { 0.0 } else { self.estimated_y(doc, given.t, at) };
         let size = sizes(given.t);
         Laying { shown: self, doc, writing: &doc.writing, size, given }.start_at(at, y);
@@ -397,7 +411,8 @@ impl Shown {
         self.lay_more(doc, given, 0.0, at);
     }
 
-    /// Lays out what `view` shows and a screen above and below it: on from what is laid out, or
+    /// Lays out what `view` shows and a screen above and below it, through the end where the
+    /// view is at it (so the end it stays at is found at once): on from what is laid out, or
     /// afresh where the view is far from it. Returns how far the view must scroll to keep what
     /// it shows in place (from laying out afresh above it).
     fn cover(&mut self, doc: &Markdown, given: &mut Given, view: [f32; 2]) -> f32 {
@@ -405,21 +420,23 @@ impl Shown {
         self.screen = (view[1] - view[0]).max(1.0);
         let [top, bottom] = [view[0] - self.screen, view[1] + self.screen];
         let far_below = self.next < count && view[0] > self.bottom + 2.0 * self.screen;
+        let end = if self.first < self.next && view[1] >= self.high - 0.5 { count - 1 } else { 0 };
+        let mut moved = 0.0;
         if far_below || view[1] < self.top {
             let at = self.block_at(doc, t, top);
             self.lay_from(doc, given, at);
         } else if top < self.top && self.first > 1 {
             // (Laid out afresh from further up, by whatever the estimate above was off: the
-            // first block that showed stays where it showed.)
+            // first block that showed stays where it showed, and the view moves with it.)
             let anchor = self.anchor(&doc.writing, view);
             let was = anchor.map_or(0.0, |at| self.areas[at].rect.y);
             let at = self.block_at(doc, t, top - self.screen);
             self.lay_from(doc, given, at);
-            self.lay_more(doc, given, bottom, anchor.unwrap_or(0));
-            return anchor.map_or(0.0, |at| self.areas[at].rect.y - was);
+            self.lay_more(doc, given, 0.0, anchor.unwrap_or(0));
+            moved = anchor.map_or(0.0, |at| self.areas[at].rect.y - was);
         }
-        self.lay_more(doc, given, bottom, 0);
-        0.0
+        self.lay_more(doc, given, bottom + moved, end);
+        moved
     }
 
     /// The first block in view that holds no others (its place is its own, not where laying
@@ -511,11 +528,11 @@ impl Shown {
     }
 
     /// The link pieces given boxes, in order: those in view (in the blocks `order`), the link
-    /// before them and the one after (so Tab reaches them), and the focused link wherever it
-    /// is. Links not laid out are returned apart, each to get a box of its own: the focused one,
-    /// else the one before what is laid out, and the one after, where no link laid out is
-    /// before or after the view. (0 for none.)
-    fn reachable(&self, writing: &Writing, order: &[u32], view: [f32; 2]) -> (Vec<Target>, [u32; 2]) {
+    /// before them and the one after, and the focused link and those either side of it, wherever
+    /// they are: so Tab and Shift+Tab move on in text order. Links not laid out are returned
+    /// apart, in order, those above what is laid out and those below, each to get a box of its
+    /// own.
+    fn reachable(&self, writing: &Writing, order: &[u32], view: [f32; 2]) -> (Vec<Target>, [Vec<u32>; 2]) {
         let worded = order.iter().map(|at| *at as usize).filter(|at| worded(writing.blocks[*at].kind));
         let [low, high] = worded.map(|at| self.rows_in_view(at, view)).fold([usize::MAX, 0], |[low, high], [from, to]| [low.min(from), high.max(to)]);
         let [from, to] = [low, high].map(|row| self.targets.partition_point(|(at, _)| (*at as usize) < row));
@@ -523,31 +540,35 @@ impl Shown {
         let to = to.max(from);
         let tab_stop = |at: &usize| self.laid.frags[self.targets[*at].1 as usize].part == 0;
         let (before, after) = ((0..from).rev().find(tab_stop), (to..self.targets.len()).find(tab_stop));
-        let focused = self.targets.partition_point(|target| link_of(self, target) < self.focused);
-        let focused = self.targets.get(focused).filter(|target| link_of(self, target) == self.focused).map(|_| focused);
-        // (In text order: the focused one goes in where it belongs, if not there already.)
         let mut picked: Vec<usize> = before.into_iter().chain(from..to).chain(after).collect();
-        if let Some(focused) = focused
-            && let Err(at) = picked.binary_search(&focused)
-        {
-            picked.insert(at, focused);
-        }
-        // (The links before what is laid out, and the first and last laid out.)
+        // (Where no link laid out is before or after the view: the links next to what is laid
+        // out, `ahead` of it and after the last laid out.)
         let start = writing.blocks.get(self.first).map_or(u32::MAX, |block| block.words[0]);
         let ahead = self.links.partition_point(|words| words[0] < start) as u32;
-        let laid = [self.targets.first().map_or(ahead + 1, |target| link_of(self, target)), self.targets.last().map_or(ahead, |target| link_of(self, target))];
-        let above = match before {
-            _ if self.focused != 0 && self.focused < laid[0] => self.focused,
-            None => ahead,
-            Some(_) => 0,
-        };
-        let below = match after {
-            _ if self.focused > laid[1] => self.focused,
-            None => laid[1] + 1,
-            Some(_) => 0,
-        };
-        let below = if (below as usize) <= self.links.len() { below } else { 0 };
-        (picked.into_iter().map(|at| self.targets[at]).collect(), [above, below])
+        let last = self.targets.last().map_or(ahead, |target| link_of(self, target));
+        let next_to = [if before.is_none() { ahead } else { 0 }, if after.is_none() { last + 1 } else { 0 }];
+        let focus = if self.focused == 0 { [0; 3] } else { [self.focused - 1, self.focused, self.focused + 1] };
+        let mut apart = [Vec::new(), Vec::new()];
+        for link in next_to.into_iter().chain(focus).filter(|link| *link != 0 && *link as usize <= self.links.len()) {
+            self.pick_link(link, ahead, &mut picked, &mut apart);
+        }
+        (picked.into_iter().map(|at| self.targets[at]).collect(), apart)
+    }
+
+    /// Gives link `link` a box, once, in text order: its first piece among `picked` where it is
+    /// laid out; else apart, above what is laid out (where the `ahead` links are) or below.
+    fn pick_link(&self, link: u32, ahead: u32, picked: &mut Vec<usize>, apart: &mut [Vec<u32>; 2]) {
+        let at = self.targets.partition_point(|target| link_of(self, target) < link);
+        if self.targets.get(at).is_some_and(|target| link_of(self, target) == link) {
+            if let Err(place) = picked.binary_search(&at) {
+                picked.insert(place, at);
+            }
+            return;
+        }
+        let side = &mut apart[usize::from(link > ahead)];
+        if let Err(place) = side.binary_search(&link) {
+            side.insert(place, link);
+        }
     }
 
     /// The text byte nearest a point (from the document's top left): in the nearest text block
@@ -645,8 +666,8 @@ struct Laying<'a, 'b> {
 }
 
 impl Laying<'_, '_> {
-    /// Starts laying out afresh at block `at` (at its table, in one), `y` down: the containers
-    /// around it are opened there, as if laid out down to it.
+    /// Starts laying out afresh at block `at` (in no table), `y` down: the containers around it
+    /// are opened there, as if laid out down to it.
     fn start_at(&mut self, at: usize, y: f32) {
         let blocks = &self.writing.blocks;
         let mut around = Vec::new();
@@ -655,10 +676,6 @@ impl Laying<'_, '_> {
             around.push(up);
             up = blocks[up].parent as usize;
         }
-        // (A table is laid out whole.)
-        let table = around.iter().rposition(|up| blocks[*up].kind == Kind::Table);
-        let at = table.map_or(at, |table| around[table]);
-        around.drain(..table.map_or(0, |table| table + 1));
         self.shown.restart(at, y, self.size.gap);
         for container in around.into_iter().rev() {
             self.ready_for(container, y);
@@ -880,7 +897,7 @@ impl Ui {
     /// code highlighted by its language (scrolling sideways where wide), tables, task check
     /// boxes, rules, and images the app supplies by name ([`Markdown::set_picture`]). As wide
     /// as its room, as high as it comes out; in a scroll box, only what is in view is
-    /// described, and only what has been in view is laid out.
+    /// described, and only what is around it is laid out (a jump to the end lays out the end).
     ///
     /// Select with the pointer (double click: word, triple: block, Shift extends; dragged past
     /// the view's edge, it scrolls) or, once focused, with the keys (Shift+arrows, Home/End;
@@ -928,7 +945,7 @@ impl Ui {
         let code_scrolls = page.code_scrolls;
         (shown.used, shown.code_scrolls) = (true, code_scrolls);
         self.document_menu(shown, doc, &whole, &links);
-        self.follow_focus(shown, doc, links.focused, apart, within, view);
+        self.follow_focus(shown, doc, links.focused, &apart, within, view);
         let link = doc.links.get(links.pressed.wrapping_sub(1) as usize).map(|(url, _)| url.as_str());
         let heading = link
             .and_then(|url| url.strip_prefix('#'))
@@ -985,8 +1002,8 @@ impl Ui {
 
     /// Notes the focused link. One focus just reached through a stand-in box (links `apart`) is
     /// laid out, and scrolled to (in scroll box `within`, now showing `view`).
-    fn follow_focus(&mut self, shown: &mut Shown, doc: &Markdown, focused: u32, apart: [u32; 2], within: u32, view: [f32; 2]) {
-        let arrived = shown.focused != focused && apart.contains(&focused);
+    fn follow_focus(&mut self, shown: &mut Shown, doc: &Markdown, focused: u32, apart: &[Vec<u32>; 2], within: u32, view: [f32; 2]) {
+        let arrived = shown.focused != focused && apart.iter().flatten().any(|link| *link == focused);
         shown.focused = focused;
         let Some(words) = shown.links.get(focused.wrapping_sub(1) as usize).filter(|_| arrived) else { return };
         self.lay_document_to(shown, doc, block_of(&doc.writing, words[0]));
@@ -1143,13 +1160,13 @@ impl Ui {
     /// The document's blocks in view, each a box inside its parent block's box; then its links'
     /// boxes. Returns what was done to its links, and the links given stand-in boxes, before and
     /// after the rest (0 for none).
-    fn document_blocks(&mut self, page: &mut Page) -> (Links, [u32; 2]) {
+    fn document_blocks(&mut self, page: &mut Page) -> (Links, [Vec<u32>; 2]) {
         let (blocks, shown, view, rule) = (&page.writing.blocks, page.shown, page.view, self.theme.line_strong);
         let order = shown.in_view(page.writing, view);
         let (targets, apart) = shown.reachable(page.writing, &order, view);
         let mut links = self.link_states(&page.shape, &targets);
-        for link in apart.into_iter().filter(|link| *link != 0) {
-            links.note(link, self.link_state(link, 0));
+        for link in apart.iter().flatten() {
+            links.note(*link, self.link_state(*link, 0));
         }
         page.lit = links.lit.clone();
         // The containers entered, innermost last (the page is the document's own box).
@@ -1171,16 +1188,16 @@ impl Ui {
         for _ in 1..open.len() {
             self.close();
         }
-        // (Links not laid out: a box at the top of the view or of what is laid out, and one at
-        // the foot, which Tab reaches in text order.)
-        let [above, below] = apart;
-        self.stand_in_link(page, above, view[0].max(shown.top));
+        // (Links not laid out: boxes at the top of the view or of what is laid out for those
+        // above, and at the foot for those below, which Tab reaches in text order.)
+        let [above, below] = &apart;
+        above.iter().for_each(|link| self.stand_in_link(page, *link, view[0].max(shown.top)));
         self.link_boxes(&page.shape, &targets, [0.0; 2]);
-        self.stand_in_link(page, below, (view[1].min(shown.bottom) - 1.0).max(0.0));
+        below.iter().for_each(|link| self.stand_in_link(page, *link, (view[1].min(shown.bottom) - 1.0).max(0.0)));
         (links, apart)
     }
 
-    /// A box for link `link` (none for 0), not laid out: a point at `y` that Tab reaches.
+    /// A box for link `link`, not laid out: a point at `y` that Tab reaches.
     fn stand_in_link(&mut self, page: &Page, link: u32, y: f32) {
         let Some([from, to]) = page.shown.links.get(link.wrapping_sub(1) as usize).copied() else { return };
         let name = page.writing.words.get(from as usize..to as usize).unwrap_or("");
@@ -1459,13 +1476,26 @@ mod tests {
     /// filling a window 420 by 300.
     fn long_document(before: &str, after: &str) -> Trial<Markdown> {
         let lines: String = (0..10_000).map(|n| format!("Line {n} of a long document.\n\n")).collect();
-        let mut trial = Trial::new(Markdown::parse(&format!("{before}{lines}{after}")), |doc: &mut Markdown, ui| {
+        scrolled_document(&format!("{before}{lines}{after}"))
+    }
+
+    /// `text` in a scroll box filling a window 420 by 300.
+    fn scrolled_document(text: &str) -> Trial<Markdown> {
+        let mut trial = Trial::new(Markdown::parse(text), |doc: &mut Markdown, ui| {
             ui.column().grow().scroll().open();
             ui.markdown(doc);
             ui.close();
         });
         trial.resize(420.0, 300.0, 1.0);
         trial
+    }
+
+    /// Four thousand lines, each with code `high` lines high below it, then `Last words.`: code
+    /// is estimated by its bytes as if wrapped, so laid out it comes out far higher.
+    fn coded_document(high: usize) -> Trial<Markdown> {
+        let code = format!("```\n{}```\n\n", "x\n".repeat(high));
+        let text: String = (0..4000).map(|n| format!("Line {n}.\n\n{code}")).collect();
+        scrolled_document(&format!("{text}Last words.\n"))
     }
 
     /// Where paragraph `name` shows: its top in the window.
@@ -1531,6 +1561,35 @@ mod tests {
     }
 
     #[test]
+    fn a_table_at_the_top_is_at_the_top_when_the_selection_jumps_back_to_it() {
+        let mut trial = long_document("| Name | Size |\n|---|---|\n| a | 1 |\n\n", "");
+        trial.wheel(pt(200.0, 150.0), 0.0, 1e9);
+        trial.click(pt(200.0, 150.0));
+        trial.key("Ctrl+Shift+Home");
+        // Nothing lies above it: scrolled up, its top is the view's.
+        trial.wheel(pt(200.0, 150.0), 0.0, -100.0);
+        assert_eq!(trial.find(Role::ColumnHeader, "Name").rect.y, 0.0);
+    }
+
+    #[test]
+    fn tab_and_shift_tab_move_on_from_a_link_far_from_the_view() {
+        let text: String = (0..3000).map(|n| if n % 1000 == 500 { format!("Line {n} [link {}](#a).\n\n", n / 1000) } else { format!("Line {n}.\n\n") }).collect();
+        let mut trial = scrolled_document(&text);
+        trial.key("Tab");
+        trial.key("Tab");
+        assert!(trial.find(Role::Link, "link 0").focused);
+        // The view jumps to the end, far below the focused link: Tab goes on to the next link,
+        // laid out and shown; Shift+Tab back.
+        trial.wheel(pt(200.0, 150.0), 0.0, 1e9);
+        trial.key("Tab");
+        let next = trial.find(Role::Link, "link 1");
+        assert!(next.focused && next.rect.y >= 0.0 && next.rect.bottom() <= 300.0, "{next:?}");
+        assert!(trial.has(Role::Paragraph, "Line 1500 link 1."));
+        trial.key("Shift+Tab");
+        assert!(trial.find(Role::Link, "link 0").focused);
+    }
+
+    #[test]
     fn a_new_width_keeps_what_shows_at_the_top_there() {
         let mut trial = long_document("", "");
         trial.wheel(pt(200.0, 150.0), 0.0, 150_000.0);
@@ -1538,6 +1597,29 @@ mod tests {
         trial.resize(300.0, 300.0, 1.0);
         assert!((top_of(&trial, &shown.0) - shown.1).abs() < 1.0, "{} moved", shown.0);
         assert!(with_shown(&mut trial.ui, measured) < 100);
+    }
+
+    #[test]
+    fn a_jump_to_the_end_finds_it_at_once_however_far_off_the_estimate() {
+        // (A trial fails where a run would not settle.)
+        let mut trial = coded_document(30);
+        trial.wheel(pt(200.0, 150.0), 0.0, 1e9);
+        let last = trial.find(Role::Paragraph, "Last words.").rect;
+        assert!(last.bottom() <= 300.0 && last.bottom() > 250.0, "the end shows at the foot: {last:?}");
+    }
+
+    #[test]
+    fn laid_out_afresh_from_further_up_it_reaches_a_screen_below_where_the_view_moves() {
+        let mut trial = coded_document(10);
+        trial.wheel(pt(200.0, 150.0), 0.0, 1e9);
+        let mut kept = trial.ui.take_writings();
+        let shown = kept.documents.values_mut().next().expect("a document");
+        // A view from the first line laid out, below its code: what is above is laid out.
+        let line = (shown.first..shown.next).find(|at| trial.app.writing.blocks[*at].kind == Kind::Paragraph).expect("a line laid out");
+        let view = [shown.areas[line].rect.y, shown.areas[line].rect.y + 300.0];
+        let moved = trial.ui.laying(shown, |shown, given| shown.cover(&trial.app, given, view));
+        assert!(moved > 0.0 && shown.top < view[0] + moved - 300.0, "laid out afresh from further up, by {moved}");
+        assert!(shown.bottom >= view[1] + moved + 300.0, "laid out to {}, the view moved to {:?}", shown.bottom, [view[0] + moved, view[1] + moved]);
     }
 
     #[cfg(feature = "right-to-left")]

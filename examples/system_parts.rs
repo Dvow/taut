@@ -21,8 +21,9 @@ pub struct Parts {
     asked: Asked,
     /// Where the app's own files go.
     folder: PathBuf,
-    /// The box checked for spelling, and the code editor.
+    /// The box checked for spelling.
     note: String,
+    /// The code editor the system's keyboard types into.
     code: CodeEditor,
     notification: Option<Notification>,
     printing: Option<PrintJob>,

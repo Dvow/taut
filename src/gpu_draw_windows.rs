@@ -17,7 +17,7 @@ use crate::text::Font;
 #[cfg(feature = "video")]
 use crate::video::FrameTexture;
 #[cfg(feature = "video")]
-use crate::video_windows::A_KEYED_MUTEX;
+use crate::video_windows::{A_KEYED_MUTEX, FRAME_WAIT};
 use crate::windows::sys::{ExtTextOutW, GdiFlush, HANDLE, IntersectClipRect, RestoreDC, SaveDC, SelectObject, SetBkMode, SetTextColor, SetViewportOrgEx};
 use crate::windows::{function_in, system_library};
 use std::ffi::{CStr, c_char, c_void};
@@ -343,6 +343,12 @@ impl Pipeline {
             }
             function::<unsafe extern "system" fn(Com, u32, u32, u32, u32)>(context, 21)(context, 4, list.quads.len() as u32, 0, 0);
             function::<unsafe extern "system" fn(Com, u32, *const Com, Com)>(context, 33)(context, 0, null(), null_mut());
+            // (Unbound: a bound view would keep a closed video's texture alive, and a frame's
+            // texture is read only while its keyed mutex is held.)
+            #[cfg(feature = "video")]
+            if !frames.is_empty() {
+                function::<Views>(context, 8)(context, 3, frames.len() as u32, [null_mut(); crate::gpu_draw::MOST_FRAMES].as_ptr());
+            }
         }
         #[cfg(feature = "video")]
         give_back(&frames);
@@ -350,8 +356,8 @@ impl Pipeline {
     }
 
     /// The views of `frames` on this device, each opened the first time it is drawn, their
-    /// keyed mutexes taken (8: AcquireSync, within 100 ms): none where one can't be, those taken
-    /// given back. Frames gone are let go first.
+    /// keyed mutexes taken (8: AcquireSync, within `FRAME_WAIT`): none where one can't be, those
+    /// taken given back. Frames gone are let go first.
     #[cfg(feature = "video")]
     fn take_frames(&mut self, device: Com, frames: &[Arc<FrameTexture>]) -> Option<Vec<[Com; 2]>> {
         self.opened.retain(|opened| opened.frame.strong_count() > 0);
@@ -364,7 +370,7 @@ impl Pipeline {
             let OpenedFrame { view, mutex, .. } = self.opened[at];
             // SAFETY: the mutex, where there is one, is alive; key 0 is the one every device
             // takes (`S_OK` only: a time-out is a success code).
-            let held = !mutex.is_null() && unsafe { function::<unsafe extern "system" fn(Com, u64, u32) -> i32>(mutex, 8)(mutex, 0, 100) } == 0;
+            let held = !mutex.is_null() && unsafe { function::<unsafe extern "system" fn(Com, u64, u32) -> i32>(mutex, 8)(mutex, 0, FRAME_WAIT) } == 0;
             if !held {
                 give_back(&taken);
                 return None;

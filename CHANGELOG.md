@@ -287,12 +287,15 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   2.6 to 3.9 ms of CPU a frame instead of 4.3 to 7.6.
 - **Captions in the video stream** (CEA-608 in H.264, feature `video`): a caption track `CC1`,
   found once its first data plays. Windows reads them through Media Foundation's timed text;
-  Android and Linux through taut's own decoder (from the extractor's samples; from GStreamer's
-  caption meta).
+  Android and Linux through taut's own decoder (from the extractor's samples, put in display
+  order; from GStreamer's caption meta).
 - **Windows video:** Media Foundation starts once for the program, not per video (40 opens now
   take half the time); the device videos decode on is made again after a GPU reset (before, every
   video after one failed). Media Foundation keeps the pitch at other speeds: checked at 0.5, 1.5
   and 2 times.
+- **Fixed:** a playing video asked for its next frame once per gap between the frames it took,
+  so one late frame made it miss every other frame from then on (a 30 fps video showed 10 fps).
+  It now asks twice per gap.
 - **SVG animation in a window (`AnimatedDrawing`)** keeps its timeline as it plays and adds
   each event to it: an event costs the same after an hour as at the start (the same schedule as
   before). None is forgotten: before, a file waiting for `mousemove` lost an early `click` after

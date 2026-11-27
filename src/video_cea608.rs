@@ -40,16 +40,32 @@ pub(crate) struct Decoder {
     /// The channel of the last control pair (data of channel 2 is skipped until channel 1 is
     /// named again).
     on_channel_one: bool,
-    /// The cues so far, the last one open (its end not yet known) while its text shows.
+    /// The cues so far, in time order, the last one open (its end not yet known) while its text
+    /// shows.
     cues: Vec<Cue>,
     open: bool,
+    /// The earliest time the next change can take: the last change's, or where a seek went
+    /// (data read again from the key frame before it changes the screen from there).
+    not_before: Duration,
     /// Whether any caption data came.
     found: bool,
 }
 
 impl Default for Decoder {
     fn default() -> Self {
-        Decoder { mode: Mode::PopOn, shown: blank(), hidden: blank(), row: ROWS - 1, column: 0, last_control: None, on_channel_one: true, cues: Vec::new(), open: false, found: false }
+        Decoder {
+            mode: Mode::PopOn,
+            shown: blank(),
+            hidden: blank(),
+            row: ROWS - 1,
+            column: 0,
+            last_control: None,
+            on_channel_one: true,
+            cues: Vec::new(),
+            open: false,
+            not_before: Duration::ZERO,
+            found: false,
+        }
     }
 }
 
@@ -105,11 +121,12 @@ impl Decoder {
 
     /// Starts again at `to` after a seek: what was read from there on is read again as it
     /// plays, the caption on show then ends there (608 says what shows only as it changes).
+    /// Data from before `to` (from the key frame before it) changes the screen from `to`.
     pub(crate) fn sought(&mut self, to: Duration) {
         let mut cues = std::mem::take(&mut self.cues);
-        cues.retain(|cue| cue.from < to);
+        cues.truncate(cues.partition_point(|cue| cue.from < to));
         cues.iter_mut().for_each(|cue| cue.to = cue.to.min(to));
-        *self = Decoder { cues, found: self.found, ..Decoder::default() };
+        *self = Decoder { cues, not_before: to, found: self.found, ..Decoder::default() };
     }
 
     /// Whether any caption data came (not only padding): the stream has captions.
@@ -226,24 +243,28 @@ impl Decoder {
         self.column = (column + 1).min(COLUMNS - 1);
     }
 
-    /// Ends the open cue and starts one where the text on the screen changed, at `at`.
+    /// Ends the open cue and starts one where the text on the screen changed, at `at` (or
+    /// `not_before`, if later). A cue changed again at the moment it started is replaced.
     fn shown_changed(&mut self, at: Duration) {
         let text = text_of(&self.shown);
         let open = self.cues.last_mut().filter(|_| self.open);
         if open.as_ref().is_some_and(|cue| cue.text == text) || (!self.open && text.is_empty()) {
             return;
         }
-        if let Some(cue) = open {
-            cue.to = at;
+        let at = at.max(self.not_before);
+        match open {
+            Some(cue) if cue.from == at => _ = self.cues.pop(),
+            Some(cue) => cue.to = at,
+            None => {}
         }
-        self.open = !text.is_empty();
+        (self.open, self.not_before) = (!text.is_empty(), at);
         if self.open {
             self.cues.push(Cue { from: at, to: Duration::MAX, text });
         }
     }
 }
 
-/// A standard character: ASCII but for nine places.
+/// A standard character: ASCII but for ten places.
 fn standard(byte: u8) -> char {
     match byte {
         0x2A => 'á',
@@ -379,6 +400,26 @@ mod tests {
         // (Read again from the seek: nothing shows until a command says what.)
         decoder.read_pair([odd(b'x'), 0x80], at(8));
         assert_eq!(decoder.cues().last().map(|cue| cue.to), Some(at(7)));
+    }
+
+    #[test]
+    fn data_read_again_from_the_key_frame_before_a_seek_changes_the_captions_from_the_seek() {
+        let mut pairs: Vec<[u8; 2]> = [twice(0x29), twice(0x70)].concat();
+        pairs.extend(letters("Painted"));
+        let mut decoder = Decoder::default();
+        (0..).zip(&pairs).for_each(|(tenth, pair)| decoder.read_pair(*pair, at(tenth)));
+        let played = decoder.cues().to_vec();
+        decoder.sought(at(5));
+        (0..).zip(&pairs).for_each(|(tenth, pair)| decoder.read_pair(*pair, at(tenth)));
+        assert_eq!(decoder.cues(), played);
+    }
+
+    #[test]
+    fn changes_at_one_moment_make_one_cue() {
+        let mut decoder = Decoder::default();
+        let pairs: Vec<[u8; 2]> = [twice(0x29), twice(0x70)].concat().into_iter().chain(letters("one two")).collect();
+        pairs.iter().for_each(|pair| decoder.read_pair(*pair, at(3)));
+        assert_eq!(decoder.cues(), [Cue { from: at(3), to: Duration::MAX, text: "one two".into() }]);
     }
 
     #[test]
