@@ -1,0 +1,3 @@
+run 1 all exit 101 in 575 s
+::error file=src/video.rs,line=1096,title=src/lib.rs%3A video%3A%3Atests%3A%3Aa_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed::thread 'video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed' (1788) panicked at src\video.rs:1096:13:%0Athe caption tracks did not happen: Video { playing: false, position: 0ns, length: None, size: None, speed: 1.0, caption: None, error: None, .. }
+run 1 lib exit 0 in 140 s
