@@ -157,11 +157,11 @@ jobs:
           set +e
           O=ci-results/${GITHUB_SHA::7}/mac-spell
           mkdir -p $O
-          cargo test -q --lib --no-run
-          for begin in hung hung-cold; do for way in async checkstring sync; do
-            pkill -x sleep; launchctl kickstart -k gui/$(id -u)/com.apple.applespell || true
+          cargo test -q --test macos --no-run
+          for begin in cold warm; do for way in request checkstring sync; do
+            [ $begin = cold ] && pkill -x AppleSpell
             start=$(date +%s)
-            PROBE_START=$begin PROBE_WAY=$way cargo test --lib probe_spell_server_stopped -- --ignored --nocapture > $O/$begin-$way.txt 2>&1
+            PROBE_SPELL_START=$begin PROBE_SPELL_WAY=$way cargo test --test macos > $O/$begin-$way.txt 2>&1
             echo "$begin $way exit $? in $(( $(date +%s) - start )) s" >> $O/summary.txt
             ps -axo pid,user,stat,comm | grep -i spell >> $O/summary.txt
             pgrep -x AppleSpell | xargs -n1 kill -CONT 2>/dev/null

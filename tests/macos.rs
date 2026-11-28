@@ -1761,8 +1761,109 @@ mod mac {
         fn objc_setExceptionPreprocessor(preprocessor: extern "C" fn(Obj) -> Obj) -> *const c_void;
     }
 
+    // ---- (probe) the spell checker asked from another thread while the main thread is blocked ----
+
+    args!(A, B, C, D, E, F);
+    args!(A, B, C, D, E, F, G);
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct ProbeRange {
+        location: usize,
+        length: usize,
+    }
+
+    static PROBE_ANSWER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    extern "C" fn probe_answered(_: *const Block, sequence: isize, results: Obj, _: Obj, _: isize) {
+        let count: usize = send(results, c"count", ());
+        *PROBE_ANSWER.lock().unwrap() = Some(format!("request {sequence}: {count} results"));
+    }
+
+    fn probe_ask(way: &str, word: &str) -> String {
+        let start = Instant::now();
+        let pool: Obj = send(send::<Obj>(class(c"NSAutoreleasePool"), c"alloc", ()), c"init", ());
+        let checker: Obj = send(class(c"NSSpellChecker"), c"sharedSpellChecker", ());
+        let whole = ProbeRange { location: 0, length: word.len() };
+        let said = match way {
+            "sync" => {
+                let found: ProbeRange = send(checker, c"checkSpellingOfString:startingAt:language:wrap:inSpellDocumentWithTag:wordCount:", (string(word), 0isize, string("en"), 0u8, 0isize, std::ptr::null_mut::<isize>()));
+                format!("sync found at {} length {}", found.location, found.length)
+            }
+            "checkstring" => {
+                let results: Obj = send(checker, c"checkString:range:types:options:inSpellDocumentWithTag:orthography:wordCount:", (string(word), whole, 2u64, std::ptr::null_mut::<c_void>(), 0isize, std::ptr::null_mut::<Obj>(), std::ptr::null_mut::<isize>()));
+                let count: usize = send(results, c"count", ());
+                format!("checkString {count} results")
+            }
+            _ => {
+                *PROBE_ANSWER.lock().unwrap() = None;
+                let sequence: isize = send(checker, c"requestCheckingOfString:range:types:options:inSpellDocumentWithTag:completionHandler:", (string(word), whole, 2u64, std::ptr::null_mut::<c_void>(), 0isize, block(probe_answered as *const c_void)));
+                let asked = Instant::now();
+                while PROBE_ANSWER.lock().unwrap().is_none() && asked.elapsed() < Duration::from_secs(60) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                format!("asked {sequence}: {:?}", PROBE_ANSWER.lock().unwrap())
+            }
+        };
+        let _: () = send(pool, c"drain", ());
+        format!("probe: {way} {word}: {said} after {:?}", start.elapsed())
+    }
+
+    /// (Probe) A check from another thread while the main thread is blocked for 5 s: PROBE_SPELL_WAY
+    /// (sync, checkstring, request), PROBE_SPELL_START (warm: a check first; cold).
+    fn probe_spell_while_main_blocked() -> Vec<String> {
+        let way = std::env::var("PROBE_SPELL_WAY").unwrap_or_default();
+        let warm = std::env::var("PROBE_SPELL_START").is_ok_and(|start| start == "warm");
+        let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let (warmed, asked) = (std::sync::Arc::new(std::sync::atomic::AtomicBool::new(!warm)), std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let window = Window { title: "Probe", width: 200.0, height: 100.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            ui.label("Probe");
+            match steps.step {
+                0 if steps.waited(300) => {
+                    steps.idle = true;
+                    if warm {
+                        let (way, said, warmed) = (way.clone(), said.clone(), warmed.clone());
+                        std::thread::spawn(move || {
+                            said.lock().unwrap().push(probe_ask(&way, "helo"));
+                            warmed.store(true, std::sync::atomic::Ordering::SeqCst);
+                            taut::Waker.wake();
+                        });
+                    }
+                    steps.next();
+                }
+                1 if warmed.load(std::sync::atomic::Ordering::SeqCst) => {
+                    let (way, said2, asked2) = (way.clone(), said.clone(), asked.clone());
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(200));
+                        said2.lock().unwrap().push(probe_ask(&way, "wrld"));
+                        asked2.store(true, std::sync::atomic::Ordering::SeqCst);
+                        taut::Waker.wake();
+                    });
+                    let blocked = Instant::now();
+                    std::thread::sleep(Duration::from_secs(5));
+                    said.lock().unwrap().push(format!("probe: the main thread was blocked {:?}", blocked.elapsed()));
+                    steps.next();
+                }
+                2 if asked.load(std::sync::atomic::Ordering::SeqCst) => {
+                    for line in said.lock().unwrap().iter() {
+                        println!("{line}");
+                    }
+                    steps.idle = false;
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
     pub fn main() {
         unsafe { objc_setExceptionPreprocessor(thrown) };
+        if std::env::var_os("PROBE_SPELL_WAY").is_some() {
+            let found = probe_spell_while_main_blocked();
+            println!("probe done: {found:?}");
+            return;
+        }
         type Check = fn() -> Vec<String>;
         let checks: [(&str, Check); 21] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
