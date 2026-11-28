@@ -353,11 +353,11 @@ impl AccessNode {
     }
 
     /// Whether a reader reads its text by line and letter: a text box, plain text, a heading,
-    /// a paragraph, code, a table cell; and a document, where readers read one whole (see
-    /// `markdown_view::WHOLE_TOLD`).
+    /// a paragraph, code, a table cell; and a document told whole, where readers read one so
+    /// (see `markdown_view::WHOLE_TOLD`).
     pub(crate) fn reads_text(&self) -> bool {
         let text = matches!(self.role, Role::TextBox | Role::PasswordBox | Role::Text | Role::Heading | Role::Paragraph | Role::Code | Role::Cell | Role::ColumnHeader);
-        text || crate::markdown_view::WHOLE_TOLD && self.role == Role::Document
+        text || crate::markdown_view::WHOLE_TOLD && self.role == Role::Document && self.letters.is_some()
     }
     /// The text it is read by: a text box's own (`value`), a document's whole text where told,
     /// else its name.
@@ -1740,6 +1740,19 @@ mod tests {
     fn counts(trial: &Trial<Page>) -> (u32, u32, u64) {
         let cache = trial.ui.visible_boxes.access_cache.first().expect("a cache kept while a screen reader listens");
         (cache.built, cache.moved, trial.ui.access_version())
+    }
+
+    #[test]
+    fn a_document_an_app_tells_is_not_read_by_line_and_letter() {
+        // Beside a Markdown document, which (on the desktop) is read so: told whole.
+        let mut trial = Trial::new(crate::Markdown::parse("Some words.\n"), |doc, ui| {
+            ui.markdown(doc);
+            let sketch = ui.el().w(crate::layout::Length::Px(100.0)).h(crate::layout::Length::Px(40.0)).sense().show();
+            ui.tell(&sketch, Role::Document, None, "Sketch");
+        });
+        trial.run();
+        let read: Vec<(bool, bool)> = trial.access_nodes().iter().filter(|node| node.role == Role::Document).map(|node| (node.name == "Sketch", node.reads_text())).collect();
+        assert_eq!(read, [(false, crate::markdown_view::WHOLE_TOLD), (true, false)]);
     }
 
     #[test]

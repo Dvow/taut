@@ -245,7 +245,8 @@ impl Programs {
         let names = self.names.filter(|at| *at > 2).and_then(|at| {
             let each = match cff.u8(at)? {
                 0 => 2,
-                kind => usize::from(kind) + 2,
+                kind @ (1 | 2) => usize::from(kind) + 2,
+                _ => return None,
             };
             Some(at..at + 1 + each * count.saturating_sub(1))
         });
@@ -360,7 +361,9 @@ impl FetchedTable {
         let kept: Vec<(usize, Box<[u8]>)> =
             programs.kept_parts(fetched.table()).into_iter().filter_map(|part| Some((part.start, fetched.system.read(part.start, part.len())?.into_boxed_slice()))).collect();
         fetched.kept = kept;
-        fetched.lists = programs.lists().map(|list| (list.at, Fetched::new(list.count))).collect();
+        // (Room for no more items than the table has room for offsets: a count may lie.)
+        let room = |list: List| list.count.min(fetched.system.len().saturating_sub(list.at) / list.wide);
+        fetched.lists = programs.lists().map(|list| (list.at, Fetched::new(room(list)))).collect();
         fetched.lists.sort_by_key(|(at, _)| *at);
         fetched.lists.dedup_by_key(|(at, _)| *at);
         programs.fetched = Some(Box::new(fetched));

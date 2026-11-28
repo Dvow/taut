@@ -125,7 +125,7 @@ const MOST: usize = 1 << 24;
 const COUNTED_SIDE: f32 = 512.0;
 /// How deep entities named in entities are written out, and how many times longer that may make
 /// a file (see `with_entities`).
-const ENTITY_ROUNDS: usize = 8;
+const ENTITY_DEPTH: usize = 16;
 const ENTITY_GROWTH: usize = 4;
 /// How many cached pictures of a drawing are kept: one per size and colour shown.
 const KEPT: usize = 4;
@@ -222,7 +222,7 @@ type Loader = dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync;
 /// program, as XML readers do: some drawing programs name their styles by them
 /// (`<!ENTITY st0 "fill:red">`, then `style="&st0;"`). Those named in them are written out too,
 /// while the file grows at most four times. Without this, a file naming them is read as written,
-/// and a program need not carry the code (about 3 KB).
+/// and a program need not carry the code (about 8 KB).
 pub fn enable_entities() {
     _ = ENTITIES.set(with_entities);
 }
@@ -632,46 +632,55 @@ impl<'a> File<'a> {
 }
 
 /// The text with the entities its doctype declares (`<!ENTITY name "value">`) written out where
-/// they are named (`&name;`), as XML readers do: those named in them too, `ENTITY_ROUNDS` deep,
-/// while it is at most `ENTITY_GROWTH` times as long, so they can't make it cost more than a
-/// file that long. As it is where it declares none.
+/// they are named (`&name;`), as XML readers do: those named in them too, `ENTITY_DEPTH` deep.
+/// All they write out comes to at most `ENTITY_GROWTH - 1` times the text's length (past that,
+/// names stay as they are), so they can't make it cost more than a file that long. As it is
+/// where it declares none.
 fn with_entities(text: &str) -> Cow<'_, str> {
     let Some(start) = text.find("<!DOCTYPE") else { return Cow::Borrowed(text) };
     let end = start + text[start..].find(']').unwrap_or(0);
-    let mut entities: Vec<(&str, String)> = Vec::new();
-    for entity in text[start..end].split("<!ENTITY").skip(1) {
-        // Its name, then its value in either kind of quotes.
-        let Some(open) = entity.find(['"', '\'']) else { continue };
-        let Some(long) = entity[open + 1..].find(&entity[open..open + 1]) else { continue };
-        entities.push((entity[..open].trim(), entity[open + 1..open + 1 + long].to_string()));
-    }
+    let entities = declared(&text[start..end]);
     if entities.is_empty() {
         return Cow::Borrowed(text);
     }
-    let most = text.len() * ENTITY_GROWTH;
-    for _ in 0..ENTITY_ROUNDS {
-        for n in 0..entities.len() {
-            entities[n].1 = written(&entities[n].1, &entities, most);
+    let (mut out, mut left) = (text[..end].to_string(), text.len() * (ENTITY_GROWTH - 1));
+    // What is still to write: pieces of text, each with how deep in entities it lies.
+    let mut pieces = vec![(&text[end..], 0)];
+    while let Some((piece, depth)) = pieces.pop() {
+        let Some(at) = piece.find('&') else {
+            out += piece;
+            continue;
+        };
+        out += &piece[..at];
+        let after = &piece[at + 1..];
+        let named = after.find(';').and_then(|end| Some((end, *entities.get(&after[..end])?)));
+        match named.filter(|(_, value)| depth < ENTITY_DEPTH && value.len() <= left) {
+            Some((end, value)) => {
+                left -= value.len();
+                pieces.extend([(&after[end + 1..], depth), (value, depth + 1)]);
+            }
+            None => {
+                out.push('&');
+                pieces.push((after, depth));
+            }
         }
     }
-    Cow::Owned(text[..end].to_string() + &written(&text[end..], &entities, most - end))
+    Cow::Owned(out)
 }
 
-/// `text` with each entity of `entities` (name and value) written out where it is named, while
-/// the whole stays at most `most` bytes long.
-fn written(text: &str, entities: &[(&str, String)], most: usize) -> String {
-    let mut parts = text.split('&');
-    let mut out = parts.next().unwrap_or("").to_string();
-    let mut left = text.len() - out.len();
-    for part in parts {
-        left -= part.len() + 1;
-        let named = part.find(';').and_then(|end| entities.iter().find(|(name, _)| *name == &part[..end]));
-        match named.filter(|(_, value)| out.len() + value.len() + part.len() + left <= most) {
-            Some((name, value)) => out = out + value + &part[name.len() + 1..],
-            None => out = out + "&" + part,
+/// The entities a doctype declares, by name: each one's value, in either kind of quotes (the
+/// first, where a name is declared twice). A parameter entity (`%`) or an external one is none.
+fn declared(doctype: &str) -> HashMap<&str, &str> {
+    let mut entities = HashMap::new();
+    for entity in doctype.split("<!ENTITY").skip(1) {
+        let Some(open) = entity.find(['"', '\'']) else { continue };
+        let Some(long) = entity[open + 1..].find(&entity[open..open + 1]) else { continue };
+        let name = entity[..open].trim();
+        if !name.contains(char::is_whitespace) {
+            entities.entry(name).or_insert(&entity[open + 1..open + 1 + long]);
         }
     }
-    out
+    entities
 }
 
 /// A tag's length from after its `<` to before the `>` ending it. A comment ends at `-->` only;
@@ -1780,13 +1789,16 @@ fn averaged(picture: &Picture, back: Table) -> Option<(usize, Vec<u32>, Table)> 
         return None;
     }
     let (wide, high) = (picture.wide, picture.pixels.len() / picture.wide.max(1));
+    if wide == 0 {
+        return None;
+    }
     // The window pixels it covers, each way.
     let [x0, x1, y0, y1] = [-left / across, (wide as f32 - left) / across, -top / down, (high as f32 - top) / down];
     let ([x0, x1], [y0, y1]) = ([x0.floor(), x1.ceil()], [y0.floor(), y1.ceil()]);
     let (out_wide, out_high) = ((x1 - x0) as usize, (y1 - y0) as usize);
-    let pixels: Vec<[f32; 4]> = picture.pixels.iter().map(|pixel| [24, 16, 8, 0].map(|shift| (pixel >> shift & 255) as f32)).collect();
     // Across each row, then down each column of that.
-    let rows: Vec<[f32; 4]> = pixels.chunks_exact(wide).flat_map(|row| mean_along(row, [across, across * x0 + left], out_wide)).collect();
+    let channels = |row: &[u32]| row.iter().map(|pixel| [24, 16, 8, 0].map(|shift| (pixel >> shift & 255) as f32)).collect::<Vec<_>>();
+    let rows: Vec<[f32; 4]> = picture.pixels.chunks_exact(wide).flat_map(|row| mean_along(&channels(row), [across, across * x0 + left], out_wide)).collect();
     let mut shown = vec![0u32; out_wide * out_high];
     for x in 0..out_wide {
         let column: Vec<[f32; 4]> = rows.iter().skip(x).step_by(out_wide).copied().collect();
@@ -4804,11 +4816,23 @@ mod tests {
         let declared = r#"<?xml version="1.0"?><!DOCTYPE svg [ <!ENTITY red "fill:red;"> <!ENTITY both '&red;stroke:none'> ]>
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="2" style="&red;"/><rect y="2" width="4" height="2" style="&both;"/></svg>"#;
         assert_eq!(count(&decode(declared, 4, 4).expect("drawn").1, RED), 16);
-        // Each named ten times in the next: written out no further than four times as long.
+    }
+
+    #[test]
+    fn entities_named_in_each_other_make_a_file_at_most_four_times_as_long() {
+        // Each named ten times in the next; then two thousand, each named twice in the next
+        // (each was once allowed four times the file on its own: 14 s in a release build).
         let mut laughs = String::from(r#"<!DOCTYPE svg [ <!ENTITY l0 "lol">"#);
         (1..10).for_each(|n| laughs += &format!(r#"<!ENTITY l{n} "{}">"#, format!("&l{};", n - 1).repeat(10)));
         laughs += "]><svg><text>&l9;</text></svg>";
-        assert!(with_entities(&laughs).len() <= 4 * laughs.len());
+        let mut chained = String::from(r#"<!DOCTYPE svg [ <!ENTITY c0 "lol">"#);
+        (1..2000).for_each(|n| chained += &format!(r#"<!ENTITY c{n} "&c{};&c{};">"#, n - 1, n - 1));
+        chained += "]><svg><text>&c1999;</text></svg>";
+        let out = with_entities(&laughs);
+        assert!(out.len() <= 4 * laughs.len() && out.matches("lol").count() > 100, "{}", out.len());
+        let started = std::time::Instant::now();
+        assert!(with_entities(&chained).len() <= 4 * chained.len());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
     }
 
     #[test]
