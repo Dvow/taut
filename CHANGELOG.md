@@ -5,6 +5,13 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
 ## Unreleased
 
+- **Video captions on macOS, iOS and in Safari** (feature `video`): macOS and iOS list a stream's
+  caption tracks (an HLS stream's subtitle renditions and its CEA-608 and CEA-708; a file's at an
+  address) and show them at their times, placed where the stream says. A file's caption tracks
+  are read by taut, as on Windows: WebVTT tracks in MP4 files show, placed, and 3GPP timed text
+  keeps its justification. On the web, tracks the browser adds after the video's metadata
+  (Safari's own, of files and HLS streams) are listed. `examples/web_page.rs` serves HLS
+  playlists (`.m3u8`), segments (`.m4s`) and WebVTT (`.vtt`) with their types.
 - **Text centred in its box:** a line of text in a button, menu item, list row or any box now
   has the band from its baseline to its cap height in the middle, and every line in one font
   has the same baseline. Before, a label with lowercase letters sat up to a pixel and a half

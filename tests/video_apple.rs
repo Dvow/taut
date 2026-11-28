@@ -125,6 +125,10 @@ mod checks {
     pub fn all() {
         // SAFETY: a function of the type the runtime calls.
         unsafe { objc_setExceptionPreprocessor(thrown) };
+        if std::env::var_os("TAUT_PROBE_STREAM").is_some() {
+            captions_of_a_stream();
+            return;
+        }
         let silent = written("silent.mp4", &mp4(30, 10, false));
         let with_sound = written("with-sound.mp4", &mp4(30, 10, true));
         frames_show_at_their_times(&with_sound);
@@ -216,6 +220,9 @@ mod checks {
         let address = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                let mut head = [0u8; 160];
+                let read = stream.peek(&mut head).unwrap_or(0);
+                eprintln!("probe: asked {}", String::from_utf8_lossy(&head[..read]).lines().next().unwrap_or_default());
                 let folder = folder.clone();
                 std::thread::spawn(move || super::web_page::answer(stream, &folder, &mut |_, _| {}));
             }
@@ -235,6 +242,21 @@ mod checks {
         until(&mut trial, "the caption tracks", |video| video.caption_tracks().len() >= 5);
         let listed: Vec<(&str, &str)> = trial.app.caption_tracks().iter().map(|track| (track.language.as_str(), track.name.as_str())).collect();
         assert_eq!(listed, [("en", "English"), ("fr", "Français"), ("en", "CC1"), ("en", "CC3"), ("en", "Service 1")]);
+        if std::env::var_os("TAUT_PROBE_STREAM").is_some() {
+            trial.app.set_caption_track(Some(1));
+            for _ in 0..100 {
+                pass(&mut trial, Duration::from_millis(30));
+                trial.run();
+            }
+            eprintln!("probe: paused, chosen: {:?}", trial.app.caption());
+            trial.app.play();
+            for _ in 0..100 {
+                pass(&mut trial, Duration::from_millis(30));
+                trial.run();
+            }
+            eprintln!("probe: played to {:?}: {:?}", trial.app.position(), trial.app.caption());
+            trial.app.pause();
+        }
         trial.app.set_caption_track(Some(1));
         for (at, caption) in [(500, Some("Français un")), (2200, None), (2700, Some("Français fin"))] {
             caption_at(&mut trial, Duration::from_millis(at), caption);

@@ -280,13 +280,17 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   (`avdec_h264`, `avdec_h265`). SSA is placed (taut reads its events); WebVTT's cue settings in a
   file are not (GStreamer's parser drops them). No caption settings to follow: the usual style.
 - macOS and iOS: `open_silent` plays muted; bytes are played from a temporary file. iOS: a
-  video with sound sets the audio session's category to `Playback` unless the app set one.
-  Caption tracks of files only (3GPP timed text, at the usual place; QuickTime closed-caption
-  tracks, a track for each CEA-608 service, read by taut; each read by an `AVAssetReader`), not
-  of streams; the captions in a file's video stream
-  are read by taut through another (up to 5 s ahead of the video), not those of a stream (HLS).
-  The file's tracks are named by their language only. Checked only on GitHub's runner and in
-  the iOS simulator.
+  video with sound sets the audio session's category to `Playback` unless the app set one; an
+  `http` address plays only where the app's App Transport Security allows it. A file's caption
+  tracks are read by taut, as on Windows (3GPP timed text, WebVTT, `c608`); AVFoundation refuses
+  a file whose WebVTT track has QuickTime's subtitle handler (`sbtl`; ffmpeg writes `text`). The
+  captions in a file's video stream are read through an `AVAssetReader` (up to 5 s ahead of the
+  video), not those in a file at an address. An address's caption tracks are AVFoundation's (an
+  HLS stream's subtitle renditions, and its CEA-608 and CEA-708 where its playlist declares
+  them; a file's tracks), as the text it hands over: placed where that says (WebVTT's settings,
+  CEA-608's rows), not its colours or fonts; forced-only subtitles not listed; named by the
+  playlist's `NAME`, a file's by its language only. After a paused seek, CEA-608 and CEA-708 show
+  from their next caption on. Checked only on GitHub's runner and in the iOS simulator.
 - Android: what the system's decoders read, through the NDK (no `MediaPlayer`); frames come
   through an image reader in YUV and are made RGB on the CPU (with `gpu-draw`, where the CPU
   draws them). Volume scales the samples (AAudio
@@ -298,10 +302,12 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   emulator (software decoders); there, a command-line program that ended the moment it dropped
   its last video once aborted in Android's own decoder thread.
 - Web: the browser's formats (H.264 in MP4 in most; VP8, VP9, AV1 in WebM). Sound tracks only
-  where the browser lists them (Safari; not Chrome, Edge or Firefox), and the file's captions
-  only where it reads them (Safari, whose text tracks also hold a QuickTime closed-caption
-  track's and an HLS stream's CEA-608; not checked here); the app's captions everywhere. A page
-  gets no samples: taut reads no captions in the video stream there. A page can't read the
+  where the browser lists them (Safari; not Chrome, Edge or Firefox), and the source's captions
+  only where it lists them: Safari lists a file's, a QuickTime closed-caption track's CEA-608, and
+  an HLS stream's subtitle renditions, CEA-608 and CEA-708 (checked through `safaridriver` on
+  GitHub's runner); Chrome and Edge play HLS but list none of its captions; forced-only
+  subtitles are not listed. The app's captions everywhere. A page gets no samples: taut
+  reads no captions in the video stream there. A page can't read the
   system's caption settings: the usual style. Sound plays only after a press on the page:
   before, `play` gives `error()`, cleared at the next `play`; muted, it plays. Another site's
   address needs CORS headers, or its frames can't be read. A path is an address relative to

@@ -180,7 +180,7 @@ pub(crate) struct News {
     /// The error clears at the next play: a browser waiting for a press.
     pub clears_on_play: bool,
     /// The source's tracks changed since they were read: captions in the video stream found
-    /// once they play.
+    /// once they play, a stream's once loaded, a browser's own once it lists them.
     pub tracks_changed: bool,
     /// Tracks may come while the video stands still: a thread of its own still reads the
     /// captions in the video stream, or the player told of tracks it does not list yet.

@@ -460,24 +460,30 @@ async function the_controls() {
 
 async function bytes_and_errors() {
     if (await opened("Bytes")) await seek("Seek 1.2", 12);
-    // Sound before any press: refused, said, and nothing hangs; muted, the same video plays.
+    // Sound before any press: refused, said, and nothing hangs; muted, the same video plays. (A
+    // browser that wants no press, as Safari driven by `safaridriver`, plays it.)
     if (await opened("With sound")) {
         await press("Play");
-        await until("a refused play", (now) => now.error !== "none");
+        await until("a refused play, or playing", (now) => now.error !== "none" || now.position > 0.3);
         results.refused = state().line;
-        if (state().playing || !state().error.includes("press")) fail(`a play with sound: ${state().line}`);
-        named("button", "Play").focus();
-        await key("Tab");
-        await key("Tab");
-        await key("Tab");
-        await key(" ", "Space");
-        await press("Play");
-        await until("a muted play", (now) => now.playing && now.position > 0.3);
-        if (state().error !== "none") fail(`a muted play: ${state().line}`);
+        if (state().error !== "none") await muted_after_a_refused_play();
     }
     await press("Missing");
     await until("the error of a missing file", (now) => now.error !== "none");
     results.missing = state().line;
+}
+
+// A play with sound was refused: said, not playing; muted (Mute in the controls), it plays.
+async function muted_after_a_refused_play() {
+    if (state().playing || !state().error.includes("press")) fail(`a play with sound: ${state().line}`);
+    named("button", "Play").focus();
+    await key("Tab");
+    await key("Tab");
+    await key("Tab");
+    await key(" ", "Space");
+    await press("Play");
+    await until("a muted play", (now) => now.playing && now.position > 0.3);
+    if (state().error !== "none") fail(`a muted play: ${state().line}`);
 }
 
 async function captions_and_speed() {
@@ -550,12 +556,13 @@ async function a_files_webvtt_and_closed_captions() {
     await shows_as_it_plays("Hello_there");
 }
 
-// Where the browser plays HLS (Safari): a stream's subtitle renditions, the French placed as its
-// WebVTT settings say, and its closed captions (CEA-608's CC1, CEA-708's service 1), each
-// chosen in the controls.
+// Where the browser plays HLS and lists its caption tracks (Safari; Chrome and Edge list none): a
+// stream's subtitle renditions, the French placed as its WebVTT settings say, and its closed
+// captions (CEA-608's CC1, CEA-708's service 1), each chosen in the controls.
 async function a_streams_captions() {
     if (!document.createElement("video").canPlayType("application/vnd.apple.mpegurl")) return (results.stream = "no HLS");
     if (!(await opened("Stream"))) return;
+    if (!lists_its_own()) return (results.stream = "no caption tracks listed");
     await until("the stream's tracks", (now) => now.tracks === "1/4");
     await choose_captions("Français");
     await press("Seek 2.5");

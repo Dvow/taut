@@ -1321,8 +1321,9 @@ export class Page {
 
     // A video element for an address, or for bytes (a Blob of type `kind`): its number; 0 with
     // no page (under Node). Muted unless `sound`. Each frame the browser shows is noted
-    // (`requestVideoFrameCallback`, where it has it) to be read once; tracks the browser adds or
-    // takes away later (Safari's, after the metadata) are told by `videoState`.
+    // (`requestVideoFrameCallback`, where it has it) to be read once. Tracks the browser adds or
+    // takes away later (Safari's, after the metadata) are told by `videoState`; they, and a cue
+    // that comes on show (after a paused seek's frame), have the interface run again.
     videoOpen(source, kind, sound) {
         if (typeof document === "undefined") {
             return 0;
@@ -1335,10 +1336,15 @@ export class Page {
         element.addEventListener("loadeddata", () => (made.fresh = true));
         element.addEventListener("seeked", () => (made.fresh = true));
         element.addEventListener("ended", () => Object.assign(made, { ended: true, wanted: false }));
+        const tracksChanged = () => {
+            made.tracksChanged = true;
+            this.wake(0);
+        };
         for (const tracks of [element.textTracks, element.audioTracks].filter(Boolean)) {
-            tracks.addEventListener("addtrack", () => (made.tracksChanged = true));
-            tracks.addEventListener("removetrack", () => (made.tracksChanged = true));
+            tracks.addEventListener("addtrack", tracksChanged);
+            tracks.addEventListener("removetrack", tracksChanged);
         }
+        element.textTracks.addEventListener("addtrack", (event) => event.track.addEventListener("cuechange", () => this.wake(0)));
         element.addEventListener("error", () => this.videoFailed(made, `the player stopped: ${element.error?.message || `error ${element.error?.code}`}`));
         if (element.requestVideoFrameCallback) {
             const shown = (_, frame) => {

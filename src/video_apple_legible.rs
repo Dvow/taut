@@ -131,6 +131,8 @@ impl LegibleCaptions {
         let option = nth.and_then(|nth| self.options.get(nth)).copied().unwrap_or(std::ptr::null_mut());
         // SAFETY: a live item, its group and one of the group's options (or nil: none).
         unsafe { send::<()>(self.item, c"selectMediaOption:inMediaSelectionGroup:", (option, self.group)) };
+        let chosen = unsafe { rust_string(send(send::<Obj>(send::<Obj>(self.item, c"currentMediaSelection", ()), c"selectedMediaOptionInMediaSelectionGroup:", (self.group,)), c"description", ())) };
+        eprintln!("probe: chose {nth:?}: {chosen:?}");
     }
 
     /// The chosen option's captions on show at `at`.
@@ -214,6 +216,7 @@ extern "C" fn text_handed_over(delegate: Obj, _: Sel, _output: Obj, strings: Obj
     let captions: Vec<Caption> = array_items(strings).into_iter().filter_map(caption_of).collect();
     // SAFETY: made by `new_with_extra` with its captions' number.
     let number: u64 = unsafe { extra_of(delegate) };
+    eprintln!("probe: handed {number} at {at:?}: {:?}", captions.iter().map(|caption| caption.text.clone()).collect::<Vec<_>>());
     with_cues(number, |cues| show_from(cues, at, captions));
     crate::platform::Waker.wake();
 }

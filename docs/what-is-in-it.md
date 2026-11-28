@@ -186,10 +186,12 @@ Popovers anchored to their button.
   SRT or SSA) drawn over the video where the file puts them (CEA-608's rows and indents,
   CEA-708's window anchors, WebVTT's `line`, `position`, `size`, `align` and regions, SRT's
   `{\an8}`, SSA's alignment, margins and `\pos`), italic where they are, in the system's caption
-  style, and said by screen readers. Windows reads MP4's and QuickTime's caption tracks itself
-  (3GPP timed text, WebVTT, `c608`), and downloads an address once for the player and the
-  caption readers; controls for keyboard and
-  screen readers. Windows decodes on the GPU (DXVA) what the GPU decodes (checked: H.264, HEVC,
+  style, and said by screen readers. Windows, macOS and iOS read MP4's and QuickTime's caption
+  tracks themselves (3GPP timed text, WebVTT, `c608`); Windows downloads an address once for the
+  player and the caption readers; macOS and iOS list a stream's caption tracks (HLS subtitle
+  renditions, CEA-608 and CEA-708) as AVFoundation hands them over, placed; on the web, the
+  browser's own tracks as they come (Safari's of files and HLS streams). Controls for keyboard
+  and screen readers. Windows decodes on the GPU (DXVA) what the GPU decodes (checked: H.264, HEVC,
   VP9). With `gpu-draw`, frames are drawn from the decoder's own buffer, never read back while
   they play: Direct3D 11 and 12, Vulkan and OpenGL from Windows' texture (1080p H.264: 1.5 to
   2.7 ms of CPU a frame instead of 6 to 7.7), Metal from AVFoundation's pixel buffer, Vulkan and OpenGL ES from Android's hardware buffer,
