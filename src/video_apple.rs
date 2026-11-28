@@ -617,14 +617,16 @@ impl TrackReading {
             let status: isize = unsafe { send(self.reader, c"status", ()) };
             let error: Obj = unsafe { send(self.reader, c"error", ()) };
             let said = if error.is_null() { None } else { rust_string(unsafe { send(error, c"description", ()) }) };
-            eprintln!("probe: reader gave no sample: status {status} (2 completed, 3 failed, 4 cancelled), error {said:?}");
+            eprintln!("probe: reader gave no sample after {} read: status {status} (2 completed, 3 failed, 4 cancelled), error {said:?}", PROBE_READ.swap(0, Ordering::Relaxed));
             in_stream.ended();
             return Duration::MAX;
         }
         // SAFETY: as above. (A sample decoded as it is shown has no decode time of its own.)
         let (at, decoded) = unsafe { ((f.sample_time)(sample).known().unwrap_or_default(), (f.decode_time)(sample).known()) };
-        if let Some(bytes) = sample_bytes(f, sample) {
-            in_stream.read(&bytes, codec, at, Some(decoded.unwrap_or(at)));
+        PROBE_READ.fetch_add(1, Ordering::Relaxed);
+        match sample_bytes(f, sample) {
+            Some(bytes) => in_stream.read(&bytes, codec, at, Some(decoded.unwrap_or(at))),
+            None => eprintln!("probe: sample at {at:?} without bytes"),
         }
         // SAFETY: as above.
         unsafe { crate::macos_sys::CFRelease(sample) };
@@ -641,6 +643,8 @@ impl Drop for TrackReading {
         }
     }
 }
+
+static PROBE_READ: AtomicU32 = AtomicU32::new(0);
 
 /// A BGRA pixel buffer's pixels, opaque, into `into`; its width (0 where it can't be read).
 fn read(f: &Functions, buffer: *mut c_void, into: &mut Vec<u32>) -> usize {
