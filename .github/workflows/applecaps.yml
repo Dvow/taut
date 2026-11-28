@@ -29,7 +29,9 @@ jobs:
         run: |
           set +e
           mkdir -p ci-results/${GITHUB_SHA::7}
-          { sw_vers; TAUT_PROBE_STREAM=1 SIMCTL_CHILD_TAUT_PROBE_STREAM=1 TAUT_VIDEO=required TAUT_IOS_SIMULATOR=1 cargo test --features video --test video_apple -- --nocapture; echo "exit $?";
+          { sw_vers; cargo clippy --features video --all-targets -- -D warnings; echo "clippy $?"; cargo clippy --features video --all-targets --target aarch64-apple-ios -- -D warnings; echo "clippy ios $?";
+            cargo test --features video --lib video -- --nocapture; echo "lib $?";
+            TAUT_VIDEO=required TAUT_IOS_SIMULATOR=1 cargo test --features video --test video_apple -- --nocapture; echo "exit $?";
             echo "==== app output"; tail -n 600 target/video-ios/*.err target/video-ios/*.out 2>/dev/null; } > ci-results/${GITHUB_SHA::7}/macos.txt 2>&1
           code=$(grep '^exit ' ci-results/${GITHUB_SHA::7}/macos.txt | tail -1 | cut -d' ' -f2)
           git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

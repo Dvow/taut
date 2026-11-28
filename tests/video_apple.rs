@@ -125,10 +125,6 @@ mod checks {
     pub fn all() {
         // SAFETY: a function of the type the runtime calls.
         unsafe { objc_setExceptionPreprocessor(thrown) };
-        if std::env::var_os("TAUT_PROBE_STREAM").is_some() {
-            captions_of_a_stream();
-            return;
-        }
         let silent = written("silent.mp4", &mp4(30, 10, false));
         let with_sound = written("with-sound.mp4", &mp4(30, 10, true));
         frames_show_at_their_times(&with_sound);
@@ -220,9 +216,6 @@ mod checks {
         let address = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let mut head = [0u8; 160];
-                let read = stream.peek(&mut head).unwrap_or(0);
-                eprintln!("probe: asked {}", String::from_utf8_lossy(&head[..read]).lines().next().unwrap_or_default());
                 let folder = folder.clone();
                 std::thread::spawn(move || super::web_page::answer(stream, &folder, &mut |_, _| {}));
             }
@@ -242,40 +235,32 @@ mod checks {
         until(&mut trial, "the caption tracks", |video| video.caption_tracks().len() >= 5);
         let listed: Vec<(&str, &str)> = trial.app.caption_tracks().iter().map(|track| (track.language.as_str(), track.name.as_str())).collect();
         assert_eq!(listed, [("en", "English"), ("fr", "Français"), ("en", "CC1"), ("en", "CC3"), ("en", "Service 1")]);
-        if std::env::var_os("TAUT_PROBE_STREAM").is_some() {
-            trial.app.set_caption_track(Some(1));
-            for _ in 0..100 {
-                pass(&mut trial, Duration::from_millis(30));
-                trial.run();
-            }
-            eprintln!("probe: paused, chosen: {:?}", trial.app.caption());
-            trial.app.play();
-            for _ in 0..100 {
-                pass(&mut trial, Duration::from_millis(30));
-                trial.run();
-            }
-            eprintln!("probe: played to {:?}: {:?}", trial.app.position(), trial.app.caption());
-            trial.app.pause();
-        }
-        trial.app.set_caption_track(Some(1));
-        for (at, caption) in [(500, Some("Français un")), (2200, None), (2700, Some("Français fin"))] {
-            caption_at(&mut trial, Duration::from_millis(at), caption);
-        }
-        assert_top_left(&trial, "Français fin");
-        // (CEA-608 and CEA-708 say only what changes: each shows as it plays. Looping, a slow
+        // (AVFoundation hands over a track's text as it plays, a little ahead. Looping, a slow
         // runner meets each caption again.)
         trial.app.set_looping(true);
+        trial.app.set_caption_track(Some(1));
+        shows_as_it_plays(&mut trial, "Français fin");
+        assert_top_left(&trial, "Français fin");
+        // (Seeks back show what was handed over.)
+        for (at, caption) in [(500, Some("Français un")), (2200, None), (1500, Some("Français deux"))] {
+            caption_at(&mut trial, Duration::from_millis(at), caption);
+        }
         for (track, caption) in [(2, "Hello there"), (3, "Third channel"), (4, "Service one")] {
             trial.app.set_caption_track(Some(track));
-            trial.app.seek(Duration::ZERO);
-            trial.app.play();
-            until_run(&mut trial, caption, |video| video.caption() == Some(caption));
-            trial.app.pause();
+            shows_as_it_plays(&mut trial, caption);
             // (Row 15 of the caption grid, near the frame's bottom; CEA-608's text from column
             // 1, left of the middle.)
             let place = place_of(&trial, caption);
             assert!(place.y > 190.0 && place.x + place.w / 2.0 < 155.0, "{caption} at {place:?}");
         }
+    }
+
+    /// Plays from the start until `caption` shows, then pauses.
+    fn shows_as_it_plays(trial: &mut Trial<Video>, caption: &str) {
+        trial.app.seek(Duration::ZERO);
+        trial.app.play();
+        until_run(trial, caption, |video| video.caption() == Some(caption));
+        trial.app.pause();
     }
 
     /// CEA-608's other channels, in the SEI and in a QuickTime closed-caption track: a track

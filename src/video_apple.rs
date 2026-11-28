@@ -236,10 +236,12 @@ impl OwnCaptions {
         }
     }
 
-    /// Shows the `nth` track from now on, or none.
-    fn choose(&mut self, nth: Option<usize>) {
-        if let OwnCaptions::Stream(captions) = self {
-            captions.choose(nth);
+    /// Shows the `nth` track from now on, or none: whether a stream's track is to be handed over
+    /// anew.
+    fn choose(&mut self, nth: Option<usize>) -> bool {
+        match self {
+            OwnCaptions::File(_) => false,
+            OwnCaptions::Stream(captions) => captions.choose(nth) && nth.is_some(),
         }
     }
 
@@ -511,9 +513,15 @@ impl Player {
             unsafe { send::<()>(track, c"setEnabled:", ((at == nth) as Bool,)) };
         }
     }
+    /// Shows the `nth` caption track, or none. (A stream's output hands over a track's text as the
+    /// playhead moves: paused, a seek where it stands has it hand over what shows there.)
     pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
         self.captions = nth;
-        self.own.choose(nth.filter(|nth| *nth < self.own_listed));
+        let handed_anew = self.own.choose(nth.filter(|nth| *nth < self.own_listed));
+        if handed_anew && !self.playing && self.ready {
+            let here = self.position();
+            self.seek(here);
+        }
     }
     /// The chosen caption track's captions on show: of the source's own tracks, or of the video
     /// stream's.

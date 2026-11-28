@@ -7,7 +7,7 @@
 use crate::macos_sys::{Block, Bool, NSRange, Obj, Pool, Sel, array_items, class, extra_of, made_class, new_with_extra, ns_array, ns_string, rust_string, send};
 use crate::video::Track;
 use crate::video_apple::{CMTime, Functions};
-use crate::video_captions::{Caption, Cue};
+use crate::video_captions::Caption;
 use std::ffi::{c_char, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -27,28 +27,45 @@ const LOADED: isize = 2;
 /// The asset's key that holds its media selection options.
 const OPTIONS_KEY: &str = "availableMediaCharacteristicsWithMediaSelectionOptions";
 
-/// The cues each output handed over, by its captions' number: the output's delegate may be
+/// What an output handed over for the chosen option: each time the text shown changes, and the
+/// captions shown from then on, in time order.
+type Changes = Vec<(Duration, Vec<Caption>)>;
+
+/// The most changes kept: the earliest go first (a stream played for hours).
+const MOST_CHANGES: usize = 4096;
+
+/// The changes each output handed over, by its captions' number: the output's delegate may be
 /// called after its captions are gone, and then finds none.
-static HANDED_OVER: Mutex<Vec<(u64, Vec<Cue>)>> = Mutex::new(Vec::new());
+static HANDED_OVER: Mutex<Vec<(u64, Changes)>> = Mutex::new(Vec::new());
 /// Numbers each stream's captions.
 static NUMBERED: AtomicU64 = AtomicU64::new(0);
 
-fn handed_over() -> MutexGuard<'static, Vec<(u64, Vec<Cue>)>> {
+fn handed_over() -> MutexGuard<'static, Vec<(u64, Changes)>> {
     HANDED_OVER.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// What `take` makes of the cues the output of captions `number` handed over; none where they
-/// are gone.
-fn with_cues<T>(number: u64, take: impl FnOnce(&mut Vec<Cue>) -> T) -> Option<T> {
-    handed_over().iter_mut().find(|(of, _)| *of == number).map(|(_, cues)| take(cues))
+/// What `take` makes of the changes the output of captions `number` handed over; none where
+/// they are gone.
+fn with_changes<T>(number: u64, take: impl FnOnce(&mut Changes) -> T) -> Option<T> {
+    handed_over().iter_mut().find(|(of, _)| *of == number).map(|(_, changes)| take(changes))
 }
 
-/// These captions show from `at` on, in place of any before: cues from `at` on go (a seek back
-/// hands them over again), those on show end there.
-fn show_from(cues: &mut Vec<Cue>, at: Duration, captions: Vec<Caption>) {
-    cues.retain(|cue| cue.from < at);
-    cues.iter_mut().for_each(|cue| cue.to = cue.to.min(at));
-    cues.extend(captions.into_iter().map(|caption| Cue { from: at, to: Duration::MAX, caption }));
+/// These captions show from `at` on, in place of what was handed over for that time before.
+/// The rest stays: after a seek back the output may hand over what shows there again, or not.
+fn show_from(changes: &mut Changes, at: Duration, captions: Vec<Caption>) {
+    match changes.binary_search_by_key(&at, |(time, _)| *time) {
+        Ok(found) => changes[found].1 = captions,
+        Err(place) => changes.insert(place, (at, captions)),
+    }
+    if changes.len() > MOST_CHANGES {
+        changes.remove(0);
+    }
+}
+
+/// The captions shown at `at`: those of the last change at or before it.
+fn shown_at(changes: &Changes, at: Duration) -> Vec<Caption> {
+    let after = changes.partition_point(|(time, _)| *time <= at);
+    after.checked_sub(1).map_or_else(Vec::new, |last| changes[last].1.clone())
 }
 
 /// A stream's caption tracks: its item's legible options, and the output that hands over the
@@ -122,22 +139,30 @@ impl LegibleCaptions {
         !self.listed
     }
 
-    /// Selects the `nth` option, or none; what was handed over before goes.
-    pub(crate) fn choose(&mut self, nth: Option<usize>) {
-        with_cues(self.number, Vec::clear);
+    /// Selects the `nth` option, or none: whether that is another than the one selected (what
+    /// was handed over for that one goes).
+    pub(crate) fn choose(&mut self, nth: Option<usize>) -> bool {
         if self.group.is_null() {
-            return;
+            return false;
         }
+        let _pool = Pool::new();
         let option = nth.and_then(|nth| self.options.get(nth)).copied().unwrap_or(std::ptr::null_mut());
-        // SAFETY: a live item, its group and one of the group's options (or nil: none).
-        unsafe { send::<()>(self.item, c"selectMediaOption:inMediaSelectionGroup:", (option, self.group)) };
-        let chosen = unsafe { rust_string(send(send::<Obj>(send::<Obj>(self.item, c"currentMediaSelection", ()), c"selectedMediaOptionInMediaSelectionGroup:", (self.group,)), c"description", ())) };
-        eprintln!("probe: chose {nth:?}: {chosen:?}");
+        // SAFETY: a live item and its group; the selection is autoreleased, the option one of
+        // the group's (or nil: none).
+        unsafe {
+            let selected: Obj = send(send::<Obj>(self.item, c"currentMediaSelection", ()), c"selectedMediaOptionInMediaSelectionGroup:", (self.group,));
+            if option == selected || (!option.is_null() && send::<Bool>(option, c"isEqual:", (selected,)) != 0) {
+                return false;
+            }
+            send::<()>(self.item, c"selectMediaOption:inMediaSelectionGroup:", (option, self.group));
+        }
+        with_changes(self.number, Vec::clear);
+        true
     }
 
     /// The chosen option's captions on show at `at`.
     pub(crate) fn captions_at(&self, at: Duration) -> Vec<Caption> {
-        with_cues(self.number, |cues| crate::video_captions::captions_at(cues, at)).unwrap_or_default()
+        with_changes(self.number, |changes| shown_at(changes, at)).unwrap_or_default()
     }
 
     /// Whether the item's asset has loaded its options.
@@ -204,7 +229,12 @@ extern "C" fn options_loaded(_block: *const Block<()>) {}
 /// The class of the outputs' delegates: each keeps its captions' number.
 fn delegate_class() -> Obj {
     let handed_over = text_handed_over as *const c_void;
-    made_class(c"TautLegibleOutputDelegate", c"NSObject", &[(c"legibleOutput:didOutputAttributedStrings:nativeSampleBuffers:forItemTime:", handed_over, "v@:@@@{?=qiIq}")], &[c"AVPlayerItemLegibleOutputPushDelegate"])
+    made_class(
+        c"TautLegibleOutputDelegate",
+        c"NSObject",
+        &[(c"legibleOutput:didOutputAttributedStrings:nativeSampleBuffers:forItemTime:", handed_over, "v@:@@@{?=qiIq}")],
+        &[c"AVPlayerItemLegibleOutputPushDelegate"],
+    )
 }
 
 /// The output handed over the texts shown from `time` on (none: nothing shows). The window
@@ -216,8 +246,7 @@ extern "C" fn text_handed_over(delegate: Obj, _: Sel, _output: Obj, strings: Obj
     let captions: Vec<Caption> = array_items(strings).into_iter().filter_map(caption_of).collect();
     // SAFETY: made by `new_with_extra` with its captions' number.
     let number: u64 = unsafe { extra_of(delegate) };
-    eprintln!("probe: handed {number} at {at:?}: {:?}", captions.iter().map(|caption| caption.text.clone()).collect::<Vec<_>>());
-    with_cues(number, |cues| show_from(cues, at, captions));
+    with_changes(number, |changes| show_from(changes, at, captions));
     crate::platform::Waker.wake();
 }
 
@@ -285,21 +314,42 @@ mod tests {
         Duration::from_millis(millis)
     }
 
-    fn texts(cues: &[Cue], at: Duration) -> Vec<String> {
-        crate::video_captions::captions_at(cues, at).into_iter().map(|caption| caption.text).collect()
+    fn texts(changes: &Changes, millis: u64) -> Vec<String> {
+        shown_at(changes, ms(millis)).into_iter().map(|caption| caption.text).collect()
+    }
+
+    /// The changes of one, two, then nothing, a second each, as an output hands them over.
+    fn played_through() -> Changes {
+        let mut changes = Vec::new();
+        show_from(&mut changes, ms(0), vec![Caption::plain("one")]);
+        show_from(&mut changes, ms(1000), vec![Caption::plain("two")]);
+        show_from(&mut changes, ms(2000), Vec::new());
+        changes
     }
 
     #[test]
-    fn text_handed_over_shows_until_the_next_and_a_seek_back_replaces_what_follows() {
-        let mut cues = Vec::new();
-        // (As it plays: one, then two, then nothing, each handed over ahead.)
-        show_from(&mut cues, ms(0), vec![Caption::plain("one")]);
-        show_from(&mut cues, ms(1000), vec![Caption::plain("two")]);
-        show_from(&mut cues, ms(2000), Vec::new());
-        assert_eq!((texts(&cues, ms(500)), texts(&cues, ms(1500)), texts(&cues, ms(2500))), (vec!["one".to_owned()], vec!["two".to_owned()], Vec::new()));
-        // (A seek back into two: handed over again from its start.)
-        show_from(&mut cues, ms(1000), vec![Caption::plain("two")]);
-        assert_eq!((texts(&cues, ms(500)), texts(&cues, ms(1500)), texts(&cues, ms(2500))), (vec!["one".to_owned()], vec!["two".to_owned()], vec!["two".to_owned()]));
+    fn text_handed_over_shows_until_the_next_change() {
+        let changes = played_through();
+        assert_eq!([texts(&changes, 500), texts(&changes, 1500), texts(&changes, 2500)], [vec!["one".to_owned()], vec!["two".to_owned()], Vec::new()]);
+    }
+
+    #[test]
+    fn after_a_seek_back_what_was_handed_over_shows_whether_handed_over_again_or_not() {
+        // (Handed over again for its time, the same: nothing else moves.)
+        let mut changes = played_through();
+        show_from(&mut changes, ms(1000), vec![Caption::plain("two")]);
+        assert_eq!(changes, played_through());
+        // (Not handed over again: shown as before.)
+        assert_eq!(texts(&played_through(), 500), ["one"]);
+    }
+
+    #[test]
+    fn the_earliest_changes_go_past_the_most_kept() {
+        let mut changes = Vec::new();
+        for second in 0..=MOST_CHANGES as u64 {
+            show_from(&mut changes, Duration::from_secs(second), vec![Caption::plain(second.to_string())]);
+        }
+        assert_eq!((changes.len(), changes[0].0), (MOST_CHANGES, Duration::from_secs(1)));
     }
 
     #[test]

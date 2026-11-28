@@ -536,10 +536,8 @@ async function the_files_tracks() {
     if (!lists_its_own()) return;
     if (results.tracks !== "2/2") fail(`the file's tracks: ${state().line}`);
     await choose_captions("fr");
-    for (const [button, caption] of [["Seek 0.5", "Français_un"], ["Seek 2.0", "none"], ["Seek 2.5", "Français_fin"]]) {
-        await press(button);
-        await until(`${caption} after ${button}`, (now) => now.caption === caption);
-    }
+    await shows_as_it_plays("Français_fin");
+    await seek_back_shows("Français_un");
 }
 
 // Where the browser lists a file's own caption tracks (Safari): a WebVTT track's cues placed as
@@ -547,8 +545,7 @@ async function the_files_tracks() {
 async function a_files_webvtt_and_closed_captions() {
     if (!(await opened("Placed")) || !lists_its_own()) return;
     await choose_captions("fr");
-    await press("Seek 2.5");
-    await until("the placed caption", (now) => now.caption === "Français_fin");
+    await shows_as_it_plays("Français_fin");
     results.placed = cue_settings();
     if (results.placed !== "line:10% position:10% align:start") fail(`the WebVTT cue's settings: ${JSON.stringify(results.placed)}`);
     if (!(await opened("Closed"))) return;
@@ -565,10 +562,10 @@ async function a_streams_captions() {
     if (!lists_its_own()) return (results.stream = "no caption tracks listed");
     await until("the stream's tracks", (now) => now.tracks === "1/4");
     await choose_captions("Français");
-    await press("Seek 2.5");
-    await until("the French rendition", (now) => now.caption === "Français_fin");
+    await shows_as_it_plays("Français_fin");
     results.rendition = cue_settings();
     if (results.rendition !== "line:10% position:10% align:start") fail(`the rendition's settings: ${JSON.stringify(results.rendition)}`);
+    await seek_back_shows("Français_un");
     for (const [label, caption] of [["CC1", "Hello_there"], ["Service 1", "Service_one"]]) {
         await choose_captions(label);
         await shows_as_it_plays(caption);
@@ -592,8 +589,14 @@ function cue_settings() {
     return new TextDecoder().decode(page.made).split("\n")[0];
 }
 
-// Plays, looping, until `caption` shows (captions in a video stream say only what changes:
-// they show as it plays).
+// Paused, a seek back to 0.5 s shows `caption`: what the track showed there as it played.
+async function seek_back_shows(caption) {
+    await press("Seek 0.5");
+    await until(`${caption} after a seek back`, (now) => now.caption === caption);
+}
+
+// Plays, looping, until `caption` shows, then pauses: a browser hands a track's cues over as it
+// plays.
 async function shows_as_it_plays(caption) {
     await press("Loop");
     await press("Play");
