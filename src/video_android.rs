@@ -884,17 +884,10 @@ impl Track {
 /// dropped), at the usual place; SRT's and WebVTT's without their markup, SRT's at its
 /// `{\anN}` place.
 fn cue_caption(mime: &str, sample: &[u8]) -> Caption {
-    let text = match (mime, sample) {
-        ("text/3gpp-tt", [high, low, rest @ ..]) => &rest[..(usize::from(*high) << 8 | usize::from(*low)).min(rest.len())],
-        ("text/3gpp-tt", _) => &[],
-        _ => sample,
-    };
-    let text = String::from_utf8_lossy(text);
-    let text = text.trim_end_matches('\0').trim();
-    match mime {
-        "text/3gpp-tt" => Caption::plain(text),
-        _ => crate::video_captions::caption_of(text),
+    if mime == "text/3gpp-tt" {
+        return Caption::plain(crate::video_captions::timed_text(sample));
     }
+    crate::video_captions::caption_of(String::from_utf8_lossy(sample).trim_end_matches('\0').trim())
 }
 
 // ---- the video's thread ----

@@ -115,6 +115,7 @@ pub(crate) fn read(text: &str) -> Result<Vec<Cue>, CaptionsError> {
     cues.sort_by_key(|cue| cue.from);
     Ok(cues)
 }
+
 /// The cues of WebVTT or SRT text. Each block with a `-->` line is a cue: the lines after it are
 /// its text, the settings after its times its place; WebVTT's `REGION` blocks name places for
 /// cues. Anything else (WebVTT's header, notes, styles; SRT's numbers) is skipped.
@@ -277,6 +278,21 @@ fn line_place(value: &str) -> Option<Down> {
         Some(part) => Some(Down::At(part, side)),
         None => at.parse().ok().map(Down::Line),
     }
+}
+
+/// A 3GPP timed text sample's text (TS 26.245: its length, then UTF-8, or UTF-16 after a byte
+/// order mark; the style boxes after it dropped), trimmed.
+#[cfg(any(test, windows, target_os = "android"))]
+pub(crate) fn timed_text(sample: &[u8]) -> String {
+    let [high, low, rest @ ..] = sample else { return String::new() };
+    let text = &rest[..(usize::from(*high) << 8 | usize::from(*low)).min(rest.len())];
+    let utf16 = |bytes: &[u8], read: fn([u8; 2]) -> u16| String::from_utf16_lossy(&bytes.as_chunks::<2>().0.iter().map(|two| read(*two)).collect::<Vec<u16>>());
+    let text = match text {
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        _ => String::from_utf8_lossy(text).into_owned(),
+    };
+    text.trim_end_matches('\0').trim().to_owned()
 }
 
 /// A WebVTT cue's text as a caption placed as its settings say (outside any region).
@@ -509,6 +525,14 @@ mod tests {
         assert!(near(place.x, 0.1) && near(place.width, 0.4) && place.across == Align::Start, "{place:?}");
         assert_eq!(place.down, Down::At(0.9, Align::End));
         assert_eq!(cues[1].caption.place, None);
+    }
+
+    #[test]
+    fn timed_text_is_read_as_utf8_or_as_utf16_after_its_byte_order_mark() {
+        assert_eq!(timed_text(b"\0\x05Hello styles after"), "Hello");
+        assert_eq!(timed_text(&[0, 6, 0xFE, 0xFF, 0, b'H', 0, b'i']), "Hi");
+        assert_eq!(timed_text(&[0, 6, 0xFF, 0xFE, b'H', 0, b'i', 0]), "Hi");
+        assert_eq!(timed_text(&[0]), "");
     }
 
     #[test]

@@ -815,17 +815,21 @@ impl Ui {
         let Some(place) = caption.place else { return };
         let ((width, height), size) = (looks.frame, looks.size);
         let line = LINE * height * looks.style.scale;
+        let lines = ((height / line) as i32).max(1);
         let (across, x) = match place.across {
             Align::End => (Align::End, place.x * width - width),
             Align::Center => (Align::Center, place.x * width - width / 2.0),
             _ => (Align::Start, place.x * width),
         };
+        // (A line number past the frame's lines keeps to its last, or first, as WebVTT says.)
         let (down, y) = match place.down {
             Down::At(at, Align::End) => (Align::End, at * height - height),
             Down::At(at, Align::Center) => (Align::Center, at * height - height / 2.0),
             Down::At(at, _) => (Align::Start, at * height),
-            Down::Line(from_top @ 0..) => (Align::Start, from_top as f32 * line),
-            Down::Line(from_bottom) => (Align::End, (from_bottom + 1) as f32 * line - size / 2.0),
+            Down::Line(from_top @ 0..) if from_top < lines => (Align::Start, from_top as f32 * line),
+            Down::Line(0..) => (Align::End, -size / 2.0),
+            Down::Line(from_bottom) if from_bottom >= -lines => (Align::End, (from_bottom + 1) as f32 * line - size / 2.0),
+            Down::Line(_) => (Align::Start, 0.0),
         };
         let room = match place.across {
             Align::End => place.x,
@@ -1803,6 +1807,7 @@ pub(crate) mod tests {
         trial.app.add_captions("WEBVTT\n\n00:00.000 --> 00:05.000 align:start position:10% line:10%\nTop left", "en", "Top left").unwrap();
         trial.app.add_captions(&format!("{SSA_HEADER}Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{{\\an5\\pos(320,240)}}Middle\r\n"), "en", "Middle").unwrap();
         trial.app.add_captions("WEBVTT\n\n00:00.000 --> 00:05.000\nUsual", "en", "Usual").unwrap();
+        trial.app.add_captions("WEBVTT\n\n00:00.000 --> 00:05.000 line:40\nPast the last line", "en", "Past the last line").unwrap();
         // (A 4:3 frame filling the box of 320×240: a tenth in is 32 across and 24 down.)
         let [left, top, ..] = caption_box(&mut trial, "Top left").expect("the caption drawn");
         assert!(left.abs_diff(32) <= 1 && top.abs_diff(24) <= 1, "WebVTT's caption starts at {left}, {top}, not 32, 24");
@@ -1812,6 +1817,8 @@ pub(crate) mod tests {
         let [left, _, right, bottom] = caption_box(&mut trial, "Usual").expect("the caption drawn");
         assert!(bottom > 200 && ((left + right) / 2).abs_diff(160) <= 1, "the usual caption sits at the bottom middle: {left}..{right}, to {bottom}");
         assert_eq!(trial.find(Role::Text, "Usual").name, "Usual");
+        let [_, top, _, bottom] = caption_box(&mut trial, "Past the last line").expect("the caption drawn");
+        assert!(bottom <= 240 && bottom > 200, "a line past the last keeps to the last: {top} to {bottom}");
     }
 
     #[test]

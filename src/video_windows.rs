@@ -348,11 +348,13 @@ unsafe extern "system" fn event(this: *mut Listener<Said>, event: u32, _: usize,
 }
 
 /// What the timed text told (`IMFTimedTextNotify`): the cues it shows now, each with its id
-/// and track's; and whether its tracks changed since asked (captions in the video stream,
-/// CEA-608, are a track added once their first data plays).
+/// and track's; whether its tracks changed since asked (captions in the video stream, CEA-608,
+/// are a track added once their first data plays); and how many it has, as its notices count
+/// them (a track may be told before its list holds it).
 struct Showing {
     cues: Mutex<Vec<(u32, u32, Cue)>>,
     tracks_changed: AtomicBool,
+    tracks: AtomicU32,
 }
 
 impl Showing {
@@ -373,24 +375,25 @@ struct ShowingTable {
     reset: unsafe extern "system" fn(*mut Listener<Showing>),
 }
 
-static SHOWING: ShowingTable = ShowingTable {
-    unknown: ListenerTable { query, add, release },
-    track_added: tracks_changed,
-    track_removed: tracks_changed,
-    track_selected: ignore_selected,
-    track_ready: ignore_track,
-    error: ignore_error,
-    cue,
-    reset,
-};
+static SHOWING: ShowingTable =
+    ShowingTable { unknown: ListenerTable { query, add, release }, track_added, track_removed, track_selected: ignore_selected, track_ready: ignore_track, error: ignore_error, cue, reset };
 
 unsafe extern "system" fn ignore_track(_: *mut Listener<Showing>, _: u32) {}
 unsafe extern "system" fn ignore_selected(_: *mut Listener<Showing>, _: u32, _: i32) {}
 unsafe extern "system" fn ignore_error(_: *mut Listener<Showing>, _: u32, _: i32, _: u32) {}
 
-unsafe extern "system" fn tracks_changed(this: *mut Listener<Showing>, _: u32) {
+unsafe extern "system" fn track_added(this: *mut Listener<Showing>, _: u32) {
     // SAFETY: the timed text holds a reference while it calls.
-    unsafe { (*this).told.tracks_changed.store(true, Ordering::Release) };
+    let told = unsafe { &(*this).told };
+    told.tracks.fetch_add(1, Ordering::AcqRel);
+    told.tracks_changed.store(true, Ordering::Release);
+}
+
+unsafe extern "system" fn track_removed(this: *mut Listener<Showing>, _: u32) {
+    // SAFETY: the timed text holds a reference while it calls.
+    let told = unsafe { &(*this).told };
+    told.tracks.fetch_sub(1, Ordering::AcqRel);
+    told.tracks_changed.store(true, Ordering::Release);
 }
 
 /// A cue came on show (0), went (1), or all went (2). (Of the cue: 3: GetId, 8: GetTrackId.)
@@ -435,8 +438,10 @@ pub(crate) struct Player {
     loaded: bool,
     /// The engine's streams that are sound tracks, in order.
     sound_streams: Vec<u32>,
-    /// The engine's timed text (`IMFTimedText`), its caption tracks' ids, and the one chosen.
+    /// The engine's timed text (`IMFTimedText`), how many tracks its list held when last read,
+    /// its caption tracks' ids, and the one chosen.
     timed_text: *mut Com,
+    timed_tracks: u32,
     caption_ids: Vec<u32>,
     captions: Option<usize>,
     /// The caption tracks of an MP4 or QuickTime file, read by taut (listed after the timed
@@ -495,12 +500,13 @@ impl Player {
             engine: null_mut(),
             ex: null_mut(),
             said: Listener::boxed(&SAID.unknown, &A_NOTIFY, Said { bits: AtomicU32::new(0), code: AtomicI32::new(0) }),
-            showing: Listener::boxed(&SHOWING.unknown, &A_CUE_NOTIFY, Showing { cues: Mutex::new(Vec::new()), tracks_changed: AtomicBool::new(false) }),
+            showing: Listener::boxed(&SHOWING.unknown, &A_CUE_NOTIFY, Showing { cues: Mutex::new(Vec::new()), tracks_changed: AtomicBool::new(false), tracks: AtomicU32::new(0) }),
             frames: Frames::Bitmap { wic: null_mut(), bitmap: null_mut(), size: (0, 0) },
             last: None,
             loaded: false,
             sound_streams: Vec::new(),
             timed_text: null_mut(),
+            timed_tracks: 0,
             caption_ids: Vec::new(),
             captions: None,
             file_captions: Arc::new(ReadAhead::new()),
@@ -767,8 +773,10 @@ impl Player {
         self.loaded |= said & LOADED != 0;
         let error = (said & FAILED != 0).then(|| format!("the player stopped: {} ({:#010x})", self.error_words(), code as u32));
         // SAFETY: as above.
-        let tracks_changed = unsafe { (*self.showing).told.tracks_changed.swap(false, Ordering::AcqRel) };
-        let tracks_changed = tracks_changed || self.in_stream.with_tracks(|tracks| tracks.unlisted()) || self.file_captions.with(|captions| captions.unlisted());
+        let showing = unsafe { &(*self.showing).told };
+        // (A track told before the list held it is listed again until the list does.)
+        let timed_text = showing.tracks_changed.swap(false, Ordering::AcqRel) || showing.tracks.load(Ordering::Acquire) > self.timed_tracks;
+        let tracks_changed = timed_text || self.in_stream.with_tracks(|tracks| tracks.unlisted()) || self.file_captions.with(|captions| captions.unlisted());
         let reading_captions = self.in_stream.reading() || self.file_captions.reading();
         News { ended: said & ENDED != 0, error: unread.or(error), clears_on_play: false, tracks_changed, reading_captions }
     }
@@ -902,7 +910,7 @@ impl Player {
 
     /// The timed text's subtitle and caption tracks: their ids and what they are (of the timed
     /// text, 13: GetTextTracks; of the list, 3: GetLength).
-    fn caption_tracks(&self) -> (Vec<u32>, Vec<Track>) {
+    fn caption_tracks(&mut self) -> (Vec<u32>, Vec<Track>) {
         let mut list = null_mut();
         // SAFETY: the timed text is alive; it gives a list of its own.
         let listed = !self.timed_text.is_null() && unsafe { call!(self.timed_text, 13, unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32, &mut list) } >= 0;
@@ -911,6 +919,7 @@ impl Player {
         }
         // SAFETY: a live list.
         let count = unsafe { call!(list, 3, unsafe extern "system" fn(*mut Com) -> u32) };
+        self.timed_tracks = count;
         let found = (0..count).filter_map(|at| caption_track(list, at, self.reads_in_stream)).unzip();
         // SAFETY: held once.
         unsafe { Com::release(list) };
@@ -1058,7 +1067,7 @@ unsafe fn region_place(cue: *mut Com, lines: Align) -> Option<Place> {
         Com::release(region);
     }
     // (1: MF_TIMED_TEXT_UNIT_TYPE_PERCENTAGE.)
-    if (at_unit, size_unit) != (1, 1) || width <= 0.0 {
+    if (at_unit, size_unit) != (1, 1) || width.is_nan() || width <= 0.0 {
         return None;
     }
     let [x, y, width, height] = [x, y, width, height].map(|value| (value / 100.0).clamp(0.0, 1.0) as f32);

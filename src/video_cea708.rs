@@ -460,14 +460,14 @@ impl Window {
     }
 
     /// A predefined window style (1 to 7; 0 is 1): 1 to 6 write left to right and scroll up,
-    /// 4 to 6 wrapping words; 7, a ticker, writes top to bottom and scrolls right to left. 2
-    /// and 5 centre their lines.
+    /// 4 to 6 wrapping words; 7, a ticker, writes top to bottom and scrolls right to left. 3
+    /// and 6 (the centred pop-on and roll-up) centre their lines.
     fn set_style(&mut self, style: u8) {
         let ticker = style == 7;
         self.print = if ticker { Direction::TopToBottom } else { Direction::LeftToRight };
         self.scroll = if ticker { Direction::RightToLeft } else { Direction::BottomToTop };
         self.word_wrap = (4..=6).contains(&style);
-        self.justify = if matches!(style, 2 | 5) { Align::Center } else { Align::Start };
+        self.justify = if matches!(style, 3 | 6) { Align::Center } else { Align::Start };
     }
 
     /// SetWindowAttributes' third byte: word wrap, print and scroll direction, justification
@@ -698,8 +698,11 @@ mod tests {
 
     #[test]
     fn a_windows_justification_and_style_line_up_its_lines() {
-        let centred = last(&fed(&[&[&define(0, true, 1, 80, 2)[..], b"mid"].concat()]))[0].place.unwrap();
-        assert_eq!(centred.lines, Align::Center);
+        // (Styles 3 and 6 are the centred ones; 2 and 5 only drop the black behind the text.)
+        for (style, lines) in [(2, Align::Start), (3, Align::Center), (5, Align::Start), (6, Align::Center)] {
+            let place = last(&fed(&[&[&define(0, true, 1, 80, style)[..], b"mid"].concat()]))[0].place.unwrap();
+            assert_eq!(place.lines, lines, "style {style}");
+        }
         // (SetWindowAttributes: right justified.)
         let right = last(&fed(&[&define(0, true, 1, 80, 1), &[0x97, 0, 0, 0x0D, 0], b"right"]))[0].place.unwrap();
         assert_eq!(right.lines, Align::End);

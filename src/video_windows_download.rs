@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 
 /// `IMFByteStream`.
 const A_BYTE_STREAM: [u32; 4] = named(0xAD4C_1B00, 0x4BF7, 0x422F, [0x91, 0x75, 0x75, 0x66, 0x93, 0xD9, 0x13, 0x0D]);
@@ -29,22 +29,22 @@ const NOT_DONE: i32 = 0x8000_4001_u32 as i32;
 const FAILED: i32 = 0x8000_4005_u32 as i32;
 const BAD_ARGUMENT: i32 = 0x8007_0057_u32 as i32;
 
-/// A download of an address, shared by its readers.
+/// A download of an address, shared by its readers: its length (none where the address does
+/// not say) and what it can do, once started; read under its own lock, so a slow read holds up
+/// no reader that only asks those.
 pub(crate) struct Download {
     functions: &'static Functions,
     address: Vec<u16>,
+    opened: OnceLock<(Option<u64>, u32)>,
     source: Mutex<Downloading>,
     kept: Mutex<Kept>,
 }
 
-/// Media Foundation's byte stream of the address (made at the first read), where it stands, its
-/// length and what it can do; or why it could not be made.
+/// Media Foundation's byte stream of the address (made at the first read; null where it can't
+/// be), and where it stands (`u64::MAX` after a failed read: unknown).
 struct Downloading {
     stream: *mut Com,
     at: u64,
-    length: Option<u64>,
-    capabilities: u32,
-    tried: bool,
 }
 
 /// The blocks read, each with when it was last used.
@@ -70,30 +70,36 @@ impl Drop for Downloading {
 impl Download {
     /// A download of `address` (not started: the first read starts it, on its reader's thread).
     pub(crate) fn new(functions: &'static Functions, address: &str) -> Arc<Download> {
-        let source = Downloading { stream: null_mut(), at: 0, length: None, capabilities: 0, tried: false };
-        Arc::new(Download { functions, address: crate::windows::wide(address), source: Mutex::new(source), kept: Mutex::default() })
+        let source = Downloading { stream: null_mut(), at: 0 };
+        Arc::new(Download { functions, address: crate::windows::wide(address), opened: OnceLock::new(), source: Mutex::new(source), kept: Mutex::default() })
     }
 
     /// Its length, once the download started; none where the address does not say.
     pub(crate) fn length(&self) -> Option<u64> {
-        self.started().length
+        self.opened().0
     }
 
     /// What Media Foundation's byte stream of it can do, but write.
     fn capabilities(&self) -> u32 {
-        self.started().capabilities & !WRITABLE
+        self.opened().1 & !WRITABLE
     }
 
-    /// The download, started where it was not.
-    fn started(&self) -> MutexGuard<'_, Downloading> {
-        let mut source = self.source.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !source.tried {
-            source.tried = true;
-            source.stream = self.open();
-            source.length = stream_length(source.stream);
-            source.capabilities = if source.stream.is_null() { 0 } else { stream_capabilities(source.stream) };
+    /// Its length and what it can do, the download started where it was not.
+    fn opened(&self) -> (Option<u64>, u32) {
+        match self.opened.get() {
+            Some(opened) => *opened,
+            None => self.started().1,
         }
-        source
+    }
+
+    /// The download, started where it was not, and its length and what it can do.
+    fn started(&self) -> (MutexGuard<'_, Downloading>, (Option<u64>, u32)) {
+        let mut source = self.source.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let opened = *self.opened.get_or_init(|| {
+            source.stream = self.open();
+            (stream_length(source.stream), stream_capabilities(source.stream))
+        });
+        (source, opened)
     }
 
     /// Media Foundation's byte stream of the address (`MFCreateSourceResolver`; of the resolver,
@@ -144,17 +150,19 @@ impl Download {
         done
     }
 
-    /// Block `nth` of the download: kept, or read now; none past the end or on a failure.
+    /// Block `nth` of the download: kept, or read now; none past the end or on a failure. A
+    /// block cut short before the end (a failed read) is not kept: it is read again when next
+    /// asked for.
     fn block(&self, nth: u64) -> Option<Arc<[u8]>> {
         if let Some(kept) = self.kept_block(nth) {
             return Some(kept);
         }
-        let mut source = self.started();
+        let (mut source, (length, _)) = self.started();
         // (Another reader may have read it meanwhile.)
         if let Some(kept) = self.kept_block(nth) {
             return Some(kept);
         }
-        let start = nth * BLOCK;
+        let start = nth.checked_mul(BLOCK).filter(|start| length.is_none_or(|length| *start < length))?;
         let ahead = start.checked_sub(source.at).filter(|ahead| *ahead <= SKIP && *ahead % BLOCK == 0);
         if ahead.is_none() && !seek_stream(source.stream, start) {
             return None;
@@ -165,15 +173,23 @@ impl Download {
         };
         // (Read on to the block, keeping what is passed, so another reader finds it.)
         loop {
-            let read = read_stream(source.stream, BLOCK as usize)?;
-            let (number, length) = (source.at / BLOCK, read.len() as u64);
-            source.at += length;
+            let Some(read) = read_stream(source.stream, BLOCK as usize) else {
+                source.at = u64::MAX;
+                return None;
+            };
+            let (number, read_length) = (source.at / BLOCK, read.len() as u64);
+            source.at += read_length;
             let read: Arc<[u8]> = read.into();
+            let whole = read_length == BLOCK || length.is_none_or(|length| source.at >= length);
+            if !whole {
+                source.at = u64::MAX;
+                return (number == nth).then_some(read);
+            }
             self.keep(number, Arc::clone(&read));
             if number == nth {
                 return Some(read);
             }
-            if length < BLOCK {
+            if read_length < BLOCK {
                 return None;
             }
         }
@@ -222,11 +238,13 @@ fn stream_length(stream: *mut Com) -> Option<u64> {
     (got && length != u64::MAX).then_some(length)
 }
 
-/// What a byte stream can do (3: GetCapabilities).
+/// What a byte stream can do (3: GetCapabilities); nothing for none.
 fn stream_capabilities(stream: *mut Com) -> u32 {
     let mut capabilities = 0u32;
-    // SAFETY: a live byte stream.
-    unsafe { call!(stream, 3, unsafe extern "system" fn(*mut Com, *mut u32) -> i32, &mut capabilities) };
+    if !stream.is_null() {
+        // SAFETY: a live byte stream.
+        unsafe { call!(stream, 3, unsafe extern "system" fn(*mut Com, *mut u32) -> i32, &mut capabilities) };
+    }
     capabilities
 }
 
@@ -432,6 +450,9 @@ fn reads_thread(reading: &Reading) -> mpsc::Sender<Asked> {
                 Com::release(read.result);
             }
         }
+        // (Media Foundation's byte stream, where this held the last of the download, is
+        // released while COM is still started here.)
+        drop(download);
         if com {
             // SAFETY: started above.
             unsafe { crate::windows::sys::CoUninitialize() };
@@ -444,8 +465,9 @@ unsafe extern "system" fn end_read(this: This, result: *mut Com, out: *mut u32) 
     // SAFETY: as above.
     let reading = unsafe { reading(this) };
     let mut done = reading.done.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(at) = done.iter().position(|(of, _)| *of == result as usize) else { return BAD_ARGUMENT };
-    let (_, length) = done.swap_remove(at);
+    // (The latest read of this result: an earlier one never ended may have had its address.)
+    let Some(at) = done.iter().rposition(|(of, _)| *of == result as usize) else { return BAD_ARGUMENT };
+    let (_, length) = done.remove(at);
     // SAFETY: as above; the result is live (4: GetStatus).
     unsafe {
         *out = length;
