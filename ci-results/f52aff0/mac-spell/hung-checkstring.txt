@@ -1,0 +1,33 @@
+    Finished `test` profile [unoptimized] target(s) in 0.02s
+     Running unittests src/lib.rs (target/debug/build/taut/fe4b8e13aec337b8/out/taut-fe4b8e13aec337b8)
+
+running 1 test
+probe: warm, helo wrong: true
+probe: id ["-u"]: 501
+probe: launchctl ["debug", "gui/501/com.apple.applespell", "--program", "/bin/sleep", "--", "sleep", "300"]: This subcommand requires root privileges: debug
+probe: -KILL  2990 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -KILL 2990: Ok(ExitStatus(unix_wait_status(0)))
+probe: pgrep ["-lx", "AppleSpell"]: 
+probe: pgrep ["-lx", "sleep"]: 
+2026-11-28 19:04:42.566 taut-fe4b8e13aec337b8[2993:12808] NSSpellServer dataFromCheckingString timed out, index is 1
+2026-11-28 19:04:43.118 taut-fe4b8e13aec337b8[2993:12808] NSSpellServer dataFromCheckingString timed out, index is 2
+probe: checkString wrld gave 0 results after 1.125528542s
+2026-11-28 19:04:43.423 taut-fe4b8e13aec337b8[2993:12808] NSSpellServer dataFromCheckingString timed out, index is 3
+2026-11-28 19:04:43.681 taut-fe4b8e13aec337b8[2993:12808] NSSpellServer dataFromCheckingString timed out, index is 4
+probe: checkString recieve gave 0 results after 555.824083ms
+2026-11-28 19:04:43.866 taut-fe4b8e13aec337b8[2993:12808] NSSpellServer dataFromCheckingString timed out, index is 5
+2026-11-28 19:04:44.000 taut-fe4b8e13aec337b8[2993:12808] NSSpellServer dataFromCheckingString timed out, index is 6
+probe: checkString naïve gave 0 results after 319.726ms
+2026-11-28 19:04:44.100 taut-fe4b8e13aec337b8[2993:12808] NSSpellServer dataFromCheckingString timed out, index is 7
+2026-11-28 19:04:44.165 taut-fe4b8e13aec337b8[2993:12808] NSSpellServer dataFromCheckingString timed out, index is 8
+probe: checkString teh gave 0 results after 164.600333ms
+probe: checkString hello gave 0 results after 129.746583ms
+probe: checkString speling gave 0 results after 103.932833ms
+probe: checkString colour gave 0 results after 107.626458ms
+probe: checkString thier gave 0 results after 102.346458ms
+probe: checkstring hung done after 2.611003416s
+probe: after, wrld wrong: false
+test ns_spell_checker::probe::probe_spell_server_stopped ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 686 filtered out; finished in 3.72s
+

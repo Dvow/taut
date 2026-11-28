@@ -1,0 +1,41 @@
+    Finished `test` profile [unoptimized] target(s) in 0.02s
+     Running unittests src/lib.rs (target/debug/build/taut/fe4b8e13aec337b8/out/taut-fe4b8e13aec337b8)
+
+running 1 test
+probe: id ["-u"]: 501
+probe: launchctl ["debug", "gui/501/com.apple.applespell", "--program", "/bin/sleep", "--", "sleep", "300"]: This subcommand requires root privileges: debug
+probe: -KILL  4921 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -KILL 4921: Ok(ExitStatus(unix_wait_status(0)))
+probe: pgrep ["-lx", "AppleSpell"]: 
+probe: pgrep ["-lx", "sleep"]: 
+2026-11-28 19:06:03.669 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+2026-11-28 19:06:04.193 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says wrld wrong: false after 1.028452125s
+2026-11-28 19:06:04.727 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+2026-11-28 19:06:05.263 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says recieve wrong: false after 1.067485667s
+2026-11-28 19:06:05.787 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+2026-11-28 19:06:06.291 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says naïve wrong: false after 1.027659333s
+2026-11-28 19:06:06.920 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+2026-11-28 19:06:07.549 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says teh wrong: false after 1.256989458s
+2026-11-28 19:06:08.166 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+2026-11-28 19:06:08.746 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says hello wrong: false after 1.196281916s
+2026-11-28 19:06:09.288 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+2026-11-28 19:06:09.939 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says speling wrong: false after 1.192403583s
+2026-11-28 19:06:10.582 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+2026-11-28 19:06:11.210 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says colour wrong: false after 1.270160583s
+2026-11-28 19:06:11.864 taut-fe4b8e13aec337b8[4924:17347] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says thier wrong: true after 1.168058333s
+probe: sync hung-cold done after 9.208959541s
+probe: -CONT  5211 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -CONT 5211: Ok(ExitStatus(unix_wait_status(0)))
+probe: after, wrld wrong: true
+test ns_spell_checker::probe::probe_spell_server_stopped ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 686 filtered out; finished in 10.30s
+

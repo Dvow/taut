@@ -1,0 +1,8 @@
+hung async exit 0 in 5 s
+hung checkstring exit 0 in 4 s
+hung sync exit 0 in 10 s
+ 3892 runner           S    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+hung-cold async exit 0 in 4 s
+hung-cold checkstring exit 0 in 5 s
+hung-cold sync exit 0 in 10 s
+ 5211 runner           R    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
