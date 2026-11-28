@@ -1029,44 +1029,63 @@ fn own_language() -> String {
 #[cfg(windows)]
 struct Speller(*mut Com);
 
+/// What making the spell checker factory gives while the spelling server another program just
+/// let go of is still stopping (`CO_E_SERVER_STOPPING`): made again a moment later, it works.
+#[cfg(windows)]
+const SERVER_STOPPING: i32 = 0x8008_0008_u32 as i32;
+/// How long a checker is made again while that server stops.
+#[cfg(windows)]
+const STOPPING_PATIENCE: Duration = Duration::from_secs(5);
+
 #[cfg(windows)]
 impl Speller {
     /// Windows' checker for the language of this name, from the spell checker factory, if it
     /// has one. (COM is initialized multithreaded on this thread: it is the checking thread,
     /// which has no window.)
     fn open(language: &str) -> Option<Speller> {
+        let name = wide(&language.replace('_', "-"));
+        // SAFETY: COM for this thread, which is not a window's.
+        unsafe { crate::windows::sys::CoInitializeEx(std::ptr::null_mut(), 0) };
+        until_not_stopping(|| Speller::made(&name))
+    }
+
+    /// One try: the checker for the language of this NUL-terminated name, none where the
+    /// factory has none, or the error that stopped it.
+    fn made(name: &[u16]) -> Result<Option<Speller>, i32> {
         const FACTORY: [u32; 4] = named(0x7AB3_6653, 0x1796, 0x484B, [0xBD, 0xFA, 0xE7, 0x4F, 0x1D, 0xB7, 0xC1, 0xDC]);
         const A_FACTORY: [u32; 4] = named(0x8E01_8A9D, 0x2415, 0x4677, [0xBF, 0x08, 0x79, 0x4E, 0xA6, 0x1F, 0x94, 0xBB]);
-        let (name, mut factory, mut checker, mut known) = (wide(&language.replace('_', "-")), std::ptr::null_mut(), std::ptr::null_mut(), 0i32);
+        let (mut factory, mut checker, mut known) = (std::ptr::null_mut(), std::ptr::null_mut(), 0i32);
         // SAFETY: the factory is created, asked whether it supports the language (4) and for
-        // its checker (5), and released. The name is NUL-terminated and outlives the calls.
+        // its checker (5), and released. The name outlives the calls.
         unsafe {
-            let start = std::time::Instant::now();
-            let com = crate::windows::sys::CoInitializeEx(std::ptr::null_mut(), 0);
             let made = crate::windows::sys::CoCreateInstance(&FACTORY, std::ptr::null_mut(), 1, &A_FACTORY, &mut factory);
             if made < 0 || factory.is_null() {
-                probe_note(&format!("probe: open {language}: CoInitializeEx {com:#x}, factory {made:#x} after {:?}", start.elapsed()));
-                return None;
+                return Err(made);
             }
-            let supported = Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut i32) -> i32>(factory, 4)(factory, name.as_ptr(), &mut known);
-            let mut created = 0;
-            if known != 0 {
-                created = Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut *mut Com) -> i32>(factory, 5)(factory, name.as_ptr(), &mut checker);
+            let mut asked = Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut i32) -> i32>(factory, 4)(factory, name.as_ptr(), &mut known);
+            if asked >= 0 && known != 0 {
+                asked = Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut *mut Com) -> i32>(factory, 5)(factory, name.as_ptr(), &mut checker);
             }
-            probe_note(&format!("probe: open {language}: CoInitializeEx {com:#x}, factory {made:#x}, supported {supported:#x} known {known}, checker {created:#x} null {} after {:?}", checker.is_null(), start.elapsed()));
             Com::release(factory);
+            if asked < 0 {
+                return Err(asked);
+            }
         }
-        (!checker.is_null()).then(|| Speller(checker))
+        Ok((!checker.is_null()).then(|| Speller(checker)))
     }
 }
 
-/// (Probe) A line to stderr and to the file TAUT_PROBE names.
+/// What `attempt` makes, tried again every 20 ms while it says the spelling server is stopping,
+/// for `STOPPING_PATIENCE` at most; none after any other error. (Taken for "no checker", the
+/// language would go unchecked for as long as the window is open.)
 #[cfg(windows)]
-fn probe_note(line: &str) {
-    eprintln!("{line}");
-    if let Ok(path) = std::env::var("TAUT_PROBE") {
-        use std::io::Write;
-        _ = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| writeln!(file, "{line}"));
+fn until_not_stopping<T>(mut attempt: impl FnMut() -> Result<Option<T>, i32>) -> Option<T> {
+    let start = std::time::Instant::now();
+    loop {
+        match attempt() {
+            Err(SERVER_STOPPING) if start.elapsed() < STOPPING_PATIENCE => std::thread::sleep(Duration::from_millis(20)),
+            made => return made.ok().flatten(),
+        }
     }
 }
 
@@ -1077,12 +1096,7 @@ impl Check for Speller {
         // SAFETY: the checker is alive; its results are asked for their first error, and both
         // are released.
         unsafe {
-            let start = std::time::Instant::now();
-            let checked = Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut *mut Com) -> i32>(self.0, 4)(self.0, word.as_ptr(), &mut found);
-            if checked < 0 || found.is_null() || start.elapsed() > std::time::Duration::from_millis(100) {
-                probe_note(&format!("probe: check {}: {checked:#x} null {} after {:?}", String::from_utf16_lossy(&word), found.is_null(), start.elapsed()));
-            }
-            if checked < 0 || found.is_null() {
+            if Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut *mut Com) -> i32>(self.0, 4)(self.0, word.as_ptr(), &mut found) < 0 || found.is_null() {
                 return false;
             }
             let more = Com::function::<unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32>(found, 3)(found, &mut first);
@@ -1948,44 +1962,40 @@ pub(crate) mod tests {
             let letters: Vec<char> = source.value.chars().collect();
             source.misspelled.iter().map(|[from, to]| letters[*from as usize..*to as usize].iter().collect::<String>()).collect::<Vec<_>>()
         };
-        let start = std::time::Instant::now();
-        let mut runs = 0;
         for _ in 0..400 {
-            runs += 1;
             ui.run(&mut |ui| code(&mut app, ui));
             if told(&ui).len() >= 2 {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        let mut line = format!("probe: {language} marks {:?} after {:?} in {runs} runs\n", told(&ui), start.elapsed());
-        let early = told(&ui);
-        if early.len() < 2 {
-            let late = std::time::Instant::now();
-            while told(&ui).len() < 2 && late.elapsed() < Duration::from_secs(30) {
-                ui.run(&mut |ui| code(&mut app, ui));
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            line += &format!("probe: past the 400 runs, marks {:?} {:?} later\n", told(&ui), late.elapsed());
-        }
-        eprint!("{line}");
-        if let Ok(path) = std::env::var("TAUT_PROBE") {
-            use std::io::Write;
-            _ = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| file.write_all(line.as_bytes()));
-        }
-        early
+        told(&ui)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_checker_is_made_again_while_the_spelling_server_stops() {
+        // (On a runner, the spelling server the last test program let go of was still stopping
+        // as the next one opened its first checker, in 129 of 320 runs.)
+        let mut tries = 0;
+        let made = until_not_stopping(|| {
+            tries += 1;
+            if tries < 3 { Err(SERVER_STOPPING) } else { Ok(Some(tries)) }
+        });
+        assert_eq!(made, Some(3));
+        let mut tries = 0;
+        let failed = until_not_stopping(|| {
+            tries += 1;
+            Err::<Option<u8>, _>(0x8000_4005_u32 as i32)
+        });
+        assert_eq!((failed, tries), (None, 1), "another error is not tried again");
+        assert_eq!(until_not_stopping(|| Ok::<Option<u8>, i32>(None)), None);
     }
 
     #[cfg(windows)]
     #[test]
     fn windows_checks_a_code_boxs_comments_and_strings() {
-        let start = std::time::Instant::now();
-        let marks = system_marks_in_code("en-US");
-        if marks != ["helo", "recieve"] {
-            let checker = system("en-US");
-            let now = checker.as_ref().map(|checker| (checker.wrong("helo"), checker.wrong("recieve"), checker.wrong("world")));
-            panic!("marks {marks:?} after {:?}; a checker opened now: {}, says helo/recieve/world wrong: {now:?}", start.elapsed(), checker.is_some());
-        }
+        assert_eq!(system_marks_in_code("en-US"), ["helo", "recieve"]);
     }
 
     #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]

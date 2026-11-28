@@ -5,6 +5,9 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
 ## Unreleased
 
+- **Fixed (video on Linux):** a paused video whose first frame came before GStreamer said it
+  was ready never listed its sound and caption tracks until something else ran the window. The
+  player now wakes the window when it is ready, ends or fails.
 - **Text centred in its box:** a line of text in a button, menu item, list row or any box now
   has the band from its baseline to its cap height in the middle, and every line in one font
   has the same baseline. Before, a label with lowercase letters sat up to a pixel and a half

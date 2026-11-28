@@ -59,6 +59,20 @@ use crate::video_windows::{Player, caption_style};
 #[cfg(all(test, any(windows, feature = "gpu-draw"), not(target_family = "wasm")))]
 pub(crate) static READ_BACK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Has the window run its interface again: a player tells from threads of its own what a paused
+/// video, which no longer asks, must hear (tracks, being ready). (Tests count these: a window
+/// runs once for each.)
+#[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
+pub(crate) fn wake_window() {
+    #[cfg(test)]
+    WOKEN.fetch_add(1, Ordering::Relaxed);
+    crate::platform::Waker.wake();
+}
+
+/// (Tests: how many times a player woke the window.)
+#[cfg(all(test, any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
+pub(crate) static WOKEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// Where a video comes from: a file, an address (`https://`, `file://`), or the file's bytes.
 /// Text with `://` in it is an address, any other a path. On the web a path is an address
 /// relative to the page, or a picked file's (`/picked/<name>`, see [`web::picked`](crate::web)).
@@ -1073,9 +1087,9 @@ pub(crate) mod tests {
     }
     /// Whether the player woke the window since last asked.
     fn woken() -> bool {
-        #[cfg(windows)]
-        return crate::video_windows::WOKEN.swap(0, Ordering::Relaxed) > 0;
-        #[cfg(not(windows))]
+        #[cfg(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
+        return WOKEN.swap(0, Ordering::Relaxed) > 0;
+        #[cfg(not(any(windows, all(unix, not(any(target_vendor = "apple", target_os = "android"))))))]
         false
     }
     /// Passes time until `done`, or fails after 10 s saying `what`.
@@ -1088,11 +1102,6 @@ pub(crate) mod tests {
         trial.run();
         let start = std::time::Instant::now();
         while !done(&trial.app) {
-            #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
-            if start.elapsed() >= limit {
-                let probe = trial.app.player.probe();
-                panic!("{what} did not happen: {:?}; {probe}", trial.app);
-            }
             assert!(start.elapsed() < limit, "{what} did not happen: {:?}", trial.app);
             pass(trial, Duration::from_millis(20));
         }
@@ -1940,14 +1949,33 @@ pub(crate) mod tests {
         // Media Foundation tells of a track the list does not hold yet, as it does of a file's
         // second track as late as after the first frame: the window wakes, and the video asks
         // until the list holds as many as were told.
-        crate::video_windows::WOKEN.store(0, Ordering::Relaxed);
+        WOKEN.store(0, Ordering::Relaxed);
         trial.app.player.tell_track(true);
-        assert_eq!(crate::video_windows::WOKEN.load(Ordering::Relaxed), 1, "the window was not woken");
+        assert_eq!(WOKEN.load(Ordering::Relaxed), 1, "the window was not woken");
         pass(&mut trial, Duration::from_millis(20));
         assert!(trial.ui.wake_in().is_some(), "the video asks no more with a track told and not listed");
         trial.app.player.tell_track(false);
         pass(&mut trial, Duration::from_millis(120));
         assert_eq!((trial.ui.wake_in(), trial.app.caption_tracks().len()), (None, 2));
+    }
+
+    #[test]
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+    fn a_player_ready_after_the_video_stopped_asking_wakes_the_window() {
+        let _alone = alone();
+        WOKEN.store(0, Ordering::Relaxed);
+        let Some(video) = opened(false) else { return };
+        // GStreamer is ready on threads of its own, its tracks known, sometimes only after the
+        // paused video took its first frame and stopped asking: it wakes the window then, and
+        // that one run takes the frame and the tracks.
+        let start = std::time::Instant::now();
+        while WOKEN.load(Ordering::Relaxed) == 0 {
+            assert!(start.elapsed() < Duration::from_secs(10), "the window was not woken");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let trial = trial(video, false);
+        assert!(trial.app.size().is_some() && trial.app.tracks_known, "{:?}", trial.app);
+        assert_eq!(trial.ui.wake_in(), None, "the paused video still asks");
     }
 
     #[test]

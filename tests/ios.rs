@@ -955,7 +955,9 @@ mod phone {
 
     impl Page for System {
         const NOTE: &'static str = "system.txt";
-        const PATIENCE: Duration = Duration::from_secs(60);
+        // (The system's document picker is a service started on first use: on runners it came up
+        // in 2.7 to 4.4 s, once past 8 s.)
+        const PATIENCE: Duration = Duration::from_secs(30);
         const STEPS: &'static [&'static str] = &[
             "reader asked",
             "the system's dialog opens for several files",

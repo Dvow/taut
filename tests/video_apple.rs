@@ -119,10 +119,6 @@ mod checks {
         println!("tracks, captions and speed");
         captions_in_the_video_stream();
         println!("captions in the video stream");
-        for _ in 0..std::env::var("TAUT_VIDEO_REPEAT").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(0) {
-            captions_in_the_video_stream();
-            println!("captions in the video stream, again");
-        }
         other_cea608_channels();
         println!("CEA-608's other channels");
         many_opens(&with_sound);
@@ -399,7 +395,7 @@ mod simulator {
                 return Ok(said);
             }
             let failed = std::fs::read_to_string(&err).unwrap_or_default();
-            if failed.contains("panicked") || since.elapsed() > Duration::from_secs(1200) {
+            if failed.contains("panicked") || since.elapsed() > Duration::from_secs(300) {
                 return Err(format!("{said}\n{failed}"));
             }
             std::thread::sleep(Duration::from_millis(500));

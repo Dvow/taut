@@ -30,6 +30,7 @@ library!(Gst, ["libgstreamer-1.0.so.0"], {
     fn gst_element_seek(Object, f64, c_int, c_int, c_int, i64, c_int, i64) -> c_int;
     fn gst_element_get_bus(Object) -> Object;
     fn gst_bus_pop_filtered(Object, c_uint) -> Object;
+    fn gst_bus_set_sync_handler(Object, *const c_void, *mut c_void, *const c_void);
     fn gst_message_parse_error(Object, *mut *mut GError, *mut *mut c_char);
     fn gst_mini_object_unref(Object);
     fn gst_object_unref(Object);
@@ -158,6 +159,8 @@ const BUFFER_DURATION: usize = 88;
 const EOS: c_uint = 1;
 const ERROR: c_uint = 2;
 const ASYNC_DONE: c_uint = 1 << 21;
+/// A bus handler's answer: the message goes on to the bus.
+const BUS_PASS: c_int = 1;
 const TIME: c_int = 3;
 const PAUSED: c_int = 3;
 const PLAYING: c_int = 4;
@@ -284,8 +287,6 @@ pub(crate) struct Player {
     source: std::sync::Arc<()>,
     /// The SSA script of the captions shown, by its header, once read.
     script: Option<(String, Script)>,
-    probe_opened: std::time::Instant,
-    probe_framed: bool,
 }
 
 /// The captions read from the caption meta of each frame that reaches the frame sink.
@@ -346,6 +347,18 @@ fn cc_data_of_cdp(cdp: &[u8]) -> Option<&[u8]> {
     (flags & 0x40 != 0).then(|| triplets.get(..(count & 0x1F) as usize * 3)).flatten()
 }
 
+/// A message posted to the player's bus, on the thread that posts it: the window is woken for
+/// those `news` reads. (A paused video stops asking once its first frame shows; the player can
+/// say it is ready, its tracks known, only after that.) Every message goes on to the bus.
+unsafe extern "C" fn posted(_: Object, message: Object, _: *mut c_void) -> c_int {
+    // SAFETY: a live message; its type follows the mini object.
+    let kind = unsafe { *message.cast::<u8>().add(MESSAGE_TYPE).cast::<c_uint>() };
+    if kind & (EOS | ERROR | ASYNC_DONE) != 0 {
+        crate::video::wake_window();
+    }
+    BUS_PASS
+}
+
 /// A frame reached the frame sink: its captions are read.
 unsafe extern "C" fn frame_came(_: Object, info: *mut c_void, data: *mut c_void) -> c_int {
     // SAFETY: `data` is the player's `InStream`, alive while the pipeline runs; a buffer
@@ -365,8 +378,13 @@ impl Player {
         if playbin.is_null() || sink.is_null() || text_sink.is_null() {
             return Err(VideoError::NoPlayer("GStreamer's playbin or appsink is missing".into()));
         }
-        // SAFETY: the bus of a live element, held until the player is dropped.
-        let bus = unsafe { (lib.gst.gst_element_get_bus)(playbin) };
+        // SAFETY: the bus of a live element, held until the player is dropped; the handler has
+        // a bus handler's arguments and no data.
+        let bus = unsafe {
+            let bus = (lib.gst.gst_element_get_bus)(playbin);
+            (lib.gst.gst_bus_set_sync_handler)(bus, posted as *const c_void, null_mut(), std::ptr::null());
+            bus
+        };
         let in_stream = Box::new(InStream { lib, meta_kind: AtomicUsize::new(0), captions: Mutex::default() });
         let mut player = Player {
             lib,
@@ -387,8 +405,6 @@ impl Player {
             #[cfg(feature = "gpu-draw")]
             source: std::sync::Arc::new(()),
             script: None,
-            probe_opened: std::time::Instant::now(),
-            probe_framed: false,
         };
         player.read_captions_in_stream();
         player.set_sinks(sound, make(c"fakesink"), make(c"scaletempo"));
@@ -544,22 +560,8 @@ impl Player {
         news.tracks_changed = self.ready && self.in_stream.captions().unlisted();
         news
     }
-    /// (Probe) What the player knows, and whether an ASYNC_DONE waits on the bus.
-    pub(crate) fn probe(&mut self) -> String {
-        // SAFETY: a message popped is released.
-        let waiting = unsafe { (self.lib.gst.gst_bus_pop_filtered)(self.bus, ASYNC_DONE) };
-        let waits = !waiting.is_null();
-        if waits {
-            // SAFETY: popped, so ours.
-            unsafe { (self.lib.gst.gst_mini_object_unref)(waiting) };
-        }
-        format!("probe: ready {}, frame taken {}, ASYNC_DONE waiting {waits}, at {:?}", self.ready, self.last.is_some(), self.probe_opened.elapsed())
-    }
     /// The player finished a change: a seek asked before may go now.
     fn now_ready(&mut self) {
-        if !self.ready {
-            eprintln!("probe: ready at {:?}, a frame taken before: {}", self.probe_opened.elapsed(), self.last.is_some());
-        }
         self.ready = true;
         if let Some(to) = self.pending.take() {
             self.seek(Duration::from_nanos(to as u64));
@@ -585,9 +587,6 @@ impl Player {
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
         let sample = self.last_sample(self.sink)?;
         let read = self.read_sample(sample, into);
-        if read.is_some() && !std::mem::replace(&mut self.probe_framed, true) {
-            eprintln!("probe: first frame at {:?}, ready {}", self.probe_opened.elapsed(), self.ready);
-        }
         // SAFETY: ours, as `last_sample` gave it.
         unsafe { (self.lib.gst.gst_mini_object_unref)(sample) };
         read

@@ -504,14 +504,7 @@ fn stored_samples(asset: Obj, track: Obj, from: Duration) -> Option<(Obj, Obj)> 
             send::<()>(reader, c"setTimeRange:", (CMTimeRange { start: CMTime::of(from), duration: forever },));
         }
         send::<()>(reader, c"addOutput:", (output,));
-        let started = send::<Bool>(reader, c"startReading", ()) != 0;
-        if !started {
-            let error: Obj = send(reader, c"error", ());
-            let said = if error.is_null() { None } else { rust_string(send(error, c"description", ())) };
-            eprintln!("probe: reader did not start at {from:?}: {said:?}");
-        }
-        eprintln!("probe: reader started at {from:?}: {started}");
-        started.then_some((reader, output))
+        (send::<Bool>(reader, c"startReading", ()) != 0).then_some((reader, output))
     }
 }
 
@@ -614,19 +607,13 @@ impl TrackReading {
         // SAFETY: a reading output; the sample buffer it copies is ours, read and released.
         let sample: *mut c_void = unsafe { send(self.output, c"copyNextSampleBuffer", ()) };
         if sample.is_null() {
-            let status: isize = unsafe { send(self.reader, c"status", ()) };
-            let error: Obj = unsafe { send(self.reader, c"error", ()) };
-            let said = if error.is_null() { None } else { rust_string(unsafe { send(error, c"description", ()) }) };
-            eprintln!("probe: reader gave no sample after {} read: status {status} (2 completed, 3 failed, 4 cancelled), error {said:?}", PROBE_READ.swap(0, Ordering::Relaxed));
             in_stream.ended();
             return Duration::MAX;
         }
         // SAFETY: as above. (A sample decoded as it is shown has no decode time of its own.)
         let (at, decoded) = unsafe { ((f.sample_time)(sample).known().unwrap_or_default(), (f.decode_time)(sample).known()) };
-        PROBE_READ.fetch_add(1, Ordering::Relaxed);
-        match sample_bytes(f, sample) {
-            Some(bytes) => in_stream.read(&bytes, codec, at, Some(decoded.unwrap_or(at))),
-            None => eprintln!("probe: sample at {at:?} without bytes"),
+        if let Some(bytes) = sample_bytes(f, sample) {
+            in_stream.read(&bytes, codec, at, Some(decoded.unwrap_or(at)));
         }
         // SAFETY: as above.
         unsafe { crate::macos_sys::CFRelease(sample) };
@@ -643,8 +630,6 @@ impl Drop for TrackReading {
         }
     }
 }
-
-static PROBE_READ: AtomicU32 = AtomicU32::new(0);
 
 /// A BGRA pixel buffer's pixels, opaque, into `into`; its width (0 where it can't be read).
 fn read(f: &Functions, buffer: *mut c_void, into: &mut Vec<u32>) -> usize {

@@ -387,7 +387,7 @@ unsafe extern "system" fn track_added(this: *mut Listener<Showing>, _: u32) {
     let told = unsafe { &(*this).told };
     told.tracks.fetch_add(1, Ordering::AcqRel);
     told.tracks_changed.store(true, Ordering::Release);
-    wake_window();
+    crate::video::wake_window();
 }
 
 unsafe extern "system" fn track_removed(this: *mut Listener<Showing>, _: u32) {
@@ -395,21 +395,8 @@ unsafe extern "system" fn track_removed(this: *mut Listener<Showing>, _: u32) {
     let told = unsafe { &(*this).told };
     told.tracks.fetch_sub(1, Ordering::AcqRel);
     told.tracks_changed.store(true, Ordering::Release);
-    wake_window();
+    crate::video::wake_window();
 }
-
-/// Has the window run its interface again: the timed text tells of tracks from threads of its
-/// own, a file's second track as late as after the first frame, when a paused video no longer
-/// asks. (Tests count these: a window runs once for each.)
-fn wake_window() {
-    #[cfg(test)]
-    WOKEN.fetch_add(1, Ordering::Relaxed);
-    crate::platform::Waker.wake();
-}
-
-/// (Tests: how many times the window was woken.)
-#[cfg(test)]
-pub(crate) static WOKEN: AtomicU32 = AtomicU32::new(0);
 
 /// A cue came on show (0), went (1), or all went (2). (Of the cue: 3: GetId, 8: GetTrackId.)
 unsafe extern "system" fn cue(this: *mut Listener<Showing>, happened: u32, _: f64, cue: *mut Com) {
