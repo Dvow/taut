@@ -8,6 +8,8 @@
 
 use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
+use crate::video_captions::Caption;
+use crate::video_ssa::Script;
 use crate::video_stream_captions::ClosedCaptions;
 #[cfg(feature = "gpu-draw")]
 use crate::video_yuv::Colours;
@@ -45,6 +47,8 @@ library!(Gst, ["libgstreamer-1.0.so.0"], {
     fn gst_element_get_static_pad(Object, *const c_char) -> Object;
     fn gst_pad_add_probe(Object, c_uint, *const c_void, *mut c_void, *const c_void) -> u64;
     fn gst_structure_get_string(Object, *const c_char) -> *const c_char;
+    fn gst_structure_get_name(Object) -> *const c_char;
+    fn gst_structure_get_value(Object, *const c_char) -> *const c_void;
 });
 // Dmabufs and the video meta that lays out their planes (`gpu-draw`; plugins-base's libraries).
 // (A buffer's memories are GStreamer's own, found through the allocators', which links it.)
@@ -69,6 +73,7 @@ library!(GObject, ["libgobject-2.0.so.0"], {
     fn g_signal_connect_data(Object, *const c_char, *const c_void, *mut c_void, *const c_void, c_int) -> u64;
     fn g_signal_emit_by_name(Object, *const c_char, ...);
     fn g_type_from_name(*const c_char) -> usize;
+    fn g_value_get_boxed(*const c_void) -> Object;
 });
 library!(GLib, ["libglib-2.0.so.0"], {
     fn g_free(*mut c_void);
@@ -133,6 +138,10 @@ const CDP: c_uint = 4;
 /// A probe of buffers, which lets each pass.
 const PROBE_BUFFERS: c_uint = 1 << 4;
 const PROBE_OK: c_int = 1;
+
+/// The captions the text sink takes: text, or SSA's and ASS's events as the file keeps them (so
+/// their places are read by taut).
+const TEXT: &CStr = c"text/x-raw;application/x-ssa;application/x-ass";
 
 /// The frames the frame sink takes: BGRx; with `gpu-draw` linear dmabufs of NV12, I420 or YV12
 /// (as DRM formats, or as GStreamer's) first.
@@ -273,6 +282,8 @@ pub(crate) struct Player {
     /// (`gpu_frames`).
     #[cfg(feature = "gpu-draw")]
     source: std::sync::Arc<()>,
+    /// The SSA script of the captions shown, by its header, once read.
+    script: Option<(String, Script)>,
 }
 
 /// The captions read from the caption meta of each frame that reaches the frame sink.
@@ -316,8 +327,8 @@ impl InStream {
         match meta.kind {
             CC_DATA => captions.read_cc_data(data, at),
             CDP => captions.read_cc_data(cc_data_of_cdp(data).unwrap_or_default(), at),
-            CEA608_PAIRS => data.as_chunks::<2>().0.iter().for_each(|pair| captions.read_cea608_pair(*pair, at)),
-            CEA608_FIELD_TRIPLETS => data.as_chunks::<3>().0.iter().filter(|three| three[0] & 0x80 != 0).for_each(|three| captions.read_cea608_pair([three[1], three[2]], at)),
+            CEA608_PAIRS => data.as_chunks::<2>().0.iter().for_each(|pair| captions.read_cea608_pair(0, *pair, at)),
+            CEA608_FIELD_TRIPLETS => data.as_chunks::<3>().0.iter().for_each(|three| captions.read_cea608_pair(usize::from(three[0] & 0x80 == 0), [three[1], three[2]], at)),
             _ => {}
         }
     }
@@ -373,6 +384,7 @@ impl Player {
             in_stream_shown: None,
             #[cfg(feature = "gpu-draw")]
             source: std::sync::Arc::new(()),
+            script: None,
         };
         player.read_captions_in_stream();
         player.set_sinks(sound, make(c"fakesink"), make(c"scaletempo"));
@@ -397,7 +409,7 @@ impl Player {
             let caps = (self.lib.gst.gst_caps_from_string)(frames.as_ptr());
             set(self.sink, c"caps".as_ptr(), caps, c"max-buffers".as_ptr(), 1 as c_uint, c"drop".as_ptr(), 1 as c_int, c"wait-on-eos".as_ptr(), 0 as c_int, end);
             (self.lib.gst.gst_mini_object_unref)(caps);
-            let caps = (self.lib.gst.gst_caps_from_string)(c"text/x-raw".as_ptr());
+            let caps = (self.lib.gst.gst_caps_from_string)(TEXT.as_ptr());
             set(self.text_sink, c"caps".as_ptr(), caps, c"max-buffers".as_ptr(), 1 as c_uint, c"drop".as_ptr(), 1 as c_int, c"wait-on-eos".as_ptr(), 0 as c_int, end);
             (self.lib.gst.gst_mini_object_unref)(caps);
             set(self.playbin, c"video-sink".as_ptr(), self.sink, c"text-sink".as_ptr(), self.text_sink, end);
@@ -659,31 +671,70 @@ impl Player {
             unsafe { (self.lib.gobject.g_object_set)(self.playbin, c"current-text".as_ptr(), nth as c_int, std::ptr::null::<c_char>()) };
         }
     }
-    /// The caption on show: the text sink's last sample, while its span holds the position; or
-    /// the captions in the video stream's at the position.
-    pub(crate) fn caption(&mut self) -> Option<String> {
+    /// The captions on show: the text sink's last sample, while its span holds the position (an
+    /// SSA or ASS event read with its script's header); or the captions in the video stream's
+    /// at the position.
+    pub(crate) fn captions(&mut self) -> Vec<Caption> {
         if let Some(track) = self.in_stream_shown {
             let at = self.position();
-            return self.in_stream.captions().text_at(track, at);
+            return self.in_stream.captions().captions_at(track, at);
         }
         if !self.captions {
-            return None;
+            return Vec::new();
         }
-        let sample = self.last_sample(self.text_sink)?;
+        let Some(sample) = self.last_sample(self.text_sink) else { return Vec::new() };
         let at = self.position().as_nanos() as u64;
+        let (text, header) = (self.sample_text(sample, at), self.ssa_header(sample));
+        // SAFETY: ours, as `last_sample` gave it.
+        unsafe { (self.lib.gst.gst_mini_object_unref)(sample) };
+        let Some(text) = text.filter(|text| !text.trim().is_empty()) else { return Vec::new() };
+        let caption = match header {
+            Some(header) => crate::video_ssa::event_caption(self.script(header), &text),
+            None => crate::video_captions::caption_of(&text),
+        };
+        vec![caption]
+    }
+    /// A caption sample's text, while its span holds `at` (in ns).
+    fn sample_text(&self, sample: Object, at: u64) -> Option<String> {
         // SAFETY: the sample's buffer is its own; its time and duration follow the mini object.
-        let shown = unsafe {
+        unsafe {
             let buffer = (self.lib.gst.gst_sample_get_buffer)(sample);
             let (from, length) = match buffer.is_null() {
                 true => (u64::MAX, 0),
                 false => (*buffer.cast::<u8>().add(BUFFER_TIME).cast::<u64>(), *buffer.cast::<u8>().add(BUFFER_DURATION).cast::<u64>()),
             };
             let holds = from != u64::MAX && from <= at && (length == u64::MAX || at < from.saturating_add(length));
-            holds.then(|| self.lib.mapped(buffer, |bytes| crate::video_captions::plain(String::from_utf8_lossy(bytes).trim_end_matches('\0')))).flatten()
-        };
-        // SAFETY: ours, as `last_sample` gave it.
-        unsafe { (self.lib.gst.gst_mini_object_unref)(sample) };
-        shown.filter(|text| !text.trim().is_empty())
+            holds.then(|| self.lib.mapped(buffer, |bytes| String::from_utf8_lossy(bytes).trim_end_matches('\0').to_owned())).flatten()
+        }
+    }
+    /// The script header of an SSA or ASS sample (its caps' `codec_data`, empty where they have
+    /// none); none for text.
+    fn ssa_header(&self, sample: Object) -> Option<String> {
+        let gst = &self.lib.gst;
+        // SAFETY: the sample's caps, their structure and its values are the sample's own; the
+        // name is read and the header copied while it is held.
+        unsafe {
+            let structure = (gst.gst_caps_get_structure)((gst.gst_sample_get_caps)(sample), 0);
+            let name = if structure.is_null() { None } else { Some(CStr::from_ptr((gst.gst_structure_get_name)(structure))) };
+            if !matches!(name.map(CStr::to_bytes), Some(b"application/x-ssa" | b"application/x-ass")) {
+                return None;
+            }
+            let value = (gst.gst_structure_get_value)(structure, c"codec_data".as_ptr());
+            let buffer = if value.is_null() { null_mut() } else { (self.lib.gobject.g_value_get_boxed)(value) };
+            match buffer.is_null() {
+                true => Some(String::new()),
+                false => self.lib.mapped(buffer, |bytes| String::from_utf8_lossy(bytes).into_owned()),
+            }
+        }
+    }
+    /// The SSA script of this header, read once for as long as it stays the same.
+    fn script(&mut self, header: String) -> &Script {
+        let known = self.script.take().filter(|(known, _)| *known == header);
+        let script = known.unwrap_or_else(|| {
+            let script = Script::read(&header);
+            (header, script)
+        });
+        &self.script.insert(script).1
     }
 }
 

@@ -117,7 +117,32 @@ mod checks {
         println!("tracks, captions and speed");
         captions_in_the_video_stream();
         println!("captions in the video stream");
+        other_cea608_channels();
+        println!("CEA-608's other channels");
         many_opens(&with_sound);
+    }
+
+    /// CEA-608's other channels, in the SEI and in a QuickTime closed-caption track: a track
+    /// each, shown at their times.
+    fn other_cea608_channels() {
+        for (carried, name) in [(Carried::InSei, "other-channels.mp4"), (Carried::InCaptionTrack, "other-channels.mov")] {
+            let file = written(name, &movie_captioned_in_stream(30, Coding::H264, &OTHER_CHANNELS, carried));
+            let mut trial = trial(Video::open_silent(file).unwrap(), false);
+            until(&mut trial, "the first frame", |video| video.size().is_some());
+            trial.app.play();
+            // (The simulator's reader is slow: see `captions_in_the_video_stream`.)
+            let reader = Duration::from_secs(60);
+            until_within(&mut trial, "three caption tracks", reader, |video| video.caption_tracks().len() >= 3);
+            let names: Vec<&str> = trial.app.caption_tracks().iter().map(|track| track.name.as_str()).collect();
+            assert_eq!(names, ["CC2", "CC3", "CC4"], "{name}");
+            trial.app.pause();
+            for (at, track, caption) in [(900, "CC2", "Second channel"), (1300, "CC3", "Third channel"), (2400, "CC4", "Fourth channel")] {
+                trial.app.set_caption_track(trial.app.caption_tracks().iter().position(|found| found.name == track));
+                let there = Duration::from_millis(at);
+                trial.app.seek(there);
+                until_within(&mut trial, "the caption", reader, |video| video.position().abs_diff(there) < Duration::from_millis(50) && video.caption() == Some(caption));
+            }
+        }
     }
 
     /// The first two letters of each track's language.

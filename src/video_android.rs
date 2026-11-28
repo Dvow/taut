@@ -8,7 +8,7 @@
 use crate::color::Color;
 use crate::dynamic_library::library;
 use crate::video::{CaptionStyle, News, Tracks, VideoError, VideoSource};
-use crate::video_captions::Cue;
+use crate::video_captions::{Caption, Cue};
 use crate::video_sei::{Codec, StreamCaptions};
 use crate::video_yuv::{BT601, BT709, BT2020, Colours, Plane};
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
@@ -718,14 +718,14 @@ impl Player {
     pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
         self.captions = nth;
     }
-    /// The chosen caption track's text on show, once its cues are read: the source's own, then
-    /// those in the video stream.
-    pub(crate) fn caption(&mut self) -> Option<String> {
-        let (at, nth) = (self.position(), self.captions?);
+    /// The chosen caption track's captions on show, once its cues are read: the source's own,
+    /// then those in the video stream.
+    pub(crate) fn captions(&mut self) -> Vec<Caption> {
+        let (at, Some(nth)) = (self.position(), self.captions) else { return Vec::new() };
         let state = self.shared.lock();
         match nth.checked_sub(state.listed.captions.len()) {
-            None => crate::video_captions::text_at(state.cues.get(nth)?, at),
-            Some(in_stream) => held(state.in_stream.as_ref()?).tracks.text_at(in_stream, at),
+            None => state.cues.get(nth).map_or_else(Vec::new, |cues| crate::video_captions::captions_at(cues, at)),
+            Some(in_stream) => state.in_stream.as_ref().map_or_else(Vec::new, |captions| held(captions).tracks.captions_at(in_stream, at)),
         }
     }
 }
@@ -861,10 +861,10 @@ impl Track {
         while !shared.lock().stop
             && let Some((time, size)) = self.next_sample(&mut buffer)
         {
-            samples.push((time, cue_text(&found.mime, &buffer[..size])));
+            samples.push((time, cue_caption(&found.mime, &buffer[..size])));
         }
         let ends = samples.iter().skip(1).map(|(time, _)| *time).chain([Duration::MAX]);
-        samples.iter().zip(ends).filter(|((_, text), _)| !text.is_empty()).map(|((from, text), to)| Cue { from: *from, to, text: text.clone() }).collect()
+        samples.iter().zip(ends).filter(|((_, caption), _)| !caption.text.is_empty()).map(|((from, caption), to)| Cue { from: *from, to, caption: caption.clone() }).collect()
     }
 
     /// The next sample, into `buffer`: its time and size; none after the last.
@@ -880,15 +880,21 @@ impl Track {
     }
 }
 
-/// A caption sample's text: 3GPP timed text's after its length (styles after it dropped); SRT's
-/// and WebVTT's as they are, without their markup.
-fn cue_text(mime: &str, sample: &[u8]) -> String {
+/// A caption sample as a caption: 3GPP timed text's text after its length (styles after it
+/// dropped), at the usual place; SRT's and WebVTT's without their markup, SRT's at its
+/// `{\anN}` place.
+fn cue_caption(mime: &str, sample: &[u8]) -> Caption {
     let text = match (mime, sample) {
         ("text/3gpp-tt", [high, low, rest @ ..]) => &rest[..(usize::from(*high) << 8 | usize::from(*low)).min(rest.len())],
         ("text/3gpp-tt", _) => &[],
         _ => sample,
     };
-    crate::video_captions::plain(String::from_utf8_lossy(text).trim_end_matches('\0').trim())
+    let text = String::from_utf8_lossy(text);
+    let text = text.trim_end_matches('\0').trim();
+    match mime {
+        "text/3gpp-tt" => Caption::plain(text),
+        _ => crate::video_captions::caption_of(text),
+    }
 }
 
 // ---- the video's thread ----

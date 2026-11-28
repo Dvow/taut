@@ -352,10 +352,17 @@ pub fn odd(byte: u8) -> u8 {
 /// the text, end of caption), what shows erased at its end; each command twice. Null pairs
 /// between.
 pub fn cea608_pairs(cues: &[(u32, u32, &str)], count: usize) -> Vec<[u8; 3 * 2]> {
+    cea608_pairs_of(cues, count, 0x14)
+}
+
+/// The same for the caption channel whose commands start with `first`: 0x14 for CC1, 0x1C for
+/// CC2 (field 1); 0x15 for CC3, 0x1D for CC4 (field 2).
+pub fn cea608_pairs_of(cues: &[(u32, u32, &str)], count: usize, first: u8) -> Vec<[u8; 3 * 2]> {
     let mut pairs = vec![[0x80u8, 0x80]; count * 3];
-    let command = |second: u8| [[0x94, odd(second)]; 2];
+    let command = |second: u8| [[odd(first), odd(second)]; 2];
+    let row_15 = [[odd(0x14 | (first & 0x08)), odd(0x70)]; 2];
     for &(from, to, text) in cues {
-        let mut loading: Vec<[u8; 2]> = [command(0x20), command(0x2E), command(0x70)].concat();
+        let mut loading: Vec<[u8; 2]> = [command(0x20), command(0x2E), row_15].concat();
         let letters: Vec<u8> = text.bytes().map(odd).collect();
         loading.extend(letters.chunks(2).map(|two| [two[0], two.get(1).copied().unwrap_or(0x80)]));
         loading.extend(command(0x2F));
@@ -382,10 +389,13 @@ pub fn caption_sei(triplets: &[u8], hevc: bool) -> Vec<u8> {
 }
 
 /// Captions in the video stream of a made file (from and to in tenths of a second, and the
-/// text, at 10 frames a second): CEA-608's channel 1, and CEA-708 services by their number.
+/// text, at 10 frames a second): CEA-608's channel 1, its other channels by the first byte of
+/// their commands (0x1C: CC2; 0x15: CC3, 0x1D: CC4, in field 2), and CEA-708 services by their
+/// number.
 #[derive(Clone, Copy)]
 pub struct InStream<'a> {
     pub cea608: Cues<'a>,
+    pub other_channels: &'a [(u8, Cues<'a>)],
     pub services: &'a [(u8, Cues<'a>)],
 }
 
@@ -394,7 +404,11 @@ pub type Cues<'a> = &'a [(u32, u32, &'a str)];
 
 /// Captions in the video stream of the in-stream test files: CEA-608's from 0.5 s to 1.2 s and
 /// from 1.8 s to 2.6 s, and CEA-708 service 1's from 0.8 s to 2.2 s.
-pub const IN_STREAM: InStream = InStream { cea608: &[(5, 12, "Hello there"), (18, 26, "Second line")], services: &[(1, &[(8, 22, "Service one")])] };
+pub const IN_STREAM: InStream = InStream { cea608: &[(5, 12, "Hello there"), (18, 26, "Second line")], other_channels: &[], services: &[(1, &[(8, 22, "Service one")])] };
+
+/// Captions in the other CEA-608 channels: CC2 from 0.5 s to 1.2 s, CC3 from 0.8 s to 1.5 s,
+/// CC4 from 2 s to 2.8 s.
+pub const OTHER_CHANNELS: InStream = InStream { cea608: &[], other_channels: &[(0x1C, &[(5, 12, "Second channel")]), (0x15, &[(8, 15, "Third channel")]), (0x1D, &[(20, 28, "Fourth channel")])], services: &[] };
 
 /// What each in-stream track (`CC1`, `Service 1`) shows at times through `IN_STREAM`'s file,
 /// each well within a cue or a gap.
@@ -407,15 +421,33 @@ pub const IN_STREAM_SHOWN: [(f32, &str, Option<&str>); 6] = [
     (2.45, "Service 1", None),
 ];
 
-/// The `cc_data` triplets of each of `count` frames: three CEA-608 pairs of field 1 (see
-/// `cea608_pairs`), then the CEA-708 packets due (see `cea708_packets`), ten pairs a frame at
-/// most.
+/// Each frame's CEA-608 pairs of field 1 and of field 2: channel 1's and the other channels',
+/// none of them sending in the same place.
+pub fn cea608_fields(in_stream: &InStream, count: usize) -> Vec<[[u8; 3 * 2]; 2]> {
+    let mut fields = vec![[[0x80; 6]; 2]; count];
+    let channels = std::iter::once((0x14, in_stream.cea608)).chain(in_stream.other_channels.iter().copied());
+    for (first, cues) in channels {
+        let field = usize::from(first & 1 == 1);
+        for (frame, pairs) in cea608_pairs_of(cues, count, first).into_iter().enumerate() {
+            for (at, pair) in pairs.chunks(2).enumerate().filter(|(_, pair)| *pair != [0x80, 0x80]) {
+                assert_eq!(fields[frame][field][at * 2..at * 2 + 2], [0x80, 0x80], "two channels at frame {frame}");
+                fields[frame][field][at * 2..at * 2 + 2].copy_from_slice(pair);
+            }
+        }
+    }
+    fields
+}
+
+/// The `cc_data` triplets of each of `count` frames: three CEA-608 pairs of field 1 and three
+/// of field 2 (see `cea608_fields`), then the CEA-708 packets due (see `cea708_packets`), ten
+/// pairs a frame at most.
 pub fn cc_data(in_stream: &InStream, count: usize) -> Vec<Vec<u8>> {
-    let pairs = cea608_pairs(in_stream.cea608, count);
+    let fields = cea608_fields(in_stream, count);
     let (mut waiting, mut next) = (std::collections::VecDeque::new(), cea708_packets(in_stream.services).into_iter().peekable());
     let mut frames = Vec::new();
-    for (frame, pairs) in pairs.iter().enumerate() {
-        let mut triplets: Vec<u8> = pairs.chunks(2).flat_map(|pair| [0xFC, pair[0], pair[1]]).collect();
+    for (frame, [one, two]) in fields.iter().enumerate() {
+        let mut triplets: Vec<u8> = one.chunks(2).flat_map(|pair| [0xFC, pair[0], pair[1]]).collect();
+        triplets.extend(two.chunks(2).flat_map(|pair| [0xFD, pair[0], pair[1]]));
         while let Some((_, packet)) = next.next_if(|(due, _)| *due <= frame) {
             waiting.extend(packet.chunks(2).enumerate().map(|(nth, pair)| [if nth == 0 { 0xFF } else { 0xFE }, pair[0], pair[1]]));
         }
@@ -468,14 +500,28 @@ pub struct Sound<'a> {
     pub tone: u32,
 }
 
-/// A caption track of a made file: its language, its name, and its cues (from and to, in tenths
-/// of a second, and the text). In MP4 as 3GPP timed text, in Matroska as SRT.
+/// A caption track of a made file: its language, its name, its cues (from and to, in tenths of a
+/// second, and the text) and how they are kept.
 #[derive(Clone, Copy)]
 pub struct Captions<'a> {
     pub language: &'a str,
     pub name: &'a str,
     pub cues: &'a [(u32, u32, &'a str)],
+    pub format: CaptionFormat,
 }
+
+/// How a made file keeps a caption track.
+#[derive(Clone, Copy, PartialEq)]
+pub enum CaptionFormat {
+    /// Text at the usual place: in MP4 3GPP timed text, in Matroska SRT.
+    Plain,
+    /// Each cue placed at the top left, a tenth of the frame in: in MP4 WebVTT (`align:start
+    /// position:10% line:10%`), in Matroska SSA (`{\an7\pos(64,48)}` on a script of 640 by 480).
+    Placed,
+}
+
+/// The SSA script header of a made Matroska file's placed captions: 640 by 480, one style.
+pub const SSA_HEADER: &str = "[Script Info]\r\nScriptType: v4.00+\r\nPlayResX: 640\r\nPlayResY: 480\r\n\r\n[V4+ Styles]\r\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1\r\n\r\n[Events]\r\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n";
 
 /// The sound tracks of `languages_file`: English at 400 Hz, German at 1000 Hz.
 pub const TWO_LANGUAGES: [Sound; 2] = [Sound { language: "eng", name: "English", tone: 400 }, Sound { language: "deu", name: "Deutsch", tone: 1000 }];
@@ -484,7 +530,10 @@ pub const ENGLISH: &[(u32, u32, &str)] = &[(0, 10, "English one"), (10, 20, "Eng
 /// The same in French.
 pub const FRENCH: &[(u32, u32, &str)] = &[(0, 10, "Français un"), (10, 20, "Français deux"), (25, 30, "Français fin")];
 /// Its caption tracks: English and French.
-pub const TWO_CAPTIONS: [Captions; 2] = [Captions { language: "eng", name: "English", cues: ENGLISH }, Captions { language: "fra", name: "Français", cues: FRENCH }];
+pub const TWO_CAPTIONS: [Captions; 2] = [Captions { language: "eng", name: "English", cues: ENGLISH, format: CaptionFormat::Plain }, Captions { language: "fra", name: "Français", cues: FRENCH, format: CaptionFormat::Plain }];
+/// Caption tracks one plain, one placed: English as text at the usual place, French at the top
+/// left (see `CaptionFormat`).
+pub const PLAIN_AND_PLACED: [Captions; 2] = [Captions { language: "eng", name: "English", cues: ENGLISH, format: CaptionFormat::Plain }, Captions { language: "fra", name: "", cues: FRENCH, format: CaptionFormat::Placed }];
 
 /// `count` samples of a square wave of `hertz` at 8 kHz, a quarter of full scale.
 pub fn tone(hertz: u32, count: usize) -> Vec<i16> {
@@ -574,9 +623,14 @@ fn visual_entry(kind: &[u8; 4], more: Vec<u8>) -> Vec<u8> {
     atom(kind, &entry)
 }
 
-/// 3GPP timed text's sample entry: centred at the bottom, white on nothing, one font.
-fn caption_entry() -> Vec<u8> {
+/// A caption track's sample entry: 3GPP timed text centred at the bottom, white on nothing,
+/// one font; or WebVTT.
+fn caption_entry(format: CaptionFormat) -> Vec<u8> {
     let mut entry = vec![0, 0, 0, 0, 0, 0, 0, 1];
+    if format == CaptionFormat::Placed {
+        entry.extend(atom(b"vttC", b"WEBVTT"));
+        return atom(b"wvtt", &entry);
+    }
     entry.extend(be32(&[0]));
     entry.extend_from_slice(&[1, 0xFF, 0, 0, 0, 0]); // centred, at the bottom; no background
     entry.extend_from_slice(&[0, 0, 0, 0, 0, 48, 0, 64]); // the text box
@@ -597,11 +651,16 @@ fn table(sizes: &[u32], durations: &[u32], offsets: &[u32]) -> Vec<Vec<u8>> {
     ]
 }
 
-/// A caption track's samples, in ms: each cue, and empty ones between, to `length` (each its
-/// text's length, then the text).
-fn caption_samples(cues: &[(u32, u32, &str)], length: u32) -> Vec<(u32, Vec<u8>)> {
+/// A caption track's samples, in ms: each cue, and empty ones between, to `length`. 3GPP timed
+/// text's are their text's length, then the text; WebVTT's a cue box (its settings and text) or
+/// an empty box.
+fn caption_samples(cues: &[(u32, u32, &str)], length: u32, format: CaptionFormat) -> Vec<(u32, Vec<u8>)> {
     let (mut samples, mut at) = (Vec::new(), 0);
-    let text = |words: &str| [(words.len() as u16).to_be_bytes().to_vec(), words.as_bytes().to_vec()].concat();
+    let text = |words: &str| match (format, words) {
+        (CaptionFormat::Plain, _) => [(words.len() as u16).to_be_bytes().to_vec(), words.as_bytes().to_vec()].concat(),
+        (CaptionFormat::Placed, "") => atom(b"vtte", &[]),
+        (CaptionFormat::Placed, _) => atoms(b"vttc", &[atom(b"sttg", b"align:start position:10% line:10%"), atom(b"payl", words.as_bytes())]),
+    };
     for &(from, to, words) in cues {
         if from * 100 > at {
             samples.push((from * 100 - at, text("")));
@@ -682,7 +741,9 @@ fn movie_with(count: usize, rate: u32, coding: Coding, sounds: &[Sound], caption
     let video = Trak { id: 1, holds: Holds::Frames, enabled: true, group: 0, language: "und", name: "Video", timescale: rate, duration_ms, media_duration: count as u32, size: [64, 48] };
     traks.push(video.atom(entry, table(&sizes, &vec![1; count], &offsets)));
     if let Some(captions) = caption_track {
-        let samples: Vec<Vec<u8>> = cea608_pairs(captions.cea608, count).iter().map(|pairs| atom(b"cdat", pairs)).collect();
+        // (Field 2's pairs in a `cdt2` atom where it has any but padding.)
+        let field_2 = |pairs: &[u8; 6]| if pairs.iter().all(|byte| *byte == 0x80) { Vec::new() } else { atom(b"cdt2", pairs) };
+        let samples: Vec<Vec<u8>> = cea608_fields(captions, count).iter().map(|[one, two]| [atom(b"cdat", one), field_2(two)].concat()).collect();
         let offsets: Vec<u32> = samples.iter().map(|sample| put(sample)).collect();
         let sizes: Vec<u32> = samples.iter().map(|sample| sample.len() as u32).collect();
         let trak = Trak { id: 2, holds: Holds::ClosedCaptions, enabled: true, group: 0, language: "eng", name: "Closed captions", ..video };
@@ -708,12 +769,12 @@ fn movie_with(count: usize, rate: u32, coding: Coding, sounds: &[Sound], caption
         traks.push(trak.atom(atom(b"sowt", &entry), table));
     }
     for captions in captions {
-        let samples = caption_samples(captions.cues, duration_ms);
+        let samples = caption_samples(captions.cues, duration_ms, captions.format);
         let offsets: Vec<u32> = samples.iter().map(|(_, bytes)| put(bytes)).collect();
         let sizes: Vec<u32> = samples.iter().map(|(_, bytes)| bytes.len() as u32).collect();
         let durations: Vec<u32> = samples.iter().map(|(duration, _)| *duration).collect();
         let trak = Trak { id: traks.len() as u32 + 1, holds: Holds::Captions, enabled: false, group: 2, language: captions.language, name: captions.name, timescale: 1000, media_duration: duration_ms, ..video };
-        traks.push(trak.atom(caption_entry(), table(&sizes, &durations, &offsets)));
+        traks.push(trak.atom(caption_entry(captions.format), table(&sizes, &durations, &offsets)));
     }
     let mut mvhd = be32(&[0, 0, 0, 1000, duration_ms, 0x10000]);
     mvhd.extend_from_slice(&[1, 0, 0, 0]);
@@ -724,6 +785,60 @@ fn movie_with(count: usize, rate: u32, coding: Coding, sounds: &[Sound], caption
     [ftyp, atom(b"mdat", &mdat), moov].concat()
 }
 
+
+/// A fragmented MP4 file `count` tenths of a second long holding only these caption tracks, a
+/// fragment a second: each track's samples starting in that second (see `caption_samples`).
+pub fn fragmented_with_captions(count: usize, captions: &[Captions]) -> Vec<u8> {
+    let length = count as u32 * 100;
+    let tracks: Vec<Vec<(u32, u32, Vec<u8>)>> = captions
+        .iter()
+        .map(|captions| {
+            let mut at = 0;
+            let samples = caption_samples(captions.cues, length, captions.format);
+            let mut timed = Vec::new();
+            for (duration, bytes) in samples {
+                timed.push((at, duration, bytes));
+                at += duration;
+            }
+            timed
+        })
+        .collect();
+    let mut traks = Vec::new();
+    for (nth, captions) in captions.iter().enumerate() {
+        let trak = Trak { id: nth as u32 + 1, holds: Holds::Captions, enabled: false, group: 2, language: captions.language, name: captions.name, timescale: 1000, duration_ms: 0, media_duration: 0, size: [64, 48] };
+        traks.push(trak.atom(caption_entry(captions.format), table(&[], &[], &[])));
+    }
+    let trex: Vec<Vec<u8>> = (1..=captions.len() as u32).map(|id| atom(b"trex", &be32(&[0, id, 1, 0, 0, 0]))).collect();
+    let mut mvhd = be32(&[0, 0, 0, 1000, 0, 0x10000]);
+    mvhd.extend_from_slice(&[1, 0, 0, 0]);
+    mvhd.extend(be32(&[0, 0]));
+    mvhd.extend(be32(&MATRIX));
+    mvhd.extend(be32(&[0, 0, 0, 0, 0, 0, captions.len() as u32 + 1]));
+    let moov = atoms(b"moov", &[vec![atom(b"mvhd", &mvhd)], traks, vec![atoms(b"mvex", &trex)]].concat());
+    let mut file = [atom(b"ftyp", b"isom\0\0\x02\0isomiso6"), moov].concat();
+    for (sequence, second) in (0..length.div_ceil(1000)).enumerate() {
+        let starting = |samples: &Vec<(u32, u32, Vec<u8>)>| samples.iter().filter(|(at, _, _)| at / 1000 == second).cloned().collect::<Vec<_>>();
+        let parts: Vec<Vec<(u32, u32, Vec<u8>)>> = tracks.iter().map(starting).collect();
+        // (A track fragment's data offset counts from the fragment's start: known once the
+        // fragment's own size is, which does not change with it.)
+        let moof = |data_at: u32| {
+            let mut offset = data_at;
+            let trafs = parts.iter().enumerate().map(|(nth, samples)| {
+                let tfhd = atom(b"tfhd", &be32(&[0x02_0000, nth as u32 + 1]));
+                let tfdt = atom(b"tfdt", &[be32(&[1 << 24, 0]), be32(&[samples.first().map_or(second * 1000, |sample| sample.0)])].concat());
+                let sizes: Vec<u32> = samples.iter().flat_map(|(_, duration, bytes)| [*duration, bytes.len() as u32]).collect();
+                let trun = atom(b"trun", &[be32(&[0x301, samples.len() as u32, offset]), be32(&sizes)].concat());
+                offset += samples.iter().map(|(_, _, bytes)| bytes.len() as u32).sum::<u32>();
+                atoms(b"traf", &[tfhd, tfdt, trun])
+            });
+            atoms(b"moof", &[vec![atom(b"mfhd", &be32(&[0, sequence as u32 + 1]))], trafs.collect()].concat())
+        };
+        let size = moof(0).len() as u32;
+        let data: Vec<u8> = parts.iter().flatten().flat_map(|(_, _, bytes)| bytes.clone()).collect();
+        file.extend([moof(size + 8), atom(b"mdat", &data)].concat());
+    }
+    file
+}
 
 /// H.264's sequence and picture parameters for baseline frames `width` by `height` (each a
 /// multiple of 16 but for a cut of whole pairs of rows at the bottom), level 5.1.
@@ -868,7 +983,11 @@ pub fn matroska(count: usize, rate: u32, sounds: &[Sound], captions: &[Captions]
     }
     let first_caption = 2 + sounds.len() as u8;
     for (nth, captions) in captions.iter().enumerate() {
-        tracks.push(entry(first_caption + nth as u8, 0x11, "S_TEXT/UTF8", captions.language, captions.name, false, Vec::new()));
+        let (codec, private) = match captions.format {
+            CaptionFormat::Plain => ("S_TEXT/UTF8", Vec::new()),
+            CaptionFormat::Placed => ("S_TEXT/ASS", element(0x63A2, SSA_HEADER.as_bytes())),
+        };
+        tracks.push(entry(first_caption + nth as u8, 0x11, codec, captions.language, captions.name, false, private));
     }
     let tones: Vec<Vec<i16>> = sounds.iter().map(|sound| tone(sound.tone, count * samples_per_frame)).collect();
     // (A seek head first, where a player looks for the cues: its positions, from the segment's
@@ -893,7 +1012,13 @@ pub fn matroska(count: usize, rate: u32, sounds: &[Sound], captions: &[Captions]
             }
             for (nth, captions) in captions.iter().enumerate() {
                 let starting = captions.cues.iter().filter(|cue| cue.0 * 100 == at + start);
-                blocks.extend(starting.map(|&(from, to, text)| block(first_caption + nth as u8, at, text.as_bytes(), Some((to - from) * 100))));
+                // (SSA's events as Matroska keeps them: read order, layer, style, name, margins,
+                // effect, text.)
+                let event = |order: usize, text: &str| match captions.format {
+                    CaptionFormat::Plain => text.to_owned(),
+                    CaptionFormat::Placed => format!("{order},0,Default,,0,0,0,,{{\\an7\\pos(64,48)}}{text}"),
+                };
+                blocks.extend(starting.enumerate().map(|(order, &(from, to, text))| block(first_caption + nth as u8, at, event(order, text).as_bytes(), Some((to - from) * 100))));
             }
         }
         let point = [number(0xB3, start as u64), element(0xB7, &[number(0xF7, 1), number(0xF1, skipped + body.len() as u64)].concat())].concat();

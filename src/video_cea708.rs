@@ -3,12 +3,18 @@
 //!
 //! Each service has eight windows: defined, shown, hidden, cleared and deleted by its commands,
 //! written into where the pen is, in the window's print direction, scrolling and wrapping as it
-//! says. Delays hold the commands after them. The text on show is the shown windows' text, the
-//! highest window first. Colours, fonts, sizes, borders and effects are not kept: text only, as
-//! the app's captions are.
+//! says. Delays hold the commands after them. What shows is each shown window's text, the
+//! highest window first, placed at the window's anchor on the caption screen (the middle 80% of
+//! the frame), its lines justified as the window says, italic where the pen wrote all of it so.
+//! Colours, fonts, sizes, borders and effects are not kept.
 
-use crate::video_captions::{Cue, CueRecorder};
+use crate::layout::Align;
+use crate::video_captions::{Caption, Cue, CueRecorder, Down, Place};
 use std::time::Duration;
+
+/// Where the caption screen starts, from the frame's edges, and how much of the frame it is.
+const MARGIN: f32 = 0.1;
+const SCREEN: f32 = 0.8;
 
 /// A service's input buffer (CEA-708 8.4.2): a delay ends early once this much waits.
 const BUFFER: usize = 128;
@@ -139,7 +145,7 @@ impl Service {
             };
             self.delay_until = None;
             self.act(from);
-            self.recorder.show(self.screen.text(), from);
+            self.recorder.show(self.screen.captions(), from);
             if self.delay_until.is_none() {
                 return;
             }
@@ -258,7 +264,7 @@ impl Screen {
             [code @ 0x80..=0x87] => self.current = Some((code & 7) as usize).filter(|at| self.windows[*at].defined),
             [code @ 0x88..=0x8C, chosen] => self.windows_command(code, chosen),
             [0x8F] => *self = Screen::default(),
-            [0x90, tag_offset_size, _] => self.window(|window| window.hides_text = tag_offset_size >> 4 == 15),
+            [0x90, tag_offset_size, italic_underline_edge_font] => self.window(|window| (window.hides_text, window.italic) = (tag_offset_size >> 4 == 15, italic_underline_edge_font & 0x80 != 0)),
             [0x92, row, column] => self.window(|window| window.move_pen((row & 0x0F) as usize, (column & 0x3F) as usize)),
             [0x97, _, _, layout, _] => self.window(|window| window.set_layout(layout)),
             [code @ 0x98..=0x9F, ref parameters @ ..] => self.define((code & 7) as usize, parameters),
@@ -314,7 +320,7 @@ impl Screen {
             window.set_style(style);
         }
         if new || styles & 7 != 0 {
-            window.hides_text = false;
+            (window.hides_text, window.italic) = (false, false);
         }
         if new {
             window.pen = window.origin();
@@ -322,12 +328,11 @@ impl Screen {
         self.current = Some(at);
     }
 
-    /// The text on show: each shown window's, the highest (then leftmost) first.
-    fn text(&self) -> String {
+    /// What shows: each shown window with text, the highest (then leftmost) first.
+    fn captions(&self) -> Vec<Caption> {
         let mut shown: Vec<&Window> = self.windows.iter().filter(|window| window.visible).collect();
         shown.sort_by(|one, other| one.top.total_cmp(&other.top).then(one.left.total_cmp(&other.left)));
-        let texts: Vec<String> = shown.iter().map(|window| window.text()).filter(|text| !text.is_empty()).collect();
-        texts.join("\n")
+        shown.iter().map(|window| window.caption()).filter(|caption| !caption.text.is_empty()).collect()
     }
 }
 
@@ -364,6 +369,15 @@ fn g2(code: u8) -> Option<char> {
     })
 }
 
+/// A place in a window: a character, and whether the pen wrote it italic.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cell {
+    letter: char,
+    italic: bool,
+}
+
+const BLANK: Cell = Cell { letter: ' ', italic: false };
+
 /// A window: its text, where the pen is, how text runs in it, and where it is on the screen.
 struct Window {
     defined: bool,
@@ -371,7 +385,7 @@ struct Window {
     rows: usize,
     columns: usize,
     /// Its cells, row by row.
-    cells: Vec<char>,
+    cells: Vec<Cell>,
     /// The pen: row and column.
     pen: (usize, usize),
     /// The pen wrote the last cell of its line: the next letter starts a new line (with word
@@ -380,9 +394,16 @@ struct Window {
     print: Direction,
     scroll: Direction,
     word_wrap: bool,
-    /// The pen's text tag says its text is not to be shown.
+    /// How its lines line up.
+    justify: Align,
+    /// The pen's text tag says its text is not to be shown; the pen writes italic.
     hides_text: bool,
-    /// Where its top and left are, as parts of the screen (for the order of windows' text).
+    italic: bool,
+    /// Where its anchor is, as parts of the caption screen (across, down), and which of its
+    /// points that is (0 top left to 8 bottom right).
+    anchor: (f32, f32),
+    anchor_point: u8,
+    /// Where its top and left are, as parts of the caption screen (for the order of windows).
     top: f32,
     left: f32,
 }
@@ -400,7 +421,11 @@ impl Default for Window {
             print: Direction::LeftToRight,
             scroll: Direction::BottomToTop,
             word_wrap: false,
+            justify: Align::Start,
             hides_text: false,
+            italic: false,
+            anchor: (0.0, 0.0),
+            anchor_point: 0,
             top: 0.0,
             left: 0.0,
         }
@@ -411,7 +436,7 @@ impl Window {
     /// Gives it this many rows and columns (1 to 16, 1 to 64), keeping the text that fits and
     /// the pen in it.
     fn resize(&mut self, rows: usize, columns: usize) {
-        let mut cells = vec![' '; rows * columns];
+        let mut cells = vec![BLANK; rows * columns];
         for row in 0..rows.min(self.rows) {
             let kept = columns.min(self.columns);
             cells[row * columns..row * columns + kept].copy_from_slice(&self.cells[row * self.columns..row * self.columns + kept]);
@@ -427,24 +452,29 @@ impl Window {
         let relative = vertical & 0x80 != 0;
         let (down, across) = ((vertical & 0x7F) as f32, horizontal as f32);
         let (down, across) = if relative { (down / 100.0, across / 100.0) } else { (down / 75.0, across / 210.0) };
-        let (above, beside) = ((anchor_point.min(8) / 3) as f32 / 2.0, (anchor_point.min(8) % 3) as f32 / 2.0);
+        let anchor_point = anchor_point.min(8);
+        let (above, beside) = ((anchor_point / 3) as f32 / 2.0, (anchor_point % 3) as f32 / 2.0);
+        (self.anchor, self.anchor_point) = ((across.min(1.0), down.min(1.0)), anchor_point);
         // (A row is a 15th of the screen's height, a column a 42nd of its width.)
         (self.top, self.left) = (down - above * self.rows as f32 / 15.0, across - beside * self.columns as f32 / 42.0);
     }
 
     /// A predefined window style (1 to 7; 0 is 1): 1 to 6 write left to right and scroll up,
-    /// 4 to 6 wrapping words; 7, a ticker, writes top to bottom and scrolls right to left.
+    /// 4 to 6 wrapping words; 7, a ticker, writes top to bottom and scrolls right to left. 2
+    /// and 5 centre their lines.
     fn set_style(&mut self, style: u8) {
         let ticker = style == 7;
         self.print = if ticker { Direction::TopToBottom } else { Direction::LeftToRight };
         self.scroll = if ticker { Direction::RightToLeft } else { Direction::BottomToTop };
         self.word_wrap = (4..=6).contains(&style);
+        self.justify = if matches!(style, 2 | 5) { Align::Center } else { Align::Start };
     }
 
-    /// SetWindowAttributes' third byte: word wrap, print and scroll direction (justification
-    /// is no matter for text).
+    /// SetWindowAttributes' third byte: word wrap, print and scroll direction, justification
+    /// (left, right, centre, full: full as left).
     fn set_layout(&mut self, layout: u8) {
         (self.word_wrap, self.print, self.scroll) = (layout & 0x40 != 0, Direction::of(layout >> 4), Direction::of(layout >> 2));
+        self.justify = [Align::Start, Align::End, Align::Center, Align::Start][usize::from(layout & 3)];
         self.at_line_end = false;
     }
 
@@ -488,12 +518,12 @@ impl Window {
         std::iter::successors(Some(start), |cell| self.after(*cell, self.print.step())).collect()
     }
 
-    fn cell(&mut self, (row, column): (usize, usize)) -> &mut char {
+    fn cell(&mut self, (row, column): (usize, usize)) -> &mut Cell {
         &mut self.cells[row * self.columns + column]
     }
 
     fn clear(&mut self) {
-        self.cells.fill(' ');
+        self.cells.fill(BLANK);
         self.at_line_end = false;
     }
 
@@ -511,7 +541,7 @@ impl Window {
                 return;
             }
         }
-        *self.cell(self.pen) = if self.hides_text { ' ' } else { letter };
+        *self.cell(self.pen) = if self.hides_text { BLANK } else { Cell { letter, italic: self.italic } };
         match self.after(self.pen, self.print.step()) {
             Some(next) => self.pen = next,
             None => self.at_line_end = true,
@@ -522,9 +552,9 @@ impl Window {
     /// along (unless it fills the line, or a space comes next).
     fn wrap(&mut self, letter: char) {
         let line = self.line(self.pen);
-        let word = line.iter().rev().take_while(|cell| self.cells[cell.0 * self.columns + cell.1] != ' ').count();
+        let word = line.iter().rev().take_while(|cell| self.cells[cell.0 * self.columns + cell.1].letter != ' ').count();
         let moved = if letter == ' ' || word == line.len() { Vec::new() } else { line[line.len() - word..].to_vec() };
-        let letters: Vec<char> = moved.iter().map(|cell| std::mem::replace(self.cell(*cell), ' ')).collect();
+        let letters: Vec<Cell> = moved.iter().map(|cell| std::mem::replace(self.cell(*cell), BLANK)).collect();
         self.new_line();
         for letter in letters {
             *self.cell(self.pen) = letter;
@@ -547,7 +577,7 @@ impl Window {
 
     /// Moves every line one back against `step` (the first goes), the last one left empty.
     fn scroll(&mut self, (down, across): (isize, isize)) {
-        let old = std::mem::replace(&mut self.cells, vec![' '; self.rows * self.columns]);
+        let old = std::mem::replace(&mut self.cells, vec![BLANK; self.rows * self.columns]);
         for (row, column) in (0..self.rows).flat_map(|row| (0..self.columns).map(move |column| (row, column))) {
             if let Some((from_row, from_column)) = self.after((row, column), (down, across)) {
                 self.cells[row * self.columns + column] = old[from_row * self.columns + from_column];
@@ -558,7 +588,7 @@ impl Window {
     /// Horizontal carriage return: the pen's line emptied, the pen at its start.
     fn clear_line(&mut self) {
         for cell in self.line(self.pen) {
-            *self.cell(cell) = ' ';
+            *self.cell(cell) = BLANK;
         }
         (self.pen, self.at_line_end) = (self.line_start(self.pen), false);
     }
@@ -570,7 +600,7 @@ impl Window {
             let Some(before) = self.after(self.pen, back) else { return };
             self.pen = before;
         }
-        *self.cell(self.pen) = ' ';
+        *self.cell(self.pen) = BLANK;
     }
 
     /// Form feed: the window emptied, the pen at its start.
@@ -579,15 +609,22 @@ impl Window {
         self.pen = self.origin();
     }
 
-    /// Its text: each line with anything on it, in the order lines are written, each read in
-    /// the print direction and trimmed.
-    fn text(&self) -> String {
+    /// What it shows: each line with anything on it, in the order lines are written, each read
+    /// in the print direction and trimmed; placed at its anchor on the caption screen, lined up
+    /// as it says; italic where all of it is.
+    fn caption(&self) -> Caption {
         let step = self.line_step();
         let first = self.line_start(self.origin());
-        let lines = std::iter::successors(Some(first), |cell| self.after(*cell, step).map(|next| self.line_start(next)));
-        let read = lines.map(|start| self.line(start).iter().map(|(row, column)| self.cells[row * self.columns + column]).collect::<String>());
-        let kept: Vec<String> = read.map(|line| line.trim().to_owned()).filter(|line| !line.is_empty()).collect();
-        kept.join("\n")
+        let lines: Vec<Vec<Cell>> = std::iter::successors(Some(first), |cell| self.after(*cell, step).map(|next| self.line_start(next)))
+            .map(|start| self.line(start).iter().map(|(row, column)| self.cells[row * self.columns + column]).collect())
+            .collect();
+        let read = lines.iter().map(|line| line.iter().map(|cell| cell.letter).collect::<String>().trim().to_owned());
+        let text = read.filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n");
+        let italic = lines.iter().flatten().filter(|cell| cell.letter != ' ').all(|cell| cell.italic);
+        let sides = [Align::Start, Align::Center, Align::End];
+        let (across, down) = (sides[usize::from(self.anchor_point % 3)], sides[usize::from(self.anchor_point / 3)]);
+        let place = Place { x: MARGIN + SCREEN * self.anchor.0, across, down: Down::At(MARGIN + SCREEN * self.anchor.1, down), width: SCREEN, lines: self.justify };
+        Caption { text, place: Some(place), italic: italic && lines.iter().flatten().any(|cell| cell.letter != ' ') }
     }
 }
 
@@ -620,11 +657,60 @@ mod tests {
 
     fn cues(decoder: &Decoder, service: u8) -> Vec<(Duration, Duration, String)> {
         let (_, cues) = decoder.services().find(|(number, _)| *number == service).expect("the service");
-        cues.iter().map(|cue| (cue.from, cue.to, cue.text.clone())).collect()
+        cues.iter().map(|cue| (cue.from, cue.to, cue.caption.text.clone())).collect()
     }
 
+    /// Service 1's text on show at each change: its windows' cues starting then, a line each.
     fn texts(decoder: &Decoder) -> Vec<String> {
-        cues(decoder, 1).into_iter().map(|(_, _, text)| text).collect()
+        let mut texts: Vec<(Duration, String)> = Vec::new();
+        for (from, _, text) in cues(decoder, 1) {
+            match texts.last_mut() {
+                Some((at, all)) if *at == from => *all = format!("{all}\n{text}"),
+                _ => texts.push((from, text)),
+            }
+        }
+        texts.into_iter().map(|(_, text)| text).collect()
+    }
+
+    /// Service 1's last captions.
+    fn last(decoder: &Decoder) -> Vec<Caption> {
+        let (_, cues) = decoder.services().find(|(number, _)| *number == 1).expect("the service");
+        cues.iter().filter(|cue| cue.to == Duration::MAX).map(|cue| cue.caption.clone()).collect()
+    }
+
+    fn near(one: f32, other: f32) -> bool {
+        (one - other).abs() < 1e-4
+    }
+
+    #[test]
+    fn a_window_is_placed_at_its_anchor_on_the_caption_screen() {
+        // (Anchored by its bottom middle (point 7) at 90% down, 50% across.)
+        let window = [0x98, 0x20, 0x80 | 90, 50, 0x70, 31, 1 << 3 | 1];
+        let place = last(&fed(&[&[&window[..], b"Low"].concat()]))[0].place.unwrap();
+        assert!(near(place.x, 0.1 + 0.8 * 0.5) && place.across == Align::Center, "{place:?}");
+        assert_eq!(place.down, Down::At(0.1 + 0.8 * 0.9, Align::End));
+        // (Anchored by its top left in the grid of 75 rows by 210 columns.)
+        let window = [0x98, 0x20, 15, 42, 0x00, 31, 1 << 3 | 1];
+        let place = last(&fed(&[&[&window[..], b"High"].concat()]))[0].place.unwrap();
+        assert!(near(place.x, 0.1 + 0.8 * 0.2) && place.across == Align::Start, "{place:?}");
+        assert_eq!(place.down, Down::At(0.1 + 0.8 * 0.2, Align::Start));
+    }
+
+    #[test]
+    fn a_windows_justification_and_style_line_up_its_lines() {
+        let centred = last(&fed(&[&[&define(0, true, 1, 80, 2)[..], b"mid"].concat()]))[0].place.unwrap();
+        assert_eq!(centred.lines, Align::Center);
+        // (SetWindowAttributes: right justified.)
+        let right = last(&fed(&[&define(0, true, 1, 80, 1), &[0x97, 0, 0, 0x0D, 0], b"right"]))[0].place.unwrap();
+        assert_eq!(right.lines, Align::End);
+    }
+
+    #[test]
+    fn text_the_pen_writes_italic_makes_an_italic_caption() {
+        let italic = last(&fed(&[&define(0, true, 1, 80, 1), &[0x90, 0x05, 0x80], b"lean"]));
+        assert!(italic[0].italic, "{italic:?}");
+        let mixed = last(&fed(&[&define(0, true, 1, 80, 1), &[0x90, 0x05, 0x80], b"lean", &[0x90, 0x05, 0x00], b" up"]));
+        assert!(!mixed[0].italic && mixed[0].text == "lean up", "{mixed:?}");
     }
 
     /// DefineWindow 0 to 7 (`at`): shown or not, `rows` by 32, anchored at its top left this

@@ -5,6 +5,7 @@
 //! at the next play.
 
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource, kind_of};
+use crate::video_captions::Caption;
 use crate::web_host::took;
 use std::time::Duration;
 
@@ -151,11 +152,17 @@ impl Player {
         // SAFETY: a plain request.
         unsafe { video_choose_captions(self.id, nth.map_or(-1, |nth| nth as i32)) };
     }
-    /// The chosen caption track's cues on show, as the browser says.
-    pub(crate) fn caption(&mut self) -> Option<String> {
+    /// The chosen caption track's cues on show, as the browser says: each its WebVTT settings
+    /// on a line, then its text; a blank line between.
+    pub(crate) fn captions(&mut self) -> Vec<Caption> {
         // SAFETY: the loader answers the text's length, kept for `took`.
         let length = unsafe { video_caption(self.id) };
-        (length > 0).then(|| crate::video_captions::plain(&String::from_utf8_lossy(&took(length))))
+        if length == 0 {
+            return Vec::new();
+        }
+        let text = String::from_utf8_lossy(&took(length)).into_owned();
+        let cue = |block: &str| block.split_once('\n').map(|(settings, text)| crate::video_captions::caption_with_settings(text, settings));
+        text.split("\n\n").filter_map(cue).collect()
     }
 }
 

@@ -7,7 +7,7 @@
 //!   headless browser (Edge or Chrome; `TAUT_BROWSER` names one), muted, which presses its
 //!   parts through the readers' elements and keys and reads the frame numbers off the canvas:
 //!   frames at their times, pause, seeks to the frame asked, the end once, a loop, the controls,
-//!   the app's captions (shown and told), speed, the browser's own tracks,
+//!   the app's captions (shown and told), speed, a browser cue's settings, the browser's own tracks,
 //!   bytes, a play with sound refused before a press, a missing file, and many opens.
 //!
 //! Each half says why and passes where it lacks the wasm target, Node or a browser, unless
@@ -482,6 +482,23 @@ async function captions_and_speed() {
     if (Math.abs(results.rate - 2) > 0.4) fail(`at 2× the time moved ${results.rate} s a second`);
 }
 
+// A browser's own cue reaches taut with its settings, a line of WebVTT before its text.
+async function browser_cue_settings() {
+    if (!(await opened("Silent"))) return;
+    const [id, video] = [...page.videos.entries()][0];
+    const track = video.element.addTextTrack("captions", "Placed", "en");
+    track.mode = "hidden";
+    const cue = new VTTCue(0, 10, "Placed");
+    Object.assign(cue, { snapToLines: false, line: 10, position: 10, align: "start" });
+    track.addCue(cue);
+    // (A track's active cues are found as its time moves.)
+    video.element.currentTime = 0.2;
+    await pause(300);
+    page.videoCaption(id);
+    results.cue = new TextDecoder().decode(page.made);
+    if (results.cue !== "line:10% position:10% align:start\nPlaced") fail(`the browser's cue: ${JSON.stringify(results.cue)}`);
+}
+
 // The browser's own tracks of a file with two sound and two caption tracks: what it lists.
 async function the_files_tracks() {
     if (!(await opened("Languages"))) return;
@@ -511,7 +528,7 @@ async function many_opens() {
 try {
     page = await start("page.wasm", { element: document.getElementById("app") });
     await settle();
-    for (const check of [frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, the_files_tracks, many_opens]) {
+    for (const check of [frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, browser_cue_settings, the_files_tracks, many_opens]) {
         const failed = results.failed.length;
         await check();
         results[check.name] = results.failed.length === failed ? "passed" : "FAILED";

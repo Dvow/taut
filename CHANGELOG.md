@@ -373,6 +373,20 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   time. Vulkan on Linux and Android draws frames of two kinds in one part (NV12 beside I420)
   instead of leaving the part to the CPU. On Windows the decoder no longer waits for a texture
   a window's device holds: each try held the interface up to 100 ms.
+- **Captions where the file puts them** (feature `video`): `ui.video_captions` draws each
+  caption at its place on the frame: CEA-608's rows and indents, CEA-708's window anchors and
+  justification, WebVTT's `line`, `position`, `size`, `align` and regions, SRT's `{\an8}`, SSA's
+  alignment, margins and `\pos`; italic where the file says. Screen readers are told the text as
+  before. `add_captions` also takes SSA (ASS) scripts. Captions take the size the caption
+  style asks against the frame (an 18th of its height): before, the theme's text size, as the
+  video's box was not known. That box now senses the pointer (so its place is kept).
+- **CEA-608's other services:** `CC2` to `CC4` and the text services `T1` to `T4` are caption
+  tracks once their data comes (in the video stream, and QuickTime closed-caption tracks on
+  macOS, iOS and Windows).
+- **Windows:** MP4's and QuickTime's caption tracks (3GPP timed text, WebVTT, `c608`), which
+  Media Foundation does not read, are read by taut. An `http` or `https` address is downloaded
+  once for the player and the caption readers (before, the captions' reader made a connection of
+  its own and read the video again); the video opens once the address's first bytes come.
 
 ## 0.3.0 (2026-11-24)
 

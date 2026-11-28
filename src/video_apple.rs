@@ -12,11 +12,10 @@
 use crate::color::Color;
 use crate::macos_sys::{Block, Bool, Obj, Pool, array_items, class, ns_string, rust_string, send, send_large};
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
-use crate::video_captions::Cue;
-use crate::video_cea608;
-use crate::video_read_ahead::{ReadAhead, Step};
+use crate::video_captions::{Caption, Cue};
+use crate::video_read_ahead::{ReadAhead, SeiReading, Step};
 use crate::video_sei::Codec;
-use crate::video_stream_captions::ClosedCaptions;
+use crate::video_stream_captions::{ClosedCaptions, cea608_pairs};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -177,7 +176,7 @@ pub(crate) struct Player {
     captions: Option<usize>,
     /// The captions in the video stream of a file, read by a thread of their own (tracks
     /// after the file's).
-    in_stream: Arc<ReadAhead>,
+    in_stream: Arc<ReadAhead<SeiReading>>,
 }
 
 /// The block a seek calls when it is over, finished or not, with the count of seeks over. It
@@ -367,7 +366,8 @@ impl Player {
     }
 
     /// The item's sound and caption tracks, once it is ready (the cues of its own caption tracks
-    /// read then), and those found in the video stream so far.
+    /// read then: each closed-caption track gives a track for each CEA-608 service it holds),
+    /// and those found in the video stream so far.
     pub(crate) fn tracks(&mut self) -> Option<Tracks> {
         if !self.ready {
             return None;
@@ -377,9 +377,14 @@ impl Player {
         let (captions, closed) = (self.item_tracks(&["sbtl", "text"]), self.item_tracks(&["clcp"]));
         // SAFETY: live tracks.
         let chosen = sound.iter().position(|track| unsafe { send::<Bool>(*track, c"isEnabled", ()) } != 0);
-        self.cues = captions.iter().map(|track| self.cues_of(*track)).chain(closed.iter().map(|track| self.cea608_cues_of(*track))).collect();
         let mut listed: Vec<Track> = captions.iter().map(|track| track_of(*track)).collect();
-        listed.extend(closed.iter().map(|track| Track { name: "CC1".into(), ..track_of(*track) }));
+        self.cues = captions.iter().map(|track| self.cues_of(*track)).collect();
+        for track in closed {
+            for (service, cues) in self.cea608_services_of(track) {
+                listed.push(Track { name: service.name, ..track_of(track) });
+                self.cues.push(cues);
+            }
+        }
         listed.extend(self.in_stream.with_tracks(ClosedCaptions::tracks));
         Some(Tracks { sound: sound.iter().map(|track| track_of(*track)).collect(), captions: listed, sound_chosen: chosen })
     }
@@ -395,12 +400,13 @@ impl Player {
     pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
         self.captions = nth;
     }
-    /// The chosen caption track's text on show: of the file's tracks, or of the video stream's.
-    pub(crate) fn caption(&mut self) -> Option<String> {
-        let (at, nth) = (self.position(), self.captions?);
+    /// The chosen caption track's captions on show: of the file's tracks, or of the video
+    /// stream's.
+    pub(crate) fn captions(&mut self) -> Vec<Caption> {
+        let (at, Some(nth)) = (self.position(), self.captions) else { return Vec::new() };
         match nth.checked_sub(self.cues.len()) {
-            None => crate::video_captions::text_at(&self.cues[nth], at),
-            Some(in_stream) => self.in_stream.with_tracks(|tracks| tracks.text_at(in_stream, at)),
+            None => crate::video_captions::captions_at(&self.cues[nth], at),
+            Some(in_stream) => self.in_stream.with_tracks(|tracks| tracks.captions_at(in_stream, at)),
         }
     }
 
@@ -415,18 +421,18 @@ impl Player {
         cues
     }
 
-    /// A closed-caption track's cues: its samples' CEA-608 pairs of field 1 (`cdat` atoms), read
-    /// by taut.
-    fn cea608_cues_of(&self, track: Obj) -> Vec<Cue> {
-        let mut decoder = video_cea608::Decoder::default();
+    /// A closed-caption track's CEA-608 services (`CC1` to `CC4`, `T1` to `T4`) and their cues:
+    /// its samples' byte pairs of field 1 (`cdat` atoms) and field 2 (`cdt2`), read by taut.
+    fn cea608_services_of(&self, track: Obj) -> Vec<(Track, Vec<Cue>)> {
+        let mut decoded = ClosedCaptions::default();
         let Some(output) = self.samples_of(track) else { return Vec::new() };
         each_sample(output, |sample| {
             // SAFETY: a live sample buffer.
             let at = unsafe { (self.functions.sample_time)(sample) }.known();
             let (Some(at), Some(bytes)) = (at, sample_bytes(self.functions, sample)) else { return };
-            cdat_pairs(&bytes).for_each(|pair| decoder.read_pair(pair, at));
+            cea608_pairs(&bytes).for_each(|(field, pair)| decoded.read_cea608_pair(field, pair, at));
         });
-        decoder.cues().to_vec()
+        decoded.tracks().into_iter().enumerate().map(|(nth, track)| (track, decoded.cues_of_track(nth).to_vec())).collect()
     }
 
     /// An `AVAssetReader`'s output of a track's samples as stored, reading (autoreleased, with
@@ -444,7 +450,7 @@ impl Player {
         // SAFETY: a live sample buffer.
         let (from, length) = unsafe { ((f.sample_time)(sample).known()?, (f.sample_duration)(sample).known()) };
         let text = timed_text(&sample_bytes(f, sample)?)?;
-        Some(Cue { from, to: from + length.unwrap_or(Duration::MAX - from), text })
+        Some(Cue { from, to: from + length.unwrap_or(Duration::MAX - from), caption: Caption::plain(text) })
     }
 }
 
@@ -495,19 +501,6 @@ fn sample_bytes(f: &Functions, sample: *mut c_void) -> Option<Vec<u8>> {
     }
 }
 
-/// The CEA-608 pairs in a closed-caption sample: those of its `cdat` atoms (field 1).
-fn cdat_pairs(mut sample: &[u8]) -> impl Iterator<Item = [u8; 2]> {
-    let mut pairs = Vec::new();
-    while let Some(&[a, b, c, d, ref kind @ ..]) = sample.first_chunk::<8>() {
-        let size = (u32::from_be_bytes([a, b, c, d]) as usize).clamp(8, sample.len());
-        if kind == b"cdat" {
-            pairs.extend(sample[8..size].as_chunks::<2>().0);
-        }
-        sample = &sample[size..];
-    }
-    pairs.into_iter()
-}
-
 /// A time range as CoreMedia keeps it.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -542,7 +535,7 @@ impl Drop for Retained {
 /// The captions' thread: reads the samples of the file's video track as stored (an
 /// `AVAssetReader`, no decoder), where it is H.264 or HEVC, a little ahead of where it plays,
 /// until the player goes.
-fn read_captions_in_stream(functions: &Functions, url: &Retained, in_stream: &ReadAhead) {
+fn read_captions_in_stream(functions: &Functions, url: &Retained, in_stream: &ReadAhead<SeiReading>) {
     let _pool = Pool::new();
     // SAFETY: a live URL; the asset and its tracks are autoreleased into the pool.
     let asset: Obj = unsafe { send(class(c"AVURLAsset"), c"URLAssetWithURL:options:", (url.0, std::ptr::null_mut::<c_void>())) };
@@ -589,7 +582,7 @@ impl TrackReading {
 
     /// Reads the next sample into the captions: its time; at the end, `Duration::MAX`, the
     /// captions waiting read.
-    fn read_sample(&self, f: &Functions, codec: Codec, in_stream: &ReadAhead) -> Duration {
+    fn read_sample(&self, f: &Functions, codec: Codec, in_stream: &ReadAhead<SeiReading>) -> Duration {
         let _pool = Pool::new();
         // SAFETY: a reading output; the sample buffer it copies is ours, read and released.
         let sample: *mut c_void = unsafe { send(self.output, c"copyNextSampleBuffer", ()) };
@@ -729,7 +722,7 @@ pub(crate) fn flush_metal_textures(cache: *mut c_void) {
 }
 
 /// Reads the next sample, where there is a reading: as `TrackReading::read_sample`.
-fn read_next(reading: Option<&TrackReading>, f: &Functions, codec: Codec, in_stream: &ReadAhead) -> Duration {
+fn read_next(reading: Option<&TrackReading>, f: &Functions, codec: Codec, in_stream: &ReadAhead<SeiReading>) -> Duration {
     let Some(reading) = reading else {
         in_stream.ended();
         return Duration::MAX;

@@ -27,11 +27,11 @@ use crate::accessibility::Role;
 use crate::color::Color;
 use crate::el::El;
 use crate::event::{Key, Mods};
-use crate::layout::{Align, Length};
+use crate::layout::{Align, Flow, Length};
 use crate::text::Font;
 use crate::ui::{Icon, Picture, Response, Ui};
 pub use crate::video_captions::CaptionsError;
-use crate::video_captions::Cue;
+use crate::video_captions::{Caption, Cue, Down, LINE};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -231,8 +231,9 @@ pub struct Video {
     tracks_known: bool,
     app_cues: Vec<Vec<Cue>>,
     captioned: Option<Captioned>,
-    /// The caption on show as of the last run, whether it is new since readers were told, and
-    /// how it looks.
+    /// The captions on show as of the last run, their text (a caption a line), whether it is new
+    /// since readers were told, and how they look.
+    shown: Vec<Caption>,
     caption: Option<String>,
     caption_new: bool,
     style: CaptionStyle,
@@ -302,6 +303,7 @@ impl Video {
             tracks_known: false,
             app_cues: Vec::new(),
             captioned: None,
+            shown: Vec::new(),
             caption: None,
             caption_new: false,
             style: caption_style(),
@@ -449,12 +451,13 @@ impl Video {
         };
         self.captioned = chosen;
         self.player.choose_captions(file);
-        let caption = self.caption_now();
-        self.set_caption(caption);
+        let shown = self.captions_now();
+        self.set_captions(shown);
     }
-    /// Adds the app's captions, WebVTT or SRT text, as a caption track named `name` in
-    /// `language`: its place in [`caption_tracks`](Self::caption_tracks). Only the text of each
-    /// cue is kept: no positions or styles.
+    /// Adds the app's captions, WebVTT, SRT or SSA (ASS) text, as a caption track named `name`
+    /// in `language`: its place in [`caption_tracks`](Self::caption_tracks). Each cue keeps its
+    /// text, its place (WebVTT's settings and regions, SRT's `{\an8}`, SSA's alignment, margins
+    /// and `\pos`) and italics; not its colours or fonts.
     ///
     /// ```no_run
     /// # fn add(video: &mut taut::Video) -> Result<(), taut::CaptionsError> {
@@ -467,7 +470,8 @@ impl Video {
         self.caption_tracks.push(Track { language: language.into(), name: name.into() });
         Ok(self.caption_tracks.len() - 1)
     }
-    /// The caption on show, as of the last run; none while captions are off or between cues.
+    /// The caption on show, as of the last run, a line for each where several show; none while
+    /// captions are off or between cues.
     pub fn caption(&self) -> Option<&str> {
         self.caption.as_deref()
     }
@@ -492,19 +496,31 @@ impl Video {
         });
     }
     /// Takes the source's tracks once the player knows them: they come before the app's
-    /// caption tracks.
+    /// caption tracks. A track of the source's shown stays shown where tracks found later
+    /// come before it.
     fn take_tracks(&mut self) {
         let Some(found) = self.player.tracks() else { return };
+        let chosen = match self.captioned {
+            Some(Captioned::File(nth)) => self.caption_tracks.get(nth).map(|track| (track.clone(), self.caption_tracks[..nth].iter().filter(|other| *other == track).count())),
+            _ => None,
+        };
         let app = self.caption_tracks.split_off(self.file_captions);
         (self.file_captions, self.tracks_known) = (found.captions.len(), true);
         (self.sound_tracks, self.sound_track, self.caption_tracks) = (found.sound, found.sound_chosen, found.captions);
         self.caption_tracks.extend(app);
+        let Some((track, earlier)) = chosen else { return };
+        let moved = self.caption_tracks[..self.file_captions].iter().enumerate().filter(|(_, other)| **other == track).nth(earlier).map(|(at, _)| at);
+        if let Some(at) = moved.filter(|at| self.captioned != Some(Captioned::File(*at))) {
+            self.captioned = Some(Captioned::File(at));
+            self.player.choose_captions(Some(at));
+        }
     }
-    /// The caption on show at its position.
-    fn caption_now(&mut self) -> Option<String> {
-        match self.captioned? {
-            Captioned::File(_) => self.player.caption(),
-            Captioned::App(nth) => crate::video_captions::text_at(&self.app_cues[nth], self.position),
+    /// The captions on show at its position.
+    fn captions_now(&mut self) -> Vec<Caption> {
+        match self.captioned {
+            None => Vec::new(),
+            Some(Captioned::File(_)) => self.player.captions(),
+            Some(Captioned::App(nth)) => crate::video_captions::captions_at(&self.app_cues[nth], self.position),
         }
     }
     fn ask(&mut self, ui: &mut Ui) {
@@ -522,13 +538,15 @@ impl Video {
         if !self.tracks_known {
             self.take_tracks();
         }
-        let caption = self.caption_now();
-        self.set_caption(caption);
+        let shown = self.captions_now();
+        self.set_captions(shown);
     }
-    /// The caption on show from now: readers are told it where it is new.
-    fn set_caption(&mut self, caption: Option<String>) {
+    /// The captions on show from now: readers are told their text where it is new.
+    fn set_captions(&mut self, shown: Vec<Caption>) {
+        let texts: Vec<&str> = shown.iter().map(|caption| caption.text.as_str()).filter(|text| !text.is_empty()).collect();
+        let caption = (!texts.is_empty()).then(|| texts.join("\n"));
         self.caption_new |= caption.is_some() && caption != self.caption;
-        self.caption = caption;
+        (self.caption, self.shown) = (caption, shown);
     }
     /// At the end: again from the start, or stopped there.
     fn restart_or_stop(&mut self) {
@@ -583,6 +601,32 @@ impl Video {
             Some(picture) => ui.set_picture_texture(picture, frame),
             None => self.picture = Some(ui.add_picture_texture(frame)),
         }
+    }
+}
+
+/// The size of the frame shown in a box `room` wide and high: all of it when filling or before
+/// the frame's size is known, else as big as fits with the frame's shape.
+fn frame_size(size: Option<(usize, usize)>, room: (f32, f32), fill: bool) -> (f32, f32) {
+    let Some((width, height)) = size.filter(|(width, height)| !fill && *width > 0 && *height > 0) else { return room };
+    let scale = (room.0 / width as f32).min(room.1 / height as f32);
+    (width as f32 * scale, height as f32 * scale)
+}
+
+/// How captions look over a frame: the system's caption style, the text size, and the frame's.
+struct CaptionLooks {
+    style: CaptionStyle,
+    size: f32,
+    frame: (f32, f32),
+}
+
+impl CaptionLooks {
+    /// A caption's box around its text, at most `widest` wide.
+    fn boxed<'a>(&self, el: El<'a>, widest: f32) -> El<'a> {
+        let size = self.size;
+        el.pad((size / 6.0, size / 3.0)).radius(size / 6.0).fill(self.style.background).max(widest, f32::MAX)
+    }
+    fn font(&self, italic: bool) -> Font {
+        if italic { Font::new(self.size).italic() } else { Font::new(self.size) }
     }
 }
 
@@ -684,9 +728,9 @@ impl Ui {
             video.room = (room.w, room.h);
         }
         video.update(self);
-        let (picture, size, fill) = (video.picture, video.size.unwrap_or((0, 0)), video.fill);
-        let el = self.el().key(key).fill(Color::BLACK);
-        let el = if fill { el.sense() } else { el };
+        let (picture, size) = (video.picture, video.size.unwrap_or((0, 0)));
+        // (Sensing, so its place is kept for filling and for its captions' places.)
+        let el = self.el().key(key).fill(Color::BLACK).sense();
         match picture {
             Some(picture) => el.picture(picture).keep_aspect(),
             None => el.size(size.0 as f32, size.1 as f32),
@@ -726,22 +770,69 @@ impl Ui {
         self.again |= row.changed;
         row
     }
-    /// The video's caption on show, in a box at the bottom middle of its parent, styled as the
-    /// system's caption settings say where it has them; empty while there is none. Told to
-    /// screen readers, and said by them as it changes. Put it after [`video`](Self::video) in a
-    /// stack, so it lies over the frame (see [the module](crate::Video)).
+    /// The video's captions on show, over its frame, styled as the system's caption settings say
+    /// where it has them: each where its source puts it (rows and windows of captions in the
+    /// stream, WebVTT's settings, SRT's `{\an8}`, SSA's alignment and `\pos`), the rest in a box
+    /// at the bottom middle; empty while none shows. Told to screen readers, and said by them as
+    /// they change. Put it after [`video`](Self::video) in a stack the video fills, so it lies
+    /// over the frame (see [the module](crate::Video)).
     pub fn video_captions(&mut self, video: &mut Video) -> Response {
         let room = self.visible_rect(self.id(("taut video", video.serial)));
-        let Some(caption) = video.caption.clone() else { return self.el().size(0.0, 0.0).place((Align::Center, Align::End)).show() };
+        let Some(text) = video.caption.clone() else { return self.el().size(0.0, 0.0).place((Align::Center, Align::End)).show() };
         if std::mem::take(&mut video.caption_new) {
-            self.announce(&caption);
+            self.announce(&text);
         }
-        let style = video.style;
-        let size = (room.h / 18.0).max(self.theme.font.size) * style.scale;
-        // (As wide as the frame leaves room for, once it was laid out.)
-        let widest = if room.w > 0.0 { (room.w - size).max(size) } else { f32::MAX };
-        let el = self.el().place((Align::Center, Align::End)).offset(0.0, -size / 2.0).pad((size / 6.0, size / 3.0)).radius(size / 6.0).fill(style.background);
-        el.max(widest, f32::MAX).text(&caption, Font::new(size), style.text).text_align(Align::Center).wrap().show()
+        let frame = frame_size(video.size, (room.w, room.h), video.fill);
+        let looks = CaptionLooks { style: video.style, size: (frame.1 / 18.0).max(self.theme.font.size) * video.style.scale, frame };
+        let (placed, usual): (Vec<&Caption>, Vec<&Caption>) = video.shown.iter().partition(|caption| caption.place.is_some() && room.w > 0.0);
+        if placed.is_empty() {
+            return self.usual_caption(&text, usual.iter().all(|caption| caption.italic), &looks);
+        }
+        let response = self.el().flow(Flow::Stack).place(Align::Center).size(frame.0, frame.1).open();
+        for caption in placed {
+            self.placed_caption(caption, &looks);
+        }
+        if !usual.is_empty() {
+            let text = usual.iter().map(|caption| caption.text.as_str()).collect::<Vec<_>>().join("\n");
+            self.usual_caption(&text, usual.iter().all(|caption| caption.italic), &looks);
+        }
+        self.close();
+        response
+    }
+    /// Captions at the usual place: the bottom middle, as wide as the frame leaves room for once
+    /// it was laid out.
+    fn usual_caption(&mut self, text: &str, italic: bool, looks: &CaptionLooks) -> Response {
+        let size = looks.size;
+        let widest = if looks.frame.0 > 0.0 { (looks.frame.0 - size).max(size) } else { f32::MAX };
+        let el = self.el().place((Align::Center, Align::End)).offset(0.0, -size / 2.0);
+        looks.boxed(el, widest).text(text, looks.font(italic), looks.style.text).text_align(Align::Center).wrap().show()
+    }
+    /// A caption where its source puts it on the frame: the side of its box it names at its
+    /// place, no wider than its place and the frame leave room for.
+    fn placed_caption(&mut self, caption: &Caption, looks: &CaptionLooks) {
+        let Some(place) = caption.place else { return };
+        let ((width, height), size) = (looks.frame, looks.size);
+        let line = LINE * height * looks.style.scale;
+        let (across, x) = match place.across {
+            Align::End => (Align::End, place.x * width - width),
+            Align::Center => (Align::Center, place.x * width - width / 2.0),
+            _ => (Align::Start, place.x * width),
+        };
+        let (down, y) = match place.down {
+            Down::At(at, Align::End) => (Align::End, at * height - height),
+            Down::At(at, Align::Center) => (Align::Center, at * height - height / 2.0),
+            Down::At(at, _) => (Align::Start, at * height),
+            Down::Line(from_top @ 0..) => (Align::Start, from_top as f32 * line),
+            Down::Line(from_bottom) => (Align::End, (from_bottom + 1) as f32 * line - size / 2.0),
+        };
+        let room = match place.across {
+            Align::End => place.x,
+            Align::Center => 2.0 * place.x.min(1.0 - place.x),
+            _ => 1.0 - place.x,
+        };
+        let widest = (place.width.min(room) * width - size / 1.5).max(size);
+        let el = self.el().place((across, down)).offset(x, y);
+        looks.boxed(el, widest).text(&caption.text, looks.font(caption.italic), looks.style.text).text_align(place.lines).wrap().show();
     }
     /// Menus for the caption track, the sound track (where there are several) and the speed:
     /// whether one was chosen.
@@ -1683,6 +1774,162 @@ pub(crate) mod tests {
                 trial.run();
                 assert_eq!(trial.app.caption(), caption, "{name}, {track} at {:?}", trial.app.position());
             }
+        }
+    }
+
+    /// The bounds (left, top, right, bottom) of the box of the caption track `name` in the
+    /// window's image: the pixels of its background (opaque magenta, for the test).
+    fn caption_box(trial: &mut Trial<Video>, name: &str) -> Option<[usize; 4]> {
+        let track = trial.app.caption_tracks().iter().position(|track| track.name == name).expect("the track");
+        trial.app.style = CaptionStyle { text: Color::WHITE, background: Color::rgb(0xFF00FF), scale: 1.0 };
+        trial.app.set_caption_track(Some(track));
+        trial.run();
+        let width = trial.screen.width;
+        let boxed = trial.screen.pixels.iter().enumerate().filter(|(_, pixel)| **pixel & 0xFF_FFFF == 0xFF00FF).map(|(at, _)| (at % width, at / width));
+        boxed.fold(None, |bounds, (x, y)| {
+            let [left, top, right, bottom] = bounds.unwrap_or([x, y, x + 1, y + 1]);
+            Some([left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1)])
+        })
+    }
+
+    #[test]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
+    fn a_placed_caption_is_drawn_where_its_file_puts_it() {
+        let _alone = alone();
+        let Some(video) = opened(false) else { return };
+        let mut trial = Trial::new(video, captioned);
+        until(&mut trial, "the first frame and the tracks", |video| video.size().is_some() && !video.awaited && video.tracks_known);
+        trial.app.add_captions("WEBVTT\n\n00:00.000 --> 00:05.000 align:start position:10% line:10%\nTop left", "en", "Top left").unwrap();
+        trial.app.add_captions(&format!("{SSA_HEADER}Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{{\\an5\\pos(320,240)}}Middle\r\n"), "en", "Middle").unwrap();
+        trial.app.add_captions("WEBVTT\n\n00:00.000 --> 00:05.000\nUsual", "en", "Usual").unwrap();
+        // (A 4:3 frame filling the box of 320×240: a tenth in is 32 across and 24 down.)
+        let [left, top, ..] = caption_box(&mut trial, "Top left").expect("the caption drawn");
+        assert!(left.abs_diff(32) <= 1 && top.abs_diff(24) <= 1, "WebVTT's caption starts at {left}, {top}, not 32, 24");
+        let [left, top, right, bottom] = caption_box(&mut trial, "Middle").expect("the caption drawn");
+        let middle = ((left + right) / 2, (top + bottom) / 2);
+        assert!(middle.0.abs_diff(160) <= 1 && middle.1.abs_diff(120) <= 1, "SSA's caption is centred at {middle:?}, not 160, 120");
+        let [left, _, right, bottom] = caption_box(&mut trial, "Usual").expect("the caption drawn");
+        assert!(bottom > 200 && ((left + right) / 2).abs_diff(160) <= 1, "the usual caption sits at the bottom middle: {left}..{right}, to {bottom}");
+        assert_eq!(trial.find(Role::Text, "Usual").name, "Usual");
+    }
+
+    #[test]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
+    fn the_other_cea608_channels_in_the_stream_are_tracks_placed_at_their_rows() {
+        let _alone = alone();
+        if !reads_in_stream(Coding::H264) {
+            return;
+        }
+        let file = written("other-channels.mp4", &movie_captioned_in_stream(30, Coding::H264, &OTHER_CHANNELS, Carried::InSei));
+        let Some(video) = player(Video::open_silent(file)) else { return };
+        let mut trial = trial(video, false);
+        trial.app.play();
+        until(&mut trial, "three caption tracks", |video| video.caption_tracks().len() >= 3);
+        let names: Vec<&str> = trial.app.caption_tracks().iter().map(|track| track.name.as_str()).collect();
+        assert_eq!(names, ["CC2", "CC3", "CC4"]);
+        // (Each from the start: a slow machine finds the last track after the first's caption.)
+        for (track, caption) in [("CC2", "Second channel"), ("CC3", "Third channel"), ("CC4", "Fourth channel")] {
+            trial.app.set_caption_track(trial.app.caption_tracks().iter().position(|found| found.name == track));
+            trial.app.seek(Duration::ZERO);
+            trial.app.play();
+            until(&mut trial, "the caption", |video| video.caption() == Some(caption));
+            // (Row 15 of the caption screen, the middle 80% of the frame.)
+            let place = trial.app.shown[0].place.expect("a place");
+            assert_eq!(place.down, Down::At(0.1 + 0.8 * 14.0 / 15.0, Align::Start), "{track}");
+        }
+    }
+
+    /// Whether GStreamer here reads H.264 in Matroska (and so its SSA captions, places and
+    /// all); said where not.
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+    fn reads_placed_ssa() -> bool {
+        use crate::video_gstreamer::has_element;
+        skipped(has_element(c"matroskademux") && [c"avdec_h264", c"openh264dec"].iter().any(|decoder| has_element(decoder)), "GStreamer here reads no H.264 in Matroska")
+    }
+    /// Media Foundation reads them; AVFoundation and Android's extractor read no SSA.
+    #[cfg(not(all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
+    fn reads_placed_ssa() -> bool {
+        cfg!(windows)
+    }
+
+    #[test]
+    #[cfg_attr(target_vendor = "apple", ignore = "AVFoundation plays only on the main thread: tests/video_apple.rs")]
+    fn ssa_captions_in_matroska_are_placed_where_their_script_says() {
+        let _alone = alone();
+        if !reads_placed_ssa() {
+            return;
+        }
+        let file = written("placed.mkv", &matroska(30, 10, &[], &PLAIN_AND_PLACED));
+        // (Each track chosen before it plays: GStreamer may not switch in a file this short.)
+        let place_of = |language: &str, caption: &str| {
+            let video = player(Video::open_silent(file.clone()))?;
+            let mut trial = trial(video, false);
+            until(&mut trial, "the caption tracks", |video| video.caption_tracks().len() >= 2);
+            let track = languages(trial.app.caption_tracks()).iter().position(|found| found == language);
+            trial.app.set_caption_track(track);
+            trial.app.play();
+            until(&mut trial, "the first caption", |video| video.caption() == Some(caption));
+            Some(trial.app.shown[0].place)
+        };
+        // (`\an7\pos(64,48)` in 640 by 480: its top left a tenth in.)
+        let Some(Some(place)) = place_of("fr", "Français un") else { return };
+        let Down::At(down, Align::Start) = place.down else { panic!("{place:?}") };
+        assert!((place.x - 0.1).abs() < 0.02 && place.across == Align::Start && (down - 0.1).abs() < 0.02, "{place:?}");
+        assert_eq!(place_of("en", "English one"), Some(None));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn caption_tracks_in_mp4_files_are_read_by_taut() {
+        let _alone = alone();
+        let file = written("mp4-captions.mp4", &movie(30, 10, false, &[], &PLAIN_AND_PLACED));
+        let Some(video) = player(Video::open_silent(file)) else { return };
+        let mut trial = trial(video, false);
+        until(&mut trial, "the caption tracks", |video| video.caption_tracks().len() >= 2);
+        assert_eq!(trial.app.caption_tracks(), [Track { language: "eng".into(), name: "English".into() }, Track { language: "fra".into(), name: String::new() }]);
+        trial.app.set_caption_track(Some(1));
+        trial.app.play();
+        until(&mut trial, "the last French caption", |video| video.caption() == Some("Français fin"));
+        assert_eq!(trial.app.shown[0].place.map(|place| (place.across, place.down)), Some((Align::Start, Down::At(0.1, Align::Start))));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_quicktime_closed_caption_track_is_a_track_for_each_cea608_channel_in_it() {
+        let _alone = alone();
+        let file = written("channels.mov", &movie_captioned_in_stream(30, Coding::H264, &OTHER_CHANNELS, Carried::InCaptionTrack));
+        let Some(video) = player(Video::open_silent(file)) else { return };
+        let mut trial = trial(video, false);
+        trial.app.play();
+        until(&mut trial, "three caption tracks", |video| video.caption_tracks().len() >= 3);
+        let names: Vec<&str> = trial.app.caption_tracks().iter().map(|track| track.name.as_str()).collect();
+        assert_eq!(names, ["CC2", "CC3", "CC4"]);
+        until(&mut trial, "the time", |video| video.position() >= Duration::from_millis(1300));
+        trial.app.set_caption_track(Some(1));
+        trial.run();
+        assert_eq!(trial.app.caption(), Some("Third channel"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn an_address_is_downloaded_once_for_the_player_and_its_captions() {
+        let _alone = alone();
+        for (bytes, track, at, caption) in
+            [(movie_captioned_in_stream(30, Coding::H264, &IN_STREAM, Carried::InSei), "CC1", 0.7, "Hello there"), (movie(30, 10, false, &[], &PLAIN_AND_PLACED), "English", 1.5, "English two")]
+        {
+            let (address, connections, sent) = crate::video_windows_download::tests::serve(bytes.clone());
+            let Some(video) = player(Video::open_silent(address.as_str())) else { return };
+            let mut trial = trial(video, false);
+            trial.app.play();
+            until(&mut trial, "the caption track", |video| video.caption_tracks().iter().any(|found| found.name == track));
+            trial.app.set_caption_track(trial.app.caption_tracks().iter().position(|found| found.name == track));
+            until(&mut trial, "the time", |video| video.position() >= Duration::from_secs_f32(at));
+            trial.run();
+            assert_eq!(trial.app.caption(), Some(caption), "{track} at {:?}", trial.app.position());
+            until(&mut trial, "the end", |video| video.ended || video.error().is_some());
+            let (sent, connections) = (sent.load(Ordering::Acquire), connections.load(Ordering::Acquire));
+            eprintln!("{track}: {sent} bytes sent for a file of {}, in {connections} connections", bytes.len());
+            assert!(sent <= bytes.len() + (64 << 10), "{track}: {sent} bytes sent for a file of {}", bytes.len());
         }
     }
 

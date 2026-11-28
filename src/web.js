@@ -1446,12 +1446,13 @@ export class Page {
         }
     }
 
-    // The chosen caption track's cues on show, a line each, kept for `take`: their length.
+    // The chosen caption track's cues on show, kept for `take`: their length. Each cue is its
+    // WebVTT settings on a line, then its text; a blank line between cues.
     videoCaption(id) {
         const element = this.videos.get(id)?.element;
         const track = element && captionTracks(element).find((track) => track.mode === "hidden");
-        const shown = [...(track?.activeCues || [])].map((cue) => cue.text);
-        this.made = encoder.encode(shown.join("\n"));
+        const shown = [...(track?.activeCues || [])].map((cue) => `${cueSettings(cue)}\n${cue.text}`);
+        this.made = encoder.encode(shown.join("\n\n"));
         return this.made.length;
     }
 
@@ -1514,6 +1515,30 @@ export class Page {
 // A video element's subtitle and caption tracks.
 function captionTracks(element) {
     return [...element.textTracks].filter((track) => track.kind === "subtitles" || track.kind === "captions");
+}
+
+// A WebVTT cue's place as its settings say it (`line`, `position`, `size`, `align`), the usual
+// ones left out (and the alignments of `line` and `position` where the browser has none);
+// nothing for another kind of cue.
+function cueSettings(cue) {
+    if (typeof VTTCue === "undefined" || !(cue instanceof VTTCue)) {
+        return "";
+    }
+    const side = (align, usual) => (align && align !== usual ? `,${align}` : "");
+    const settings = [];
+    if (cue.line !== "auto") {
+        settings.push(`line:${cue.line}${cue.snapToLines ? "" : "%"}${side(cue.lineAlign, "start")}`);
+    }
+    if (cue.position !== "auto") {
+        settings.push(`position:${cue.position}%${side(cue.positionAlign, "auto")}`);
+    }
+    if (cue.size !== 100) {
+        settings.push(`size:${cue.size}%`);
+    }
+    if (cue.align !== "center") {
+        settings.push(`align:${cue.align}`);
+    }
+    return settings.join(" ");
 }
 
 // The canvas text is measured and drawn on: one of its own, read back often.

@@ -1,18 +1,19 @@
 //! The caption tracks of a video stream, read by taut from its `cc_data` (in the SEI of H.264
-//! and HEVC, in GStreamer's caption meta) or a QuickTime closed-caption track: CEA-608's channel
-//! 1 (`CC1`) and each CEA-708 service (`Service 1`…), listed in the order their first data came.
-//! For players that hand over the data but do not read it (with `video_sei` where they hand
-//! over samples).
+//! and HEVC, in GStreamer's caption meta) or a QuickTime closed-caption track: CEA-608's caption
+//! and text services (`CC1` to `CC4`, `T1` to `T4`) and each CEA-708 service (`Service 1`…),
+//! listed in the order their first data came. For players that hand over the data but do not
+//! read it (with `video_sei` where they hand over samples).
 
 use crate::video::Track;
-use crate::video_captions::Cue;
+use crate::video_captions::{Caption, Cue};
 use crate::{video_cea608, video_cea708};
 use std::time::Duration;
 
 /// Where a track's cues come from.
 #[derive(Clone, Copy, PartialEq)]
 enum Source {
-    Cea608,
+    /// A CEA-608 service, by its place in `video_cea608::NAMES`.
+    Cea608(usize),
     Service(u8),
 }
 
@@ -34,10 +35,10 @@ impl ClosedCaptions {
         self.note_found();
     }
 
-    /// Reads a CEA-608 byte pair of field 1 at time `at`.
-    #[cfg(any(test, all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
-    pub(crate) fn read_cea608_pair(&mut self, pair: [u8; 2], at: Duration) {
-        self.cea608.read_pair(pair, at);
+    /// Reads a CEA-608 byte pair of field 1 or 2 (`field` 0 or 1) at time `at`.
+    #[cfg(any(test, windows, target_vendor = "apple", all(unix, not(target_os = "android"))))]
+    pub(crate) fn read_cea608_pair(&mut self, field: usize, pair: [u8; 2], at: Duration) {
+        self.cea608.read_pair(field, pair, at);
         self.note_found();
     }
 
@@ -56,35 +57,57 @@ impl ClosedCaptions {
     pub(crate) fn tracks(&mut self) -> Vec<Track> {
         self.listed = self.found.len();
         let name = |source: &Source| match source {
-            Source::Cea608 => "CC1".to_owned(),
+            Source::Cea608(nth) => video_cea608::NAMES[*nth].to_owned(),
             Source::Service(number) => format!("Service {number}"),
         };
         self.found.iter().map(|source| Track { language: String::new(), name: name(source) }).collect()
     }
 
-    /// The text the `nth` track shows at `at`.
-    pub(crate) fn text_at(&self, nth: usize, at: Duration) -> Option<String> {
-        crate::video_captions::text_at(self.cues(*self.found.get(nth)?), at)
+    /// The captions the `nth` track shows at `at`.
+    pub(crate) fn captions_at(&self, nth: usize, at: Duration) -> Vec<Caption> {
+        self.found.get(nth).map_or_else(Vec::new, |source| crate::video_captions::captions_at(self.cues(*source), at))
+    }
+
+    /// The cues of the `nth` track found so far.
+    #[cfg(any(test, target_vendor = "apple"))]
+    pub(crate) fn cues_of_track(&self, nth: usize) -> &[Cue] {
+        self.found.get(nth).map_or(&[], |source| self.cues(*source))
     }
 
     fn cues(&self, source: Source) -> &[Cue] {
         match source {
-            Source::Cea608 => self.cea608.cues(),
+            Source::Cea608(nth) => self.cea608.services().nth(nth).map_or(&[], |(_, cues)| cues),
             Source::Service(number) => self.cea708.services().find(|(found, _)| *found == number).map_or(&[], |(_, cues)| cues),
         }
     }
 
     /// Adds the tracks whose first data came.
     fn note_found(&mut self) {
-        if self.cea608.found() && !self.found.contains(&Source::Cea608) {
-            self.found.push(Source::Cea608);
-        }
-        for (number, _) in self.cea708.services() {
-            if !self.found.contains(&Source::Service(number)) {
-                self.found.push(Source::Service(number));
-            }
-        }
+        let cea608 = self.cea608.services().enumerate().filter(|(_, (found, _))| *found).map(|(nth, _)| Source::Cea608(nth));
+        let cea708 = self.cea708.services().map(|(number, _)| Source::Service(number));
+        let new: Vec<Source> = cea608.chain(cea708).filter(|source| !self.found.contains(source)).collect();
+        self.found.extend(new);
     }
+}
+
+/// The CEA-608 byte pairs in a QuickTime closed-caption sample, in order, each with its field
+/// (0 or 1): those of its `cdat` atoms (field 1) and `cdt2` atoms (field 2).
+#[cfg(any(test, windows, target_vendor = "apple"))]
+pub(crate) fn cea608_pairs(mut sample: &[u8]) -> impl Iterator<Item = (usize, [u8; 2])> {
+    let mut pairs = Vec::new();
+    while let Some(&[a, b, c, d, ref kind @ ..]) = sample.first_chunk::<8>() {
+        let size = (u32::from_be_bytes([a, b, c, d]) as usize).clamp(8, sample.len());
+        let field = match kind {
+            b"cdat" => Some(0),
+            b"cdt2" => Some(1),
+            _ => None,
+        };
+        if let Some(field) = field {
+            pairs.extend(sample[8..size].as_chunks::<2>().0.iter().map(|pair| (field, *pair)));
+        }
+        sample = &sample[size..];
+    }
+    pairs.into_iter()
 }
 
 #[cfg(test)]
@@ -104,7 +127,7 @@ mod tests {
 
     const CUES: &[(u32, u32, &str)] = &[(5, 12, "Hello there"), (18, 26, "Second line")];
     const SERVICE: &[(u32, u32, &str)] = &[(8, 15, "Service text")];
-    const BOTH: InStream = InStream { cea608: CUES, services: &[(1, SERVICE)] };
+    const BOTH: InStream = InStream { cea608: CUES, other_channels: &[], services: &[(1, SERVICE)] };
 
     /// The access units of 30 frames with these captions in their SEI.
     fn units(in_stream: &InStream, codec: Codec) -> Vec<Vec<u8>> {
@@ -112,16 +135,19 @@ mod tests {
     }
 
     /// Each track's name and cues.
-    fn read(tracks: &mut ClosedCaptions) -> Vec<(String, Vec<Cue>)> {
+    fn read(tracks: &mut ClosedCaptions) -> Vec<(String, Vec<Spoken>)> {
         let names = tracks.tracks().into_iter().map(|track| track.name);
-        names.zip(0..).map(|(name, nth)| (name, tracks.cues(tracks.found[nth]).to_vec())).collect()
+        names.zip(0..).map(|(name, nth)| (name, tracks.cues_of_track(nth).iter().map(|cue| (cue.from, cue.to, cue.caption.text.clone())).collect())).collect()
     }
 
-    fn cue(from: u64, to: u64, text: &str) -> Cue {
-        Cue { from: at(from), to: at(to), text: text.into() }
+    /// A cue's times and text.
+    type Spoken = (Duration, Duration, String);
+
+    fn cue(from: u64, to: u64, text: &str) -> Spoken {
+        (at(from), at(to), text.into())
     }
 
-    fn expected() -> Vec<(String, Vec<Cue>)> {
+    fn expected() -> Vec<(String, Vec<Spoken>)> {
         let cues = |cues: &[(u32, u32, &str)]| cues.iter().map(|(from, to, text)| cue(*from as u64, *to as u64, text)).collect();
         vec![("CC1".into(), cues(CUES)), ("Service 1".into(), cues(SERVICE))]
     }
@@ -158,7 +184,7 @@ mod tests {
     #[test]
     fn tracks_are_listed_in_the_order_found_and_told_once() {
         let mut captions = StreamCaptions::default();
-        let units = units(&InStream { cea608: &[(15, 20, "Late")], services: &[(1, SERVICE)] }, Codec::H264);
+        let units = units(&InStream { cea608: &[(15, 20, "Late")], other_channels: &[], services: &[(1, SERVICE)] }, Codec::H264);
         for (frame, unit) in (0..).zip(&units) {
             captions.fed(unit, Codec::H264, at(frame));
             captions.decoded(at(frame));
@@ -170,7 +196,29 @@ mod tests {
         }
         assert!(captions.tracks.unlisted());
         assert_eq!(captions.tracks.tracks().iter().map(|track| track.name.as_str()).collect::<Vec<_>>(), ["Service 1", "CC1"]);
-        assert_eq!(captions.tracks.text_at(1, at(17)).as_deref(), Some("Late"));
+        let late: Vec<Caption> = captions.tracks.captions_at(1, at(17));
+        assert_eq!(late.iter().map(|caption| caption.text.as_str()).collect::<Vec<_>>(), ["Late"]);
+    }
+
+    #[test]
+    fn cc2_to_cc4_and_text_services_are_tracks_once_their_data_comes() {
+        // (CC3 in field 2, then T2 (channel 2's text restart) and CC2 in field 1.)
+        let mut tracks = ClosedCaptions::default();
+        let cc3 = files::cea608_pairs_of(&[(1, 5, "Third")], 10, 0x15);
+        for (frame, pairs) in (0..).zip(cc3) {
+            let triplets: Vec<u8> = pairs.as_chunks::<2>().0.iter().flat_map(|pair| [0xFD, pair[0], pair[1]]).collect();
+            tracks.read_cc_data(&triplets, at(frame));
+        }
+        assert_eq!(tracks.tracks().iter().map(|track| track.name.as_str()).collect::<Vec<_>>(), ["CC3"]);
+        for (tenth, pair) in (20..).zip([[0x9C, 0x2A], [0x9C, 0x2A], [0xC8, 0xE9]]) {
+            tracks.read_cea608_pair(0, pair, at(tenth));
+        }
+        for (frame, pairs) in (30..).zip(files::cea608_pairs_of(&[(35, 38, "Second")], 40, 0x1C).into_iter().skip(30)) {
+            pairs.as_chunks::<2>().0.iter().for_each(|pair| tracks.read_cea608_pair(0, *pair, at(frame)));
+        }
+        assert_eq!(tracks.tracks().iter().map(|track| track.name.as_str()).collect::<Vec<_>>(), ["CC3", "T2", "CC2"]);
+        let text = |nth: usize, tenth: u64| tracks.captions_at(nth, at(tenth)).into_iter().map(|caption| caption.text).collect::<Vec<_>>();
+        assert_eq!((text(0, 3), text(1, 25), text(2, 36)), (vec!["Third".to_owned()], vec!["Hi".to_owned()], vec!["Second".to_owned()]));
     }
 
     #[test]
@@ -197,7 +245,7 @@ mod tests {
     fn cea608_pairs_alone_are_the_track_cc1() {
         let mut tracks = ClosedCaptions::default();
         for (frame, pairs) in (0..).zip(files::cea608_pairs(CUES, 30)) {
-            pairs.as_chunks::<2>().0.iter().for_each(|pair| tracks.read_cea608_pair(*pair, at(frame)));
+            pairs.as_chunks::<2>().0.iter().for_each(|pair| tracks.read_cea608_pair(0, *pair, at(frame)));
         }
         assert_eq!(read(&mut tracks), expected()[..1]);
     }

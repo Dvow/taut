@@ -245,15 +245,25 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
     Not seen here with a real decoder: the import is checked with a file GStreamer takes as a
     dmabuf (lavapipe, llvmpipe), and on GitHub's runner.
   - Not on the web: a frame is read back to the canvas, then drawn.
-- Captions: their text only, without the file's positions, regions or styles. In the video
-  stream (the SEI of H.264 and HEVC), read by taut: CEA-608's channel 1 of field 1 (`CC1`) and
-  each CEA-708 service (`Service 1`…), tracks once their first data is read; not CC2 to CC4 or
-  CEA-608's text channels. CEA-708 gives its windows' text, the highest first: not their
-  colours, fonts, sizes, borders or places on the screen. After a seek, a caption shows from its
-  next command on (CEA-608 and CEA-708 say only what changes). Not on the web.
-- Windows: the file's own captions only from Matroska (SRT, SSA, as text): Media Foundation reads
-  no caption track in MP4. Captions in the video stream come from a source reader of their own
-  (the video stream read twice, up to 5 s ahead of the video). Decoded on the GPU through
+- Captions: placed where the file puts them and italic where it says; not their colours, fonts,
+  sizes, borders or effects (the system's caption style instead). Captions placed in the same
+  spot may overlap (no moving apart). In the video stream (the SEI of H.264 and HEVC), read by
+  taut: CEA-608's services (`CC1` to `CC4`, `T1` to `T4`) and each CEA-708 service (`Service
+  1`…), tracks once their first data is read. Text services show as rows from the top.
+  CEA-708's grid is taken as 16:9 (210 columns). After a seek, a caption shows from its next
+  command on (CEA-608 and CEA-708 say only what changes). Not on the web. WebVTT: written left
+  to right only (no `vertical`); regions do not scroll; line numbers count lines of a 15th of
+  the frame; on the web, the browser's own cues give their settings, not their regions.
+- Windows: the file's own captions from Matroska through Media Foundation (SRT, and SSA with
+  its places), and from MP4 and QuickTime files through taut (3GPP timed text with its
+  justification, not its text boxes; WebVTT; `c608`; not TTML or `c708` tracks), read a little
+  ahead of the video. A region of Media Foundation's cues in pixels keeps the usual place. An
+  `http` or `https` address is downloaded once, through Media Foundation's own byte stream,
+  kept in memory a block at a time (64 MB at most), for the engine and taut's caption readers;
+  it opens once its first bytes come. A playlist (HLS, DASH) the engine reads itself: its
+  captions in the stream are then the engine's `CC1` only. Other addresses (`file://`) are read
+  by each reader on its own, MP4 caption tracks not at all. Captions in the video stream come
+  from a source reader of their own (up to 5 s ahead of the video). Decoded on the GPU through
   Direct3D 11 where there is one; without one, in software (MJPEG then only where Windows'
   decoder writes into a bitmap: not on every machine). AV1 needs Windows' AV1 extension (on
   the GPU where it decodes AV1). N editions need the Media Feature Pack. `open_silent` plays
@@ -263,11 +273,13 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   with `scaletempo` (plugins-good); without it the pitch moves. The file's captions need its
   demuxer (`qtdemux` for MP4, `matroskademux`): none with base and bad plugins only; those in
   the video stream a parser that marks them on frames (`h264parse`, `h265parse`) and a decoder
-  (`avdec_h264`, `avdec_h265`). No caption settings to follow: the usual style.
+  (`avdec_h264`, `avdec_h265`). SSA is placed (taut reads its events); WebVTT's cue settings in a
+  file are not (GStreamer's parser drops them). No caption settings to follow: the usual style.
 - macOS and iOS: `open_silent` plays muted; bytes are played from a temporary file. iOS: a
   video with sound sets the audio session's category to `Playback` unless the app set one.
-  Caption tracks of files only (3GPP timed text; QuickTime closed-caption tracks, CEA-608 read by
-  taut; each read by an `AVAssetReader`), not of streams; the captions in a file's video stream
+  Caption tracks of files only (3GPP timed text, at the usual place; QuickTime closed-caption
+  tracks, a track for each CEA-608 service, read by taut; each read by an `AVAssetReader`), not
+  of streams; the captions in a file's video stream
   are read by taut through another (up to 5 s ahead of the video), not those of a stream (HLS).
   The file's tracks are named by their language only. Checked only on GitHub's runner and in
   the iOS simulator.
@@ -275,8 +287,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   through an image reader in YUV and are made RGB on the CPU (with `gpu-draw`, where the CPU
   draws them). Volume scales the samples (AAudio
   has none); other speeds are stretched by taut (WSOLA), the last 40 ms of sound not played.
-  Captions: 3GPP (MP4), SRT (Matroska), WebVTT (WebM), each until the next (Matroska's durations
-  not read); tracks named by their language. Those in the video stream are read from the
+  Captions: 3GPP (MP4), SRT (Matroska; placed by its `{\an8}`), WebVTT (WebM; its cue settings
+  not read), each until the next (Matroska's durations not read); tracks named by their language. Those in the video stream are read from the
   samples as they are decoded. The caption style follows the system's in an app only.
   Addresses play only in an app's process. No sound device: it plays silent. Checked only on an
   emulator (software decoders); there, a command-line program that ended the moment it dropped

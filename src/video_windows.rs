@@ -12,18 +12,21 @@
 
 use crate::color::Color;
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Pixels, TextureDescription};
+use crate::layout::Align;
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
-use crate::video_captions::Cue;
-use crate::video_read_ahead::{ReadAhead, Step};
+use crate::video_captions::{Caption, Cue, Down, Place};
+use crate::video_mp4::{FileCaptions, Source};
+use crate::video_read_ahead::{ReadAhead, SeiReading, Step};
 use crate::video_sei::Codec;
 use crate::video_stream_captions::ClosedCaptions;
+use crate::video_windows_download::{Download, byte_stream};
 use crate::windows::{Com, function_in, named, system_library, wide};
 use std::ffi::{CStr, c_void};
 use std::ptr::{null, null_mut};
 #[cfg(feature = "gpu-draw")]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
 #[link(name = "ole32")]
@@ -77,7 +80,7 @@ const FIRST_VIDEO: u32 = 0xFFFF_FFFC;
 const ALL_STREAMS: u32 = 0xFFFF_FFFE;
 
 /// The functions of Media Foundation and its helpers that are not methods.
-struct Functions {
+pub(crate) struct Functions {
     startup: unsafe extern "system" fn(u32, u32) -> i32,
     attributes: unsafe extern "system" fn(*mut *mut Com, u32) -> i32,
     on_stream: unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32,
@@ -89,6 +92,11 @@ struct Functions {
     /// video stream are read through a reader of their own.
     reader_from_url: unsafe extern "system" fn(*const u16, *mut Com, *mut *mut Com) -> i32,
     reader_from_stream: unsafe extern "system" fn(*mut Com, *mut Com, *mut *mut Com) -> i32,
+    /// `MFCreateSourceResolver`, `MFCreateAsyncResult` and `MFInvokeCallback`: an address is
+    /// downloaded once for all its readers (`video_windows_download`).
+    pub(crate) source_resolver: unsafe extern "system" fn(*mut *mut Com) -> i32,
+    pub(crate) async_result: unsafe extern "system" fn(*mut Com, *mut Com, *mut Com, *mut *mut Com) -> i32,
+    pub(crate) invoke: unsafe extern "system" fn(*mut Com) -> i32,
     /// `D3D11CreateDevice`; none without Direct3D 11.
     make_device: Option<MakeDevice>,
 }
@@ -110,6 +118,12 @@ fn media_foundation_started(functions: &Functions) -> i32 {
     *STARTED.get_or_init(|| unsafe { (functions.startup)(0x0002_0070, 0) })
 }
 
+/// The functions, with Media Foundation started: none where it is missing or does not start.
+#[cfg(test)]
+pub(crate) fn started_functions() -> Option<&'static Functions> {
+    functions().filter(|functions| media_foundation_started(functions) >= 0)
+}
+
 fn load() -> Option<Functions> {
     let (mf, ole, shell, d3d11) = (system_library("mfplat.dll"), system_library("oleaut32.dll"), system_library("shlwapi.dll"), system_library("d3d11.dll"));
     let reader = system_library("mfreadwrite.dll");
@@ -129,6 +143,9 @@ fn load() -> Option<Functions> {
             free_text: function(found(ole, c"SysFreeString")?),
             reader_from_url: function(found(reader, c"MFCreateSourceReaderFromURL")?),
             reader_from_stream: function(found(reader, c"MFCreateSourceReaderFromByteStream")?),
+            source_resolver: function(found(mf, c"MFCreateSourceResolver")?),
+            async_result: function(found(mf, c"MFCreateAsyncResult")?),
+            invoke: function(found(mf, c"MFInvokeCallback")?),
             make_device: found(d3d11, c"D3D11CreateDevice").map(|at| function(at)),
         })
     }
@@ -149,6 +166,7 @@ macro_rules! call {
         Com::function::<$kind>($object, $at)($object $(, $argument)*)
     };
 }
+pub(crate) use call;
 
 // ---- the GPU the engines decode on ----
 
@@ -242,30 +260,30 @@ type Ask = unsafe extern "system" fn(*mut Com, *const [u32; 4], *mut *mut Com) -
 /// A COM object of ours that the engine tells things to: its vtable, the one interface it has
 /// (besides `IUnknown`), its references, and what it was told.
 #[repr(C)]
-struct Listener<S: 'static> {
+pub(crate) struct Listener<S: 'static> {
     table: &'static ListenerTable<S>,
     interface: &'static [u32; 4],
     references: AtomicU32,
-    told: S,
+    pub(crate) told: S,
 }
 
 /// `IUnknown`'s three methods, then the interface's own, of any shape (each table below is
 /// one of these with them after).
 #[repr(C)]
-struct ListenerTable<S: 'static> {
-    query: unsafe extern "system" fn(*mut Listener<S>, *const [u32; 4], *mut *mut c_void) -> i32,
-    add: unsafe extern "system" fn(*mut Listener<S>) -> u32,
-    release: unsafe extern "system" fn(*mut Listener<S>) -> u32,
+pub(crate) struct ListenerTable<S: 'static> {
+    pub(crate) query: unsafe extern "system" fn(*mut Listener<S>, *const [u32; 4], *mut *mut c_void) -> i32,
+    pub(crate) add: unsafe extern "system" fn(*mut Listener<S>) -> u32,
+    pub(crate) release: unsafe extern "system" fn(*mut Listener<S>) -> u32,
 }
 
 impl<S> Listener<S> {
     /// A new one, held once by the caller.
-    fn boxed(table: &'static ListenerTable<S>, interface: &'static [u32; 4], told: S) -> *mut Listener<S> {
+    pub(crate) fn boxed(table: &'static ListenerTable<S>, interface: &'static [u32; 4], told: S) -> *mut Listener<S> {
         Box::into_raw(Box::new(Listener { table, interface, references: AtomicU32::new(1), told }))
     }
 }
 
-unsafe extern "system" fn query<S>(this: *mut Listener<S>, of: *const [u32; 4], out: *mut *mut c_void) -> i32 {
+pub(crate) unsafe extern "system" fn query<S>(this: *mut Listener<S>, of: *const [u32; 4], out: *mut *mut c_void) -> i32 {
     // SAFETY: COM passes a live object, a valid interface id and a place for the answer.
     unsafe {
         let ours = *of == AN_UNKNOWN || *of == *(*this).interface;
@@ -278,12 +296,12 @@ unsafe extern "system" fn query<S>(this: *mut Listener<S>, of: *const [u32; 4], 
     0
 }
 
-unsafe extern "system" fn add<S>(this: *mut Listener<S>) -> u32 {
+pub(crate) unsafe extern "system" fn add<S>(this: *mut Listener<S>) -> u32 {
     // SAFETY: the caller holds a reference, so it is alive.
     unsafe { (*this).references.fetch_add(1, Ordering::AcqRel) + 1 }
 }
 
-unsafe extern "system" fn release<S>(this: *mut Listener<S>) -> u32 {
+pub(crate) unsafe extern "system" fn release<S>(this: *mut Listener<S>) -> u32 {
     // SAFETY: the caller holds a reference; the last one frees it, as it was boxed.
     unsafe {
         let left = (*this).references.fetch_sub(1, Ordering::AcqRel) - 1;
@@ -421,9 +439,17 @@ pub(crate) struct Player {
     timed_text: *mut Com,
     caption_ids: Vec<u32>,
     captions: Option<usize>,
+    /// The caption tracks of an MP4 or QuickTime file, read by taut (listed after the timed
+    /// text's tracks), and how many of them were listed last.
+    file_captions: Arc<ReadAhead<FileCaptions>>,
+    file_listed: usize,
     /// The captions in the video stream, read by a thread of their own (listed after the
-    /// timed text's tracks).
-    in_stream: Arc<ReadAhead>,
+    /// file's), unless the source is one taut does not read (the engine's own `CC1` is then
+    /// listed).
+    in_stream: Arc<ReadAhead<SeiReading>>,
+    reads_in_stream: bool,
+    /// An address being downloaded, until its first bytes come and the engine is given it.
+    pending: Option<Pending>,
     /// (Tests: the effect that hears what plays, or null.)
     #[cfg(test)]
     hearing: *mut Listener<Mutex<hearing::Hearing>>,
@@ -477,7 +503,11 @@ impl Player {
             timed_text: null_mut(),
             caption_ids: Vec::new(),
             captions: None,
+            file_captions: Arc::new(ReadAhead::new()),
+            file_listed: 0,
             in_stream: Arc::new(ReadAhead::new()),
+            reads_in_stream: true,
+            pending: None,
             #[cfg(test)]
             hearing: null_mut(),
         })
@@ -531,65 +561,153 @@ impl Player {
         timed_text
     }
 
-    /// Gives the engine its source: a path or address as text (6: SetSource), bytes as a
-    /// stream (45: `IMFMediaEngineEx::SetSourceFromByteStream`), named for their kind. The
-    /// captions in its video stream are read from it too.
+    /// Gives the engine its source and starts taut's caption readers on it. An `http` or
+    /// `https` address is downloaded once for the engine and the readers (`download`).
     fn set_source(&mut self, source: VideoSource) -> Result<(), VideoError> {
-        let (address, bytes) = match source {
-            VideoSource::File(path) => (std::path::absolute(&path).unwrap_or(path).display().to_string(), None),
-            VideoSource::Url(url) => (url, None),
-            VideoSource::Bytes(bytes) => (format!("memory.{}", crate::video::kind_of(&bytes)), Some(bytes)),
-        };
-        let (address, from_bytes) = (wide(&address), bytes.is_some());
-        // SAFETY: the text is made and freed around the call; the stream holds a copy of the
-        // bytes, and the engine its own reference to it.
-        let done = unsafe {
-            let text = (self.functions.text)(address.as_ptr());
-            let done = match bytes {
-                None => call!(self.engine, 6, unsafe extern "system" fn(*mut Com, *mut u16) -> i32, text),
-                Some(bytes) => self.set_bytes(&bytes, text),
-            };
-            (self.functions.free_text)(text);
-            done
-        };
-        if done < 0 {
-            return Err(VideoError::Refused(format!("the source was refused ({:#010x})", done as u32)));
+        match source {
+            VideoSource::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {
+                self.download(url);
+                Ok(())
+            }
+            VideoSource::Url(url) => self.set_address(&url),
+            VideoSource::Bytes(bytes) => self.set_bytes(&bytes),
+            VideoSource::File(path) => {
+                let path = std::path::absolute(&path).unwrap_or(path);
+                self.set_address(&path.display().to_string())?;
+                self.read_file_captions(move || std::fs::File::open(&path).ok());
+                Ok(())
+            }
         }
-        if !from_bytes {
-            self.read_in_stream(ReaderSource::Address(address));
-        }
+    }
+
+    /// Gives the engine a path or address; the captions in its video stream are read through a
+    /// reader of their own.
+    fn set_address(&mut self, address: &str) -> Result<(), VideoError> {
+        let address = wide(address);
+        self.give_address(&address)?;
+        self.read_in_stream(ReaderSource::Address(address));
         Ok(())
     }
 
-    /// # Safety
-    /// `name` is a `BSTR`.
-    unsafe fn set_bytes(&mut self, bytes: &[u8], name: *mut u16) -> i32 {
-        let (mut stream, mut copy) = (null_mut(), null_mut());
-        // SAFETY: a stream is made over a copy of the bytes, and released after the engine
-        // took it; its clone (13: Clone, sharing the bytes, reading on its own) goes to the
-        // captions' reader.
+    /// Gives the engine a path or address ending in a zero (6: SetSource).
+    fn give_address(&mut self, address: &[u16]) -> Result<(), VideoError> {
+        // SAFETY: the text is made and freed around the call.
+        refused(unsafe {
+            let text = (self.functions.text)(address.as_ptr());
+            let done = call!(self.engine, 6, unsafe extern "system" fn(*mut Com, *mut u16) -> i32, text);
+            (self.functions.free_text)(text);
+            done
+        })
+    }
+
+    /// Gives the engine a byte stream, named `name` for its kind (45:
+    /// `IMFMediaEngineEx::SetSourceFromByteStream`; the engine takes its own reference).
+    fn give_byte_stream(&mut self, stream: *mut Com, name: &str) -> Result<(), VideoError> {
+        let name = wide(name);
+        // SAFETY: a live byte stream; the text is made and freed around the call.
+        refused(unsafe {
+            let text = (self.functions.text)(name.as_ptr());
+            let done = call!(self.ex, 45, unsafe extern "system" fn(*mut Com, *mut Com, *mut u16) -> i32, stream, text);
+            (self.functions.free_text)(text);
+            done
+        })
+    }
+
+    /// Plays bytes: the engine and each caption reader read a clone of one memory stream over
+    /// a copy of them (13: Clone, sharing the bytes, reading on its own).
+    fn set_bytes(&mut self, bytes: &[u8]) -> Result<(), VideoError> {
+        let mut stream = null_mut();
+        // SAFETY: the memory stream and the byte stream over it are ours, released once the
+        // engine and the readers took theirs.
         unsafe {
             let memory = (self.functions.memory_stream)(bytes.as_ptr(), bytes.len() as u32);
             if memory.is_null() {
-                return -1;
+                return Err(VideoError::Refused("no memory for the bytes".into()));
             }
             let made = (self.functions.on_stream)(memory, &mut stream);
-            let done = match made < 0 || stream.is_null() {
-                true => -1,
-                false => call!(self.ex, 45, unsafe extern "system" fn(*mut Com, *mut Com, *mut u16) -> i32, stream, name),
+            let given = match made < 0 || stream.is_null() {
+                true => refused(made.min(-1)),
+                false => self.give_byte_stream(stream, &format!("memory.{}", crate::video::kind_of(bytes))),
             };
-            if done >= 0 && call!(memory, 13, unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32, &mut copy) >= 0 && !copy.is_null() {
-                self.read_in_stream(ReaderSource::Stream(copy));
+            if given.is_ok() {
+                if let Some(copy) = cloned(memory) {
+                    self.read_in_stream(ReaderSource::Stream(copy));
+                }
+                if let Some(copy) = cloned(memory).map(MemoryStream) {
+                    self.read_file_captions(move || Some(copy));
+                }
             }
             release_all(&[stream, memory]);
-            done
+            given
         }
+    }
+
+    /// Starts downloading an address: its first bytes are read on a thread of their own (an
+    /// address may take a while), and the engine is given the download once they came
+    /// (`take_download`).
+    fn download(&mut self, address: String) {
+        let download = Download::new(self.functions, &address);
+        let (sent, first) = mpsc::channel();
+        let reading = Arc::clone(&download);
+        std::thread::spawn(move || {
+            // SAFETY: COM for this thread, multithreaded (0), ended with it.
+            let com = unsafe { crate::windows::sys::CoInitializeEx(null_mut(), 0) } >= 0;
+            let mut head = [0u8; 16];
+            let read = reading.read(0, &mut head);
+            let _ = sent.send(head[..read].to_vec());
+            if com {
+                // SAFETY: started above.
+                unsafe { crate::windows::sys::CoUninitialize() };
+            }
+        });
+        self.pending = Some(Pending { address, download, first });
+    }
+
+    /// Once an address's first bytes came: the engine is given a byte stream of the download,
+    /// and so are taut's caption readers; an error where nothing came. A playlist (HLS, DASH)
+    /// the engine reads itself: its captions in the stream are then the engine's own `CC1`.
+    fn take_download(&mut self) -> Option<String> {
+        let first = self.pending.as_ref()?.first.try_recv().ok()?;
+        let Pending { address, download, .. } = self.pending.take()?;
+        if first.is_empty() {
+            return Some(format!("{address} can't be read"));
+        }
+        if first.starts_with(b"#EXTM3U") || first.starts_with(b"<") {
+            self.reads_in_stream = false;
+            return self.give_address(&wide(&address)).err().map(|error| error.to_string());
+        }
+        let stream = byte_stream(&download);
+        let given = self.give_byte_stream(stream, &format!("download.{}", kind_of_address(&address, &first)));
+        // SAFETY: held once; the engine holds its own.
+        unsafe { Com::release(stream) };
+        if let Err(error) = given {
+            return Some(error.to_string());
+        }
+        self.read_in_stream(ReaderSource::ByteStream(byte_stream(&download)));
+        self.read_file_captions(move || Some(download));
+        None
     }
 
     /// Starts the thread that reads the captions in the source's video stream.
     fn read_in_stream(&self, source: ReaderSource) {
         let functions = self.functions;
         self.in_stream.spawn(move |in_stream| read_captions_in_stream(functions, source, in_stream));
+    }
+
+    /// Starts the thread that reads the caption tracks of an MP4 or QuickTime file from what
+    /// `open` gives (on that thread).
+    fn read_file_captions<S: Source + 'static>(&self, open: impl FnOnce() -> Option<S> + Send + 'static) {
+        self.file_captions.spawn(move |file_captions| {
+            // SAFETY: COM for this thread, multithreaded (0), ended with it.
+            let com = unsafe { crate::windows::sys::CoInitializeEx(null_mut(), 0) } >= 0;
+            if let Some(source) = open() {
+                crate::video_mp4::read_paced(source, file_captions);
+            }
+            if com {
+                // SAFETY: started above.
+                unsafe { crate::windows::sys::CoUninitialize() };
+            }
+        });
     }
 
     /// Calls a method that takes nothing more and returns `R`.
@@ -613,11 +731,13 @@ impl Player {
         self.last = None;
         self.set(17, to.as_secs_f64());
         self.in_stream.seek(to);
+        self.file_captions.seek(to);
     }
-    /// Where it plays (the captions' reader reads on from there).
+    /// Where it plays (the captions' readers read on from there).
     pub(crate) fn position(&mut self) -> Duration {
         let position = Duration::try_from_secs_f64(self.call::<f64>(16)).unwrap_or_default();
         self.in_stream.played_to(position);
+        self.file_captions.played_to(position);
         position
     }
     pub(crate) fn length(&mut self) -> Option<Duration> {
@@ -637,7 +757,10 @@ impl Player {
         self.set(24, speed as f64);
     }
 
+    /// What the engine and the caption readers said since last asked (an address's download
+    /// given to the engine once its first bytes came).
     pub(crate) fn news(&mut self) -> News {
+        let unread = self.take_download();
         // SAFETY: ours is one of its references.
         let told = unsafe { &(*self.said).told };
         let (said, code) = (told.bits.swap(0, Ordering::AcqRel), told.code.load(Ordering::Acquire));
@@ -645,8 +768,9 @@ impl Player {
         let error = (said & FAILED != 0).then(|| format!("the player stopped: {} ({:#010x})", self.error_words(), code as u32));
         // SAFETY: as above.
         let tracks_changed = unsafe { (*self.showing).told.tracks_changed.swap(false, Ordering::AcqRel) };
-        let tracks_changed = tracks_changed || self.in_stream.with_tracks(|tracks| tracks.unlisted());
-        News { ended: said & ENDED != 0, error, clears_on_play: false, tracks_changed, reading_captions: self.in_stream.reading() }
+        let tracks_changed = tracks_changed || self.in_stream.with_tracks(|tracks| tracks.unlisted()) || self.file_captions.with(|captions| captions.unlisted());
+        let reading_captions = self.in_stream.reading() || self.file_captions.reading();
+        News { ended: said & ENDED != 0, error: unread.or(error), clears_on_play: false, tracks_changed, reading_captions }
     }
     /// The engine's error as words (3: GetError; of the error, 3: GetErrorCode).
     fn error_words(&self) -> &'static str {
@@ -728,6 +852,9 @@ impl Player {
             tracks.sound.push(Track { language: text(&LANGUAGE), name: text(&STREAM_NAME) });
         }
         (self.caption_ids, tracks.captions) = self.caption_tracks();
+        let file = self.file_captions.with(FileCaptions::tracks);
+        self.file_listed = file.len();
+        tracks.captions.extend(file);
         tracks.captions.extend(self.in_stream.with_tracks(ClosedCaptions::tracks));
         Some(tracks)
     }
@@ -784,7 +911,7 @@ impl Player {
         }
         // SAFETY: a live list.
         let count = unsafe { call!(list, 3, unsafe extern "system" fn(*mut Com) -> u32) };
-        let found = (0..count).filter_map(|at| caption_track(list, at)).unzip();
+        let found = (0..count).filter_map(|at| caption_track(list, at, self.reads_in_stream)).unzip();
         // SAFETY: held once.
         unsafe { Com::release(list) };
         found
@@ -804,29 +931,31 @@ impl Player {
         }
     }
 
-    /// The chosen caption track's text on show now: its cues the timed text says are on show,
-    /// or those read in the video stream.
-    pub(crate) fn caption(&mut self) -> Option<String> {
-        let nth = self.captions?;
+    /// The chosen caption track's captions on show now: its cues the timed text says are on
+    /// show, or those read in the file's caption tracks or the video stream.
+    pub(crate) fn captions(&mut self) -> Vec<Caption> {
+        let Some(nth) = self.captions else { return Vec::new() };
         let Some(&id) = self.caption_ids.get(nth) else {
-            let (at, in_stream) = (self.position(), nth - self.caption_ids.len());
-            return self.in_stream.with_tracks(|tracks| tracks.text_at(in_stream, at));
+            let (at, file) = (self.position(), nth - self.caption_ids.len());
+            return match file.checked_sub(self.file_listed) {
+                None => self.file_captions.with(|captions| captions.captions_at(file, at)),
+                Some(in_stream) => self.in_stream.with_tracks(|tracks| tracks.captions_at(in_stream, at)),
+            };
         };
         // SAFETY: ours is one of its references.
         let shown = unsafe { (*self.showing).told.cues() };
         let mut cues: Vec<&Cue> = shown.iter().filter(|(_, track, _)| *track == id).map(|(_, _, cue)| cue).collect();
         cues.sort_by_key(|cue| cue.from);
-        let first = cues.first()?.text.clone();
-        Some(cues[1..].iter().fold(first, |all, cue| all + "\n" + &cue.text))
+        cues.into_iter().map(|cue| cue.caption.clone()).collect()
     }
 }
 
 /// The `at`th track of a timed text's track list, unless it holds metadata (kind 3) or is the
 /// engine's own reading of the captions in the video stream (data format
-/// `MFSubtitleFormat_ATSC`; taut reads those itself): its id, and what it is (of the list, 4:
-/// GetTrack; of the track, 3: GetId, 4: GetLabel, 6: GetLanguage, 7: GetTrackKind,
-/// 13: GetDataFormat).
-fn caption_track(list: *mut Com, at: u32) -> Option<(u32, Track)> {
+/// `MFSubtitleFormat_ATSC`) where taut reads those itself: its id, and what it is (of the list,
+/// 4: GetTrack; of the track, 3: GetId, 4: GetLabel, 6: GetLanguage, 7: GetTrackKind,
+/// 13: GetDataFormat). The engine's own is named `CC1`.
+fn caption_track(list: *mut Com, at: u32, taut_reads_in_stream: bool) -> Option<(u32, Track)> {
     let (mut track, mut format) = (null_mut(), [0u32; 4]);
     // SAFETY: a live list; the track it gives is read and released.
     unsafe {
@@ -834,15 +963,18 @@ fn caption_track(list: *mut Com, at: u32) -> Option<(u32, Track)> {
             return None;
         }
         call!(track, 13, unsafe extern "system" fn(*mut Com, *mut [u32; 4]) -> i32, &mut format);
-        let captions = call!(track, 7, unsafe extern "system" fn(*mut Com) -> u32) != 3 && format != ATSC;
-        let found = captions.then(|| (call!(track, 3, unsafe extern "system" fn(*mut Com) -> u32), Track { language: owned_text(track, 6), name: owned_text(track, 4) }));
+        let in_stream = format == ATSC;
+        let captions = call!(track, 7, unsafe extern "system" fn(*mut Com) -> u32) != 3 && !(in_stream && taut_reads_in_stream);
+        let name = |label: String| if in_stream && label.is_empty() { "CC1".to_owned() } else { label };
+        let found = captions.then(|| (call!(track, 3, unsafe extern "system" fn(*mut Com) -> u32), Track { language: owned_text(track, 6), name: name(owned_text(track, 4)) }));
         Com::release(track);
         found
     }
 }
 
-/// A cue's times and lines (6: GetStartTime, 7: GetDuration, 12: GetLineCount, 13: GetLine;
-/// of a line, 3: GetText).
+/// A cue's times, lines, place and italics (6: GetStartTime, 7: GetDuration, 12: GetLineCount,
+/// 13: GetLine; of a line, 3: GetText): placed by its region where it has one, else by SRT's
+/// `{\anN}` left in its text.
 ///
 /// # Safety
 /// `cue` is a live `IMFTimedTextCue`.
@@ -865,7 +997,82 @@ unsafe fn cue_of(cue: *mut Com) -> Cue {
             }
         }
     }
-    Cue { from, to: from + length, text: crate::video_captions::plain(&lines.join("\n")) }
+    let caption = crate::video_captions::caption_of(&lines.join("\n"));
+    // SAFETY: as the caller promises.
+    let (alignment, italic) = unsafe { cue_style(cue) };
+    // SAFETY: as the caller promises.
+    let place = unsafe { region_place(cue, alignment) }.or(caption.place);
+    Cue { from, to: from + length, caption: Caption { place, italic: caption.italic || italic, ..caption } }
+}
+
+/// A cue's object of the method at `at` (10: GetRegion, 11: GetStyle), held: none where it has
+/// none.
+///
+/// # Safety
+/// `cue` is a live `IMFTimedTextCue`.
+unsafe fn cue_part(cue: *mut Com, at: usize) -> Option<*mut Com> {
+    let mut part = null_mut();
+    // SAFETY: as the caller promises; the part given is ours.
+    let got = unsafe { call!(cue, at, unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32, &mut part) };
+    (got >= 0 && !part.is_null()).then_some(part)
+}
+
+/// How a cue's style lines up its text (13: GetTextAlignment: 0 start, 1 end, 2 centre) and
+/// whether it is italic (10: GetFontStyle: 1 oblique, 2 italic).
+///
+/// # Safety
+/// `cue` is a live `IMFTimedTextCue`.
+unsafe fn cue_style(cue: *mut Com) -> (Align, bool) {
+    // SAFETY: as the caller promises; the style is read and released.
+    let Some(style) = (unsafe { cue_part(cue, 11) }) else { return (Align::Center, false) };
+    let (mut alignment, mut font) = (2u32, 0u32);
+    // SAFETY: a live style.
+    unsafe {
+        call!(style, 13, unsafe extern "system" fn(*mut Com, *mut u32) -> i32, &mut alignment);
+        call!(style, 10, unsafe extern "system" fn(*mut Com, *mut u32) -> i32, &mut font);
+        Com::release(style);
+    }
+    let alignment = match alignment {
+        0 => Align::Start,
+        1 => Align::End,
+        _ => Align::Center,
+    };
+    (alignment, matches!(font, 1 | 2))
+}
+
+/// The place of a cue's region, where it gives one in percent (4: GetPosition, 5: GetExtent,
+/// 8: GetDisplayAlignment: 0 its top, 1 its bottom, 2 its middle), its lines lined up as
+/// `lines`. (Matroska's SSA comes so: its alignment, margins and `\pos` as regions.)
+///
+/// # Safety
+/// `cue` is a live `IMFTimedTextCue`.
+unsafe fn region_place(cue: *mut Com, lines: Align) -> Option<Place> {
+    // SAFETY: as the caller promises; the region is read and released.
+    let region = unsafe { cue_part(cue, 10) }?;
+    let ([mut x, mut y, mut width, mut height], [mut at_unit, mut size_unit], mut display) = ([0f64; 4], [0u32; 2], 0u32);
+    // SAFETY: a live region.
+    unsafe {
+        call!(region, 4, unsafe extern "system" fn(*mut Com, *mut f64, *mut f64, *mut u32) -> i32, &mut x, &mut y, &mut at_unit);
+        call!(region, 5, unsafe extern "system" fn(*mut Com, *mut f64, *mut f64, *mut u32) -> i32, &mut width, &mut height, &mut size_unit);
+        call!(region, 8, unsafe extern "system" fn(*mut Com, *mut u32) -> i32, &mut display);
+        Com::release(region);
+    }
+    // (1: MF_TIMED_TEXT_UNIT_TYPE_PERCENTAGE.)
+    if (at_unit, size_unit) != (1, 1) || width <= 0.0 {
+        return None;
+    }
+    let [x, y, width, height] = [x, y, width, height].map(|value| (value / 100.0).clamp(0.0, 1.0) as f32);
+    let across = match lines {
+        Align::Start => x,
+        Align::End => x + width,
+        _ => x + width / 2.0,
+    };
+    let down = match display {
+        1 => Down::At(y + height, Align::End),
+        2 => Down::At(y + height / 2.0, Align::Center),
+        _ => Down::At(y, Align::Start),
+    };
+    Some(Place { x: across, across: lines, down, width, lines })
 }
 
 /// Text a method gives as a `LPWSTR` the caller frees, empty where none.
@@ -897,30 +1104,95 @@ unsafe fn text_at(text: *const u16) -> String {
 
 // ---- the captions in the video stream ----
 
-/// What the captions' reader reads: the source's address (or path, ending in a zero), or a
-/// clone of the bytes' stream.
+/// What the captions' reader reads: the source's address (or path, ending in a zero), a clone
+/// of the bytes' stream, or a byte stream of an address's download.
 enum ReaderSource {
     Address(Vec<u16>),
     Stream(*mut Com),
+    ByteStream(*mut Com),
 }
 
-// SAFETY: a memory stream (`SHCreateMemStream`) may be used from any thread; its clone moves to
-// the reader's thread, which alone uses it.
+// SAFETY: a memory stream (`SHCreateMemStream`) and a download's byte stream may be used from
+// any thread; each moves to the reader's thread, which alone uses it.
 unsafe impl Send for ReaderSource {}
 
 impl Drop for ReaderSource {
     fn drop(&mut self) {
-        if let ReaderSource::Stream(stream) = *self {
+        if let ReaderSource::Stream(stream) | ReaderSource::ByteStream(stream) = *self {
             // SAFETY: held once.
             unsafe { Com::release(stream) };
         }
     }
 }
 
+/// An address being downloaded: the download, and its first bytes once read (none where it
+/// can't be).
+struct Pending {
+    address: String,
+    download: Arc<Download>,
+    first: mpsc::Receiver<Vec<u8>>,
+}
+
+/// A clone of a memory stream, read by a caption reader (3: Read, 5: Seek).
+struct MemoryStream(*mut Com);
+
+// SAFETY: a memory stream's clone may be used from any thread; it moves to the reader's thread,
+// which alone uses it.
+unsafe impl Send for MemoryStream {}
+
+impl Source for MemoryStream {
+    fn read_at(&mut self, at: u64, into: &mut [u8]) -> usize {
+        let (mut moved, mut read) = (0u64, 0u32);
+        // SAFETY: a live stream, read within the room given.
+        unsafe {
+            if call!(self.0, 5, unsafe extern "system" fn(*mut Com, i64, u32, *mut u64) -> i32, at as i64, 0, &mut moved) < 0 {
+                return 0;
+            }
+            call!(self.0, 3, unsafe extern "system" fn(*mut Com, *mut u8, u32, *mut u32) -> i32, into.as_mut_ptr(), into.len().min(u32::MAX as usize) as u32, &mut read);
+        }
+        read as usize
+    }
+}
+
+impl Drop for MemoryStream {
+    fn drop(&mut self) {
+        // SAFETY: held once.
+        unsafe { Com::release(self.0) };
+    }
+}
+
+/// A clone of a memory stream (13: Clone), held; none where it can't be made.
+///
+/// # Safety
+/// `memory` is a live `IStream`.
+unsafe fn cloned(memory: *mut Com) -> Option<*mut Com> {
+    let mut copy = null_mut();
+    // SAFETY: as the caller promises; the clone is ours.
+    let made = unsafe { call!(memory, 13, unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32, &mut copy) };
+    (made >= 0 && !copy.is_null()).then_some(copy)
+}
+
+/// An error where an `HRESULT` says the engine refused its source.
+fn refused(done: i32) -> Result<(), VideoError> {
+    match done < 0 {
+        true => Err(VideoError::Refused(format!("the source was refused ({:#010x})", done as u32))),
+        false => Ok(()),
+    }
+}
+
+/// The kind of file at an address, as the engine knows it: its file name's extension (before
+/// any query), else the kind its first bytes show.
+fn kind_of_address(address: &str, first: &[u8]) -> String {
+    let path = address.split(['?', '#']).next().unwrap_or_default();
+    let name = path.rsplit('/').next().unwrap_or_default();
+    let extension = name.rsplit_once('.').map(|(_, extension)| extension).filter(|extension| (1..=5).contains(&extension.len()) && extension.bytes().all(|byte| byte.is_ascii_alphanumeric()));
+    extension.map_or_else(|| crate::video::kind_of(first).to_owned(), str::to_ascii_lowercase)
+}
+
 /// The captions' thread: reads the samples of the source's video stream as stored (an
 /// `IMFSourceReader`, no decoder), where it is H.264 or HEVC, a little ahead of where it plays,
 /// until the player goes.
-fn read_captions_in_stream(functions: &Functions, source: ReaderSource, in_stream: &ReadAhead) {
+fn read_captions_in_stream(functions: &Functions, source: ReaderSource, in_stream: &ReadAhead<SeiReading>) {
     // SAFETY: COM for this thread, multithreaded (0), ended with it where it started.
     let com = unsafe { crate::windows::sys::CoInitializeEx(null_mut(), 0) } >= 0;
     if let Some(reader) = source_reader(functions, &source) {
@@ -946,6 +1218,7 @@ fn source_reader(functions: &Functions, source: &ReaderSource) -> Option<*mut Co
         let made = match *source {
             ReaderSource::Address(ref address) => (functions.reader_from_url)(address.as_ptr(), null_mut(), &mut reader),
             ReaderSource::Stream(stream) => stream_reader(functions, stream, &mut reader),
+            ReaderSource::ByteStream(stream) => (functions.reader_from_stream)(stream, null_mut(), &mut reader),
         };
         if made < 0 || reader.is_null() {
             return None;
@@ -995,7 +1268,7 @@ fn video_codec(reader: *mut Com) -> Option<Codec> {
 }
 
 /// Reads the video stream's samples as the player's side lets it, following its seeks.
-fn read_samples(reader: *mut Com, codec: Codec, in_stream: &ReadAhead) {
+fn read_samples(reader: *mut Com, codec: Codec, in_stream: &ReadAhead<SeiReading>) {
     let mut read_to = Duration::ZERO;
     loop {
         match in_stream.next(read_to) {
@@ -1029,7 +1302,7 @@ unsafe fn decode_time(sample: *mut Com) -> Option<Duration> {
 /// Reads the next sample into the captions (9: ReadSample; of the sample, 41:
 /// ConvertToContiguousBuffer): its time; at the end (or a failure), `Duration::MAX`, the
 /// captions waiting read.
-fn read_sample(reader: *mut Com, codec: Codec, in_stream: &ReadAhead) -> Duration {
+fn read_sample(reader: *mut Com, codec: Codec, in_stream: &ReadAhead<SeiReading>) -> Duration {
     let (mut flags, mut time, mut sample, mut buffer) = (0u32, 0i64, null_mut(), null_mut());
     // SAFETY: a live reader; the sample and its buffer are read and released.
     unsafe {
@@ -1499,6 +1772,7 @@ impl Drop for Frames {
 impl Drop for Player {
     fn drop(&mut self) {
         self.in_stream.stop();
+        self.file_captions.stop();
         // SAFETY: the engine, where it was made, is shut down (42) and released with its
         // interfaces; then our references to what tells us.
         unsafe {
