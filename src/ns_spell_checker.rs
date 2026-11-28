@@ -159,6 +159,18 @@ mod probe {
         out
     }
 
+    /// The spell server's next launch runs a program that never answers (`sleep`), and the
+    /// running one is killed: the next request launches a server that never takes it.
+    fn spell_service_hung() {
+        let uid = said("id", &["-u"]).trim().to_owned();
+        let target = format!("gui/{uid}/com.apple.applespell");
+        said("launchctl", &["debug", &target, "--program", "/bin/sleep", "--", "sleep", "300"]);
+        signal_spell_server("-KILL");
+        std::thread::sleep(Duration::from_millis(500));
+        said("pgrep", &["-lx", "AppleSpell"]);
+        said("pgrep", &["-lx", "sleep"]);
+    }
+
     /// The spell server's launch service, disabled (and its server killed and booted out) or
     /// enabled again.
     fn spell_service(enabled: bool) {
@@ -197,6 +209,9 @@ mod probe {
             if begin == "disabled-cold" {
                 spell_service(false);
             }
+            if begin == "hung-cold" {
+                spell_service_hung();
+            }
             let checker = system("en-US").expect("a checker");
             if !begin.ends_with("cold") {
                 eprintln!("probe: warm, helo wrong: {}", checker.wrong("helo"));
@@ -206,7 +221,8 @@ mod probe {
                     signal_spell_server("-KILL");
                     watcher = Some(stop_relaunches(Duration::from_secs(30)));
                 }
-                "cold" | "disabled-cold" => {}
+                "cold" | "disabled-cold" | "hung-cold" => {}
+                "hung" => spell_service_hung(),
                 "disabled" => spell_service(false),
                 _ => signal_spell_server("-STOP"),
             }
