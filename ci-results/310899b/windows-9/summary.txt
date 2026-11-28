@@ -1,0 +1,27 @@
+run 1 all exit 0 in 624 s
+run 1 lib exit 0 in 168 s
+run 1 spell exit 0 in 1 s
+run 2 spell exit 0 in 2 s
+run 3 spell exit 0 in 1 s
+run 4 spell exit 0 in 1 s
+run 5 spell exit 0 in 1 s
+run 6 spell exit 101 in 2 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (9168) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 7 spell exit 0 in 1 s
+run 8 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (6440) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 9 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (4060) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 10 spell exit 0 in 2 s
+run 11 spell exit 0 in 1 s
+run 12 spell exit 0 in 2 s
+run 13 spell exit 0 in 1 s
+run 14 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (3804) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 15 spell exit 0 in 2 s
+run 16 spell exit 0 in 1 s
+run 17 spell exit 0 in 1 s
+run 18 spell exit 0 in 2 s
+run 19 spell exit 0 in 1 s
+run 20 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (1484) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
