@@ -1,0 +1,285 @@
+ProductName:		macOS
+ProductVersion:		26.7.2
+BuildVersion:		25G332
+    Checking taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `dev` profile [unoptimized] target(s) in 26.46s
+clippy 0
+    Checking taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `dev` profile [unoptimized] target(s) in 27.61s
+clippy ios 0
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `test` profile [unoptimized] target(s) in 43.90s
+     Running unittests src/lib.rs (target/debug/build/taut/53c1d18ec4588c21/out/taut-53c1d18ec4588c21)
+
+running 105 tests
+test video::tests::a_faster_or_slower_speed_moves_the_frames_that_much_faster_or_slower ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::a_paused_video_stays_on_its_frame_and_a_seek_shows_the_frame_there ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::a_placed_caption_is_drawn_where_its_file_puts_it ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::a_playing_video_asks_again_sooner_than_its_frame_time ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::a_speed_set_after_a_seek_keeps_the_seek ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::bytes_play_as_the_file_does ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::captions_turned_on_during_a_cue_say_it ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::cea608_and_cea708_in_h264_and_hevc_streams_are_caption_tracks_shown_at_their_times ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::filling_cuts_the_frame_to_its_box ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::frames_show_at_their_times_and_only_their_box_is_redrawn ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::ssa_captions_in_matroska_are_placed_where_their_script_says ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::a_missing_file_is_refused ... ok
+test video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::text_is_a_path_or_an_address ... ok
+test video::tests::the_controls_are_told_to_readers_and_work_by_keyboard ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::the_controls_choose_captions_sound_track_and_speed ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::a_frame_shows_its_number ... ok
+test video::tests::the_end_is_told_once_and_a_loop_starts_again ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::the_other_cea608_channels_in_the_stream_are_tracks_placed_at_their_rows ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::the_pitch_stays_at_other_speeds ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::the_sources_captions_show_at_their_times ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video::tests::the_sources_sound_tracks_are_listed_and_the_one_chosen_is_heard ... ignored, AVFoundation plays only on the main thread: tests/video_apple.rs
+test video_apple_legible::tests::text_markup_is_webvtts_settings_the_usual_ones_left_out ... ok
+test video_apple_legible::tests::text_handed_over_shows_until_the_next_and_a_seek_back_replaces_what_follows ... ok
+test video_captions::tests::a_lone_ampersand_or_brace_stays ... ok
+test video_captions::tests::a_cue_all_in_italics_is_italic_and_one_partly_so_is_not ... ok
+test video_captions::tests::a_webvtt_position_keeps_the_box_on_the_frame ... ok
+test video_captions::tests::a_cue_in_a_webvtt_region_sits_at_the_regions_bottom ... ok
+test video_captions::tests::srt_cues_are_read_and_sorted ... ok
+test video_captions::tests::text_with_no_cues_or_bad_times_is_refused ... ok
+test video_captions::tests::srt_keypad_tags_place_a_cue ... ok
+test video_captions::tests::the_captions_on_show_are_each_cue_holding_the_time ... ok
+test video_captions::tests::the_keypad_puts_a_box_at_its_corner_or_middle_inside_the_margins ... ok
+test video_captions::tests::the_recorder_keeps_each_change_of_several_captions_as_cues ... ok
+test video_captions::tests::timed_text_is_read_as_utf8_or_as_utf16_after_its_byte_order_mark ... ok
+test video_captions::tests::webvtt_cues_are_read_without_their_markup ... ok
+test video_captions::tests::webvtt_settings_place_a_cue_across_and_down ... ok
+test video_cea608::tests::a_pop_on_caption_shows_from_its_end_of_caption_until_it_is_erased ... ok
+test video_cea608::tests::a_caption_is_placed_at_its_row_and_indent ... ok
+test video_cea608::tests::after_a_seek_the_caption_on_show_ends_there_and_what_follows_is_read_again ... ok
+test video_cea608::tests::centred_rows_are_one_centred_caption_and_rows_apart_are_two ... ok
+test video_cea608::tests::channel_two_is_cc2_and_its_data_leaves_cc1_alone ... ok
+test video_cea608::tests::changes_at_one_moment_make_one_cue ... ok
+test video_cea608::tests::data_read_again_from_the_key_frame_before_a_seek_changes_the_captions_from_the_seek ... ok
+test video_cea608::tests::italics_from_a_preamble_or_a_mid_row_code_make_a_caption_italic ... ok
+test video_cea608::tests::field_two_holds_cc3_and_cc4_and_its_commands_use_0x15 ... ok
+test video_cea608::tests::padding_alone_is_no_captions ... ok
+test video_cea608::tests::paint_on_text_shows_as_it_is_written_and_backspace_takes_a_letter_back ... ok
+test video_cea608::tests::a_text_service_fills_rows_from_the_top_and_scrolls ... ok
+test video_cea608::tests::roll_up_rows_rise_and_each_new_line_is_a_new_cue ... ok
+test video_cea608::tests::rows_starting_in_one_column_are_one_caption_at_that_column ... ok
+test video_cea608::tests::special_and_extended_characters_are_read ... ok
+test video_cea608::tests::xds_data_in_field_two_is_skipped ... ok
+test video_cea708::tests::a_delay_holds_the_commands_after_it_until_its_time ... ok
+test video_cea708::tests::a_delay_cancel_or_a_reset_ends_a_delay_at_once ... ok
+test video_cea708::tests::a_hidden_window_written_then_shown_is_a_cue_until_it_is_deleted ... ok
+test video_cea708::tests::a_packet_spread_over_several_reads_or_cut_short_is_read ... ok
+test video_cea708::tests::a_window_is_placed_at_its_anchor_on_the_caption_screen ... ok
+test video_cea708::tests::a_word_that_does_not_fit_wraps_whole_where_words_wrap ... ok
+test video_cea708::tests::a_windows_justification_and_style_line_up_its_lines ... ok
+test video_cea708::tests::after_a_seek_the_cue_on_show_ends_there_and_what_follows_is_read_again ... ok
+test video_cea708::tests::backspace_form_feed_and_horizontal_carriage_return_take_text_back ... ok
+test video_cea708::tests::extended_and_sixteen_bit_characters_and_the_music_note_are_read ... ok
+test video_cea708::tests::carriage_returns_scroll_a_window_of_two_rows_up ... ok
+test video_cea708::tests::right_to_left_and_ticker_windows_are_read_as_written ... ok
+test video_cea708::tests::services_are_listed_as_found_and_numbers_past_six_are_read ... ok
+test video_cea708::tests::text_the_pen_writes_italic_makes_an_italic_caption ... ok
+test video_cea708::tests::text_written_into_a_shown_window_shows_as_it_is_written ... ok
+test video_cea708::tests::the_text_of_shown_windows_is_read_from_the_highest ... ok
+test video_cea708::tests::the_pen_moves_where_it_is_set_and_its_hidden_text_is_not_shown ... ok
+test video_mp4::tests::a_sample_tables_chunks_follow_its_runs_and_far_offsets_stay_in_range ... ok
+test video_mp4::tests::a_track_fragment_without_a_base_follows_the_one_before ... ok
+test video_mp4::tests::a_track_that_ends_early_is_not_waited_for_to_the_files_end ... ok
+test video_mp4::tests::a_closed_caption_track_is_a_track_for_each_service_it_holds ... ok
+test video_mp4::tests::an_edit_list_moves_a_tracks_times ... ok
+test video_mp4::tests::fragmented_files_are_read_fragment_by_fragment ... ok
+test video_mp4::tests::a_paced_reader_lists_the_tracks_reads_as_the_video_plays_and_stops_with_it ... ok
+test video_mp4::tests::timed_text_justification_places_a_track ... ok
+test video_mp4::tests::after_a_seek_samples_are_read_from_there_once ... ok
+test video_mp4::tests::what_is_no_mp4_or_has_no_caption_tracks_is_not_read ... ok
+test video_read_ahead::tests::a_seek_to_the_latest_time_is_followed ... ok
+test video_read_ahead::tests::a_seek_within_what_was_read_keeps_its_captions_and_one_out_of_it_reads_again ... ok
+test video_mp4::tests::webvtt_settings_in_a_sample_place_its_cue ... ok
+test video_read_ahead::tests::the_thread_is_told_reading_until_it_waits_for_the_video ... ok
+test video_read_ahead::tests::units_read_in_decode_order_give_their_captions_in_display_order ... ok
+test video_mp4::tests::timed_text_and_webvtt_tracks_are_read_with_their_languages_names_and_times ... ok
+test video_sei::tests::a_first_unit_whose_length_begins_as_a_start_code_is_read_by_its_length ... ok
+test video_sei::tests::hevc_prefix_and_suffix_sei_are_read_and_h264_sei_is_not_taken_for_hevc ... ok
+test video_sei::tests::sei_with_other_payloads_and_other_providers_holds_no_captions ... ok
+test video_sei::tests::start_codes_and_lengths_both_find_the_sei ... ok
+test video_read_ahead::tests::units_with_decode_times_give_their_captions_once_nothing_can_come_before_them ... ok
+test video_ssa::tests::a_matroska_event_is_read_with_its_scripts_header ... ok
+test video_ssa::tests::a_style_places_its_captions_inside_its_margins_and_may_make_them_italic ... ok
+test video_ssa::tests::bad_times_and_scripts_without_events_are_refused ... ok
+test video_ssa::tests::dialogue_lines_are_cues_with_their_text_and_times ... ok
+test video_ssa::tests::legacy_ssa_alignments_and_tags_are_read ... ok
+test video_ssa::tests::pos_puts_the_point_its_alignment_names_where_it_says ... ok
+test video_ssa::tests::the_usual_alignment_keeps_the_usual_place ... ok
+test video_stream_captions::tests::captions_fed_in_decode_order_are_read_in_display_order ... ok
+test video_stream_captions::tests::after_a_seek_the_tracks_are_read_again_from_there ... ok
+test video_stream_captions::tests::cc2_to_cc4_and_text_services_are_tracks_once_their_data_comes ... ok
+test video_stream_captions::tests::cea608_pairs_alone_are_the_track_cc1 ... ok
+test video_stream_captions::tests::cea608_and_cea708_in_h264_and_hevc_sei_are_tracks_read_as_written ... ok
+test video_stream_captions::tests::tracks_are_listed_in_the_order_found_and_told_once ... ok
+test video_read_ahead::tests::the_reading_thread_waits_until_the_video_plays_near_and_follows_a_seek ... ok
+
+test result: ok. 86 passed; 0 failed; 19 ignored; 0 measured; 686 filtered out; finished in 0.30s
+
+lib 0
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `test` profile [unoptimized] target(s) in 28.52s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+frames show at their times
+pause and seek
+a seek before the first frame
+the end, and a loop
+the controls
+bytes
+tracks, captions and speed
+captions in the video stream
+CEA-608's other channels
+timed text and WebVTT tracks of a file
+captions of a stream
+many opens: held 67108864 bytes, after 30 more 71417856
+video on macOS: every check passed
+
+thread 'main' (16426) panicked at tests/video_apple.rs:482:25:
+video on iOS:
+frames show at their times
+pause and seek
+a seek before the first frame
+the end, and a loop
+the controls
+bytes
+tracks, captions and speed
+captions in the video stream
+CEA-608's other channels
+timed text and WebVTT tracks of a file
+
+unrecognised property keyunrecognised property key
+thread 'main' (31944) panicked at tests/video_apple.rs:172:13:
+Some("Français un") at 500ms did not happen: Video { playing: false, position: 500ms, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (31944) panicked at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:        0x104cec224 - <<std[4d474039d585e394]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[23f300596627935b]::fmt::Display>::fmt
+   1:        0x104cff470 - core[23f300596627935b]::fmt::write
+   2:        0x104cf00dc - <std[4d474039d585e394]::sys::stdio::unix::Stderr as core[23f300596627935b]::io::write::Write>::write_fmt
+   3:        0x104cd73c8 - std[4d474039d585e394]::panicking::default_hook::{closure#0}
+   4:        0x104ce6a8c - std[4d474039d585e394]::panicking::default_hook
+   5:        0x104ce6dc8 - std[4d474039d585e394]::panicking::panic_with_hook
+   6:        0x104cd7478 - std[4d474039d585e394]::panicking::panic_handler::{closure#0}
+   7:        0x104ccfa48 - std[4d474039d585e394]::sys::backtrace::__rust_end_short_backtrace::<std[4d474039d585e394]::panicking::panic_handler::{closure#0}, !>
+   8:        0x104cd7c18 - __rustc[488137f9e312a25f]::rust_begin_unwind
+   9:        0x104d12afc - core[23f300596627935b]::panicking::panic_nounwind_fmt
+  10:        0x104d12a84 - core[23f300596627935b]::panicking::panic_nounwind
+  11:        0x104d12bd8 - core[23f300596627935b]::panicking::panic_cannot_unwind
+  12:        0x104cc5cc8 - taut[5914370db15e638a]::ios::scene_connected
+  13:        0x1857bc640 - +[UIScene _sceneForFBSScene:create:withSession:connectionOptions:]
+  14:        0x1864a6e90 - -[UIApplication _connectUISceneFromFBSScene:transitionContext:]
+  15:        0x1864a726c - -[UIApplication workspace:didCreateScene:withTransitionContext:completion:]
+  16:        0x185ebbbd8 - -[UIApplicationSceneClientAgent scene:didInitializeWithEvent:completion:]
+  17:        0x1887ed8a0 - ___95-[FBSScene _callOutQueue_didCreateWithTransitionContext:alternativeCreationCallout:completion:]_block_invoke
+  18:        0x1887edd30 - -[FBSScene _callOutQueue_maybeCoalesceClientSettingsUpdates:]
+  19:        0x1887ed6f4 - -[FBSScene _callOutQueue_didCreateWithTransitionContext:alternativeCreationCallout:completion:]
+  20:        0x1888590a4 - ___93-[FBSWorkspaceScenesClient _callOutQueue_sendDidCreateForScene:transitionContext:completion:]_block_invoke.281
+  21:        0x1887fb2b0 - -[FBSWorkspace _calloutQueue_executeCalloutFromSource:withBlock:]
+  22:        0x18881a4c8 - -[FBSWorkspaceScenesClient _callOutQueue_sendDidCreateForScene:transitionContext:completion:]
+  23:        0x18881bc0c - ___92-[FBSWorkspaceScenesClient createSceneWithIdentity:parameters:transitionContext:completion:]_block_invoke_2
+  24:        0x1887fb2b0 - -[FBSWorkspace _calloutQueue_executeCalloutFromSource:withBlock:]
+  25:        0x1801a0e98 - __dispatch_client_callout
+  26:        0x18018b5fc - __dispatch_block_invoke_direct
+  27:        0x188243258 - ___BSSERVICEMAINRUNLOOPQUEUE_IS_CALLING_OUT_TO_A_BLOCK__
+  28:        0x188242210 - _BSServiceMainRunLoopSourceHandler
+  29:        0x180422f5c - ___CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__
+  30:        0x180422ea4 - ___CFRunLoopDoSource0
+  31:        0x180422690 - ___CFRunLoopDoSources0
+  32:        0x180421808 - ___CFRunLoopRun
+  33:        0x18041c904 - __CFRunLoopRunSpecificWithOptions
+  34:        0x1933599c0 - _GSEventRunModal
+  35:        0x1864a54cc - -[UIApplication _run]
+  36:        0x186b9f910 - _UIApplicationMain
+  37:        0x104b136d8 - taut[5914370db15e638a]::ios::run::<video_apple[f4a54533abd1b62e]::main::{closure#0}>
+  38:        0x104b10d60 - video_apple[f4a54533abd1b62e]::main
+  39:        0x104b24b5c - <fn() as core[23f300596627935b]::ops::function::FnOnce<()>>::call_once
+  40:        0x104b1ad74 - std[4d474039d585e394]::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  41:        0x104b22934 - std[4d474039d585e394]::rt::lang_start::<()>::{closure#0}
+  42:        0x104ce5f40 - std[4d474039d585e394]::rt::lang_start_internal
+  43:        0x104b20e78 - std[4d474039d585e394]::rt::lang_start::<()>
+  44:        0x104b132a8 - _main
+thread caused non-unwinding panic. aborting.
+
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: video_apple::simulator::run
+   3: video_apple::main
+   4: <fn() as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `--test video_apple`
+exit 101
+==== app output
+==> target/video-ios/video_check.err <==
+unrecognised property keyunrecognised property key
+thread 'main' (31944) panicked at tests/video_apple.rs:172:13:
+Some("Français un") at 500ms did not happen: Video { playing: false, position: 500ms, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (31944) panicked at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:        0x104cec224 - <<std[4d474039d585e394]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[23f300596627935b]::fmt::Display>::fmt
+   1:        0x104cff470 - core[23f300596627935b]::fmt::write
+   2:        0x104cf00dc - <std[4d474039d585e394]::sys::stdio::unix::Stderr as core[23f300596627935b]::io::write::Write>::write_fmt
+   3:        0x104cd73c8 - std[4d474039d585e394]::panicking::default_hook::{closure#0}
+   4:        0x104ce6a8c - std[4d474039d585e394]::panicking::default_hook
+   5:        0x104ce6dc8 - std[4d474039d585e394]::panicking::panic_with_hook
+   6:        0x104cd7478 - std[4d474039d585e394]::panicking::panic_handler::{closure#0}
+   7:        0x104ccfa48 - std[4d474039d585e394]::sys::backtrace::__rust_end_short_backtrace::<std[4d474039d585e394]::panicking::panic_handler::{closure#0}, !>
+   8:        0x104cd7c18 - __rustc[488137f9e312a25f]::rust_begin_unwind
+   9:        0x104d12afc - core[23f300596627935b]::panicking::panic_nounwind_fmt
+  10:        0x104d12a84 - core[23f300596627935b]::panicking::panic_nounwind
+  11:        0x104d12bd8 - core[23f300596627935b]::panicking::panic_cannot_unwind
+  12:        0x104cc5cc8 - taut[5914370db15e638a]::ios::scene_connected
+  13:        0x1857bc640 - +[UIScene _sceneForFBSScene:create:withSession:connectionOptions:]
+  14:        0x1864a6e90 - -[UIApplication _connectUISceneFromFBSScene:transitionContext:]
+  15:        0x1864a726c - -[UIApplication workspace:didCreateScene:withTransitionContext:completion:]
+  16:        0x185ebbbd8 - -[UIApplicationSceneClientAgent scene:didInitializeWithEvent:completion:]
+  17:        0x1887ed8a0 - ___95-[FBSScene _callOutQueue_didCreateWithTransitionContext:alternativeCreationCallout:completion:]_block_invoke
+  18:        0x1887edd30 - -[FBSScene _callOutQueue_maybeCoalesceClientSettingsUpdates:]
+  19:        0x1887ed6f4 - -[FBSScene _callOutQueue_didCreateWithTransitionContext:alternativeCreationCallout:completion:]
+  20:        0x1888590a4 - ___93-[FBSWorkspaceScenesClient _callOutQueue_sendDidCreateForScene:transitionContext:completion:]_block_invoke.281
+  21:        0x1887fb2b0 - -[FBSWorkspace _calloutQueue_executeCalloutFromSource:withBlock:]
+  22:        0x18881a4c8 - -[FBSWorkspaceScenesClient _callOutQueue_sendDidCreateForScene:transitionContext:completion:]
+  23:        0x18881bc0c - ___92-[FBSWorkspaceScenesClient createSceneWithIdentity:parameters:transitionContext:completion:]_block_invoke_2
+  24:        0x1887fb2b0 - -[FBSWorkspace _calloutQueue_executeCalloutFromSource:withBlock:]
+  25:        0x1801a0e98 - __dispatch_client_callout
+  26:        0x18018b5fc - __dispatch_block_invoke_direct
+  27:        0x188243258 - ___BSSERVICEMAINRUNLOOPQUEUE_IS_CALLING_OUT_TO_A_BLOCK__
+  28:        0x188242210 - _BSServiceMainRunLoopSourceHandler
+  29:        0x180422f5c - ___CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__
+  30:        0x180422ea4 - ___CFRunLoopDoSource0
+  31:        0x180422690 - ___CFRunLoopDoSources0
+  32:        0x180421808 - ___CFRunLoopRun
+  33:        0x18041c904 - __CFRunLoopRunSpecificWithOptions
+  34:        0x1933599c0 - _GSEventRunModal
+  35:        0x1864a54cc - -[UIApplication _run]
+  36:        0x186b9f910 - _UIApplicationMain
+  37:        0x104b136d8 - taut[5914370db15e638a]::ios::run::<video_apple[f4a54533abd1b62e]::main::{closure#0}>
+  38:        0x104b10d60 - video_apple[f4a54533abd1b62e]::main
+  39:        0x104b24b5c - <fn() as core[23f300596627935b]::ops::function::FnOnce<()>>::call_once
+  40:        0x104b1ad74 - std[4d474039d585e394]::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  41:        0x104b22934 - std[4d474039d585e394]::rt::lang_start::<()>::{closure#0}
+  42:        0x104ce5f40 - std[4d474039d585e394]::rt::lang_start_internal
+  43:        0x104b20e78 - std[4d474039d585e394]::rt::lang_start::<()>
+  44:        0x104b132a8 - _main
+thread caused non-unwinding panic. aborting.
+
+==> target/video-ios/video_check.out <==
+frames show at their times
+pause and seek
+a seek before the first frame
+the end, and a loop
+the controls
+bytes
+tracks, captions and speed
+captions in the video stream
+CEA-608's other channels
+timed text and WebVTT tracks of a file
