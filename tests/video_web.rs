@@ -4,11 +4,13 @@
 //!   controls and caption, buttons that open, seek, loop, add captions and open many, and a line
 //!   saying the video's state.
 //! - Here (`checks`), it builds that page and runs it under Node (no page: `NoPlayer`) and in a
-//!   headless browser (Edge or Chrome; `TAUT_BROWSER` names one), muted, which presses its
-//!   parts through the readers' elements and keys and reads the frame numbers off the canvas:
-//!   frames at their times, pause, seeks to the frame asked, the end once, a loop, the controls,
-//!   the app's captions (shown and told), speed, a browser cue's settings, the browser's own tracks,
-//!   bytes, a play with sound refused before a press, a missing file, and many opens.
+//!   headless browser (Edge or Chrome; `TAUT_BROWSER` names one), or in Safari through
+//!   `safaridriver` (`TAUT_BROWSER=safari`), muted, which presses its parts through the readers'
+//!   elements and keys and reads the frame numbers off the canvas: frames at their times, pause,
+//!   seeks to the frame asked, the end once, a loop, the controls, the app's captions (shown and
+//!   told), speed, a browser cue's settings, the browser's own tracks (where it lists them: a
+//!   file's, a QuickTime closed-caption track's, an HLS stream's renditions and closed
+//!   captions), bytes, a play with sound refused before a press, a missing file, and many opens.
 //!
 //! Each half says why and passes where it lacks the wasm target, Node or a browser, unless
 //! `TAUT_VIDEO=required`.
@@ -139,8 +141,9 @@ mod page {
             ui.wake_after(Duration::from_millis(10));
         }
 
-        /// One line the checks read: `name=value` words. (While many open, only how many are
-        /// left and whether one has a frame: each new line drawn is kept a while.)
+        /// One line the checks read: `name=value` words, a caption's spaces as `_`. (While many
+        /// open, only how many are left and whether one has a frame: each new line drawn is kept
+        /// a while.)
         fn state(&self) -> String {
             let Some(video) = &self.video else { return format!("state opened={}", self.opened) };
             if let Some((left, _)) = self.many {
@@ -159,7 +162,7 @@ mod page {
                 video.speed(),
                 video.sound_tracks().len(),
                 video.caption_tracks().len(),
-                video.caption().unwrap_or("none"),
+                video.caption().map_or("none".into(), |caption| caption.replace([' ', '\n'], "_")),
                 self.many.map_or(0, |(left, _)| left),
                 video.error().unwrap_or("none"),
             )
@@ -319,9 +322,18 @@ function state() {
     words.line = line;
     return words;
 }
-// The frame number the canvas shows at the top left (the cells' middles, bright or dark).
+// The frame number shown at the top left (the cells' middles, bright or dark): read off the
+// page's canvas, or where the browser can't read it back (Safari on GitHub's macOS runner:
+// `InvalidStateError`), off the video's last frame taut read.
 function shown() {
-    const seen = page.context.getImageData(0, 0, 64, 48).data;
+    let seen;
+    try {
+        seen = page.context.getImageData(0, 0, 64, 48).data;
+    } catch (error) {
+        if (error.name !== "InvalidStateError") throw error;
+        seen = [...page.videos.values()][0].context.getImageData(0, 0, 64, 48).data;
+        results.frames_read_from = "the video's frame";
+    }
     let number = 0;
     for (let cell = 0; cell < 8; cell++) {
         const at = ((Math.floor(cell / 4) * 24 + 12) * 64 + (cell % 4) * 16 + 8) * 4;
@@ -508,49 +520,78 @@ async function browser_cue_settings() {
 }
 
 // The browser's own tracks of a file with two sound and two caption tracks: what it lists.
+// Where it lists a file's caption tracks (Safari), the one chosen in the controls shows at its
+// times.
 async function the_files_tracks() {
     if (!(await opened("Languages"))) return;
     await pause(300);
     await settle();
     results.tracks = state().tracks;
+    if (!lists_its_own()) return;
+    if (results.tracks !== "2/2") fail(`the file's tracks: ${state().line}`);
+    await choose_captions("fr");
+    for (const [button, caption] of [["Seek 0.5", "Français_un"], ["Seek 2.0", "none"], ["Seek 2.5", "Français_fin"]]) {
+        await press(button);
+        await until(`${caption} after ${button}`, (now) => now.caption === caption);
+    }
 }
 
-// (Probe) The browser's own text tracks of files and a stream: what it lists and shows.
-async function in_band_tracks() {
-    results.in_band = {};
-    for (const button of ["Languages", "Placed", "Closed", "Stream"]) {
-        const seen = [];
-        await press(button);
-        await until(`the first frame of ${button}`, (now) => now.size === "64x48", 20);
-        const [id, made] = [...page.videos.entries()][0];
-        const element = made.element;
-        const describe = () => [...element.textTracks].map((track) => `${track.kind}|${track.label}|${track.language}|${track.mode}|cues=${track.cues?.length}`).join("; ");
-        seen.push(`at load: ${describe()} :: ${state().line}`);
-        await pause(2000);
-        await settle();
-        seen.push(`after 2 s: ${describe()} :: ${state().line}`);
-        const place = (cue) => (typeof VTTCue !== "undefined" && cue instanceof VTTCue ? `line=${cue.line} snap=${cue.snapToLines} position=${cue.position} size=${cue.size} align=${cue.align}` : "not a VTTCue");
-        const listed = [...element.textTracks].filter((track) => track.kind === "subtitles" || track.kind === "captions");
-        for (let nth = 0; nth < listed.length; nth++) {
-            page.videoChooseCaptions(id, nth);
-            element.currentTime = 0;
-            await pause(300);
-            element.play();
-            let last = "";
-            const begun = performance.now();
-            while (!element.ended && performance.now() - begun < 6000) {
-                await pause(50);
-                await settle();
-                const active = [...(listed[nth].activeCues || [])].map((cue) => `${cue.constructor.name} ${cue.startTime.toFixed(2)}-${cue.endTime.toFixed(2)} ${JSON.stringify(cue.text)} ${place(cue)}`).join(" | ");
-                page.videoCaption(id);
-                const now = `${active} :: taut ${JSON.stringify(new TextDecoder().decode(page.made))} :: ${state().caption}`;
-                if (now !== last) seen.push(`${listed[nth].label || listed[nth].language} at ${element.currentTime.toFixed(2)}: ${now}`);
-                last = now;
-            }
-            element.pause();
-        }
-        results.in_band[button] = seen;
+// Where the browser lists a file's own caption tracks (Safari): a WebVTT track's cues placed as
+// its settings say, and a QuickTime closed-caption track's CEA-608 shown as it plays.
+async function a_files_webvtt_and_closed_captions() {
+    if (!(await opened("Placed")) || !lists_its_own()) return;
+    await choose_captions("fr");
+    await press("Seek 2.5");
+    await until("the placed caption", (now) => now.caption === "Français_fin");
+    results.placed = cue_settings();
+    if (results.placed !== "line:10% position:10% align:start") fail(`the WebVTT cue's settings: ${JSON.stringify(results.placed)}`);
+    if (!(await opened("Closed"))) return;
+    await choose_captions("Closed captions");
+    await shows_as_it_plays("Hello_there");
+}
+
+// Where the browser plays HLS (Safari): a stream's subtitle renditions, the French placed as its
+// WebVTT settings say, and its closed captions (CEA-608's CC1, CEA-708's service 1), each
+// chosen in the controls.
+async function a_streams_captions() {
+    if (!document.createElement("video").canPlayType("application/vnd.apple.mpegurl")) return (results.stream = "no HLS");
+    if (!(await opened("Stream"))) return;
+    await until("the stream's tracks", (now) => now.tracks === "1/4");
+    await choose_captions("Français");
+    await press("Seek 2.5");
+    await until("the French rendition", (now) => now.caption === "Français_fin");
+    results.rendition = cue_settings();
+    if (results.rendition !== "line:10% position:10% align:start") fail(`the rendition's settings: ${JSON.stringify(results.rendition)}`);
+    for (const [label, caption] of [["CC1", "Hello_there"], ["Service 1", "Service_one"]]) {
+        await choose_captions(label);
+        await shows_as_it_plays(caption);
     }
+}
+
+// Whether the browser lists the video's own caption tracks: Safari does, Chrome, Edge and
+// Firefox none.
+function lists_its_own() {
+    return [...page.videos.values()][0].element.textTracks.length > 0;
+}
+
+async function choose_captions(label) {
+    await press("Captions");
+    await press(label, "menuitemradio");
+}
+
+// The settings of the chosen track's cue on show, as taut got them.
+function cue_settings() {
+    page.videoCaption([...page.videos.keys()][0]);
+    return new TextDecoder().decode(page.made).split("\n")[0];
+}
+
+// Plays, looping, until `caption` shows (captions in a video stream say only what changes:
+// they show as it plays).
+async function shows_as_it_plays(caption) {
+    await press("Loop");
+    await press("Play");
+    await until(`${caption} as it plays`, (now) => now.caption === caption);
+    await press("Pause");
 }
 
 async function many_opens() {
@@ -574,7 +615,7 @@ async function many_opens() {
 try {
     page = await start("page.wasm", { element: document.getElementById("app") });
     await settle();
-    for (const check of [in_band_tracks, frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, browser_cue_settings, the_files_tracks, many_opens]) {
+    for (const check of [frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, browser_cue_settings, the_files_tracks, a_files_webvtt_and_closed_captions, a_streams_captions, many_opens]) {
         const failed = results.failed.length;
         await check().catch((error) => fail(`${check.name}: ${error}\n${error.stack}`));
         results[check.name] = results.failed.length === failed ? "passed" : "FAILED";

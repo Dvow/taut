@@ -625,7 +625,7 @@ impl FileCaptions {
 
 /// A WebVTT sample's cues (`vttc` boxes: their text in `payl`, their settings in `sttg`); none
 /// for a gap (`vtte`).
-pub(crate) fn webvtt_cues(sample: &[u8]) -> Vec<Caption> {
+fn webvtt_cues(sample: &[u8]) -> Vec<Caption> {
     let cue = |vttc: &[u8]| {
         let text = text_of(child(vttc, b"payl")?);
         let settings = child(vttc, b"sttg").map(text_of).unwrap_or_default();

@@ -510,6 +510,13 @@ pub struct Captions<'a> {
     pub format: CaptionFormat,
 }
 
+impl Captions<'_> {
+    /// What its track holds in an MP4 file.
+    fn holds(&self) -> Holds {
+        if self.format == CaptionFormat::Placed { Holds::WebVtt } else { Holds::Captions }
+    }
+}
+
 /// How a made file keeps a caption track.
 #[derive(Clone, Copy, PartialEq)]
 pub enum CaptionFormat {
@@ -556,6 +563,9 @@ enum Holds {
     Frames,
     Sound,
     Captions,
+    /// WebVTT, under the handler `text` (as ffmpeg writes it; AVFoundation refuses a file with it
+    /// under `sbtl`).
+    WebVtt,
     ClosedCaptions,
 }
 
@@ -595,6 +605,7 @@ impl Trak<'_> {
             Holds::Frames => (b"vide", atom(b"vmhd", &be32(&[1, 0, 0]))),
             Holds::Sound => (b"soun", atom(b"smhd", &be32(&[0, 0]))),
             Holds::Captions => (b"sbtl", atom(b"nmhd", &be32(&[0]))),
+            Holds::WebVtt => (b"text", atom(b"nmhd", &be32(&[0]))),
             // (QuickTime's base media header, its graphics mode copy.)
             Holds::ClosedCaptions => (b"clcp", atoms(b"gmhd", &[atom(b"gmin", &[0, 0, 0, 0, 0, 0x40, 0x80, 0, 0x80, 0, 0x80, 0, 0, 0, 0, 0])])),
         };
@@ -779,7 +790,7 @@ fn movie_with(count: usize, rate: u32, coding: Coding, sounds: &[Sound], caption
         let offsets: Vec<u32> = samples.iter().map(|(_, bytes)| put(bytes)).collect();
         let sizes: Vec<u32> = samples.iter().map(|(_, bytes)| bytes.len() as u32).collect();
         let durations: Vec<u32> = samples.iter().map(|(duration, _)| *duration).collect();
-        let trak = Trak { id: traks.len() as u32 + 1, holds: Holds::Captions, enabled: false, group: 2, language: captions.language, name: captions.name, timescale: 1000, media_duration: duration_ms, ..video };
+        let trak = Trak { id: traks.len() as u32 + 1, holds: captions.holds(), enabled: false, group: 2, language: captions.language, name: captions.name, timescale: 1000, media_duration: duration_ms, ..video };
         traks.push(trak.atom(caption_entry(captions.format), table(&sizes, &durations, &offsets)));
     }
     let mut mvhd = be32(&[0, 0, 0, 1000, duration_ms, 0x10000]);
@@ -811,7 +822,7 @@ pub fn fragmented_with_captions(count: usize, captions: &[Captions]) -> Vec<u8> 
         .collect();
     let mut traks = Vec::new();
     for (nth, captions) in captions.iter().enumerate() {
-        let trak = Trak { id: nth as u32 + 1, holds: Holds::Captions, enabled: false, group: 2, language: captions.language, name: captions.name, timescale: 1000, duration_ms: 0, media_duration: 0, size: [64, 48] };
+        let trak = Trak { id: nth as u32 + 1, holds: captions.holds(), enabled: false, group: 2, language: captions.language, name: captions.name, timescale: 1000, duration_ms: 0, media_duration: 0, size: [64, 48] };
         traks.push(trak.atom(caption_entry(captions.format), table(&[], &[], &[])));
     }
     let trex: Vec<Vec<u8>> = (1..=captions.len() as u32).map(|id| atom(b"trex", &be32(&[0, id, 1, 0, 0, 0]))).collect();

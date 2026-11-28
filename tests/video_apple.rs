@@ -52,7 +52,7 @@ mod checks {
     use std::ffi::c_void;
     use std::time::{Duration, Instant};
     use taut::testing::Trial;
-    use taut::{Flow, Role, Track, Video};
+    use taut::{Flow, Rect, Role, Track, Video};
 
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
@@ -125,11 +125,6 @@ mod checks {
     pub fn all() {
         // SAFETY: a function of the type the runtime calls.
         unsafe { objc_setExceptionPreprocessor(thrown) };
-        captions_of_a_stream();
-        println!("captions of a stream (probe)");
-        if std::env::var_os("TAUT_PROBE_ONLY").is_some() {
-            return;
-        }
         let silent = written("silent.mp4", &mp4(30, 10, false));
         let with_sound = written("with-sound.mp4", &mp4(30, 10, true));
         frames_show_at_their_times(&with_sound);
@@ -154,6 +149,8 @@ mod checks {
         println!("CEA-608's other channels");
         timed_text_and_webvtt_tracks_of_a_file();
         println!("timed text and WebVTT tracks of a file");
+        captions_of_a_stream();
+        println!("captions of a stream");
         many_opens(&with_sound);
     }
 
@@ -167,14 +164,37 @@ mod checks {
         })
     }
 
-    /// Goes to `to` and waits for the caption there.
+    /// Waits for `done`, the interface run each turn: a stream's text comes from AVFoundation's
+    /// thread, which wakes a window, not a trial.
+    fn until_run(trial: &mut Trial<Video>, what: &str, done: impl Fn(&Video) -> bool) {
+        let start = Instant::now();
+        while !done(&trial.app) {
+            assert!(start.elapsed() < Duration::from_secs(30), "{what} did not happen: {:?}", trial.app);
+            pass(trial, Duration::from_millis(20));
+            trial.run();
+        }
+    }
+
+    /// Goes to `to`, and waits for the caption there.
     fn caption_at(trial: &mut Trial<Video>, to: Duration, caption: Option<&str>) {
         trial.app.seek(to);
-        until_within(trial, &format!("{caption:?} at {to:?}"), Duration::from_secs(30), |video| video.position().abs_diff(to) < Duration::from_millis(50) && video.caption() == caption);
+        until_run(trial, &format!("{caption:?} at {to:?}"), |video| video.position().abs_diff(to) < Duration::from_millis(50) && video.caption() == caption);
+    }
+
+    /// Where the caption `text` is drawn: the rectangle readers are told.
+    fn place_of(trial: &Trial<Video>, text: &str) -> Rect {
+        trial.find(Role::Text, text).rect
+    }
+
+    /// A caption placed by WebVTT's `align:start position:10% line:10%`: a tenth of the frame in
+    /// from the top left.
+    fn assert_top_left(trial: &Trial<Video>, text: &str) {
+        let place = place_of(trial, text);
+        assert!((place.x - 32.0).abs() <= 2.0 && (place.y - 24.0).abs() <= 2.0, "{text} at {place:?}, not 32, 24");
     }
 
     /// A file's 3GPP timed text and WebVTT tracks, read by taut: named, shown at their times,
-    /// WebVTT's placed as its settings say (a tenth of the frame in from the top left).
+    /// WebVTT's placed as its settings say.
     fn timed_text_and_webvtt_tracks_of_a_file() {
         let file = written("plain-and-placed.mp4", &movie(30, 10, false, &[], &PLAIN_AND_PLACED));
         let mut trial = captioned(Video::open_silent(file).unwrap());
@@ -184,8 +204,7 @@ mod checks {
         for (at, caption) in [(500, Some("Français un")), (2200, None), (2700, Some("Français fin"))] {
             caption_at(&mut trial, Duration::from_millis(at), caption);
         }
-        let place = trial.find(Role::Text, "Français fin").rect;
-        assert!((place.x - 32.0).abs() <= 2.0 && (place.y - 24.0).abs() <= 2.0, "the WebVTT caption at {place:?}, not 32, 24");
+        assert_top_left(&trial, "Français fin");
         trial.app.set_caption_track(Some(0));
         caption_at(&mut trial, Duration::from_millis(1500), Some("English two"));
     }
@@ -205,111 +224,35 @@ mod checks {
     }
 
     /// An HLS stream's caption tracks, as AVFoundation hands them over: its subtitle renditions
-    /// (WebVTT) and the closed captions in its video stream, listed and shown at their times.
+    /// (WebVTT) and the closed captions in its video stream (CEA-608's `CC1` and `CC3`,
+    /// CEA-708's service 1), listed by their names and shown at their times, placed as the
+    /// stream says.
     fn captions_of_a_stream() {
         let in_stream = InStream { other_channels: &OTHER_CHANNELS.other_channels[1..2], ..IN_STREAM };
-        let files = hls_stream(30, &in_stream, &RENDITIONS);
-        let written: Vec<std::path::PathBuf> = files.iter().map(|(name, bytes)| written(name, bytes)).collect();
-        let folder = written[0].parent().unwrap().to_path_buf();
-        // (Probe: a WebVTT track in each handler and media header a file may give it.)
-        let movie_bytes = movie(30, 10, false, &[], &PLAIN_AND_PLACED);
-        let variants = [("sbtl", "nmhd"), ("text", "nmhd"), ("subt", "sthd"), ("text", "gmhd")];
-        for (handler, header) in variants {
-            let mut bytes = movie_bytes.clone();
-            replace_last(&mut bytes, b"hdlr\0\0\0\0\0\0\0\0sbtl", &[b"hdlr\0\0\0\0\0\0\0\0", handler.as_bytes()].concat());
-            if header != "gmhd" {
-                replace_last(&mut bytes, b"nmhd", header.as_bytes());
-            }
-            written_to(&folder, &format!("webvtt-{handler}-{header}.mp4"), &bytes);
+        let files: Vec<std::path::PathBuf> = hls_stream(30, &in_stream, &RENDITIONS).iter().map(|(name, bytes)| written(name, bytes)).collect();
+        let address = served(files[0].parent().unwrap().to_path_buf());
+        let mut trial = captioned(Video::open_silent(format!("{address}master.m3u8").as_str()).unwrap());
+        until(&mut trial, "the caption tracks", |video| video.caption_tracks().len() >= 5);
+        let listed: Vec<(&str, &str)> = trial.app.caption_tracks().iter().map(|track| (track.language.as_str(), track.name.as_str())).collect();
+        assert_eq!(listed, [("en", "English"), ("fr", "Français"), ("en", "CC1"), ("en", "CC3"), ("en", "Service 1")]);
+        trial.app.set_caption_track(Some(1));
+        for (at, caption) in [(500, Some("Français un")), (2200, None), (2700, Some("Français fin"))] {
+            caption_at(&mut trial, Duration::from_millis(at), caption);
         }
-        let only_webvtt = movie(30, 10, false, &[], &PLAIN_AND_PLACED[1..]);
-        let mut text = only_webvtt.clone();
-        replace_last(&mut text, b"hdlr\0\0\0\0\0\0\0\0sbtl", b"hdlr\0\0\0\0\0\0\0\0text");
-        written_to(&folder, "only-webvtt-sbtl.mp4", &only_webvtt);
-        written_to(&folder, "only-webvtt-text.mp4", &text);
-        written_to(&folder, "languages.mp4", &movie(30, 10, false, &TWO_LANGUAGES, &TWO_CAPTIONS));
-        let address = served(folder.clone());
-        for name in ["master.m3u8", "video.m3u8", "languages.mp4"] {
-            probe_stream(&format!("{address}{name}"));
-        }
-        if std::env::var("TAUT_PROBE_NATIVE").is_ok() {
-            return;
-        }
-        for (handler, header) in variants {
-            probe_file(&folder.join(format!("webvtt-{handler}-{header}.mp4")));
-        }
-        probe_file(&folder.join("only-webvtt-sbtl.mp4"));
-        probe_file(&folder.join("only-webvtt-text.mp4"));
-    }
-
-    fn replace_last(bytes: &mut [u8], what: &[u8], with: &[u8]) {
-        let at = bytes.windows(what.len()).rposition(|window| window == what).expect("found");
-        bytes[at..at + with.len()].copy_from_slice(with);
-    }
-
-    fn written_to(folder: &std::path::Path, name: &str, bytes: &[u8]) {
-        std::fs::write(folder.join(name), bytes).unwrap();
-    }
-
-    /// Whether a file plays and what tracks it has (a probe).
-    fn probe_file(file: &std::path::Path) {
-        let mut trial = captioned(Video::open_silent(file).unwrap());
-        trial.run();
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(10) && trial.app.size().is_none() && trial.app.error().is_none() {
-            pass(&mut trial, Duration::from_millis(50));
-        }
-        pass(&mut trial, Duration::from_millis(1500));
-        eprintln!("probe: file {}: tracks {:?} size {:?} error {:?}", file.display(), trial.app.caption_tracks(), trial.app.size(), trial.app.error());
-        let count = trial.app.caption_tracks().len();
-        for nth in 0..count {
-            trial.app.set_caption_track(Some(nth));
-            for at in [500, 2700] {
-                trial.app.seek(Duration::from_millis(at));
-                let start = Instant::now();
-                while start.elapsed() < Duration::from_secs(5) && trial.app.caption().is_none() {
-                    pass(&mut trial, Duration::from_millis(50));
-                }
-                let place = trial.app.caption().map(|text| trial.find(Role::Text, text.lines().next().unwrap_or_default()).rect);
-                eprintln!("probe:   file track {nth} at {at}: {:?} {place:?}", trial.app.caption());
-            }
-        }
-    }
-
-    /// What a stream's caption tracks show, said (a probe).
-    fn probe_stream(address: &str) {
-        let mut trial = captioned(Video::open_silent(address).unwrap());
-        trial.run();
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(20) && (trial.app.caption_tracks().is_empty() || trial.app.size().is_none()) {
-            pass(&mut trial, Duration::from_millis(50));
-        }
-        eprintln!("probe: {address}: tracks {:?} size {:?} length {:?} error {:?}", trial.app.caption_tracks(), trial.app.size(), trial.app.length(), trial.app.error());
-        for nth in 0..trial.app.caption_tracks().len() {
-            trial.app.set_caption_track(Some(nth));
+        assert_top_left(&trial, "Français fin");
+        // (CEA-608 and CEA-708 say only what changes: each shows as it plays. Looping, a slow
+        // runner meets each caption again.)
+        trial.app.set_looping(true);
+        for (track, caption) in [(2, "Hello there"), (3, "Third channel"), (4, "Service one")] {
+            trial.app.set_caption_track(Some(track));
             trial.app.seek(Duration::ZERO);
             trial.app.play();
-            let start = Instant::now();
-            let mut seen = Vec::new();
-            while start.elapsed() < Duration::from_secs(6) && trial.app.position() < Duration::from_millis(2900) {
-                pass(&mut trial, Duration::from_millis(50));
-                let caption = trial.app.caption().map(str::to_owned);
-                if seen.last().map(|(_, last)| last) != Some(&caption) {
-                    let place = caption.as_ref().map(|text| trial.find(Role::Text, text.lines().next().unwrap_or_default()).rect);
-                    eprintln!("probe:   track {nth} at {:?}: {caption:?} {place:?}", trial.app.position());
-                    seen.push((trial.app.position(), caption));
-                }
-            }
+            until_run(&mut trial, caption, |video| video.caption() == Some(caption));
             trial.app.pause();
-            for at in [700, 1300, 2050] {
-                trial.app.seek(Duration::from_millis(at));
-                let start = Instant::now();
-                while start.elapsed() < Duration::from_secs(3) && trial.app.position().abs_diff(Duration::from_millis(at)) > Duration::from_millis(50) {
-                    pass(&mut trial, Duration::from_millis(50));
-                }
-                pass(&mut trial, Duration::from_millis(500));
-                eprintln!("probe:   track {nth} paused at {:?}: {:?}", trial.app.position(), trial.app.caption());
-            }
+            // (Row 15 of the caption grid, near the frame's bottom; CEA-608's text from column
+            // 1, left of the middle.)
+            let place = place_of(&trial, caption);
+            assert!(place.y > 190.0 && place.x + place.w / 2.0 < 155.0, "{caption} at {place:?}");
         }
     }
 
@@ -553,6 +496,10 @@ mod simulator {
         let line = said.lines().find(|line| line.contains("\"executable\":\"") && line.contains("\"name\":\"video_apple\""));
         let program = line.and_then(|line| line.split("\"executable\":\"").nth(1)?.split('"').next()).ok_or("no test program built")?;
         let app = ios_bundle::bundle(Path::new(program), "video_check", ID, false, &built().join("ios")).map_err(|error| error.to_string())?;
+        // (The checks play a stream from a server of their own, over http to 127.0.0.1: App
+        // Transport Security lets an app reach a local address so only with this.)
+        let local = ["-c", "Add :NSAppTransportSecurity dict", "-c", "Add :NSAppTransportSecurity:NSAllowsLocalNetworking bool true"];
+        ios_bundle::ran(Command::new("/usr/libexec/PlistBuddy").args(local).arg(app.join("Info.plist")))?;
         ios_bundle::sign_for_simulator(&app)?;
         Ok(app)
     }

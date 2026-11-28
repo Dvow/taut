@@ -52,8 +52,9 @@ impl CMTime {
 
 /// CoreVideo's functions for reading a pixel buffer, and its key for their format; CoreMedia's
 /// for reading a sample buffer; AVFoundation's name of the time-pitch algorithm that keeps the
-/// pitch at any rate, and of the characteristic of caption tracks. With `gpu-draw`, CoreVideo's
-/// keys asking for buffers Metal reads and its cache of Metal textures of them.
+/// pitch at any rate, the characteristics of caption tracks and forced subtitles, and the key
+/// of a title in the common key space. With `gpu-draw`, CoreVideo's keys asking for buffers
+/// Metal reads and its cache of Metal textures of them.
 pub(crate) struct Functions {
     lock: unsafe extern "C" fn(*mut c_void, u64) -> i32,
     unlock: unsafe extern "C" fn(*mut c_void, u64) -> i32,
@@ -63,16 +64,17 @@ pub(crate) struct Functions {
     height: unsafe extern "C" fn(*mut c_void) -> usize,
     release: unsafe extern "C" fn(*mut c_void),
     format_key: Obj,
-    pub(crate) sample_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
+    sample_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
     decode_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
-    pub(crate) sample_duration: unsafe extern "C" fn(*mut c_void) -> CMTime,
-    pub(crate) sample_format: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     sample_data: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     data_length: unsafe extern "C" fn(*mut c_void) -> usize,
     copy_data: unsafe extern "C" fn(*mut c_void, usize, usize, *mut u8) -> i32,
-    pub(crate) media_subtype: unsafe extern "C" fn(*mut c_void) -> u32,
+    media_subtype: unsafe extern "C" fn(*mut c_void) -> u32,
     spectral: Obj,
     pub(crate) legible: Obj,
+    pub(crate) forced_only: Obj,
+    pub(crate) title_key: Obj,
+    pub(crate) common_key_space: Obj,
     #[cfg(feature = "gpu-draw")]
     metal: MetalTextures,
 }
@@ -95,7 +97,7 @@ unsafe impl Send for Functions {}
 unsafe impl Sync for Functions {}
 
 /// The frameworks, opened once; none where AVFoundation is missing.
-pub(crate) fn functions() -> Option<&'static Functions> {
+fn functions() -> Option<&'static Functions> {
     static LOADED: OnceLock<Option<Functions>> = OnceLock::new();
     LOADED.get_or_init(load).as_ref()
 }
@@ -127,14 +129,15 @@ fn load() -> Option<Functions> {
             format_key: *found(video, c"kCVPixelBufferPixelFormatTypeKey")?.cast::<Obj>(),
             sample_time: function(found(media, c"CMSampleBufferGetPresentationTimeStamp")?),
             decode_time: function(found(media, c"CMSampleBufferGetDecodeTimeStamp")?),
-            sample_duration: function(found(media, c"CMSampleBufferGetDuration")?),
-            sample_format: function(found(media, c"CMSampleBufferGetFormatDescription")?),
             sample_data: function(found(media, c"CMSampleBufferGetDataBuffer")?),
             data_length: function(found(media, c"CMBlockBufferGetDataLength")?),
             copy_data: function(found(media, c"CMBlockBufferCopyDataBytes")?),
             media_subtype: function(found(media, c"CMFormatDescriptionGetMediaSubType")?),
             spectral: *found(av, c"AVAudioTimePitchAlgorithmSpectral")?.cast::<Obj>(),
             legible: *found(av, c"AVMediaCharacteristicLegible")?.cast::<Obj>(),
+            forced_only: *found(av, c"AVMediaCharacteristicContainsOnlyForcedSubtitles")?.cast::<Obj>(),
+            title_key: *found(av, c"AVMetadataCommonKeyTitle")?.cast::<Obj>(),
+            common_key_space: *found(av, c"AVMetadataKeySpaceCommon")?.cast::<Obj>(),
             #[cfg(feature = "gpu-draw")]
             metal: MetalTextures {
                 compatible_key: *found(video, c"kCVPixelBufferMetalCompatibilityKey")?.cast::<Obj>(),
@@ -255,11 +258,10 @@ impl OwnCaptions {
         }
     }
 
-    /// It went to `to`.
+    /// It went to `to` (a stream's output hands over what shows there by itself).
     fn seek(&self, to: Duration) {
-        match self {
-            OwnCaptions::File(captions) => captions.seek(to),
-            OwnCaptions::Stream(captions) => captions.sought(to),
+        if let OwnCaptions::File(captions) = self {
+            captions.seek(to);
         }
     }
 }
@@ -545,7 +547,7 @@ fn stored_samples(asset: Obj, track: Obj, from: Duration) -> Option<(Obj, Obj)> 
 }
 
 /// A sample buffer's bytes; none where it has none.
-pub(crate) fn sample_bytes(f: &Functions, sample: *mut c_void) -> Option<Vec<u8>> {
+fn sample_bytes(f: &Functions, sample: *mut c_void) -> Option<Vec<u8>> {
     // SAFETY: a live sample buffer; its data is copied within its length.
     unsafe {
         let data = (f.sample_data)(sample);
