@@ -1,0 +1,10 @@
+ios exit 0 in 1622 s
+a new device after 1 lost: 0 pixels differ, at most by 0
+a new device after 2 lost: 0 pixels differ, at most by 0
+a new device after 3 lost: 0 pixels differ, at most by 0
+a new device after 1 lost: 0 pixels differ, at most by 0
+a new device after 2 lost: 0 pixels differ, at most by 0
+a new device after 3 lost: 0 pixels differ, at most by 0
+a new device after 1 lost: 0 pixels differ, at most by 0
+a new device after 2 lost: 0 pixels differ, at most by 0
+a new device after 3 lost: 0 pixels differ, at most by 0

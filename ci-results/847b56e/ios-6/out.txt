@@ -1,0 +1,357 @@
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `test` profile [unoptimized] target(s) in 19.61s
+     Running tests/ios.rs (target/debug/build/taut/161af3711712cc79/out/ios-161af3711712cc79)
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `dev` profile [unoptimized] target(s) in 1.21s
+simulator 7F81FA48-EEA2-44A5-AC62-55FB6DDF82EA
+page 402x778 at [0.0, 62.0], scale 3
+check-gallery: taken at 14.3 s, past the launch screen from 12.1 s
+the screen against the Mac's drawing: 2.23% of pixels apart, at most 234
+the screen against the phone's own drawing: 0.000% of pixels apart, at most 0
+62 elements told to readers; the first:
+"File" "" 0x1 4,64 37x24
+"View" "" 0x1 43,64 45x24
+"Gallery: 60 items, 0 presses counted" "" 0x40 10,98 202x16
+"Add an item" "" 0x1 14,126 28x28
+"The colour that stands out" "" 0x1 44,126 28x28
+"Starred" "" 0x9 74,126 28x28
+"Copy the notes" "" 0x1 115,126 28x28
+"Start over" "" 0x1 145,126 28x28
+"A tool that does nothing" "" 0x1 175,126 28x28
+"Filter items" "" 0x0 10,166 170x28
+"" "Roomy" 0x1 188,166 79x28
+"Start over" "" 0x1 275,166 75x28
+"Count one" "" 0x1 10,202 82x28
+"More" "" 0x1 100,202 28x28
+"List" "" 0x9 10,243 40x29
+"Table" "" 0x1 52,243 51x29
+"Parts" "" 0x1 105,243 49x29
+"Drawing" "" 0x1 156,243 66x29
+"More" "" 0x1 224,243 49x29
+"Dock" "" 0x1 275,243 49x29
+"Familiar" "" 0x1 326,243 63x29
+"Charts" "" 0x1 391,243 57x29
+"A tick box, which the keyboard can reach with Tab and flip with Space" "" 0x1 10,283 372x32
+"A paragraph breaks into as many lines as the width of the window needs. Under it is a box for several lines of text, then a list that scrolls." "" 0x40 10,321 372x48
+"Notes" "" 0x0 10,375 372x44
+looks:
+dark false
+away false
+dark true
+dark false
+away true
+dark true
+dark false
+away false
+
+reader:
+ok reader asked (613 ms)
+ok lines as wrapped (208 ms)
+ok letters where drawn (213 ms)
+ok a reader selects in the text box (5174 ms)
+ok a data table (604 ms)
+ok a row out of view comes at once (369 ms)
+ok a three-finger swipe pages the table on (108 ms)
+done
+
+parts:
+ok reader asked (664 ms)
+ok finger taps the button (108 ms)
+ok pointer clicks the button (7 ms)
+ok pencil taps the button (13 ms)
+ok finger taps the text box (351 ms)
+ok typed text (182 ms)
+ok composed text (31 ms)
+ok keyboard's delete (26 ms)
+ok hardware backspace (11 ms)
+ok select all and copy (196 ms)
+ok command-a and backspace (216 ms)
+ok paste (71 ms)
+ok keyboard reads the box (54 ms)
+ok keyboard corrects a word (11 ms)
+ok keyboard moves the cursor (3 ms)
+ok composing over a selection (20 ms)
+ok what was composed is committed (79 ms)
+ok places of the text (107 ms)
+ok the keyboard hears the app's change (324 ms)
+ok long press shows the system's edit menu (746 ms)
+ok a secondary click shows the system's edit menu (104 ms)
+ok reader ticks (146 ms)
+ok reader steps the slider (56 ms)
+ok turned sideways (76 ms)
+ok turned upright (4066 ms)
+done
+
+system:
+ok reader asked (644 ms)
+ok the system's dialog opens for several files (3886 ms)
+ok two files are picked (1022 ms)
+ok the system's dialog saves (1703 ms)
+ok where it was saved is the answer (770 ms)
+ok the system's dialog opens for a file (1127 ms)
+ok it is closed without a choice (1204 ms)
+ok a file opens in the system's preview (2372 ms)
+ok the preview is put away (189 ms)
+ok files come over the window (91 ms)
+ok files and a picture are dropped (156 ms)
+ok text is dropped (12 ms)
+ok a long press lifts the box's file (85 ms)
+ok the other app copies it (110 ms)
+ok files copied are read back (134 ms)
+ok files another app copied are pasted (209 ms)
+done
+
+gallery: taken at 4.0 s, past the launch screen from 2.5 s
+the gallery example against the Mac's drawing: 2.23% of pixels apart, at most 234
+the library's GPU checks with gpu, in the simulator:
+
+running 10 tests
+test gpu_ios::tests::a_lost_device_is_opened_again_and_after_too_many_the_cpu_shows ... ok
+test gpu_ios::tests::a_turned_screen_gets_a_new_texture_drawn_whole ... ok
+test gpu_ios::tests::metal_shows_the_cpus_pixels_byte_for_byte_and_what_changed_goes_up ... ok
+test gpu_ios::tests::nothing_goes_to_the_gpu_in_the_background_and_the_window_comes_back_up_to_date ... ok
+test gpu_ios::tests::the_cpu_asked_shows_the_window_itself ... ok
+test gpu_metal::tests::a_drawable_is_presented_with_the_whole_texture_in_it ... ok
+test gpu_metal::tests::a_lost_device_is_said_and_a_new_one_shows_the_window_whole ... ok
+test gpu_metal::tests::a_window_too_big_for_the_device_is_not_shown_and_a_new_size_is_a_new_texture ... ok
+test gpu_metal::tests::the_gpu_shows_the_cpus_pixels_byte_for_byte_and_only_what_changed_goes_up ... ok
+test layer_metal::tests::the_ui_is_drawn_over_the_programs_picture_where_asked_and_what_changed_follows ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 680 filtered out; finished in 4.42s
+
+a new device after 1 lost: 0 pixels differ, at most by 0
+a new device after 2 lost: 0 pixels differ, at most by 0
+a new device after 3 lost: 0 pixels differ, at most by 0
+turned, at a new scale: 0 pixels differ, at most by 0
+the first frame through Metal: 0 pixels differ, at most by 0
+after a click: 0 pixels differ, at most by 0
+back from the background: 0 pixels differ, at most by 0
+Metal: Apple iOS simulator GPU
+at 1: 21504 of 120000 pixels went up
+at 2: 78336 of 480000 pixels went up
+
+the library's GPU checks with gpu-draw, in the simulator:
+
+running 13 tests
+test gpu_draw_metal::tests::every_function_takes_the_textures_and_every_call_passes_them ... ok
+test gpu_draw_metal::tests::metal_draws_every_kind_as_the_cpu_does ... ok
+test gpu_ios::tests::a_lost_device_is_opened_again_and_after_too_many_the_cpu_shows ... ok
+test gpu_ios::tests::a_turned_screen_gets_a_new_texture_drawn_whole ... ok
+test gpu_ios::tests::metal_draws_every_kind_of_part_within_a_few_levels_of_the_cpu ... ok
+test gpu_ios::tests::metal_shows_the_cpus_pixels_byte_for_byte_and_what_changed_goes_up ... ok
+test gpu_ios::tests::nothing_goes_to_the_gpu_in_the_background_and_the_window_comes_back_up_to_date ... ok
+test gpu_ios::tests::the_cpu_asked_shows_the_window_itself ... ok
+test gpu_metal::tests::a_drawable_is_presented_with_the_whole_texture_in_it ... ok
+test gpu_metal::tests::a_lost_device_is_said_and_a_new_one_shows_the_window_whole ... ok
+test gpu_metal::tests::a_window_too_big_for_the_device_is_not_shown_and_a_new_size_is_a_new_texture ... ok
+test gpu_metal::tests::the_gpu_shows_the_cpus_pixels_byte_for_byte_and_only_what_changed_goes_up ... ok
+test layer_metal::tests::the_ui_is_drawn_over_the_programs_picture_where_asked_and_what_changed_follows ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 688 filtered out; finished in 3.98s
+
+Metal at 1: 6078 of 75600 pixels differ, at most by 2 (at 62, 37)
+Metal at 1, again: 6078 of 75600 pixels differ, at most by 2 (at 62, 37)
+Metal at 1.5: 13335 of 170100 pixels differ, at most by 3 (at 141, 48)
+Metal at 1.5, again: 13335 of 170100 pixels differ, at most by 3 (at 141, 48)
+Metal at 2: 23229 of 302400 pixels differ, at most by 3 (at 188, 68)
+Metal at 2, again: 23229 of 302400 pixels differ, at most by 3 (at 188, 68)
+a new device after 1 lost: 0 pixels differ, at most by 0
+a new device after 2 lost: 0 pixels differ, at most by 0
+a new device after 3 lost: 0 pixels differ, at most by 0
+turned, at a new scale: 0 pixels differ, at most by 0
+drawn by Metal: 23229 pixels differ, at most by 3
+the first frame through Metal: 0 pixels differ, at most by 0
+after a click: 0 pixels differ, at most by 0
+back from the background: 0 pixels differ, at most by 0
+Metal: Apple iOS simulator GPU
+at 1: 21504 of 120000 pixels went up
+at 2: 78336 of 480000 pixels went up
+
+the library's GPU checks with gpu-draw,video, in the simulator:
+
+running 14 tests
+test gpu_draw_metal::tests::every_function_takes_the_textures_and_every_call_passes_them ... ok
+test gpu_draw_metal::tests::metal_draws_a_frame_from_its_pixel_buffer_as_its_pixels_read_back ... ok
+test gpu_draw_metal::tests::metal_draws_every_kind_as_the_cpu_does ... ok
+test gpu_ios::tests::a_lost_device_is_opened_again_and_after_too_many_the_cpu_shows ... ok
+test gpu_ios::tests::a_turned_screen_gets_a_new_texture_drawn_whole ... ok
+test gpu_ios::tests::metal_draws_every_kind_of_part_within_a_few_levels_of_the_cpu ... ok
+test gpu_ios::tests::metal_shows_the_cpus_pixels_byte_for_byte_and_what_changed_goes_up ... ok
+test gpu_ios::tests::nothing_goes_to_the_gpu_in_the_background_and_the_window_comes_back_up_to_date ... ok
+test gpu_ios::tests::the_cpu_asked_shows_the_window_itself ... ok
+test gpu_metal::tests::a_drawable_is_presented_with_the_whole_texture_in_it ... ok
+test gpu_metal::tests::a_lost_device_is_said_and_a_new_one_shows_the_window_whole ... ok
+test gpu_metal::tests::a_window_too_big_for_the_device_is_not_shown_and_a_new_size_is_a_new_texture ... ok
+test gpu_metal::tests::the_gpu_shows_the_cpus_pixels_byte_for_byte_and_only_what_changed_goes_up ... ok
+test layer_metal::tests::the_ui_is_drawn_over_the_programs_picture_where_asked_and_what_changed_follows ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 791 filtered out; finished in 6.57s
+
+Metal at 1: 6078 of 75600 pixels differ, at most by 2 (at 62, 37)
+Metal at 1, again: 6078 of 75600 pixels differ, at most by 2 (at 62, 37)
+Metal at 1.5: 13335 of 170100 pixels differ, at most by 3 (at 141, 48)
+Metal at 1.5, again: 13335 of 170100 pixels differ, at most by 3 (at 141, 48)
+Metal at 2: 23229 of 302400 pixels differ, at most by 3 (at 188, 68)
+Metal at 2, again: 23229 of 302400 pixels differ, at most by 3 (at 188, 68)
+a new device after 1 lost: 0 pixels differ, at most by 0
+a new device after 2 lost: 0 pixels differ, at most by 0
+a new device after 3 lost: 0 pixels differ, at most by 0
+turned, at a new scale: 0 pixels differ, at most by 0
+drawn by Metal: 23229 pixels differ, at most by 3
+the first frame through Metal: 0 pixels differ, at most by 0
+after a click: 0 pixels differ, at most by 0
+back from the background: 0 pixels differ, at most by 0
+Metal: Apple iOS simulator GPU
+at 1: 21504 of 120000 pixels went up
+at 2: 78336 of 480000 pixels went up
+
+metal-cpu: taken at 2.3 s, past the launch screen from 1.0 s
+metal-cpu: 0.000% of pixels more than 0 apart from the CPU's, at most 0
+metal-cpu-back: taken at 2.7 s, past the launch screen from 1.2 s
+metal-cpu, back from the background: 0.000% of pixels more than 0 apart from the CPU's, at most 0
+metal-cpu-turned: taken at 4.5 s, past the launch screen from 3.3 s
+metal-cpu, turned: 0.000% of pixels more than 0 apart from the CPU's, at most 0
+metal-gpu: taken at 5.6 s, past the launch screen from 2.9 s
+metal-gpu: 0.000% of pixels more than 4 apart from the CPU's, at most 2
+metal-gpu-back: taken at 3.8 s, past the launch screen from 1.2 s
+metal-gpu, back from the background: 0.000% of pixels more than 4 apart from the CPU's, at most 2
+metal-gpu-turned: taken at 7.9 s, past the launch screen from 6.2 s
+metal-gpu, turned: 0.000% of pixels more than 4 apart from the CPU's, at most 2
+notices:
+ok a notification is sent (740 ms)
+ok a click on it is heard (97 ms)
+done
+
+dialog:
+ok a dialog is asked for (656 ms)
+ok a touch on the first window still reaches it (119 ms)
+done
+
+simulator 13E6007B-403B-4948-9650-8FC7203A4499
+windows:
+ok reader asked (770 ms)
+ok a second window opens in a scene of its own (2532 ms)
+ok a touch on it reaches its interface (63 ms)
+ok it shows its own page (0 ms)
+ok a touch on its text box gives it the keyboard (404 ms)
+ok the system lets go of its scene: it stays open (348 ms)
+ok its scene comes back: it shows as it was, with the keyboard (102 ms)
+ok typing still reaches its text box (113 ms)
+ok a touch on it still reaches its interface (14 ms)
+ok the person closing its scene is a close request (1184 ms)
+ok it opens again (586 ms)
+ok the app closes it: the first window comes forward (996 ms)
+ok it opens once more (479 ms)
+ok a touch on the first window reaches it (70 ms)
+ok the system lets go of the first scene and brings it back (75 ms)
+ok the first window shows as it was and takes the keys (77 ms)
+ok the person closing the first scene, refused, gets a new scene (747 ms)
+done
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-reader.err:
+reader.txt: ok reader asked (613 ms)
+reader.txt: ok lines as wrapped (208 ms)
+reader.txt: ok letters where drawn (213 ms)
+reader.txt: ok a reader selects in the text box (5174 ms)
+reader.txt: ok a data table (604 ms)
+reader.txt: ok a row out of view comes at once (369 ms)
+reader.txt: ok a three-finger swipe pages the table on (108 ms)
+reader.txt: done
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-system.err:
+system.txt: ok two files are picked (1022 ms)
+system.txt: ok the system's dialog saves (1703 ms)
+system.txt: ok where it was saved is the answer (770 ms)
+system.txt: ok the system's dialog opens for a file (1127 ms)
+system.txt: ok it is closed without a choice (1204 ms)
+system.txt: ok a file opens in the system's preview (2372 ms)
+system.txt: ok the preview is put away (189 ms)
+system.txt: ok files come over the window (91 ms)
+system.txt: ok files and a picture are dropped (156 ms)
+system.txt: ok text is dropped (12 ms)
+system.txt: ok a long press lifts the box's file (85 ms)
+system.txt: ok the other app copies it (110 ms)
+system.txt: ok files copied are read back (134 ms)
+system.txt: ok files another app copied are pasted (209 ms)
+system.txt: done
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.gallery-.err:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-notices.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-gallery.err:
+elements.txt: "11 KB" "" 0x40 308,774 28x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,767 28x28
+elements.txt: "item 8" "" 0x40 44,817 35x16
+elements.txt: "a note" "" 0x40 87,818 31x15
+elements.txt: "18 KB" "" 0x40 306,818 30x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,811 28x28
+elements.txt: done
+looks.txt: dark false
+looks.txt: away false
+looks.txt: dark true
+looks.txt: dark false
+looks.txt: away true
+looks.txt: dark true
+looks.txt: dark false
+looks.txt: away false
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-gallery.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-notices.err:
+notices.txt: ok a notification is sent (740 ms)
+notices.txt: ok a click on it is heard (97 ms)
+notices.txt: done
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-system.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-reader.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.gallery-.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-parts.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-dialog.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-windows.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check.gpu-gallery.err:
+ready.txt: 402 778 3 0 62 0 1 Metal
+turned.txt: 750 382 3 62 0 0 1 Metal
+ready.txt: 402 778 3 0 62 0 1 Metal
+turned.txt: 750 382 3 62 0 0 1 Metal
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check.gpu-gallery.out:
+
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-windows.err:
+windows.txt: ok a touch on its text box gives it the keyboard (404 ms)
+windows.txt: ok the system lets go of its scene: it stays open (348 ms)
+windows.txt: ok its scene comes back: it shows as it was, with the keyboard (102 ms)
+windows.txt: ok typing still reaches its text box (113 ms)
+windows.txt: ok a touch on it still reaches its interface (14 ms)
+windows.txt: ok the person closing its scene is a close request (1184 ms)
+windows.txt: ok it opens again (586 ms)
+windows.txt: ok the app closes it: the first window comes forward (996 ms)
+windows.txt: ok it opens once more (479 ms)
+windows.txt: ok a touch on the first window reaches it (70 ms)
+windows.txt: ok the system lets go of the first scene and brings it back (75 ms)
+2026-11-28 18:37:49.622 check[47148:129428] Unbalanced calls to begin/end appearance transitions for <TautViewController: 0x1069a0400>.
+windows.txt: ok the first window shows as it was and takes the keys (77 ms)
+windows.txt: ok the person closing the first scene, refused, gets a new scene (747 ms)
+windows.txt: done
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-parts.err:
+parts.txt: ok paste (71 ms)
+parts.txt: ok keyboard reads the box (54 ms)
+parts.txt: ok keyboard corrects a word (11 ms)
+parts.txt: ok keyboard moves the cursor (3 ms)
+parts.txt: ok composing over a selection (20 ms)
+parts.txt: ok what was composed is committed (79 ms)
+parts.txt: ok places of the text (107 ms)
+parts.txt: ok the keyboard hears the app's change (324 ms)
+parts.txt: ok long press shows the system's edit menu (746 ms)
+parts.txt: ok a secondary click shows the system's edit menu (104 ms)
+parts.txt: ok reader ticks (146 ms)
+parts.txt: ok reader steps the slider (56 ms)
+parts.txt: ok turned sideways (76 ms)
+parts.txt: ok turned upright (4066 ms)
+parts.txt: done
+--- /Users/runner/work/taut/taut/target/ios-check/dev.taut.check-dialog.err:
+dialog.txt: ok a dialog is asked for (656 ms)
+dialog.txt: ok a touch on the first window still reaches it (119 ms)
+dialog.txt: done
+all iOS checks passed
