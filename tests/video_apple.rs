@@ -76,10 +76,13 @@ mod checks {
         trial.wait(time);
     }
     fn until(trial: &mut Trial<Video>, what: &str, done: impl Fn(&Video) -> bool) {
+        until_within(trial, what, Duration::from_secs(15), done);
+    }
+    fn until_within(trial: &mut Trial<Video>, what: &str, limit: Duration, done: impl Fn(&Video) -> bool) {
         trial.run();
         let start = Instant::now();
         while !done(&trial.app) {
-            assert!(start.elapsed() < Duration::from_secs(15), "{what} did not happen: {:?}", trial.app);
+            assert!(start.elapsed() < limit, "{what} did not happen: {:?}", trial.app);
             pass(trial, Duration::from_millis(20));
         }
     }
@@ -154,10 +157,25 @@ mod checks {
             until(&mut trial, "the first frame", |video| video.size().is_some());
             assert_eq!(shown(&trial), 0, "{name}");
             trial.app.play();
+            // (The simulator's reader takes seconds to start and once stalled 25 s mid-file
+            // (`copyNextSampleBuffer`): the tracks may come once the captions played, or the
+            // video ended. CC1's second caption, once read, shows at 2.5 s and has ended at
+            // 2.65 s once all checked below was read; then from the start.)
+            let reader = Duration::from_secs(60);
             let wanted: &[&str] = if carried == Carried::InSei { &["CC1", "Service 1"] } else { &["CC1"] };
-            until(&mut trial, "the caption tracks", |video| video.caption_tracks().len() >= wanted.len());
+            until_within(&mut trial, "the caption tracks", reader, |video| video.caption_tracks().len() >= wanted.len());
             let names: Vec<&str> = trial.app.caption_tracks().iter().map(|track| track.name.as_str()).collect();
             assert_eq!(names, wanted, "{name}");
+            trial.app.pause();
+            trial.app.set_caption_track(Some(0));
+            for (at, shown) in [(2500, Some("Second line")), (2650, None)] {
+                let there = Duration::from_millis(at);
+                trial.app.seek(there);
+                until_within(&mut trial, "the captions read", reader, |video| video.position().abs_diff(there) < Duration::from_millis(50) && video.caption() == shown);
+            }
+            trial.app.seek(Duration::ZERO);
+            trial.app.play();
+            until(&mut trial, "the seek back", |video| video.position() < Duration::from_millis(500));
             for (at, track, caption) in IN_STREAM_SHOWN.into_iter().filter(|(_, track, _)| wanted.contains(track)) {
                 until(&mut trial, "the time", |video| video.position() >= Duration::from_secs_f32(at));
                 trial.app.set_caption_track(trial.app.caption_tracks().iter().position(|found| found.name == track));

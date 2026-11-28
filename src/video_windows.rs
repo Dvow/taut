@@ -70,6 +70,8 @@ const HEVC: [u32; 4] = named(0x4356_4548, 0x0000, 0x0010, [0x80, 0x00, 0x00, 0xA
 /// `MFSubtitleFormat_ATSC`: the data format of the timed text's own track of the captions in
 /// the video stream.
 const ATSC: [u32; 4] = named(0x7FA7_FAA3, 0xFEAE, 0x4E16, [0xAE, 0xDF, 0x36, 0xB9, 0xAC, 0xFB, 0xB0, 0x99]);
+/// A sample's `MFSampleExtension_DecodeTimestamp`.
+const DECODE_TIME: [u32; 4] = named(0x73A9_54D4, 0x09E2, 0x4861, [0xBE, 0xFC, 0x94, 0xBD, 0x97, 0xC0, 0x8E, 0x6E]);
 /// A source reader's first video stream, and all its streams.
 const FIRST_VIDEO: u32 = 0xFFFF_FFFC;
 const ALL_STREAMS: u32 = 0xFFFF_FFFE;
@@ -586,8 +588,8 @@ impl Player {
 
     /// Starts the thread that reads the captions in the source's video stream.
     fn read_in_stream(&self, source: ReaderSource) {
-        let (functions, in_stream) = (self.functions, Arc::clone(&self.in_stream));
-        std::thread::spawn(move || read_captions_in_stream(functions, source, &in_stream));
+        let functions = self.functions;
+        self.in_stream.spawn(move |in_stream| read_captions_in_stream(functions, source, in_stream));
     }
 
     /// Calls a method that takes nothing more and returns `R`.
@@ -644,7 +646,7 @@ impl Player {
         // SAFETY: as above.
         let tracks_changed = unsafe { (*self.showing).told.tracks_changed.swap(false, Ordering::AcqRel) };
         let tracks_changed = tracks_changed || self.in_stream.with_tracks(|tracks| tracks.unlisted());
-        News { ended: said & ENDED != 0, error, clears_on_play: false, tracks_changed }
+        News { ended: said & ENDED != 0, error, clears_on_play: false, tracks_changed, reading_captions: self.in_stream.reading() }
     }
     /// The engine's error as words (3: GetError; of the error, 3: GetErrorCode).
     fn error_words(&self) -> &'static str {
@@ -1012,6 +1014,18 @@ fn seek_reader(reader: *mut Com, to: Duration) -> Duration {
     to
 }
 
+/// A sample's decode time, where the source gives one (`MFSampleExtension_DecodeTimestamp`,
+/// in 100 ns; 8: GetUINT64).
+///
+/// # Safety
+/// `sample` is a live `IMFSample`.
+unsafe fn decode_time(sample: *mut Com) -> Option<Duration> {
+    let mut time = 0u64;
+    // SAFETY: as the caller promises.
+    let got = unsafe { call!(sample, 8, unsafe extern "system" fn(*mut Com, *const [u32; 4], *mut u64) -> i32, &DECODE_TIME, &mut time) };
+    (got >= 0).then(|| Duration::from_nanos(time.saturating_mul(100)))
+}
+
 /// Reads the next sample into the captions (9: ReadSample; of the sample, 41:
 /// ConvertToContiguousBuffer): its time; at the end (or a failure), `Duration::MAX`, the
 /// captions waiting read.
@@ -1028,7 +1042,8 @@ fn read_sample(reader: *mut Com, codec: Codec, in_stream: &ReadAhead) -> Duratio
         }
         let at = Duration::from_nanos(time.max(0) as u64 * 100);
         if !sample.is_null() && call!(sample, 41, unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32, &mut buffer) >= 0 && !buffer.is_null() {
-            locked(buffer, |bytes| in_stream.read(bytes, codec, at));
+            let decoded = decode_time(sample);
+            locked(buffer, |bytes| in_stream.read(bytes, codec, at, decoded));
         }
         release_all(&[buffer, sample]);
         at

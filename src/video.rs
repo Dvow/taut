@@ -182,6 +182,9 @@ pub(crate) struct News {
     /// The source's tracks changed since they were read: captions in the video stream found
     /// once they play.
     pub tracks_changed: bool,
+    /// A thread of its own still reads the captions in the video stream: tracks may come while
+    /// the video stands still.
+    pub reading_captions: bool,
 }
 
 /// Numbers each video, for its box's key.
@@ -210,6 +213,8 @@ pub struct Video {
     asked: Option<Duration>,
     /// A frame is due though paused: after opening or seeking.
     awaited: bool,
+    /// The player still reads the captions in the video stream (asked again though paused).
+    reading_captions: bool,
     /// The time between frames, as seen; and the last frame's time.
     gap: Duration,
     last: Option<Duration>,
@@ -285,6 +290,7 @@ impl Video {
             size: None,
             asked: None,
             awaited: true,
+            reading_captions: false,
             gap: Duration::from_millis(16),
             last: None,
             frames: 0,
@@ -469,15 +475,21 @@ impl Video {
     /// Asks the player what changed and takes its newest frame, once per moment of the
     /// interface (a rerun shows the same); asks to run again in half the time between frames.
     /// (Asked once a gap, one frame missed doubles the gap seen, and from then on every other
-    /// frame is missed: a 30 fps video showed 10 fps.)
+    /// frame is missed: a 30 fps video showed 10 fps.) Paused, it asks again soon for a frame
+    /// due, and every 100 ms while the player reads captions.
     fn update(&mut self, ui: &mut Ui) {
         if self.asked != Some(ui.now) {
             self.ask(ui);
         }
-        let waits = self.error.is_none() && (self.playing || self.awaited);
-        if waits && !ui.window_minimized() {
-            ui.wake_after(if self.playing { (self.gap / 2).div_f32(self.speed) } else { Duration::from_millis(10) });
+        let waits = self.error.is_none() && (self.playing || self.awaited || self.reading_captions);
+        if !waits || ui.window_minimized() {
+            return;
         }
+        ui.wake_after(match (self.playing, self.awaited) {
+            (true, _) => (self.gap / 2).div_f32(self.speed),
+            (false, true) => Duration::from_millis(10),
+            (false, false) => Duration::from_millis(100),
+        });
     }
     /// Takes the source's tracks once the player knows them: they come before the app's
     /// caption tracks.
@@ -504,7 +516,7 @@ impl Video {
         if news.ended {
             self.restart_or_stop();
         }
-        self.tracks_known &= !news.tracks_changed;
+        (self.tracks_known, self.reading_captions) = (self.tracks_known && !news.tracks_changed, news.reading_captions);
         self.take_frame(ui);
         (self.position, self.length) = (self.player.position(), self.player.length().or(self.length));
         if !self.tracks_known {

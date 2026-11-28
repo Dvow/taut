@@ -63,6 +63,7 @@ struct Functions {
     release: unsafe extern "C" fn(*mut c_void),
     format_key: Obj,
     sample_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
+    decode_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
     sample_duration: unsafe extern "C" fn(*mut c_void) -> CMTime,
     sample_data: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     data_length: unsafe extern "C" fn(*mut c_void) -> usize,
@@ -122,6 +123,7 @@ fn load() -> Option<Functions> {
             release: function(found(video, c"CVBufferRelease")?),
             format_key: *found(video, c"kCVPixelBufferPixelFormatTypeKey")?.cast::<Obj>(),
             sample_time: function(found(media, c"CMSampleBufferGetPresentationTimeStamp")?),
+            decode_time: function(found(media, c"CMSampleBufferGetDecodeTimeStamp")?),
             sample_duration: function(found(media, c"CMSampleBufferGetDuration")?),
             sample_data: function(found(media, c"CMSampleBufferGetDataBuffer")?),
             data_length: function(found(media, c"CMBlockBufferGetDataLength")?),
@@ -218,8 +220,8 @@ impl Player {
             send::<()>(item, c"setAudioTimePitchAlgorithm:", (functions.spectral,));
             let in_stream = Arc::new(ReadAhead::new());
             if send::<Bool>(url, c"isFileURL", ()) != 0 {
-                let (url, reading) = (Retained::of(url), Arc::clone(&in_stream));
-                std::thread::spawn(move || read_captions_in_stream(functions, &url, &reading));
+                let url = Retained::of(url);
+                in_stream.spawn(move |in_stream| read_captions_in_stream(functions, &url, in_stream));
             }
             Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written, seeks: 0, seeked: seeked(), speed: 1.0, cues: Vec::new(), captions: None, in_stream })
         }
@@ -292,7 +294,7 @@ impl Player {
         let ended = self.playing && rate == 0.0 && at_end;
         self.playing &= !ended;
         let tracks_changed = self.ready && self.in_stream.with_tracks(|tracks| tracks.unlisted());
-        News { ended, error, clears_on_play: false, tracks_changed }
+        News { ended, error, clears_on_play: false, tracks_changed, reading_captions: self.in_stream.reading() }
     }
 
     /// The newest frame where there is one not given yet: its width and time, its pixels in
@@ -595,10 +597,10 @@ impl TrackReading {
             in_stream.ended();
             return Duration::MAX;
         }
-        // SAFETY: as above.
-        let at = unsafe { (f.sample_time)(sample) }.known().unwrap_or_default();
+        // SAFETY: as above. (A sample decoded as it is shown has no decode time of its own.)
+        let (at, decoded) = unsafe { ((f.sample_time)(sample).known().unwrap_or_default(), (f.decode_time)(sample).known()) };
         if let Some(bytes) = sample_bytes(f, sample) {
-            in_stream.read(&bytes, codec, at);
+            in_stream.read(&bytes, codec, at, Some(decoded.unwrap_or(at)));
         }
         // SAFETY: as above.
         unsafe { crate::macos_sys::CFRelease(sample) };

@@ -92,7 +92,7 @@ impl Player {
         self.position = Duration::from_secs_f64(at.max(0.0));
         self.length = (length.is_finite() && length >= 0.0).then(|| Duration::from_secs_f64(length));
         let error = (error_kind != 0.0).then(|| String::from_utf8_lossy(&took(told)).into_owned());
-        News { ended: ended != 0.0, error, clears_on_play: error_kind == 2.0, tracks_changed: false }
+        News { ended: ended != 0.0, error, clears_on_play: error_kind == 2.0, tracks_changed: false, reading_captions: false }
     }
 
     /// The frame on show, where it was not given yet: its width and time, its pixels in `into`.

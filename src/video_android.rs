@@ -668,7 +668,7 @@ impl Player {
     }
     pub(crate) fn news(&mut self) -> News {
         let mut state = self.shared.lock();
-        News { ended: std::mem::take(&mut state.ended), error: state.error.take(), clears_on_play: false, tracks_changed: std::mem::take(&mut state.tracks_changed) }
+        News { ended: std::mem::take(&mut state.ended), error: state.error.take(), clears_on_play: false, tracks_changed: std::mem::take(&mut state.tracks_changed), reading_captions: false }
     }
     /// The newest frame not given yet, made RGB: its width and time, its pixels in `into`.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
