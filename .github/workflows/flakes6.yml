@@ -157,17 +157,13 @@ jobs:
           O=ci-results/${GITHUB_SHA::7}/mac-spell
           mkdir -p $O
           cargo test -q --lib --no-run
-          for way in async checkstring sync spell-test; do
+          for begin in stop relaunch cold; do for way in async checkstring sync; do
             start=$(date +%s)
-            if [ $way = spell-test ]; then
-              cargo test --lib ns_spell_checker::tests -- --nocapture > $O/$way.txt 2>&1
-            else
-              PROBE_WAY=$way cargo test --lib probe_spell_server_stopped -- --ignored --nocapture > $O/$way.txt 2>&1
-            fi
-            echo "$way exit $? in $(( $(date +%s) - start )) s" >> $O/summary.txt
+            PROBE_START=$begin PROBE_WAY=$way cargo test --lib probe_spell_server_stopped -- --ignored --nocapture > $O/$begin-$way.txt 2>&1
+            echo "$begin $way exit $? in $(( $(date +%s) - start )) s" >> $O/summary.txt
             ps -axo pid,user,stat,comm | grep -i spell >> $O/summary.txt
             pgrep -x AppleSpell | xargs -n1 kill -CONT 2>/dev/null
-          done
+          done; done
           cat $O/summary.txt
           git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f ci-results && git commit -q -m "results mac-spell"
