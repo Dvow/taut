@@ -3,8 +3,32 @@
 //!
 //! It names languages "en", "en_GB", "de": a name as the app gives it ("en-US") is matched
 //! whole, then by its language alone.
+//!
+//! Words are checked by request, as AppKit's own text views check as you type: the checker
+//! answers on a queue of its own, finding nothing where its server does not answer. (Its
+//! synchronous check can throw `NSXPCSpellServerTimeoutException` when the server's connection
+//! times out, which past Rust's frames ends the program.)
 use crate::macos_sys::*;
 use crate::spell::{Check, OFFERED};
+use std::ffi::c_void;
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use std::time::Duration;
+
+#[link(name = "AppKit", kind = "framework")]
+unsafe extern "C" {
+    /// The text checking option giving the orthography (script and language) to check in.
+    static NSTextCheckingOrthographyKey: Obj;
+}
+
+/// `NSTextCheckingTypeSpelling`.
+const SPELLING: u64 = 1 << 1;
+/// How long a request's answer is waited for. (The checker gives up on a server that does not
+/// answer after about a second, and answers that it found nothing.)
+const ANSWER_WAIT: Duration = Duration::from_secs(10);
+
+/// The checker's answers by request number: whether it found a misspelling.
+static ANSWERS: Mutex<Vec<(isize, bool)>> = Mutex::new(Vec::new());
+static ANSWERED: Condvar = Condvar::new();
 
 /// The checker for one language, by the name `NSSpellChecker` has for it.
 pub(crate) struct Speller(String);
@@ -13,6 +37,30 @@ pub(crate) struct Speller(String);
 fn checker() -> Obj {
     // SAFETY: a plain question; the checker lives as long as the program.
     unsafe { send(class(c"NSSpellChecker"), c"sharedSpellChecker", ()) }
+}
+
+/// The checker answered request `sequence` with these results.
+extern "C" fn answered(_: *const Block<()>, sequence: isize, results: Obj, _: Obj, _: isize) {
+    let found = !array_items(results).is_empty();
+    ANSWERS.lock().unwrap_or_else(PoisonError::into_inner).push((sequence, found));
+    ANSWERED.notify_all();
+}
+
+/// The block every request is answered through, made once.
+fn answer_block() -> *const Block<()> {
+    static MADE: OnceLock<usize> = OnceLock::new();
+    *MADE.get_or_init(|| Block::leaked(answered as *const c_void, ()) as *const Block<()> as usize) as *const Block<()>
+}
+
+/// The answer to request `sequence`: whether it found a misspelling; none if it did not answer
+/// in `ANSWER_WAIT`. Answers to earlier requests, given up on, are dropped.
+fn answer_to(sequence: isize) -> Option<bool> {
+    let answers = ANSWERS.lock().unwrap_or_else(PoisonError::into_inner);
+    let waited = ANSWERED.wait_timeout_while(answers, ANSWER_WAIT, |answers| answers.iter().all(|(of, _)| *of != sequence));
+    let (mut answers, _) = waited.unwrap_or_else(PoisonError::into_inner);
+    let found = answers.iter().find(|(of, _)| *of == sequence).map(|(_, found)| *found);
+    answers.retain(|(of, _)| *of > sequence);
+    found
 }
 
 impl Speller {
@@ -32,15 +80,18 @@ impl Speller {
 impl Check for Speller {
     fn wrong(&self, word: &str) -> bool {
         let _pool = Pool::new();
-        // SAFETY: the word and language are strings; no wrap, no document (0), no word count.
-        let found: NSRange = unsafe {
-            send(
-                checker(),
-                c"checkSpellingOfString:startingAt:language:wrap:inSpellDocumentWithTag:wordCount:",
-                (ns_string(word), 0isize, ns_string(&self.0), 0 as Bool, 0isize, std::ptr::null_mut::<isize>()),
-            )
+        let whole = NSRange { location: 0, length: word.encode_utf16().count() };
+        // SAFETY: the language's orthography in a dictionary of options, both autoreleased; the
+        // key is AppKit's.
+        let options: Obj = unsafe {
+            let orthography: Obj = send(class(c"NSOrthography"), c"defaultOrthographyForLanguage:", (ns_string(&self.0),));
+            send(class(c"NSDictionary"), c"dictionaryWithObject:forKey:", (orthography, NSTextCheckingOrthographyKey))
         };
-        found.location != NOT_FOUND && found.length > 0
+        // SAFETY: the word, its whole range in UTF-16 units, spelling only, the options, no
+        // document (0), and a block that lives for good.
+        let sequence: isize =
+            unsafe { send(checker(), c"requestCheckingOfString:range:types:options:inSpellDocumentWithTag:completionHandler:", (ns_string(word), whole, SPELLING, options, 0isize, answer_block())) };
+        answer_to(sequence).unwrap_or(false)
     }
 
     fn offer(&mut self, word: &str) -> Vec<String> {
@@ -65,184 +116,6 @@ pub(crate) fn own_language() -> String {
     // SAFETY: a plain question; an array of strings comes back.
     let first = array_items(unsafe { send(class(c"NSLocale"), c"preferredLanguages", ()) }).first().copied().and_then(rust_string);
     first.filter(|name| !name.is_empty()).unwrap_or_else(|| "en-US".to_owned())
-}
-
-#[cfg(test)]
-mod probe {
-    use super::*;
-    use crate::spell::system;
-    use std::ffi::c_void;
-    use std::process::Command;
-    use std::sync::{Arc, Condvar, Mutex};
-    use std::time::{Duration, Instant};
-
-    type Answer = Arc<(Mutex<Option<(isize, usize)>>, Condvar)>;
-
-    extern "C" fn answered(block: *const Block<Answer>, _: isize, results: Obj, _: Obj, count: isize) {
-        let held = unsafe { &(*block).held };
-        *held.0.lock().unwrap() = Some((count, array_items(results).len()));
-        held.1.notify_all();
-    }
-
-    fn signal_spell_server(signal: &str) {
-        let listed = Command::new("ps").args(["-axo", "pid,user,comm"]).output().unwrap();
-        let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
-        for line in listed.lines().filter(|line| line.to_lowercase().contains("spell")) {
-            eprintln!("probe: {signal} {line}");
-            let pid = line.split_whitespace().next().unwrap();
-            if line.contains("AppleSpell") {
-                let status = Command::new("kill").args([signal, pid]).status();
-                eprintln!("probe: kill {signal} {pid}: {status:?}");
-            }
-        }
-    }
-
-    /// Stops every AppleSpell that appears until `hold` is over (polling), then lets them go.
-    fn stop_relaunches(hold: Duration) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
-            let (start, mut stopped) = (Instant::now(), Vec::<String>::new());
-            while start.elapsed() < hold {
-                let found = Command::new("pgrep").args(["-x", "AppleSpell"]).output().unwrap();
-                for pid in String::from_utf8_lossy(&found.stdout).split_whitespace().map(str::to_owned) {
-                    if !stopped.contains(&pid) {
-                        let status = Command::new("kill").args(["-STOP", &pid]).status();
-                        eprintln!("probe: relaunched AppleSpell {pid} stopped at {:?}: {status:?}", start.elapsed());
-                        stopped.push(pid);
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            for pid in &stopped {
-                _ = Command::new("kill").args(["-CONT", pid]).status();
-            }
-            eprintln!("probe: let go of {stopped:?} at {:?}", start.elapsed());
-        })
-    }
-
-    fn ask(way: &str, checker: &dyn crate::spell::Check, word: &str) {
-        let start = Instant::now();
-        match way {
-            "sync" => eprintln!("probe: sync says {word} wrong: {} after {:?}", checker.wrong(word), start.elapsed()),
-            "checkstring" => {
-                let _pool = Pool::new();
-                let results: Obj = unsafe {
-                    send(
-                        super::checker(),
-                        c"checkString:range:types:options:inSpellDocumentWithTag:orthography:wordCount:",
-                        (ns_string(word), NSRange { location: 0, length: word.encode_utf16().count() }, 2u64, std::ptr::null_mut::<c_void>(), 0isize, std::ptr::null_mut::<Obj>(), std::ptr::null_mut::<isize>()),
-                    )
-                };
-                eprintln!("probe: checkString {word} gave {} results after {:?}", array_items(results).len(), start.elapsed());
-            }
-            _ => {
-                let answer: Answer = Arc::default();
-                let block = Block::leaked(answered as *const c_void, answer.clone());
-                let _pool = Pool::new();
-                let sequence: isize = unsafe {
-                    send(
-                        super::checker(),
-                        c"requestCheckingOfString:range:types:options:inSpellDocumentWithTag:completionHandler:",
-                        (ns_string(word), NSRange { location: 0, length: word.encode_utf16().count() }, 2u64, std::ptr::null_mut::<c_void>(), 0isize, block as *const Block<Answer>),
-                    )
-                };
-                let guard = answer.0.lock().unwrap();
-                let (guard, waited) = answer.1.wait_timeout_while(guard, Duration::from_secs(60), |got| got.is_none()).unwrap();
-                eprintln!("probe: async {word} (sequence {sequence}) answer {:?} (timed out {}) after {:?}", *guard, waited.timed_out(), start.elapsed());
-            }
-        }
-    }
-
-    /// Runs a command, its output said as a probe line.
-    fn said(program: &str, args: &[&str]) -> String {
-        let out = Command::new(program).args(args).output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr)).unwrap_or_else(|error| error.to_string());
-        eprintln!("probe: {program} {args:?}: {}", out.trim());
-        out
-    }
-
-    /// The spell server's next launch runs a program that never answers (`sleep`), and the
-    /// running one is killed: the next request launches a server that never takes it.
-    fn spell_service_hung() {
-        let uid = said("id", &["-u"]).trim().to_owned();
-        let target = format!("gui/{uid}/com.apple.applespell");
-        said("launchctl", &["debug", &target, "--program", "/bin/sleep", "--", "sleep", "300"]);
-        signal_spell_server("-KILL");
-        std::thread::sleep(Duration::from_millis(500));
-        said("pgrep", &["-lx", "AppleSpell"]);
-        said("pgrep", &["-lx", "sleep"]);
-    }
-
-    /// The spell server's launch service, disabled (and its server killed and booted out) or
-    /// enabled again.
-    fn spell_service(enabled: bool) {
-        let uid = said("id", &["-u"]).trim().to_owned();
-        let listed = said("launchctl", &["list"]);
-        let labels: Vec<String> = listed.lines().filter(|line| line.to_lowercase().contains("spell")).filter_map(|line| line.split_whitespace().nth(2)).map(str::to_owned).collect();
-        for label in labels.iter().chain(["com.apple.AppleSpell".to_owned()].iter()) {
-            let target = format!("gui/{uid}/{label}");
-            if enabled {
-                said("launchctl", &["enable", &target]);
-            } else {
-                said("launchctl", &["disable", &target]);
-                said("launchctl", &["bootout", &target]);
-            }
-        }
-        if !enabled {
-            signal_spell_server("-KILL");
-            std::thread::sleep(Duration::from_secs(2));
-            said("pgrep", &["-lx", "AppleSpell"]);
-        }
-    }
-
-    /// (Probe) The spell server stopped or relaunching stopped: what each way of asking does.
-    /// PROBE_WAY = sync, async, checkstring; PROBE_START = stop, relaunch, cold.
-    #[test]
-    #[ignore]
-    fn probe_spell_server_stopped() {
-        let way = std::env::var("PROBE_WAY").unwrap_or_default();
-        let begin = std::env::var("PROBE_START").unwrap_or_default();
-        std::thread::spawn(move || {
-            let mut watcher = None;
-            if begin == "cold" {
-                signal_spell_server("-KILL");
-                watcher = Some(stop_relaunches(Duration::from_secs(30)));
-            }
-            if begin == "disabled-cold" {
-                spell_service(false);
-            }
-            if begin == "hung-cold" {
-                spell_service_hung();
-            }
-            let checker = system("en-US").expect("a checker");
-            if !begin.ends_with("cold") {
-                eprintln!("probe: warm, helo wrong: {}", checker.wrong("helo"));
-            }
-            match begin.as_str() {
-                "relaunch" => {
-                    signal_spell_server("-KILL");
-                    watcher = Some(stop_relaunches(Duration::from_secs(30)));
-                }
-                "cold" | "disabled-cold" | "hung-cold" => {}
-                "hung" => spell_service_hung(),
-                "disabled" => spell_service(false),
-                _ => signal_spell_server("-STOP"),
-            }
-            let start = Instant::now();
-            for word in ["wrld", "recieve", "naïve", "teh", "hello", "speling", "colour", "thier"] {
-                ask(&way, &*checker, word);
-            }
-            eprintln!("probe: {way} {begin} done after {:?}", start.elapsed());
-            if let Some(watcher) = watcher {
-                watcher.join().unwrap();
-            }
-            signal_spell_server("-CONT");
-            if begin.starts_with("disabled") {
-                spell_service(true);
-            }
-            eprintln!("probe: after, wrld wrong: {}", checker.wrong("wrld"));
-        })
-        .join()
-        .unwrap();
-    }
 }
 
 #[cfg(test)]
