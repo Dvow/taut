@@ -1,0 +1,6 @@
+disabled async exit 0 in 3 s
+disabled checkstring exit 0 in 2 s
+disabled sync exit 0 in 3 s
+disabled-cold async exit 0 in 2 s
+disabled-cold checkstring exit 0 in 2 s
+disabled-cold sync exit 0 in 3 s
