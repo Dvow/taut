@@ -1,0 +1,87 @@
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 63 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 70 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader gave no sample after 0 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+
+thread 'main' (50404) panicked at tests/video_apple.rs:85:13:
+the caption tracks did not happen: Video { playing: false, position: 3s, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (50404) panicked at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:        0x104c71b40 - <<std[4d474039d585e394]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[23f300596627935b]::fmt::Display>::fmt
+   1:        0x104c83ed8 - core[23f300596627935b]::fmt::write
+   2:        0x104c754dc - <std[4d474039d585e394]::sys::stdio::unix::Stderr as core[23f300596627935b]::io::write::Write>::write_fmt
+   3:        0x104c5dabc - std[4d474039d585e394]::panicking::default_hook::{closure#0}
+   4:        0x104c6c84c - std[4d474039d585e394]::panicking::default_hook
+   5:        0x104c6cb88 - std[4d474039d585e394]::panicking::panic_with_hook
+   6:        0x104c5db6c - std[4d474039d585e394]::panicking::panic_handler::{closure#0}
+   7:        0x104c5613c - std[4d474039d585e394]::sys::backtrace::__rust_end_short_backtrace::<std[4d474039d585e394]::panicking::panic_handler::{closure#0}, !>
+   8:        0x104c5e178 - __rustc[488137f9e312a25f]::rust_begin_unwind
+   9:        0x104c96d68 - core[23f300596627935b]::panicking::panic_nounwind_fmt
+  10:        0x104c96cf0 - core[23f300596627935b]::panicking::panic_nounwind
+  11:        0x104c96e44 - core[23f300596627935b]::panicking::panic_cannot_unwind
+  12:        0x104b8cdd0 - taut[5914370db15e638a]::ios::scene_connected
+  13:        0x1857bc640 - +[UIScene _sceneForFBSScene:create:withSession:connectionOptions:]
+  14:        0x1864a6e90 - -[UIApplication _connectUISceneFromFBSScene:transitionContext:]
+  15:        0x1864a726c - -[UIApplication workspace:didCreateScene:withTransitionContext:completion:]
+  16:        0x185ebbbd8 - -[UIApplicationSceneClientAgent scene:didInitializeWithEvent:completion:]
+  17:        0x1887ed8a0 - ___95-[FBSScene _callOutQueue_didCreateWithTransitionContext:alternativeCreationCallout:completion:]_block_invoke
+  18:        0x1887edd30 - -[FBSScene _callOutQueue_maybeCoalesceClientSettingsUpdates:]
+  19:        0x1887ed6f4 - -[FBSScene _callOutQueue_didCreateWithTransitionContext:alternativeCreationCallout:completion:]
+  20:        0x1888590a4 - ___93-[FBSWorkspaceScenesClient _callOutQueue_sendDidCreateForScene:transitionContext:completion:]_block_invoke.281
+  21:        0x1887fb2b0 - -[FBSWorkspace _calloutQueue_executeCalloutFromSource:withBlock:]
+  22:        0x18881a4c8 - -[FBSWorkspaceScenesClient _callOutQueue_sendDidCreateForScene:transitionContext:completion:]
+  23:        0x18881bc0c - ___92-[FBSWorkspaceScenesClient createSceneWithIdentity:parameters:transitionContext:completion:]_block_invoke_2
+  24:        0x1887fb2b0 - -[FBSWorkspace _calloutQueue_executeCalloutFromSource:withBlock:]
+  25:        0x1801a0e98 - __dispatch_client_callout
+  26:        0x18018b5fc - __dispatch_block_invoke_direct
+  27:        0x188243258 - ___BSSERVICEMAINRUNLOOPQUEUE_IS_CALLING_OUT_TO_A_BLOCK__
+  28:        0x188242210 - _BSServiceMainRunLoopSourceHandler
+  29:        0x180422f5c - ___CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__
+  30:        0x180422ea4 - ___CFRunLoopDoSource0
+  31:        0x180422690 - ___CFRunLoopDoSources0
+  32:        0x180421808 - ___CFRunLoopRun
+  33:        0x18041c904 - __CFRunLoopRunSpecificWithOptions
+  34:        0x1933599c0 - _GSEventRunModal
+  35:        0x1864a54cc - -[UIApplication _run]
+  36:        0x186b9f910 - _UIApplicationMain
+  37:        0x104aae53c - taut[5914370db15e638a]::ios::run::<video_apple[f4a54533abd1b62e]::main::{closure#0}>
+  38:        0x104ac8e00 - video_apple[f4a54533abd1b62e]::main
+  39:        0x104ac64b4 - <fn() as core[23f300596627935b]::ops::function::FnOnce<()>>::call_once
+  40:        0x104ac42dc - std[4d474039d585e394]::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  41:        0x104abf410 - std[4d474039d585e394]::rt::lang_start::<()>::{closure#0}
+  42:        0x104c6bd00 - std[4d474039d585e394]::rt::lang_start_internal
+  43:        0x104abe37c - std[4d474039d585e394]::rt::lang_start::<()>
+  44:        0x104aca9fc - _main
+thread caused non-unwinding panic. aborting.

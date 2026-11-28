@@ -1,0 +1,381 @@
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `test` profile [unoptimized] target(s) in 32.48s
+     Running tests/video_apple.rs (target/debug/build/taut/e9a0efbd97bf79ca/out/video_apple-e9a0efbd97bf79ca)
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+frames show at their times
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+pause and seek
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+a seek before the first frame
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+the end, and a loop
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+the controls
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+tracks, captions and speed
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+captions in the video stream
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+CEA-608's other channels
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+many opens: held 45252608 bytes, after 30 more 49840128
+video on macOS: every check passed
+
+thread 'main' (38047) panicked at tests/video_apple.rs:354:25:
+video on iOS:
+frames show at their times
+pause and seek
+a seek before the first frame
+the end, and a loop
+the controls
+bytes
+tracks, captions and speed
+
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 63 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 70 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader gave no sample after 0 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+
+thread 'main' (50404) panicked at tests/video_apple.rs:85:13:
+the caption tracks did not happen: Video { playing: false, position: 3s, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (50404) panicked at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:        0x104c71b40 - <<std[4d474039d585e394]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[23f300596627935b]::fmt::Display>::fmt
+   1:        0x104c83ed8 - core[23f300596627935b]::fmt::write
+   2:        0x104c754dc - <std[4d474039d585e394]::sys::stdio::unix::Stderr as core[23f300596627935b]::io::write::Write>::write_fmt
+   3:        0x104c5dabc - std[4d474039d585e394]::panicking::default_hook::{closure#0}
+   4:        0x104c6c84c - std[4d474039d585e394]::panicking::default_hook
+   5:        0x104c6cb88 - std[4d474039d585e394]::panicking::panic_with_hook
+   6:        0x104c5db6c - std[4d474039d585e394]::panicking::panic_handler::{closure#0}
+   7:        0x104c5613c - std[4d474039d585e394]::sys::backtrace::__rust_end_short_backtrace::<std[4d474039d585e394]::panicking::panic_handler::{closure#0}, !>
+   8:        0x104c5e178 - __rustc[488137f9e312a25f]::rust_begin_unwind
+   9:        0x104c96d68 - core[23f300596627935b]::panicking::panic_nounwind_fmt
+  10:        0x104c96cf0 - core[23f300596627935b]::panicking::panic_nounwind
+  11:        0x104c96e44 - core[23f300596627935b]::panicking::panic_cannot_unwind
+  12:        0x104b8cdd0 - taut[5914370db15e638a]::ios::scene_connected
+  13:        0x1857bc640 - +[UIScene _sceneForFBSScene:create:withSession:connectionOptions:]
+  14:        0x1864a6e90 - -[UIApplication _connectUISceneFromFBSScene:transitionContext:]
+  15:        0x1864a726c - -[UIApplication workspace:didCreateScene:withTransitionContext:completion:]
+  16:        0x185ebbbd8 - -[UIApplicationSceneClientAgent scene:didInitializeWithEvent:completion:]
+
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: video_apple::simulator::run
+   3: video_apple::main
+   4: <fn() as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `--test video_apple`
+::error file=tests/video_apple.rs,line=354,title=tests/video_apple.rs%3A thread 'main' panicked::thread 'main' (38047) panicked at tests/video_apple.rs:354:25:%0Avideo on iOS:%0Aframes show at their times%0Apause and seek%0Aa seek before the first frame%0Athe end, and a loop%0Athe controls%0Abytes%0Atracks, captions and speed
+::error file=tests/video_apple.rs,line=85,title=tests/video_apple.rs%3A thread 'main' panicked::thread 'main' (50404) panicked at tests/video_apple.rs:85:13:%0Athe caption tracks did not happen: Video { playing: false, position: 3s, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
+::error title=tests/video_apple.rs%3A thread 'main' panicked::thread 'main' (50404) panicked at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core/src/panicking.rs:225:5:%0Apanic in a function that cannot unwind
