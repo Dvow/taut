@@ -60,6 +60,25 @@ mod checks {
         fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, once: u8) -> i32;
     }
 
+    unsafe extern "C" {
+        fn objc_setExceptionPreprocessor(preprocessor: extern "C" fn(*mut c_void) -> *mut c_void) -> *const c_void;
+        fn objc_msgSend();
+        fn sel_registerName(name: *const std::ffi::c_char) -> *const c_void;
+    }
+
+    /// Says what an Objective-C exception was, as it is thrown: past Rust's frames it can only
+    /// end the program.
+    extern "C" fn thrown(exception: *mut c_void) -> *mut c_void {
+        // SAFETY: each object answers these messages; the text is copied at once.
+        let said = |name: &std::ffi::CStr| unsafe {
+            let send: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            let text = send(send(send(exception, sel_registerName(name.as_ptr())), sel_registerName(c"description".as_ptr())), sel_registerName(c"UTF8String".as_ptr()));
+            if text.is_null() { String::new() } else { std::ffi::CStr::from_ptr(text.cast()).to_string_lossy().into_owned() }
+        };
+        eprintln!("Objective-C exception: {}: {}\n{}", said(c"name"), said(c"reason"), said(c"callStackSymbols"));
+        exception
+    }
+
     /// Lets the main run loop turn this long.
     fn turn(time: Duration) {
         // SAFETY: the main thread's own run loop, in its default mode.
@@ -104,8 +123,13 @@ mod checks {
     }
 
     pub fn all() {
+        // SAFETY: a function of the type the runtime calls.
+        unsafe { objc_setExceptionPreprocessor(thrown) };
         captions_of_a_stream();
         println!("captions of a stream (probe)");
+        if std::env::var_os("TAUT_PROBE_ONLY").is_some() {
+            return;
+        }
         let silent = written("silent.mp4", &mp4(30, 10, false));
         let with_sound = written("with-sound.mp4", &mp4(30, 10, true));
         frames_show_at_their_times(&with_sound);
@@ -185,10 +209,70 @@ mod checks {
     fn captions_of_a_stream() {
         let in_stream = InStream { other_channels: &OTHER_CHANNELS.other_channels[1..2], ..IN_STREAM };
         let files = hls_stream(30, &in_stream, &RENDITIONS);
-        let folder = files.iter().map(|(name, bytes)| written(name, bytes)).next_back().unwrap().parent().unwrap().to_path_buf();
-        let address = served(folder);
-        for name in ["master.m3u8", "plain-and-placed.mp4"] {
+        let written: Vec<std::path::PathBuf> = files.iter().map(|(name, bytes)| written(name, bytes)).collect();
+        let folder = written[0].parent().unwrap().to_path_buf();
+        // (Probe: a WebVTT track in each handler and media header a file may give it.)
+        let movie_bytes = movie(30, 10, false, &[], &PLAIN_AND_PLACED);
+        let variants = [("sbtl", "nmhd"), ("text", "nmhd"), ("subt", "sthd"), ("text", "gmhd")];
+        for (handler, header) in variants {
+            let mut bytes = movie_bytes.clone();
+            replace_last(&mut bytes, b"hdlr\0\0\0\0\0\0\0\0sbtl", &[b"hdlr\0\0\0\0\0\0\0\0", handler.as_bytes()].concat());
+            if header != "gmhd" {
+                replace_last(&mut bytes, b"nmhd", header.as_bytes());
+            }
+            written_to(&folder, &format!("webvtt-{handler}-{header}.mp4"), &bytes);
+        }
+        let only_webvtt = movie(30, 10, false, &[], &PLAIN_AND_PLACED[1..]);
+        let mut text = only_webvtt.clone();
+        replace_last(&mut text, b"hdlr\0\0\0\0\0\0\0\0sbtl", b"hdlr\0\0\0\0\0\0\0\0text");
+        written_to(&folder, "only-webvtt-sbtl.mp4", &only_webvtt);
+        written_to(&folder, "only-webvtt-text.mp4", &text);
+        written_to(&folder, "languages.mp4", &movie(30, 10, false, &TWO_LANGUAGES, &TWO_CAPTIONS));
+        let address = served(folder.clone());
+        for name in ["master.m3u8", "video.m3u8", "languages.mp4"] {
             probe_stream(&format!("{address}{name}"));
+        }
+        if std::env::var("TAUT_PROBE_NATIVE").is_ok() {
+            return;
+        }
+        for (handler, header) in variants {
+            probe_file(&folder.join(format!("webvtt-{handler}-{header}.mp4")));
+        }
+        probe_file(&folder.join("only-webvtt-sbtl.mp4"));
+        probe_file(&folder.join("only-webvtt-text.mp4"));
+    }
+
+    fn replace_last(bytes: &mut [u8], what: &[u8], with: &[u8]) {
+        let at = bytes.windows(what.len()).rposition(|window| window == what).expect("found");
+        bytes[at..at + with.len()].copy_from_slice(with);
+    }
+
+    fn written_to(folder: &std::path::Path, name: &str, bytes: &[u8]) {
+        std::fs::write(folder.join(name), bytes).unwrap();
+    }
+
+    /// Whether a file plays and what tracks it has (a probe).
+    fn probe_file(file: &std::path::Path) {
+        let mut trial = captioned(Video::open_silent(file).unwrap());
+        trial.run();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) && trial.app.size().is_none() && trial.app.error().is_none() {
+            pass(&mut trial, Duration::from_millis(50));
+        }
+        pass(&mut trial, Duration::from_millis(1500));
+        eprintln!("probe: file {}: tracks {:?} size {:?} error {:?}", file.display(), trial.app.caption_tracks(), trial.app.size(), trial.app.error());
+        let count = trial.app.caption_tracks().len();
+        for nth in 0..count {
+            trial.app.set_caption_track(Some(nth));
+            for at in [500, 2700] {
+                trial.app.seek(Duration::from_millis(at));
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(5) && trial.app.caption().is_none() {
+                    pass(&mut trial, Duration::from_millis(50));
+                }
+                let place = trial.app.caption().map(|text| trial.find(Role::Text, text.lines().next().unwrap_or_default()).rect);
+                eprintln!("probe:   file track {nth} at {at}: {:?} {place:?}", trial.app.caption());
+            }
         }
     }
 

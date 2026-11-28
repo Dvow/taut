@@ -29,7 +29,7 @@ jobs:
         run: |
           set +e
           mkdir -p ci-results/${GITHUB_SHA::7}
-          { sw_vers; TAUT_PROBE_NATIVE=0 cargo test --features video --test video_apple -- --nocapture; echo "plain $?";
+          { sw_vers; for kinds in none wvtt c608 c708 tx3g text; do TAUT_PROBE_ONLY=1 TAUT_PROBE_NATIVE=$kinds cargo test --features video --test video_apple -- --nocapture; echo "kinds $kinds $?"; done;
             TAUT_VIDEO=required TAUT_IOS_SIMULATOR=1 cargo test --features video --test video_apple -- --nocapture; echo "exit $?";
             echo "==== app output"; tail -n 600 target/video-ios/*.err target/video-ios/*.out 2>/dev/null; } > ci-results/${GITHUB_SHA::7}/macos.txt 2>&1
           code=$(grep '^exit ' ci-results/${GITHUB_SHA::7}/macos.txt | tail -1 | cut -d' ' -f2)

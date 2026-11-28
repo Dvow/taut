@@ -1321,7 +1321,8 @@ export class Page {
 
     // A video element for an address, or for bytes (a Blob of type `kind`): its number; 0 with
     // no page (under Node). Muted unless `sound`. Each frame the browser shows is noted
-    // (`requestVideoFrameCallback`, where it has it) to be read once.
+    // (`requestVideoFrameCallback`, where it has it) to be read once; tracks the browser adds or
+    // takes away later (Safari's, after the metadata) are told by `videoState`.
     videoOpen(source, kind, sound) {
         if (typeof document === "undefined") {
             return 0;
@@ -1329,11 +1330,15 @@ export class Page {
         const element = document.createElement("video");
         const blob = typeof source === "string" ? null : URL.createObjectURL(new Blob([source], { type: kind }));
         const id = ++this.videoCount;
-        const made = { element, blob, canvas: null, context: null, fresh: false, given: -1, shown: -1, wanted: false, ended: false, error: "", clearsOnPlay: false };
+        const made = { element, blob, canvas: null, context: null, fresh: false, given: -1, shown: -1, wanted: false, ended: false, error: "", clearsOnPlay: false, tracksChanged: false };
         Object.assign(element, { muted: !sound, defaultMuted: !sound, playsInline: true, preload: "auto", crossOrigin: "anonymous" });
         element.addEventListener("loadeddata", () => (made.fresh = true));
         element.addEventListener("seeked", () => (made.fresh = true));
         element.addEventListener("ended", () => Object.assign(made, { ended: true, wanted: false }));
+        for (const tracks of [element.textTracks, element.audioTracks].filter(Boolean)) {
+            tracks.addEventListener("addtrack", () => (made.tracksChanged = true));
+            tracks.addEventListener("removetrack", () => (made.tracksChanged = true));
+        }
         element.addEventListener("error", () => this.videoFailed(made, `the player stopped: ${element.error?.message || `error ${element.error?.code}`}`));
         if (element.requestVideoFrameCallback) {
             const shown = (_, frame) => {
@@ -1456,8 +1461,9 @@ export class Page {
         return this.made.length;
     }
 
-    // Writes the time, the length (NaN unknown), the end (once) and an error's kind (1, or 2 for
-    // one that clears on the next play); answers the error's length, its words kept for `take`.
+    // Writes the time, the length (NaN unknown), the end (once), an error's kind (1, or 2 for one
+    // that clears on the next play) and whether tracks changed (once); answers the error's length,
+    // its words kept for `take`.
     // (A browser that paused a video it was unmuting before any press says nothing: that is
     // told as a refused play.)
     videoState(id, out) {
@@ -1471,8 +1477,8 @@ export class Page {
         }
         const length = Number.isFinite(element.duration) ? element.duration : NaN;
         const error = made.error ? (made.clearsOnPlay ? 2 : 1) : 0;
-        new Float64Array(this.exports.memory.buffer, out, 4).set([element.currentTime, length, made.ended ? 1 : 0, error]);
-        made.ended = false;
+        new Float64Array(this.exports.memory.buffer, out, 5).set([element.currentTime, length, made.ended ? 1 : 0, error, made.tracksChanged ? 1 : 0]);
+        made.ended = made.tracksChanged = false;
         if (!error) {
             return 0;
         }

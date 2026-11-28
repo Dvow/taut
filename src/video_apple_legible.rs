@@ -115,12 +115,14 @@ impl LegibleCaptions {
     pub(crate) fn new(functions: &'static Functions, item: Obj) -> LegibleCaptions {
         let number = NUMBERED.fetch_add(1, Ordering::Relaxed);
         handed_over().push((number, HandedOver::default()));
-        let native = std::env::var("TAUT_PROBE_NATIVE").as_deref() != Ok("0");
+        let asked = std::env::var("TAUT_PROBE_NATIVE").unwrap_or_default();
+        let native: Vec<u32> = asked.split(',').filter(|kind| kind.len() == 4).map(|kind| u32::from_be_bytes(kind.as_bytes().try_into().unwrap_or_default())).collect();
+        eprintln!("probe: native {asked:?}");
         // SAFETY: the classes answer these messages; what is kept is retained, the rest
         // autoreleased into the pool. The queue is serial (no attributes).
         unsafe {
             let _pool = Pool::new();
-            let kinds: Vec<Obj> = [WEBVTT, CEA608, CEA708].iter().filter(|_| native).map(|kind| send(class(c"NSNumber"), c"numberWithUnsignedInt:", (*kind,))).collect();
+            let kinds: Vec<Obj> = native.iter().map(|kind| send(class(c"NSNumber"), c"numberWithUnsignedInt:", (*kind,))).collect();
             let output: Obj = send(send::<Obj>(class(c"AVPlayerItemLegibleOutput"), c"alloc", ()), c"initWithMediaSubtypesForNativeRepresentation:", (ns_array(&kinds),));
             let delegate = new_with_extra(delegate_class(), number);
             let queue = dispatch_queue_create(c"taut captions".as_ptr(), std::ptr::null());

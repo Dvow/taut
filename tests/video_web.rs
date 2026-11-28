@@ -524,23 +524,30 @@ async function in_band_tracks() {
         await until(`the first frame of ${button}`, (now) => now.size === "64x48", 20);
         const [id, made] = [...page.videos.entries()][0];
         const element = made.element;
-        const describe = () => [...element.textTracks].map((track) => `${track.kind}|${track.label}|${track.language}|${track.mode}|${track.id}|${track.inBandMetadataTrackDispatchType}|cues=${track.cues?.length}`).join("; ");
+        const describe = () => [...element.textTracks].map((track) => `${track.kind}|${track.label}|${track.language}|${track.mode}|cues=${track.cues?.length}`).join("; ");
         seen.push(`at load: ${describe()} :: ${state().line}`);
-        await pause(3000);
+        await pause(2000);
         await settle();
-        seen.push(`after 3 s: ${describe()} :: ${state().line}`);
-        const place = (cue) => (typeof VTTCue !== "undefined" && cue instanceof VTTCue ? `line=${cue.line} snap=${cue.snapToLines} position=${cue.position} size=${cue.size} align=${cue.align} lineAlign=${cue.lineAlign} positionAlign=${cue.positionAlign} region=${cue.region?.id}` : "not a VTTCue");
-        for (let nth = 0; nth < element.textTracks.length; nth++) {
+        seen.push(`after 2 s: ${describe()} :: ${state().line}`);
+        const place = (cue) => (typeof VTTCue !== "undefined" && cue instanceof VTTCue ? `line=${cue.line} snap=${cue.snapToLines} position=${cue.position} size=${cue.size} align=${cue.align}` : "not a VTTCue");
+        const listed = [...element.textTracks].filter((track) => track.kind === "subtitles" || track.kind === "captions");
+        for (let nth = 0; nth < listed.length; nth++) {
             page.videoChooseCaptions(id, nth);
-            for (const at of [0.7, 1.3, 2.05, 2.7]) {
-                element.currentTime = at;
-                await pause(500);
+            element.currentTime = 0;
+            await pause(300);
+            element.play();
+            let last = "";
+            const begun = performance.now();
+            while (!element.ended && performance.now() - begun < 6000) {
+                await pause(50);
                 await settle();
-                const track = element.textTracks[nth];
-                const active = [...(track.activeCues || [])].map((cue) => `${cue.constructor.name} ${cue.startTime}-${cue.endTime} ${JSON.stringify(cue.text)} ${place(cue)}`);
+                const active = [...(listed[nth].activeCues || [])].map((cue) => `${cue.constructor.name} ${cue.startTime.toFixed(2)}-${cue.endTime.toFixed(2)} ${JSON.stringify(cue.text)} ${place(cue)}`).join(" | ");
                 page.videoCaption(id);
-                seen.push(`track ${nth} (${track.mode}) at ${at}: ${active.join(" | ")} :: taut ${JSON.stringify(new TextDecoder().decode(page.made))} :: ${state().caption}`);
+                const now = `${active} :: taut ${JSON.stringify(new TextDecoder().decode(page.made))} :: ${state().caption}`;
+                if (now !== last) seen.push(`${listed[nth].label || listed[nth].language} at ${element.currentTime.toFixed(2)}: ${now}`);
+                last = now;
             }
+            element.pause();
         }
         results.in_band[button] = seen;
     }
@@ -569,11 +576,11 @@ try {
     await settle();
     for (const check of [in_band_tracks, frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, browser_cue_settings, the_files_tracks, many_opens]) {
         const failed = results.failed.length;
-        await check();
+        await check().catch((error) => fail(`${check.name}: ${error}\n${error.stack}`));
         results[check.name] = results.failed.length === failed ? "passed" : "FAILED";
     }
 } catch (error) {
-    fail(String(error.stack || error));
+    fail(`${error}\n${error.stack}`);
 }
 await post("/done", Object.entries(results).map(([name, value]) => `${name}=${JSON.stringify(value)}`).join("\n"));
 "##;
