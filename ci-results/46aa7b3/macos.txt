@@ -1,0 +1,42 @@
+ProductName:		macOS
+ProductVersion:		26.7.2
+BuildVersion:		25G332
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `test` profile [unoptimized] target(s) in 26.07s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: http://127.0.0.1:49174/master.m3u8: tracks [] size None length None error Some("the player stopped: The requested URL was not found on this server.")
+probe: http://127.0.0.1:49174/plain-and-placed.mp4: tracks [] size None length None error Some("the player stopped: The requested URL was not found on this server.")
+captions of a stream (probe)
+frames show at their times
+pause and seek
+a seek before the first frame
+the end, and a loop
+the controls
+bytes
+tracks, captions and speed
+captions in the video stream
+CEA-608's other channels
+
+thread 'main' (8262) panicked at tests/video_apple.rs:90:13:
+the caption tracks did not happen: Video { playing: false, position: 0ns, length: Some(3s), size: None, speed: 1.0, caption: None, error: Some("the player stopped: The operation could not be completed"), .. }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: video_apple::checks::until_within::<video_apple::checks::timed_text_and_webvtt_tracks_of_a_file::{closure#0}>
+   3: video_apple::checks::until::<video_apple::checks::timed_text_and_webvtt_tracks_of_a_file::{closure#0}>
+   4: video_apple::checks::timed_text_and_webvtt_tracks_of_a_file
+   5: video_apple::checks::all
+   6: video_apple::main
+   7: <fn() as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `--test video_apple`
+plain 101
+    Finished `test` profile [unoptimized] target(s) in 0.01s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+fatal runtime error: Rust cannot catch foreign exceptions, aborting
+error: test failed, to rerun pass `--test video_apple`
+
+Caused by:
+  process didn't exit successfully: `/Users/runner/work/taut/taut/target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe --nocapture` (signal: 6, SIGABRT: process abort signal)
+exit 101
+==== app output
