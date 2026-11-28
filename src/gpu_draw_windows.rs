@@ -11,7 +11,9 @@
 use crate::color::Color;
 use crate::gpu_draw::{DrawList, Fast, SHADING, SIDE};
 #[cfg(feature = "video")]
-use crate::gpu_frames_windows::{OpenedFrames, give_back, opened_on_direct3d_11, take_all};
+use crate::gpu_frames::ImportedFrames;
+#[cfg(feature = "video")]
+use crate::gpu_frames_windows::{give_back, opened_on_direct3d_11, take_all};
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, TextureDescription, function, release};
 use crate::text::Font;
 #[cfg(feature = "video")]
@@ -152,7 +154,7 @@ pub(crate) struct Pipeline {
     views: [Com; 2],
     /// Videos' frames opened on this device, as they were drawn.
     #[cfg(feature = "video")]
-    opened: OpenedFrames<OpenedFrame>,
+    opened: ImportedFrames<OpenedFrame>,
 }
 
 // SAFETY: as its device: made on the device's thread, then used by the windows' alone.
@@ -231,7 +233,7 @@ impl Pipeline {
             textures: [null_mut(); 2],
             views: [null_mut(); 2],
             #[cfg(feature = "video")]
-            opened: OpenedFrames::default(),
+            opened: ImportedFrames::default(),
         };
         // One, one minus the second colour (2, 17), added (1); alpha likewise (2, 19, 1); all
         // four channels.
@@ -346,19 +348,21 @@ impl Pipeline {
         true
     }
 
-    /// The views of `frames` on this device, each opened the first time it is drawn, and their
-    /// keyed mutexes, taken: none where one can't be opened or taken.
+    /// The views of `frames` on this device (opened as `gpu_frames` says), and their keyed
+    /// mutexes, taken: none where one can't be opened or taken.
     #[cfg(feature = "video")]
     fn take_frames(&mut self, device: Com, frames: &[Arc<FrameTexture>]) -> Option<(Vec<Com>, Vec<Com>)> {
-        let opened = self.opened.opened(frames, |frame| OpenedFrame::new(device, frame), drop)?;
-        let (views, mutexes): (Vec<Com>, Vec<Com>) = opened.iter().map(|opened| (opened.view, opened.mutex)).unzip();
+        if !self.opened.ready(frames, |frame| OpenedFrame::new(device, frame), drop) {
+            return None;
+        }
+        let (views, mutexes): (Vec<Com>, Vec<Com>) = self.opened.drawn().map(|opened| (opened.view, opened.mutex)).unzip();
         take_all(&mutexes).then_some((views, mutexes))
     }
 
     /// Whether a video's frame could not be opened on this device.
     #[cfg(feature = "video")]
     pub(crate) fn refuses_frames(&self) -> bool {
-        self.opened.refused
+        self.opened.refused()
     }
 }
 

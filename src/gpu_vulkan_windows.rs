@@ -770,7 +770,7 @@ impl Shown {
         let submitted = |device: &Device, _: &crate::gpu_draw_vulkan::Pipeline| device.submit(0, 0);
         #[cfg(feature = "video")]
         let submitted = |device: &Device, drawing: &crate::gpu_draw_vulkan::Pipeline| device.submit_frames(&drawing.frames.as_ref().map_or(Vec::new(), |frames| frames.memories()));
-        let drawn = self.picture != 0 && device.begin() && self.draw_with(device, &mut drawing, list, area) && submitted(device, &drawing) && device.wait();
+        let drawn = self.picture != 0 && drawing.ready_frames(list) && device.begin() && self.draw_with(device, &mut drawing, list, area) && submitted(device, &drawing) && device.wait();
         drawing.forget_target();
         device.drawing = Some(drawing);
         drawn

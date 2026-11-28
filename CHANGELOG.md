@@ -366,6 +366,13 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   and strings, by its language's rules; corrections from its menu, undone as one.
 - **Pan-zoom text too small to read:** in a view zoomed far out, text under 4 units shows as a
   faint bar per line, where before it drew nothing.
+- **Video frames on the GPU** (`video` with `gpu-draw`): every path keeps a decoder's buffers
+  imported by one rule: while the video lives, the 8 most recently drawn at most (Linux and
+  Android kept a closed video's 8). A device that can't import a frame draws frames read back
+  from then on; Linux and Android tried again at every draw, and Vulkan lost the device each
+  time. Vulkan on Linux and Android draws frames of two kinds in one part (NV12 beside I420)
+  instead of leaving the part to the CPU. On Windows the decoder no longer waits for a texture
+  a window's device holds: each try held the interface up to 100 ms.
 
 ## 0.3.0 (2026-11-24)
 

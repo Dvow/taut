@@ -163,6 +163,8 @@ mod gpu_draw_vulkan;
 mod gpu_draw_windows;
 #[cfg(all(unix, not(target_vendor = "apple"), feature = "gpu"))]
 mod gpu_egl;
+#[cfg(all(feature = "video", feature = "gpu-draw", any(windows, all(unix, not(target_vendor = "apple")))))]
+mod gpu_frames;
 #[cfg(all(windows, feature = "gpu-draw", feature = "video"))]
 mod gpu_frames_windows;
 #[cfg(all(target_os = "ios", feature = "gpu"))]

@@ -629,6 +629,13 @@ impl<S> Gpu<S> {
         Some(pipeline)
     }
 
+    /// Whether a video's frame could not be drawn on the device: from then on its parts draw
+    /// them read back.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    pub(crate) fn refuses_frames(&self) -> bool {
+        self.pipeline.as_ref().and_then(Option::as_ref).is_some_and(|pipeline| pipeline.refuses_frames())
+    }
+
     /// Tests: whether it has drawn windows itself (see `gpu_draw`).
     #[cfg(all(test, feature = "gpu-draw"))]
     pub(crate) fn has_drawn(&self) -> bool {

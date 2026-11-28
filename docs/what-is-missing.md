@@ -245,8 +245,6 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
     Not seen here with a real decoder: the import is checked with a file GStreamer takes as a
     dmabuf (lavapipe, llvmpipe), and on GitHub's runner.
   - Not on the web: a frame is read back to the canvas, then drawn.
-  Vulkan reads frames of one kind a part (their sampler Y′CbCr conversion is part of the
-  pipeline): a part showing two kinds at once is drawn by the CPU.
 - Captions: their text only, without the file's positions, regions or styles. In the video
   stream (the SEI of H.264 and HEVC), read by taut: CEA-608's channel 1 of field 1 (`CC1`) and
   each CEA-708 service (`Service 1`…), tracks once their first data is read; not CC2 to CC4 or

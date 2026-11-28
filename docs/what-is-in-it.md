@@ -189,7 +189,9 @@ Popovers anchored to their button.
   they play: Direct3D 11 and 12, Vulkan and OpenGL from Windows' texture (1080p H.264: 1.5 to
   2.7 ms of CPU a frame instead of 6 to 7.7), Metal from AVFoundation's pixel buffer, Vulkan and OpenGL ES from Android's hardware buffer,
   Vulkan and EGL from a Linux decoder's dmabuf. The same pixels as read back (Android's OpenGL
-  ES: within 2 levels).
+  ES: within 2 levels). A device keeps each buffer imported while its video lives (8 at most);
+  one it can't import makes it draw frames read back from then on. Vulkan draws frames of
+  several kinds in one part. Windows' decoder never waits for a texture a window holds.
 - SVG: clip paths, masks, patterns, markers, symbols; on request, `shape-rendering`, seamless
   clip paths and masks, text (on paths too; shaped with `shaping`), filters (every primitive,
   lighting, `BackgroundImage`, paint inputs (patterns too) and kernel units included; about 90

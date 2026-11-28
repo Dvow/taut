@@ -7673,6 +7673,52 @@ pub(crate) mod tests {
             }
         }
 
+        /// The part the GPU recorded last: whether it was thrown away (the CPU drew it), and
+        /// whether the device takes videos' frames.
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        fn last_part(host: &Windows) -> Option<(bool, bool)> {
+            let list = match host.gpu.as_ref()? {
+                crate::gpu_x11::Gpu::OpenGL(gpu) => &gpu.list,
+                crate::gpu_x11::Gpu::Vulkan(gpu) => &gpu.list,
+            };
+            Some((list.failed, list.takes_frames))
+        }
+
+        /// A video's frame a GPU path can't import is drawn by the CPU once; from then on the
+        /// device takes no frames, and draws them read back itself, as the CPU paints them.
+        /// (OpenGL ES refuses a frame of planes of no pitch; Vulkan one sealed against writing.)
+        #[cfg(all(feature = "gpu-draw", feature = "video"))]
+        #[test]
+        #[ignore]
+        fn a_frame_the_gpu_cant_import_is_drawn_read_back_from_then_on() {
+            use crate::video_gstreamer::tests::{pitchless_dmabuf_frame, sealed_dmabuf_frame};
+            let (Some(pitchless), Some(sealed)) = (pitchless_dmabuf_frame(), sealed_dmabuf_frame()) else { return eprintln!("no GStreamer dmabuf allocator: not tested") };
+            for (renderer, frame) in GPUS.into_iter().zip([pitchless, sealed]) {
+                let mut picture = None;
+                let crop = [0, 0, frame.size.0 as usize, frame.size.1 as usize];
+                let app = move |ui: &mut Ui| {
+                    let shown = *picture.get_or_insert_with(|| ui.add_picture_texture(crate::video::FrameOnGpu { texture: frame.clone(), crop, read: false }));
+                    ui.el().picture(shown).size(128.0, 96.0).show();
+                };
+                let window = Window { title: "taut frame", width: 160.0, height: 120.0, renderer, ..Default::default() };
+                let (_alone, mut host) = host(window, app).expect("a display");
+                settle(&mut host);
+                if host.gpu.as_ref().map(crate::gpu_x11::Gpu::renderer) != Some(renderer) || last_part(&host).is_some_and(|(_, takes)| !takes) || !always_drawn(&mut host) {
+                    eprintln!("{renderer:?} missing, or taking no frames: not tested");
+                    continue;
+                }
+                for wanted in [(true, false), (false, false)] {
+                    host.windows[0].uncovered = whole(host.windows[0].size, host.scale);
+                    host.draw(0);
+                    assert_eq!(last_part(&host), Some(wanted), "{renderer:?}: (thrown away, takes frames)");
+                }
+                let (seen, must) = shown(&mut host, 0);
+                let off = |a: &c_ulong, b: &c_ulong| [16, 8, 0].map(|shift| (a >> shift & 255).abs_diff(b >> shift & 255)).into_iter().max().unwrap_or(0);
+                let most = seen.iter().flatten().zip(must.iter().flatten()).map(|(a, b)| off(a, b)).max().unwrap_or(0);
+                assert!(most <= crate::gpu_draw::tests::TOLERANCE as c_ulong, "{renderer:?}: a pixel {most} levels off what was painted");
+            }
+        }
+
         /// A lost device is made again, and the window drawn whole through it; lost with none to
         /// be had, X shows the window from then on.
         #[test]

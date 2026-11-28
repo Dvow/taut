@@ -14,7 +14,7 @@
 use crate::gpu_draw::{DrawList, Quad, SIDE};
 use crate::gpu_draw_windows::{compiled, source};
 #[cfg(feature = "video")]
-use crate::gpu_frames_windows::OpenedFrames;
+use crate::gpu_frames::ImportedFrames;
 use crate::layer_d3d11::{B8G8R8A8_UNORM, Box3, Com, function, release};
 #[cfg(feature = "video")]
 use crate::video::FrameTexture;
@@ -226,7 +226,7 @@ pub(crate) struct Pipeline {
     quads: Option<Written>,
     /// Videos' frames opened on this device; those the prepared list draws.
     #[cfg(feature = "video")]
-    opened: OpenedFrames<OpenedFrame>,
+    opened: ImportedFrames<OpenedFrame>,
     #[cfg(feature = "video")]
     frames: Vec<Taken>,
 }
@@ -326,7 +326,7 @@ impl Pipeline {
             staging: None,
             quads: None,
             #[cfg(feature = "video")]
-            opened: OpenedFrames::default(),
+            opened: ImportedFrames::default(),
             #[cfg(feature = "video")]
             frames: Vec::new(),
         };
@@ -387,14 +387,16 @@ impl Pipeline {
         true
     }
 
-    /// Readies `frames` to be drawn: each opened the first time, viewed in its place (four to
-    /// seven, the places left the cache's), its fence's value now noted. Says whether all could
-    /// be.
+    /// Readies `frames` to be drawn: each opened (as `gpu_frames` says), viewed in its place
+    /// (four to seven, the places left the cache's), its fence's value now noted. Says whether
+    /// all could be.
     #[cfg(feature = "video")]
     fn take_frames(&mut self, device: Com, frames: &[std::sync::Arc<FrameTexture>]) -> bool {
         self.frames.clear();
-        let Some(opened) = self.opened.opened(frames, |frame| OpenedFrame::new(device, frame), drop) else { return false };
-        let opened: Vec<[Com; 2]> = opened.iter().map(|opened| [opened.texture, opened.fence]).collect();
+        if !self.opened.ready(frames, |frame| OpenedFrame::new(device, frame), drop) {
+            return false;
+        }
+        let opened: Vec<[Com; 2]> = self.opened.drawn().map(|opened| [opened.texture, opened.fence]).collect();
         for (at, ([texture, fence], frame)) in opened.into_iter().zip(frames).enumerate() {
             self.view(device, texture, 3 + at);
             self.frames.push(Taken { texture, fence, value: frame.fence_value.load(std::sync::atomic::Ordering::Acquire) });
@@ -412,7 +414,7 @@ impl Pipeline {
     /// Whether a video's frame could not be opened on this device.
     #[cfg(feature = "video")]
     pub(crate) fn refuses_frames(&self) -> bool {
-        self.opened.refused
+        self.opened.refused()
     }
 
     /// The upload buffer `written`, made at least `bytes` big where it is not.

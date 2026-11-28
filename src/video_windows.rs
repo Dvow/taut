@@ -1122,14 +1122,16 @@ impl Frames {
     }
 
     /// Has the engine transfer its frame into the target, `whole` its rectangle (43:
-    /// TransferVideoFrame): whether it did. A texture whose keyed mutex was abandoned (a
-    /// device lost while holding it) is dropped, to be made again.
+    /// TransferVideoFrame): whether it did. Not while a window's device holds the texture: the
+    /// engine keeps the frame (`OnVideoStreamTick` gives it again), so the next tick puts it in.
+    /// A texture whose keyed mutex was abandoned (a device lost while holding it) is dropped, to
+    /// be made again.
     fn transfer(&mut self, engine: *mut Com, whole: &[i32; 4]) -> bool {
         // SAFETY: the engine is alive; the target is a live texture or bitmap of that size,
         // the texture held by this device while drawn into.
         let sent = unsafe {
             match self {
-                Frames::Gpu { texture: Some(texture), .. } => texture.held(|| texture.filled(call!(engine, 43, Transfer, texture.drawn, null(), whole, null()) >= 0)),
+                Frames::Gpu { texture: Some(texture), .. } => texture.held(0, || texture.filled(call!(engine, 43, Transfer, texture.drawn, null(), whole, null()) >= 0)),
                 Frames::Gpu { texture: None, .. } => Ok(false),
                 Frames::Bitmap { bitmap, .. } => Ok(call!(engine, 43, Transfer, *bitmap, null(), whole, null()) >= 0),
             }
@@ -1191,8 +1193,7 @@ unsafe impl Send for FrameTexture {}
 unsafe impl Sync for FrameTexture {}
 
 /// How long a device waits for another's work on a frame's texture, in ms (`AcquireSync`), and
-/// what it gives when that passes.
-#[cfg(feature = "gpu-draw")]
+/// what it gives when that passes. (The decoder's transfer never waits.)
 pub(crate) const FRAME_WAIT: u32 = 100;
 const WAIT_TIMEOUT: i32 = 0x102;
 /// How many frame textures were made (each one's `serial`).
@@ -1305,22 +1306,15 @@ impl FrameTexture {
         sent
     }
 
-    /// What tells it apart from the decoder's other textures (`video_vulkan` keeps imports by
-    /// it).
-    #[cfg(feature = "gpu-draw")]
-    pub(crate) fn key(&self) -> Option<u64> {
-        Some(self.serial)
-    }
-
     /// Does `work` on the texture drawn into, holding its keyed mutex (8: AcquireSync, 9:
     /// ReleaseSync): other devices' work on it is done first, and theirs waits for this. Not
-    /// where the mutex can't be taken within `FRAME_WAIT`: what `AcquireSync` gave instead.
-    fn held<R>(&self, work: impl FnOnce() -> R) -> Result<R, i32> {
+    /// where the mutex can't be taken within `wait` ms: what `AcquireSync` gave instead.
+    fn held<R>(&self, wait: u32, work: impl FnOnce() -> R) -> Result<R, i32> {
         #[cfg(feature = "gpu-draw")]
         if !self.mutex.is_null() {
             // SAFETY: the mutex is alive; key 0 is the one every device takes (`S_OK` only: a
             // time-out and an abandoned mutex are success codes).
-            let taken = unsafe { call!(self.mutex, 8, unsafe extern "system" fn(*mut Com, u64, u32) -> i32, 0, FRAME_WAIT) };
+            let taken = unsafe { call!(self.mutex, 8, unsafe extern "system" fn(*mut Com, u64, u32) -> i32, 0, wait) };
             if taken != 0 {
                 return Err(taken);
             }
@@ -1329,6 +1323,8 @@ impl FrameTexture {
             unsafe { call!(self.mutex, 9, unsafe extern "system" fn(*mut Com, u64) -> i32, 0) };
             return Ok(done);
         }
+        #[cfg(not(feature = "gpu-draw"))]
+        let _ = wait;
         Ok(work())
     }
 
@@ -1340,7 +1336,7 @@ impl FrameTexture {
         let mut mapped = Pixels { first: null(), row_pitch: 0, slice_pitch: 0 };
         // SAFETY: two live textures of one size and format; the copy is mapped for reading.
         let mapped_now = unsafe {
-            self.held(|| call!(self.gpu.context, 47, unsafe extern "system" fn(*mut Com, *mut Com, *mut Com), self.readable, self.drawn)).is_ok()
+            self.held(FRAME_WAIT, || call!(self.gpu.context, 47, unsafe extern "system" fn(*mut Com, *mut Com, *mut Com), self.readable, self.drawn)).is_ok()
                 && call!(self.gpu.context, 14, Map, self.readable, 0, 1, 0, &mut mapped) >= 0
                 && !mapped.first.is_null()
         };
@@ -1360,12 +1356,15 @@ impl FrameTexture {
     }
 }
 
-#[cfg(all(test, feature = "gpu-draw"))]
-impl FrameTexture {
-    /// A frame of no texture on no device, standing in for one.
-    pub(crate) fn stand_in() -> FrameTexture {
-        let gpu = Arc::new(Gpu { device: null_mut(), context: null_mut(), manager: null_mut(), signaller: null_mut() });
-        FrameTexture { gpu, drawn: null_mut(), readable: null_mut(), mutex: null_mut(), handle: 0, fence: null_mut(), fence_handle: 0, fence_value: AtomicU64::new(0), serial: 0, size: (0, 0) }
+#[cfg(feature = "gpu-draw")]
+impl crate::gpu_frames::Frame for FrameTexture {
+    /// Its number among the textures made.
+    fn key(&self) -> Option<u64> {
+        Some(self.serial)
+    }
+    /// The texture itself: the decoder puts each frame into it while the size holds.
+    fn source(this: &Arc<Self>) -> std::sync::Weak<dyn Send + Sync> {
+        Arc::downgrade(this) as std::sync::Weak<dyn Send + Sync>
     }
 }
 
@@ -2034,5 +2033,52 @@ mod tests {
     fn a_player_whose_engine_was_never_made_drops_cleanly() {
         let Ok(player) = Player::started() else { return eprintln!("no Media Foundation here: skipped") };
         drop(player);
+    }
+
+    /// The player's newest frame left on the GPU, asked for until one comes (five seconds at
+    /// most).
+    #[cfg(feature = "gpu-draw")]
+    fn next_texture(player: &mut Player) -> Option<Arc<FrameTexture>> {
+        let asked = std::time::Instant::now();
+        while asked.elapsed() < Duration::from_secs(5) {
+            if let Some((texture, _)) = player.frame_texture() {
+                return Some(texture);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    /// While a window's device holds a frame's texture (its keyed mutex, taken on a device of
+    /// its own), the decoder never waits for it: no try costs the UI thread a wait, and the
+    /// frame held back is put in once the texture is given back. Prints the longest try.
+    #[cfg(feature = "gpu-draw")]
+    #[test]
+    fn the_decoder_never_waits_for_a_texture_a_window_holds() {
+        use crate::gpu_frames_windows::{give_back, opened_on_direct3d_11, take_all};
+        let Some(file) = crate::video::tests::test_file(false) else { return eprintln!("no test file here: skipped") };
+        let Ok(mut player) = Player::open(VideoSource::from(file.as_path()), false) else { return eprintln!("no Media Foundation here: skipped") };
+        if !player.decodes_on_gpu() {
+            return eprintln!("no GPU decodes here: skipped");
+        }
+        player.play();
+        let texture = next_texture(&mut player).expect("a first frame");
+        let window = make_gpu(player.functions).expect("a device of the window's");
+        let Some([held, mutex]) = opened_on_direct3d_11(window.device.cast(), &texture) else { return eprintln!("the frame's texture is not shared here: skipped") };
+        assert!(take_all(&[mutex]), "the window's device holds the texture");
+        let (mut longest, holding) = (Duration::ZERO, std::time::Instant::now());
+        while holding.elapsed() < Duration::from_millis(500) {
+            let tried = std::time::Instant::now();
+            assert!(player.frame_texture().is_none(), "a frame was put in while a window held the texture");
+            longest = longest.max(tried.elapsed());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        give_back(&[mutex]);
+        assert!(next_texture(&mut player).is_some(), "no frame came once the texture was given back");
+        // SAFETY: each opened above, held once by the test.
+        unsafe { release_all(&[mutex.cast(), held.cast()]) };
+        drop(window);
+        println!("the longest try while a window held the texture: {longest:?}");
+        assert!(longest < Duration::from_millis(FRAME_WAIT.into()), "a try waited {longest:?} for the texture (a wait for it takes FRAME_WAIT)");
     }
 }

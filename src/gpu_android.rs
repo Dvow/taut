@@ -353,7 +353,7 @@ impl Gpu {
 
     /// Draws `area` of the window (`place` in pixels: left, top, right, bottom) on the GPU, where
     /// it draws a part that big itself (see `gpu_draw`). Says whether it did; if not, the CPU is
-    /// to.
+    /// to. A device that refused a video's frame records none from then on.
     #[cfg(feature = "gpu-draw")]
     fn drawn_by_gpu(&mut self, shows: &mut Shows, ui: &mut Ui, area: Rect, place: [i32; 4], size: [i32; 2]) -> bool {
         let list = match self {
@@ -368,12 +368,25 @@ impl Gpu {
             (Gpu::OpenGL(gpu), Shows::OpenGL(shows)) if !list.failed => gpu.draw(shows, &list, place),
             _ => false,
         };
+        #[cfg(feature = "video")]
+        if !drawn && self.refuses_frames() {
+            list.takes_frames = false;
+        }
         list.finish(drawn);
         match self {
             Gpu::Vulkan(gpu) => *gpu.list = list,
             Gpu::OpenGL(gpu) => *gpu.list = list,
         }
         drawn
+    }
+
+    /// Whether a video's frame could not be drawn on the device.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    fn refuses_frames(&self) -> bool {
+        match self {
+            Gpu::Vulkan(gpu) => gpu.refuses_frames(),
+            Gpu::OpenGL(gpu) => gpu.refuses_frames(),
+        }
     }
 }
 

@@ -8,8 +8,10 @@
 //! - Linux: each plane of a linear dmabuf as an EGL image of its own
 //!   (`EGL_EXT_image_dma_buf_import`, as `R8` and `GR88`), a texture each; the shaders make them
 //!   RGB as the CPU does (`video_yuv::FROM_YUV`), so both give the same pixels.
+//! - Imports are kept as `gpu_frames` says.
 use crate::functions::functions;
 use crate::gpu_draw::MOST_FRAMES;
+use crate::gpu_frames::ImportedFrames;
 use crate::video::FrameTexture;
 use std::ffi::{CStr, c_int, c_uint, c_void};
 use std::ptr::null_mut;
@@ -146,10 +148,9 @@ const PER_FRAME: usize = 1;
 #[cfg(not(target_os = "android"))]
 const PER_FRAME: usize = 3;
 
-/// A decoder's buffer imported: which (`key`), its EGL images and their textures (0 where none);
-/// Android: the hardware buffer, held while imported.
+/// A decoder's buffer imported: its EGL images and their textures (0 where none); Android: the
+/// hardware buffer, held while imported.
 struct Imported {
-    key: u64,
     images: [Handle; PER_FRAME],
     textures: [c_uint; PER_FRAME],
     #[cfg(target_os = "android")]
@@ -157,19 +158,15 @@ struct Imported {
 }
 
 /// What draws videos' frames in an EGL context: its functions, EGL's display, the buffers
-/// imported (the newest last), the program's uniforms (`numbers`, Linux: `planes`), and this
-/// part's frames: their imports and the numbers that make them RGB.
+/// imported, the program's uniforms (`numbers`, Linux: `planes`), and the numbers that make this
+/// part's frames RGB.
 pub(crate) struct Frames {
     calls: Calls,
     display: Handle,
-    imported: Vec<Imported>,
+    imported: ImportedFrames<Imported>,
     uniforms: [c_int; 2],
-    drawn: Vec<usize>,
     numbers: [f32; MOST_FRAMES * 8],
 }
-
-/// Imports kept (each frame's buffer is one of the decoder's few, used again and again).
-const KEPT: usize = 8;
 
 /// Whether an EGL display offering `extensions` (as `eglQueryString` says) imports the
 /// decoder's buffers.
@@ -190,7 +187,7 @@ impl Frames {
             return None;
         }
         let calls = Calls::load(find).ok()?;
-        Some(Box::new(Frames { calls, display, imported: Vec::new(), uniforms: [-1; 2], drawn: Vec::new(), numbers: [0.0; MOST_FRAMES * 8] }))
+        Some(Box::new(Frames { calls, display, imported: ImportedFrames::default(), uniforms: [-1; 2], numbers: [0.0; MOST_FRAMES * 8] }))
     }
 
     /// Tells `program` (current, made with `TEXTURES`) which unit each frame's sampler reads,
@@ -207,39 +204,31 @@ impl Frames {
         }
     }
 
-    /// Readies `frames` (this part's) to be drawn: each imported and bound to its units, its
-    /// numbers set (the program current). Whether all are.
+    /// Readies `frames` (this part's) to be drawn: each imported (as `gpu_frames` says) and
+    /// bound to its units, their numbers set (the program current where there are any). Whether
+    /// all are; where one can't be, the context refuses frames.
     pub(crate) fn ready(&mut self, frames: &[Arc<FrameTexture>]) -> bool {
-        self.drawn.clear();
-        for (nth, frame) in frames.iter().enumerate() {
-            let Some(at) = self.import(frame) else { return false };
-            self.bind(nth, at);
-            self.drawn.push(at);
-            self.numbers[nth * 8..nth * 8 + 8].copy_from_slice(&frame.for_shaders());
-        }
-        if !frames.is_empty() {
+        let mut imported = std::mem::take(&mut self.imported);
+        let ready = imported.ready(frames, |frame| self.imported_of(frame), |gone| self.let_go_of(gone));
+        if ready && !frames.is_empty() {
+            for (nth, (import, frame)) in imported.drawn().zip(frames).enumerate() {
+                self.bind(nth, import);
+                self.numbers[nth * 8..nth * 8 + 8].copy_from_slice(&frame.for_shaders());
+            }
             self.set_numbers(frames);
         }
-        true
+        self.imported = imported;
+        ready
     }
 
-    /// Where `frame`'s buffer is among those imported: found, or imported now (the oldest not
-    /// in this part let go of where too many are). None where it can't be.
-    fn import(&mut self, frame: &FrameTexture) -> Option<usize> {
-        let key = frame.key()?;
-        if let Some(at) = self.imported.iter().position(|imported| imported.key == key) {
-            return Some(at);
-        }
-        if self.imported.len() >= KEPT
-            && let Some(oldest) = (0..self.imported.len()).find(|at| !self.drawn.contains(at))
-        {
-            let gone = self.imported.remove(oldest);
-            self.let_go_of(gone);
-            self.drawn.iter_mut().filter(|at| **at > oldest).for_each(|at| *at -= 1);
-        }
-        let imported = self.imported_of(frame, key)?;
-        self.imported.push(imported);
-        Some(self.imported.len() - 1)
+    /// Notes that frames can't be drawn in this context. Gives false.
+    pub(crate) fn refuse(&mut self) -> bool {
+        self.imported.refuse()
+    }
+
+    /// Whether frames can't be drawn in this context: its parts then draw them read back.
+    pub(crate) fn refused(&self) -> bool {
+        self.imported.refused()
     }
 
     /// A texture of EGL image `image`, as `target` (unfiltered); 0 where it can't be made.
@@ -264,19 +253,22 @@ impl Frames {
     fn let_go_of(&self, imported: Imported) {
         // SAFETY: the textures are the current context's (0 is let be), the images the
         // display's.
-        unsafe {
-            (self.calls.glDeleteTextures)(PER_FRAME as c_int, imported.textures.as_ptr());
-            imported.images.iter().filter(|image| !image.is_null()).for_each(|image| _ = (self.calls.eglDestroyImageKHR)(self.display, *image));
-        }
+        unsafe { (self.calls.glDeleteTextures)(PER_FRAME as c_int, imported.textures.as_ptr()) };
+        self.let_go_of_images(&imported);
+    }
+
+    /// Lets go of an import's EGL images.
+    fn let_go_of_images(&self, imported: &Imported) {
+        // SAFETY: each image is the display's, used by nothing after.
+        imported.images.iter().filter(|image| !image.is_null()).for_each(|image| unsafe { _ = (self.calls.eglDestroyImageKHR)(self.display, *image) });
     }
 }
 
 impl Drop for Frames {
     /// Lets go of the EGL images (the textures go with the context, which may not be current).
     fn drop(&mut self) {
-        let images = self.imported.iter().flat_map(|imported| imported.images).filter(|image| !image.is_null());
-        // SAFETY: each image is the display's, used by nothing after.
-        images.for_each(|image| unsafe { _ = (self.calls.eglDestroyImageKHR)(self.display, image) });
+        let mut imported = std::mem::take(&mut self.imported);
+        imported.let_go_of_all(|import| self.let_go_of_images(&import));
     }
 }
 
@@ -295,7 +287,7 @@ const EXTERNAL: c_uint = 0x8D65;
 impl Frames {
     /// `frame`'s hardware buffer as an EGL image and an external texture of it; the buffer held
     /// while imported.
-    fn imported_of(&self, frame: &FrameTexture, key: u64) -> Option<Imported> {
+    fn imported_of(&self, frame: &FrameTexture) -> Option<Imported> {
         let (held, asked) = (frame.hold_buffer(), [PRESERVED, 1, NONE]);
         // SAFETY: a live buffer; EGL's documented calls on the display, the list ending in
         // `NONE`.
@@ -303,7 +295,7 @@ impl Frames {
             let client = (self.calls.eglGetNativeClientBufferANDROID)(frame.buffer);
             (self.calls.eglCreateImageKHR)(self.display, null_mut(), NATIVE_BUFFER, client, asked.as_ptr())
         };
-        let imported = Imported { key, images: [image], textures: [self.texture(EXTERNAL, image)], _held: held };
+        let imported = Imported { images: [image], textures: [self.texture(EXTERNAL, image)], _held: held };
         if imported.textures[0] == 0 {
             self.let_go_of(imported);
             return None;
@@ -311,10 +303,9 @@ impl Frames {
         Some(imported)
     }
 
-    /// Binds import `at` to frame `nth`'s unit, its image named again (so the texture reads
+    /// Binds `imported` to frame `nth`'s unit, its image named again (so the texture reads
     /// what the decoder wrote since).
-    fn bind(&self, nth: usize, at: usize) {
-        let imported = &self.imported[at];
+    fn bind(&self, nth: usize, imported: &Imported) {
         // SAFETY: OpenGL's documented calls on the current context; the texture and image are
         // alive.
         unsafe {
@@ -351,8 +342,8 @@ const TEXTURE_2D: c_uint = 0x0DE1;
 #[cfg(not(target_os = "android"))]
 impl Frames {
     /// `frame`'s dmabuf as an EGL image and a texture for each plane.
-    fn imported_of(&self, frame: &FrameTexture, key: u64) -> Option<Imported> {
-        let mut imported = Imported { key, images: [null_mut(); 3], textures: [0; 3] };
+    fn imported_of(&self, frame: &FrameTexture) -> Option<Imported> {
+        let mut imported = Imported { images: [null_mut(); 3], textures: [0; 3] };
         let planes = &frame.dmabuf.planes;
         for (nth, plane) in planes.iter().enumerate() {
             let (size, format) = match nth {
@@ -373,9 +364,8 @@ impl Frames {
         Some(imported)
     }
 
-    /// Binds import `at`'s planes to frame `nth`'s units (a plane it lacks reads its first).
-    fn bind(&self, nth: usize, at: usize) {
-        let imported = &self.imported[at];
+    /// Binds `imported`'s planes to frame `nth`'s units (a plane it lacks reads its first).
+    fn bind(&self, nth: usize, imported: &Imported) {
         for plane in 0..PER_FRAME {
             let texture = if imported.textures[plane] != 0 { imported.textures[plane] } else { imported.textures[0] };
             // SAFETY: OpenGL's documented calls on the current context; the texture is alive.
@@ -406,7 +396,7 @@ mod tests {
     use crate::gpu_draw::DrawList;
     use crate::gpu_draw::tests::{FRAME_PLACES, frame_part};
     use crate::gpu_draw_opengl::Pipeline;
-    use crate::video_gstreamer::tests::dmabuf_frame;
+    use crate::video_gstreamer::tests::{dmabuf_frame, pitchless_dmabuf_frame};
 
     functions!(Testing {
         eglGetPlatformDisplayEXT: fn(c_uint, Handle, *const c_int) -> Handle;
@@ -478,5 +468,16 @@ mod tests {
             let differ = from_dmabuf.iter().zip(&read_back).filter(|(a, b)| a != b).count();
             assert_eq!(differ, 0, "at {r:?}: {differ} pixels differ from the frame read back and drawn as a picture");
         }
+    }
+
+    #[test]
+    fn a_frame_that_cant_be_imported_refuses_the_context() {
+        let Some(pitchless) = pitchless_dmabuf_frame() else { return println!("no GStreamer dmabuf allocator here: not tested") };
+        let Some((display, extensions, _)) = surfaceless() else { return println!("no surfaceless EGL here: not tested") };
+        let (egl, _) = crate::gpu_egl::libraries().expect("EGL");
+        let mut find = |name: &CStr| unsafe { (egl.eglGetProcAddress)(name.as_ptr()) }.cast_const();
+        let mut frames = Frames::new(&mut find, display, &extensions).expect("frames are drawn in this context");
+        assert!(!frames.ready(&[pitchless]), "a frame of planes of no pitch was imported");
+        assert!(frames.refused(), "the context refuses frames");
     }
 }

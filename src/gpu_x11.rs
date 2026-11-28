@@ -170,7 +170,7 @@ impl Gpu {
 
     /// Draws a recorded paint into a window's pixels on the GPU, inside `place`, to be shown
     /// with what was put in; and keeps `list` for the next one. Says whether it drew: if not,
-    /// the CPU is to.
+    /// the CPU is to. A device that refused a video's frame records none from then on.
     #[cfg(feature = "gpu-draw")]
     pub(crate) fn draw(&mut self, shows: &mut Shows, mut list: crate::gpu_draw::DrawList, place: [c_int; 4]) -> bool {
         let drawn = match (&mut *self, shows) {
@@ -178,12 +178,25 @@ impl Gpu {
             (Gpu::Vulkan(gpu), Shows::Vulkan(shows)) if !list.failed => gpu.draw(shows, &list, place),
             _ => false,
         };
+        #[cfg(feature = "video")]
+        if !drawn && self.refuses_frames() {
+            list.takes_frames = false;
+        }
         list.finish(drawn);
         match self {
             Gpu::OpenGL(gpu) => *gpu.list = list,
             Gpu::Vulkan(gpu) => *gpu.list = list,
         }
         drawn
+    }
+
+    /// Whether a video's frame could not be drawn on the device.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    fn refuses_frames(&self) -> bool {
+        match self {
+            Gpu::OpenGL(gpu) => gpu.refuses_frames(),
+            Gpu::Vulkan(gpu) => gpu.refuses_frames(),
+        }
     }
 
     /// Shows what was put into a window's pixels since they were last shown.

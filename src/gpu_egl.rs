@@ -402,6 +402,13 @@ impl<S> Gpu<S> {
         self.pipeline.as_mut().and_then(Option::as_mut).is_some_and(|pipeline| pipeline.draw(shows.texture, shows.size, list, place))
     }
 
+    /// Whether a video's frame could not be drawn here: from then on its parts draw them read
+    /// back.
+    #[cfg(all(feature = "gpu-draw", feature = "video"))]
+    pub(crate) fn refuses_frames(&self) -> bool {
+        self.pipeline.as_ref().and_then(Option::as_ref).is_some_and(|pipeline| pipeline.refuses_frames())
+    }
+
     /// Swaps a window's back buffer in (it is current), naming `damage` where the display can
     /// (four numbers a place: left, bottom, width, height; none: all of it). Says whether it
     /// swapped; a device reset is lost.

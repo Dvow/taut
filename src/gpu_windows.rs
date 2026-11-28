@@ -47,7 +47,7 @@ fn refuses_frames(made: &Made) -> bool {
     match made {
         Made::D3d11(device) => device.drawing.as_ref().is_some_and(|drawing| drawing.refuses_frames()),
         Made::D3d12(device) => device.drawing.as_ref().is_some_and(|drawing| drawing.refuses_frames()),
-        Made::Vulkan(device) => device.drawing.as_ref().and_then(|drawing| drawing.frames.as_ref()).is_some_and(|frames| frames.refused),
+        Made::Vulkan(device) => device.drawing.as_ref().is_some_and(|drawing| drawing.refuses_frames()),
         Made::Gl(device) => device.refuses_frames(),
     }
 }

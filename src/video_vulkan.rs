@@ -14,11 +14,15 @@
 //!   model, full range, nearest: its planes' bytes as they are, each pixel's chroma the sample of
 //!   its 2 × 2. The shaders make them RGB as the CPU does (`video_yuv::FROM_YUV`), so both give
 //!   the same pixels.
-//! - The conversion is part of the frames' descriptor set layout, so of their pipeline: one is
-//!   made for the kind of frame drawn, and a part showing frames of two kinds is drawn by the CPU.
+//! - The conversion is part of the frames' descriptor set layout, so of their pipeline: each kind
+//!   of frame has its own, made the first time one is drawn and kept (a device meets few). A part
+//!   showing frames of several kinds draws its quads in runs, each by the pipeline of the frames
+//!   it shows.
+//! - Imports are kept as `gpu_frames` says.
 #[cfg(unix)]
-use crate::gpu_draw::MOST_FRAMES;
+use crate::gpu_draw::{MOST_FRAMES, Quad};
 use crate::gpu_draw_vulkan::Pipeline;
+use crate::gpu_frames::ImportedFrames;
 #[cfg(unix)]
 use crate::gpu_vulkan::Vulkan;
 #[cfg(unix)]
@@ -99,7 +103,7 @@ functions!(Calls {
 
 // What makes and binds each kind of frame's pipeline (Android, Linux).
 #[cfg(unix)]
-functions!(Kinds {
+functions!(KindCalls {
     vkCreateSamplerYcbcrConversion: fn(Object, *const VkSamplerYcbcrConversionCreateInfo, *const c_void, *mut Handle) -> i32;
     vkDestroySamplerYcbcrConversion: fn(Object, Handle, *const c_void);
     vkCreateSampler: fn(Object, *const VkSamplerCreateInfo, *const c_void, *mut Handle) -> i32;
@@ -133,8 +137,6 @@ const MIDPOINT_CHROMA: u32 = 0x2_0000;
 const MIDPOINT: u32 = 1;
 #[cfg(unix)]
 const COSITED: u32 = 0;
-/// Imports kept (each frame's buffer is one of the decoder's few, used again and again).
-const KEPT: usize = 8;
 
 /// Whether device `physical` imports the decoder's buffers: Vulkan 1.1 with the extensions and
 /// sampler Y′CbCr conversions. Its `extensions` are then to be asked for with
@@ -164,17 +166,16 @@ pub(crate) fn conversions_on() -> VkPhysicalDeviceSamplerYcbcrConversionFeatures
     VkPhysicalDeviceSamplerYcbcrConversionFeatures { kind: 1_000_156_004, enabled: 1, ..Default::default() }
 }
 
-/// A decoder's buffer imported: which (`key`), the image of it, its memory and view, and
-/// whether the image was given back to the decoder since first used. Android: the hardware
-/// buffer, held while imported; Linux: the dmabuf as a buffer, and its memory. (Windows: the
-/// memory is the Direct3D 11 texture's, which the import holds.)
+/// A decoder's buffer imported: the image of it, its memory and view. Android: whether the
+/// image was given back to the decoder since first used, and the hardware buffer, held while
+/// imported; Linux: the dmabuf as a buffer, and its memory. (Windows: the memory is the
+/// Direct3D 11 texture's, which the import holds.)
 struct Imported {
-    key: u64,
     image: Handle,
     memory: Handle,
     view: Handle,
     #[cfg(target_os = "android")]
-    used: bool,
+    used: std::cell::Cell<bool>,
     #[cfg(target_os = "android")]
     _held: crate::video_android::HeldBuffer,
     #[cfg(all(unix, not(target_os = "android")))]
@@ -184,27 +185,25 @@ struct Imported {
 }
 
 /// What draws videos' frames on a device that `imports`: its functions, the device and its
-/// queue family, the buffers imported (the newest last), and this part's frames' imports.
-/// Android and Linux: the format features of the Linux frames' formats, the kind of frame drawn
-/// and the numbers that make this part's frames RGB. Windows: whether a frame could not be
-/// imported, after which the device's frames are read back.
+/// queue family, and the buffers imported. Android and Linux: the functions that make kinds of
+/// frames, the format features of the Linux frames' formats, the kinds made, and this part's
+/// frames' kinds (their places in `kinds`) and the numbers that make them RGB.
 pub(crate) struct Frames {
     calls: Calls,
     device: Object,
     #[cfg(any(target_os = "android", windows))]
     family: u32,
-    imported: Vec<Imported>,
-    drawn: Vec<usize>,
+    imported: ImportedFrames<Imported>,
     #[cfg(unix)]
-    kinds: Kinds,
+    kind_calls: KindCalls,
     #[cfg(all(unix, not(target_os = "android")))]
     planar: [u32; 2],
     #[cfg(unix)]
-    kind: Option<Kind>,
+    kinds: Vec<Kind>,
+    #[cfg(unix)]
+    frame_kinds: Vec<usize>,
     #[cfg(unix)]
     numbers: [f32; MOST_FRAMES * 8],
-    #[cfg(windows)]
-    pub(crate) refused: bool,
 }
 
 // SAFETY: as its device: used by one thread at a time.
@@ -217,7 +216,7 @@ impl Frames {
     pub(crate) fn new(find: &mut dyn FnMut(&CStr) -> *const c_void, device: Object, family: u32, #[cfg(unix)] vulkan: &Vulkan, #[cfg(unix)] physical: Object) -> Option<Box<Frames>> {
         let calls = Calls::load(find).ok()?;
         #[cfg(unix)]
-        let kinds = Kinds::load(find).ok()?;
+        let kind_calls = KindCalls::load(find).ok()?;
         #[cfg(target_os = "android")]
         let _ = (vulkan, physical);
         #[cfg(all(unix, not(target_os = "android")))]
@@ -227,67 +226,46 @@ impl Frames {
             device,
             #[cfg(any(target_os = "android", windows))]
             family,
-            imported: Vec::new(),
-            drawn: Vec::new(),
+            imported: ImportedFrames::default(),
             #[cfg(unix)]
-            kinds,
+            kind_calls,
             #[cfg(all(unix, not(target_os = "android")))]
             planar: [TWO_PLANES, THREE_PLANES].map(|format| optimal_features(vulkan, physical, format)),
             #[cfg(unix)]
-            kind: None,
+            kinds: Vec::new(),
+            #[cfg(unix)]
+            frame_kinds: Vec::new(),
             #[cfg(unix)]
             numbers: [0.0; MOST_FRAMES * 8],
-            #[cfg(windows)]
-            refused: false,
         }))
     }
 
-    /// Readies `frames` (this part's) to be drawn: each imported, laid out for the shaders and
-    /// named in the descriptor set that reads them (Android and Linux: their kind's pipeline's;
-    /// Windows: `pipeline`'s own). Whether they are (none can be where the frames are of two
-    /// kinds, or one can't be imported).
-    pub(crate) fn ready(&mut self, pipeline: &Pipeline, commands: Object, frames: &[Arc<FrameTexture>]) -> bool {
-        self.drawn.clear();
+    /// Readies `frames` (this part's) to be drawn: each imported (as `gpu_frames` says) and
+    /// named in the descriptor sets that read them (Android and Linux: their kinds' pipelines';
+    /// Windows: `pipeline`'s own). Nothing is recorded: `take` lays them out for the shaders.
+    /// Whether they are; where one can't be, the device refuses frames.
+    pub(crate) fn ready(&mut self, pipeline: &Pipeline, frames: &[Arc<FrameTexture>]) -> bool {
         #[cfg(unix)]
-        if !frames.is_empty() && !self.ready_kind(pipeline, frames) {
-            return false;
+        if !self.ready_kinds(pipeline, frames) {
+            return self.imported.refuse();
         }
-        for frame in frames {
-            let Some(at) = self.import(pipeline, frame) else { return self.refuse() };
-            self.lay_out(commands, at, frame);
-            self.drawn.push(at);
+        let mut imported = std::mem::take(&mut self.imported);
+        let ready = imported.ready(frames, |frame| self.imported_of(pipeline, frame), |gone| self.let_go_of(gone));
+        if ready {
+            self.name_frames(pipeline, &imported);
         }
-        self.name_frames(pipeline);
-        true
+        self.imported = imported;
+        ready
     }
 
-    /// Notes that a frame could not be imported (Windows then reads the device's frames back).
-    /// Gives false.
-    fn refuse(&mut self) -> bool {
-        #[cfg(windows)]
-        {
-            self.refused = true;
-        }
-        false
+    /// Records this part's frames (readied by `ready`) taken from the decoder for the shaders.
+    pub(crate) fn take(&self, commands: Object, frames: &[Arc<FrameTexture>]) {
+        self.imported.drawn().zip(frames).for_each(|(imported, frame)| self.lay_out(commands, imported, frame));
     }
 
-    /// Where `frame`'s buffer is among those imported: found, or imported now (the oldest not
-    /// in this part let go of where too many are). None where it can't be.
-    fn import(&mut self, pipeline: &Pipeline, frame: &FrameTexture) -> Option<usize> {
-        let key = frame.key()?;
-        if let Some(at) = self.imported.iter().position(|imported| imported.key == key) {
-            return Some(at);
-        }
-        if self.imported.len() >= KEPT
-            && let Some(oldest) = (0..self.imported.len()).find(|at| !self.drawn.contains(at))
-        {
-            let gone = self.imported.remove(oldest);
-            self.let_go_of(gone);
-            self.drawn.iter_mut().filter(|at| **at > oldest).for_each(|at| *at -= 1);
-        }
-        let imported = self.imported_of(pipeline, frame, key)?;
-        self.imported.push(imported);
-        Some(self.imported.len() - 1)
+    /// Whether a frame could not be imported: the device's frames are then read back.
+    pub(crate) fn refused(&self) -> bool {
+        self.imported.refused()
     }
 
     /// A view of `image`, of `format`, chaining in `next`; 0 where none is made.
@@ -314,19 +292,15 @@ impl Frames {
             (calls.vkFreeMemory)(device, imported.buffer_memory, null());
         }
     }
-
-    /// Lets go of every import. (The device is done with them.)
-    fn let_go_of_imports(&mut self) {
-        std::mem::take(&mut self.imported).into_iter().for_each(|imported| self.let_go_of(imported));
-    }
 }
 
 impl Drop for Frames {
     /// Lets go of everything. (The device is done with all of it.)
     fn drop(&mut self) {
-        self.let_go_of_imports();
+        let mut imported = std::mem::take(&mut self.imported);
+        imported.let_go_of_all(|import| self.let_go_of(import));
         #[cfg(unix)]
-        self.forget_kind();
+        std::mem::take(&mut self.kinds).into_iter().for_each(|kind| self.forget(kind));
     }
 }
 
@@ -380,50 +354,74 @@ const PUSHED: u32 = (MOST_FRAMES * 8 * 4) as u32;
 
 #[cfg(unix)]
 impl Frames {
-    /// Makes the pipeline of `frames`' kind, where they are of one, and notes the numbers that
-    /// make each RGB: whether it is made.
-    fn ready_kind(&mut self, pipeline: &Pipeline, frames: &[Arc<FrameTexture>]) -> bool {
-        let Some(kind) = frames.first().and_then(|first| self.kind_of(first)) else { return false };
-        if !frames.iter().all(|frame| self.kind_of(frame).is_some_and(|other| other.key == kind.key)) || !self.make_kind(pipeline, kind) {
-            return false;
-        }
+    /// Makes the pipeline of each of `frames`' kinds where it is not made yet, and notes each
+    /// frame's kind and the numbers that make it RGB: whether all are made.
+    fn ready_kinds(&mut self, pipeline: &Pipeline, frames: &[Arc<FrameTexture>]) -> bool {
+        self.frame_kinds.clear();
         for (nth, frame) in frames.iter().enumerate() {
+            let Some(at) = self.kind_of(frame).and_then(|kind| self.kind_made(pipeline, &kind)) else { return false };
+            self.frame_kinds.push(at);
             self.numbers[nth * 8..nth * 8 + 8].copy_from_slice(&frame.for_shaders());
         }
         true
     }
 
-    /// Binds the frames' pipeline, the descriptor sets (`set` the cache and patches') and the
-    /// numbers into `commands` (in a render pass), where this part has frames: whether it does.
-    pub(crate) fn bind(&self, commands: Object, set: Handle) -> bool {
-        let Some(kind) = self.kind.as_ref().filter(|_| !self.drawn.is_empty()) else { return false };
-        let (kinds, sets) = (&self.kinds, [set, kind.set]);
+    /// Whether this part has frames: its quads are then drawn in `runs`.
+    pub(crate) fn drawing(&self) -> bool {
+        !self.frame_kinds.is_empty()
+    }
+
+    /// `quads` (this part's) in runs, each drawn by one kind's pipeline: its quads, and the
+    /// kind's place in `kinds`. A run ends before a quad showing a frame of another kind.
+    pub(crate) fn runs(&self, quads: &[Quad]) -> Vec<(std::ops::Range<usize>, usize)> {
+        let mut runs: Vec<(std::ops::Range<usize>, usize)> = Vec::new();
+        for (at, quad) in quads.iter().enumerate() {
+            let Some(kind) = quad.frame().and_then(|nth| self.frame_kinds.get(nth)).copied() else { continue };
+            if runs.last().is_some_and(|last| last.1 == kind) {
+                continue;
+            }
+            let start = if runs.is_empty() { 0 } else { at };
+            if let Some(last) = runs.last_mut() {
+                last.0.end = at;
+            }
+            runs.push((start..quads.len(), kind));
+        }
+        if runs.is_empty() {
+            runs.push((0..quads.len(), self.frame_kinds.first().copied().unwrap_or_default()));
+        }
+        runs
+    }
+
+    /// Binds kind `at`'s pipeline, the descriptor sets (`set` the cache and patches') and the
+    /// numbers into `commands` (in a render pass).
+    pub(crate) fn bind(&self, commands: Object, set: Handle, at: usize) {
+        let (calls, kind) = (&self.kind_calls, &self.kinds[at]);
+        let sets = [set, kind.set];
         // SAFETY: the commands are being recorded; the pipeline and sets are alive, and the
         // numbers as many as the pipeline's layout takes.
         unsafe {
-            (kinds.vkCmdBindPipeline)(commands, 0, kind.pipeline);
-            (kinds.vkCmdBindDescriptorSets)(commands, 0, kind.layout, 0, 2, sets.as_ptr(), 0, null());
-            (kinds.vkCmdPushConstants)(commands, kind.layout, FRAGMENT, 0, PUSHED, self.numbers.as_ptr().cast());
+            (calls.vkCmdBindPipeline)(commands, 0, kind.pipeline);
+            (calls.vkCmdBindDescriptorSets)(commands, 0, kind.layout, 0, 2, sets.as_ptr(), 0, null());
+            (calls.vkCmdPushConstants)(commands, kind.layout, FRAGMENT, 0, PUSHED, self.numbers.as_ptr().cast());
         }
-        true
     }
 
-    /// Makes the pipeline of frames of `kind` where it is not the one made: the conversion and
-    /// what names frames through it, then the pipeline. What was made for the kind before goes,
-    /// and the buffers imported with it. Whether it is made.
-    fn make_kind(&mut self, pipeline: &Pipeline, kind: KindOf) -> bool {
-        if self.kind.as_ref().is_some_and(|made| made.key == kind.key) {
-            return true;
+    /// Where the pipeline of frames of `kind` is among those made: found, or made now (the
+    /// conversion and what names frames through it, then the pipeline). None where it can't be.
+    fn kind_made(&mut self, pipeline: &Pipeline, kind: &KindOf) -> Option<usize> {
+        if let Some(at) = self.kinds.iter().position(|made| made.key == kind.key) {
+            return Some(at);
         }
-        self.let_go_of_imports();
-        self.forget_kind();
-        let Some(conversion) = self.conversion(&kind) else { return false };
+        let conversion = self.conversion(kind)?;
         let mut made = Kind { key: kind.key, conversion, sampler: 0, set_layout: 0, pool: 0, set: 0, layout: 0, pipeline: 0 };
         let complete = self.sampler(&mut made) && self.set(&mut made, pipeline.set_layout());
         made.pipeline = if complete { pipeline.pipeline(&PIXELS_FRAMES, made.layout).unwrap_or(0) } else { 0 };
-        let ready = made.pipeline != 0;
-        self.kind = Some(made);
-        ready
+        if made.pipeline == 0 {
+            self.forget(made);
+            return None;
+        }
+        self.kinds.push(made);
+        Some(self.kinds.len() - 1)
     }
 
     /// A conversion of frames of `kind`: the identity model, full range, nearest, chroma at the
@@ -433,7 +431,7 @@ impl Frames {
         let asked = VkSamplerYcbcrConversionCreateInfo { kind: 1_000_156_000, next: kind.chained(), format: kind.format, x_offset: place, y_offset: place, ..Default::default() };
         let mut conversion = 0;
         // SAFETY: the device is alive; the description and what it chains live through the call.
-        (unsafe { (self.kinds.vkCreateSamplerYcbcrConversion)(self.device, &asked, null(), &mut conversion) } == 0).then_some(conversion)
+        (unsafe { (self.kind_calls.vkCreateSamplerYcbcrConversion)(self.device, &asked, null(), &mut conversion) } == 0).then_some(conversion)
     }
 
     /// The sampler through `made`'s conversion: nearest, clamped. Whether it is made.
@@ -441,7 +439,7 @@ impl Frames {
         let through = VkSamplerYcbcrConversionInfo { kind: 1_000_156_001, conversion: made.conversion, ..Default::default() };
         let asked = VkSamplerCreateInfo { kind: 31, next: (&raw const through).cast(), address: [2; 3], ..Default::default() };
         // SAFETY: as above.
-        unsafe { (self.kinds.vkCreateSampler)(self.device, &asked, null(), &mut made.sampler) == 0 }
+        unsafe { (self.kind_calls.vkCreateSampler)(self.device, &asked, null(), &mut made.sampler) == 0 }
     }
 
     /// The descriptor set naming four frames through `made`'s sampler (set 1; `set_layout` is
@@ -453,57 +451,63 @@ impl Frames {
         // (A frame of several planes may take a descriptor for each.)
         let sizes = VkDescriptorPoolSize { descriptor_type: SAMPLED, count: (MOST_FRAMES * 3) as u32 };
         let pushed = VkPushConstantRange { stages: FRAGMENT, offset: 0, size: PUSHED };
-        let (kinds, device) = (&self.kinds, self.device);
+        let (calls, device) = (&self.kind_calls, self.device);
         // SAFETY: the device is alive; each description is whole and what it points to lives
         // through the call. What is made is held by the kind.
         unsafe {
             let described = VkDescriptorSetLayoutCreateInfo { kind: 32, binding_count: 4, bindings: bindings.as_ptr(), ..Default::default() };
             let pooled = VkDescriptorPoolCreateInfo { kind: 33, max_sets: 1, size_count: 1, sizes: &sizes, ..Default::default() };
-            if (kinds.vkCreateDescriptorSetLayout)(device, &described, null(), &mut made.set_layout) != 0 || (kinds.vkCreateDescriptorPool)(device, &pooled, null(), &mut made.pool) != 0 {
+            if (calls.vkCreateDescriptorSetLayout)(device, &described, null(), &mut made.set_layout) != 0 || (calls.vkCreateDescriptorPool)(device, &pooled, null(), &mut made.pool) != 0 {
                 return false;
             }
             let layouts = [set_layout, made.set_layout];
             let asked = VkDescriptorSetAllocateInfo { kind: 34, pool: made.pool, count: 1, layouts: &made.set_layout, ..Default::default() };
             let laid = VkPipelineLayoutCreateInfo { kind: 30, set_layout_count: 2, set_layouts: layouts.as_ptr(), push_range_count: 1, push_ranges: (&raw const pushed).cast(), ..Default::default() };
-            (kinds.vkAllocateDescriptorSets)(device, &asked, &mut made.set) == 0 && (kinds.vkCreatePipelineLayout)(device, &laid, null(), &mut made.layout) == 0
+            (calls.vkAllocateDescriptorSets)(device, &asked, &mut made.set) == 0 && (calls.vkCreatePipelineLayout)(device, &laid, null(), &mut made.layout) == 0
         }
     }
 
-    /// Names this part's frames in the kind's descriptor set: frame n at binding n; the first
-    /// where there are fewer.
-    fn name_frames(&self, _: &Pipeline) {
-        let (Some(kind), Some(first)) = (&self.kind, self.drawn.first()) else { return };
-        let images: [VkDescriptorImageInfo; MOST_FRAMES] = std::array::from_fn(|nth| {
-            let at = self.drawn.get(nth).unwrap_or(first);
-            VkDescriptorImageInfo { sampler: 0, view: self.imported[*at].view, layout: LAYOUT_SHADER_READ_ONLY }
-        });
+    /// Names this part's frames in the descriptor sets of their kinds.
+    fn name_frames(&self, _: &Pipeline, imported: &ImportedFrames<Imported>) {
+        let views: Vec<Handle> = imported.drawn().map(|import| import.view).collect();
+        (0..self.kinds.len()).for_each(|at| self.name_frames_of(at, &views));
+    }
+
+    /// Names this part's frames of kind `at` in its descriptor set: frame n at binding n, where
+    /// it is of the kind; else its first frame of the kind (never read there). `views` are the
+    /// frames', in order.
+    fn name_frames_of(&self, at: usize, views: &[Handle]) {
+        let Some(first) = self.frame_kinds.iter().position(|kind| *kind == at) else { return };
+        let of_kind = |nth: usize| if self.frame_kinds.get(nth) == Some(&at) { nth } else { first };
+        let images: [VkDescriptorImageInfo; MOST_FRAMES] = std::array::from_fn(|nth| VkDescriptorImageInfo { sampler: 0, view: views[of_kind(nth)], layout: LAYOUT_SHADER_READ_ONLY });
+        let set = self.kinds[at].set;
         let writes: [VkWriteDescriptorSet; MOST_FRAMES] =
-            std::array::from_fn(|nth| VkWriteDescriptorSet { kind: 35, set: kind.set, binding: nth as u32, count: 1, descriptor_type: SAMPLED, images: &images[nth], ..Default::default() });
+            std::array::from_fn(|nth| VkWriteDescriptorSet { kind: 35, set, binding: nth as u32, count: 1, descriptor_type: SAMPLED, images: &images[nth], ..Default::default() });
         // SAFETY: the set and views are alive; nothing the device runs uses the set now (each
         // submit is waited for); the writes point into `images`, alive here.
-        unsafe { (self.kinds.vkUpdateDescriptorSets)(self.device, MOST_FRAMES as u32, writes.as_ptr(), 0, null()) };
+        unsafe { (self.kind_calls.vkUpdateDescriptorSets)(self.device, MOST_FRAMES as u32, writes.as_ptr(), 0, null()) };
     }
 
-    /// A view of `image` through the kind's conversion; 0 where none is made.
-    fn view(&self, image: Handle, format: u32) -> Handle {
-        let Some(kind) = &self.kind else { return 0 };
-        let through = VkSamplerYcbcrConversionInfo { kind: 1_000_156_001, conversion: kind.conversion, ..Default::default() };
-        self.view_chaining(image, format, (&raw const through).cast())
+    /// A view of `image` (of `kind`'s format) through the kind's conversion; 0 where none is
+    /// made.
+    fn view(&self, image: Handle, kind: &KindOf) -> Handle {
+        let Some(made) = self.kinds.iter().find(|made| made.key == kind.key) else { return 0 };
+        let through = VkSamplerYcbcrConversionInfo { kind: 1_000_156_001, conversion: made.conversion, ..Default::default() };
+        self.view_chaining(image, kind.format, (&raw const through).cast())
     }
 
-    /// Lets go of the kind made. (The device is done with it, and the imports viewed through its
+    /// Lets go of a kind made. (The device is done with it, and the imports viewed through its
     /// conversion are gone.)
-    fn forget_kind(&mut self) {
-        let Some(kind) = self.kind.take() else { return };
-        let (kinds, device) = (&self.kinds, self.device);
+    fn forget(&self, kind: Kind) {
+        let (calls, device) = (&self.kind_calls, self.device);
         // SAFETY: each is held once, by the kind; null handles are let be.
         unsafe {
-            (kinds.vkDestroyPipeline)(device, kind.pipeline, null());
-            (kinds.vkDestroyPipelineLayout)(device, kind.layout, null());
-            (kinds.vkDestroyDescriptorPool)(device, kind.pool, null());
-            (kinds.vkDestroyDescriptorSetLayout)(device, kind.set_layout, null());
-            (kinds.vkDestroySampler)(device, kind.sampler, null());
-            (kinds.vkDestroySamplerYcbcrConversion)(device, kind.conversion, null());
+            (calls.vkDestroyPipeline)(device, kind.pipeline, null());
+            (calls.vkDestroyPipelineLayout)(device, kind.layout, null());
+            (calls.vkDestroyDescriptorPool)(device, kind.pool, null());
+            (calls.vkDestroyDescriptorSetLayout)(device, kind.set_layout, null());
+            (calls.vkDestroySampler)(device, kind.sampler, null());
+            (calls.vkDestroySamplerYcbcrConversion)(device, kind.conversion, null());
         }
     }
 }
@@ -541,7 +545,7 @@ impl Frames {
 
     /// `frame`'s hardware buffer imported as an image of its kind, with its view; the buffer
     /// held while imported.
-    fn imported_of(&self, _: &Pipeline, frame: &FrameTexture, key: u64) -> Option<Imported> {
+    fn imported_of(&self, _: &Pipeline, frame: &FrameTexture) -> Option<Imported> {
         let ((properties, format), kind) = (self.properties(frame)?, self.kind_of(frame)?);
         let (calls, device) = (&self.calls, self.device);
         let external = VkExternalMemoryImageCreateInfo { kind: 1_000_072_001, next: kind.chained(), handles: HARDWARE_BUFFER };
@@ -558,7 +562,7 @@ impl Frames {
             usage: USAGE_SAMPLED,
             ..Default::default()
         };
-        let mut imported = Imported { key, image: 0, memory: 0, view: 0, used: false, _held: frame.hold_buffer() };
+        let mut imported = Imported { image: 0, memory: 0, view: 0, used: std::cell::Cell::new(false), _held: frame.hold_buffer() };
         // SAFETY: the device is alive; the description and its chain live through the call.
         let made = unsafe { (calls.vkCreateImage)(device, &asked, null(), &mut imported.image) } == 0;
         let dedicated = VkMemoryDedicatedAllocateInfo { kind: 1_000_127_001, image: imported.image, ..Default::default() };
@@ -566,7 +570,7 @@ impl Frames {
         let memory = VkMemoryAllocateInfo { kind: 5, next: (&raw const buffer).cast(), size: properties.size, type_index: properties.memory_types.trailing_zeros() };
         // SAFETY: as above; the image takes all of the memory.
         let bound = made && unsafe { (calls.vkAllocateMemory)(device, &memory, null(), &mut imported.memory) == 0 && (calls.vkBindImageMemory)(device, imported.image, imported.memory, 0) == 0 };
-        imported.view = if bound { self.view(imported.image, format.format) } else { 0 };
+        imported.view = if bound { self.view(imported.image, &kind) } else { 0 };
         if imported.view == 0 {
             self.let_go_of(imported);
             return None;
@@ -577,9 +581,8 @@ impl Frames {
     /// Takes this part's frames from the shaders back to the decoder, once drawn (to the
     /// foreign queue family).
     pub(crate) fn give_back(&self, commands: Object) {
-        for at in &self.drawn {
-            let given =
-                VkImageMemoryBarrier { source_family: self.family, destination_family: FOREIGN, ..barrier(self.imported[*at].image, LAYOUT_SHADER_READ_ONLY, LAYOUT_GENERAL, ACCESS_SHADER_READ, 0) };
+        for imported in self.imported.drawn() {
+            let given = VkImageMemoryBarrier { source_family: self.family, destination_family: FOREIGN, ..barrier(imported.image, LAYOUT_SHADER_READ_ONLY, LAYOUT_GENERAL, ACCESS_SHADER_READ, 0) };
             // SAFETY: the commands are being recorded; the image is alive.
             unsafe { (self.calls.vkCmdPipelineBarrier)(commands, STAGE_FRAGMENT_SHADER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &given) };
         }
@@ -587,9 +590,8 @@ impl Frames {
 
     /// Takes the frame's image from the decoder for the shaders (from the foreign queue family:
     /// what the decoder wrote is kept).
-    fn lay_out(&mut self, commands: Object, at: usize, _: &FrameTexture) {
-        let imported = &mut self.imported[at];
-        let before = if std::mem::replace(&mut imported.used, true) { LAYOUT_GENERAL } else { LAYOUT_UNDEFINED };
+    fn lay_out(&self, commands: Object, imported: &Imported, _: &FrameTexture) {
+        let before = if imported.used.replace(true) { LAYOUT_GENERAL } else { LAYOUT_UNDEFINED };
         let taken = VkImageMemoryBarrier { source_family: FOREIGN, destination_family: self.family, ..barrier(imported.image, before, LAYOUT_SHADER_READ_ONLY, 0, ACCESS_SHADER_READ) };
         // SAFETY: the commands are being recorded; the image is alive.
         unsafe { (self.calls.vkCmdPipelineBarrier)(commands, STAGE_TOP, STAGE_FRAGMENT_SHADER, 0, 0, null(), 0, null(), 1, &taken) };
@@ -612,7 +614,7 @@ const D3D11_TEXTURE: u32 = 0x8;
 impl Frames {
     /// `frame`'s texture imported by its NT handle as an image of memory of its own (dedicated,
     /// as Direct3D's textures must be), with its view.
-    fn imported_of(&self, _: &Pipeline, frame: &FrameTexture, key: u64) -> Option<Imported> {
+    fn imported_of(&self, _: &Pipeline, frame: &FrameTexture) -> Option<Imported> {
         if frame.handle == 0 {
             return None;
         }
@@ -630,7 +632,7 @@ impl Frames {
             usage: USAGE_SAMPLED,
             ..Default::default()
         };
-        let (mut imported, mut needs) = (Imported { key, image: 0, memory: 0, view: 0 }, VkMemoryRequirements::default());
+        let (mut imported, mut needs) = (Imported { image: 0, memory: 0, view: 0 }, VkMemoryRequirements::default());
         // SAFETY: the device is alive; the description and its chain live through the call.
         let made = unsafe { (calls.vkCreateImage)(device, &asked, null(), &mut imported.image) } == 0;
         if made {
@@ -642,7 +644,7 @@ impl Frames {
         let memory = VkMemoryAllocateInfo { kind: 5, next: (&raw const handle).cast(), size: needs.size, type_index: needs.type_bits.trailing_zeros() };
         // SAFETY: as above; the image takes all of the memory; the handle stays the frame's.
         let bound = made && unsafe { (calls.vkAllocateMemory)(device, &memory, null(), &mut imported.memory) == 0 && (calls.vkBindImageMemory)(device, imported.image, imported.memory, 0) == 0 };
-        imported.view = if bound { self.view(imported.image, B8G8R8A8_UNORM) } else { 0 };
+        imported.view = if bound { self.view_chaining(imported.image, B8G8R8A8_UNORM, null()) } else { 0 };
         if imported.view == 0 {
             self.let_go_of(imported);
             return None;
@@ -652,18 +654,16 @@ impl Frames {
 
     /// Takes the frame's image from Direct3D for the shaders (from the external queue family:
     /// what the decoder wrote is kept).
-    fn lay_out(&mut self, commands: Object, at: usize, _: &FrameTexture) {
-        let taken =
-            VkImageMemoryBarrier { source_family: EXTERNAL, destination_family: self.family, ..barrier(self.imported[at].image, LAYOUT_GENERAL, LAYOUT_SHADER_READ_ONLY, 0, ACCESS_SHADER_READ) };
+    fn lay_out(&self, commands: Object, imported: &Imported, _: &FrameTexture) {
+        let taken = VkImageMemoryBarrier { source_family: EXTERNAL, destination_family: self.family, ..barrier(imported.image, LAYOUT_GENERAL, LAYOUT_SHADER_READ_ONLY, 0, ACCESS_SHADER_READ) };
         // SAFETY: the commands are being recorded; the image is alive.
         unsafe { (self.calls.vkCmdPipelineBarrier)(commands, STAGE_TOP, STAGE_FRAGMENT_SHADER, 0, 0, null(), 0, null(), 1, &taken) };
     }
 
     /// Gives this part's frames back to Direct3D, once drawn (to the external queue family).
     pub(crate) fn give_back(&self, commands: Object) {
-        for at in &self.drawn {
-            let given =
-                VkImageMemoryBarrier { source_family: self.family, destination_family: EXTERNAL, ..barrier(self.imported[*at].image, LAYOUT_SHADER_READ_ONLY, LAYOUT_GENERAL, ACCESS_SHADER_READ, 0) };
+        for imported in self.imported.drawn() {
+            let given = VkImageMemoryBarrier { source_family: self.family, destination_family: EXTERNAL, ..barrier(imported.image, LAYOUT_SHADER_READ_ONLY, LAYOUT_GENERAL, ACCESS_SHADER_READ, 0) };
             // SAFETY: the commands are being recorded; the image is alive.
             unsafe { (self.calls.vkCmdPipelineBarrier)(commands, STAGE_FRAGMENT_SHADER, STAGE_BOTTOM, 0, 0, null(), 0, null(), 1, &given) };
         }
@@ -671,18 +671,13 @@ impl Frames {
 
     /// The memory of this part's frames: the submit takes their keyed mutexes.
     pub(crate) fn memories(&self) -> Vec<Handle> {
-        self.drawn.iter().map(|at| self.imported[*at].memory).collect()
+        self.imported.drawn().map(|imported| imported.memory).collect()
     }
 
     /// Names this part's frames in `pipeline`'s own descriptor set.
-    fn name_frames(&self, pipeline: &Pipeline) {
-        let views: Vec<Handle> = self.drawn.iter().map(|at| self.imported[*at].view).collect();
+    fn name_frames(&self, pipeline: &Pipeline, imported: &ImportedFrames<Imported>) {
+        let views: Vec<Handle> = imported.drawn().map(|import| import.view).collect();
         pipeline.name_frames(&views);
-    }
-
-    /// A view of `image`, of `format`; 0 where none is made.
-    fn view(&self, image: Handle, format: u32) -> Handle {
-        self.view_chaining(image, format, null())
     }
 }
 
@@ -728,11 +723,11 @@ impl Frames {
 
     /// `frame`'s dmabuf imported as a buffer (its file duplicated, handed to Vulkan), and an
     /// image of its kind's planes it is copied into, with its view.
-    fn imported_of(&self, pipeline: &Pipeline, frame: &FrameTexture, key: u64) -> Option<Imported> {
-        let format = self.kind_of(frame)?.format;
-        let mut imported = Imported { key, image: 0, memory: 0, view: 0, buffer: 0, buffer_memory: 0 };
-        let made = self.import_buffer(frame, &mut imported) && self.planes_image(pipeline, frame, format, &mut imported);
-        imported.view = if made { self.view(imported.image, format) } else { 0 };
+    fn imported_of(&self, pipeline: &Pipeline, frame: &FrameTexture) -> Option<Imported> {
+        let kind = self.kind_of(frame)?;
+        let mut imported = Imported { image: 0, memory: 0, view: 0, buffer: 0, buffer_memory: 0 };
+        let made = self.import_buffer(frame, &mut imported) && self.planes_image(pipeline, frame, kind.format, &mut imported);
+        imported.view = if made { self.view(imported.image, &kind) } else { 0 };
         if imported.view == 0 {
             self.let_go_of(imported);
             return None;
@@ -804,8 +799,7 @@ impl Frames {
 
     /// Copies the frame's planes from its dmabuf into its image, then readies that for the
     /// shaders.
-    fn lay_out(&mut self, commands: Object, at: usize, frame: &FrameTexture) {
-        let imported = &self.imported[at];
+    fn lay_out(&self, commands: Object, imported: &Imported, frame: &FrameTexture) {
         let [width, height] = [frame.whole.0, frame.whole.1];
         let copies: Vec<VkBufferImageCopy> = frame.dmabuf.planes.iter().enumerate().map(|(nth, plane)| plane_copy(nth, plane, [width, height], frame.dmabuf.planes.len())).collect();
         let to_copy = barrier(imported.image, LAYOUT_UNDEFINED, LAYOUT_TRANSFER_DESTINATION, 0, ACCESS_TRANSFER_WRITE);
@@ -2446,9 +2440,11 @@ pub(crate) static PIXELS_DUAL_FRAMES: [u32; 9489] = [
 mod tests {
     use super::*;
     #[cfg(all(unix, not(target_os = "android")))]
-    use crate::gpu_draw::tests::{FRAME_PLACES, frame_part};
+    use crate::gpu_draw::tests::{FRAME_PLACES, frame_part, frames_part};
     #[cfg(all(unix, not(target_os = "android")))]
     use crate::gpu_draw_vulkan::tests::{Bench, Made};
+    #[cfg(all(unix, not(target_os = "android")))]
+    use crate::video_gstreamer::tests::{dmabuf_frame, sealed_dmabuf_frame, three_plane_dmabuf_frame};
 
     #[test]
     fn the_structures_are_laid_out_as_vulkan_lays_them_out() {
@@ -2501,16 +2497,23 @@ mod tests {
         Some((Bench::on(&made, find, vulkan.instance, device, memory, false), made, vulkan, physical))
     }
 
+    /// What `importing` gives, with a pipeline drawing frames on its device; none where there is
+    /// none.
+    #[cfg(all(unix, not(target_os = "android")))]
+    fn framing() -> Option<(Bench, Made, Box<Pipeline>)> {
+        let (bench, made, vulkan, physical) = importing()?;
+        let mut pipeline = bench.pipeline();
+        let (find, instance) = (bench.find, bench.instance);
+        pipeline.frames = Frames::new(&mut |name| unsafe { find(instance, name.as_ptr()) }, bench.device, 0, &vulkan, physical);
+        assert!(pipeline.frames.is_some(), "frames are drawn on this device");
+        Some((bench, made, pipeline))
+    }
+
     #[cfg(all(unix, not(target_os = "android")))]
     #[test]
     fn a_dmabufs_frame_is_drawn_from_there_as_its_pixels_read_back_are() {
-        let Some(frame) = crate::video_gstreamer::tests::dmabuf_frame() else { return println!("no GStreamer dmabuf allocator here: not tested") };
-        let Some((bench, made, vulkan, physical)) = importing() else { return println!("no Vulkan CPU device that imports dmabufs here: not tested") };
-        let mut pipeline = bench.pipeline();
-        let (find, device) = (bench.find, bench.device);
-        let mut found = |name: &CStr| unsafe { find(bench.instance, name.as_ptr()) };
-        pipeline.frames = Frames::new(&mut found, device, 0, &vulkan, physical);
-        assert!(pipeline.frames.is_some(), "frames are drawn on this device");
+        let Some(frame) = dmabuf_frame() else { return println!("no GStreamer dmabuf allocator here: not tested") };
+        let Some((bench, made, mut pipeline)) = framing() else { return println!("no Vulkan CPU device that imports dmabufs here: not tested") };
         let size = [220, 170];
         let under = vec![0xff20_2830; (size[0] * size[1]) as usize];
         for r in FRAME_PLACES {
@@ -2519,6 +2522,35 @@ mod tests {
             let differ = drawn.iter().zip(&read_back).filter(|(a, b)| a != b).count();
             assert_eq!(differ, 0, "at {r:?}: {differ} pixels differ from the frame read back and drawn as a picture");
         }
+        drop(pipeline);
+        bench.finish(made);
+    }
+
+    #[cfg(all(unix, not(target_os = "android")))]
+    #[test]
+    fn frames_of_two_kinds_in_one_part_are_drawn_as_their_pixels_read_back_are() {
+        let (Some(two), Some(three)) = (dmabuf_frame(), three_plane_dmabuf_frame()) else { return println!("no GStreamer dmabuf allocator here: not tested") };
+        let Some((bench, made, mut pipeline)) = framing() else { return println!("no Vulkan CPU device that imports dmabufs here: not tested") };
+        let [big, small, smaller] = FRAME_PLACES;
+        let shown = [(&two, big), (&three, small), (&two, smaller)];
+        let size = [220, 170];
+        let under = vec![0xff20_2830; (size[0] * size[1]) as usize];
+        let drawn = bench.drawn(&made, &mut pipeline, &frames_part(&shown, size, true), size, &under);
+        let read_back = bench.drawn(&made, &mut pipeline, &frames_part(&shown, size, false), size, &under);
+        let differ = drawn.iter().zip(&read_back).filter(|(a, b)| a != b).count();
+        assert_eq!(differ, 0, "{differ} pixels differ from the frames read back and drawn as pictures");
+        assert_eq!(pipeline.frames.as_ref().map(|frames| frames.kinds.len()), Some(2), "a pipeline for each kind");
+        drop(pipeline);
+        bench.finish(made);
+    }
+
+    #[cfg(all(unix, not(target_os = "android")))]
+    #[test]
+    fn a_frame_that_cant_be_imported_refuses_the_device() {
+        let Some(sealed) = sealed_dmabuf_frame() else { return println!("no GStreamer dmabuf allocator here: not tested") };
+        let Some((bench, made, mut pipeline)) = framing() else { return println!("no Vulkan CPU device that imports dmabufs here: not tested") };
+        assert!(!pipeline.ready_frames(&frame_part(&sealed, [220, 170], FRAME_PLACES[0], true)), "a frame sealed against writing was imported");
+        assert!(pipeline.refuses_frames(), "the device refuses frames");
         drop(pipeline);
         bench.finish(made);
     }

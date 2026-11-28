@@ -1247,16 +1247,23 @@ impl FrameTexture {
         self.colours.for_shaders(self.whole)
     }
 
-    /// What tells its buffer apart from the decoder's others: the hardware buffer.
-    pub(crate) fn key(&self) -> Option<u64> {
-        Some(self.buffer as u64)
-    }
-
     /// Its hardware buffer, held until what this gives is dropped (by an import of it).
     pub(crate) fn hold_buffer(&self) -> HeldBuffer {
         // SAFETY: a live buffer: the image holds it.
         unsafe { AHardwareBuffer_acquire(self.buffer) };
         HeldBuffer(self.buffer)
+    }
+}
+
+#[cfg(feature = "gpu-draw")]
+impl crate::gpu_frames::Frame for FrameTexture {
+    /// The hardware buffer.
+    fn key(&self) -> Option<u64> {
+        Some(self.buffer as u64)
+    }
+    /// The image reader: its buffers come again while it lives.
+    fn source(this: &Arc<Self>) -> std::sync::Weak<dyn Send + Sync> {
+        Arc::downgrade(&this.reader) as std::sync::Weak<dyn Send + Sync>
     }
 }
 

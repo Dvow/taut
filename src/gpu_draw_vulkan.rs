@@ -547,7 +547,8 @@ impl Pipeline {
     /// B8G8R8A8, made to be drawn into) inside `area` (left, top, right, bottom): its texels put
     /// up first. The image is as `was` says before and in `after` (a layout, read by
     /// copies) after. The CPU's writes are done here: the caller submits, and waits before the
-    /// next. Says whether all of it could be recorded.
+    /// next. Says whether all of it could be recorded. Its videos' frames are those
+    /// `ready_frames` readied.
     #[allow(clippy::too_many_arguments)] // (What drawing into another's image takes.)
     pub(crate) fn record(&mut self, commands: Object, image: Handle, size: [i32; 2], list: &DrawList, area: [i32; 4], was: Was, after: u32) -> bool {
         let mut staging = std::mem::take(&mut self.staging);
@@ -562,8 +563,8 @@ impl Pipeline {
         }
         self.put_up(commands, list);
         #[cfg(all(feature = "video", any(unix, windows)))]
-        if !self.ready_frames(commands, list) {
-            return false;
+        if let Some(frames) = &self.frames {
+            frames.take(commands, &list.frames);
         }
         let to_draw = VkImageMemoryBarrier { source_access: was.access, destination_access: ACCESS_COLOUR, ..barrier(image, was.layout, LAYOUT_COLOUR, 0, 0) };
         let to_copy = barrier(image, LAYOUT_COLOUR, after, ACCESS_COLOUR, ACCESS_TRANSFER_READ | ACCESS_TRANSFER_WRITE);
@@ -579,14 +580,29 @@ impl Pipeline {
         true
     }
 
-    /// Readies the list's videos' frames for the shaders (see `video_vulkan`): whether they
-    /// are, or it has none.
+    /// Readies the list's videos' frames for the shaders (see `video_vulkan`) before anything
+    /// of the part is recorded (a part failing once recorded loses the device): whether they
+    /// are, or it has none. Where one can't be, the device refuses frames.
+    pub(crate) fn ready_frames(&mut self, list: &DrawList) -> bool {
+        #[cfg(all(feature = "video", any(unix, windows)))]
+        {
+            let Some(mut frames) = self.frames.take() else { return list.frames.is_empty() };
+            let ready = frames.ready(self, &list.frames);
+            self.frames = Some(frames);
+            ready
+        }
+        #[cfg(not(all(feature = "video", any(unix, windows))))]
+        {
+            let _ = list;
+            true
+        }
+    }
+
+    /// Whether this device refuses videos' frames (it can't draw them, or one could not be
+    /// imported): from then on its parts draw them read back.
     #[cfg(all(feature = "video", any(unix, windows)))]
-    fn ready_frames(&mut self, commands: Object, list: &DrawList) -> bool {
-        let Some(mut frames) = self.frames.take() else { return list.frames.is_empty() };
-        let ready = frames.ready(self, commands, &list.frames);
-        self.frames = Some(frames);
-        ready
+    pub(crate) fn refuses_frames(&self) -> bool {
+        self.frames.as_ref().is_none_or(|frames| frames.refused())
     }
 
     /// Records the list's uploads copied into the textures, which are then ready for shaders.
@@ -621,17 +637,24 @@ impl Pipeline {
         }
     }
 
-    /// Binds the pipeline and what it reads into `commands` (in a render pass): the one of the
-    /// videos' frames where the part has some.
-    fn bind(&self, commands: Object) {
+    /// Records the list's quads drawn (in a render pass): by the pipeline, or where the part
+    /// shows frames of pipelines of their own (Android, Linux), in runs each bound to its kind's
+    /// (`video_vulkan::Frames::runs`).
+    fn draw_quads(&self, commands: Object, list: &DrawList) {
         #[cfg(all(feature = "video", unix))]
-        if self.frames.as_ref().is_some_and(|frames| frames.bind(commands, self.set)) {
+        if let Some(frames) = self.frames.as_ref().filter(|frames| frames.drawing()) {
+            for (run, kind) in frames.runs(&list.quads) {
+                frames.bind(commands, self.set, kind);
+                // SAFETY: the commands are being recorded; the run's quads lie in the buffer.
+                unsafe { (self.calls.vkCmdDraw)(commands, 4, run.len() as u32, 0, run.start as u32) };
+            }
             return;
         }
         // SAFETY: the commands are being recorded; everything bound is the pipeline's.
         unsafe {
             (self.calls.vkCmdBindPipeline)(commands, 0, self.pipeline);
             (self.calls.vkCmdBindDescriptorSets)(commands, 0, self.layout, 0, 1, &self.set, 0, null());
+            (self.calls.vkCmdDraw)(commands, 4, list.quads.len() as u32, 0, 0);
         }
     }
 
@@ -646,11 +669,10 @@ impl Pipeline {
         unsafe {
             (calls.vkCmdBeginRenderPass)(commands, &begun, 0);
             if !list.quads.is_empty() {
-                self.bind(commands);
                 (calls.vkCmdBindVertexBuffers)(commands, 0, 1, &self.quads.buffer, &offset);
                 (calls.vkCmdSetViewport)(commands, 0, 1, &viewport);
                 (calls.vkCmdSetScissor)(commands, 0, 1, &scissor);
-                (calls.vkCmdDraw)(commands, 4, list.quads.len() as u32, 0, 0);
+                self.draw_quads(commands, list);
             }
             (calls.vkCmdEndRenderPass)(commands);
         }
@@ -1941,6 +1963,7 @@ pub(crate) mod tests {
         /// Draws `list` into a new image `size` pixels, first filled with `under`, and reads
         /// it back, row after row.
         pub(crate) fn drawn(&self, made: &Made, pipeline: &mut Pipeline, list: &DrawList, size: [i32; 2], under: &[u32]) -> Vec<u32> {
+            assert!(pipeline.ready_frames(list), "its videos' frames readied");
             let draws = Calls::load(&mut |name| unsafe { (self.find)(self.instance, name.as_ptr()) }).unwrap();
             let usage = USAGE_DRAWN_INTO | USAGE_TRANSFER_SOURCE | USAGE_TRANSFER_DESTINATION;
             let asked = VkImageCreateInfo {

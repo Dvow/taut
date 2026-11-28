@@ -409,7 +409,7 @@ impl Gpu {
             return false;
         }
         let mut made = self.pipeline.take().unwrap_or_else(|| self.drawer());
-        let drawn = made.as_mut().is_some_and(|pipeline| self.draw_with(shows, pipeline, list, place));
+        let drawn = made.as_mut().is_some_and(|pipeline| pipeline.ready_frames(list) && self.draw_with(shows, pipeline, list, place));
         self.pipeline = Some(made);
         if drawn {
             note(&mut shows.system.put, place);

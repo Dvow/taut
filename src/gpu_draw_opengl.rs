@@ -341,20 +341,31 @@ impl Pipeline {
     }
 
     /// Readies the list's videos' frames for the shaders (see `video_opengl`), their program
-    /// made the first time: whether they are, or it has none.
+    /// made the first time: whether they are, or it has none. Where that program can't be made,
+    /// the context refuses frames.
     #[cfg(all(feature = "video", unix))]
     fn ready_frames(&mut self, list: &DrawList) -> bool {
-        if list.frames.is_empty() {
-            return true;
-        }
-        if self.framing == 0 {
+        if !list.frames.is_empty() && self.framing == 0 {
             self.framing = self.framing_program();
         }
-        let (Some(frames), true) = (self.frames.as_mut(), self.framing != FAILED) else { return false };
+        let Some(frames) = self.frames.as_mut() else { return list.frames.is_empty() };
+        if list.frames.is_empty() {
+            return frames.ready(&[]);
+        }
+        if self.framing == FAILED {
+            return frames.refuse();
+        }
         // SAFETY: OpenGL's documented call on the current context (`put_back` puts back the
         // program that was).
         unsafe { (self.gl.glUseProgram)(self.framing) };
         frames.ready(&list.frames)
+    }
+
+    /// Whether this context refuses videos' frames (it can't draw them, or one could not be
+    /// imported): from then on its parts draw them read back.
+    #[cfg(all(feature = "video", unix))]
+    pub(crate) fn refuses_frames(&self) -> bool {
+        self.frames.as_ref().is_none_or(|frames| frames.refused())
     }
 
     /// The program that draws videos' frames too, its samplers told their units; `FAILED`

@@ -9,17 +9,15 @@
 //! | Vulkan | `VK_KHR_external_memory_win32` (`video_vulkan`) | its keyed mutex, in the submit (`VK_KHR_win32_keyed_mutex`) |
 //! | OpenGL | `WGL_NV_DX_interop2`, through a Direct3D 11 device of its own | its keyed mutex, on the CPU |
 //!
-//! A frame is opened on a device the first time it is drawn there and let go of once no video
-//! holds it. Where one can't be opened (another adapter's), the device takes no frames from then
-//! on: their parts are drawn by the CPU, the frames read back. Each path waits for its drawing
-//! before the next frame is put in.
+//! Opened frames are kept as `gpu_frames` says; a device that can't open one (another adapter's)
+//! refuses frames. Each path waits for its drawing before the next frame is put in; the decoder
+//! never waits for a texture a device holds (`video_windows::Frames::transfer`).
 use crate::gpu_d3d11::TEXTURE;
 use crate::layer_d3d11::{Com, function, release};
 use crate::video::FrameTexture;
 use crate::video_windows::{A_KEYED_MUTEX, FRAME_WAIT};
 use crate::windows::named;
 use std::ptr::null_mut;
-use std::sync::{Arc, Weak};
 
 /// `ID3D11Device1`.
 const A_DEVICE1: [u32; 4] = named(0xA04B_FB29, 0x08EF, 0x43D6, [0xA4, 0x9C, 0xA9, 0xBD, 0xBD, 0xCB, 0xE6, 0x86]);
@@ -72,77 +70,4 @@ pub(crate) fn take_all(mutexes: &[Com]) -> bool {
 pub(crate) fn give_back(mutexes: &[Com]) {
     // SAFETY: each mutex is alive and was taken with key 0.
     unsafe { mutexes.iter().for_each(|mutex| _ = function::<unsafe extern "system" fn(Com, u64) -> i32>(*mutex, 9)(*mutex, 0)) };
-}
-
-/// Videos' frames opened on a device, as `T`.
-pub(crate) struct OpenedFrames<T> {
-    opened: Vec<(Weak<FrameTexture>, T)>,
-    /// A frame could not be opened here.
-    pub(crate) refused: bool,
-}
-
-impl<T> Default for OpenedFrames<T> {
-    #[inline]
-    fn default() -> Self {
-        OpenedFrames { opened: Vec::new(), refused: false }
-    }
-}
-
-impl<T> OpenedFrames<T> {
-    /// What `frames` are opened as, in their order: each opened by `open` the first time it is
-    /// drawn. Nothing where one can't be (it is then `refused`). Frames no video holds are let go
-    /// of by `let_go` first.
-    pub(crate) fn opened(&mut self, frames: &[Arc<FrameTexture>], mut open: impl FnMut(&FrameTexture) -> Option<T>, mut let_go: impl FnMut(T)) -> Option<Vec<&T>> {
-        self.opened.extract_if(.., |(frame, _)| frame.strong_count() == 0).for_each(|(_, gone)| let_go(gone));
-        let mut places = Vec::with_capacity(frames.len());
-        for frame in frames {
-            let found = self.opened.iter().position(|(kept, _)| std::ptr::eq(kept.as_ptr(), Arc::as_ptr(frame)));
-            if let Some(at) = found {
-                places.push(at);
-                continue;
-            }
-            let Some(made) = open(frame) else {
-                self.refused = true;
-                return None;
-            };
-            self.opened.push((Arc::downgrade(frame), made));
-            places.push(self.opened.len() - 1);
-        }
-        Some(places.into_iter().map(|at| &self.opened[at].1).collect())
-    }
-
-    /// Lets go of every frame opened, by `let_go`.
-    pub(crate) fn let_go_of_all(&mut self, let_go: impl FnMut(T)) {
-        self.opened.drain(..).map(|(_, opened)| opened).for_each(let_go);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_frame_is_opened_once_and_let_go_of_when_no_video_holds_it() {
-        let frames: Vec<Arc<FrameTexture>> = (0..2).map(|_| Arc::new(FrameTexture::stand_in())).collect();
-        let (mut opened, mut made, mut gone) = (OpenedFrames::default(), 0, Vec::new());
-        for _ in 0..3 {
-            let got = opened.opened(&frames, |_| Some(made).inspect(|_| made += 1), |id| gone.push(id)).expect("opened");
-            assert_eq!(got, [&0, &1]);
-        }
-        assert_eq!(made, 2, "each opened once");
-        let kept = frames[1].clone();
-        drop(frames);
-        assert_eq!(opened.opened(&[kept], |_| None, |id| gone.push(id)), Some(vec![&1]));
-        assert_eq!(gone, [0], "the frame no video holds");
-        opened.let_go_of_all(|id| gone.push(id));
-        assert_eq!(gone, [0, 1]);
-    }
-
-    #[test]
-    fn a_frame_that_cant_be_opened_refuses_the_device() {
-        let frames = [Arc::new(FrameTexture::stand_in())];
-        let mut opened = OpenedFrames::<u32>::default();
-        assert!(opened.opened(&frames, |_| None, drop).is_none());
-        assert!(opened.refused);
-    }
 }

@@ -90,6 +90,15 @@ pub(crate) struct Quad {
     pub(crate) rows: [[f32; 4]; 6],
 }
 
+impl Quad {
+    /// Which of the part's videos' frames it shows (its place in `DrawList::frames`), where it
+    /// shows one.
+    #[cfg(all(feature = "video", unix, not(target_vendor = "apple")))]
+    pub(crate) fn frame(&self) -> Option<usize> {
+        (self.rows[5][0] == FRAME).then_some(self.rows[2][3] as usize)
+    }
+}
+
 /// One rectangle of texels to put into a texture before drawing: `at` (left, top, width,
 /// height), read from `staging` at `from`, `at[2]` a row.
 #[derive(Clone, Copy, Debug)]
@@ -947,17 +956,26 @@ pub(crate) mod tests {
     /// from its texture (`video_frame`), or its pixels read back as a picture.
     #[cfg(all(feature = "video", unix, not(target_os = "android")))]
     pub(crate) fn frame_part(frame: &std::sync::Arc<crate::video::FrameTexture>, size: [i32; 2], r: Rect, from_texture: bool) -> DrawList {
+        frames_part(&[(frame, r)], size, from_texture)
+    }
+
+    /// A part `size` pixels big with each of `frames` drawn at its place with round corners, in
+    /// order: from its texture (`video_frame`), or its pixels read back as a picture.
+    #[cfg(all(feature = "video", unix, not(target_os = "android")))]
+    pub(crate) fn frames_part(frames: &[(&std::sync::Arc<crate::video::FrameTexture>, Rect)], size: [i32; 2], from_texture: bool) -> DrawList {
         let (mut list, clip) = (DrawList::default(), [0, 0, size[0], size[1]]);
         list.takes_frames = true;
         list.begin(size);
-        let [width, height] = [frame.size.0 as usize, frame.size.1 as usize];
-        if from_texture {
-            let shown = crate::video::FrameOnGpu { texture: frame.clone(), crop: [0, 0, width, height], read: false };
-            assert!(list.video_frame(&shown, r, 6.0, 1.0, clip), "the frame is drawn from its texture");
-        } else {
+        for (frame, r) in frames {
+            let [width, height] = [frame.size.0 as usize, frame.size.1 as usize];
+            if from_texture {
+                let shown = crate::video::FrameOnGpu { texture: (*frame).clone(), crop: [0, 0, width, height], read: false };
+                assert!(list.video_frame(&shown, *r, 6.0, 1.0, clip), "the frame is drawn from its texture");
+                continue;
+            }
             let mut pixels = Vec::new();
             assert!(frame.read(&mut pixels));
-            list.picture(&pixels, width, r, 6.0, 1.0, clip);
+            list.picture(&pixels, width, *r, 6.0, 1.0, clip);
         }
         list
     }

@@ -269,6 +269,10 @@ pub(crate) struct Player {
     /// player), and which of their tracks is shown.
     in_stream: Box<InStream>,
     in_stream_shown: Option<usize>,
+    /// Held by each frame left in a dmabuf: its buffers may come again while one is
+    /// (`gpu_frames`).
+    #[cfg(feature = "gpu-draw")]
+    source: std::sync::Arc<()>,
 }
 
 /// The captions read from the caption meta of each frame that reaches the frame sink.
@@ -367,6 +371,8 @@ impl Player {
             sound_wanted: None,
             in_stream,
             in_stream_shown: None,
+            #[cfg(feature = "gpu-draw")]
+            source: std::sync::Arc::new(()),
         };
         player.read_captions_in_stream();
         player.set_sinks(sound, make(c"fakesink"), make(c"scaletempo"));
@@ -867,7 +873,8 @@ pub(crate) struct Dmabuf {
 }
 
 /// A frame left in the decoder's dmabuf, with `gpu-draw`: its sample (held), the dmabuf the GPU
-/// imports, how it lies and becomes RGB, and its size (visible, all of it: the same).
+/// imports, how it lies and becomes RGB, its size (visible, all of it: the same), and its
+/// player's source (`Player::source`).
 #[cfg(feature = "gpu-draw")]
 pub(crate) struct FrameTexture {
     lib: &'static Libraries,
@@ -876,6 +883,7 @@ pub(crate) struct FrameTexture {
     layout: Layout,
     pub(crate) size: (u32, u32),
     pub(crate) whole: (u32, u32),
+    source: std::sync::Arc<()>,
 }
 
 // SAFETY: a sample may be read and released from any thread.
@@ -901,11 +909,18 @@ impl FrameTexture {
     pub(crate) fn for_shaders(&self) -> [f32; 8] {
         self.layout.yuv.as_ref().map_or([0.0; 8], |yuv| yuv.colours.for_shaders(self.whole))
     }
+}
 
-    /// What tells its dmabuf apart from the decoder's others: its file's inode.
-    pub(crate) fn key(&self) -> Option<u64> {
+#[cfg(feature = "gpu-draw")]
+impl crate::gpu_frames::Frame for FrameTexture {
+    /// Its dmabuf's inode.
+    fn key(&self) -> Option<u64> {
         use std::os::unix::fs::MetadataExt;
         std::fs::metadata(format!("/proc/self/fd/{}", self.dmabuf.fd)).ok().map(|file| file.ino())
+    }
+    /// Its player's source.
+    fn source(this: &std::sync::Arc<Self>) -> std::sync::Weak<dyn Send + Sync> {
+        std::sync::Arc::downgrade(&this.source) as std::sync::Weak<dyn Send + Sync>
     }
 }
 
@@ -941,7 +956,7 @@ impl Player {
     /// it is the last one given, or not in one dmabuf.
     fn texture_of(&mut self, sample: Object) -> Option<(std::sync::Arc<FrameTexture>, Duration)> {
         let (buffer, time) = self.new_buffer(sample)?;
-        let texture = FrameTexture::of(self.lib, sample)?;
+        let texture = FrameTexture::of(self.lib, sample, self.source.clone())?;
         self.last = Some((buffer as usize, time));
         Some((std::sync::Arc::new(texture), Duration::from_nanos(if time == u64::MAX { 0 } else { time })))
     }
@@ -949,15 +964,15 @@ impl Player {
 
 #[cfg(feature = "gpu-draw")]
 impl FrameTexture {
-    /// `sample` (handed over where this gives a frame) as a frame left in its dmabuf: none where
-    /// it is not of YUV 4:2:0 in one dmabuf.
-    fn of(lib: &'static Libraries, sample: Object) -> Option<FrameTexture> {
+    /// `sample` (handed over where this gives a frame) of a player of `source`, as a frame left in
+    /// its dmabuf: none where it is not of YUV 4:2:0 in one dmabuf.
+    fn of(lib: &'static Libraries, sample: Object, source: std::sync::Arc<()>) -> Option<FrameTexture> {
         // SAFETY: the sample's buffer is its own.
         let buffer = unsafe { (lib.gst.gst_sample_get_buffer)(sample) };
         let layout = lib.layout(sample, buffer)?;
         let dmabuf = lib.dmabuf_of(buffer, &layout)?;
         let size = (layout.width as u32, layout.height as u32);
-        Some(FrameTexture { lib, sample, dmabuf, layout, size, whole: size })
+        Some(FrameTexture { lib, sample, dmabuf, layout, size, whole: size, source })
     }
 }
 
@@ -1105,6 +1120,7 @@ fn first_channel(bytes: &[u8], count: usize, channels: usize) -> Option<Vec<f32>
 #[cfg(all(test, feature = "gpu-draw"))]
 pub(crate) mod tests {
     use super::*;
+    use crate::gpu_frames::Frame;
     use crate::video_yuv::{BT601, BT709, BT2020};
     use std::os::fd::IntoRawFd;
 
@@ -1123,7 +1139,15 @@ pub(crate) mod tests {
 
     unsafe extern "C" {
         fn memfd_create(name: *const u8, flags: u32) -> c_int;
+        fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
     }
+
+    /// A memfd that may be sealed (`MFD_ALLOW_SEALING`); adding seals to a file
+    /// (`F_ADD_SEALS`); seals against shrinking, growing and writing (`F_SEAL_SHRINK`,
+    /// `F_SEAL_GROW`, `F_SEAL_WRITE`): then it maps for reading only.
+    const ALLOW_SEALING: u32 = 2;
+    const ADD_SEALS: c_int = 1033;
+    const READ_ONLY: c_int = 2 | 4 | 8;
 
     /// The samples of the test frames: Y, U and V at each place (U and V of each 2 × 2 pixels).
     fn luma(x: usize, y: usize) -> u8 {
@@ -1159,20 +1183,16 @@ pub(crate) mod tests {
         (0..height).flat_map(|y| (0..width).map(move |x| colours.rgb(luma(x, y), blue(x / 2, y / 2), red(x / 2, y / 2)))).collect()
     }
 
-    /// A sample of `bytes` in a dmabuf-like file (a memfd, as GStreamer's dmabuf memory), `caps`
-    /// saying what it is, and a video meta of `planes` (GStreamer's `format`). None where
-    /// GStreamer or its dmabuf allocator is missing.
-    pub(crate) fn sample_of(bytes: &[u8], caps: &CStr, (format, size, planes): (c_uint, (usize, usize), &[Plane])) -> Option<Object> {
+    /// A sample of `bytes` bytes in `file` (a memfd stands in for a dmabuf, as GStreamer's dmabuf
+    /// memory), `caps` saying what it is, and a video meta of `planes` (GStreamer's `format`).
+    /// None where GStreamer or its dmabuf allocator is missing.
+    pub(crate) fn sample_of(file: std::fs::File, bytes: usize, caps: &CStr, (format, size, planes): (c_uint, (usize, usize), &[Plane])) -> Option<Object> {
         let (lib, making, core, meta) = (libraries().ok()?, Making::open()?, MakingCore::open()?, MakingMeta::open()?);
-        // SAFETY: a new memfd, written whole and handed to GStreamer (which closes it).
-        let fd = unsafe { memfd_create(c"taut-frame".as_ptr().cast(), 0) };
-        assert!(fd >= 0, "a memfd");
-        let mut file = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-        std::io::Write::write_all(&mut file, bytes).unwrap();
         let (offsets, strides): (Vec<usize>, Vec<c_int>) = (0..4).map(|nth| planes.get(nth).map_or((0, 0), |plane| (plane.offset as usize, plane.pitch as c_int))).unzip();
-        // SAFETY: GStreamer's documented calls; what is made is handed on, the sample last.
+        // SAFETY: GStreamer's documented calls; the file is handed over (GStreamer closes it);
+        // what is made is handed on, the sample last.
         unsafe {
-            let memory = (making.gst_dmabuf_allocator_alloc)((making.gst_dmabuf_allocator_new)(), file.into_raw_fd(), bytes.len());
+            let memory = (making.gst_dmabuf_allocator_alloc)((making.gst_dmabuf_allocator_new)(), file.into_raw_fd(), bytes);
             let buffer = (core.gst_buffer_new)();
             (core.gst_buffer_append_memory)(buffer, memory);
             (meta.gst_buffer_add_video_meta_full)(buffer, 0, format, size.0 as c_uint, size.1 as c_uint, planes.len() as c_uint, offsets.as_ptr(), strides.as_ptr());
@@ -1184,13 +1204,48 @@ pub(crate) mod tests {
         }
     }
 
+    /// A new memfd holding `bytes`, with `seals` added (none: 0).
+    fn memfd_of(bytes: &[u8], seals: c_int) -> std::fs::File {
+        // SAFETY: a new memfd, held by the file made of it.
+        let fd = unsafe { memfd_create(c"taut-frame".as_ptr().cast(), ALLOW_SEALING) };
+        assert!(fd >= 0, "a memfd");
+        let mut file = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+        std::io::Write::write_all(&mut file, bytes).unwrap();
+        assert!(seals == 0 || unsafe { fcntl(fd, ADD_SEALS, seals) } == 0, "sealed");
+        file
+    }
+
     /// The test frame, 64 × 48 NV12 in BT.709 limited range, its rows 80 bytes apart, as a
     /// frame left in its dmabuf; none where GStreamer or its dmabuf allocator is missing.
     pub(crate) fn dmabuf_frame() -> Option<std::sync::Arc<FrameTexture>> {
-        let (bytes, planes) = yuv_bytes((64, 48), 2, 80);
-        let caps = c"video/x-raw(memory:DMABuf),format=NV12,width=64,height=48,colorimetry=bt709";
-        let sample = sample_of(&bytes, caps, (23, (64, 48), &planes))?;
-        Some(std::sync::Arc::new(FrameTexture::of(libraries().ok()?, sample).expect("a frame of the sample")))
+        dmabuf_frame_of(NV12, 80, 0)
+    }
+
+    /// The same frame in I420 (three planes): a kind of its own.
+    pub(crate) fn three_plane_dmabuf_frame() -> Option<std::sync::Arc<FrameTexture>> {
+        dmabuf_frame_of(I420, 80, 0)
+    }
+
+    /// The test frame in a dmabuf Vulkan can't import: sealed, it maps for reading only (as the
+    /// CPU reads it back, and OpenGL ES imports it).
+    pub(crate) fn sealed_dmabuf_frame() -> Option<std::sync::Arc<FrameTexture>> {
+        dmabuf_frame_of(NV12, 80, READ_ONLY)
+    }
+
+    /// The test frame with planes of no pitch, which OpenGL ES refuses to import.
+    pub(crate) fn pitchless_dmabuf_frame() -> Option<std::sync::Arc<FrameTexture>> {
+        dmabuf_frame_of(NV12, 0, 0)
+    }
+
+    /// The test frame's formats: its caps, GStreamer's video format and the count of planes.
+    const NV12: (&CStr, c_uint, usize) = (c"video/x-raw(memory:DMABuf),format=NV12,width=64,height=48,colorimetry=bt709", 23, 2);
+    const I420: (&CStr, c_uint, usize) = (c"video/x-raw(memory:DMABuf),format=I420,width=64,height=48,colorimetry=bt709", 2, 3);
+
+    /// The test frame in `format`, its rows `pitch` bytes apart, in a memfd sealed with `seals`.
+    fn dmabuf_frame_of((caps, format, planes): (&CStr, c_uint, usize), pitch: usize, seals: c_int) -> Option<std::sync::Arc<FrameTexture>> {
+        let (bytes, places) = yuv_bytes((64, 48), planes, pitch);
+        let sample = sample_of(memfd_of(&bytes, seals), bytes.len(), caps, (format, (64, 48), &places))?;
+        Some(std::sync::Arc::new(FrameTexture::of(libraries().ok()?, sample, std::sync::Arc::new(())).expect("a frame of the sample")))
     }
 
     fn caps(format: &str, drm_format: &str, colorimetry: &str) -> Caps {

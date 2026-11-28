@@ -313,7 +313,7 @@ impl Device {
     /// Whether a video's frame could not be opened.
     #[cfg(all(feature = "gpu-draw", feature = "video"))]
     pub(crate) fn refuses_frames(&self) -> bool {
-        self.frames.as_ref().is_some_and(|frames| frames.opened.refused)
+        self.frames.as_ref().is_some_and(|frames| frames.opened.refused())
     }
 
     /// Whether the GPU was reset (a robust context says so), or a swap failed.
@@ -399,7 +399,7 @@ functions!(Interop {
 struct Frames {
     interop: Interop,
     direct3d: Option<Option<Direct3d>>,
-    opened: crate::gpu_frames_windows::OpenedFrames<OpenedFrame>,
+    opened: crate::gpu_frames::ImportedFrames<OpenedFrame>,
 }
 
 /// A Direct3D 11 device on the default adapter (the decoder's), its immediate context and its
@@ -431,17 +431,17 @@ impl Frames {
     }
 
     /// Has `draw` draw with `frames` seen as OpenGL textures (given their names, in order): each
-    /// opened the first time, copied on the GPU (its keyed mutex taken meanwhile), and the
-    /// interop's lock held while it draws. The context is current. Says whether it drew: not
+    /// opened (as `gpu_frames` says), copied on the GPU (its keyed mutex taken meanwhile), and
+    /// the interop's lock held while it draws. The context is current. Says whether it drew: not
     /// where a frame can't be opened or taken.
     fn drawn(&mut self, gl: &Gl, frames: &[std::sync::Arc<crate::video::FrameTexture>], draw: impl FnOnce(&[u32]) -> bool) -> bool {
         let Frames { interop, direct3d, opened } = self;
-        let Some(direct3d) = *direct3d.get_or_insert_with(|| made_direct3d(interop)) else {
-            opened.refused = true;
-            return false;
-        };
+        let Some(direct3d) = *direct3d.get_or_insert_with(|| made_direct3d(interop)) else { return opened.refuse() };
         let open = |frame: &crate::video::FrameTexture| OpenedFrame::new(interop, gl, direct3d, frame);
-        let Some(taken) = opened.opened(frames, open, |gone| gone.let_go(interop, Some(gl), direct3d.handle)) else { return false };
+        if !opened.ready(frames, open, |gone| gone.let_go(interop, Some(gl), direct3d.handle)) {
+            return false;
+        }
+        let taken: Vec<&OpenedFrame> = opened.drawn().collect();
         if !copied(direct3d.context, &taken) {
             return false;
         }
