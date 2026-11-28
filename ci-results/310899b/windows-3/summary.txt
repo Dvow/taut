@@ -1,0 +1,37 @@
+run 1 all exit 0 in 513 s
+run 1 lib exit 0 in 92 s
+run 1 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (1456) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 2 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (5156) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 3 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (812) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 4 spell exit 101 in 0 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (7496) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 5 spell exit 0 in 1 s
+run 6 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (9816) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 7 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (5936) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 8 spell exit 0 in 0 s
+run 9 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (8280) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 10 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (7584) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 11 spell exit 0 in 1 s
+run 12 spell exit 101 in 0 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (896) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 13 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (4268) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 14 spell exit 0 in 1 s
+run 15 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (2344) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 16 spell exit 101 in 0 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (4816) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 17 spell exit 0 in 1 s
+run 18 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (1932) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 19 spell exit 101 in 1 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (6804) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
+run 20 spell exit 101 in 0 s
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (8312) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }
