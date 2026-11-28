@@ -1,0 +1,6 @@
+run 1 video exit 0 in 35 s
+run 2 video exit 0 in 33 s
+run 3 video exit 101 in 42 s
+::error file=src/video.rs,line=1094,title=src/lib.rs%3A video%3A%3Atests%3A%3Athe_apps_captions_show_over_the_video_and_are_told_as_they_change::thread 'video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change' (4512) panicked at src/video.rs:1094:17:%0Athe first frame and the tracks did not happen: Video { playing: false, position: 0ns, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }; probe: ready false, frame taken true, ASYNC_DONE waiting true, at 10.017880027s
+run 4 video exit 0 in 33 s
+run 1 gpu exit 0 in 65 s

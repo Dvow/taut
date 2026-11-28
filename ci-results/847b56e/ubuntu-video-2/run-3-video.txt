@@ -1,0 +1,108 @@
+    Finished `test` profile [unoptimized] target(s) in 0.00s
+     Running unittests src/lib.rs (target/debug/build/taut/ae0b72000e0eef4f/out/taut-ae0b72000e0eef4f)
+
+running 24 tests
+test video::tests::a_missing_file_is_refused ... ok
+test video::tests::a_frame_shows_its_number ... ok
+probe: ready at 48.59493ms, a frame taken before: false
+probe: first frame at 50.078647ms, ready true
+probe: ready at 25.214358ms, a frame taken before: false
+probe: first frame at 46.766745ms, ready true
+test video::tests::a_faster_or_slower_speed_moves_the_frames_that_much_faster_or_slower ... ok
+probe: ready at 24.838502ms, a frame taken before: false
+probe: first frame at 24.970159ms, ready true
+test video::tests::a_paused_video_stays_on_its_frame_and_a_seek_shows_the_frame_there ... ok
+test video::tests::a_system_without_gstreamer_is_told_so ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 984 filtered out; finished in 0.00s
+Err(NoPlayer("GStreamer's playbin or appsink is missing"))
+
+unshare could not hide GStreamer here: that half skipped
+test video::tests::a_system_without_gstreamer_is_told_so ... ok
+probe: ready at 48.020614ms, a frame taken before: false
+probe: first frame at 48.122941ms, ready true
+test video::tests::a_placed_caption_is_drawn_where_its_file_puts_it ... ok
+probe: ready at 26.356795ms, a frame taken before: false
+probe: first frame at 26.459169ms, ready true
+test video::tests::a_playing_video_asks_again_sooner_than_its_frame_time ... ok
+probe: ready at 44.8464ms, a frame taken before: false
+probe: first frame at 66.45039ms, ready true
+test video::tests::a_speed_set_after_a_seek_keeps_the_seek ... ok
+probe: ready at 45.908037ms, a frame taken before: false
+probe: first frame at 46.02669ms, ready true
+test video::tests::bytes_play_as_the_file_does ... ok
+probe: ready at 27.001084ms, a frame taken before: false
+probe: first frame at 27.144366ms, ready true
+test video::tests::captions_turned_on_during_a_cue_say_it ... ok
+probe: ready at 49.271817ms, a frame taken before: false
+probe: first frame at 49.386281ms, ready true
+probe: ready at 45.073309ms, a frame taken before: false
+probe: first frame at 45.17865ms, ready true
+test video::tests::cea608_and_cea708_in_h264_and_hevc_streams_are_caption_tracks_shown_at_their_times ... ok
+probe: ready at 47.260731ms, a frame taken before: false
+probe: first frame at 47.376701ms, ready true
+test video::tests::filling_cuts_the_frame_to_its_box ... ok
+test video::tests::text_is_a_path_or_an_address ... ok
+probe: ready at 45.856223ms, a frame taken before: false
+probe: first frame at 45.968995ms, ready true
+test video::tests::frames_show_at_their_times_and_only_their_box_is_redrawn ... ok
+probe: ready at 45.858487ms, a frame taken before: false
+probe: first frame at 45.986354ms, ready true
+probe: ready at 45.627031ms, a frame taken before: false
+probe: first frame at 45.742282ms, ready true
+test video::tests::ssa_captions_in_matroska_are_placed_where_their_script_says ... ok
+probe: first frame at 25.247922ms, ready false
+
+thread 'video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change' (4512) panicked at src/video.rs:1094:17:
+the first frame and the tracks did not happen: Video { playing: false, position: 0ns, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }; probe: ready false, frame taken true, ASYNC_DONE waiting true, at 10.017880027s
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: taut::video::tests::until_within::<taut::video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change::{closure#0}>
+   3: taut::video::tests::until::<taut::video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change::{closure#0}>
+   4: taut::video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change
+   5: taut::video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change::{closure#0}
+   6: <taut::video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+test video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change ... FAILED
+probe: ready at 47.654895ms, a frame taken before: false
+probe: first frame at 47.783291ms, ready true
+test video::tests::the_controls_are_told_to_readers_and_work_by_keyboard ... ok
+probe: ready at 47.732746ms, a frame taken before: false
+probe: first frame at 47.847963ms, ready true
+test video::tests::the_controls_choose_captions_sound_track_and_speed ... ok
+probe: ready at 45.948202ms, a frame taken before: false
+probe: first frame at 46.08682ms, ready true
+test video::tests::the_end_is_told_once_and_a_loop_starts_again ... ok
+probe: ready at 45.983878ms, a frame taken before: false
+probe: first frame at 46.161261ms, ready true
+held while warming up, each 20 opens: [7324, 36876, 36896, 37104, 37112] KB
+held 38002688 bytes, after 40 more 38014976
+held 9 threads, after 40 more opens 9
+test video::tests::many_opens_leave_nothing_behind ... ok
+test video::tests::the_other_cea608_channels_in_the_stream_are_tracks_placed_at_their_rows ... ok
+probe: ready at 45.85718ms, a frame taken before: false
+probe: first frame at 47.988105ms, ready true
+at 0.5× the 400 Hz tone plays at 398.8095 Hz
+probe: ready at 46.071758ms, a frame taken before: false
+probe: first frame at 48.47776ms, ready true
+at 1.5× the 400 Hz tone plays at 396.66666 Hz
+probe: ready at 46.22444ms, a frame taken before: false
+probe: first frame at 48.737459ms, ready true
+at 2× the 400 Hz tone plays at 394.44446 Hz
+test video::tests::the_pitch_stays_at_other_speeds ... ok
+probe: ready at 46.368925ms, a frame taken before: false
+probe: first frame at 46.515481ms, ready true
+test video::tests::the_sources_captions_show_at_their_times ... ok
+probe: ready at 46.335858ms, a frame taken before: false
+probe: first frame at 46.471676ms, ready true
+test video::tests::the_sources_sound_tracks_are_listed_and_the_one_chosen_is_heard ... ok
+
+failures:
+
+failures:
+    video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change
+
+test result: FAILED. 23 passed; 1 failed; 0 ignored; 0 measured; 961 filtered out; finished in 42.52s
+
+error: test failed, to rerun pass `--lib`
+::error file=src/video.rs,line=1094,title=src/lib.rs%3A video%3A%3Atests%3A%3Athe_apps_captions_show_over_the_video_and_are_told_as_they_change::thread 'video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change' (4512) panicked at src/video.rs:1094:17:%0Athe first frame and the tracks did not happen: Video { playing: false, position: 0ns, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }; probe: ready false, frame taken true, ASYNC_DONE waiting true, at 10.017880027s
