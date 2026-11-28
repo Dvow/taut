@@ -356,16 +356,27 @@ mod simulator {
         Ok(app)
     }
 
-    /// Runs the app and waits for its verdict: what it said, or why it failed.
+    /// Runs the app on the newest iPhone simulator and waits for its verdict: what it said, or
+    /// why it failed. A simulator booted here is shut down after: the steps after this one
+    /// time frames on the Mac.
     fn checked() -> Result<String, String> {
         let app = app()?;
         let device = ios_bundle::newest_simulator("iPhone")?;
-        ios_bundle::boot(&device)?;
-        ios_bundle::ran(Command::new("xcrun").args(["simctl", "install", &device]).arg(&app))?;
+        let booted = ios_bundle::boot(&device)?;
+        let verdict = verdict(&device, &app);
+        if booted {
+            ios_bundle::shut_down(&device)?;
+        }
+        verdict
+    }
+
+    /// Installs and runs the app on `device`, and waits for its verdict.
+    fn verdict(device: &str, app: &Path) -> Result<String, String> {
+        ios_bundle::ran(Command::new("xcrun").args(["simctl", "install", device]).arg(app))?;
         let (out, err) = (built().join("video_check.out"), built().join("video_check.err"));
         let _ = (std::fs::remove_file(&out), std::fs::remove_file(&err));
         let logs = [format!("--stdout={}", out.display()), format!("--stderr={}", err.display())];
-        ios_bundle::ran(Command::new("xcrun").args(["simctl", "launch", "--terminate-running-process"]).args(&logs).args([&device, ID]))?;
+        ios_bundle::ran(Command::new("xcrun").args(["simctl", "launch", "--terminate-running-process"]).args(&logs).args([device, ID]))?;
         let since = Instant::now();
         loop {
             let said = std::fs::read_to_string(&out).unwrap_or_default();

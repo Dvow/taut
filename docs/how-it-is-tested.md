@@ -37,6 +37,11 @@ xvfb-run cargo test -p taut --lib -- --include-ignored --skip how_long --skip ma
   pointer, keyboard and input method, XTest) and screen capture. One compares the gallery's
   window in a screenshot with its own pixels. Without a compositor they check nothing.
 
+CI (`.github/workflows/ci.yml`) runs them on Windows, Ubuntu, macOS, the iOS simulator, an
+Android emulator and headless Chrome. Every test step runs through `.github/ci.rs test`: each
+failed test, with its panic message, becomes an annotation, which anyone can read without a
+login at `api.github.com/repos/<owner>/taut/check-runs/<job id>/annotations`.
+
 Measurements:
 
 - Times: `examples/bench.rs`.

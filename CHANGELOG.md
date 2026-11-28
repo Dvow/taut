@@ -405,6 +405,18 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 - **Windows, feature `cff`:** system fonts with PostScript outlines (`CFF `, `CFF2`) are read a
   charstring and subroutine at a time as drawn, as `glyf` fonts are: a page of CJK SVG text in
   Noto Sans CJK peaks at 6.7 MB, not 17.8.
+- **Video on macOS and iOS:** the first frame shows as soon as AVFoundation has it, without
+  waiting for it to say the first seek is over (up to 9.8 s later on the iOS simulator; at most
+  0.07 s now).
+- **`Video::position`** is never past `length()`: AVFoundation's clock could stop at 3.09 s of a
+  3 s video.
+- **CI failures readable without a login:** every test step runs through `.github/ci.rs test`,
+  which makes each failed test, with its panic message, a GitHub annotation (crashes and other
+  failures too). Flaky tests fixed: `tests/renderers.rs` crashed (0xC0000005) on NVIDIA, as
+  `opengl_puts_back_what_it_sets` uploaded its own picture with rows and pixels still skipped
+  and OpenGL read past its end; the video memory check measures only once memory stops growing
+  (some 200 opens on Windows); `tests/video_apple.rs` shuts down the simulator it booted, which
+  kept the Mac busy and its frames late in the steps after.
 
 ## 0.3.0 (2026-11-24)
 

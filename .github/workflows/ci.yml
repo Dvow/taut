@@ -23,10 +23,16 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 90
+    defaults:
+      run:
+        # As on the other runners, for `~/ci`.
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - name: Rust
         run: rustup toolchain install stable --profile minimal -c clippy,rustfmt && rustup default stable && rustc -V
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
       - uses: actions/cache@v6
         with:
           path: target
@@ -50,10 +56,10 @@ jobs:
         run: cargo build --example overlay
       - name: Tests, all features
         if: ${{ !cancelled() }}
-        run: cargo test --all-features --no-fail-fast -- --test-threads=4
+        run: ~/ci test cargo test --all-features --no-fail-fast -- --test-threads=4
       - name: Library tests, no features
         if: ${{ !cancelled() }}
-        run: cargo test --lib --no-fail-fast
+        run: ~/ci test cargo test --lib --no-fail-fast
 
   ubuntu:
     runs-on: ubuntu-latest
@@ -79,7 +85,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
       - name: What the tests and walks load
         run: |
-          rustc -O --edition 2024 .github/ci.rs -o ~/ci
+          rustc -O --edition 2024 .github/ci.rs --out-dir ~
           ~/ci apt xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
             libx11-6 libxtst6 libxi6 libxrandr2 libxkbcommon0 libfontconfig1 libfreetype6 libharfbuzz0b fonts-dejavu-core \
             libegl1 libgles2 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 xclip
@@ -100,22 +106,22 @@ jobs:
         run: cargo clippy --all-targets --features hdr -- -D warnings
       - name: Tests, all features
         if: ${{ !cancelled() }}
-        run: cargo test --all-features --no-fail-fast -- --test-threads=4
+        run: ~/ci test cargo test --all-features --no-fail-fast -- --test-threads=4
       - name: Library tests, no features
         if: ${{ !cancelled() }}
-        run: cargo test --lib --no-fail-fast
+        run: ~/ci test cargo test --lib --no-fail-fast
       - name: Library tests with windows, on a display of their own
         if: ${{ !cancelled() }}
         run: |
           export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
-          xvfb-run -n 190 -s "-screen 0 900x600x24" cargo test --lib --all-features --no-fail-fast -- --include-ignored --skip how_long --skip made_afresh
+          xvfb-run -n 190 -s "-screen 0 900x600x24" ~/ci test cargo test --lib --all-features --no-fail-fast -- --include-ignored --skip how_long --skip made_afresh
       - name: Formats against glibc's locales (compiled into a folder of the job's own)
         if: ${{ !cancelled() }}
         env:
           LOCPATH: ${{ runner.temp }}/locales
         run: |
           ~/ci locales "$LOCPATH" en_US de_DE sv_SE en_IN fi_FI ru_RU ko_KR ja_JP fr_FR
-          cargo test --lib --all-features locale
+          ~/ci test cargo test --lib --all-features locale
       - name: Build the walks
         if: ${{ !cancelled() }}
         run: cargo build --release --all-features --example gallery --example walk --example walk_reader
@@ -159,7 +165,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V
       - name: Weston, lavapipe, Xvfb; and /dev/udmabuf
         run: |
-          rustc -O --edition 2024 .github/ci.rs -o ~/ci
+          rustc -O --edition 2024 .github/ci.rs --out-dir ~
           ~/ci apt weston xvfb xauth dbus \
             mesa-vulkan-drivers libvulkan1 vulkan-tools libgl1-mesa-dri libegl1 libgles2 \
             libx11-6 libx11-dev libxtst6 libxi6 libxkbcommon0 libfontconfig1 libfreetype6 fonts-dejavu-core
@@ -171,19 +177,19 @@ jobs:
       - name: Build the tests
         run: cargo test --lib --all-features --no-run
       - name: Tests with a played compositor
-        run: cargo test --lib --all-features gpu_wayland -- --nocapture
+        run: ~/ci test cargo test --lib --all-features gpu_wayland -- --nocapture
       - name: GL Weston on Xvfb (dmabufs, the screen read)
         if: ${{ !cancelled() }}
-        run: ~/ci desk weston-x11-gl 31 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+        run: ~/ci desk weston-x11-gl 31 ~/ci test cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
       - name: GL Weston headless (dmabufs)
         if: ${{ !cancelled() }}
-        run: ~/ci desk weston-gl 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+        run: ~/ci desk weston-gl 0 ~/ci test cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
       - name: Pixman Weston (no dmabufs; shared memory)
         if: ${{ !cancelled() }}
-        run: ~/ci desk weston 0 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+        run: ~/ci desk weston 0 ~/ci test cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
       - name: Pixman Weston on Xvfb (shared memory, the screen read)
         if: ${{ !cancelled() }}
-        run: ~/ci desk weston-x11 32 cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
+        run: ~/ci desk weston-x11 32 ~/ci test cargo test --lib --all-features gpu_wayland -- --include-ignored --skip how_long --nocapture --test-threads=1
 
   macos:
     runs-on: macos-latest
@@ -192,6 +198,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Rust
         run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustc -V && sw_vers
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
       - uses: actions/cache@v6
         with:
           path: target
@@ -209,16 +217,16 @@ jobs:
         run: cargo clippy --all-targets --features hdr -- -D warnings
       - name: Window checks (real windows on the runner's screen, which is nobody's)
         if: ${{ !cancelled() }}
-        run: TAUT_SHOTS="$RUNNER_TEMP/shots" cargo test --test macos
+        run: TAUT_SHOTS="$RUNNER_TEMP/shots" ~/ci test cargo test --test macos
       - name: Window checks, all features
         if: ${{ !cancelled() }}
-        run: TAUT_SHOTS="$RUNNER_TEMP/shots/all-features" cargo test --all-features --test macos
+        run: TAUT_SHOTS="$RUNNER_TEMP/shots/all-features" ~/ci test cargo test --all-features --test macos
       - name: Library tests, all features
         if: ${{ !cancelled() }}
-        run: cargo test --lib --all-features --no-fail-fast
+        run: ~/ci test cargo test --lib --all-features --no-fail-fast
       - name: Library tests, no features
         if: ${{ !cancelled() }}
-        run: cargo test --lib --no-fail-fast
+        run: ~/ci test cargo test --lib --no-fail-fast
       - name: Pictures of the windows
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
@@ -237,6 +245,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Rust, with the web's target
         run: rustup toolchain install stable --profile minimal -c clippy -t wasm32-unknown-unknown && rustup default stable && rustc -V
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
       - uses: actions/cache@v6
         with:
           path: target
@@ -251,15 +261,15 @@ jobs:
         run: rustup toolchain install 1.88.0 --profile minimal -t wasm32-unknown-unknown && cargo +1.88.0 check --lib --all-features --target wasm32-unknown-unknown
       - name: The font both sides of the pixel checks draw with, and colour emoji for the browser
         if: ${{ !cancelled() }}
-        run: rustc -O --edition 2024 .github/ci.rs -o ~/ci && ~/ci apt fonts-dejavu-core fonts-noto-color-emoji
+        run: ~/ci apt fonts-dejavu-core fonts-noto-color-emoji
       - name: Pages under Node and headless Chrome
         if: ${{ !cancelled() }}
-        run: node --version && google-chrome --version && cargo test --test web -- --nocapture
+        run: node --version && google-chrome --version && ~/ci test cargo test --test web -- --nocapture
       - name: The system's parts in headless Chrome
         if: ${{ !cancelled() }}
         env:
           TAUT_WEB: required
-        run: cargo test --test web_system
+        run: ~/ci test cargo test --test web_system
       - name: Sizes (the release profile of docs/costs-and-speed.md)
         if: ${{ !cancelled() }}
         env:
@@ -280,6 +290,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Rust
         run: rustup toolchain install stable --profile minimal -c clippy -t aarch64-apple-ios -t aarch64-apple-ios-sim && rustup default stable && rustc -V && xcodebuild -version
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
       - uses: actions/cache@v6
         with:
           path: target
@@ -297,7 +309,7 @@ jobs:
         run: rustup toolchain install 1.88.0 --profile minimal -t aarch64-apple-ios && cargo +1.88.0 check --all-targets --all-features --target aarch64-apple-ios
       - name: In the simulator
         if: ${{ !cancelled() }}
-        run: TAUT_IOS_SIMULATOR=1 TAUT_SHOTS="$RUNNER_TEMP/ios" cargo test --test ios
+        run: TAUT_IOS_SIMULATOR=1 TAUT_SHOTS="$RUNNER_TEMP/ios" ~/ci test cargo test --test ios
       - name: Pictures of the simulator
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
@@ -313,21 +325,23 @@ jobs:
       - uses: actions/checkout@v7
       - name: Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
       - uses: actions/cache@v6
         with:
           path: target
           key: macos-gpu-${{ hashFiles('Cargo.toml', 'src/**', 'tests/**', 'examples/**') }}
       - name: Metal without gpu-draw
-        run: cargo test --lib --features gpu -- gpu_metal layer_metal
+        run: ~/ci test cargo test --lib --features gpu -- gpu_metal layer_metal
       - name: Layers under a program's own renderer (Metal, OpenGL through CGL)
         if: ${{ !cancelled() }}
-        run: cargo test --all-features --test renderers -- --test-threads=1
+        run: ~/ci test cargo test --all-features --test renderers -- --test-threads=1
       - name: Window checks, Metal showing
         if: ${{ !cancelled() }}
-        run: TAUT_SHOTS="$RUNNER_TEMP/shots/metal" cargo test --features gpu --test macos
+        run: TAUT_SHOTS="$RUNNER_TEMP/shots/metal" ~/ci test cargo test --features gpu --test macos
       - name: Window checks, Metal drawing every part
         if: ${{ !cancelled() }}
-        run: TAUT_DRAW=gpu TAUT_SHOTS="$RUNNER_TEMP/shots/metal-draw" cargo test --all-features --test macos
+        run: TAUT_DRAW=gpu TAUT_SHOTS="$RUNNER_TEMP/shots/metal-draw" ~/ci test cargo test --all-features --test macos
       - name: Pictures of the windows
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
@@ -367,6 +381,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Rust
         run: rustup toolchain install stable --profile minimal -c clippy && rustup default stable && rustup target add x86_64-linux-android aarch64-linux-android && rustc -V
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
       - uses: actions/cache@v6
         with:
           path: target
@@ -381,7 +397,7 @@ jobs:
         run: rustup toolchain install 1.88.0 --profile minimal -t x86_64-linux-android && cargo +1.88.0 check --all-targets --target x86_64-linux-android
       - name: The Android parts' tests here (the SDK's dexdump reads the DEX file)
         if: ${{ !cancelled() }}
-        run: cargo test --lib android_
+        run: ~/ci test cargo test --lib android_
       - name: The gallery and hello as APKs, for the emulator and for phones
         run: |
           export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
@@ -417,19 +433,19 @@ jobs:
           $ADB shell settings put global hide_error_dialogs 1 || true
           sleep 10
       - name: The gallery on the emulator
-        run: TAUT_ANDROID_APK=$PWD/target/apk/gallery.apk TAUT_PICTURES=$PWD/android cargo test --lib the_gallery_on_an_android_emulator -- --nocapture
+        run: TAUT_ANDROID_APK=$PWD/target/apk/gallery.apk TAUT_PICTURES=$PWD/android ~/ci test cargo test --lib the_gallery_on_an_android_emulator -- --nocapture
       - name: Screen readers on the emulator
         if: ${{ !cancelled() }}
-        run: TAUT_ANDROID_APK=$PWD/target/apk/android.apk TAUT_PICTURES=$PWD/android/readers cargo test --test android -- --nocapture
+        run: TAUT_ANDROID_APK=$PWD/target/apk/android.apk TAUT_PICTURES=$PWD/android/readers ~/ci test cargo test --test android -- --nocapture
       - name: Video on the emulator (the library's video tests, run there)
         if: ${{ !cancelled() }}
-        run: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME TAUT_VIDEO=required cargo test --features video --test video_android -- --nocapture
+        run: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME TAUT_VIDEO=required ~/ci test cargo test --features video --test video_android -- --nocapture
       - name: The system parts on the emulator
         if: ${{ !cancelled() }}
-        run: TAUT_ANDROID_PARTS_APK=$PWD/target/apk/system_parts.apk TAUT_ANDROID_OTHER_APK=$PWD/target/apk/parts2.apk TAUT_PICTURES=$PWD/android-parts cargo test --lib the_system_parts_on_an_android_emulator -- --nocapture
+        run: TAUT_ANDROID_PARTS_APK=$PWD/target/apk/system_parts.apk TAUT_ANDROID_OTHER_APK=$PWD/target/apk/parts2.apk TAUT_PICTURES=$PWD/android-parts ~/ci test cargo test --lib the_system_parts_on_an_android_emulator -- --nocapture
       - name: The GPU on the emulator (Vulkan and OpenGL ES; the library's checks there, the gallery shown each way)
         if: ${{ !cancelled() }}
-        run: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME TAUT_ANDROID_GPU=required TAUT_ANDROID_GPU_APK=$PWD/target/apk/gallery-gpu.apk TAUT_PICTURES=$PWD/android/gpu cargo test --test android_gpu
+        run: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME TAUT_ANDROID_GPU=required TAUT_ANDROID_GPU_APK=$PWD/target/apk/gallery-gpu.apk TAUT_PICTURES=$PWD/android/gpu ~/ci test cargo test --test android_gpu
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
@@ -497,24 +513,30 @@ jobs:
     timeout-minutes: 45
     env:
       TAUT_VIDEO: required
+    defaults:
+      run:
+        # Also on Windows, for `~/ci`.
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - name: Rust
         run: rustup toolchain install stable --profile minimal -t wasm32-unknown-unknown -t aarch64-apple-ios-sim && rustup default stable && rustc -V
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
       - name: GStreamer, and Mesa's Vulkan and EGL on the CPU (lavapipe, llvmpipe)
         if: runner.os == 'Linux'
-        run: rustc -O --edition 2024 .github/ci.rs -o ~/ci && ~/ci apt gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav mesa-vulkan-drivers libvulkan1 libegl1 libgles2 libgl1-mesa-dri
+        run: ~/ci apt gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav mesa-vulkan-drivers libvulkan1 libegl1 libgles2 libgl1-mesa-dri
       - name: Video tests
-        run: cargo test --features video --lib video::tests
+        run: ~/ci test cargo test --features video --lib video::tests
       - name: Video tests, frames left on the GPU (read back where the CPU draws); drawn from there by Direct3D 11, Metal, and from dmabufs by Vulkan and EGL
         if: ${{ !cancelled() }}
-        run: cargo test --features video,gpu-draw --lib -- video::tests video_gstreamer video_vulkan video_opengl direct3d_11_draws_video_frames gpu_draw_metal
+        run: ~/ci test cargo test --features video,gpu-draw --lib -- video::tests video_gstreamer video_vulkan video_opengl direct3d_11_draws_video_frames gpu_draw_metal
       - name: Video on the main thread, and in the iOS simulator
         if: ${{ runner.os == 'macOS' && !cancelled() }}
-        run: TAUT_IOS_SIMULATOR=1 cargo test --features video --test video_apple
+        run: TAUT_IOS_SIMULATOR=1 ~/ci test cargo test --features video --test video_apple
       - name: The same, frames left in AVFoundation's pixel buffers (gpu-draw)
         if: ${{ runner.os == 'macOS' && !cancelled() }}
-        run: TAUT_IOS_SIMULATOR=1 cargo test --features video,gpu-draw --test video_apple
+        run: TAUT_IOS_SIMULATOR=1 ~/ci test cargo test --features video,gpu-draw --test video_apple
       - name: Video in a browser and under Node
         if: ${{ runner.os == 'Linux' && !cancelled() }}
-        run: cargo test --features video --test video_web
+        run: ~/ci test cargo test --features video --test video_web

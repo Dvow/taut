@@ -340,7 +340,7 @@ impl Video {
         self.player.seek(to);
         (self.position, self.awaited, self.last) = (to, true, None);
     }
-    /// Where it is, as of the last run.
+    /// Where it is, as of the last run: never past its length.
     pub fn position(&self) -> Duration {
         self.position
     }
@@ -534,7 +534,9 @@ impl Video {
         }
         (self.tracks_known, self.reading_captions) = (self.tracks_known && !news.tracks_changed, news.reading_captions);
         self.take_frame(ui);
-        (self.position, self.length) = (self.player.position(), self.player.length().or(self.length));
+        let (position, length) = (self.player.position(), self.player.length().or(self.length));
+        // (AVFoundation's clock can stop past the end: at 3.094 s of 3 s, seen on a Mac.)
+        (self.position, self.length) = (length.map_or(position, |length| position.min(length)), length);
         if !self.tracks_known {
             self.take_tracks();
         }
@@ -1370,18 +1372,17 @@ pub(crate) mod tests {
             eprintln!("{}", said.lines().filter(|line| line.starts_with("held")).collect::<Vec<_>>().join("\n"));
             return;
         }
-        // (Warmed up first, until 20 more opens hold under 2 MB more, ten times 20 at most: the
-        // GPU's driver and Media Foundation keep some 10 MB of their own over the first few
-        // dozen videos decoded on the GPU, more of them on a busy computer, then no more.)
-        let mut held = memory_held();
-        for _ in 0..10 {
+        // (Warmed up first, until 60 more opens hold under 2 MB more, twenty times 20 at most:
+        // the GPU's driver and Media Foundation keep some 20 MB of their own over the first two
+        // hundred videos decoded on the GPU, in steps of 2 to 3 MB with flat stretches between,
+        // then no more.)
+        let mut held = vec![memory_held()];
+        let settled = |held: &[usize]| held.len() > 3 && held[held.len() - 1] < held[held.len() - 4] + (2 << 20);
+        while !settled(&held) && held.len() <= 20 {
             open_and_close(20);
-            let (was, now) = (held, memory_held());
-            held = now;
-            if now < was + (2 << 20) {
-                break;
-            }
+            held.push(memory_held());
         }
+        eprintln!("held while warming up, each 20 opens: {:?} KB", held.iter().map(|bytes| bytes >> 10).collect::<Vec<_>>());
         let (before, threads) = (memory_held(), threads_held());
         open_and_close(40);
         let after = memory_held();

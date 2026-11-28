@@ -167,6 +167,9 @@ pub(crate) struct Player {
     /// Seeks asked for; frames wait until the player has finished as many (`seeked`):
     /// while it decodes its way to the time asked, it hands out frames on the way.
     seeks: u32,
+    /// The last seek is to where it stood, for the first frame: it hands out no frames on the
+    /// way, and the player may say it is over seconds after its frame (8 s on the iOS simulator).
+    in_place: bool,
     /// What the player calls when a seek is over.
     seeked: &'static Seeked,
     /// The rate it plays at.
@@ -222,7 +225,23 @@ impl Player {
                 let url = Retained::of(url);
                 in_stream.spawn(move |in_stream| read_captions_in_stream(functions, &url, in_stream));
             }
-            Ok(Player { functions, player, item, output, playing: false, ready: false, last: None, written, seeks: 0, seeked: seeked(), speed: 1.0, cues: Vec::new(), captions: None, in_stream })
+            Ok(Player {
+                functions,
+                player,
+                item,
+                output,
+                playing: false,
+                ready: false,
+                last: None,
+                written,
+                seeks: 0,
+                in_place: false,
+                seeked: seeked(),
+                speed: 1.0,
+                cues: Vec::new(),
+                captions: None,
+                in_stream,
+            })
         }
     }
 
@@ -244,7 +263,7 @@ impl Player {
         unsafe { send::<()>(self.player, c"pause", ()) };
     }
     pub(crate) fn seek(&mut self, to: Duration) {
-        (self.last, self.seeks) = (None, self.seeks.wrapping_add(1));
+        (self.last, self.seeks, self.in_place) = (None, self.seeks.wrapping_add(1), false);
         let exact = CMTime { value: 0, timescale: 1, flags: 1, epoch: 0 };
         let over: *const Seeked = self.seeked;
         let _pool = Pool::new();
@@ -288,6 +307,7 @@ impl Player {
             self.ready = true;
             let here = self.position();
             self.seek(here);
+            self.in_place = true;
         }
         let at_end = self.length().is_some_and(|length| self.position() + Duration::from_millis(1) >= length);
         let ended = self.playing && rate == 0.0 && at_end;
@@ -297,7 +317,7 @@ impl Player {
     }
 
     /// The newest frame where there is one not given yet: its width and time, its pixels in
-    /// `into`. None before the item is ready (its length known) and its first seek is over.
+    /// `into`. None before the item is ready (its length known), nor while a seek goes elsewhere.
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
         let (buffer, shown) = self.new_buffer()?;
         let width = read(self.functions, buffer, into);
@@ -328,9 +348,9 @@ impl Player {
     }
 
     /// The newest pixel buffer not given yet (+1), and its time; none before the item is ready
-    /// (its length known) and its first seek is over.
+    /// (its length known), nor while a seek goes elsewhere.
     fn new_buffer(&mut self) -> Option<(*mut c_void, CMTime)> {
-        if !self.ready || self.seeked.held.load(Ordering::Acquire) != self.seeks {
+        if !self.ready || (!self.in_place && self.seeked.held.load(Ordering::Acquire) != self.seeks) {
             return None;
         }
         let _pool = Pool::new();

@@ -138,10 +138,16 @@ pub fn newest_simulator(kind: &str) -> Result<String, String> {
     found.ok_or_else(|| format!("no {kind} simulator in:\n{listed}"))
 }
 
-/// Boots a simulator, unless it is booted, and waits until it is ready.
-pub fn boot(device: &str) -> Result<(), String> {
-    _ = ran(Command::new("xcrun").args(["simctl", "boot", device]));
-    ran(Command::new("xcrun").args(["simctl", "bootstatus", device, "-b"])).map(drop)
+/// Boots a simulator, unless it is booted, and waits until it is ready. Whether this booted it.
+pub fn boot(device: &str) -> Result<bool, String> {
+    let booted = ran(Command::new("xcrun").args(["simctl", "boot", device])).is_ok();
+    ran(Command::new("xcrun").args(["simctl", "bootstatus", device, "-b"]))?;
+    Ok(booted)
+}
+
+/// Shuts a simulator down: a booted one keeps the computer busy after its app has quit.
+pub fn shut_down(device: &str) -> Result<(), String> {
+    ran(Command::new("xcrun").args(["simctl", "shutdown", device])).map(drop)
 }
 
 /// Builds the example as asked into a target folder, and gives back the bundle (in its `ios`).

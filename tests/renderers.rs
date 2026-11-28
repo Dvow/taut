@@ -956,6 +956,10 @@ mod open_gl {
         let mut gallery = Gallery::new(320, 230, 1.0);
         opengl.update(&mut gallery.ui);
         let checks = &opengl.checks;
+        // The program's own way of unpacking pixel rows (their length, rows and pixels skipped,
+        // alignment), and the plain way it fills its target.
+        let odd = [(0x0CF2, 7), (0x0CF3, 3), (0x0CF4, 2), (0x0CF5, 1)];
+        let plain = [(0x0CF2, 0), (0x0CF3, 0), (0x0CF4, 0), (0x0CF5, 4)];
         let (mut texture, mut corners, mut buffer) = (0, 0, 0);
         let own = program(checks);
         unsafe {
@@ -974,7 +978,7 @@ mod open_gl {
             (checks.glBindTexture)(TEXTURE_2D, texture);
             (checks.glActiveTexture)(0x84C3);
             (checks.glBindBuffer)(0x88EC, buffer);
-            [(0x0CF2, 7), (0x0CF3, 3), (0x0CF4, 2), (0x0CF5, 1)].into_iter().for_each(|(what, to)| (checks.glPixelStorei)(what, to));
+            odd.into_iter().for_each(|(what, to)| (checks.glPixelStorei)(what, to));
         }
         gallery.ui.event(Event::Key(Key::Tab, Mods::NONE));
         gallery.run();
@@ -986,9 +990,10 @@ mod open_gl {
             (checks.glActiveTexture)(0x84C1);
             (checks.glBindTexture)(TEXTURE_2D, target);
             (checks.glBindBuffer)(0x88EC, 0);
-            (checks.glPixelStorei)(0x0CF2, 0);
+            // (Rows or pixels skipped would be read past the end of the picture.)
+            plain.into_iter().for_each(|(what, to)| (checks.glPixelStorei)(what, to));
             (checks.glTexImage2D)(TEXTURE_2D, 0, 0x8058, width, height, 0, BGRA, UNSIGNED_INT_8_8_8_8_REV, under(400, 300).as_ptr().cast());
-            (checks.glPixelStorei)(0x0CF2, 7);
+            odd.into_iter().for_each(|(what, to)| (checks.glPixelStorei)(what, to));
             (checks.glBindBuffer)(0x88EC, buffer);
             (checks.glActiveTexture)(0x84C3);
             (checks.glGenFramebuffers)(1, &mut framebuffer);
