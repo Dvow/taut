@@ -1,0 +1,32 @@
+    Finished `test` profile [unoptimized] target(s) in 0.00s
+     Running unittests src/lib.rs (target/debug/build/taut/fe4b8e13aec337b8/out/taut-fe4b8e13aec337b8)
+
+running 1 test
+probe: warm, helo wrong: true
+probe: -STOP  2592 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -STOP 2592: Ok(ExitStatus(unix_wait_status(0)))
+2026-11-28 18:19:35.637 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer dataFromCheckingString timed out, index is 1
+2026-11-28 18:19:36.158 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer dataFromCheckingString timed out, index is 2
+probe: checkString wrld gave 0 results after 1.0437115s
+2026-11-28 18:19:36.428 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer dataFromCheckingString timed out, index is 3
+2026-11-28 18:19:36.684 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer dataFromCheckingString timed out, index is 4
+probe: checkString recieve gave 0 results after 524.167542ms
+2026-11-28 18:19:36.835 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer dataFromCheckingString timed out, index is 5
+2026-11-28 18:19:37.023 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer dataFromCheckingString timed out, index is 6
+probe: checkString naïve gave 0 results after 339.231208ms
+2026-11-28 18:19:37.160 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer dataFromCheckingString timed out, index is 7
+2026-11-28 18:19:37.238 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer dataFromCheckingString timed out, index is 8
+probe: checkString teh gave 0 results after 214.706833ms
+probe: checkString hello gave 0 results after 113.706875ms
+probe: checkString speling gave 0 results after 120.756334ms
+probe: checkString colour gave 0 results after 197.543292ms
+probe: checkString thier gave 0 results after 103.935792ms
+probe: checkstring stop done after 2.658896708s
+probe: -CONT  2592 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -CONT 2592: Ok(ExitStatus(unix_wait_status(0)))
+2026-11-28 18:19:37.839 taut-fe4b8e13aec337b8[2730:12339] NSSpellServer findMisspelledWordInString succeeded, index is 7
+probe: after, wrld wrong: true
+test ns_spell_checker::probe::probe_spell_server_stopped ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 686 filtered out; finished in 2.78s
+

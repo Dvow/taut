@@ -1,0 +1,18 @@
+stop async exit 0 in 3 s
+ 2592 runner           U    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+stop checkstring exit 0 in 2 s
+ 2592 runner           U    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+stop sync exit 0 in 9 s
+ 2592 runner           U    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+relaunch async exit 0 in 31 s
+ 3169 runner           R    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+relaunch checkstring exit 0 in 30 s
+23315 runner           S    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+relaunch sync exit 0 in 30 s
+44042 runner           R    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+cold async exit 0 in 30 s
+64808 runner           U    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+cold checkstring exit 0 in 30 s
+84848 runner           R    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+cold sync exit 0 in 30 s
+ 2566 runner           R    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell

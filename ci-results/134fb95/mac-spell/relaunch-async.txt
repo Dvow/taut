@@ -1,0 +1,34 @@
+    Finished `test` profile [unoptimized] target(s) in 0.00s
+     Running unittests src/lib.rs (target/debug/build/taut/fe4b8e13aec337b8/out/taut-fe4b8e13aec337b8)
+
+running 1 test
+probe: warm, helo wrong: true
+probe: -KILL  2592 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -KILL 2592: Ok(ExitStatus(unix_wait_status(0)))
+probe: relaunched AppleSpell 3169 stopped at 37.466917ms: Ok(ExitStatus(unix_wait_status(0)))
+2026-11-28 18:19:47.602 taut-fe4b8e13aec337b8[3129:13110] NSSpellServer dataFromCheckingString timed out, index is 1
+2026-11-28 18:19:48.114 taut-fe4b8e13aec337b8[3129:13110] NSSpellServer dataFromCheckingString timed out, index is 2
+probe: async wrld (sequence 1) answer Some((1, 0)) (timed out false) after 1.069638708s
+2026-11-28 18:19:48.369 taut-fe4b8e13aec337b8[3129:13110] NSSpellServer dataFromCheckingString timed out, index is 3
+2026-11-28 18:19:48.635 taut-fe4b8e13aec337b8[3129:13110] NSSpellServer dataFromCheckingString timed out, index is 4
+probe: async recieve (sequence 2) answer Some((1, 0)) (timed out false) after 518.72475ms
+2026-11-28 18:19:48.774 taut-fe4b8e13aec337b8[3129:13110] NSSpellServer dataFromCheckingString timed out, index is 5
+2026-11-28 18:19:48.968 taut-fe4b8e13aec337b8[3129:13110] NSSpellServer dataFromCheckingString timed out, index is 6
+probe: async naïve (sequence 3) answer Some((1, 0)) (timed out false) after 333.593ms
+2026-11-28 18:19:49.096 taut-fe4b8e13aec337b8[3129:13110] NSSpellServer dataFromCheckingString timed out, index is 7
+2026-11-28 18:19:49.225 taut-fe4b8e13aec337b8[3129:13110] NSSpellServer dataFromCheckingString timed out, index is 8
+probe: async teh (sequence 4) answer Some((1, 0)) (timed out false) after 256.732542ms
+probe: async hello (sequence 5) answer Some((1, 0)) (timed out false) after 71.479ms
+probe: async speling (sequence 6) answer Some((1, 0)) (timed out false) after 187.928791ms
+probe: async colour (sequence 7) answer Some((1, 0)) (timed out false) after 118.709667ms
+probe: async thier (sequence 8) answer Some((1, 0)) (timed out false) after 135.980083ms
+probe: async relaunch done after 2.69352675s
+probe: let go of ["3169"] at 30.014225125s
+probe: -CONT  3169 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -CONT 3169: Ok(ExitStatus(unix_wait_status(0)))
+2026-11-28 18:20:17.197 taut-fe4b8e13aec337b8[3129:13107] NSSpellServer findMisspelledWordInString succeeded, index is 7
+probe: after, wrld wrong: true
+test ns_spell_checker::probe::probe_spell_server_stopped ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 686 filtered out; finished in 30.22s
+
