@@ -504,7 +504,14 @@ fn stored_samples(asset: Obj, track: Obj, from: Duration) -> Option<(Obj, Obj)> 
             send::<()>(reader, c"setTimeRange:", (CMTimeRange { start: CMTime::of(from), duration: forever },));
         }
         send::<()>(reader, c"addOutput:", (output,));
-        (send::<Bool>(reader, c"startReading", ()) != 0).then_some((reader, output))
+        let started = send::<Bool>(reader, c"startReading", ()) != 0;
+        if !started {
+            let error: Obj = send(reader, c"error", ());
+            let said = if error.is_null() { None } else { rust_string(send(error, c"description", ())) };
+            eprintln!("probe: reader did not start at {from:?}: {said:?}");
+        }
+        eprintln!("probe: reader started at {from:?}: {started}");
+        started.then_some((reader, output))
     }
 }
 
