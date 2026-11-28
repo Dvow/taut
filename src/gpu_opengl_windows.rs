@@ -457,6 +457,14 @@ impl Frames {
         drawn
     }
 
+    /// Lets go of the frames whose video is gone, in a part that draws none (the context is
+    /// current), as the other paths do (`gpu_frames`).
+    fn let_go_of_gone(&mut self, gl: &Gl) {
+        let Frames { interop, direct3d: Some(Some(direct3d)), opened } = self else { return };
+        let none: &[std::sync::Arc<crate::video::FrameTexture>] = &[];
+        opened.ready(none, |_| None, |gone| gone.let_go(interop, Some(gl), direct3d.handle));
+    }
+
     /// Lets go of every frame and the Direct3D 11 device, with no context current (OpenGL's
     /// textures go with the context).
     fn close(mut self) {
@@ -703,6 +711,10 @@ impl Shown {
         if !list.frames.is_empty() {
             let (texture, size, gl) = (self.texture, self.size, &self.owner.gl);
             return device.frames.as_mut().is_some_and(|frames| frames.drawn(gl, &list.frames, |names| pipeline.draw_with_frames(texture, size, list, area, names)));
+        }
+        #[cfg(feature = "video")]
+        if let Some(frames) = device.frames.as_mut() {
+            frames.let_go_of_gone(&self.owner.gl);
         }
         #[cfg(not(feature = "video"))]
         let _ = device;

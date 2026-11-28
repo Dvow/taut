@@ -48,7 +48,7 @@ const QUOTED_WIDTH: usize = 300;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let done = match args.split_first() {
-        Some((what, command)) if what == "test" && !command.is_empty() => return test(command),
+        Some((what, command)) if what == "test" && !command.is_empty() => std::process::exit(test(command)),
         Some((what, packages)) if what == "apt" && !packages.is_empty() => apt(packages),
         Some((what, rest)) if what == "desk" && rest.len() > 2 => desk(&rest[0], &rest[1], &rest[2..]),
         Some((what, rest)) if what == "locales" && rest.len() > 1 => locales(Path::new(&rest[0]), &rest[1..]),
@@ -188,20 +188,22 @@ fn run_shown(mut command: Command, mut each: impl FnMut(&str)) -> Result<ExitSta
         println!("{line}");
         each(&line);
     };
+    // (Asked after every line too: a process it left behind may write on without a pause.)
     let status = loop {
         match lines.recv_timeout(Duration::from_millis(100)) {
             Ok(line) => show(line),
             Err(RecvTimeoutError::Disconnected) => break child.wait(),
-            Err(RecvTimeoutError::Timeout) => match child.try_wait() {
-                Ok(Some(status)) => break Ok(status),
-                Ok(None) => {}
-                Err(error) => break Err(error),
-            },
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if let Some(ended) = child.try_wait().transpose() {
+            break ended;
         }
     };
     // What it wrote before it ended: until the pipe is quiet for a moment, 5 s at most.
     let ended = Instant::now();
-    while let (Ok(line), true) = (lines.recv_timeout(Duration::from_millis(500)), ended.elapsed() < Duration::from_secs(5)) {
+    while ended.elapsed() < Duration::from_secs(5)
+        && let Ok(line) = lines.recv_timeout(Duration::from_millis(500))
+    {
         show(line);
     }
     status.map_err(|e| e.to_string())
@@ -220,8 +222,9 @@ fn read_lines(reader: std::io::PipeReader, send: &mpsc::Sender<String>) {
     }
 }
 
-/// `ci test`: runs `command` and annotates what failed (see the top).
-fn test(command: &[String]) -> ExitCode {
+/// `ci test`: runs `command` and annotates what failed (see the top). Its exit code, whole
+/// (Windows' 0xC0000005 too); 1 where it has none (ended by a signal) or it could not run.
+fn test(command: &[String]) -> i32 {
     let mut tests = Command::new(&command[0]);
     tests.args(&command[1..]);
     let mut report = TestReport::default();
@@ -229,17 +232,16 @@ fn test(command: &[String]) -> ExitCode {
         Ok(status) => status,
         Err(error) => {
             println!("::error title={}::{}", escape_property(&command.join(" ")), escape_message(&error));
-            return ExitCode::FAILURE;
+            return 1;
         }
     };
     if status.success() {
-        return ExitCode::SUCCESS;
+        return 0;
     }
     for annotation in report.annotations(&command.join(" ")) {
         println!("{annotation}");
     }
-    let code = status.code().and_then(|code| u8::try_from(code).ok()).filter(|&code| code != 0);
-    ExitCode::from(code.unwrap_or(1))
+    status.code().filter(|&code| code != 0).unwrap_or(1)
 }
 
 /// What a test command's output says failed, read line by line: libtest's and cargo's words.

@@ -105,6 +105,8 @@ mod checks {
         println!("frames show at their times");
         a_paused_video_holds_and_seeks(&silent);
         println!("pause and seek");
+        a_seek_before_the_first_frame(&silent);
+        println!("a seek before the first frame");
         the_end_and_a_loop(&with_sound);
         println!("the end, and a loop");
         the_controls(&silent);
@@ -243,6 +245,16 @@ mod checks {
         }
     }
 
+    /// A seek asked before the video is ready: the first frame shown is the one there, none on
+    /// the way to it.
+    fn a_seek_before_the_first_frame(file: &std::path::Path) {
+        let mut video = Video::open_silent(file).unwrap();
+        video.seek(Duration::from_millis(1200));
+        let mut trial = trial(video, false);
+        until(&mut trial, "the first frame", |video| video.frames_shown() > 0);
+        assert_eq!(shown(&trial), 12, "the first frame shown");
+    }
+
     fn the_end_and_a_loop(file: &std::path::Path) {
         let mut trial = trial(Video::open_silent(file).unwrap(), false);
         until(&mut trial, "the first frame", |video| video.size().is_some());
@@ -364,10 +376,9 @@ mod simulator {
         let device = ios_bundle::newest_simulator("iPhone")?;
         let booted = ios_bundle::boot(&device)?;
         let verdict = verdict(&device, &app);
-        if booted {
-            ios_bundle::shut_down(&device)?;
-        }
-        verdict
+        let shut = if booted { ios_bundle::shut_down(&device) } else { Ok(()) };
+        // (A failed check is said before a failed shutdown.)
+        verdict.and_then(|said| shut.map(|()| said))
     }
 
     /// Installs and runs the app on `device`, and waits for its verdict.
