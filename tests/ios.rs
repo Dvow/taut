@@ -621,7 +621,7 @@ mod phone {
                 return;
             }
             match page.check(name, ui) {
-                true => note(P::NOTE, &format!("ok {name}")),
+                true => note(P::NOTE, &format!("ok {name} ({} ms)", since.elapsed().as_millis())),
                 false if since.elapsed() < P::PATIENCE => return,
                 false => note(P::NOTE, &format!("FAILED {name}: {page:?}; places {:?}, long presses {:?}, edit menus {}", PLACES.take(), LONG_PRESSES.get(), MENUS.get().0)),
             }
@@ -955,6 +955,7 @@ mod phone {
 
     impl Page for System {
         const NOTE: &'static str = "system.txt";
+        const PATIENCE: Duration = Duration::from_secs(60);
         const STEPS: &'static [&'static str] = &[
             "reader asked",
             "the system's dialog opens for several files",

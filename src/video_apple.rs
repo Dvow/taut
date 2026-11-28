@@ -607,6 +607,10 @@ impl TrackReading {
         // SAFETY: a reading output; the sample buffer it copies is ours, read and released.
         let sample: *mut c_void = unsafe { send(self.output, c"copyNextSampleBuffer", ()) };
         if sample.is_null() {
+            let status: isize = unsafe { send(self.reader, c"status", ()) };
+            let error: Obj = unsafe { send(self.reader, c"error", ()) };
+            let said = if error.is_null() { None } else { rust_string(unsafe { send(error, c"description", ()) }) };
+            eprintln!("probe: reader gave no sample: status {status} (2 completed, 3 failed, 4 cancelled), error {said:?}");
             in_stream.ended();
             return Duration::MAX;
         }

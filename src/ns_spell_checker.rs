@@ -68,6 +68,86 @@ pub(crate) fn own_language() -> String {
 }
 
 #[cfg(test)]
+mod probe {
+    use super::*;
+    use crate::spell::system;
+    use std::ffi::c_void;
+    use std::process::Command;
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::{Duration, Instant};
+
+    type Answer = Arc<(Mutex<Option<(isize, usize)>>, Condvar)>;
+
+    extern "C" fn answered(block: *const Block<Answer>, _: isize, results: Obj, _: Obj, count: isize) {
+        let held = unsafe { &(*block).held };
+        *held.0.lock().unwrap() = Some((count, array_items(results).len()));
+        held.1.notify_all();
+    }
+
+    fn signal_spell_server(signal: &str) {
+        let listed = Command::new("ps").args(["-axo", "pid,user,comm"]).output().unwrap();
+        let listed = String::from_utf8_lossy(&listed.stdout).into_owned();
+        for line in listed.lines().filter(|line| line.to_lowercase().contains("spell")) {
+            eprintln!("probe: {signal} {line}");
+            let pid = line.split_whitespace().next().unwrap();
+            if line.contains("AppleSpell") {
+                let status = Command::new("kill").args([signal, pid]).status();
+                eprintln!("probe: kill {signal} {pid}: {status:?}");
+            }
+        }
+    }
+
+    /// (Probe) The spell server stopped: what each way of asking does. PROBE_WAY = sync, async,
+    /// checkstring.
+    #[test]
+    #[ignore]
+    fn probe_spell_server_stopped() {
+        let way = std::env::var("PROBE_WAY").unwrap_or_default();
+        std::thread::spawn(move || {
+            let checker = system("en-US").expect("a checker");
+            eprintln!("probe: warm, helo wrong: {}", checker.wrong("helo"));
+            signal_spell_server("-STOP");
+            let start = Instant::now();
+            match way.as_str() {
+                "sync" => eprintln!("probe: sync says wrld wrong: {}", checker.wrong("wrld")),
+                "checkstring" => {
+                    let _pool = Pool::new();
+                    let results: Obj = unsafe {
+                        send(
+                            super::checker(),
+                            c"checkString:range:types:options:inSpellDocumentWithTag:orthography:wordCount:",
+                            (ns_string("helo wrld"), NSRange { location: 0, length: 9 }, 2u64, std::ptr::null_mut::<c_void>(), 0isize, std::ptr::null_mut::<Obj>(), std::ptr::null_mut::<isize>()),
+                        )
+                    };
+                    eprintln!("probe: checkString gave {} results", array_items(results).len());
+                }
+                _ => {
+                    let answer: Answer = Arc::default();
+                    let block = Block::leaked(answered as *const c_void, answer.clone());
+                    let _pool = Pool::new();
+                    let sequence: isize = unsafe {
+                        send(
+                            super::checker(),
+                            c"requestCheckingOfString:range:types:options:inSpellDocumentWithTag:completionHandler:",
+                            (ns_string("helo wrld"), NSRange { location: 0, length: 9 }, 2u64, std::ptr::null_mut::<c_void>(), 0isize, block as *const Block<Answer>),
+                        )
+                    };
+                    eprintln!("probe: asked, sequence {sequence}, after {:?}", start.elapsed());
+                    let guard = answer.0.lock().unwrap();
+                    let (guard, waited) = answer.1.wait_timeout_while(guard, Duration::from_secs(120), |got| got.is_none()).unwrap();
+                    eprintln!("probe: async answer {:?} (timed out {}) after {:?}", *guard, waited.timed_out(), start.elapsed());
+                }
+            }
+            eprintln!("probe: {way} done after {:?}", start.elapsed());
+            signal_spell_server("-CONT");
+            eprintln!("probe: after CONT, wrld wrong: {}", checker.wrong("wrld"));
+        })
+        .join()
+        .unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use crate::spell::{OFFERED, system};
 

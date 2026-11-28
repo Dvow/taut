@@ -1,0 +1,289 @@
+# Branch wip/flakes6 only: CI's flaky steps, each job in copies, results committed back to the
+# branch (ci-results/<sha7>/<job>-<copy>/). A commit message picks the jobs: [ubuntu-video]
+# [windows] [macos] [mac-spell] [ios] [ios-video] [ubuntu]; with [few], 2 copies each.
+name: flakes6
+
+on:
+  push:
+    branches: [wip/flakes6]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUST_BACKTRACE: 1
+  TAUT_CI: 1
+
+jobs:
+  # The video job's Linux steps: the video tests four times, then with gpu-draw once.
+  ubuntu-video:
+    if: contains(github.event.head_commit.message, '[ubuntu-video]')
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(contains(github.event.head_commit.message, '[few]') && '[1, 2]' || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TAUT_VIDEO: required
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V
+      - name: The CI tool, GStreamer, Mesa
+        run: |
+          rustc -O --edition 2024 .github/ci.rs --out-dir ~
+          ~/ci apt gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav mesa-vulkan-drivers libvulkan1 libegl1 libgles2 libgl1-mesa-dri
+      - name: Runs
+        run: |
+          set +e
+          O=ci-results/${GITHUB_SHA::7}/ubuntu-video-${{ matrix.copy }}
+          mkdir -p $O
+          run() {
+            start=$(date +%s)
+            ~/ci test "${@:3}" > run.txt 2>&1
+            code=$?
+            echo "run $1 $2 exit $code in $(( $(date +%s) - start )) s" >> $O/summary.txt
+            grep "^::error" run.txt >> $O/summary.txt
+            grep "probe:" run.txt >> $O/probes.txt
+            [ $code = 0 ] || cp run.txt $O/run-$1-$2.txt
+          }
+          cargo test -q --features video --lib --no-run
+          for i in 1 2 3 4; do run $i video cargo test --features video --lib video::tests -- --nocapture; done
+          run 1 gpu cargo test --features video,gpu-draw --lib -- video::tests video_gstreamer video_vulkan video_opengl --nocapture
+          cat $O/summary.txt
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ci-results && git commit -q -m "results ubuntu-video ${{ matrix.copy }}"
+          for try in $(seq 1 20); do git pull -q --rebase origin wip/flakes6 && git push -q origin HEAD:wip/flakes6 && break; sleep $((RANDOM % 20 + 3)); done
+          ! grep -q "exit [^0]" $O/summary.txt
+
+  # The windows job's two test steps, the spell checks' times kept (TAUT_PROBE).
+  windows:
+    if: contains(github.event.head_commit.message, '[windows]')
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(contains(github.event.head_commit.message, '[few]') && '[1, 2]' || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]') }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
+      - name: Runs
+        run: |
+          set +e
+          O=ci-results/${GITHUB_SHA::7}/windows-${{ matrix.copy }}
+          mkdir -p $O
+          export TAUT_PROBE=$PWD/$O/probes.txt
+          run() {
+            start=$(date +%s)
+            ~/ci test "${@:3}" > run.txt 2>&1
+            code=$?
+            echo "run $1 $2 exit $code in $(( $(date +%s) - start )) s" >> $O/summary.txt
+            grep "^::error" run.txt >> $O/summary.txt
+            [ $code = 0 ] || cp run.txt $O/run-$1-$2.txt
+          }
+          cargo build -q --example overlay
+          run 1 all cargo test --all-features --no-fail-fast -- --test-threads=4
+          run 1 lib cargo test --lib --no-fail-fast
+          cat $O/summary.txt $O/probes.txt
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ci-results && git commit -q -m "results windows ${{ matrix.copy }}"
+          for try in $(seq 1 20); do git pull -q --rebase origin wip/flakes6 && git push -q origin HEAD:wip/flakes6 && break; sleep $((RANDOM % 20 + 3)); done
+          ! grep -q "exit [^0]" $O/summary.txt
+
+  # The macos job's test steps, then the macos-gpu job's window checks.
+  macos:
+    if: contains(github.event.head_commit.message, '[macos]')
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(contains(github.event.head_commit.message, '[few]') && '[1, 2]' || '[1, 2, 3, 4, 5, 6, 7, 8]') }}
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V && sw_vers
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
+      - name: Runs
+        run: |
+          set +e
+          O=ci-results/${GITHUB_SHA::7}/macos-${{ matrix.copy }}
+          mkdir -p $O
+          run() {
+            start=$(date +%s)
+            "${@:3}" > run.txt 2>&1
+            code=$?
+            echo "run $1 $2 exit $code in $(( $(date +%s) - start )) s" >> $O/summary.txt
+            grep "^::error" run.txt >> $O/summary.txt
+            grep -E "probe:|NSSpell|Objective-C exception|FAILED|^failed" run.txt >> $O/probes.txt
+            [ $code = 0 ] || cp run.txt $O/run-$1-$2.txt
+          }
+          run 1 window env TAUT_SHOTS="$RUNNER_TEMP/shots" ~/ci test cargo test --test macos
+          run 1 window-all env TAUT_SHOTS="$RUNNER_TEMP/shots/all" ~/ci test cargo test --all-features --test macos
+          run 1 lib-all ~/ci test cargo test --lib --all-features --no-fail-fast
+          run 1 lib ~/ci test cargo test --lib --no-fail-fast
+          run 1 metal env TAUT_SHOTS="$RUNNER_TEMP/shots/metal" ~/ci test cargo test --features gpu --test macos
+          run 1 metal-draw env TAUT_DRAW=gpu TAUT_SHOTS="$RUNNER_TEMP/shots/metal-draw" ~/ci test cargo test --all-features --test macos
+          cat $O/summary.txt
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ci-results && git commit -q -m "results macos ${{ matrix.copy }}"
+          for try in $(seq 1 20); do git pull -q --rebase origin wip/flakes6 && git push -q origin HEAD:wip/flakes6 && break; sleep $((RANDOM % 20 + 3)); done
+          ! grep -q "exit [^0]" $O/summary.txt
+
+  # The spell server stopped (SIGSTOP), asked each way: what comes back, or how it ends.
+  mac-spell:
+    if: contains(github.event.head_commit.message, '[mac-spell]')
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V && sw_vers
+      - name: Runs
+        run: |
+          set +e
+          O=ci-results/${GITHUB_SHA::7}/mac-spell
+          mkdir -p $O
+          cargo test -q --lib --no-run
+          for way in async checkstring sync spell-test; do
+            start=$(date +%s)
+            if [ $way = spell-test ]; then
+              cargo test --lib ns_spell_checker::tests -- --nocapture > $O/$way.txt 2>&1
+            else
+              PROBE_WAY=$way cargo test --lib probe_spell_server_stopped -- --ignored --nocapture > $O/$way.txt 2>&1
+            fi
+            echo "$way exit $? in $(( $(date +%s) - start )) s" >> $O/summary.txt
+            ps -axo pid,user,stat,comm | grep -i spell >> $O/summary.txt
+            pgrep -x AppleSpell | xargs -n1 kill -CONT 2>/dev/null
+          done
+          cat $O/summary.txt
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ci-results && git commit -q -m "results mac-spell"
+          for try in $(seq 1 20); do git pull -q --rebase origin wip/flakes6 && git push -q origin HEAD:wip/flakes6 && break; sleep $((RANDOM % 20 + 3)); done
+
+  # The ios job's simulator step.
+  ios:
+    if: contains(github.event.head_commit.message, '[ios]')
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(contains(github.event.head_commit.message, '[few]') && '[1, 2]' || '[1, 2, 3, 4, 5, 6, 7, 8]') }}
+    runs-on: macos-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -t aarch64-apple-ios-sim && rustup default stable && rustc -V
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
+      - name: In the simulator
+        run: |
+          set +e
+          O=ci-results/${GITHUB_SHA::7}/ios-${{ matrix.copy }}
+          mkdir -p $O
+          start=$(date +%s)
+          TAUT_IOS_SIMULATOR=1 TAUT_SHOTS="$RUNNER_TEMP/ios" ~/ci test cargo test --test ios > $O/out.txt 2>&1
+          code=$?
+          echo "ios exit $code in $(( $(date +%s) - start )) s" >> $O/summary.txt
+          grep -E "^::error|FAILED|after [0-9]" $O/out.txt >> $O/summary.txt
+          cp target/ios-check/*.err $O/ || true
+          cat $O/summary.txt
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ci-results && git commit -q -m "results ios ${{ matrix.copy }}"
+          for try in $(seq 1 20); do git pull -q --rebase origin wip/flakes6 && git push -q origin HEAD:wip/flakes6 && break; sleep $((RANDOM % 20 + 3)); done
+          exit $code
+
+  # The video job's two simulator steps on macOS, the in-stream caption check run 4 more times.
+  ios-video:
+    if: contains(github.event.head_commit.message, '[ios-video]')
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(contains(github.event.head_commit.message, '[few]') && '[1, 2]' || '[1, 2, 3, 4, 5, 6, 7, 8]') }}
+    runs-on: macos-latest
+    timeout-minutes: 75
+    env:
+      TAUT_VIDEO: required
+      SIMCTL_CHILD_TAUT_VIDEO_REPEAT: 4
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -t aarch64-apple-ios-sim && rustup default stable && rustc -V
+      - name: The CI tool (.github/ci.rs)
+        run: rustc -O --edition 2024 .github/ci.rs --out-dir ~
+      - name: Runs
+        run: |
+          set +e
+          O=ci-results/${GITHUB_SHA::7}/ios-video-${{ matrix.copy }}
+          mkdir -p $O
+          for features in video video,gpu-draw; do
+            start=$(date +%s)
+            TAUT_IOS_SIMULATOR=1 ~/ci test cargo test --features $features --test video_apple > $O/$features.txt 2>&1
+            code=$?
+            echo "$features exit $code in $(( $(date +%s) - start )) s" >> $O/summary.txt
+            grep -E "^::error|probe:" $O/$features.txt >> $O/summary.txt
+            cp target/video-ios/video_check.err $O/$features-app.err || true
+            grep "probe:" $O/$features-app.err >> $O/summary.txt
+          done
+          cat $O/summary.txt
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ci-results && git commit -q -m "results ios-video ${{ matrix.copy }}"
+          for try in $(seq 1 20); do git pull -q --rebase origin wip/flakes6 && git push -q origin HEAD:wip/flakes6 && break; sleep $((RANDOM % 20 + 3)); done
+          ! grep -q "exit [^0]" $O/summary.txt
+
+  # The ubuntu job's test steps, up to the display step.
+  ubuntu:
+    if: contains(github.event.head_commit.message, '[ubuntu]')
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: ${{ fromJSON(contains(github.event.head_commit.message, '[few]') && '[1, 2]' || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_PROFILE_DEV_OPT_LEVEL: 1
+      LIBGL_ALWAYS_SOFTWARE: 1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable && rustc -V
+      - name: What the tests load
+        run: |
+          rustc -O --edition 2024 .github/ci.rs --out-dir ~
+          ~/ci apt xvfb xauth dbus dbus-x11 at-spi2-core libglib2.0-bin \
+            libx11-6 libxtst6 libxi6 libxrandr2 libxkbcommon0 libfontconfig1 libfreetype6 libharfbuzz0b fonts-dejavu-core \
+            libegl1 libgles2 libgl1-mesa-dri mesa-vulkan-drivers libvulkan1 xclip
+      - name: Runs
+        run: |
+          set +e
+          O=ci-results/${GITHUB_SHA::7}/ubuntu-${{ matrix.copy }}
+          mkdir -p $O
+          run() {
+            start=$(date +%s)
+            "${@:3}" > run.txt 2>&1
+            code=$?
+            echo "run $1 $2 exit $code in $(( $(date +%s) - start )) s" >> $O/summary.txt
+            grep "^::error" run.txt >> $O/summary.txt
+            [ $code = 0 ] || cp run.txt $O/run-$1-$2.txt
+          }
+          for i in 1 2; do run $i all ~/ci test cargo test --all-features --no-fail-fast -- --test-threads=4; done
+          run 1 lib ~/ci test cargo test --lib --no-fail-fast
+          export XDG_RUNTIME_DIR=$(mktemp -d) GSETTINGS_BACKEND=memory
+          run 1 display xvfb-run -n 190 -s "-screen 0 900x600x24" ~/ci test cargo test --lib --all-features --no-fail-fast -- --include-ignored --skip how_long --skip made_afresh
+          cat $O/summary.txt
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ci-results && git commit -q -m "results ubuntu ${{ matrix.copy }}"
+          for try in $(seq 1 20); do git pull -q --rebase origin wip/flakes6 && git push -q origin HEAD:wip/flakes6 && break; sleep $((RANDOM % 20 + 3)); done
+          ! grep -q "exit [^0]" $O/summary.txt

@@ -1088,6 +1088,11 @@ pub(crate) mod tests {
         trial.run();
         let start = std::time::Instant::now();
         while !done(&trial.app) {
+            #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+            if start.elapsed() >= limit {
+                let probe = trial.app.player.probe();
+                panic!("{what} did not happen: {:?}; {probe}", trial.app);
+            }
             assert!(start.elapsed() < limit, "{what} did not happen: {:?}", trial.app);
             pass(trial, Duration::from_millis(20));
         }

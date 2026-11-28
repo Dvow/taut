@@ -1928,12 +1928,21 @@ pub(crate) mod tests {
             let letters: Vec<char> = source.value.chars().collect();
             source.misspelled.iter().map(|[from, to]| letters[*from as usize..*to as usize].iter().collect::<String>()).collect::<Vec<_>>()
         };
+        let start = std::time::Instant::now();
+        let mut runs = 0;
         for _ in 0..400 {
+            runs += 1;
             ui.run(&mut |ui| code(&mut app, ui));
             if told(&ui).len() >= 2 {
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
+        }
+        let line = format!("probe: {language} marks {:?} after {:?} in {runs} runs\n", told(&ui), start.elapsed());
+        eprint!("{line}");
+        if let Ok(path) = std::env::var("TAUT_PROBE") {
+            use std::io::Write;
+            _ = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| file.write_all(line.as_bytes()));
         }
         told(&ui)
     }
@@ -1941,7 +1950,13 @@ pub(crate) mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_checks_a_code_boxs_comments_and_strings() {
-        assert_eq!(system_marks_in_code("en-US"), ["helo", "recieve"]);
+        let start = std::time::Instant::now();
+        let marks = system_marks_in_code("en-US");
+        if marks != ["helo", "recieve"] {
+            let checker = system("en-US");
+            let now = checker.as_ref().map(|checker| (checker.wrong("helo"), checker.wrong("recieve"), checker.wrong("world")));
+            panic!("marks {marks:?} after {:?}; a checker opened now: {}, says helo/recieve/world wrong: {now:?}", start.elapsed(), checker.is_some());
+        }
     }
 
     #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]

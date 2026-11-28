@@ -284,6 +284,8 @@ pub(crate) struct Player {
     source: std::sync::Arc<()>,
     /// The SSA script of the captions shown, by its header, once read.
     script: Option<(String, Script)>,
+    probe_opened: std::time::Instant,
+    probe_framed: bool,
 }
 
 /// The captions read from the caption meta of each frame that reaches the frame sink.
@@ -385,6 +387,8 @@ impl Player {
             #[cfg(feature = "gpu-draw")]
             source: std::sync::Arc::new(()),
             script: None,
+            probe_opened: std::time::Instant::now(),
+            probe_framed: false,
         };
         player.read_captions_in_stream();
         player.set_sinks(sound, make(c"fakesink"), make(c"scaletempo"));
@@ -540,8 +544,22 @@ impl Player {
         news.tracks_changed = self.ready && self.in_stream.captions().unlisted();
         news
     }
+    /// (Probe) What the player knows, and whether an ASYNC_DONE waits on the bus.
+    pub(crate) fn probe(&mut self) -> String {
+        // SAFETY: a message popped is released.
+        let waiting = unsafe { (self.lib.gst.gst_bus_pop_filtered)(self.bus, ASYNC_DONE) };
+        let waits = !waiting.is_null();
+        if waits {
+            // SAFETY: popped, so ours.
+            unsafe { (self.lib.gst.gst_mini_object_unref)(waiting) };
+        }
+        format!("probe: ready {}, frame taken {}, ASYNC_DONE waiting {waits}, at {:?}", self.ready, self.last.is_some(), self.probe_opened.elapsed())
+    }
     /// The player finished a change: a seek asked before may go now.
     fn now_ready(&mut self) {
+        if !self.ready {
+            eprintln!("probe: ready at {:?}, a frame taken before: {}", self.probe_opened.elapsed(), self.last.is_some());
+        }
         self.ready = true;
         if let Some(to) = self.pending.take() {
             self.seek(Duration::from_nanos(to as u64));
@@ -567,6 +585,9 @@ impl Player {
     pub(crate) fn frame(&mut self, into: &mut Vec<u32>) -> Option<(usize, Duration)> {
         let sample = self.last_sample(self.sink)?;
         let read = self.read_sample(sample, into);
+        if read.is_some() && !std::mem::replace(&mut self.probe_framed, true) {
+            eprintln!("probe: first frame at {:?}, ready {}", self.probe_opened.elapsed(), self.ready);
+        }
         // SAFETY: ours, as `last_sample` gave it.
         unsafe { (self.lib.gst.gst_mini_object_unref)(sample) };
         read
