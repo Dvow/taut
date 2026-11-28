@@ -504,7 +504,14 @@ fn stored_samples(asset: Obj, track: Obj, from: Duration) -> Option<(Obj, Obj)> 
             send::<()>(reader, c"setTimeRange:", (CMTimeRange { start: CMTime::of(from), duration: forever },));
         }
         send::<()>(reader, c"addOutput:", (output,));
-        (send::<Bool>(reader, c"startReading", ()) != 0).then_some((reader, output))
+        let started = send::<Bool>(reader, c"startReading", ()) != 0;
+        if !started {
+            let error: Obj = send(reader, c"error", ());
+            let said = if error.is_null() { None } else { rust_string(send(error, c"description", ())) };
+            eprintln!("probe: reader did not start at {from:?}: {said:?}");
+        }
+        eprintln!("probe: reader started at {from:?}: {started}");
+        started.then_some((reader, output))
     }
 }
 
@@ -562,12 +569,26 @@ fn read_captions_in_stream(functions: &Functions, url: &Retained, in_stream: &Re
     // SAFETY: as above.
     let Some(&track) = array_items(unsafe { send(asset, c"tracksWithMediaType:", (ns_string("vide"),)) }).first() else { return };
     let Some(codec) = codec_of(functions, track) else { return };
+    let id = PROBE_ID.fetch_add(1, Ordering::Relaxed);
+    let name = rust_string(unsafe { send(url.0, c"lastPathComponent", ()) }).unwrap_or_default();
+    let start = std::time::Instant::now();
+    eprintln!("probe: reader {id} of {name}");
     let (mut reading, mut read_to) = (TrackReading::start(asset, track, Duration::ZERO), Duration::ZERO);
     loop {
-        match in_stream.next(read_to) {
-            Step::Stop => return,
-            Step::Seek(to) => (reading, read_to) = (TrackReading::start(asset, track, to), to),
-            Step::Read => read_to = read_next(reading.as_ref(), functions, codec, in_stream),
+        let asked = std::time::Instant::now();
+        let step = in_stream.next(read_to);
+        let waited = asked.elapsed();
+        match step {
+            Step::Stop => return eprintln!("probe: reader {id} stops at {read_to:?}, {:?} in", start.elapsed()),
+            Step::Seek(to) => {
+                eprintln!("probe: reader {id} seeks to {to:?}, {:?} in", start.elapsed());
+                (reading, read_to) = (TrackReading::start(asset, track, to), to)
+            }
+            Step::Read => {
+                let reads = std::time::Instant::now();
+                read_to = read_next(reading.as_ref(), functions, codec, in_stream);
+                eprintln!("probe: reader {id} read {read_to:?} in {:?} after waiting {waited:?}, {:?} in", reads.elapsed(), start.elapsed());
+            }
         }
     }
 }
@@ -607,13 +628,19 @@ impl TrackReading {
         // SAFETY: a reading output; the sample buffer it copies is ours, read and released.
         let sample: *mut c_void = unsafe { send(self.output, c"copyNextSampleBuffer", ()) };
         if sample.is_null() {
+            let status: isize = unsafe { send(self.reader, c"status", ()) };
+            let error: Obj = unsafe { send(self.reader, c"error", ()) };
+            let said = if error.is_null() { None } else { rust_string(unsafe { send(error, c"description", ()) }) };
+            eprintln!("probe: reader gave no sample after {} read: status {status} (2 completed, 3 failed, 4 cancelled), error {said:?}", PROBE_READ.swap(0, Ordering::Relaxed));
             in_stream.ended();
             return Duration::MAX;
         }
         // SAFETY: as above. (A sample decoded as it is shown has no decode time of its own.)
         let (at, decoded) = unsafe { ((f.sample_time)(sample).known().unwrap_or_default(), (f.decode_time)(sample).known()) };
-        if let Some(bytes) = sample_bytes(f, sample) {
-            in_stream.read(&bytes, codec, at, Some(decoded.unwrap_or(at)));
+        PROBE_READ.fetch_add(1, Ordering::Relaxed);
+        match sample_bytes(f, sample) {
+            Some(bytes) => in_stream.read(&bytes, codec, at, Some(decoded.unwrap_or(at))),
+            None => eprintln!("probe: sample at {at:?} without bytes"),
         }
         // SAFETY: as above.
         unsafe { crate::macos_sys::CFRelease(sample) };
@@ -630,6 +657,9 @@ impl Drop for TrackReading {
         }
     }
 }
+
+static PROBE_READ: AtomicU32 = AtomicU32::new(0);
+static PROBE_ID: AtomicU32 = AtomicU32::new(0);
 
 /// A BGRA pixel buffer's pixels, opaque, into `into`; its width (0 where it can't be read).
 fn read(f: &Functions, buffer: *mut c_void, into: &mut Vec<u32>) -> usize {
