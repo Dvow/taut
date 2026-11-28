@@ -1,0 +1,6 @@
+run 1 window exit 0 in 51 s
+run 1 window-all exit 0 in 58 s
+run 1 lib-all exit 0 in 134 s
+run 1 lib exit 0 in 155 s
+run 1 metal exit 0 in 61 s
+run 1 metal-draw exit 0 in 32 s
