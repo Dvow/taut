@@ -693,6 +693,11 @@ impl Player {
     pub(crate) fn decodes_on_gpu(&self) -> bool {
         true
     }
+    /// Whether `frame` gives frames too while they come as textures: those made RGB.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn gives_pixels_too(&self) -> bool {
+        true
+    }
     /// The newest frame not given yet where it was left where the decoder put it: it and its
     /// time. (One the GPU can't import is left for `frame`.)
     #[cfg(feature = "gpu-draw")]

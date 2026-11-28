@@ -187,8 +187,9 @@ Popovers anchored to their button.
   CEA-708's window anchors, WebVTT's `line`, `position`, `size`, `align` and regions, SRT's
   `{\an8}`, SSA's alignment, margins and `\pos`), italic where they are, in the system's caption
   style, and said by screen readers. Windows reads MP4's and QuickTime's caption tracks itself
-  (3GPP timed text, WebVTT, `c608`), and downloads an address once for the player and the
-  caption readers; controls for keyboard and
+  (3GPP timed text, WebVTT, `c608`; a seek in a fragmented file starts at the fragment it needs,
+  from the file's index (`mfra`, `sidx`) or the fragments read), and downloads an address once
+  for the player and the caption readers; controls for keyboard and
   screen readers. Windows decodes on the GPU (DXVA) what the GPU decodes (checked: H.264, HEVC,
   VP9). With `gpu-draw`, frames are drawn from the decoder's own buffer, never read back while
   they play: Direct3D 11 and 12, Vulkan and OpenGL from Windows' texture (1080p H.264: 1.5 to

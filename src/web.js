@@ -1447,12 +1447,13 @@ export class Page {
     }
 
     // The chosen caption track's cues on show, kept for `take`: their length. Each cue is its
-    // WebVTT settings on a line, then its text; a blank line between cues.
+    // WebVTT settings on a line, then its text, which may hold blank lines; a zero between cues
+    // (taken out of their text).
     videoCaption(id) {
         const element = this.videos.get(id)?.element;
         const track = element && captionTracks(element).find((track) => track.mode === "hidden");
-        const shown = [...(track?.activeCues || [])].map((cue) => `${cueSettings(cue)}\n${cue.text}`);
-        this.made = encoder.encode(shown.join("\n\n"));
+        const shown = [...(track?.activeCues || [])].map((cue) => `${cueSettings(cue)}\n${(cue.text || "").replaceAll("\0", "")}`);
+        this.made = encoder.encode(shown.join("\0"));
         return this.made.length;
     }
 

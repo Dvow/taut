@@ -5,6 +5,13 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
 
 ## Unreleased
 
+- **Video on Windows:** a seek in a fragmented MP4 reads its caption tracks from the fragment
+  it needs, found in the file's index (`mfra`, `sidx`) or among the fragments read before, not
+  from the first (for an address, no second download): in a file of 100 fragments, a seek read
+  336 bytes where it read 12,496. A movie box of size 0 (running to the file's end) is read.
+- **Video with `gpu-draw` on Windows, macOS and iOS:** a frame the texture was busy for is no
+  longer read back to the CPU a moment later, which held the UI thread up to 100 ms.
+- **Video on the web:** a browser cue with a blank line in its text shows whole; it was split.
 - **Text centred in its box:** a line of text in a button, menu item, list row or any box now
   has the band from its baseline to its cap height in the middle, and every line in one font
   has the same baseline. Before, a label with lowercase letters sat up to a pixel and a half

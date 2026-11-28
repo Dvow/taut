@@ -860,6 +860,11 @@ impl Player {
     pub(crate) fn decodes_on_gpu(&self) -> bool {
         matches!(self.frames, Frames::Gpu { .. })
     }
+    /// Whether `frame` gives frames too while they come as textures: never.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn gives_pixels_too(&self) -> bool {
+        false
+    }
     /// The newest frame where there is one not given yet, left on the GPU: its texture and
     /// time.
     #[cfg(feature = "gpu-draw")]
@@ -1258,6 +1263,13 @@ impl Source for MemoryStream {
             call!(self.0, 3, unsafe extern "system" fn(*mut Com, *mut u8, u32, *mut u32) -> i32, into.as_mut_ptr(), into.len().min(u32::MAX as usize) as u32, &mut read);
         }
         read as usize
+    }
+    /// Its size: where a seek to its end (2: `STREAM_SEEK_END`) lands.
+    fn size(&mut self) -> Option<u64> {
+        let mut end = 0u64;
+        // SAFETY: a live stream; it writes where it landed.
+        let moved = unsafe { call!(self.0, 5, unsafe extern "system" fn(*mut Com, i64, u32, *mut u64) -> i32, 0, 2, &mut end) };
+        (moved >= 0).then_some(end)
     }
 }
 
@@ -2421,7 +2433,7 @@ pub(crate) mod played {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -2442,6 +2454,33 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         None
+    }
+
+    /// Holds `texture` on a window's device of its own, made on a thread of its own, in turns
+    /// until `stop`: 3 ms held, then given back for 0.3 ms, as a window drawing it now and then.
+    /// Gives how many times it held it (none where the texture is not shared).
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn held_in_turns(texture: Arc<FrameTexture>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<u32> {
+        use crate::gpu_frames_windows::{give_back, opened_on_direct3d_11, take_all};
+        std::thread::spawn(move || {
+            let Some(window) = started_functions().and_then(make_gpu) else { return 0 };
+            let Some([held, mutex]) = opened_on_direct3d_11(window.device.cast(), &texture) else { return 0 };
+            let mut holds = 0;
+            while !stop.load(Ordering::Acquire) {
+                if take_all(&[mutex]) {
+                    holds += 1;
+                    std::thread::sleep(Duration::from_millis(3));
+                    give_back(&[mutex]);
+                }
+                let given_back = std::time::Instant::now();
+                while given_back.elapsed() < Duration::from_micros(300) {
+                    std::hint::spin_loop();
+                }
+            }
+            // SAFETY: each opened above, held once here.
+            unsafe { release_all(&[mutex.cast(), held.cast()]) };
+            holds
+        })
     }
 
     /// While a window's device holds a frame's texture (its keyed mutex, taken on a device of

@@ -335,6 +335,11 @@ impl Player {
     pub(crate) fn decodes_on_gpu(&self) -> bool {
         true
     }
+    /// Whether `frame` gives frames too while they come as textures: never.
+    #[cfg(feature = "gpu-draw")]
+    pub(crate) fn gives_pixels_too(&self) -> bool {
+        false
+    }
     /// The newest frame where there is one not given yet, left where AVFoundation decoded it:
     /// its pixel buffer and time.
     #[cfg(feature = "gpu-draw")]

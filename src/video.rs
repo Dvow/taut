@@ -560,13 +560,17 @@ impl Video {
         self.player.play();
     }
     /// Takes the player's newest frame, if it has one: left on the GPU where it decodes there,
-    /// else as pixels.
+    /// else as pixels. A player that gives no pixels then is not asked for them: it could put a
+    /// frame in that came meanwhile and read it back to the CPU.
     fn take_frame(&mut self, ui: &mut Ui) {
         #[cfg(all(feature = "gpu-draw", not(target_family = "wasm")))]
-        if self.player.decodes_on_gpu()
-            && let Some((texture, at)) = self.player.frame_texture()
-        {
-            return self.show_texture(ui, texture, at);
+        if self.player.decodes_on_gpu() {
+            if let Some((texture, at)) = self.player.frame_texture() {
+                return self.show_texture(ui, texture, at);
+            }
+            if !self.player.gives_pixels_too() {
+                return;
+            }
         }
         let mut pixels = Vec::new();
         if let Some((width, at)) = self.player.frame(&mut pixels) {
@@ -1975,6 +1979,47 @@ pub(crate) mod tests {
         trial.app.set_caption_track(Some(1));
         trial.run();
         assert_eq!(trial.app.caption(), Some("Third channel"));
+    }
+
+    /// A player whose frames all come as textures is asked for no pixels: while a window holds
+    /// the texture in turns, no frame is read back to the CPU. (A frame the texture was too busy
+    /// for could otherwise be put in by `frame` a moment later and read back, holding the UI
+    /// thread up to 100 ms.) Run without drawing: a CPU drawing reads every frame back itself.
+    /// Prints the holds, frames and read-backs.
+    #[test]
+    #[cfg(all(windows, feature = "gpu-draw"))]
+    fn frames_on_the_gpu_are_not_read_back_while_a_window_holds_them_in_turns() {
+        use std::sync::atomic::AtomicBool;
+        let _alone = alone();
+        let Some(mut video) = test_file(false).and_then(|file| player(Video::open_silent(file))) else { return };
+        if !video.player.decodes_on_gpu() {
+            return eprintln!("no GPU decodes here: skipped");
+        }
+        let mut ui = Ui::new(Box::new(crate::text::BuiltInFont), Box::new(crate::platform::LocalClipboard::default()));
+        video.set_looping(true);
+        video.play();
+        let start = std::time::Instant::now();
+        let texture = loop {
+            assert!(start.elapsed() < Duration::from_secs(10), "no first frame");
+            if let Some((texture, _)) = video.player.frame_texture() {
+                break texture;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let holding = crate::video_windows::tests::held_in_turns(texture, stop.clone());
+        let (read_back, shown, start) = (READ_BACK.load(Ordering::Relaxed), video.frames_shown(), std::time::Instant::now());
+        while start.elapsed() < Duration::from_secs(4) {
+            video.ask(&mut ui);
+        }
+        stop.store(true, Ordering::Release);
+        let (holds, read, shown) = (holding.join().unwrap(), READ_BACK.load(Ordering::Relaxed) - read_back, video.frames_shown() - shown);
+        println!("{holds} holds, {shown} frames shown, {read} read back");
+        if holds == 0 {
+            return eprintln!("the frame's texture is not shared here: skipped");
+        }
+        assert_eq!(read, 0, "frames were read back while a window held the texture in turns");
+        assert!(shown >= 20, "{shown} frames shown in 4 s");
     }
 
     #[test]

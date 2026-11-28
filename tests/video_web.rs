@@ -7,7 +7,8 @@
 //!   headless browser (Edge or Chrome; `TAUT_BROWSER` names one), muted, which presses its
 //!   parts through the readers' elements and keys and reads the frame numbers off the canvas:
 //!   frames at their times, pause, seeks to the frame asked, the end once, a loop, the controls,
-//!   the app's captions (shown and told), speed, a browser cue's settings, the browser's own tracks,
+//!   the app's captions (shown and told), speed, a browser cue's settings, browser cues with blank
+//!   lines, the browser's own tracks,
 //!   bytes, a play with sound refused before a press, a missing file, and many opens.
 //!
 //! Each half says why and passes where it lacks the wasm target, Node or a browser, unless
@@ -499,6 +500,26 @@ async function browser_cue_settings() {
     if (results.cue !== "line:10% position:10% align:start\nPlaced") fail(`the browser's cue: ${JSON.stringify(results.cue)}`);
 }
 
+// Two browser cues shown at once, one with a blank line in its text, reach taut as they are.
+async function a_cue_with_a_blank_line() {
+    const open = page.videoOpen;
+    page.videoOpen = (...asked) => {
+        const id = open.apply(page, asked);
+        const track = page.videos.get(id).element.addTextTrack("captions", "Two cues", "en");
+        track.addCue(new VTTCue(0, 10, "One\n\nTwo"));
+        track.addCue(new VTTCue(0, 10, "Three"));
+        return id;
+    };
+    const ready = await opened("Silent");
+    page.videoOpen = open;
+    if (!ready) return;
+    await press("Captions");
+    await press("Two cues", "menuitemradio");
+    await seek("Seek 0.5", 5);
+    results.cues = state().caption;
+    if (results.cues !== "One\n\nTwo\nThree") fail(`two browser cues: ${JSON.stringify(results.cues)}`);
+}
+
 // The browser's own tracks of a file with two sound and two caption tracks: what it lists.
 async function the_files_tracks() {
     if (!(await opened("Languages"))) return;
@@ -528,7 +549,7 @@ async function many_opens() {
 try {
     page = await start("page.wasm", { element: document.getElementById("app") });
     await settle();
-    for (const check of [frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, browser_cue_settings, the_files_tracks, many_opens]) {
+    for (const check of [frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, browser_cue_settings, a_cue_with_a_blank_line, the_files_tracks, many_opens]) {
         const failed = results.failed.length;
         await check();
         results[check.name] = results.failed.length === failed ? "passed" : "FAILED";

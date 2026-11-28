@@ -153,7 +153,7 @@ impl Player {
         unsafe { video_choose_captions(self.id, nth.map_or(-1, |nth| nth as i32)) };
     }
     /// The chosen caption track's cues on show, as the browser says: each its WebVTT settings
-    /// on a line, then its text; a blank line between.
+    /// on a line, then its text; a zero between.
     pub(crate) fn captions(&mut self) -> Vec<Caption> {
         // SAFETY: the loader answers the text's length, kept for `took`.
         let length = unsafe { video_caption(self.id) };
@@ -162,7 +162,7 @@ impl Player {
         }
         let text = String::from_utf8_lossy(&took(length)).into_owned();
         let cue = |block: &str| block.split_once('\n').map(|(settings, text)| crate::video_captions::caption_with_settings(text, settings));
-        text.split("\n\n").filter_map(cue).collect()
+        text.split('\0').filter_map(cue).collect()
     }
 }
 

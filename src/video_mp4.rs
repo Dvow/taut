@@ -3,7 +3,8 @@
 //! QuickTime text, WebVTT (`wvtt`), and closed captions (`c608`: each CEA-608 service a track).
 //! Plain and fragmented files are read, a sample at a time in time order, as a reading thread
 //! paced by the video asks (`video_read_ahead`): a file at an address is not read ahead of the
-//! player.
+//! player. A seek in a fragmented file starts at the fragment it needs, found in the file's
+//! index (`mfra`, `sidx`) or among the fragments read before.
 
 use crate::video::Track;
 use crate::video_captions::{Caption, Cue, Place};
@@ -15,6 +16,8 @@ use std::time::Duration;
 pub(crate) trait Source: Send {
     /// Reads bytes from `at` into `into`: how many (fewer at the end, 0 past it or on failure).
     fn read_at(&mut self, at: u64, into: &mut [u8]) -> usize;
+    /// How many bytes there are, where known.
+    fn size(&mut self) -> Option<u64>;
 }
 
 impl Source for std::fs::File {
@@ -32,6 +35,9 @@ impl Source for std::fs::File {
         }
         read
     }
+    fn size(&mut self) -> Option<u64> {
+        self.metadata().ok().map(|known| known.len())
+    }
 }
 
 impl Source for std::sync::Arc<[u8]> {
@@ -40,6 +46,9 @@ impl Source for std::sync::Arc<[u8]> {
         let read = rest.len().min(into.len());
         into[..read].copy_from_slice(&rest[..read]);
         read
+    }
+    fn size(&mut self) -> Option<u64> {
+        Some(self.len() as u64)
     }
 }
 
@@ -81,6 +90,12 @@ const MOST_SAMPLES: usize = 1 << 20;
 /// How far past the next sample fragments are read for a track with none pending (it may have
 /// ended, or come in fragments of its own).
 const FRAGMENTS_AHEAD: Duration = Duration::from_secs(30);
+/// The most fragments remembered of a caption track, and boxes looked at for segment indexes
+/// (`sidx`, which may point to more).
+const MOST_FRAGMENTS: usize = 1 << 14;
+const MOST_INDEXES: usize = 1024;
+/// How much of a box running to the end of its file is read at a time.
+const CHUNK: usize = 1 << 16;
 
 /// What a caption track holds.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,6 +118,18 @@ struct CaptionTrack {
     shift: i128,
     samples: Vec<Sample>,
     next: usize,
+    /// The fragments it has samples in, as far as known, by where they are.
+    fragments: Vec<Fragment>,
+}
+
+/// A fragment a caption track has samples in: where its box starts, and when the track's first
+/// sample in it shows and its last ends, in the track's time scale (the end `u64::MAX` where it
+/// was not read: listed by the file's index).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Fragment {
+    at: u64,
+    from: u64,
+    to: u64,
 }
 
 /// A sample read: what its track holds (the `text`th text track, where it is one), its bytes,
@@ -152,6 +179,36 @@ impl CaptionTrack {
     fn known_end(&self) -> Option<Duration> {
         self.samples.last().map(|sample| self.movie_time(sample.end()))
     }
+
+    /// Where reading fragments must start to have its samples from `to` on: at the fragment of
+    /// its sample showing then, else of its first after. Its fragments before `known_to` are all
+    /// known; past it, only some may be.
+    fn reading_start(&self, to: Duration, known_to: u64) -> u64 {
+        let showing = self.fragments.iter().rposition(|fragment| self.movie_time(fragment.from) <= to);
+        // (Its samples before that fragment end by the time it starts.)
+        if let Some(fragment) = showing.map(|nth| self.fragments[nth])
+            && (self.movie_time(fragment.to) > to || fragment.at >= known_to)
+        {
+            return fragment.at;
+        }
+        let next = self.fragments.get(showing.map_or(0, |nth| nth + 1));
+        next.map_or(known_to, |fragment| fragment.at.min(known_to))
+    }
+
+    /// Remembers a fragment it has samples in, `MOST_FRAGMENTS` at most: one read takes the
+    /// place of one listed by the index, and track fragments read of one fragment make one.
+    fn remember(&mut self, found: Fragment) {
+        match self.fragments.binary_search_by_key(&found.at, |fragment| fragment.at) {
+            Ok(_) if found.to == u64::MAX => {}
+            Ok(nth) if self.fragments[nth].to == u64::MAX => self.fragments[nth] = found,
+            Ok(nth) => {
+                let known = &mut self.fragments[nth];
+                (known.from, known.to) = (known.from.min(found.from), known.to.max(found.to));
+            }
+            Err(nth) if self.fragments.len() < MOST_FRAGMENTS => self.fragments.insert(nth, found),
+            Err(_) => {}
+        }
+    }
 }
 
 /// Reads a file's caption tracks.
@@ -162,11 +219,17 @@ pub(crate) struct Reader<S: Source> {
     /// none (`trex`), by track id; where its fragments start, and the next box to look at.
     defaults: Vec<(u32, (u32, u32))>,
     fragments: Option<(u64, u64)>,
+    /// Up to where fragments were read in order from the first: each caption track's fragments
+    /// before it are all known.
+    known_to: u64,
+    /// Every caption track fragment read gave its decode time (`tfdt`): a seek may start past
+    /// the first fragment.
+    timed: bool,
 }
 
 impl<S: Source> Reader<S> {
-    /// Reads a file's movie box: none where it is no MP4 or QuickTime file, or has no caption
-    /// tracks.
+    /// Reads a file's movie box, and a fragmented file's index: none where it is no MP4 or
+    /// QuickTime file, or has no caption tracks.
     pub(crate) fn open(mut source: S) -> Option<Reader<S>> {
         let mut at = 0;
         let mut first = true;
@@ -186,7 +249,101 @@ impl<S: Source> Reader<S> {
             return None;
         }
         let defaults = child(&moov, b"mvex").map(track_defaults);
-        Some(Reader { source, tracks, fragments: defaults.is_some().then_some((after, after)), defaults: defaults.unwrap_or_default() })
+        let fragmented = defaults.is_some();
+        let mut reader = Reader { source, tracks, fragments: fragmented.then_some((after, after)), defaults: defaults.unwrap_or_default(), known_to: after, timed: true };
+        if fragmented {
+            reader.take_random_access_index();
+            reader.take_segment_indexes_from(after);
+        }
+        Some(reader)
+    }
+
+    /// Takes in the fragments of caption tracks that the file's random access index lists (an
+    /// `mfra` box at its end, its size in the `mfro` box that ends it).
+    fn take_random_access_index(&mut self) {
+        let Some(length) = self.source.size().filter(|length| *length >= 16) else { return };
+        let mut tail = [0u8; 16];
+        if self.source.read_at(length - 16, &mut tail) < 16 || &tail[4..8] != b"mfro" {
+            return;
+        }
+        let Some(at) = length.checked_sub(u64::from(u32::from_be_bytes([tail[12], tail[13], tail[14], tail[15]]))) else { return };
+        let Some((_, body, end)) = atom_at(&mut self.source, at).filter(|(kind, ..)| kind == b"mfra") else { return };
+        let Some(mfra) = read_body(&mut self.source, body, end) else { return };
+        for tfra in children(&mfra, b"tfra") {
+            self.take_random_access_entries(tfra);
+        }
+    }
+
+    /// Takes in a track's random access entries (`tfra`) where it is a caption track: those of
+    /// a fragment's first sample (its first track fragment's first run's first sample).
+    fn take_random_access_entries(&mut self, tfra: &[u8]) {
+        let (Some(id), Some(sizes), Some(count)) = (be32(tfra, 4), be32(tfra, 8), be32(tfra, 12)) else { return };
+        let Some(track) = self.tracks.iter_mut().find(|track| track.id == id) else { return };
+        let wide = tfra.first() == Some(&1);
+        let times = if wide { 16 } else { 8 };
+        // (Its numbers of track fragment, run and sample, 1 to 4 bytes each, all 1.)
+        let firsts: Vec<u8> = [(sizes >> 4) & 3, (sizes >> 2) & 3, sizes & 3].iter().flat_map(|size| std::iter::repeat_n(0, *size as usize).chain([1])).collect();
+        for entry in tfra.get(16..).unwrap_or_default().chunks_exact(times + firsts.len()).take(count as usize) {
+            let (from, at) = match wide {
+                true => (be64(entry, 0), be64(entry, 8)),
+                false => (be32(entry, 0).map(u64::from), be32(entry, 4).map(u64::from)),
+            };
+            if let (Some(from), Some(at), true) = (from, at, entry[times..] == firsts[..]) {
+                track.remember(Fragment { at, from, to: u64::MAX });
+            }
+        }
+    }
+
+    /// Takes in the segment index boxes (`sidx`) between the movie box, ending at `at`, and the
+    /// first fragment.
+    fn take_segment_indexes_from(&mut self, mut at: u64) {
+        for _ in 0..MOST_INDEXES {
+            let Some((kind, _, end)) = atom_at(&mut self.source, at) else { return };
+            match &kind {
+                b"moof" | b"mdat" => return,
+                b"sidx" => self.take_segment_indexes(at),
+                _ => {}
+            }
+            at = end;
+        }
+    }
+
+    /// Takes in the fragments of caption tracks that the segment index box at `at` lists, and
+    /// the boxes it points to (`MOST_INDEXES` at most).
+    fn take_segment_indexes(&mut self, at: u64) {
+        let (mut pending, mut read) = (vec![at], 0);
+        while let Some(at) = pending.pop().filter(|_| read < MOST_INDEXES) {
+            read += 1;
+            let Some((_, body, end)) = atom_at(&mut self.source, at).filter(|(kind, ..)| kind == b"sidx") else { continue };
+            if let Some(sidx) = read_body(&mut self.source, body, end) {
+                pending.extend(self.take_segment_index(&sidx, end));
+            }
+        }
+    }
+
+    /// Takes in the fragments a segment index box lists where its track is a caption track:
+    /// each reference to media is one (the first `first_offset` past the box's `end`, each next
+    /// right after it). Gives where the segment index boxes it points to are.
+    fn take_segment_index(&mut self, sidx: &[u8], end: u64) -> Vec<u64> {
+        let (Some(id), Some(scale)) = (be32(sidx, 4), be32(sidx, 8)) else { return Vec::new() };
+        let (time, offset, references) = match sidx.first() == Some(&1) {
+            true => (be64(sidx, 12), be64(sidx, 20), 28),
+            false => (be32(sidx, 12).map(u64::from), be32(sidx, 16).map(u64::from), 20),
+        };
+        let (Some(mut time), Some(offset), Some(count)) = (time, offset, be32(sidx, references).map(|both| both & 0xFFFF)) else { return Vec::new() };
+        let mut track = self.tracks.iter_mut().find(|track| track.id == id);
+        let (mut at, mut nested) = (end.saturating_add(offset), Vec::new());
+        for reference in sidx.get(references + 4..).unwrap_or_default().as_chunks::<12>().0.iter().take(count as usize) {
+            let (Some(kind_and_size), Some(duration)) = (be32(reference, 0), be32(reference, 4)) else { break };
+            if kind_and_size >> 31 == 1 {
+                nested.push(at);
+            } else if let Some(track) = track.as_mut() {
+                track.remember(Fragment { at, from: rescaled(time, scale, track.timescale), to: u64::MAX });
+            }
+            at = at.saturating_add(u64::from(kind_and_size & 0x7FFF_FFFF));
+            time = time.saturating_add(u64::from(duration));
+        }
+        nested
     }
 
     /// The caption tracks (3GPP timed text and WebVTT first, then closed captions).
@@ -195,10 +352,11 @@ impl<S: Source> Reader<S> {
     }
 
     /// Reads from `to` on: each track from its first sample that ends after it (in a fragmented
-    /// file, read again from the first fragment).
+    /// file, read again from the fragment that holds it, as far as known).
     pub(crate) fn seek(&mut self, to: Duration) {
         if let Some((first, _)) = self.fragments {
-            self.fragments = Some((first, first));
+            let start = self.tracks.iter().map(|track| track.reading_start(to, self.known_to)).min().filter(|_| self.timed);
+            self.fragments = Some((first, start.map_or(first, |start| start.max(first))));
             self.tracks.iter_mut().for_each(|track| track.samples.clear());
         }
         loop {
@@ -239,31 +397,50 @@ impl<S: Source> Reader<S> {
     }
 
     /// Reads the next fragment's samples of the caption tracks, those read before dropped:
-    /// whether there was one.
+    /// whether there was one. Segment index boxes on the way are taken in.
     fn read_fragment(&mut self) -> bool {
         let Some((first, mut at)) = self.fragments else { return false };
+        let in_order = at <= self.known_to;
         while let Some((kind, body, end)) = atom_at(&mut self.source, at) {
             let start = std::mem::replace(&mut at, end);
-            if &kind != b"moof" {
-                continue;
+            match &kind {
+                b"moof" => return self.take_moof(start, (body, end), in_order),
+                b"sidx" => self.take_segment_indexes(start),
+                _ => {}
             }
-            let Some(moof) = read_body(&mut self.source, body, end) else { break };
-            self.fragments = Some((first, at));
-            for track in &mut self.tracks {
-                // (The last sample read stays: a fragment without a decode time goes on from it.)
-                track.samples.drain(..track.next.saturating_sub(1));
-                track.next = track.next.min(1);
-            }
-            // (The first track fragment's data counts from the fragment, each next one's from
-            // where the one before's ends, unless they say otherwise.)
-            let mut implicit = start;
-            for traf in children(&moof, b"traf") {
-                implicit = self.take_fragment(traf, start, implicit);
-            }
-            return true;
+        }
+        if in_order {
+            self.known_to = u64::MAX;
         }
         self.fragments = Some((first, u64::MAX));
         false
+    }
+
+    /// Takes in the fragment whose box starts at `moof` (its body from `body` to `end`): whether
+    /// it could be read. Fragments are known up to it where they were read `in_order`.
+    fn take_moof(&mut self, moof: u64, (body, end): (u64, u64), in_order: bool) -> bool {
+        let Some((first, _)) = self.fragments else { return false };
+        let Some(bytes) = read_body(&mut self.source, body, end) else {
+            self.fragments = Some((first, u64::MAX));
+            return false;
+        };
+        self.fragments = Some((first, end));
+        for track in &mut self.tracks {
+            // (The last sample read stays: a fragment without a decode time goes on from it.)
+            track.samples.drain(..track.next.saturating_sub(1));
+            track.next = track.next.min(1);
+        }
+        // (The first track fragment's data counts from the fragment, each next one's from where
+        // the one before's ends, unless they say otherwise.)
+        let mut implicit = moof;
+        for traf in children(&bytes, b"traf") {
+            implicit = self.take_fragment(traf, moof, implicit);
+        }
+        // (A track whose fragments are no longer all remembered leaves the rest unknown.)
+        if in_order && self.tracks.iter().all(|track| track.fragments.len() < MOST_FRAGMENTS) {
+            self.known_to = self.known_to.max(end);
+        }
+        true
     }
 
     /// Takes in a track fragment's samples where its track is a caption track, of a fragment
@@ -288,7 +465,9 @@ impl<S: Source> Reader<S> {
         // (Its base: given, the fragment's start (`default-base-is-moof`), or as above.)
         let base = base.unwrap_or(if flags & 0x2_0000 != 0 { moof } else { implicit });
         let track = self.tracks.iter_mut().find(|track| track.id == id);
-        let mut time = child(traf, b"tfdt").and_then(decode_time).or_else(|| track.as_ref()?.samples.last().map(Sample::end)).unwrap_or(0);
+        let decode_time = child(traf, b"tfdt").and_then(decode_time);
+        self.timed &= decode_time.is_some() || track.is_none();
+        let mut time = decode_time.or_else(|| track.as_ref()?.samples.last().map(Sample::end)).unwrap_or(0);
         let (mut at, mut samples) = (base, Vec::new());
         // (A run's data is at its offset from the base, or right after the run before.)
         for run in children(traf, b"trun") {
@@ -299,12 +478,19 @@ impl<S: Source> Reader<S> {
                 (time, at) = (time.saturating_add(u64::from(duration)), at.saturating_add(u64::from(size)));
             }
         }
-        if let Some(track) = track {
-            let room = MOST_SAMPLES.saturating_sub(track.samples.len());
-            track.samples.extend(samples.into_iter().take(room));
+        let Some(track) = track else { return at };
+        if let (Some(first), Some(last)) = (samples.first(), samples.last()) {
+            track.remember(Fragment { at: moof, from: first.time, to: last.end() });
         }
+        let room = MOST_SAMPLES.saturating_sub(track.samples.len());
+        track.samples.extend(samples.into_iter().take(room));
         at
     }
+}
+
+/// A time in `from` units a second as `to` units a second.
+fn rescaled(time: u64, from: u32, to: u64) -> u64 {
+    u64::try_from(u128::from(time) * u128::from(to) / u128::from(from.max(1))).unwrap_or(u64::MAX)
 }
 
 /// A track run's data offset (from the fragment's base), where it gives one, and its samples'
@@ -377,7 +563,7 @@ fn caption_track(trak: &[u8], movie_scale: u64, most: usize) -> Option<CaptionTr
     let id = child(trak, b"tkhd").and_then(|tkhd| be32(tkhd, if tkhd.first() == Some(&1) { 20 } else { 12 }))?;
     let shift = child(trak, b"edts").and_then(|edts| child(edts, b"elst")).map_or(0, |elst| edit_shift(elst, movie_scale, timescale));
     let samples = sample_table(stbl, most);
-    Some(CaptionTrack { kind, track: Track { language, name }, id, timescale, shift, samples, next: 0 })
+    Some(CaptionTrack { kind, track: Track { language, name }, id, timescale, shift, samples, next: 0, fragments: Vec::new() })
 }
 
 /// A 3GPP timed text sample entry's place: its justification across (0 left, 1 centre, -1
@@ -488,7 +674,8 @@ fn text_of(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// The box at `at` of a source: its kind, where its body starts and where it ends.
+/// The box at `at` of a source: its kind, where its body starts and where it ends (`u64::MAX`
+/// for one that runs to the end of the source).
 fn atom_at(source: &mut impl Source, at: u64) -> Option<([u8; 4], u64, u64)> {
     let mut header = [0u8; 16];
     if source.read_at(at, &mut header[..8]) < 8 {
@@ -506,12 +693,33 @@ fn atom_at(source: &mut impl Source, at: u64) -> Option<([u8; 4], u64, u64)> {
     (end >= body).then_some((kind, body, end))
 }
 
-/// A box's body, from `body` to `end`, read into memory: none past `MOST`, or where the source
-/// gives less.
+/// A box's body, from `body` to `end` (`u64::MAX`: the source's end), read into memory: none
+/// past `MOST`, or where the source gives less.
 fn read_body(source: &mut impl Source, body: u64, end: u64) -> Option<Vec<u8>> {
+    if end == u64::MAX {
+        return read_rest(source, body);
+    }
     let length = end.checked_sub(body).filter(|length| *length <= MOST)?;
     let mut bytes = vec![0; length as usize];
     (source.read_at(body, &mut bytes) == bytes.len()).then_some(bytes)
+}
+
+/// The rest of a source from `body`, `CHUNK` bytes at a time until it gives less: none past
+/// `MOST`.
+fn read_rest(source: &mut impl Source, body: u64) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    loop {
+        let start = bytes.len();
+        bytes.resize(start + CHUNK, 0);
+        let read = source.read_at(body.checked_add(start as u64)?, &mut bytes[start..]);
+        bytes.truncate(start + read);
+        if read < CHUNK {
+            return Some(bytes);
+        }
+        if bytes.len() as u64 >= MOST {
+            return None;
+        }
+    }
 }
 
 /// The boxes in `bytes`, each its kind and body (a box cut short ends them).
@@ -717,82 +925,255 @@ mod tests {
         let (tracks, captions) = read_all(files::fragmented_with_captions(30, &TWO[..1]));
         assert_eq!(tracks.len(), 1);
         assert_eq!((texts_at(&captions, 0, 5), texts_at(&captions, 0, 26)), (vec!["English one".to_owned()], vec!["English end".to_owned()]));
-        // (A seek reads its fragments again from the first.)
+        // (A seek before any fragment was read reads them from the first.)
         let mut reader = reader(files::fragmented_with_captions(30, &TWO[..1]));
         reader.seek(at(25));
         let times: Vec<Duration> = std::iter::from_fn(|| reader.read_next()).map(|sample| sample.from).collect();
         assert_eq!(times, [at(25)]);
     }
 
-    /// A track fragment of a made file: its track's id and its samples' texts.
-    type TrackFragment<'a> = (u32, &'a [&'a str]);
+    /// A made file's index of its fragments.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Index {
+        None,
+        /// A random access index at its end (`mfra`).
+        RandomAccess,
+        /// Segment index boxes before its fragments: track 2's, and track 1's through a box that
+        /// points to it.
+        Segments,
+    }
 
-    /// A fragmented file of `TWO`'s tracks (1: timed text, 2: WebVTT) with these fragments:
-    /// each its track fragments, a track id and its samples' texts (each a second long, the
-    /// first at the fragment's number in seconds). Each run's data counts from the fragment
-    /// where `from_fragment`; else each track fragment's but the first's follows the one before.
-    fn fragmented(fragments: &[&[TrackFragment]], from_fragment: bool) -> Vec<u8> {
-        let mut file = files::fragmented_with_captions(10, &TWO);
+    /// A fragment of a made file: its track fragments, each its track's id and its samples, each
+    /// its text and how many seconds it lasts.
+    type Made = Vec<(u32, Vec<(String, u32)>)>;
+
+    /// `count` fragments, each a second of each track: "English" and "Français" and its number.
+    fn each_second(count: u32) -> Vec<Made> {
+        (0..count).map(|n| vec![(1, vec![(format!("English {n}"), 1)]), (2, vec![(format!("Français {n}"), 1)])]).collect()
+    }
+
+    /// A fragmented file of `TWO`'s tracks (1: timed text, 2: WebVTT) with these fragments, the
+    /// `n`th from `n` s, and this index. Each run's data counts from the fragment where
+    /// `from_fragment`; else each track fragment's but the first's follows the one before.
+    fn fragmented(fragments: &[Made], from_fragment: bool, index: Index) -> Vec<u8> {
+        let mut head = files::fragmented_with_captions(10, &TWO);
         let mut at = 0;
-        while &file[at + 4..at + 8] != b"moof" {
-            at += u32::from_be_bytes(file[at..at + 4].try_into().unwrap()) as usize;
+        while &head[at + 4..at + 8] != b"moof" {
+            at += u32::from_be_bytes(head[at..at + 4].try_into().unwrap()) as usize;
         }
-        file.truncate(at);
-        for (second, trafs) in (0..).zip(fragments) {
-            let sample = |id: u32, text: &str| match id {
-                1 => [(text.len() as u16).to_be_bytes().to_vec(), text.as_bytes().to_vec()].concat(),
-                _ => files::atoms(b"vttc", &[atom(b"payl", text.as_bytes())]),
-            };
-            let data: Vec<Vec<Vec<u8>>> = trafs.iter().map(|(id, texts)| texts.iter().map(|text| sample(*id, text)).collect()).collect();
-            let moof = |data_at: u32| {
-                let mut offset = data_at;
-                let made = trafs.iter().zip(&data).enumerate().map(|(nth, ((id, _), samples))| {
-                    let tfhd = atom(b"tfhd", &words(&[if from_fragment { 0x02_0000 } else { 0 }, *id]));
-                    let tfdt = atom(b"tfdt", &words(&[0, second * 1000]));
-                    let sizes: Vec<u32> = samples.iter().flat_map(|bytes| [1000, bytes.len() as u32]).collect();
-                    let run = if from_fragment || nth == 0 { words(&[0x301, samples.len() as u32, offset]) } else { words(&[0x300, samples.len() as u32]) };
-                    offset += samples.iter().map(Vec::len).sum::<usize>() as u32;
-                    files::atoms(b"traf", &[tfhd, tfdt, atom(b"trun", &[run, words(&sizes)].concat())])
-                });
-                files::atoms(b"moof", &made.collect::<Vec<_>>())
-            };
-            let size = moof(0).len() as u32;
-            file.extend([moof(size + 8), atom(b"mdat", &data.concat().concat())].concat());
+        head.truncate(at);
+        let made: Vec<Vec<u8>> = (0..).zip(fragments).map(|(second, trafs)| fragment(second, trafs, from_fragment)).collect();
+        match index {
+            Index::None => [head, made.concat()].concat(),
+            Index::RandomAccess => {
+                let index = random_access_index(fragments, &made, head.len());
+                [head, made.concat(), index].concat()
+            }
+            Index::Segments => {
+                let spans = |id: u32| track_spans(fragments, &made, id);
+                let (one, two) = (spans(1), spans(2));
+                let second = segment_index(2, &two, 0);
+                let first = segment_index(1, &one, second.len() as u32);
+                let pointing = segment_index(1, &(one.0, vec![(true, first.len() as u32, 0)]), 0);
+                [head, pointing, first, second, made.concat()].concat()
+            }
         }
-        file
+    }
+
+    /// A made fragment from `second` s: its `moof` and `mdat`.
+    fn fragment(second: u32, trafs: &Made, from_fragment: bool) -> Vec<u8> {
+        let sample = |id: u32, text: &str| match id {
+            1 => [(text.len() as u16).to_be_bytes().to_vec(), text.as_bytes().to_vec()].concat(),
+            _ => files::atoms(b"vttc", &[atom(b"payl", text.as_bytes())]),
+        };
+        let data: Vec<Vec<Vec<u8>>> = trafs.iter().map(|(id, samples)| samples.iter().map(|(text, _)| sample(*id, text)).collect()).collect();
+        let moof = |data_at: u32| {
+            let mut offset = data_at;
+            let made = trafs.iter().zip(&data).enumerate().map(|(nth, ((id, samples), bytes))| {
+                let tfhd = atom(b"tfhd", &words(&[if from_fragment { 0x02_0000 } else { 0 }, *id]));
+                let tfdt = atom(b"tfdt", &words(&[0, second * 1000]));
+                let sizes: Vec<u32> = samples.iter().zip(bytes).flat_map(|((_, seconds), bytes)| [seconds * 1000, bytes.len() as u32]).collect();
+                let run = if from_fragment || nth == 0 { words(&[0x301, samples.len() as u32, offset]) } else { words(&[0x300, samples.len() as u32]) };
+                offset += bytes.iter().map(Vec::len).sum::<usize>() as u32;
+                files::atoms(b"traf", &[tfhd, tfdt, atom(b"trun", &[run, words(&sizes)].concat())])
+            });
+            files::atoms(b"moof", &made.collect::<Vec<_>>())
+        };
+        let size = moof(0).len() as u32;
+        [moof(size + 8), atom(b"mdat", &data.concat().concat())].concat()
+    }
+
+    /// The fragments track `id` has samples in: the number of each and its samples' seconds.
+    fn track_fragments(fragments: &[Made], id: u32) -> Vec<(usize, u32)> {
+        let seconds = |trafs: &Made| trafs.iter().find(|(of, _)| *of == id).map(|(_, samples)| samples.iter().map(|(_, seconds)| seconds).sum());
+        fragments.iter().enumerate().filter_map(|(nth, trafs)| Some((nth, seconds(trafs)?))).collect()
+    }
+
+    /// A random access index (`mfra`) of both tracks' fragments, the first made fragment `head`
+    /// bytes into the file: an entry for each, of its first sample (numbers of one byte).
+    fn random_access_index(fragments: &[Made], made: &[Vec<u8>], head: usize) -> Vec<u8> {
+        let starts: Vec<u32> = made.iter().scan(head, |at, bytes| Some(std::mem::replace(at, *at + bytes.len()) as u32)).collect();
+        let tfra = |id: u32| {
+            let listed = track_fragments(fragments, id);
+            let entries: Vec<u8> = listed.iter().flat_map(|(nth, _)| [words(&[*nth as u32 * 1000, starts[*nth]]), vec![1, 1, 1]].concat()).collect();
+            atom(b"tfra", &[words(&[0, id, 0, listed.len() as u32]), entries].concat())
+        };
+        let tfras = [tfra(1), tfra(2)].concat();
+        let mfro = atom(b"mfro", &words(&[0, (8 + tfras.len() + 16) as u32]));
+        files::atoms(b"mfra", &[tfras, mfro])
+    }
+
+    /// A segment index's references: its first time in seconds, and each reference whether it
+    /// points to another index, its size and seconds.
+    type References = (u32, Vec<(bool, u32, u32)>);
+
+    /// Track `id`'s fragments as references to media: each from one of its fragments to its next
+    /// (or the last's end).
+    fn track_spans(fragments: &[Made], made: &[Vec<u8>], id: u32) -> References {
+        let listed = track_fragments(fragments, id);
+        let size = |nth: usize| {
+            let to = listed.get(nth + 1).map_or(made.len(), |(next, _)| *next);
+            made[listed[nth].0..to].iter().map(Vec::len).sum::<usize>() as u32
+        };
+        (listed[0].0 as u32, (0..listed.len()).map(|nth| (false, size(nth), listed[nth].1)).collect())
+    }
+
+    /// A segment index box (`sidx`) of track `id`'s references, the first `first` bytes past it.
+    fn segment_index(id: u32, (from, references): &References, first: u32) -> Vec<u8> {
+        let listed: Vec<u32> = references.iter().flat_map(|(points, size, seconds)| [u32::from(*points) << 31 | size, seconds * 1000, 0]).collect();
+        atom(b"sidx", &[words(&[0, id, 1000, from * 1000, first, references.len() as u32]), words(&listed)].concat())
     }
 
     #[test]
     fn a_track_fragment_without_a_base_follows_the_one_before() {
-        let (_, captions) = read_all(fragmented(&[&[(1, &["Plain"]), (2, &["Placed"])]], false));
+        let fragments = [vec![(1, vec![("Plain".into(), 1)]), (2, vec![("Placed".into(), 1)])]];
+        let (_, captions) = read_all(fragmented(&fragments, false, Index::None));
         assert_eq!((texts_at(&captions, 0, 5), texts_at(&captions, 1, 5)), (vec!["Plain".to_owned()], vec!["Placed".to_owned()]));
     }
 
-    /// Bytes that keep the furthest place read from them.
+    /// Bytes that count how many were read of them.
     struct Watched(std::sync::Arc<[u8]>, std::sync::Arc<std::sync::atomic::AtomicU64>);
 
     impl Source for Watched {
         fn read_at(&mut self, at: u64, into: &mut [u8]) -> usize {
             let read = self.0.read_at(at, into);
-            self.1.fetch_max(at + read as u64, std::sync::atomic::Ordering::Relaxed);
+            self.1.fetch_add(read as u64, std::sync::atomic::Ordering::Relaxed);
             read
         }
+        fn size(&mut self) -> Option<u64> {
+            self.0.size()
+        }
+    }
+
+    /// A reader of `bytes` that counts how many it read of them.
+    fn watched(bytes: &[u8]) -> (Reader<Watched>, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        let read = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        (Reader::open(Watched(bytes.into(), read.clone())).expect("caption tracks"), read)
+    }
+
+    /// How many bytes were read while `read` ran.
+    fn bytes_read(counted: &std::sync::atomic::AtomicU64, read: impl FnOnce()) -> u64 {
+        let before = counted.load(std::sync::atomic::Ordering::Relaxed);
+        read();
+        counted.load(std::sync::atomic::Ordering::Relaxed) - before
+    }
+
+    /// The next `count` samples read: when each shows, and its text.
+    fn next_samples<S: Source>(reader: &mut Reader<S>, count: usize) -> Vec<(Duration, String)> {
+        let text = |sample: &ReadSample| match sample.kind {
+            Kind::TimedText(_) => crate::video_captions::timed_text(&sample.bytes),
+            _ => webvtt_cues(&sample.bytes).into_iter().map(|caption| caption.text).collect(),
+        };
+        (0..count).filter_map(|_| reader.read_next()).map(|sample| (sample.from, text(&sample))).collect()
     }
 
     #[test]
     fn a_track_that_ends_early_is_not_waited_for_to_the_files_end() {
         // (The French track has one sample, in the first of 100 fragments.)
-        let (firsts, more): ([TrackFragment; 2], [TrackFragment; 1]) = ([(1, &["one"]), (2, &["un"])], [(1, &["more"])]);
-        let mut fragments: Vec<&[TrackFragment]> = vec![&firsts];
-        fragments.extend(std::iter::repeat_n(&more[..], 99));
-        let bytes: std::sync::Arc<[u8]> = fragmented(&fragments, true).into();
-        let furthest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let mut reader = Reader::open(Watched(bytes.clone(), furthest.clone())).expect("caption tracks");
-        let times: Vec<Duration> = (0..3).filter_map(|_| reader.read_next()).map(|sample| sample.from).collect();
+        let mut fragments = vec![vec![(1, vec![("one".into(), 1)]), (2, vec![("un".into(), 1)])]];
+        fragments.extend((1..100).map(|_| vec![(1, vec![("more".into(), 1)])]));
+        let bytes = fragmented(&fragments, true, Index::None);
+        let (mut reader, counted) = watched(&bytes);
+        let mut times = Vec::new();
+        let read = bytes_read(&counted, || times = (0..3).filter_map(|_| reader.read_next()).map(|sample| sample.from).collect());
         assert_eq!(times, [at(0), at(0), at(10)]);
-        let read = furthest.load(std::sync::atomic::Ordering::Relaxed);
         assert!(read < bytes.len() as u64 / 2, "{read} bytes of {} read for the first samples", bytes.len());
         assert_eq!(std::iter::from_fn(|| reader.read_next()).count(), 98);
+    }
+
+    #[test]
+    fn a_seek_reads_from_the_fragment_the_files_index_gives() {
+        for index in [Index::RandomAccess, Index::Segments] {
+            let bytes = fragmented(&each_second(100), true, index);
+            let (mut reader, counted) = watched(&bytes);
+            assert!(reader.tracks.iter().all(|track| track.fragments.len() == 100), "{index:?}: the index lists every fragment");
+            let mut shown = Vec::new();
+            let read = bytes_read(&counted, || {
+                reader.seek(at(805));
+                shown = next_samples(&mut reader, 2);
+            });
+            assert_eq!(shown, [(at(800), "English 80".to_owned()), (at(800), "Français 80".to_owned())], "{index:?}");
+            assert!(read < bytes.len() as u64 / 20, "{index:?}: {read} bytes of {} read for a seek", bytes.len());
+        }
+    }
+
+    #[test]
+    fn without_an_index_a_seek_starts_at_a_fragment_read_before() {
+        let bytes = fragmented(&each_second(100), true, Index::None);
+        let (mut reader, counted) = watched(&bytes);
+        // (Before any was read: from the first.)
+        let first = bytes_read(&counted, || reader.seek(at(505)));
+        assert!(first > bytes.len() as u64 / 3, "{first} bytes of {} read for a first seek", bytes.len());
+        while reader.read_next().is_some_and(|sample| sample.from < at(900)) {}
+        // (Back among the fragments read, and on past them.)
+        for (to, second) in [(205, 20), (955, 95)] {
+            let mut shown = Vec::new();
+            let read = bytes_read(&counted, || {
+                reader.seek(at(to));
+                shown = next_samples(&mut reader, 1);
+            });
+            assert_eq!(shown, [(at(second * 10), format!("English {second}"))]);
+            assert!(read < bytes.len() as u64 / 20, "{read} bytes of {} read for a seek to {:?}", bytes.len(), at(to));
+        }
+    }
+
+    #[test]
+    fn a_caption_that_began_fragments_before_a_seek_is_read() {
+        // (English "Long" runs from 10 s to 25 s, in fragment 10; French has a sample a second.)
+        let mut fragments = each_second(30);
+        fragments[10][0].1 = vec![("Long".into(), 15)];
+        fragments[11..25].iter_mut().for_each(|trafs| _ = trafs.remove(0));
+        for (index, read_first) in [(Index::None, false), (Index::None, true), (Index::RandomAccess, false), (Index::Segments, false)] {
+            let mut reader = reader(fragmented(&fragments, true, index));
+            if read_first {
+                while reader.read_next().is_some() {}
+            }
+            reader.seek(at(205));
+            assert_eq!(next_samples(&mut reader, 2), [(at(100), "Long".to_owned()), (at(200), "Français 20".to_owned())], "{index:?}, read first: {read_first}");
+        }
+    }
+
+    #[test]
+    fn a_file_whose_fragments_give_no_decode_time_is_read_again_from_the_first() {
+        let mut bytes = fragmented(&each_second(30), true, Index::RandomAccess);
+        // (Each decode time box made one to skip: a fragment's times go on from the one before.)
+        while let Some(at) = bytes.windows(4).position(|kind| kind == b"tfdt") {
+            bytes[at..at + 4].copy_from_slice(b"free");
+        }
+        let mut reader = reader(bytes);
+        while reader.read_next().is_some() {}
+        reader.seek(at(205));
+        assert_eq!(next_samples(&mut reader, 2), [(at(200), "English 20".to_owned()), (at(200), "Français 20".to_owned())]);
+    }
+
+    #[test]
+    fn a_movie_box_that_runs_to_the_files_end_is_read() {
+        let mut bytes = files::movie(30, 10, false, &[], &TWO);
+        let moov = bytes.windows(4).rposition(|kind| kind == b"moov").unwrap() - 4;
+        bytes[moov..moov + 4].fill(0);
+        let (tracks, captions) = read_all(bytes);
+        assert_eq!(tracks.len(), 2);
+        assert_eq!((texts_at(&captions, 0, 5), texts_at(&captions, 1, 15)), (vec!["English one".to_owned()], vec!["Français deux".to_owned()]));
     }
 
     #[test]

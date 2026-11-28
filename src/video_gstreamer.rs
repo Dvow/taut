@@ -990,6 +990,10 @@ impl Player {
     pub(crate) fn decodes_on_gpu(&self) -> bool {
         true
     }
+    /// Whether `frame` gives frames too while they come as textures: those not in a dmabuf.
+    pub(crate) fn gives_pixels_too(&self) -> bool {
+        true
+    }
 
     /// The frame on show where it is not the one given last and is a dmabuf of YUV 4:2:0, left
     /// there: it and its time. (Any other is left for `frame`.)

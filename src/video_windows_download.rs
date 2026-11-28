@@ -228,6 +228,9 @@ impl Source for Arc<Download> {
     fn read_at(&mut self, at: u64, into: &mut [u8]) -> usize {
         Download::read(self, at, into)
     }
+    fn size(&mut self) -> Option<u64> {
+        Download::length(self)
+    }
 }
 
 /// A byte stream's length (4: GetLength); none where unknown.
@@ -515,27 +518,50 @@ pub(crate) mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::AtomicUsize;
+    use std::time::{Duration, Instant};
+
+    #[allow(dead_code)]
+    mod files {
+        include!("../tests/video/files.rs");
+    }
+
+    /// What a test server counted: its connections, the bytes it sent, and the requests it met
+    /// with silence.
+    #[derive(Clone, Default)]
+    struct Counted {
+        connections: Arc<AtomicUsize>,
+        sent: Arc<AtomicUsize>,
+        silenced: Arc<AtomicUsize>,
+    }
 
     /// A server of `bytes` on a port of its own, answering ranges, counting its connections and
     /// the bytes it sends; serving until the test ends.
     pub(crate) fn serve(bytes: Vec<u8>) -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let (address, counted) = serve_to(bytes, usize::MAX);
+        (address, counted.connections, counted.sent)
+    }
+
+    /// The same, but sending nothing from byte `cut` on, as a server that went dead there: an
+    /// answer that reaches it stops, and its connection stays open and silent.
+    fn serve_to(bytes: Vec<u8>, cut: usize) -> (String, Counted) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}/clip.mp4", listener.local_addr().unwrap());
-        let (connections, sent) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let (counted, sending) = (Arc::clone(&connections), Arc::clone(&sent));
+        let counted = Counted::default();
+        let counting = counted.clone();
         let bytes: Arc<[u8]> = bytes.into();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                counted.fetch_add(1, Ordering::AcqRel);
-                let (bytes, sending) = (Arc::clone(&bytes), Arc::clone(&sending));
-                std::thread::spawn(move || answer(stream, &bytes, &sending));
+                counting.connections.fetch_add(1, Ordering::AcqRel);
+                let (bytes, counting) = (Arc::clone(&bytes), counting.clone());
+                std::thread::spawn(move || answer(stream, (&bytes[..bytes.len().min(cut)], bytes.len()), &counting));
             }
         });
-        (address, connections, sent)
+        (address, counted)
     }
 
-    /// Answers a connection's requests (`GET`, `HEAD`, with or without a range).
-    fn answer(mut stream: std::net::TcpStream, bytes: &[u8], sent: &AtomicUsize) {
+    /// Answers a connection's requests (`GET`, `HEAD`, with or without a range) for a file of
+    /// `length` bytes, of which the first `bytes` are sent.
+    fn answer(mut stream: std::net::TcpStream, (bytes, length): (&[u8], usize), counted: &Counted) {
         let mut asked = Vec::new();
         let mut buffer = [0u8; 4096];
         loop {
@@ -547,24 +573,96 @@ pub(crate) mod tests {
             while let Some(end) = asked.windows(4).position(|four| four == b"\r\n\r\n") {
                 let request = String::from_utf8_lossy(&asked[..end]).into_owned();
                 asked.drain(..end + 4);
-                if respond(&mut stream, &request, bytes, sent).is_err() {
+                if respond(&mut stream, &request, (bytes, length), counted).is_err() {
                     return;
                 }
             }
         }
     }
 
-    fn respond(stream: &mut std::net::TcpStream, request: &str, bytes: &[u8], sent: &AtomicUsize) -> std::io::Result<()> {
+    /// Answers a request; past the bytes sent, says nothing more.
+    fn respond(stream: &mut std::net::TcpStream, request: &str, (bytes, length): (&[u8], usize), counted: &Counted) -> std::io::Result<()> {
         let range = request.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_owned));
-        let (from, to) = range.and_then(|range| range.split_once('-').map(|(from, to)| (from.parse().unwrap_or(0), to.parse().unwrap_or(bytes.len() - 1)))).unwrap_or((0, bytes.len() - 1));
-        let to = to.min(bytes.len() - 1);
-        let body = if request.starts_with("HEAD") { &[][..] } else { &bytes[from..=to] };
+        let (from, to) = range.and_then(|range| range.split_once('-').map(|(from, to)| (from.parse().unwrap_or(0), to.parse().unwrap_or(length - 1)))).unwrap_or((0, length - 1));
+        let to = to.min(length - 1);
+        if from >= bytes.len() {
+            silent(counted);
+        }
+        let head_only = request.starts_with("HEAD");
+        let body = if head_only { &[][..] } else { &bytes[from..=to.min(bytes.len() - 1)] };
         let status = if request.to_ascii_lowercase().contains("range:") { "206 Partial Content" } else { "200 OK" };
-        let head = format!("HTTP/1.1 {status}\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nContent-Range: bytes {from}-{to}/{}\r\n\r\n", to + 1 - from, bytes.len());
+        let head = format!("HTTP/1.1 {status}\r\nContent-Type: video/mp4\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nContent-Range: bytes {from}-{to}/{length}\r\n\r\n", to + 1 - from);
         stream.write_all(head.as_bytes())?;
         stream.write_all(body)?;
-        sent.fetch_add(body.len(), Ordering::AcqRel);
+        counted.sent.fetch_add(body.len(), Ordering::AcqRel);
+        if !head_only && to >= bytes.len() {
+            silent(counted);
+        }
         Ok(())
+    }
+
+    /// A dead server's connection: open, and silent for good.
+    fn silent(counted: &Counted) -> ! {
+        counted.silenced.fetch_add(1, Ordering::AcqRel);
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
+
+    /// `big_mp4`'s file with its movie box first, as files made to play while they download.
+    fn movie_box_first(bytes: Vec<u8>) -> Vec<u8> {
+        let (head, rest) = bytes.split_at(32);
+        let (mdat, moov) = rest.split_at(u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize);
+        let mut moov = moov.to_vec();
+        let stco = moov.windows(4).position(|kind| kind == b"stco").unwrap() + 4;
+        let count = u32::from_be_bytes(moov[stco + 4..stco + 8].try_into().unwrap()) as usize;
+        for at in (stco + 8..).step_by(4).take(count) {
+            let offset = u32::from_be_bytes(moov[at..at + 4].try_into().unwrap()) + moov.len() as u32;
+            moov[at..at + 4].copy_from_slice(&offset.to_be_bytes());
+        }
+        [head, &moov, mdat].concat()
+    }
+
+    /// How long dropping a player of `bytes` takes once their server went dead at `cut`, and the
+    /// player, playing where `play`, came to wait past it (`waited`); none without Media
+    /// Foundation. The player is made and dropped on a thread of its own: a drop that waits on
+    /// the network fails the test at 90 s, not after Media Foundation's retries.
+    fn drop_time(bytes: Vec<u8>, cut: usize, play: bool, waited: fn(&mut crate::video_windows::Player) -> bool) -> Option<Duration> {
+        let (address, counted) = serve_to(bytes, cut);
+        let (sent, took) = mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok(mut player) = crate::video_windows::Player::open(crate::video::VideoSource::Url(address), false) else {
+                _ = sent.send(None);
+                return;
+            };
+            if play {
+                player.play();
+            }
+            let asked = Instant::now();
+            while counted.silenced.load(Ordering::Acquire) == 0 || !waited(&mut player) {
+                assert!(asked.elapsed() < Duration::from_secs(20), "nothing was asked past the cut");
+                player.news();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let dropping = Instant::now();
+            drop(player);
+            _ = sent.send(Some(dropping.elapsed()));
+        });
+        took.recv_timeout(Duration::from_secs(90)).expect("the drop waited on the network")
+    }
+
+    /// Dropping a player whose server went dead waits on no network (Media Foundation's own
+    /// retries take over ten minutes): while it opens (the movie box past the cut), and while it
+    /// plays past the cut. Prints each drop's time.
+    #[test]
+    fn a_player_whose_server_went_dead_drops_at_once() {
+        let opening = drop_time(files::big_mp4(40, 10, 320, 240), 300 << 10, false, |_| true);
+        let Some(opening) = opening else { return eprintln!("no Media Foundation here: skipped") };
+        let playing = movie_box_first(files::big_mp4(100, 10, 320, 240));
+        let cut = playing.len() / 2;
+        let playing = drop_time(playing, cut, true, |player| player.position() >= Duration::from_secs(6)).expect("a player");
+        println!("dropped while opening in {opening:?}, while playing in {playing:?}");
+        assert!(opening.max(playing) < Duration::from_millis(500), "dropped while opening in {opening:?}, while playing in {playing:?}");
     }
 
     fn functions() -> &'static Functions {

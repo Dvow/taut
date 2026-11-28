@@ -261,7 +261,9 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 - Windows: the file's own captions from Matroska through Media Foundation (SRT, and SSA with
   its places), and from MP4 and QuickTime files through taut (3GPP timed text with its
   justification, not its text boxes; WebVTT; `c608`; not TTML or `c708` tracks), read a little
-  ahead of the video. A region of Media Foundation's cues in pixels keeps the usual place. An
+  ahead of the video. A seek in a fragmented file past the fragments read in order reads on from
+  them where the file has no index (`mfra`, `sidx`), or from the last one listed of a caption
+  track that ended before. A region of Media Foundation's cues in pixels keeps the usual place. An
   `http` or `https` address is downloaded once, through Media Foundation's own byte stream,
   kept in memory a block at a time (64 MB at most), for the engine and taut's caption readers;
   it opens once its first bytes come. A playlist (HLS, DASH) the engine reads itself: its
