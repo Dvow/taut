@@ -1,0 +1,78 @@
+enabled 0
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `test` profile [unoptimized] target(s) in 28.60s
+     Running tests/video_web.rs (target/debug/build/taut/2a16ed21d56b4d42/out/video_web-2a16ed21d56b4d42)
+under Node: no player, said so
+Safari: session B28127E7-762D-4B6F-8B9E-567112AA261A, {"value":null}
+in safari:
+failed=["a refused play did not happen: state playing=0 position=3.000 length=3.000 size=64x48 frames=31 ended=1 muted=0 volume=1.00 speed=1.00 tracks=1/0 caption=none many=0 error=none","a play with sound: state playing=0 position=3.000 length=3.000 size=64x48 frames=31 ended=1 muted=0 volume=1.00 speed=1.00 tracks=1/0 caption=none many=0 error=none","Français_un after Seek 0.5 did not happen: state playing=0 position=0.500 length=3.000 size=64x48 frames=2 ended=0 muted=1 volume=1.00 speed=1.00 tracks=2/2 caption=none many=0 error=none","the French rendition did not happen: state playing=0 position=2.500 length=3.000 size=64x48 frames=2 ended=0 muted=1 volume=1.00 speed=1.00 tracks=1/4 caption=none many=0 error=none","the rendition's settings: \"\""]
+frames_read_from="the video's frame"
+first=["64x48",0,3]
+seen=[[1,0.199],[2,0.258],[3,0.408],[4,0.475],[6,0.641],[6,0.708],[8,0.858],[9,0.925],[10,1.058],[11,1.13],[12,1.258],[13,1.325],[14,1.457],[15,1.524],[16,1.658],[17,1.724],[18,1.858],[19,1.924],[20,2.058],[21,2.124],[22,2.257],[23,2.325],[24,2.458],[25,2.524],[26,2.658],[27,2.724],[28,2.858],[29,2.924],[29,3]]
+frames_at_their_times="passed"
+held=[10,1.026,10,1.026]
+pause_holds_and_seeks_land="passed"
+end=[1,29]
+looped="state playing=1 position=1.288 length=3.000 size=64x48 frames=11 ended=1 muted=1 volume=1.00 speed=1.00 tracks=0/0 caption=none many=0 error=none"
+the_end_once_and_a_loop="passed"
+position_max="3"
+controls="state playing=0 position=3.000 length=3.000 size=64x48 frames=4 ended=1 muted=0 volume=0.95 speed=1.00 tracks=0/0 caption=none many=0 error=none"
+the_controls="passed"
+refused="state playing=0 position=3.000 length=3.000 size=64x48 frames=31 ended=1 muted=0 volume=1.00 speed=1.00 tracks=1/0 caption=none many=0 error=none"
+missing="state playing=0 position=0.000 length=-1.000 size=none frames=0 ended=0 muted=1 volume=1.00 speed=1.00 tracks=0/0 caption=none many=0 error=the player stopped: error 4"
+bytes_and_errors="FAILED"
+caption="Second"
+rate=1.9953846153846155
+captions_and_speed="passed"
+cue="line:10% position:10% align:start\nPlaced"
+browser_cue_settings="passed"
+tracks="2/2"
+the_files_tracks="FAILED"
+placed="line:10% position:10% align:start"
+a_files_webvtt_and_closed_captions="passed"
+rendition=""
+a_streams_captions="FAILED"
+many=[[9699328,0,1,0],[9699328,0,1,0]]
+many_opens="passed"
+
+thread 'main' (9968) panicked at tests/video_web.rs:648:9:
+the checks in the browser failed:
+failed=["a refused play did not happen: state playing=0 position=3.000 length=3.000 size=64x48 frames=31 ended=1 muted=0 volume=1.00 speed=1.00 tracks=1/0 caption=none many=0 error=none","a play with sound: state playing=0 position=3.000 length=3.000 size=64x48 frames=31 ended=1 muted=0 volume=1.00 speed=1.00 tracks=1/0 caption=none many=0 error=none","Français_un after Seek 0.5 did not happen: state playing=0 position=0.500 length=3.000 size=64x48 frames=2 ended=0 muted=1 volume=1.00 speed=1.00 tracks=2/2 caption=none many=0 error=none","the French rendition did not happen: state playing=0 position=2.500 length=3.000 size=64x48 frames=2 ended=0 muted=1 volume=1.00 speed=1.00 tracks=1/4 caption=none many=0 error=none","the rendition's settings: \"\""]
+frames_read_from="the video's frame"
+first=["64x48",0,3]
+seen=[[1,0.199],[2,0.258],[3,0.408],[4,0.475],[6,0.641],[6,0.708],[8,0.858],[9,0.925],[10,1.058],[11,1.13],[12,1.258],[13,1.325],[14,1.457],[15,1.524],[16,1.658],[17,1.724],[18,1.858],[19,1.924],[20,2.058],[21,2.124],[22,2.257],[23,2.325],[24,2.458],[25,2.524],[26,2.658],[27,2.724],[28,2.858],[29,2.924],[29,3]]
+frames_at_their_times="passed"
+held=[10,1.026,10,1.026]
+pause_holds_and_seeks_land="passed"
+end=[1,29]
+looped="state playing=1 position=1.288 length=3.000 size=64x48 frames=11 ended=1 muted=1 volume=1.00 speed=1.00 tracks=0/0 caption=none many=0 error=none"
+the_end_once_and_a_loop="passed"
+position_max="3"
+controls="state playing=0 position=3.000 length=3.000 size=64x48 frames=4 ended=1 muted=0 volume=0.95 speed=1.00 tracks=0/0 caption=none many=0 error=none"
+the_controls="passed"
+refused="state playing=0 position=3.000 length=3.000 size=64x48 frames=31 ended=1 muted=0 volume=1.00 speed=1.00 tracks=1/0 caption=none many=0 error=none"
+missing="state playing=0 position=0.000 length=-1.000 size=none frames=0 ended=0 muted=1 volume=1.00 speed=1.00 tracks=0/0 caption=none many=0 error=the player stopped: error 4"
+bytes_and_errors="FAILED"
+caption="Second"
+rate=1.9953846153846155
+captions_and_speed="passed"
+cue="line:10% position:10% align:start\nPlaced"
+browser_cue_settings="passed"
+tracks="2/2"
+the_files_tracks="FAILED"
+placed="line:10% position:10% align:start"
+a_files_webvtt_and_closed_captions="passed"
+rendition=""
+a_streams_captions="FAILED"
+many=[[9699328,0,1,0],[9699328,0,1,0]]
+many_opens="passed"
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: video_web::checks::in_a_browser
+   3: video_web::checks::all
+   4: video_web::main
+   5: <fn() as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `--test video_web`
+exit 101
