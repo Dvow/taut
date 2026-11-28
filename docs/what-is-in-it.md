@@ -197,15 +197,18 @@ Popovers anchored to their button.
   ES: within 2 levels). A device keeps each buffer imported while its video lives (8 at most);
   one it can't import makes it draw frames read back from then on. Vulkan draws frames of
   several kinds in one part. Windows' decoder never waits for a texture a window holds.
-- SVG: clip paths, masks, patterns, markers, symbols; on request, `shape-rendering`, seamless
-  clip paths and masks, text (on paths too; shaped with `shaping`), filters (every primitive,
-  lighting, `BackgroundImage`, paint inputs (patterns too) and kernel units included; about 90
-  KB), pictures and nested SVG (in the file, or through the app's loader). SMIL animation,
-  motion along paths included: as frames, or playing in a window (`AnimatedDrawing`), where the
-  pointer (within clip paths; the root where no shape is), keys, focus (Tab and Shift+Tab between
-  elements in `tabindex` order) and the wall clock begin and end what waits for them;
-  an event costs the same however long it has played. Drawing cost is bounded by file length.
-  Windows' system fonts are read a glyph at a time (a page of CJK text peaks at 6 MB, not 51).
+- SVG: clip paths (clipped by clip paths too), masks, patterns, markers, symbols; subpaths that
+  meet inside a pixel leave no seam; on request, `shape-rendering`, seamless clip paths and
+  masks, the entities a doctype declares, text (on paths too; shaped with `shaping`), filters
+  (every primitive, lighting, `BackgroundImage`, paint inputs (patterns too) and kernel units
+  included; about 90 KB), pictures (shown smaller, each pixel the mean of what lies under it)
+  and nested SVG (in the file, or through the app's loader). SMIL animation, motion along paths
+  included: as frames, or playing in a window (`AnimatedDrawing`), where the pointer (within
+  clip paths; the root where no shape is), keys, focus (Tab and Shift+Tab between elements in
+  `tabindex` order) and the wall clock begin and end what waits for them; an event costs the
+  same however long it has played, and a seek back is exact for any number of events. Drawing
+  cost is bounded by file length. Windows' system fonts are read a glyph at a time, `CFF` and
+  `CFF2` ones too (a page of CJK text peaks at 6 MB, not 51; in a `CFF` font at 7 MB, not 18).
 - 3D meshes: filled, lit, coloured or outlined, with depth; all CPU cores, only on change; a
   million triangles in about 14 ms at 1920×1080.
 - PDF: pages up to 200 inches, shapes, searchable shaped text with subset fonts (as their

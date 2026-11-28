@@ -198,8 +198,7 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   the line taller); without it, not.
 - Named faces are kept for the program's life; names over 128 bytes match nothing; beyond 4,096
   families or 65,536 faces, new names use the system font.
-- Windows: the first letter no linked font has costs a full font scan (about 60 ms, 47 KB). SVG
-  text reads `CFF` fonts whole (`glyf` fonts a glyph at a time).
+- Windows: the first letter no linked font has costs a full font scan (about 60 ms, 47 KB).
 
 ## Pictures
 
@@ -211,13 +210,18 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   time.
 - SVG: images in other files only through the app's loader; drawings an image brings, four
   deep at most. SMIL as frames (`svg::encode_animation`): a minute at most, timed parts only. In
-  a window (`AnimatedDrawing`): a seek back works its timeline out again from the start with the
-  last 4,096 events; the pointer is over a shape's fill or stroke (masks aside, as in browsers),
-  text as its whole element. A kernel unit finer than an eighth of a pixel counts as an eighth. Small blurs use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped
-  without `shaping`. Masks and non-box clips multiply edge coverages; two opposite subpaths of
-  one shape can show a hairline. Crisp edges paint pixels more than half covered (librsvg:
-  pixels whose sample point is). Of 2,986 Linux desktop icons, 392 differ visibly from librsvg
-  at 1×, 185 at 3×.
+  a window (`AnimatedDrawing`): the pointer is over a shape's fill or stroke (masks aside, as in
+  browsers), text as its whole element; a seek back keeps 12 bytes per time an event gave an
+  animation, without end. A kernel unit finer than an eighth of a pixel counts as an eighth.
+  Small blurs use a true Gaussian (as browsers; librsvg differs). SVG text is unshaped without
+  `shaping`. A stroke overlapping itself (the inside of tight bends, reversals) darkens those
+  edge pixels by up to a quarter. Crisp edges paint pixels more than half covered (librsvg:
+  pixels whose sample point is). Of 2,986 Linux desktop icons, 373 differ visibly from librsvg
+  at 1×, 159 at 3×. At 1×: 213 where librsvg's edges are further from the true coverage than
+  taut's; 95 with strokes (where one overlaps itself, taut's is darker); 42 where shapes laid
+  one over another meet (both as far from the true coverage); 13 where librsvg leaves out what
+  a missing clip path clips (Edge and taut draw it unclipped); 7 small blurs; 3 whose size is no
+  whole number of pixels (librsvg draws them unscaled).
 - SVG cost beyond the file's budget is skipped; a small file can still take seconds at
   4096×4096. With a filter's kernel unit finer than a pixel, a picture under 512 pixels across
   may cost as much as one 512 across (a 389-byte file: 68 ms at 100 pixels).

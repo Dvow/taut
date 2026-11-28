@@ -321,8 +321,8 @@ pub(crate) fn file_for(_face: Face, _letter: char) -> Option<crate::font_file::F
 /// The same on Windows, where GDI provides a font's tables (see `tables`). (The CSS generic
 /// families map to the fonts Windows browsers use for them.) Of the families `asked` names, the
 /// first installed; at a weight a family ships as a separately named family ("Segoe UI
-/// Semibold"), that one, if installed: GDI would synthesize it from the regular. Its glyphs
-/// are read from GDI as they are drawn (see `font_file::Fetched`).
+/// Semibold"), that one, if installed: GDI would synthesize it from the regular. Its outlines
+/// are read from GDI as they are drawn (see `font_file::SystemTable`).
 #[cfg(windows)]
 pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::FontFile> {
     let asked = asked(face_for(face, letter));
@@ -339,9 +339,9 @@ pub(crate) fn file_for(face: Face, letter: char) -> Option<crate::font_file::Fon
     let mut selected = Selected { dc: unsafe { CreateCompatibleDC(0) }, font: 0, one_at_a_time: Mutex::new(()) };
     // SAFETY: each font is created and selected into that DC; one not installed is released.
     selected.font = tried.find_map(|(name, weight)| unsafe { named(selected.dc, &name, weight, asked.italic) })?;
-    let (file, glyphs) = tables(selected.dc)?;
+    let (file, outline) = tables(selected.dc)?;
     let read: Box<crate::font_file::TablePart> = Box::new(move |table, at, long| selected.read(table, at, long));
-    crate::font_file::FontFile::assembled(file, (glyphs > 0).then_some((glyphs, read)))
+    crate::font_file::FontFile::assembled(file, outline.map(|(tag, long)| crate::font_file::SystemTable::new(tag, long, read)))
 }
 
 /// A system font selected into a DC of its own, its tables read as asked, by one thread at a
@@ -418,13 +418,17 @@ unsafe fn named(dc: isize, name: &str, weight: i32, italic: bool) -> Option<isiz
     }
 }
 
+/// A font's outline table (`glyf`, `CFF ` or `CFF2`): its tag and length.
+#[cfg(windows)]
+type Outline = ([u8; 4], usize);
+
 /// The DC's font as a standalone font file of the tables read (`font_file::taken`), each
 /// fetched by tag: for a font in a collection, not the others (the whole collection makes an
-/// East Asian font half as large again). `glyf` is listed empty, to be read a glyph at a time:
-/// its length comes with the file. `None` if Windows provides no tables, or the directory
-/// claims more than the file holds.
+/// East Asian font half as large again). Its outline table (`glyf`, `CFF ` or `CFF2`) is listed
+/// empty, to be read a part at a time: its tag and length come with the file. `None` if Windows
+/// provides no tables, or the directory claims more than the file holds.
 #[cfg(windows)]
-fn tables(dc: isize) -> Option<(Vec<u8>, usize)> {
+fn tables(dc: isize) -> Option<(Vec<u8>, Option<Outline>)> {
     // SAFETY: Windows writes at most the room it is told of.
     let read = |table: &[u8; 4], from: usize, into: &mut [u8]| unsafe { GetFontData(dc, u32::from_le_bytes(*table), from as u32, into.as_mut_ptr(), into.len() as u32) } as usize == into.len();
     // The table directory: 12 bytes, then 16 per table, tag first and length last. (Table 0 is
@@ -442,16 +446,16 @@ fn tables(dc: isize) -> Option<(Vec<u8>, usize)> {
     if whole.iter().all(|whole| *whole == u32::MAX || all > *whole as usize) {
         return None;
     }
-    let glyphs = long(b"glyf").unwrap_or(0);
-    let kept = tables.iter().map(|(name, long)| (*name, if *name == b"glyf" { 0 } else { *long }));
+    let outline = [b"glyf", b"CFF ", b"CFF2"].into_iter().find_map(|name| Some((*name, long(name).filter(|long| *long > 0)?)));
+    let kept = tables.iter().map(|(name, long)| (*name, if outline.is_some_and(|(tag, _)| tag == **name) { 0 } else { *long }));
     let mut file = crate::font_file::listing(&head[..4], kept.clone());
-    file.reserve_exact(all - glyphs);
+    file.reserve_exact(all - outline.map_or(0, |(_, long)| long));
     for (name, long) in kept {
         let at = file.len();
         file.resize(at + long, 0);
         (long == 0 || read(name, 0, &mut file[at..])).then_some(())?;
     }
-    Some((file, glyphs))
+    Some((file, outline))
 }
 
 // ---- Linux: what Fontconfig is asked ----

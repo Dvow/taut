@@ -387,6 +387,24 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   Media Foundation does not read, are read by taut. An `http` or `https` address is downloaded
   once for the player and the caption readers (before, the captions' reader made a connection of
   its own and read the video again); the video opens once the address's first bytes come.
+- **SVG, where subpaths meet:** two subpaths of one shape that meet inside a pixel leave no
+  hairline, as in browsers: such a pixel's coverage is worked out from the winding along 64
+  lines across it. Shapes of one subpath are drawn as before.
+- **SVG clip paths clipped by clip paths** (`clip-path` on a `<clipPath>`) keep only where
+  both do, as Edge draws them; a reference that comes back round is dropped, as Edge drops it.
+  Before, the inner clip path was ignored.
+- **SVG pictures shown smaller** are, at each pixel, the mean of the picture under it, as
+  librsvg and browsers show them (exact where square to the drawing). Before, a whole-number
+  shrink and a bilinear sample blurred them over about two pixels.
+- **`svg::enable_entities()`** writes out the entities a file's doctype declares, as XML
+  readers do (some drawing programs name every style by one), at most four times the file's
+  length.
+- **`AnimatedDrawing`:** a seek back is exact for any number of events (before, the last
+  4,096): its timeline goes on from the latest of up to 32 copies kept as it played, and each
+  time an event gave an animation is kept (12 bytes).
+- **Windows, feature `cff`:** system fonts with PostScript outlines (`CFF `, `CFF2`) are read a
+  charstring and subroutine at a time as drawn, as `glyf` fonts are: a page of CJK SVG text in
+  Noto Sans CJK peaks at 6.7 MB, not 17.8.
 
 ## 0.3.0 (2026-11-24)
 

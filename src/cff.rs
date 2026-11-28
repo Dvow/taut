@@ -7,15 +7,25 @@
 //! deltas per variation region, and `blend` resolves them at the font's instance. Its INDEX
 //! counts are 4 bytes, not 2; charstrings have no widths; glyphs have no names; there is always
 //! an FDArray; and the operand stack holds 513, not 48.
-use crate::font_file::{Bytes, FontFile, Placing, Sketch, first_not};
+//!
+//! A system font's table on Windows is read from the system a part at a time (see
+//! `FetchedTable`): a charstring or subroutine when first run.
+use crate::font_file::{Bytes, FontFile, Outlines, Placing, Sketch, first_not};
+#[cfg(windows)]
+use crate::font_file::{Fetched, SystemTable};
 use crate::geom::{Point, pt};
 use crate::variable_fonts::Regions;
+use std::borrow::Cow;
 use std::ops::Range;
 
 /// A parsed `CFF ` or `CFF2` table, where each glyph is a charstring.
 pub(crate) struct Programs {
-    /// The table's range in the file; all offsets in it are from its start.
+    /// The table's range in the file; all offsets in it are from its start. (Empty for a table
+    /// read from the system.)
     at: Range<usize>,
+    /// A system font's table on Windows, read from the system a part at a time.
+    #[cfg(windows)]
+    fetched: Option<Box<FetchedTable>>,
     /// Every glyph's charstring (CharStrings INDEX).
     glyphs: List,
     /// Global subroutines,
@@ -33,18 +43,28 @@ pub(crate) struct Programs {
 }
 
 impl Programs {
+    /// Finds a `CFF ` or `CFF2` table's parts: at `at` in the file, or in the system's table
+    /// (`outlines`).
+    pub fn read(all: Bytes, at: Range<usize>, outlines: Outlines) -> Option<Programs> {
+        match outlines {
+            Outlines::InFile => Programs::parse(Table::in_file(all.within(&at)), at),
+            #[cfg(windows)]
+            Outlines::System(system) => FetchedTable::programs(system),
+        }
+    }
+
     /// Finds a `CFF ` table's INDEXes. After the header come four: Name, Top DICT (one font),
     /// String, and Global Subrs. The Top DICT locates everything else.
-    pub fn read(all: Bytes, at: Range<usize>) -> Option<Programs> {
-        let cff = all.within(&at);
+    fn parse(cff: Table, at: Range<usize>) -> Option<Programs> {
         if cff.u8(0)? == 2 {
-            return Programs::newer(all, at);
+            return Programs::newer(cff, at);
         }
         let names = List::read(cff, cff.u8(2)? as usize)?;
         let fonts = List::read(cff, names.end(cff)?)?;
         let words = List::read(cff, fonts.end(cff)?)?;
         let shared = List::read(cff, words.end(cff)?)?;
-        let font = fonts.item(cff, 0)?;
+        let font = cff.item_now(&fonts, 0)?;
+        let font = Bytes(&font);
         // Type 1 charstrings (CharstringType 1) are not read.
         if dict_operands(font, 0x0c06).is_some_and(|kind| kind[1] != 2) {
             return None;
@@ -55,7 +75,7 @@ impl Programs {
         // FDSelect (12 37).
         let own = |dictionary: Bytes| {
             let Some([long, at]) = dict_operands(dictionary, 18) else { return Some((List::default(), 0)) };
-            match dict_operands(cff.part(at, long)?, 19) {
+            match dict_operands(Bytes(&cff.part(at, long)?), 19) {
                 Some([_, pieces]) => Some((List::read(cff, at.checked_add(pieces)?)?, 0)),
                 None => Some((List::default(), 0)),
             }
@@ -63,42 +83,84 @@ impl Programs {
         let Some([_, several]) = dict_operands(font, 0x0c24) else {
             // The charset is under key 15: without it, a predefined one.
             let names = dict_operands(font, 15).map_or(0, |[_, names]| names);
-            return Some(Programs { at, glyphs, shared, own: vec![own(font)?], which: None, names: Some(names), newer: false, store: 0 });
+            return Some(Programs {
+                at,
+                glyphs,
+                shared,
+                own: vec![own(font)?],
+                which: None,
+                names: Some(names),
+                newer: false,
+                store: 0,
+                #[cfg(windows)]
+                fetched: None,
+            });
         };
         let dictionaries = List::read(cff, several)?;
-        let own = (0..dictionaries.count.min(256)).map(|n| own(dictionaries.item(cff, n)?)).collect::<Option<_>>()?;
+        let own = (0..dictionaries.count.min(256)).map(|n| own(Bytes(&cff.item_now(&dictionaries, n)?))).collect::<Option<_>>()?;
         let which = dict_operands(font, 0x0c25)?[1];
-        (which < cff.0.len()).then_some(Programs { at, glyphs, shared, own, which: Some(which), names: None, newer: false, store: 0 })
+        (which < cff.len()).then_some(Programs {
+            at,
+            glyphs,
+            shared,
+            own,
+            which: Some(which),
+            names: None,
+            newer: false,
+            store: 0,
+            #[cfg(windows)]
+            fetched: None,
+        })
     }
 
     /// Finds a `CFF2` table's parts. After the header (whose third byte is its size, and the
     /// next two the Top DICT's length) come the Top DICT and Global Subrs. The Top DICT locates
     /// the rest, as in `CFF `, plus the variation store (key 24), which starts with its length.
     /// There is always an FDArray, and each Private DICT may set its `vsindex` (key 22).
-    fn newer(all: Bytes, at: Range<usize>) -> Option<Programs> {
-        let cff = all.within(&at);
+    fn newer(cff: Table, at: Range<usize>) -> Option<Programs> {
         let (start, long) = (cff.u8(2)? as usize, cff.u16(3)? as usize);
         let font = cff.part(start, long)?;
+        let font = Bytes(&font);
         let (shared, glyphs) = (List::newer(cff, start + long)?, List::newer(cff, dict_operands(font, 17)?[1])?);
         let own = |dictionary: Bytes| {
             let Some([long, at]) = dict_operands(dictionary, 18) else { return Some((List::default(), 0)) };
             let private = cff.part(at, long)?;
-            let blends = dict_operands(private, 22).map_or(0, |[_, list]| list.min(u16::MAX as usize) as u16);
-            match dict_operands(private, 19) {
+            let blends = dict_operands(Bytes(&private), 22).map_or(0, |[_, list]| list.min(u16::MAX as usize) as u16);
+            match dict_operands(Bytes(&private), 19) {
                 Some([_, pieces]) => Some((List::newer(cff, at.checked_add(pieces)?)?, blends)),
                 None => Some((List::default(), blends)),
             }
         };
         let dictionaries = List::newer(cff, dict_operands(font, 0x0c24)?[1])?;
-        let own = (0..dictionaries.count.min(256)).map(|n| own(dictionaries.item(cff, n)?)).collect::<Option<_>>()?;
-        let which = dict_operands(font, 0x0c25).map(|[_, which]| which).filter(|which| *which < cff.0.len());
+        let own = (0..dictionaries.count.min(256)).map(|n| own(Bytes(&cff.item_now(&dictionaries, n)?))).collect::<Option<_>>()?;
+        let which = dict_operands(font, 0x0c25).map(|[_, which]| which).filter(|which| *which < cff.len());
         let store = dict_operands(font, 24).map_or(0, |[_, store]| store.saturating_add(2));
-        Some(Programs { at, glyphs, shared, own, which, names: None, newer: true, store })
+        Some(Programs {
+            at,
+            glyphs,
+            shared,
+            own,
+            which,
+            names: None,
+            newer: true,
+            store,
+            #[cfg(windows)]
+            fetched: None,
+        })
+    }
+
+    /// Its table, in the font file `all` or the system's.
+    fn table<'a>(&'a self, all: Bytes<'a>) -> Table<'a> {
+        Table {
+            bytes: all.within(&self.at),
+            #[cfg(windows)]
+            fetched: self.fetched.as_deref(),
+        }
     }
 
     /// The Private DICT a glyph uses. FDSelect format 0 is a byte per glyph; format 3 is ranges
     /// (first glyph in 2 bytes, FD in 1); format 4 (`CFF2`) the same in 4 and 2.
-    fn dictionary(&self, cff: Bytes, glyph: usize) -> Option<usize> {
+    fn dictionary(&self, cff: Table, glyph: usize) -> Option<usize> {
         let Some(at) = self.which else { return Some(0) };
         let stretch = |n: usize| at + 3 + n * 3;
         match cff.u8(at)? {
@@ -121,7 +183,7 @@ impl Programs {
     /// accented letters. Both are named by Standard Encoding codes, and may not do the same in
     /// turn.
     pub fn draw(&self, font: &FontFile, glyph: u16, place: Placing, sketch: &mut Sketch) -> Option<()> {
-        let (cff, axes) = (font.bytes().within(&self.at), font.varied.as_ref().map_or(&[][..], |varied| &varied.place[..]));
+        let (cff, axes) = (self.table(font.bytes()), font.varied.as_ref().map_or(&[][..], |varied| &varied.place[..]));
         let Some([right, up, letter, accent]) = self.run(cff, glyph, (place, axes), sketch)? else { return Some(()) };
         for (character, place) in [(letter, place), (accent, place.after(Placing([1.0, 0.0, 0.0, 1.0, right, up])))] {
             let asked = self.run(cff, self.called(cff, character)?, (place, axes), sketch)?;
@@ -132,13 +194,13 @@ impl Programs {
 
     /// Runs one glyph's charstring for a font instance at `axes` (see `variable_fonts.rs`).
     /// Returns the four seac operands, if it had them.
-    fn run(&self, cff: Bytes, glyph: u16, (place, axes): (Placing, &[i32]), sketch: &mut Sketch) -> Option<Option<[f32; 4]>> {
+    fn run(&self, cff: Table, glyph: u16, (place, axes): (Placing, &[i32]), sketch: &mut Sketch) -> Option<Option<[f32; 4]>> {
         let (own, blends) = *self.own.get(self.dictionary(cff, glyph as usize)?)?;
-        let code = self.glyphs.item(cff, glyph as usize)?;
+        let code = cff.item(&self.glyphs, glyph as usize)?;
         // The operand stack holds 48; in `CFF2`, 513.
         let (callers, mut numbers, transient) = ([(code, 0); 16], [0.0; 513], [0.0; 32]);
         let numbers = &mut numbers[..if self.newer { 513 } else { 48 }];
-        let store = Bytes(cff.0.get(self.store..).filter(|_| self.store != 0).unwrap_or(&[]));
+        let store = cff.from(self.store).filter(|_| self.store != 0).unwrap_or(Bytes(&[]));
         let blending = Blending { newer: self.newer, store, list: blends, axes };
         let mut run =
             Run { cff, lists: [own, self.shared], code, at: 0, callers, depth: 0, numbers, count: 0, transient, hints: 0, pen: pt(0.0, 0.0), drawing: false, asked: None, place, sketch, blending };
@@ -150,7 +212,7 @@ impl Programs {
     /// The glyph of a Standard Encoding code. There characters have SIDs (an index into the
     /// standard strings every `CFF ` table knows), and the charset names every glyph but the
     /// first.
-    fn called(&self, cff: Bytes, character: f32) -> Option<u16> {
+    fn called(&self, cff: Table, character: f32) -> Option<u16> {
         let (character, at, count) = (u8::try_from(character as i32).ok()?, self.names?, self.glyphs.count.min(65535));
         let name = NAMED.iter().find(|(first, _, many)| (*first..first + many).contains(&character)).map(|(first, name, _)| (name + (character - first)) as usize)?;
         let glyph = match (at, cff.u8(at)?) {
@@ -165,6 +227,168 @@ impl Programs {
             _ => return None,
         };
         (glyph < count).then_some(glyph as u16)
+    }
+
+    /// The parts a glyph's drawing reads besides its charstring and subroutines: FDSelect, the
+    /// charset (for accented letters) and the variation store, each as far as it can reach.
+    #[cfg(windows)]
+    fn kept_parts(&self, cff: Table) -> Vec<Range<usize>> {
+        let count = self.glyphs.count;
+        let select = self.which.and_then(|at| match cff.u8(at)? {
+            0 => Some(at..at + 1 + count),
+            3 => Some(at..at + 5 + 3 * cff.u16(at + 1)? as usize),
+            4 => Some(at..at + 9 + 6 * cff.u32(at + 1)? as usize),
+            _ => None,
+        });
+        // A charset range names at least one glyph: format 0 is 2 bytes a glyph; formats 1 and 2
+        // are ranges of 3 or 4 bytes.
+        let names = self.names.filter(|at| *at > 2).and_then(|at| {
+            let each = match cff.u8(at)? {
+                0 => 2,
+                kind => usize::from(kind) + 2,
+            };
+            Some(at..at + 1 + each * count.saturating_sub(1))
+        });
+        let store = (self.store != 0).then(|| cff.u16(self.store - 2).map(|long| self.store..self.store + long as usize)).flatten();
+        [select, names, store].into_iter().flatten().map(|part| part.start..part.end.min(cff.len())).filter(|part| !part.is_empty()).collect()
+    }
+
+    /// Every INDEX of subroutines or charstrings a glyph may run.
+    #[cfg(windows)]
+    fn lists(&self) -> impl Iterator<Item = List> + '_ {
+        [self.glyphs, self.shared].into_iter().chain(self.own.iter().map(|(list, _)| *list)).filter(|list| list.count > 0)
+    }
+}
+
+/// A `CFF ` or `CFF2` table's bytes: in the font file, all offsets from its start; or a system
+/// font's on Windows, read from the system (see `FetchedTable`).
+#[derive(Clone, Copy)]
+struct Table<'a> {
+    bytes: Bytes<'a>,
+    #[cfg(windows)]
+    fetched: Option<&'a FetchedTable>,
+}
+
+impl<'a> Table<'a> {
+    /// A table in the font file.
+    fn in_file(bytes: Bytes<'a>) -> Table<'a> {
+        Table {
+            bytes,
+            #[cfg(windows)]
+            fetched: None,
+        }
+    }
+
+    /// `long` bytes from `at`.
+    fn part(&self, at: usize, long: usize) -> Option<Cow<'a, [u8]>> {
+        #[cfg(windows)]
+        if let Some(fetched) = self.fetched {
+            return fetched.part(at, long);
+        }
+        self.bytes.part(at, long).map(|part| Cow::Borrowed(part.0))
+    }
+
+    fn u8(&self, at: usize) -> Option<u8> {
+        self.part(at, 1).map(|part| part[0])
+    }
+
+    fn u16(&self, at: usize) -> Option<u16> {
+        Bytes(&self.part(at, 2)?).u16(0)
+    }
+
+    fn u32(&self, at: usize) -> Option<u32> {
+        Bytes(&self.part(at, 4)?).u32(0)
+    }
+
+    /// Its length in bytes.
+    fn len(&self) -> usize {
+        #[cfg(windows)]
+        if let Some(fetched) = self.fetched {
+            return fetched.system.len();
+        }
+        self.bytes.0.len()
+    }
+
+    /// The bytes from `at` on (of a system font's table, those kept from there).
+    fn from(&self, at: usize) -> Option<Bytes<'a>> {
+        #[cfg(windows)]
+        if let Some(fetched) = self.fetched {
+            return fetched.kept.iter().find(|(start, _)| *start == at).map(|(_, kept)| Bytes(kept));
+        }
+        self.bytes.0.get(at..).map(Bytes)
+    }
+
+    /// Item `n` of an INDEX, to run (of a system font's table, kept once read).
+    fn item(&self, list: &List, n: usize) -> Option<Bytes<'a>> {
+        if n >= list.count {
+            return None;
+        }
+        #[cfg(windows)]
+        if let Some(fetched) = self.fetched {
+            return fetched.item(*self, list, n);
+        }
+        self.bytes.0.get(list.bounds(*self, n)?).map(Bytes)
+    }
+
+    /// Item `n` of an INDEX, read now (of a system font's table, not kept).
+    fn item_now(&self, list: &List, n: usize) -> Option<Cow<'a, [u8]>> {
+        if n >= list.count {
+            return None;
+        }
+        let bounds = list.bounds(*self, n)?;
+        self.part(bounds.start, bounds.len())
+    }
+}
+
+/// A system font's `CFF ` or `CFF2` table on Windows, left out of the font file (see
+/// `font_file::SystemTable`): FDSelect, the charset and the variation store read once and kept
+/// (`kept`, each with where it starts); each charstring and subroutine read when first run, and
+/// kept (`lists`, by where its INDEX's offsets start); anything else read when asked for.
+#[cfg(windows)]
+struct FetchedTable {
+    system: SystemTable,
+    kept: Vec<(usize, Box<[u8]>)>,
+    lists: Vec<(usize, Fetched)>,
+}
+
+#[cfg(windows)]
+impl FetchedTable {
+    /// A system font's table parsed, ready to read its charstrings and subroutines as run.
+    fn programs(system: SystemTable) -> Option<Programs> {
+        let mut fetched = FetchedTable { system, kept: Vec::new(), lists: Vec::new() };
+        let mut programs = Programs::parse(fetched.table(), 0..0)?;
+        let kept: Vec<(usize, Box<[u8]>)> =
+            programs.kept_parts(fetched.table()).into_iter().filter_map(|part| Some((part.start, fetched.system.read(part.start, part.len())?.into_boxed_slice()))).collect();
+        fetched.kept = kept;
+        fetched.lists = programs.lists().map(|list| (list.at, Fetched::new(list.count))).collect();
+        fetched.lists.sort_by_key(|(at, _)| *at);
+        fetched.lists.dedup_by_key(|(at, _)| *at);
+        programs.fetched = Some(Box::new(fetched));
+        Some(programs)
+    }
+
+    /// Its table, as `Programs` reads it.
+    fn table(&self) -> Table<'_> {
+        Table { bytes: Bytes(&[]), fetched: Some(self) }
+    }
+
+    /// `long` bytes from `at`: from what is kept, else read now.
+    fn part(&self, at: usize, long: usize) -> Option<Cow<'_, [u8]>> {
+        let end = at.checked_add(long)?;
+        if let Some((start, kept)) = self.kept.iter().find(|(start, kept)| *start <= at && end <= start + kept.len()) {
+            return Some(Cow::Borrowed(&kept[at - start..end - start]));
+        }
+        self.system.read(at, long).map(Cow::Owned)
+    }
+
+    /// Item `n` of an INDEX `table` has: read from the system the first time.
+    fn item<'a>(&'a self, table: Table<'a>, list: &List, n: usize) -> Option<Bytes<'a>> {
+        let (_, items) = &self.lists[self.lists.binary_search_by_key(&list.at, |(at, _)| *at).ok()?];
+        let read = || {
+            let bounds = list.bounds(table, n)?;
+            self.system.read(bounds.start, bounds.len())
+        };
+        items.item(n, read).map(Bytes)
     }
 }
 
@@ -189,7 +413,7 @@ const NAMED: [(u8, u8, u8); 14] = [
 
 /// The glyph with SID `name`, in a charset of ranges `long` bytes each from `at`. (Glyph 0 has
 /// no name; ranges continue until every glyph has one.)
-fn stretched(cff: Bytes, mut at: usize, long: usize, count: usize, name: usize) -> Option<usize> {
+fn stretched(cff: Table, mut at: usize, long: usize, count: usize, name: usize) -> Option<usize> {
     let mut glyph = 1;
     while glyph < count {
         let (first, more) = (cff.u16(at)? as usize, if long == 3 { cff.u8(at + 2)? as usize } else { cff.u16(at + 2)? as usize });
@@ -213,7 +437,7 @@ struct List {
 
 impl List {
     /// The INDEX at `at`.
-    fn read(cff: Bytes, at: usize) -> Option<List> {
+    fn read(cff: Table, at: usize) -> Option<List> {
         let count = cff.u16(at)? as usize;
         // An empty INDEX is just its count.
         if count == 0 {
@@ -223,28 +447,24 @@ impl List {
     }
     /// The `CFF2` INDEX at `at`, whose count is 4 bytes. (No INDEX holds more items than its
     /// table has bytes.)
-    fn newer(cff: Bytes, at: usize) -> Option<List> {
-        let count = cff.u32(at).map(|count| count as usize).filter(|count| *count <= cff.0.len())?;
+    fn newer(cff: Table, at: usize) -> Option<List> {
+        let count = cff.u32(at).map(|count| count as usize).filter(|count| *count <= cff.len())?;
         if count == 0 {
             return Some(List { count, at: at + 4, wide: 0 });
         }
         Some(List { count, at: at + 5, wide: cff.u8(at + 4).filter(|wide| (1..=4).contains(wide))? as usize })
     }
-    /// Item `n`'s start in the table; for `n` the count, the end of the last.
-    fn start(&self, cff: Bytes, n: usize) -> Option<usize> {
-        let number = cff.part(self.at + n * self.wide, self.wide)?.0.iter().fold(0, |number, byte| number << 8 | *byte as usize);
-        (self.at + (self.count + 1) * self.wide).checked_add(number)?.checked_sub(1)
-    }
-    /// Item `n`.
-    fn item<'a>(&self, cff: Bytes<'a>, n: usize) -> Option<Bytes<'a>> {
-        if n >= self.count {
-            return None;
-        }
-        cff.0.get(self.start(cff, n)?..self.start(cff, n + 1)?).map(Bytes)
+    /// Item `n`'s range in the table: from its offset to the next.
+    fn bounds(&self, cff: Table, n: usize) -> Option<Range<usize>> {
+        let offsets = cff.part(self.at.checked_add(n.checked_mul(self.wide)?)?, 2 * self.wide)?;
+        let data = self.at + (self.count + 1) * self.wide;
+        let start = |offset: &[u8]| data.checked_add(offset.iter().fold(0, |number, byte| number << 8 | *byte as usize))?.checked_sub(1);
+        let (first, next) = offsets.split_at(self.wide);
+        Some(start(first)?..start(next)?)
     }
     /// The INDEX's end in the table: where what follows starts.
-    fn end(&self, cff: Bytes) -> Option<usize> {
-        if self.count == 0 { Some(self.at) } else { self.start(cff, self.count) }
+    fn end(&self, cff: Table) -> Option<usize> {
+        if self.count == 0 { Some(self.at) } else { self.bounds(cff, self.count - 1).map(|bounds| bounds.end) }
     }
     /// The subroutine bias: charstrings number subroutines from the middle, so numbers stay
     /// small and encode short.
@@ -296,7 +516,7 @@ fn small(first: u8, second: Option<u8>) -> Option<i32> {
 /// A charstring being run: operands, and operators that consume them (moves, lines, curves,
 /// subroutine calls and returns; and hints, which are skipped).
 struct Run<'a> {
-    cff: Bytes<'a>,
+    cff: Table<'a>,
     /// The callable subroutines: local and global.
     lists: [List; 2],
     /// The charstring being read, and the position in it.
@@ -363,7 +583,7 @@ impl Run<'_> {
     /// Calls a subroutine from an INDEX: the one the last operand names.
     fn call(&mut self, list: List) -> Option<bool> {
         self.count = self.count.checked_sub(1)?;
-        let piece = list.item(self.cff, usize::try_from(self.numbers[self.count] as i32 + list.middle()).ok()?)?;
+        let piece = self.cff.item(&list, usize::try_from(self.numbers[self.count] as i32 + list.middle()).ok()?)?;
         *self.callers.get_mut(self.depth)? = (self.code, self.at);
         (self.code, self.at, self.depth) = (piece, 0, self.depth + 1);
         Some(true)
@@ -916,5 +1136,88 @@ pub(crate) mod tests {
         let sums = "0 0 rmoveto 30 12 add 2 put 2 get dup 5 exch sub abs 0 rlineto 10 20 30 3 1 roll 1 index div mul neg 100 rlineto \
             4 sqrt 3 4 1 2 ifelse and random or not 50 rlineto 7 8 eq drop dotsection endchar";
         curved_with(None, [BOX, "150 20 191 193 endchar", sums, "0 600 rmoveto 100 50 -100 vlineto endchar"], "return", &[1, 0, 5, 0, 0, 123, 1])
+    }
+
+    /// A `CFF2` font of two glyphs: the box, and "A", whose move blends a value with a delta (so
+    /// it draws only with its variation store read). At its default instance, the delta is unused.
+    pub(crate) fn newer() -> Vec<u8> {
+        // A `CFF2` INDEX: a count in 4 bytes, then 2-byte offsets.
+        let list = |things: &[Vec<u8>]| [crate::font_file::tests::longs(&[things.len() as u32]), list(things)[2..].to_vec()].concat();
+        // One axis, one region peaking at its end, and one subtable using that region.
+        let store = [words(&[1]), crate::font_file::tests::longs(&[12]), words(&[1]), crate::font_file::tests::longs(&[22]), words(&[1, 1, 0, 0x4000, 0x4000, 0, 0, 1, 0])].concat();
+        let store = [words(&[store.len() as i32]), store].concat();
+        let glyphs = list(&[program("100 0 rmoveto 500 300 -500 vlineto"), program("100 200 50 1 blend rmoveto 100 0 0 100 rlineto")]);
+        let private = says(&[0], &[22]);
+        let top = |glyphs_at: usize, dictionaries_at: usize, store_at: usize| [says(&[glyphs_at], &[17]), says(&[dictionaries_at], &[12, 36]), says(&[store_at], &[24])].concat();
+        let long = top(0, 0, 0).len();
+        let store_at = 5 + long + 4;
+        let glyphs_at = store_at + store.len();
+        let dictionaries_at = glyphs_at + glyphs.len();
+        let private_at = dictionaries_at + list(&[says(&[0, 0], &[18])]).len();
+        let dictionaries = list(&[says(&[private.len(), private_at], &[18])]);
+        let cff = [vec![2, 0, 5], words(&[long as i32]), top(glyphs_at, dictionaries_at, store_at), vec![0; 4], store, glyphs, dictionaries, private].concat();
+        let tables = vec![
+            (*b"CFF2", cff),
+            (*b"cmap", words(&[0, 1, 3, 1, 0, 12, 6, 12, 0, 65, 1, 1])),
+            (*b"head", [words(&[1, 0, 0, 0, 0, 0, 0x5F0F, 0x3CF5, 0, 1000]), vec![0; 34]].concat()),
+            (*b"hhea", [words(&[1, 0, 800, -200]), vec![0; 26], words(&[2])].concat()),
+            (*b"hmtx", words(&[500, 100, 600, 100])),
+            (*b"maxp", words(&[0, 0x5000, 2])),
+        ];
+        file(b"OTTO", &tables)
+    }
+
+    #[test]
+    #[cfg(feature = "cff")]
+    fn a_cff2_font_blends_with_its_variation_store() {
+        let font = FontFile::read(newer()).expect("the font is read");
+        assert_eq!(font.outline('A', 1000.0), Path::svg("M100 600 200 600 200 500Z"));
+    }
+
+    /// A font with its `CFF ` or `CFF2` table left out (listed empty), to be read through a
+    /// system table of it that notes each range read; and that table's length.
+    #[cfg(all(windows, feature = "cff"))]
+    fn fetched(font: &[u8], read: std::sync::Arc<std::sync::Mutex<Vec<Range<usize>>>>) -> (FontFile, usize) {
+        let all = Bytes(font);
+        let tag = if crate::font_file::listed(all, 0, b"CFF2").is_some() { *b"CFF2" } else { *b"CFF " };
+        let table = all.within(&crate::font_file::listed(all, 0, &tag).expect("the font has one")).0.to_vec();
+        let names = [*b"CFF ", *b"CFF2", *b"cmap", *b"head", *b"hhea", *b"hmtx", *b"maxp"];
+        let tables: Vec<([u8; 4], Vec<u8>)> =
+            names.into_iter().filter_map(|name| Some((name, if name == tag { Vec::new() } else { all.within(&crate::font_file::listed(all, 0, &name)?).0.to_vec() }))).collect();
+        let long = table.len();
+        let reader = move |name: &[u8; 4], at: usize, long: usize| {
+            assert_eq!(*name, tag);
+            read.lock().unwrap().push(at..at + long);
+            table.get(at..at + long).map(<[u8]>::to_vec)
+        };
+        let system = SystemTable::new(tag, long, Box::new(reader));
+        (FontFile::assembled(file(b"OTTO", &tables), Some(system)).expect("the font is read"), long)
+    }
+
+    #[test]
+    #[cfg(all(windows, feature = "cff"))]
+    fn a_system_fonts_charstrings_are_read_as_run() {
+        // The plain font, one with several Private DICTs, one with seac and a charset, and a
+        // `CFF2` one: each glyph as from the whole table.
+        let fonts = [curved(None), curved(Some(vec![3, 0, 2, 0, 0, 0, 0, 3, 1, 0, 4])), summed_and_accented(), newer()];
+        for (n, font) in fonts.iter().enumerate() {
+            let read = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let ((fetched, long), whole) = (fetched(font, read.clone()), FontFile::read(font.clone()).expect("the font is read"));
+            assert!(fetched.bytes().0.len() + long <= whole.bytes().0.len(), "font {n}: the table is not held");
+            for letter in "@ABC".chars() {
+                assert_eq!(fetched.outline(letter, 1000.0), whole.outline(letter, 1000.0), "font {n}: {letter}");
+            }
+        }
+        // The charstring of "B" (its curves) is never read while only "A" is drawn; drawn again,
+        // "A" reads nothing more.
+        let read = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (font, _) = fetched(&curved(None), read.clone());
+        let first = font.outline('A', 1000.0);
+        let after = read.lock().unwrap().len();
+        assert_eq!(font.outline('A', 1000.0), first);
+        let read = read.lock().unwrap();
+        let curves = program(CURVES).len();
+        assert_eq!(read.len(), after, "{read:?}");
+        assert!(read.iter().all(|range| range.len() < curves), "{read:?}");
     }
 }

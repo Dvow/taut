@@ -486,11 +486,53 @@ impl<'a> Canvas<'a> {
     /// to draw. With `even_odd`, the even-odd rule; else nonzero. `ink` gives the colour of
     /// each covered pixel by its window position, so a shape can be filled with a gradient, as
     /// SVG drawings are.
-    pub fn fill_with(&mut self, edges: Edges, even_odd: bool, mut ink: impl FnMut(i32, i32) -> Color) {
+    pub fn fill_with(&mut self, edges: Edges, even_odd: bool, ink: impl FnMut(i32, i32) -> Color) {
         #[cfg(feature = "gpu-draw")]
         if let Some(list) = self.list.as_deref_mut() {
             return list.fill_with(edges, even_odd, ink, self.scale, self.clip);
         }
+        if let Some(area) = self.summed(edges) {
+            self.lay_summed(&area, even_odd, ink);
+        }
+    }
+
+    /// Fills a shape of several subpaths as `fill_with` does: `edges` in window pixels, each
+    /// subpath's ending among them in `ends`. Where edges of two subpaths cross one pixel, its
+    /// coverage is worked out apart (see `seams.rs`): two that meet there leave no seam.
+    pub(crate) fn fill_subpaths(&mut self, edges: &[[Point; 2]], ends: &[usize], even_odd: bool, ink: impl FnMut(i32, i32) -> Color) {
+        let mut each_edge = |each: &mut dyn FnMut(Point, Point)| edges.iter().for_each(|[a, b]| each(*a, *b));
+        #[cfg(feature = "gpu-draw")]
+        if let Some(list) = self.list.as_deref_mut() {
+            return list.fill_with(&mut each_edge, even_odd, ink, self.scale, self.clip);
+        }
+        let Some(area) = self.summed(&mut each_edge) else { return };
+        let exact = crate::seams::exact(&area, (edges, ends), even_odd);
+        self.set_shares(&area, &exact);
+        self.lay_summed(&area, even_odd, ink);
+    }
+
+    /// Sets the coverage of each pixel `exact` gives (by its cell, in order) in the coverage
+    /// summed over `area`: its cell makes the sum there that share, and the next cell gives the
+    /// difference back, so the sums past it stay.
+    fn set_shares(&mut self, area: &Summed, exact: &[(usize, f32)]) {
+        let (stride, _) = area.size();
+        // The sum of the cells of `next`'s row before it.
+        let (mut next, mut sum) = (0, 0.0);
+        for &(cell, share) in exact {
+            if cell / stride != next / stride {
+                (next, sum) = (cell / stride * stride, 0.0);
+            }
+            sum += self.cover[next..=cell].iter().sum::<f32>();
+            self.cover[cell] += share - sum;
+            self.cover[cell + 1] -= share - sum;
+            (next, sum) = (cell + 1, share);
+        }
+    }
+
+    /// Sums the coverage of whatever `edges` encloses into `cover`: each edge adds its coverage
+    /// of each pixel it crosses, and "all to the right is inside" after it, so a prefix sum
+    /// along a row gives each pixel's coverage. Says where: nothing if nowhere drawn.
+    fn summed(&mut self, edges: Edges) -> Option<Summed> {
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         edges(&mut |a, b| {
             (x0, y0) = (x0.min(a.x).min(b.x), y0.min(a.y).min(b.y));
@@ -504,26 +546,30 @@ impl<'a> Canvas<'a> {
         let (top, bottom) = ((y0.floor() as i32).max(cy0), (y1.ceil() as i32).min(cy1));
         let (from, to) = (left.max(cx0), right.min(cx1));
         if from >= to || top >= bottom {
-            return;
+            return None;
         }
-        // Each edge adds its coverage of each pixel it crosses, and "all to the right is
-        // inside" after it. A prefix sum along a row then gives each pixel's coverage. (A row
-        // has two cells more than pixels, for what edges at its far right add past its end.)
-        let (stride, h) = ((right - left) as usize + 2, (bottom - top) as usize);
+        let area = Summed { left, right, top, bottom, from, to };
+        let (stride, h) = area.size();
         let mut cover = std::mem::take(&mut self.cover);
         cover.clear();
         cover.resize(stride * h, 0.0);
-        let near = |p: Point| pt(p.x - left as f32, p.y - top as f32);
-        edges(&mut |a, b| edge(&mut cover, stride, h, near(a), near(b)));
+        edges(&mut |a, b| edge(&mut cover, stride, h, area.near(a), area.near(b)));
+        self.cover = cover;
+        Some(area)
+    }
+
+    /// Lays coverage summed over `area` down in `ink`: by the even-odd rule, or nonzero.
+    fn lay_summed(&mut self, area: &Summed, even_odd: bool, mut ink: impl FnMut(i32, i32) -> Color) {
+        let (cover, (stride, _)) = (std::mem::take(&mut self.cover), area.size());
+        let skipped = (area.from - area.left) as usize;
         for (y, cells) in cover.chunks_exact(stride).enumerate() {
-            let skipped = (from - left) as usize;
             let mut sum: f32 = cells[..skipped].iter().sum();
-            for ((p, cell), x) in self.row(top + y as i32, from, to).iter_mut().zip(&cells[skipped..]).zip(from..) {
+            for ((p, cell), x) in self.row(area.top + y as i32, area.from, area.to).iter_mut().zip(&cells[skipped..]).zip(area.from..) {
                 sum += cell;
                 // Winding twice, four times… is as good as zero.
                 let share = if even_odd { (sum - 2.0 * (sum / 2.0).round()).abs() } else { sum.abs().min(1.0) };
                 // The colour is asked for only where the shape is: it may be costly.
-                let color = if share > 0.0 { ink(x, top + y as i32) } else { Color::NONE };
+                let color = if share > 0.0 { ink(x, area.top + y as i32) } else { Color::NONE };
                 *p = color.over(*p, (share * 255.0 + 0.5) as u32);
             }
         }
@@ -909,6 +955,58 @@ fn covered(cells: &[u8], stride: usize, x: usize) -> u32 {
     cells.chunks_exact(stride).map(|row| row[x * FINE..(x + 1) * FINE].iter().map(|cell| *cell as u32).sum::<u32>()).sum::<u32>() / (FINE * FINE) as u32
 }
 
+/// Where a shape's coverage is summed (see `Canvas::summed`), in window pixels: the buffer
+/// columns it reaches (`left` to `right`) and of them those drawn (`from` to `to`), and the rows
+/// drawn (`top` to `bottom`). Each row has two cells more than pixels, for what edges at its far
+/// right add past its end.
+pub(crate) struct Summed {
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
+    from: i32,
+    to: i32,
+}
+
+impl Summed {
+    /// Cells per row, and rows.
+    pub(crate) fn size(&self) -> (usize, usize) {
+        ((self.right - self.left) as usize + 2, (self.bottom - self.top) as usize)
+    }
+
+    /// A window point in pixels from the first cell.
+    pub(crate) fn near(&self, p: Point) -> Point {
+        pt(p.x - self.left as f32, p.y - self.top as f32)
+    }
+}
+
+/// The pixels an edge from `a` to `b` crosses in each row it reaches, in rows of `stride` cells
+/// (two more than pixels), `h` of them: for each, the row and the edge's least and greatest x
+/// there (see `in_row`).
+pub(crate) fn rows(stride: usize, h: usize, a: Point, b: Point, mut each: impl FnMut(usize, f32, f32)) {
+    if a.y == b.y {
+        return;
+    }
+    let (a, b) = if a.y < b.y { (a, b) } else { (b, a) };
+    let (slope, wide) = ((b.x - a.x) / (b.y - a.y), (stride - 2) as f32);
+    for y in (a.y.max(0.0) as usize)..h.min(b.y.ceil().max(0.0) as usize) {
+        let (_, x0, x1) = in_row([a, b], slope, wide, y);
+        each(y, x0, x1);
+    }
+}
+
+/// An edge's part in row `y`, the edge going down from `a` to `b`, `slope` across per row down:
+/// its height there, and its least and greatest x, from its own ends (not the row above, so a
+/// row comes out the same in any buffer). Left of the buffer, `wide` pixels across, counts as
+/// its first pixel, right of it as just past its last.
+#[inline(always)]
+fn in_row([a, b]: [Point; 2], slope: f32, wide: f32, y: usize) -> (f32, f32, f32) {
+    let (from, to) = ((y as f32).max(a.y), ((y + 1) as f32).min(b.y));
+    let (p, q) = ((a.x + (from - a.y) * slope).clamp(0.0, wide), (a.x + (to - a.y) * slope).clamp(0.0, wide));
+    let (x0, x1) = if p < q { (p, q) } else { (q, p) };
+    (to - from, x0, x1)
+}
+
 /// Adds one edge of a shape to the coverage of the pixels it crosses, in rows of `stride`
 /// cells. (After font-rs, by Raph Levien: each pixel gets the area of it right of the edge.)
 fn edge(cover: &mut [f32], stride: usize, h: usize, a: Point, b: Point) {
@@ -919,13 +1017,8 @@ fn edge(cover: &mut [f32], stride: usize, h: usize, a: Point, b: Point) {
     let (dir, a, b) = if a.y < b.y { (1.0, a, b) } else { (-1.0, b, a) };
     let (slope, wide) = ((b.x - a.x) / (b.y - a.y), (stride - 2) as f32);
     for y in (a.y.max(0.0) as usize)..h.min(b.y.ceil().max(0.0) as usize) {
-        // The edge's span in this row, from the edge's own ends, not the row above: so a row
-        // comes out the same in any buffer.
-        let (from, to) = ((y as f32).max(a.y), ((y + 1) as f32).min(b.y));
-        let d = (to - from) * dir;
-        // Left of the buffer counts as its first pixel, right of it as just past its last.
-        let (p, q) = ((a.x + (from - a.y) * slope).clamp(0.0, wide), (a.x + (to - a.y) * slope).clamp(0.0, wide));
-        let (x0, x1) = if p < q { (p, q) } else { (q, p) };
+        let (high, x0, x1) = in_row([a, b], slope, wide, y);
+        let d = high * dir;
         let (first, last) = (x0.floor() as usize, x1.ceil() as usize);
         // The span's start and end, from the first pixel it touches.
         let (row, start, end) = (y * stride, x0 - first as f32, x1 - first as f32);

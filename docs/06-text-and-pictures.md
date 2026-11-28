@@ -172,7 +172,8 @@ fn photo(ui: &mut Ui) -> Option<Picture> {
   `svg::enable_text()`, `svg::enable_filters()`, `svg::enable_images()`; pictures in other
   files through `svg::enable_images_from(loader)`; `shape-rendering` after
   `svg::enable_shape_rendering()`; seamless clip paths and masks after
-  `svg::enable_seamless_clips()`. SMIL animation:
+  `svg::enable_seamless_clips()`; the entities a doctype declares after
+  `svg::enable_entities()`. SMIL animation:
   `ui.add_animation(&svg::encode_animation(svg_text, width, height)?)`, or one moment with
   `svg::decode_at`.
 - **Animations:** `ui.add_animation(bytes)` (GIF, PNG, WebP), `.animation(animation)`; only its box redraws.

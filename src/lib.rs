@@ -296,6 +296,7 @@ mod scene_raster;
 mod screens;
 mod scripts;
 mod scroll;
+mod seams;
 mod second_window;
 mod selection;
 mod shaping;

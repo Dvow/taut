@@ -219,11 +219,14 @@ struct Animation<'a> {
     motion: Option<Motion>,
 }
 
-/// A file's animations, in document order, and each element's parent (the root's is itself).
+/// A file's animations, in document order; each element's parent (the root's is itself); and
+/// who waits on each animation's moments: the animations whose `begin` or `end` lists name one
+/// (the animation waiting, whether as its end, which moment, the offset).
 pub(crate) struct Timeline<'a> {
     file: File<'a>,
     animations: Vec<Animation<'a>>,
     parents: Vec<usize>,
+    waiting: Vec<Vec<(usize, bool, Moment, f32)>>,
 }
 
 /// Something that happened to a drawing in a window, at a time on its clock (seconds).
@@ -241,6 +244,15 @@ enum Happened {
     Key(char),
     Begun(usize),
     Ended(usize),
+}
+
+/// A time an event gave an animation (SMIL's instance time): seconds on the drawing's clock, the
+/// animation (by its place in the timeline), and whether it is an end or a begin.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct InstanceTime {
+    seconds: f32,
+    animation: u32,
+    end: bool,
 }
 
 /// When each animation of a timeline runs, as far as worked out: its intervals in order, each
@@ -268,7 +280,8 @@ impl<'a> Timeline<'a> {
             animations.extend(animation(&file, at, open.last().copied()));
             open.push(at);
         }
-        Timeline { file, animations, parents }
+        let waiting = waiting(&animations);
+        Timeline { file, animations, parents, waiting }
     }
 
     /// The file's text with every animated attribute at its value `seconds` after it begins, as
@@ -310,9 +323,25 @@ impl<'a> Timeline<'a> {
     /// waiting on it, as much as `MOMENTS`, `MOMENTS_EACH` and `MOMENTS_PER_EVENT` allow.
     /// (`wallclock()` times never come: a file drawn at a moment has no wall clock.)
     pub(crate) fn schedule(&self, fired: &[Fired], until: f32) -> Schedule {
-        let mut scheduling = Scheduling::new(self, fired, None);
+        let mut scheduling = Scheduling::new(self, None);
+        let given: Vec<InstanceTime> = fired.iter().flat_map(|event| self.instance_times(event)).collect();
+        scheduling.hear(self, &given);
         let unfinished = scheduling.run(self, |time| time > until, self.budget(until, fired.len()));
         scheduling.into_schedule(self, until, unfinished)
+    }
+
+    /// The instance times an event gives: for each animation waiting for it, a begin or an end
+    /// at its time plus the offset said (the app's `beginElement()`, at its time).
+    fn instance_times(&self, event: &Fired) -> Vec<InstanceTime> {
+        let mut given = Vec::new();
+        for (n, animation) in self.animations.iter().enumerate() {
+            for (list, end) in [(&animation.timing.begins, false), (&animation.timing.ends, true)] {
+                let asked = by_app(&event.what, end) == Some(animation.element);
+                let offsets = list.iter().filter_map(|condition| heard(condition, &event.what)).chain(asked.then_some(0.0));
+                given.extend(offsets.map(|offset| InstanceTime { seconds: event.seconds + offset, animation: n as u32, end }));
+            }
+        }
+        given
     }
 
     /// How much work a schedule worked out to `until` seconds, with `events` fired, may do (see
@@ -403,6 +432,11 @@ impl<'a> Timeline<'a> {
             stops.insert(stops.partition_point(|stop| order(*stop) <= order(at)), at);
         }
         (focusable, stops)
+    }
+
+    /// Whether any animation waits for animation `n` to repeat.
+    fn repeats_heard(&self, n: usize) -> bool {
+        self.waiting[n].iter().any(|(.., moment, _)| matches!(moment, Moment::Repeat(_)))
     }
 
     /// The animation element named `id`, if there is one.
@@ -507,34 +541,31 @@ impl Ord for Due {
 }
 
 /// A schedule being worked out (see `Timeline::schedule`): each animation's clock and
-/// intervals so far; who waits on each one's moments (the animation waiting, whether as its
-/// end, which moment, the offset); the moments due; and the work done (see `MOMENTS`). A
-/// window keeps one as its drawing plays, taking in each event as it comes (see
-/// `AnimatedDrawing::look_ahead`).
+/// intervals so far; the moments due; and the work done (see `MOMENTS`). A window keeps one as
+/// its drawing plays, taking in each event as it comes (see `AnimatedDrawing::look_ahead`).
 #[derive(Clone)]
 struct Scheduling {
     clocks: Vec<Clock>,
     intervals: Vec<Vec<[f32; 2]>>,
-    waiting: Vec<Vec<(usize, bool, Moment, f32)>>,
     due: BinaryHeap<Due>,
     work: usize,
 }
 
 impl Scheduling {
-    /// The start: the times each animation's clock values and the events fired give it (and its
-    /// `wallclock()` values, where the wall clock's time at the start is `started`, in seconds
-    /// since 1970), and the first moment of each due.
-    fn new(timeline: &Timeline, fired: &[Fired], started: Option<f64>) -> Scheduling {
+    /// The start: the times each animation's clock values give it (and its `wallclock()`
+    /// values, where the wall clock's time at the start is `started`, in seconds since 1970),
+    /// and the first moment of each due. Events come in by `hear`.
+    fn new(timeline: &Timeline, started: Option<f64>) -> Scheduling {
         let count = timeline.animations.len();
-        let (mut clocks, begun, ended) = (Vec::with_capacity(count), by_app(fired, false), by_app(fired, true));
+        let mut clocks = Vec::with_capacity(count);
         for animation in &timeline.animations {
-            let mut begins = times(&animation.timing.begins, fired, begun.get(&animation.element), started);
-            let mut ends = times(&animation.timing.ends, fired, ended.get(&animation.element), started);
+            let mut begins = timed(&animation.timing.begins, started);
+            let mut ends = timed(&animation.timing.ends, started);
             begins.sort_by(f32::total_cmp);
             ends.sort_by(f32::total_cmp);
             clocks.push(Clock { begins, ends, running: None, done: f32::NEG_INFINITY, version: 0 });
         }
-        let mut scheduling = Scheduling { clocks, intervals: vec![Vec::new(); count], waiting: waiting(timeline), due: BinaryHeap::new(), work: 0 };
+        let mut scheduling = Scheduling { clocks, intervals: vec![Vec::new(); count], due: BinaryHeap::new(), work: 0 };
         (0..count).for_each(|n| scheduling.plan(timeline, n));
         scheduling
     }
@@ -563,30 +594,28 @@ impl Scheduling {
         Schedule { intervals: self.intervals, until, unfinished, changing }
     }
 
-    /// Takes in an event after the start, as `new` takes those fired before it: the begin and
-    /// end times it gives each animation waiting for it, which plans that animation's next
-    /// moment again. Where it ends the interval running sooner, that interval's end is as `new`
-    /// would have found it. (No moment at or after the times it gives may be taken yet: the
-    /// schedule is then the one `new` makes with the event among those fired.)
-    fn hear(&mut self, timeline: &Timeline, event: &Fired) {
-        let fired = std::slice::from_ref(event);
-        let (begun, ended) = (by_app(fired, false), by_app(fired, true));
-        for (n, animation) in timeline.animations.iter().enumerate() {
-            let begins = times(&animation.timing.begins, fired, begun.get(&animation.element), None);
-            let ends = times(&animation.timing.ends, fired, ended.get(&animation.element), None);
-            if begins.is_empty() && ends.is_empty() {
+    /// Takes in instance times events gave, which plans each animation given one again. Where an
+    /// end ends the interval running sooner, that interval's end is as it would have been with
+    /// the end known from the start. Hearing a time twice changes nothing. (No moment at or
+    /// after a time heard may be taken yet: the schedule is then the one worked out from the
+    /// start with the time known.)
+    fn hear(&mut self, timeline: &Timeline, given: &[InstanceTime]) {
+        let mut heard = vec![false; self.clocks.len()];
+        for instance in given {
+            let (n, time) = (instance.animation as usize, instance.seconds);
+            heard[n] = true;
+            let clock = &mut self.clocks[n];
+            if !instance.end {
+                insert(&mut clock.begins, time);
                 continue;
             }
-            let clock = &mut self.clocks[n];
-            begins.iter().for_each(|time| insert(&mut clock.begins, *time));
-            ends.iter().for_each(|time| insert(&mut clock.ends, *time));
-            if let (Some((begin, _)), Some(last)) = (clock.running, self.intervals[n].last_mut()) {
-                let [least, most] = animation.timing.bounds;
-                let sooner = ends.iter().filter(|end| **end > begin).map(|end| begin + (end - begin).max(least).min(most));
-                last[1] = sooner.fold(last[1], f32::min);
+            insert(&mut clock.ends, time);
+            if let (Some((begin, _)), Some(last)) = (clock.running.filter(|(begin, _)| time > *begin), self.intervals[n].last_mut()) {
+                let [least, most] = timeline.animations[n].timing.bounds;
+                last[1] = last[1].min(begin + (time - begin).max(least).min(most));
             }
-            self.plan(timeline, n);
         }
+        (0..heard.len()).filter(|n| heard[*n]).for_each(|n| self.plan(timeline, n));
     }
 
     /// Forgets what can no longer change anything from `settled` seconds on, every moment before
@@ -651,16 +680,11 @@ impl Scheduling {
         if let Some(again) = again.filter(|again| timing.restart == Restart::Always && *again < next.0) {
             next = (again, Next::Restart);
         }
-        let heard = self.repeats_heard(n);
+        let heard = timeline.repeats_heard(n);
         if let Some(repeat) = timing.simple.map(|simple| begin + simple * (told + 1) as f32).filter(|repeat| heard && *repeat < next.0) {
             next = (repeat, Next::Repeat);
         }
         Some(next)
-    }
-
-    /// Whether any animation waits for animation `n` to repeat.
-    fn repeats_heard(&self, n: usize) -> bool {
-        self.waiting[n].iter().any(|(.., moment, _)| matches!(moment, Moment::Repeat(_)))
     }
 
     /// Where an interval of animation `n` begun at `begin` ends: at its first end time after
@@ -712,8 +736,8 @@ impl Scheduling {
 
     /// Gives the animations waiting on animation `n`'s moment their begin or end times.
     fn tell(&mut self, timeline: &Timeline, n: usize, moment: Moment, time: f32) {
-        for at in 0..self.waiting[n].len() {
-            let (waiting, as_end, heard, offset) = self.waiting[n][at];
+        for at in 0..timeline.waiting[n].len() {
+            let (waiting, as_end, heard, offset) = timeline.waiting[n][at];
             if heard == moment || (heard == Moment::Repeat(0) && matches!(moment, Moment::Repeat(_))) {
                 self.work += 1;
                 let list = if as_end { &mut self.clocks[waiting].ends } else { &mut self.clocks[waiting].begins };
@@ -740,12 +764,12 @@ fn insert(list: &mut Vec<f32>, time: f32) {
     }
 }
 
-/// Who waits on each animation's moments (see `Scheduling`): for each, the animations whose
-/// begin or end lists name one of its moments.
-fn waiting(timeline: &Timeline) -> Vec<Vec<(usize, bool, Moment, f32)>> {
-    let by_element: HashMap<usize, usize> = timeline.animations.iter().enumerate().map(|(n, animation)| (animation.element, n)).collect();
-    let mut waiting = vec![Vec::new(); timeline.animations.len()];
-    for (n, animation) in timeline.animations.iter().enumerate() {
+/// Who waits on each animation's moments (see `Timeline`): for each, the animations whose begin
+/// or end lists name one of its moments.
+fn waiting(animations: &[Animation]) -> Vec<Vec<(usize, bool, Moment, f32)>> {
+    let by_element: HashMap<usize, usize> = animations.iter().enumerate().map(|(n, animation)| (animation.element, n)).collect();
+    let mut waiting = vec![Vec::new(); animations.len()];
+    for (n, animation) in animations.iter().enumerate() {
         let lists = [(&animation.timing.begins, false), (&animation.timing.ends, true)];
         for (condition, as_end) in lists.into_iter().flat_map(|(list, as_end)| list.iter().map(move |condition| (condition, as_end))) {
             let Condition::Synced(element, moment, offset) = *condition else { continue };
@@ -757,18 +781,15 @@ fn waiting(timeline: &Timeline) -> Vec<Vec<(usize, bool, Moment, f32)>> {
     waiting
 }
 
-/// The times a `begin` or `end` list gives from the start: its clock values, those of the
-/// events fired that it waits for (each at the event's time plus its offset), those the app
-/// gave (`by_app`), and its `wallclock()` values where the wall clock's time at the start is
-/// known (`started`, in seconds since 1970).
-fn times(list: &[Condition], fired: &[Fired], by_app: Option<&Vec<f32>>, started: Option<f64>) -> Vec<f32> {
-    let mut times: Vec<f32> = by_app.cloned().unwrap_or_default();
+/// The times a `begin` or `end` list gives by itself: its clock values, and its `wallclock()`
+/// values where the wall clock's time at the start is known (`started`, in seconds since 1970).
+fn timed(list: &[Condition], started: Option<f64>) -> Vec<f32> {
+    let mut times = Vec::new();
     for condition in list {
         match condition {
             Condition::Clock(time) => times.push(*time),
-            Condition::Event(..) | Condition::Key(..) => times.extend(fired.iter().filter_map(|event| heard(condition, &event.what).map(|offset| event.seconds + offset))),
             Condition::Wall(text) => times.extend(started.and_then(|started| Some((wall_time(text, started)? - started) as f32))),
-            Condition::Synced(..) => {}
+            Condition::Synced(..) | Condition::Event(..) | Condition::Key(..) => {}
         }
     }
     times
@@ -819,18 +840,13 @@ fn time_of_day(text: &str) -> Option<(f64, Option<f64>)> {
     Some((of_day, zone))
 }
 
-/// When the app began (`Begun`) or ended (`Ended`) each animation, by its element.
-fn by_app(fired: &[Fired], ended: bool) -> HashMap<usize, Vec<f32>> {
-    let mut times: HashMap<usize, Vec<f32>> = HashMap::new();
-    for event in fired {
-        let element = match event.what {
-            Happened::Begun(element) if !ended => element,
-            Happened::Ended(element) if ended => element,
-            _ => continue,
-        };
-        times.entry(element).or_default().push(event.seconds);
+/// The animation element the app began (`end` false) or ended (`end` true), where that is what
+/// happened.
+fn by_app(what: &Happened, end: bool) -> Option<usize> {
+    match (what, end) {
+        (Happened::Begun(element), false) | (Happened::Ended(element), true) => Some(*element),
+        _ => None,
     }
-    times
 }
 
 /// Where a condition waits for what happened: its offset.
@@ -1433,9 +1449,67 @@ pub(crate) fn encode(svg: &str, width: usize, height: usize) -> Option<Vec<u8>> 
 /// Numbers each animated drawing, for its box's key.
 static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// How many of the events a drawing in a window took in it keeps for a seek back, which works
-/// its timeline out again from the start: past them, the oldest go. (Playing on forgets none.)
-const KEPT_EVENTS: usize = 4096;
+/// How many events wait for a drawing's timeline at most: with as many, it takes them in at
+/// once, not at its next frame.
+const PENDING_MOST: usize = 4096;
+
+/// How many copies of its timeline a drawing in a window keeps for a seek back at most (see
+/// `Checkpoints`), and how much work its timeline does between two at first (see `MOMENTS`).
+const CHECKPOINTS: usize = 32;
+const CHECKPOINT_WORK: usize = MOMENTS;
+
+/// Copies of a drawing's timeline as it stood at earlier times, each with every moment before
+/// its time taken (seconds), oldest first: a seek back goes on from the latest before it, not
+/// from the start. One is kept each time the timeline did `every` more work; with more than
+/// `CHECKPOINTS`, every other one goes and `every` doubles. So a seek back takes at most a
+/// thirty-second of the work done since the start.
+#[derive(Clone)]
+struct Checkpoints {
+    kept: Vec<(f32, Scheduling)>,
+    every: usize,
+}
+
+impl Checkpoints {
+    fn new() -> Checkpoints {
+        Checkpoints { kept: Vec::new(), every: CHECKPOINT_WORK }
+    }
+
+    /// Keeps a copy of the timeline `playing`, every moment before `settled` taken, where it
+    /// did `every` more work since the last copy.
+    fn keep(&mut self, settled: f32, playing: &Scheduling) {
+        let last = self.kept.last().map_or(0, |(_, kept)| kept.work);
+        if playing.work < last.saturating_add(self.every) {
+            return;
+        }
+        self.kept.push((settled, playing.clone()));
+        if self.kept.len() > CHECKPOINTS {
+            // Every other one, the latest kept.
+            let first = (self.kept.len() - 1) % 2;
+            self.kept = std::mem::take(&mut self.kept).into_iter().skip(first).step_by(2).collect();
+            self.every = self.every.saturating_mul(2);
+        }
+    }
+
+    /// Forgets the copies of times after `seconds`: an instance time then came that they never
+    /// took in.
+    fn forget_after(&mut self, seconds: f32) {
+        self.kept.truncate(self.kept.partition_point(|(at, _)| *at <= seconds));
+    }
+
+    /// The latest copy of a time at or before `settled`, with that time.
+    fn latest(&self, settled: f32) -> Option<&(f32, Scheduling)> {
+        self.kept[..self.kept.partition_point(|(at, _)| *at <= settled)].last()
+    }
+}
+
+/// Puts an instance time into a list in time order (then by animation, begins first), once.
+fn add_instance(list: &mut Vec<InstanceTime>, instance: InstanceTime) {
+    let order = |other: &InstanceTime| other.seconds.total_cmp(&instance.seconds).then(other.animation.cmp(&instance.animation)).then(other.end.cmp(&instance.end));
+    let at = list.partition_point(|other| order(other) == Ordering::Less);
+    if list.get(at) != Some(&instance) {
+        list.insert(at, instance);
+    }
+}
 
 /// The elements an event at `element` comes to, each once: it and those it lies in up to the
 /// element the innermost `<use>` that brought it brings (`uses`, innermost first; `brings`:
@@ -1541,14 +1615,17 @@ impl Listening {
 /// drawn as any drawing is (see [the module](crate::svg)); only its box is redrawn, and only
 /// while something in it changes. Its timeline goes on from where it stood, each event added
 /// to it: an event costs the same however long the drawing has played, and none is
-/// forgotten. [`Ui::drop_animated_drawing`] frees its last frame.
+/// forgotten. A seek back is exact: it goes on from the latest of up to 32 copies of its
+/// timeline kept as it played. It keeps each time an event gave an animation (12 bytes;
+/// events at one clock time give it once). [`Ui::drop_animated_drawing`] frees its last frame.
 pub struct AnimatedDrawing {
     text: std::sync::Arc<str>,
     serial: u64,
     listening: Listening,
-    /// What happened to it that its animations wait for: the last `KEPT_EVENTS`, for a seek
-    /// back; those its timeline has not taken in yet; and how much ever happened.
-    fired: std::collections::VecDeque<Fired>,
+    /// The instance times events gave its animations, in time order (see `add_instance`):
+    /// all, for a seek back; the events its timeline has not taken in yet; and how many events
+    /// ever came.
+    instances: Vec<InstanceTime>,
     pending: Vec<Fired>,
     heard: usize,
     /// Its clock (seconds), the window's time it last ran at, whether it stands still, and the
@@ -1558,9 +1635,10 @@ pub struct AnimatedDrawing {
     paused: bool,
     started: Option<f64>,
     /// Its timeline as it plays: every moment before `settled` seconds taken (see
-    /// `look_ahead`).
+    /// `look_ahead`); and copies of it at earlier times, for a seek back.
     playing: Option<Scheduling>,
     settled: f32,
+    checkpoints: Checkpoints,
     /// The schedule last worked out from it, how much had happened then, and the clock then.
     schedule: Option<(Schedule, usize, f32)>,
     /// The frame on show: its text, when it is (seconds, and how much had happened), and its
@@ -1590,7 +1668,7 @@ impl AnimatedDrawing {
             text: svg.into(),
             serial: SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             listening: Timeline::read(svg).listening(),
-            fired: std::collections::VecDeque::new(),
+            instances: Vec::new(),
             pending: Vec::new(),
             heard: 0,
             seconds: 0.0,
@@ -1599,6 +1677,7 @@ impl AnimatedDrawing {
             started: None,
             playing: None,
             settled: f32::NEG_INFINITY,
+            checkpoints: Checkpoints::new(),
             schedule: None,
             shown: String::new(),
             shown_for: None,
@@ -1614,9 +1693,7 @@ impl AnimatedDrawing {
         Duration::try_from_secs_f32(self.seconds).unwrap_or(Duration::MAX)
     }
 
-    /// Sets its clock, as `setCurrentTime` does: it shows as it is then, with what happened so
-    /// far. (Back before where it stood, its timeline is worked out again from the start, with
-    /// the last 4,096 events.)
+    /// Sets its clock, as `setCurrentTime` does: it shows as it is then, with all that happened.
     pub fn seek(&mut self, to: Duration) {
         self.seconds = to.as_secs_f32();
     }
@@ -1655,12 +1732,19 @@ impl AnimatedDrawing {
     /// element and to those it lies in (`focus` and `blur` to the element alone). False where
     /// no element has the id, or the event is none of those.
     pub fn dispatch_event(&mut self, id: &str, event: &str) -> bool {
-        let element = File::read(&self.text).named.get(id).copied();
-        let (Some(element), Some(name)) = (element, EVENTS.iter().find(|name| **name == event)) else { return false };
+        let Some(what) = self.event_at(id, event) else { return false };
+        self.fire(what);
+        true
+    }
+
+    /// An event at the element with this id, with the elements it comes to (see
+    /// `dispatch_event`).
+    fn event_at(&self, id: &str, event: &str) -> Option<Happened> {
+        let element = File::read(&self.text).named.get(id).copied()?;
+        let name = EVENTS.iter().find(|name| **name == event)?;
         let chain = self.listening.chain(element, &[]);
         let chain = if matches!(*name, "focus" | "blur") { self.listening.focus_chain(&chain) } else { chain };
-        self.fire(Happened::Event(name, chain));
-        true
+        Some(Happened::Event(name, chain))
     }
 
     /// The drawing as it is at its clock, `width` by `height` pixels, as
@@ -1677,18 +1761,12 @@ impl AnimatedDrawing {
         timeline.frame(self.schedule(&timeline), seconds)
     }
 
-    /// Takes in what happened, at the clock's time: kept for a seek back (the oldest going once
-    /// `KEPT_EVENTS` are), and taken in by the timeline at its next frame (or now, once as many
-    /// wait).
+    /// Takes in what happened, at the clock's time: taken in by the timeline at its next frame
+    /// (or now, once `PENDING_MOST` wait).
     fn fire(&mut self, what: Happened) {
-        let event = Fired { seconds: self.seconds, what };
-        if self.fired.len() >= KEPT_EVENTS {
-            self.fired.pop_front();
-        }
-        self.fired.push_back(event.clone());
-        self.pending.push(event);
+        self.pending.push(Fired { seconds: self.seconds, what });
         self.heard += 1;
-        if self.pending.len() >= KEPT_EVENTS {
+        if self.pending.len() >= PENDING_MOST {
             let text = self.text.clone();
             self.schedule(&Timeline::read(&text));
         }
@@ -1701,7 +1779,7 @@ impl AnimatedDrawing {
         let last = self.last.replace(now);
         if last.is_none() {
             self.started = Some(crate::platform::unix_time() - f64::from(self.seconds));
-            (self.playing, self.schedule) = (None, None);
+            (self.playing, self.schedule, self.checkpoints) = (None, None, Checkpoints::new());
         }
         if let Some(last) = last.filter(|_| !self.paused) {
             self.seconds += now.saturating_sub(last).as_secs_f32();
@@ -1721,41 +1799,51 @@ impl AnimatedDrawing {
     /// before the clock (less how far before an event its offsets reach) is taken for good, and
     /// what can no longer matter forgotten; a copy goes on a minute further. The schedule is the
     /// one worked out from the start with every event (see `Scheduling::hear`). The copy does
-    /// no more work than its span worked out from the start with the last minute's events may:
-    /// not all the budget saved up while it played.
+    /// no more work than its span worked out from the start with the instance times of the
+    /// last minute and after may: not all the budget saved up while it played.
     fn look_ahead(&mut self, timeline: &Timeline) -> Schedule {
         let (seconds, until, reach) = (self.seconds, self.seconds + LONGEST, self.listening.reach);
         let most = timeline.budget(until, self.heard);
         let settled = seconds - self.listening.behind;
-        if settled < self.settled {
-            self.playing = None;
-        }
-        let recent = self.fired.iter().rev().take_while(|event| event.seconds >= settled - LONGEST).count();
-        let playing = self.catch_up(timeline);
+        let mut playing = self.catch_up(timeline, settled);
         playing.run(timeline, |time| time >= settled, most);
         playing.forget(timeline, settled, reach);
+        self.checkpoints.keep(settled, &playing);
+        let recent = self.instances.len() - self.instances.partition_point(|instance| instance.seconds < settled - LONGEST);
         let ahead_most = most.min(playing.work.saturating_add(timeline.budget(until - settled, recent)));
         let mut ahead = playing.clone();
-        self.settled = settled;
+        (self.playing, self.settled) = (Some(playing), settled);
         let unfinished = ahead.run(timeline, |time| time > until, ahead_most);
         ahead.into_schedule(timeline, until, unfinished)
     }
 
-    /// The timeline with every event taken in: those waiting added to it; or where there is
-    /// none yet, or an event came before what it took for good (the clock went back), all kept
-    /// worked in from the start.
-    fn catch_up(&mut self, timeline: &Timeline) -> &mut Scheduling {
-        let late = self.pending.iter().any(|event| event.seconds - self.listening.behind < self.settled);
-        let playing = match self.playing.take() {
-            Some(playing) if !late => playing,
-            _ => {
-                self.pending.clear();
-                self.settled = f32::NEG_INFINITY;
-                Scheduling::new(timeline, self.fired.make_contiguous(), self.started)
+    /// The timeline with every event taken in, to go on to `settled`: the one playing, with
+    /// the instance times of the events waiting added; or, where the clock went back before what
+    /// it took for good or an event gave an earlier time, the latest copy kept from before then.
+    fn catch_up(&mut self, timeline: &Timeline, settled: f32) -> Scheduling {
+        let given: Vec<InstanceTime> = self.pending.drain(..).flat_map(|event| timeline.instance_times(&event)).collect();
+        given.iter().for_each(|instance| add_instance(&mut self.instances, *instance));
+        let earliest = given.iter().map(|instance| instance.seconds).fold(f32::INFINITY, f32::min);
+        self.checkpoints.forget_after(earliest);
+        match self.playing.take() {
+            Some(mut playing) if self.settled <= earliest.min(settled) => {
+                playing.hear(timeline, &given);
+                playing
             }
+            _ => self.restored(timeline, settled),
+        }
+    }
+
+    /// The timeline as the latest copy kept from `settled` or before has it (or as it starts),
+    /// with every instance time from then on taken in.
+    fn restored(&mut self, timeline: &Timeline, settled: f32) -> Scheduling {
+        let (from, mut playing) = match self.checkpoints.latest(settled) {
+            Some((at, kept)) => (*at, kept.clone()),
+            None => (f32::NEG_INFINITY, Scheduling::new(timeline, self.started)),
         };
-        let playing = self.playing.insert(playing);
-        self.pending.drain(..).for_each(|event| playing.hear(timeline, &event));
+        let after = self.instances.partition_point(|instance| instance.seconds < from);
+        playing.hear(timeline, &self.instances[after..]);
+        self.settled = from;
         playing
     }
 
@@ -2263,19 +2351,25 @@ mod tests {
         <set href="#r" attributeName="fill" to="red" begin="r.click+1s" restart="never"/>
         <animate href="#s" attributeName="height" values="5;2" dur="0.3s" begin="0s;b.end+0.1s;r.click" end="s.click"/></svg>"##;
 
+    /// Sends an event to a drawing, as `dispatch_event` does; what it fired.
+    fn dispatched(drawing: &mut AnimatedDrawing, id: &str, event: &str) -> Option<Fired> {
+        let what = drawing.event_at(id, event)?;
+        drawing.fire(what.clone());
+        Some(Fired { seconds: drawing.seconds, what })
+    }
+
     #[test]
     fn playing_on_draws_what_working_out_from_the_start_draws() {
         let events =
             [(0.3, "r", "click"), (0.9, "s", "mousemove"), (1.0, "s", "click"), (1.0, "r", "mousedown"), (1.6, "r", "mouseover"), (2.2, "r", "click"), (2.25, "s", "click"), (3.1, "s", "mousemove")];
         let (timeline, mut drawing) = (Timeline::read(EVENTFUL), AnimatedDrawing::new(EVENTFUL).unwrap());
-        let mut next = events.iter().peekable();
+        let (mut next, mut fired) = (events.iter().peekable(), Vec::new());
         let mut compare = |drawing: &mut AnimatedDrawing, step: u32| {
             let seconds = step as f32 * 0.05;
             drawing.seek(Duration::from_secs_f32(seconds));
             while let Some((_, id, event)) = next.next_if(|(at, ..)| *at <= seconds + 1e-4) {
-                assert!(drawing.dispatch_event(id, event));
+                fired.extend(dispatched(drawing, id, event));
             }
-            let fired: Vec<Fired> = drawing.fired.iter().cloned().collect();
             let worked_out = timeline.frame(&timeline.schedule(&fired, drawing.seconds + LONGEST), drawing.seconds);
             assert_eq!(drawing.frame(), worked_out, "at {seconds}");
         };
@@ -2362,12 +2456,12 @@ mod tests {
     #[test]
     fn events_with_no_frame_drawn_keep_its_timeline_small() {
         let mut drawing = AnimatedDrawing::new(MOVED).unwrap();
-        for n in 0..3 * KEPT_EVENTS {
+        for n in 0..3 * PENDING_MOST {
             drawing.seek(Duration::from_secs_f32(n as f32 * 0.01));
             drawing.dispatch_event("r", "mousemove");
         }
         let held = drawing.playing.as_ref().map_or(0, Scheduling::held);
-        assert!(held < KEPT_EVENTS, "{held}");
+        assert!(held < PENDING_MOST, "{held}");
     }
 
     #[test]
@@ -2421,6 +2515,39 @@ mod tests {
         drawing.dispatch_event("r", "click");
         assert_eq!(x(&mut drawing, 0.5), None);
         assert_eq!(x(&mut drawing, 2.0).as_deref(), Some("10"));
+    }
+
+    #[test]
+    fn a_seek_back_after_twenty_thousand_events_draws_what_working_out_from_the_start_draws() {
+        // Before, a seek back kept the last 4,096 events: those before were lost.
+        let (timeline, mut drawing) = (Timeline::read(EVENTFUL), AnimatedDrawing::new(EVENTFUL).unwrap());
+        let kinds = [("r", "click"), ("s", "mousemove"), ("s", "click"), ("r", "mousedown"), ("r", "mouseover")];
+        let send = |drawing: &mut AnimatedDrawing, n: u32| {
+            let (id, event) = kinds[(n.wrapping_mul(2_654_435_761) >> 28) as usize % kinds.len()];
+            dispatched(drawing, id, event)
+        };
+        let mut fired = Vec::new();
+        for n in 0..20_000 {
+            drawing.seek(Duration::from_secs_f32(n as f32 * 0.1));
+            fired.extend(send(&mut drawing, n));
+            if n % 10 == 0 {
+                drawing.frame();
+            }
+        }
+        let compare = |drawing: &mut AnimatedDrawing, fired: &[Fired], seconds: f32| {
+            drawing.seek(Duration::from_secs_f32(seconds));
+            let worked_out = timeline.frame(&timeline.schedule(fired, seconds + LONGEST), seconds);
+            assert_eq!(drawing.frame(), worked_out, "at {seconds}");
+        };
+        for seconds in [0.35, 3.0, 123.45, 1000.05, 1999.0, 50.0] {
+            compare(&mut drawing, &fired, seconds);
+        }
+        assert!(drawing.checkpoints.kept.len() <= CHECKPOINTS, "{}", drawing.checkpoints.kept.len());
+        // Events after a seek back: copies of later times go; on from there.
+        fired.extend((20_000..20_040).filter_map(|n| send(&mut drawing, n)));
+        for seconds in [50.0, 50.3, 51.7, 300.0, 49.0] {
+            compare(&mut drawing, &fired, seconds);
+        }
     }
 
     #[test]

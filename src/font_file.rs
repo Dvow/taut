@@ -288,7 +288,7 @@ impl FontFile {
             Some(b"wOF2") => return None,
             _ => file.into(),
         };
-        FontFile::of(Held::Read(unpacked), 0)
+        FontFile::of(Held::Read(unpacked), 0, Outlines::InFile)
     }
 
     /// Opens a font file memory-mapped instead of read: for a large font of which little is
@@ -297,28 +297,23 @@ impl FontFile {
     pub fn open(path: impl AsRef<std::path::Path>) -> Option<FontFile> {
         let lying = Lying::of(&std::fs::File::open(&path).ok()?).map(Held::Lying);
         match lying.filter(|lying| !lying.starts_with(b"wOFF") && !lying.starts_with(b"wOF2")) {
-            Some(lying) => FontFile::of(lying, 0),
+            Some(lying) => FontFile::of(lying, 0, Outlines::InFile),
             None => FontFile::read(std::fs::read(path).ok()?),
         }
     }
 
     /// Reads a font put together from its tables (see `listing`), never compressed: as Windows
-    /// gives a system font's. With `glyphs`, its `glyf` is left out (listed empty) and read a
-    /// glyph at a time from there.
+    /// gives a system font's. With `outlines`, its outline table is left out (listed empty) and
+    /// read a part at a time from there.
     #[cfg(windows)]
-    pub(crate) fn assembled(file: Vec<u8>, glyphs: Option<(usize, Box<TablePart>)>) -> Option<FontFile> {
-        let mut font = FontFile::of(Held::Read(file), 0)?;
-        if let (Shapes::Points(points), Some((long, read))) = (&mut font.shapes, glyphs) {
-            points.fetched = Some(Box::new(Fetched::new(long, font.glyphs, read)));
-            font.measure();
-        }
-        Some(font)
+    pub(crate) fn assembled(file: Vec<u8>, outlines: Option<SystemTable>) -> Option<FontFile> {
+        FontFile::of(Held::Read(file), 0, outlines.map_or(Outlines::InFile, Outlines::System))
     }
 
     /// The `nth` font of a collection (from 0). `None` past the last, or for a single-font file
     /// and `nth` other than 0. (See also `named`, which finds one by name.)
     pub fn nth(self, nth: usize) -> Option<FontFile> {
-        FontFile::of(self.file, nth)
+        FontFile::of(self.file, nth, Outlines::InFile)
     }
 
     /// The file's bytes.
@@ -326,8 +321,9 @@ impl FontFile {
         Bytes(&self.file)
     }
 
-    /// Reads the `nth` font of an uncompressed file: the only one, if not a collection.
-    fn of(file: Held, nth: usize) -> Option<FontFile> {
+    /// Reads the `nth` font of an uncompressed file (the only one, if not a collection), its
+    /// outlines read from where `outlines` says.
+    fn of(file: Held, nth: usize, outlines: Outlines) -> Option<FontFile> {
         let all = Bytes(&file);
         let start = crate::variable_fonts::start(all, nth)?;
         if ![0x0001_0000, name(b"OTTO"), name(b"true")].contains(&all.u32(start)?) {
@@ -346,9 +342,9 @@ impl FontFile {
                 loca: table(b"loca")?,
                 long: head.i16(50)? != 0,
                 #[cfg(windows)]
-                fetched: None,
+                fetched: outlines.fetched(glyphs.into()),
             }),
-            (None, Some(programs)) if cfg!(feature = "cff") => Shapes::Programs(crate::cff::Programs::read(all, programs)?),
+            (None, Some(programs)) if cfg!(feature = "cff") => Shapes::Programs(crate::cff::Programs::read(all, programs, outlines)?),
             (None, Some(_)) => return None,
             (None, None) => pictures.any().then_some(Shapes::None)?,
         };
@@ -1442,34 +1438,77 @@ struct Part {
 #[cfg(windows)]
 pub(crate) type TablePart = dyn Fn(&[u8; 4], usize, usize) -> Option<Vec<u8>> + Send + Sync + std::panic::RefUnwindSafe + std::panic::UnwindSafe;
 
-/// A system font's `glyf`, read a glyph at a time as drawn and kept once read: an East Asian
-/// font's glyphs are most of its 10 to 20 MB, and a page draws a few hundred.
+/// A system font's outline table on Windows (`glyf`, `CFF ` or `CFF2`), left out of the file
+/// and read from the system a part at a time: an East Asian font's outlines are most of its 10
+/// to 20 MB, and a page draws a few hundred glyphs.
+#[cfg(windows)]
+pub(crate) struct SystemTable {
+    tag: [u8; 4],
+    long: usize,
+    read: Box<TablePart>,
+}
+
+#[cfg(windows)]
+impl SystemTable {
+    /// The table named `tag`, `long` bytes long, read by `read`.
+    pub(crate) fn new(tag: [u8; 4], long: usize, read: Box<TablePart>) -> SystemTable {
+        SystemTable { tag, long, read }
+    }
+
+    /// Its length in bytes.
+    pub(crate) fn len(&self) -> usize {
+        self.long
+    }
+
+    /// `long` bytes from byte `at`. `None` past its end, or where the system won't give them.
+    pub(crate) fn read(&self, at: usize, long: usize) -> Option<Vec<u8>> {
+        (at.checked_add(long)? <= self.long).then_some(())?;
+        (self.read)(&self.tag, at, long)
+    }
+}
+
+/// Items of a system table (glyphs, charstrings, subroutines), each read when first asked for
+/// and kept.
 #[cfg(windows)]
 pub(crate) struct Fetched {
-    read: Box<TablePart>,
-    /// `glyf`'s length.
-    long: usize,
-    /// The glyphs read, in pages of 256, each made when first needed.
+    /// In pages of 256, each made when first needed.
     pages: Vec<std::sync::OnceLock<Box<FetchedPage>>>,
 }
 
-/// 256 glyphs' bytes, each read when first asked for.
+/// 256 items' bytes, each read when first asked for.
 #[cfg(windows)]
 type FetchedPage = [std::sync::OnceLock<Box<[u8]>>; 256];
 
 #[cfg(windows)]
 impl Fetched {
-    /// A `glyf` `long` bytes long, of `count` glyphs, read by `read`.
-    pub fn new(long: usize, count: u16, read: Box<TablePart>) -> Fetched {
-        Fetched { read, long, pages: (0..usize::from(count).div_ceil(256)).map(|_| std::sync::OnceLock::new()).collect() }
+    /// Room for `count` items.
+    pub(crate) fn new(count: usize) -> Fetched {
+        Fetched { pages: (0..count.div_ceil(256)).map(|_| std::sync::OnceLock::new()).collect() }
     }
 
-    /// Glyph `glyph`'s bytes, at `held` in `glyf`: read from the system if not yet. A glyph
-    /// the system won't give is empty, so blank.
-    fn glyph(&self, glyph: usize, held: Range<usize>) -> Option<&[u8]> {
-        (held.start <= held.end && held.end <= self.long).then_some(())?;
-        let page = self.pages.get(glyph / 256)?.get_or_init(|| Box::new(std::array::from_fn(|_| std::sync::OnceLock::new())));
-        Some(page[glyph % 256].get_or_init(|| (self.read)(b"glyf", held.start, held.len()).unwrap_or_default().into_boxed_slice()))
+    /// Item `n`'s bytes, read by `read` if not yet. One the system won't give is empty.
+    pub(crate) fn item(&self, n: usize, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<&[u8]> {
+        let page = self.pages.get(n / 256)?.get_or_init(|| Box::new(std::array::from_fn(|_| std::sync::OnceLock::new())));
+        Some(page[n % 256].get_or_init(|| read().unwrap_or_default().into_boxed_slice()))
+    }
+}
+
+/// Where a font's outline table is read from: its file, or (a system font on Windows) the
+/// system, a part at a time.
+pub(crate) enum Outlines {
+    InFile,
+    #[cfg(windows)]
+    System(SystemTable),
+}
+
+#[cfg(windows)]
+impl Outlines {
+    /// The system's table, with room for `count` items read from it; none for one in the file.
+    fn fetched(self, count: usize) -> Option<Box<(SystemTable, Fetched)>> {
+        match self {
+            Outlines::System(system) => Some(Box::new((system, Fetched::new(count)))),
+            Outlines::InFile => None,
+        }
     }
 }
 
@@ -1481,7 +1520,7 @@ struct Points {
     loca: Range<usize>,
     long: bool,
     #[cfg(windows)]
-    fetched: Option<Box<Fetched>>,
+    fetched: Option<Box<(SystemTable, Fetched)>>,
 }
 
 impl Points {
@@ -1492,7 +1531,8 @@ impl Points {
         let held = start(glyph)?..start(glyph + 1)?;
         #[cfg(windows)]
         if let Some(fetched) = &self.fetched {
-            return fetched.glyph(glyph, held).map(Bytes);
+            let (system, glyphs) = &**fetched;
+            return glyphs.item(glyph, || system.read(held.start, held.len())).map(Bytes);
         }
         glyf.0.get(held).map(Bytes)
     }

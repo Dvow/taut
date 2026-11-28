@@ -20,12 +20,13 @@
 //! - strokes: width, caps, joins, miter limit, dashes, `vector-effect`, `paint-order`;
 //!   with [`enable_shape_rendering`], `shape-rendering` (`crispEdges` and `optimizeSpeed` draw
 //!   whole pixels)
-//! - `style="…"` and presentation attributes; style sheet rules by element name, class and id
+//! - `style="…"` and presentation attributes; style sheet rules by element name, class and id;
+//!   with [`enable_entities`], the entities the doctype declares
 //! - `<defs>`, `<symbol>`, `<use>`; nested `<symbol>` and `<svg>` viewports, clipped unless
 //!   `overflow` says otherwise
-//! - linear and radial gradients; clip paths (user space or bounding box, either rule);
-//!   luminance masks; patterns (units, transform, `viewBox`, `href` inheritance) for fills and
-//!   strokes
+//! - linear and radial gradients; clip paths (user space or bounding box, either rule, clipped
+//!   by their own clip paths); luminance masks; patterns (units, transform, `viewBox`, `href`
+//!   inheritance) for fills and strokes
 //! - markers at start, corners and end, oriented or not, sized by stroke width or in units
 //! - filters on shapes and groups, as lists (`url(#…)`, `blur()`, `drop-shadow()` and the other
 //!   Filter Effects functions), with filter regions and `color-interpolation-filters`:
@@ -51,8 +52,7 @@
 //!
 //! Not read: glyphs are drawn without filters. A kernel unit finer than an eighth of a pixel
 //! counts as an eighth (librsvg goes finer). Style rules by position among siblings match
-//! nothing, and rules apply in source order. A clip path's own clip path, `mask-type`, and
-//! marker clipping are ignored.
+//! nothing, and rules apply in source order. `mask-type` and marker clipping are ignored.
 //! Text is not rotated per letter; unshaped (without `shaping`) it has no joining or
 //! right-to-left order; it uses the family's font or the system's fallback. A gradient focus
 //! outside its circle is moved onto it; a subpath starting where the previous unclosed one
@@ -88,14 +88,16 @@
 //! (as browsers draw them).
 //!
 //! Accuracy: a shape is filled by summing each edge's coverage per pixel (see
-//! [`Canvas::fill_with`]), exact where one edge crosses a pixel. Where two do, both count: two
-//! opposite subpaths of one shape touching leave a hairline seam, and a stroke overlapping
-//! itself (sharp corners between segments shorter than its width, self-crossings, reversals,
-//! touching dash ends) darkens the edge pixels of the overlap by up to a quarter. Two
-//! subpaths' strokes are drawn separately and combined: exact where they cross, up to a quarter
-//! off where they run along each other. Non-rectangular clips, masks and viewport clips of
-//! strokes multiply coverages at shared edge pixels (as librsvg does, except for strokes in a
-//! viewport). Transformed pattern tiles are sampled bilinearly.
+//! [`Canvas::fill_with`]), exact where one subpath's edges cross a pixel. Where two subpaths'
+//! edges do, the pixel is worked out from the winding along 64 lines across it, exact along each:
+//! two subpaths that meet there leave no seam, as in browsers. A stroke overlapping itself
+//! (sharp corners between segments shorter than its width, self-crossings, reversals, touching
+//! dash ends) darkens the edge pixels of the overlap by up to a quarter. Two subpaths' strokes
+//! are drawn separately and combined: exact where they cross, up to a quarter off where they run
+//! along each other. Non-rectangular clips, masks and viewport clips of strokes multiply
+//! coverages at shared edge pixels, as Edge and librsvg do (librsvg not for strokes in a
+//! viewport). A picture shown smaller is the mean of what lies under each pixel (exact where
+//! square to the picture). Transformed pattern tiles are sampled bilinearly.
 use crate::canvas::{Canvas, color_at};
 use crate::color::Color;
 use crate::font_file::FontFile;
@@ -121,6 +123,10 @@ const MOST: usize = 1 << 24;
 /// counted: a picture of a drawing that is smaller may cost as much as one this large, where
 /// a kernel unit is finer than its pixels (see `svg_filters::cells_per_pixel`).
 const COUNTED_SIDE: f32 = 512.0;
+/// How deep entities named in entities are written out, and how many times longer that may make
+/// a file (see `with_entities`).
+const ENTITY_ROUNDS: usize = 8;
+const ENTITY_GROWTH: usize = 4;
 /// How many cached pictures of a drawing are kept: one per size and colour shown.
 const KEPT: usize = 4;
 /// How deeply semi-transparent groups may nest and each still composite as one (each renders to
@@ -194,6 +200,7 @@ pub fn enable_text() {
 /// the outermost file's cost budget.
 pub fn enable_images() {
     _ = PICTURES.set(|reading, at, style, place| reading.picture(at, style, place));
+    _ = SHOWN.set(shown_picture);
 }
 
 /// Draws the images in SVG files from now on, as [`enable_images`] does, and those in separate
@@ -210,6 +217,28 @@ static LOADER: std::sync::OnceLock<Box<Loader>> = std::sync::OnceLock::new();
 
 /// Gives the bytes of an image file an `href` names.
 type Loader = dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync;
+
+/// Writes out the entities a file's doctype declares from now on, in every drawing of the
+/// program, as XML readers do: some drawing programs name their styles by them
+/// (`<!ENTITY st0 "fill:red">`, then `style="&st0;"`). Those named in them are written out too,
+/// while the file grows at most four times. Without this, a file naming them is read as written,
+/// and a program need not carry the code (about 3 KB).
+pub fn enable_entities() {
+    _ = ENTITIES.set(with_entities);
+}
+
+/// How a file's entities are written out (`with_entities`), once a program called
+/// `enable_entities`.
+static ENTITIES: std::sync::OnceLock<Entities> = std::sync::OnceLock::new();
+
+/// Writes out a file's entities.
+type Entities = for<'a> fn(&'a str) -> Cow<'a, str>;
+
+/// A file's text as read: with its entities written out, once a program called
+/// `enable_entities`.
+fn written_out(text: &str) -> Cow<'_, str> {
+    ENTITIES.get().map_or(Cow::Borrowed(text), |write| write(text))
+}
 
 /// Draws shapes as `shape-rendering` asks from now on, in every drawing of the program: those
 /// marked `crispEdges` or `optimizeSpeed` cover whole pixels, each pixel they cover more than
@@ -257,6 +286,14 @@ static PICTURES: std::sync::OnceLock<Pictures> = std::sync::OnceLock::new();
 
 /// Reads an image's picture, in a box where given (see `Reading::picture`).
 type Pictures = for<'a, 'b> fn(&'b mut Reading<'a>, usize, &Style, Option<[f32; 4]>);
+
+/// How a kept picture is prepared to show (`shown_picture`), once a program called
+/// `enable_images`.
+static SHOWN: std::sync::OnceLock<Shown> = std::sync::OnceLock::new();
+
+/// Prepares a picture to show, given the transform from a window pixel back to one of its
+/// pixels, and its opacity.
+type Shown = for<'a> fn(&'a Picture, Table, f32) -> Option<Ready<'a>>;
 
 /// How a text element's letters are set (`Reading::text`), once a program called `enable_text`.
 static TEXT: std::sync::OnceLock<Texts> = std::sync::OnceLock::new();
@@ -594,6 +631,49 @@ impl<'a> File<'a> {
     }
 }
 
+/// The text with the entities its doctype declares (`<!ENTITY name "value">`) written out where
+/// they are named (`&name;`), as XML readers do: those named in them too, `ENTITY_ROUNDS` deep,
+/// while it is at most `ENTITY_GROWTH` times as long, so they can't make it cost more than a
+/// file that long. As it is where it declares none.
+fn with_entities(text: &str) -> Cow<'_, str> {
+    let Some(start) = text.find("<!DOCTYPE") else { return Cow::Borrowed(text) };
+    let end = start + text[start..].find(']').unwrap_or(0);
+    let mut entities: Vec<(&str, String)> = Vec::new();
+    for entity in text[start..end].split("<!ENTITY").skip(1) {
+        // Its name, then its value in either kind of quotes.
+        let Some(open) = entity.find(['"', '\'']) else { continue };
+        let Some(long) = entity[open + 1..].find(&entity[open..open + 1]) else { continue };
+        entities.push((entity[..open].trim(), entity[open + 1..open + 1 + long].to_string()));
+    }
+    if entities.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    let most = text.len() * ENTITY_GROWTH;
+    for _ in 0..ENTITY_ROUNDS {
+        for n in 0..entities.len() {
+            entities[n].1 = written(&entities[n].1, &entities, most);
+        }
+    }
+    Cow::Owned(text[..end].to_string() + &written(&text[end..], &entities, most - end))
+}
+
+/// `text` with each entity of `entities` (name and value) written out where it is named, while
+/// the whole stays at most `most` bytes long.
+fn written(text: &str, entities: &[(&str, String)], most: usize) -> String {
+    let mut parts = text.split('&');
+    let mut out = parts.next().unwrap_or("").to_string();
+    let mut left = text.len() - out.len();
+    for part in parts {
+        left -= part.len() + 1;
+        let named = part.find(';').and_then(|end| entities.iter().find(|(name, _)| *name == &part[..end]));
+        match named.filter(|(_, value)| out.len() + value.len() + part.len() + left <= most) {
+            Some((name, value)) => out = out + value + &part[name.len() + 1..],
+            None => out = out + "&" + part,
+        }
+    }
+    out
+}
+
 /// A tag's length from after its `<` to before the `>` ending it. A comment ends at `-->` only;
 /// elsewhere a quoted `>` does not end it.
 fn tag_length(tag: &str) -> usize {
@@ -830,12 +910,13 @@ enum Keep {
     Bright,
 }
 
-/// What a block is clipped by once drawn: a clip path or mask (by element), a viewport box
-/// (left, top, width, height in the block's units), or a kept box aligned with the picture
-/// clipping its surroundings (filtered content is clipped after the filter).
+/// What a block is clipped by once drawn: a clip path (by element, with how many clip paths it
+/// was clipped by in a chain before it) or mask (by element), a viewport box (left, top, width,
+/// height in the block's units), or a kept box aligned with the picture clipping its surroundings
+/// (filtered content is clipped after the filter).
 #[derive(Clone, Copy)]
 enum Cut {
-    Clip(usize),
+    Clip(usize, usize),
     Mask(usize),
     Box([f32; 4]),
     DrawingBox(u32),
@@ -1385,12 +1466,12 @@ impl ParsedDrawing {
 
     /// Reads a file, or with `glyph` the glyph part of it (see `glyph`).
     fn read_part(text: &str, glyph: Option<(&str, f32)>) -> Option<ParsedDrawing> {
-        Reading::of(text, glyph).map(|reading| reading.parsed)
+        Reading::of(&written_out(text), glyph).map(|reading| reading.parsed)
     }
 
     /// Reads a file, noting what lies where in it (see `element_at`).
     pub(crate) fn read_with_hits(text: &str) -> Option<ParsedDrawing> {
-        Reading::noted(text).map(|reading| reading.parsed)
+        Reading::noted(&written_out(text)).map(|reading| reading.parsed)
     }
 
     /// Shows the drawing as `show` does, noting where (see `element_at`).
@@ -1577,7 +1658,7 @@ impl ParsedDrawing {
                 Some(cut) => (cut, FINER, [1.0 / FINER, 0.0, 0.0, 1.0 / FINER, 0.0, 0.0]),
                 None => (path, fine, to_pixels),
             };
-            let mut fill = |onto: &mut Canvas, ink: &Ready| work.fill(onto, outline, fine, Transform(to_pixels), shape.even_odd, ink.painter());
+            let mut fill = |onto: &mut Canvas, ink: &Ready| work.fill_exact(onto, outline, fine, Transform(to_pixels), shape.even_odd, ink.painter());
             match CRISP.get().filter(|_| shape.crisp) {
                 Some(crisp) => crisp(&mut canvas, (path, &table, 0.0, (wide, high, top)), &ink, &mut |onto| fill(onto, &Ready::Flat(Color::WHITE))),
                 None => fill(&mut canvas, &ink),
@@ -1624,16 +1705,7 @@ impl ParsedDrawing {
                 let shown = both(fit, &both(&kept.table, &[kept.size[0] / tile.wide as f32, 0.0, 0.0, kept.size[1] / high as f32, 0.0, 0.0]));
                 undone(&shown).map(|back| Ready::Tiles(Cow::Borrowed(&tile.pixels), tile.wide, back, solid, true))
             }
-            // An image shown smaller than it is: each screen pixel averages all image pixels
-            // under it, not the nearest four.
-            Ink::Picture(kept, solid) => {
-                let picture = self.held()?.pictures.get(kept as usize)?;
-                let back = undone(table)?;
-                let by = [back[0].hypot(back[1]), back[2].hypot(back[3])].map(|by| by.floor().clamp(1.0, 64.0) as usize);
-                let (wide, pixels) = shrunk(&picture.pixels, picture.wide, by);
-                let back = both(&[1.0 / by[0] as f32, 0.0, 0.0, 1.0 / by[1] as f32, 0.0, 0.0], &back);
-                Some(Ready::Tiles(pixels, wide, back, solid, false))
-            }
+            Ink::Picture(kept, solid) => (SHOWN.get()?)(self.held()?.pictures.get(kept as usize)?, undone(table)?, solid),
         }
     }
 }
@@ -1682,6 +1754,66 @@ fn tiled(pixels: &[u32], wide: usize, at: Point, again: bool) -> u32 {
     let near = [(pixel(upper, left), (1.0 - across) * (1.0 - down)), (pixel(upper, right), across * (1.0 - down)), (pixel(lower, left), (1.0 - across) * down), (pixel(lower, right), across * down)];
     let part = |shift: u32| near.iter().map(|(pixel, weight)| (pixel >> shift & 255) as f32 * weight).sum::<f32>().round().min(255.0) as u32;
     part(24) << 24 | part(16) << 16 | part(8) << 8 | part(0)
+}
+
+/// A picture prepared to show (see `Shown`). Shown smaller than it is, each window pixel is the
+/// mean of the picture under it, as librsvg and browsers show it: exactly so where it is square
+/// to the window (`averaged`); turned or slanted, the mean of a whole number of its pixels each
+/// way, sampled between the nearest four.
+fn shown_picture(picture: &Picture, back: Table, solid: f32) -> Option<Ready<'_>> {
+    if let Some((wide, pixels, back)) = averaged(picture, back) {
+        return Some(Ready::Tiles(Cow::Owned(pixels), wide, back, solid, false));
+    }
+    let by = [back[0].hypot(back[1]), back[2].hypot(back[3])].map(|by| by.floor().clamp(1.0, 64.0) as usize);
+    let (wide, pixels) = shrunk(&picture.pixels, picture.wide, by);
+    let back = both(&[1.0 / by[0] as f32, 0.0, 0.0, 1.0 / by[1] as f32, 0.0, 0.0], &back);
+    Some(Ready::Tiles(pixels, wide, back, solid, false))
+}
+
+/// A picture shown smaller than it is and square to the window (`back`: from a window pixel to
+/// its pixels), each window pixel the mean of the picture pixels under it, in part where in
+/// part: its row length, pixels, and the transform from a window pixel to them. Nothing
+/// otherwise.
+fn averaged(picture: &Picture, back: Table) -> Option<(usize, Vec<u32>, Table)> {
+    let [across, b, c, down, left, top] = back;
+    if b != 0.0 || c != 0.0 || !(across >= 1.0 && down >= 1.0) {
+        return None;
+    }
+    let (wide, high) = (picture.wide, picture.pixels.len() / picture.wide.max(1));
+    // The window pixels it covers, each way.
+    let [x0, x1, y0, y1] = [-left / across, (wide as f32 - left) / across, -top / down, (high as f32 - top) / down];
+    let ([x0, x1], [y0, y1]) = ([x0.floor(), x1.ceil()], [y0.floor(), y1.ceil()]);
+    let (out_wide, out_high) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    let pixels: Vec<[f32; 4]> = picture.pixels.iter().map(|pixel| [24, 16, 8, 0].map(|shift| (pixel >> shift & 255) as f32)).collect();
+    // Across each row, then down each column of that.
+    let rows: Vec<[f32; 4]> = pixels.chunks_exact(wide).flat_map(|row| mean_along(row, [across, across * x0 + left], out_wide)).collect();
+    let mut shown = vec![0u32; out_wide * out_high];
+    for x in 0..out_wide {
+        let column: Vec<[f32; 4]> = rows.iter().skip(x).step_by(out_wide).copied().collect();
+        for (y, mean) in mean_along(&column, [down, down * y0 + top], out_high).into_iter().enumerate() {
+            shown[y * out_wide + x] = mean.iter().zip([24, 16, 8, 0]).fold(0, |pixel, (part, shift)| pixel | (part.round().clamp(0.0, 255.0) as u32) << shift);
+        }
+    }
+    Some((out_wide, shown, [1.0, 0.0, 0.0, 1.0, -x0, -y0]))
+}
+
+/// The means of a line of pixels over `count` stretches, each `[by, from]`: the nth from `from +
+/// n * by` on, `by` long. A stretch partly past the line is the mean of the part on it.
+fn mean_along(line: &[[f32; 4]], [by, from]: [f32; 2], count: usize) -> Vec<[f32; 4]> {
+    let long = line.len();
+    let mut means = vec![[0.0; 4]; count];
+    for (n, mean) in means.iter_mut().enumerate() {
+        let [start, end] = [from + n as f32 * by, from + (n + 1) as f32 * by].map(|at| at.clamp(0.0, long as f32));
+        let mut weight = 0.0;
+        let under = line.iter().enumerate().take(end.ceil() as usize).skip(start.floor() as usize);
+        for (at, pixel) in under {
+            let part = end.min(at as f32 + 1.0) - start.max(at as f32);
+            mean.iter_mut().zip(pixel).for_each(|(sum, channel)| *sum += part * channel);
+            weight += part;
+        }
+        mean.iter_mut().for_each(|sum| *sum /= weight.max(f32::MIN_POSITIVE));
+    }
+    means
 }
 
 /// An image's pixels (`wide` per row) shrunk by a factor across and down, each pixel the mean
@@ -1746,7 +1878,7 @@ fn data(address: &str) -> Option<Vec<u8>> {
 fn svg_text(bytes: &[u8]) -> Option<Rc<str>> {
     let text = std::str::from_utf8(bytes).ok()?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    text.trim_start().starts_with('<').then(|| Rc::from(text))
+    text.trim_start().starts_with('<').then(|| Rc::from(written_out(text).as_ref()))
 }
 
 /// A canvas pixel unpremultiplied, as a picture keeps it.
@@ -2083,7 +2215,7 @@ impl<'a> Reading<'a> {
             }
             // A semi-transparent group composites as one, so its overlapping shapes do not show
             // through each other; so does clipped or filtered content.
-            let cuts = [style.clip.map(Cut::Clip), style.mask.map(Cut::Mask), room.map(Cut::Box), around_box.map(Cut::DrawingBox)];
+            let cuts = [style.clip.map(|clip| Cut::Clip(clip, 0)), style.mask.map(Cut::Mask), room.map(Cut::Box), around_box.map(Cut::DrawingBox)];
             let cut = filtered || (cuts.iter().any(Option::is_some) && layers < LAYERS);
             let layer = ((style.opacity < 1.0 || cut) && layers < LAYERS).then_some(style.opacity);
             let first = self.parsed.items.len() + layer.is_some() as usize;
@@ -2117,6 +2249,14 @@ impl<'a> Reading<'a> {
         }
         if let Some(cut) = cut {
             let cutting = self.cutting(cut, &done);
+            // A clip path clipped by another (its own `clip-path`) keeps only where both do: the
+            // block is clipped by that one next, as browsers do, `LAYERS` deep at most.
+            if let (Cut::Clip(_, before), Some(next)) = (cut, cutting.style.clip)
+                && before < LAYERS
+                && !self.clips_round(next)
+            {
+                walk.cuts[0] = Some(Cut::Clip(next, before + 1));
+            }
             return walks.push(cutting);
         }
         if let (Some(_), Some(merge)) = (done.keep, SEAMLESS.get()) {
@@ -2307,7 +2447,7 @@ impl<'a> Reading<'a> {
                 Walk { keep: Some(Keep::Solid), first, ..Walk::through(0, 0, walk.style) }
             }
             // A clip path is in the units of what it clips, or its bounding box.
-            Cut::Clip(at) => {
+            Cut::Clip(at, _) => {
                 let mut style = self.styled(at, &Style { clipping: true, table, share: walk.style.share, ..Style::default() });
                 let boxed = self.file.attribute(at, "clipPathUnits") == Some("objectBoundingBox");
                 style.table = both(&style.table, &if boxed { self.box_of(walk) } else { SAME });
@@ -2657,9 +2797,23 @@ impl<'a> Reading<'a> {
         Some(self.parsed.boxes.len() as u32 - 1)
     }
 
-    /// A clip path's box, where it is a single square-cornered rectangle in user units (left,
-    /// top, width, height, in the units of `style`, which it clips). Nothing for any other clip
-    /// path.
+    /// Whether the chain of clip paths from `at`, each clipped by the next, comes back round
+    /// within `LAYERS` steps: browsers then drop the reference into it.
+    fn clips_round(&mut self, at: usize) -> bool {
+        let (mut seen, mut next) = (Vec::new(), Some(at));
+        while let Some(at) = next.filter(|_| seen.len() <= LAYERS) {
+            if seen.contains(&at) {
+                return true;
+            }
+            seen.push(at);
+            next = self.styled(at, &Style { clipping: true, ..Style::default() }).clip;
+        }
+        false
+    }
+
+    /// A clip path's box, where it is a single square-cornered rectangle in user units, not clipped
+    /// in turn (left, top, width, height, in the units of `style`, which it clips). Nothing for any
+    /// other clip path.
     fn clip_box(&mut self, at: usize, style: &Style) -> Option<[f32; 4]> {
         let only = at + 1;
         if self.file.elements[at].end != at + 2 || self.file.attribute(at, "clipPathUnits") == Some("objectBoundingBox") {
@@ -2669,7 +2823,7 @@ impl<'a> Reading<'a> {
         let clipping = self.styled(at, &Style { clipping: true, ..*style });
         let rect = self.styled(only, &clipping);
         let [across, b, c, down, left, top] = both(&undone(&style.table)?, &rect.table);
-        if self.file.elements[only].name != "rect" || round || rect.gone || rect.hidden || rect.clip.is_some() || b != 0.0 || c != 0.0 {
+        if self.file.elements[only].name != "rect" || round || rect.gone || rect.hidden || rect.clip.is_some() || clipping.clip.is_some() || b != 0.0 || c != 0.0 {
             return None;
         }
         let [.., wide, high] = self.parsed.view;
@@ -4644,6 +4798,40 @@ mod tests {
     }
 
     #[test]
+    fn entities_the_doctype_declares_are_written_out_where_named() {
+        enable_entities();
+        // As drawing programs write styles, one named in another.
+        let declared = r#"<?xml version="1.0"?><!DOCTYPE svg [ <!ENTITY red "fill:red;"> <!ENTITY both '&red;stroke:none'> ]>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="2" style="&red;"/><rect y="2" width="4" height="2" style="&both;"/></svg>"#;
+        assert_eq!(count(&decode(declared, 4, 4).expect("drawn").1, RED), 16);
+        // Each named ten times in the next: written out no further than four times as long.
+        let mut laughs = String::from(r#"<!DOCTYPE svg [ <!ENTITY l0 "lol">"#);
+        (1..10).for_each(|n| laughs += &format!(r#"<!ENTITY l{n} "{}">"#, format!("&l{};", n - 1).repeat(10)));
+        laughs += "]><svg><text>&l9;</text></svg>";
+        assert!(with_entities(&laughs).len() <= 4 * laughs.len());
+    }
+
+    #[test]
+    fn a_clip_path_clipped_by_another_keeps_only_where_both_do() {
+        // As Edge draws them: a chain of three keeps one quarter; a reference that comes back
+        // round (to itself, or through another) is dropped.
+        let clips = |a: &str, b: &str| format!(r##"<clipPath id="a" {a}><rect width="4" height="8"/></clipPath><clipPath id="b" {b}><rect width="8" height="4"/></clipPath>"##);
+        let clipped = |clips: &str, by: &str| count(&drawn(8, 8, &format!(r##"{clips}<rect width="8" height="8" fill="red" clip-path="url(#{by})"/>"##)), RED);
+        assert_eq!(clipped(&clips("", r##"clip-path="url(#a)""##), "b"), 16);
+        let third = r##"<clipPath id="c" clip-path="url(#b)"><rect x="2" width="6" height="8"/></clipPath>"##;
+        assert_eq!(clipped(&format!("{}{third}", clips("", r##"clip-path="url(#a)""##)), "c"), 8);
+        assert_eq!(clipped(&clips(r##"clip-path="url(#b)""##, r##"clip-path="url(#a)""##), "b"), 32);
+        assert_eq!(clipped(&clips("", r##"clip-path="url(#b)""##), "b"), 32);
+    }
+
+    #[test]
+    fn subpaths_going_round_opposite_ways_meet_without_a_seam() {
+        // Meeting halfway across a pixel column, as Edge draws them; summed, they cancelled there.
+        let pixels = drawn(8, 8, r#"<path d="M0 0H4.5V8H0Z M4.5 0V8H8V0Z" fill="red"/>"#);
+        assert_eq!(count(&pixels, RED), 64);
+    }
+
+    #[test]
     fn a_box_square_to_the_picture_cuts_exactly_at_its_edges() {
         // A shape and its clip box ending in the same part of a pixel: the pixel keeps the part
         // both cover (three quarters), not that fraction of the fraction (as multiplying two
@@ -5511,6 +5699,20 @@ mod tests {
         let nested = r#"<image x="4" y="6" width="32" height="24" href="data:image/svg+xml;utf8,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 10 10%22%3E%3Ccircle cx=%225%22 cy=%225%22 r=%226%22 fill=%22%23c30%22/%3E%3Crect x=%222%22 y=%222%22 width=%226%22 height=%226%22 fill=%22%2303c%22 transform=%22rotate(20 5 5)%22/%3E%3C/svg%3E"/>"#;
         let row = row_of(nested, 12);
         assert!(near(&row, &written(NESTED), 10), "{row:x?}");
+    }
+
+    #[test]
+    fn a_picture_shown_smaller_is_the_mean_of_what_lies_under_each_pixel() {
+        enable_images();
+        // Eight columns, white and black in turn, shown three pixels wide, as librsvg shows them:
+        // each pixel the mean of the columns under it, in part where in part (five eighths white,
+        // a half, three eighths). Before, each pixel came out half grey.
+        let columns: Vec<u32> = (0..8).map(|x| if x % 2 == 0 { 0xffff_ffff } else { 0xff00_0000 }).collect();
+        let url: String = crate::png::encode_rgba(8, &columns).expect("encoded").iter().map(|byte| format!("%{byte:02x}")).collect();
+        let text = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3 1"><image width="3" height="1" preserveAspectRatio="none" href="data:image/png,{url}"/></svg>"#);
+        let (_, pixels) = decode(&text, 3, 1).expect("drawn");
+        let levels: Vec<u32> = pixels.iter().map(|pixel| pixel & 255).collect();
+        assert!(levels.iter().zip([159, 128, 96]).all(|(level, wanted)| level.abs_diff(wanted) <= 1), "{levels:?}");
     }
 
     #[test]

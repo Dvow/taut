@@ -300,10 +300,35 @@ impl Work {
     /// edge). Curves are flattened for `fine` pixels per unit, and outlines mapped through
     /// `to_pixels` to the window, from units that many times finer.
     pub(crate) fn fill(&mut self, canvas: &mut Canvas, path: &Path, fine: f32, to_pixels: Transform, even_odd: bool, ink: impl FnMut(i32, i32) -> Color) {
-        let Work { points, edges, .. } = self;
+        self.outline_edges(path, fine, to_pixels);
+        canvas.fill_with(&mut placed(&self.edges, to_pixels), even_odd, ink);
+    }
+
+    /// Fills a shape as `fill` does, but exact where two of its subpaths meet inside a pixel
+    /// (see `Canvas::fill_subpaths`), as browsers draw SVG drawings.
+    pub(crate) fn fill_exact(&mut self, canvas: &mut Canvas, path: &Path, fine: f32, to_pixels: Transform, even_odd: bool, ink: impl FnMut(i32, i32) -> Color) {
+        self.outline_edges(path, fine, to_pixels);
+        if self.ends.len() < 2 {
+            return canvas.fill_with(&mut placed(&self.edges, to_pixels), even_odd, ink);
+        }
+        let place = to_window(to_pixels);
+        self.edges.iter_mut().for_each(|edge| *edge = edge.map(&place));
+        canvas.fill_subpaths(&self.edges, &self.ends, even_odd, ink);
+    }
+
+    /// A shape's outlines as straight edges (`edges`), each outline's ending among them in
+    /// `ends` (see `fill` for the arguments). An outline of two points encloses nothing: left
+    /// out.
+    fn outline_edges(&mut self, path: &Path, fine: f32, to_pixels: Transform) {
+        let Work { points, edges, ends, .. } = self;
         edges.clear();
-        outlines(path, fine, per_pixel(to_pixels), points, |points| edges.extend((0..points.len()).map(|at| [points[at], points[(at + 1) % points.len()]])));
-        canvas.fill_with(&mut placed(edges, to_pixels), even_odd, ink);
+        ends.clear();
+        outlines(path, fine, per_pixel(to_pixels), points, |points| {
+            if points.len() > 2 {
+                edges.extend((0..points.len()).map(|at| [points[at], points[(at + 1) % points.len()]]));
+                ends.push(edges.len());
+            }
+        });
     }
 
     /// Strokes a shape's path with a pen on a canvas, `ink` colouring each pixel by window
@@ -340,11 +365,16 @@ impl Work {
 }
 
 /// Feeds a canvas a shape's edges: each of `edges` mapped through `to_pixels` to the window
-/// (clamped to what a canvas counts).
+/// (see `to_window`).
 pub(crate) fn placed(edges: &[[Point; 2]], to_pixels: Transform) -> impl FnMut(&mut dyn FnMut(Point, Point)) + '_ {
-    let near = |at: f32| if at.is_nan() { 0.0 } else { at.clamp(-FAR_OUT, FAR_OUT) };
-    let place = move |p: Point| pt(near(to_pixels.apply(p).x), near(to_pixels.apply(p).y));
+    let place = to_window(to_pixels);
     move |each| edges.iter().for_each(|[a, b]| each(place(*a), place(*b)))
+}
+
+/// A point mapped through `to_pixels` to the window, clamped to what a canvas counts.
+fn to_window(to_pixels: Transform) -> impl Fn(Point) -> Point {
+    let near = |at: f32| if at.is_nan() { 0.0 } else { at.clamp(-FAR_OUT, FAR_OUT) };
+    move |p: Point| pt(near(to_pixels.apply(p).x), near(to_pixels.apply(p).y))
 }
 
 /// Renders several possibly overlapping strokes in one ink: `ends` says where each stroke's
