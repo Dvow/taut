@@ -1,0 +1,5 @@
+run 1 video exit 0 in 33 s
+run 2 video exit 0 in 32 s
+run 3 video exit 0 in 32 s
+run 4 video exit 0 in 32 s
+run 1 gpu exit 0 in 63 s
