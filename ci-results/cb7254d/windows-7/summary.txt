@@ -1,0 +1,24 @@
+run 1 all exit 101 in 612 s
+::error file=src/video.rs,line=1105,title=src/lib.rs%3A video%3A%3Atests%3A%3Aa_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed::thread 'video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed' (4296) panicked at src\video.rs:1105:13:%0Athe caption tracks did not happen: Video { playing: false, position: 0ns, length: None, size: None, speed: 1.0, caption: None, error: None, .. }
+::error file=src/video.rs,line=1105,title=src/lib.rs%3A video%3A%3Atests%3A%3Aan_address_is_downloaded_once_for_the_player_and_its_captions::thread 'video::tests::an_address_is_downloaded_once_for_the_player_and_its_captions' (4308) panicked at src\video.rs:1105:13:%0Athe caption track did not happen: Video { playing: true, position: 0ns, length: None, size: None, speed: 1.0, caption: None, error: None, .. }
+run 1 lib exit 0 in 167 s
+run 1 spell exit 0 in 1 s
+run 2 spell exit 0 in 1 s
+run 3 spell exit 0 in 1 s
+run 4 spell exit 0 in 1 s
+run 5 spell exit 0 in 1 s
+run 6 spell exit 0 in 1 s
+run 7 spell exit 0 in 2 s
+run 8 spell exit 0 in 1 s
+run 9 spell exit 0 in 1 s
+run 10 spell exit 0 in 1 s
+run 11 spell exit 0 in 2 s
+run 12 spell exit 0 in 1 s
+run 13 spell exit 0 in 1 s
+run 14 spell exit 0 in 1 s
+run 15 spell exit 0 in 2 s
+run 16 spell exit 0 in 1 s
+run 17 spell exit 0 in 1 s
+run 18 spell exit 0 in 1 s
+run 19 spell exit 0 in 2 s
+run 20 spell exit 0 in 1 s
