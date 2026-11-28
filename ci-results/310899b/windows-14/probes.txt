@@ -1,0 +1,184 @@
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 167.8365msprobe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 146.6396ms
+
+probe: en-US marks ["helo", "recieve"] after 241.2422ms in 45 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.4841ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.7701ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.2917ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 1.1441ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.4989ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 234.6µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 6.5322ms
+probe: en-US marks ["helo", "recieve"] after 9.1223ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.1371ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.2055ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 1.1616ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.4919ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.4401ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.2817ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 257.9µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.514ms
+probe: en-US marks ["helo", "recieve"] after 17.1081ms in 3 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.4505ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.9889ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.0623ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 855.6µs
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.8714ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.3892ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 268µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.1829ms
+probe: en-US marks ["helo", "recieve"] after 11.8292ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x80080008 after 1.7813ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.9543ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.9133ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.5401ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 936.1µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.8458ms
+probe: en-US marks ["helo", "recieve"] after 11.3434ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x80080008 after 1.792ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 5.0259ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.7838ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.2347ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 854.6µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.2435ms
+probe: en-US marks ["helo", "recieve"] after 12.0535ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 6.7114ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.3005ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.501ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.3613ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 871.5µs
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.9783ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 223.6µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.3965ms
+probe: en-US marks ["helo", "recieve"] after 14.7205ms in 3 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.0994ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.5081ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.7687ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.8564ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 921.7µs
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.2967ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 242.4µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.9314ms
+probe: en-US marks ["helo", "recieve"] after 11.4094ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x80080008 after 1.7344ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 5.1023ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.691ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.7424ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 9.7801ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.9635ms
+probe: en-US marks ["helo", "recieve"] after 13.0251ms in 3 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.4051ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.8758ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.3431ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.921ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.3617ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 921.3µs
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 201.3µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.1909ms
+probe: en-US marks ["helo", "recieve"] after 11.7912ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x80080008 after 1.7321ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 5.1585ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.5995ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.428ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 901.3µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.2997ms
+probe: en-US marks ["helo", "recieve"] after 16.974ms in 4 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.4068ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.6801ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.2961ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 921.1µs
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.9997ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.4377ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 230.5µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.3004ms
+probe: en-US marks ["helo", "recieve"] after 17.0437ms in 4 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.3898ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.8477ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.0241ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.9323ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 910.9µs
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.2222ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 173.6µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.842ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 19.49ms
+probe: en-US marks ["helo", "recieve"] after 21.6816ms in 5 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.5857ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.5563ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.4194ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.2975ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 931.8µs
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 278.4µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.8434ms
+probe: en-US marks ["helo", "recieve"] after 16.213ms in 3 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.3804ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.8059ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.1207ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 842.7µs
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.9216ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.1655ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 192.2µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.219ms
+probe: en-US marks ["helo", "recieve"] after 12.0105ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x80080008 after 1.7877ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.9847ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.5391ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.6632ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 917.5µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.3624ms
+probe: en-US marks ["helo", "recieve"] after 12.2235ms in 3 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 7.1963ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.1503ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.7274ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.1043ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 1.0211ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.2998ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 197.9µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.956ms
+probe: en-US marks ["helo", "recieve"] after 16.5187ms in 4 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.3845ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.9481ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.1278ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.9256ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 869.9µs
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.2244ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 216.8µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 9.3147ms
+probe: en-US marks ["helo", "recieve"] after 14.8834ms in 3 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.3356ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.9786ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.11ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 847.5µs
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.0413ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.2863ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 231.3µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 18.705ms
+probe: en-US marks ["helo", "recieve"] after 33.8863ms in 3 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 7.6993ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.0035ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.4459ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 1.883ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 910.3µs
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.3135ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 218.6µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.7226ms
+probe: en-US marks ["helo", "recieve"] after 11.2358ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x80080008 after 1.7771ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.9328ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.3819ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.5576ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 806.8µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.9801ms
+probe: en-US marks ["helo", "recieve"] after 11.5783ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 7.5076ms
+probe: open en_CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.6736ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.0654ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 2.0282ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 882.4µs
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.3871ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 218.5µs
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 8.674ms
+probe: en-US marks ["helo", "recieve"] after 11.2079ms in 2 runs
+probe: open en-US: CoInitializeEx 0x0, factory 0x80080008 after 1.7698ms
+probe: open en-US: CoInitializeEx 0x0, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 5.0665ms
+probe: open en-CA: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 3.8867ms
+probe: open en-US: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 1, checker 0x0 null false after 4.4387ms
+probe: open xx-YY: CoInitializeEx 0x1, factory 0x0, supported 0x0 known 0, checker 0x0 null true after 840.5µs
