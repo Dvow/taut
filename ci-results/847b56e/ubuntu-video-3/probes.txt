@@ -1,0 +1,240 @@
+probe: ready at 47.942327ms, a frame taken before: false
+probe: first frame at 49.328016ms, ready true
+probe: ready at 44.587512ms, a frame taken before: false
+probe: first frame at 45.955946ms, ready true
+probe: ready at 46.967088ms, a frame taken before: false
+probe: first frame at 47.105685ms, ready true
+probe: ready at 25.764269ms, a frame taken before: false
+probe: first frame at 25.867ms, ready true
+probe: first frame at 26.640936ms, ready false
+probe: ready at 49.157962ms, a frame taken before: true
+probe: ready at 43.048335ms, a frame taken before: false
+probe: first frame at 64.355694ms, ready true
+probe: ready at 44.504883ms, a frame taken before: false
+probe: first frame at 44.631198ms, ready true
+probe: ready at 25.69588ms, a frame taken before: false
+probe: first frame at 25.786368ms, ready true
+probe: ready at 46.015441ms, a frame taken before: false
+probe: first frame at 46.162925ms, ready true
+probe: ready at 46.419182ms, a frame taken before: false
+probe: first frame at 46.52598ms, ready true
+probe: ready at 46.391283ms, a frame taken before: false
+probe: first frame at 46.50198ms, ready true
+probe: ready at 45.207236ms, a frame taken before: false
+probe: first frame at 45.341756ms, ready true
+probe: ready at 44.920159ms, a frame taken before: false
+probe: first frame at 45.010477ms, ready true
+probe: ready at 44.468309ms, a frame taken before: false
+probe: first frame at 44.587861ms, ready true
+probe: ready at 45.794488ms, a frame taken before: false
+probe: first frame at 45.920592ms, ready true
+probe: ready at 47.584275ms, a frame taken before: false
+probe: first frame at 47.693208ms, ready true
+probe: ready at 47.386192ms, a frame taken before: false
+probe: first frame at 47.506766ms, ready true
+probe: ready at 44.668692ms, a frame taken before: false
+probe: first frame at 44.799496ms, ready true
+probe: ready at 45.885996ms, a frame taken before: false
+probe: first frame at 46.002372ms, ready true
+probe: ready at 45.320281ms, a frame taken before: false
+probe: first frame at 68.171932ms, ready true
+probe: ready at 45.535236ms, a frame taken before: false
+probe: first frame at 69.311842ms, ready true
+probe: ready at 45.350245ms, a frame taken before: false
+probe: first frame at 47.260357ms, ready true
+probe: ready at 44.795386ms, a frame taken before: false
+probe: first frame at 44.93223ms, ready true
+probe: ready at 44.829991ms, a frame taken before: false
+probe: first frame at 44.956847ms, ready true
+probe: ready at 49.167561ms, a frame taken before: false
+probe: first frame at 50.508546ms, ready true
+probe: ready at 46.180586ms, a frame taken before: false
+probe: first frame at 47.716293ms, ready true
+probe: ready at 25.267317ms, a frame taken before: false
+probe: first frame at 25.358657ms, ready true
+probe: ready at 25.639829ms, a frame taken before: false
+probe: first frame at 25.745837ms, ready true
+probe: ready at 26.5918ms, a frame taken before: false
+probe: first frame at 26.693098ms, ready true
+probe: ready at 43.912432ms, a frame taken before: false
+probe: first frame at 65.357042ms, ready true
+probe: ready at 44.413744ms, a frame taken before: false
+probe: first frame at 44.520362ms, ready true
+probe: ready at 25.512723ms, a frame taken before: false
+probe: first frame at 25.618981ms, ready true
+probe: ready at 47.066376ms, a frame taken before: false
+probe: first frame at 47.176901ms, ready true
+probe: ready at 45.815845ms, a frame taken before: false
+probe: first frame at 45.922523ms, ready true
+probe: ready at 25.946493ms, a frame taken before: false
+probe: first frame at 26.057389ms, ready true
+probe: ready at 45.629404ms, a frame taken before: false
+probe: first frame at 45.738717ms, ready true
+probe: ready at 46.185369ms, a frame taken before: false
+probe: first frame at 46.285525ms, ready true
+probe: ready at 44.736017ms, a frame taken before: false
+probe: first frame at 44.866199ms, ready true
+probe: ready at 49.031991ms, a frame taken before: false
+probe: first frame at 49.159517ms, ready true
+probe: ready at 47.605104ms, a frame taken before: false
+probe: first frame at 47.729496ms, ready true
+probe: ready at 46.401171ms, a frame taken before: false
+probe: first frame at 46.521615ms, ready true
+probe: ready at 47.189861ms, a frame taken before: false
+probe: first frame at 47.319061ms, ready true
+probe: ready at 45.967354ms, a frame taken before: false
+probe: first frame at 46.090764ms, ready true
+probe: ready at 46.267337ms, a frame taken before: false
+probe: first frame at 48.375207ms, ready true
+probe: ready at 46.163077ms, a frame taken before: false
+probe: first frame at 48.466431ms, ready true
+probe: ready at 46.127924ms, a frame taken before: false
+probe: first frame at 48.156857ms, ready true
+probe: ready at 45.645189ms, a frame taken before: false
+probe: first frame at 45.75873ms, ready true
+probe: ready at 44.999206ms, a frame taken before: false
+probe: first frame at 45.127545ms, ready true
+probe: ready at 49.348381ms, a frame taken before: false
+probe: first frame at 50.69255ms, ready true
+probe: ready at 46.625431ms, a frame taken before: false
+probe: first frame at 47.974259ms, ready true
+probe: ready at 26.127118ms, a frame taken before: false
+probe: first frame at 26.242643ms, ready true
+probe: ready at 26.832395ms, a frame taken before: false
+probe: first frame at 26.929486ms, ready true
+probe: ready at 25.074957ms, a frame taken before: false
+probe: first frame at 25.175694ms, ready true
+probe: ready at 43.972806ms, a frame taken before: false
+probe: first frame at 65.428054ms, ready true
+probe: ready at 47.054882ms, a frame taken before: false
+probe: first frame at 47.178201ms, ready true
+probe: ready at 26.07142ms, a frame taken before: false
+probe: first frame at 26.176635ms, ready true
+probe: ready at 47.841927ms, a frame taken before: false
+probe: first frame at 47.972399ms, ready true
+probe: ready at 45.505717ms, a frame taken before: false
+probe: first frame at 45.638163ms, ready true
+probe: ready at 25.106089ms, a frame taken before: false
+probe: first frame at 25.198772ms, ready true
+probe: ready at 47.694094ms, a frame taken before: false
+probe: first frame at 47.844645ms, ready true
+probe: ready at 45.264399ms, a frame taken before: false
+probe: first frame at 45.370606ms, ready true
+probe: ready at 45.704628ms, a frame taken before: false
+probe: first frame at 45.812638ms, ready true
+probe: ready at 24.976228ms, a frame taken before: false
+probe: first frame at 25.08506ms, ready true
+probe: ready at 26.121718ms, a frame taken before: false
+probe: first frame at 26.208299ms, ready true
+probe: ready at 47.270735ms, a frame taken before: false
+probe: first frame at 47.394005ms, ready true
+probe: ready at 45.386706ms, a frame taken before: false
+probe: first frame at 45.473818ms, ready true
+probe: ready at 45.868252ms, a frame taken before: false
+probe: first frame at 45.999306ms, ready true
+probe: ready at 44.781106ms, a frame taken before: false
+probe: first frame at 46.630686ms, ready true
+probe: ready at 45.329074ms, a frame taken before: false
+probe: first frame at 47.43445ms, ready true
+probe: ready at 44.65546ms, a frame taken before: false
+probe: first frame at 46.645852ms, ready true
+probe: ready at 45.056659ms, a frame taken before: false
+probe: first frame at 45.168827ms, ready true
+probe: ready at 45.601987ms, a frame taken before: false
+probe: first frame at 45.712512ms, ready true
+probe: ready at 47.340721ms, a frame taken before: false
+probe: first frame at 48.671997ms, ready true
+probe: ready at 45.522387ms, a frame taken before: false
+probe: first frame at 46.876275ms, ready true
+probe: ready at 25.418104ms, a frame taken before: false
+probe: first frame at 25.52344ms, ready true
+probe: ready at 26.751594ms, a frame taken before: false
+probe: first frame at 26.841972ms, ready true
+probe: ready at 26.005667ms, a frame taken before: false
+probe: first frame at 26.105603ms, ready true
+probe: ready at 44.042516ms, a frame taken before: false
+probe: first frame at 65.412694ms, ready true
+probe: ready at 46.740393ms, a frame taken before: false
+probe: first frame at 46.86284ms, ready true
+probe: ready at 25.555841ms, a frame taken before: false
+probe: first frame at 25.647942ms, ready true
+probe: ready at 46.584863ms, a frame taken before: false
+probe: first frame at 46.68551ms, ready true
+probe: ready at 45.443101ms, a frame taken before: false
+probe: first frame at 45.552374ms, ready true
+probe: ready at 47.062782ms, a frame taken before: false
+probe: first frame at 47.204606ms, ready true
+probe: ready at 47.23372ms, a frame taken before: false
+probe: first frame at 47.392596ms, ready true
+probe: ready at 44.795927ms, a frame taken before: false
+probe: first frame at 44.881957ms, ready true
+probe: ready at 45.922241ms, a frame taken before: false
+probe: first frame at 46.045079ms, ready true
+probe: ready at 45.791909ms, a frame taken before: false
+probe: first frame at 45.903837ms, ready true
+probe: ready at 48.866296ms, a frame taken before: false
+probe: first frame at 48.955633ms, ready true
+probe: ready at 47.560538ms, a frame taken before: false
+probe: first frame at 47.680991ms, ready true
+probe: ready at 45.209786ms, a frame taken before: false
+probe: first frame at 45.316064ms, ready true
+probe: ready at 46.87157ms, a frame taken before: false
+probe: first frame at 46.998496ms, ready true
+probe: ready at 46.20862ms, a frame taken before: false
+probe: first frame at 48.124312ms, ready true
+probe: ready at 44.761148ms, a frame taken before: false
+probe: first frame at 46.860722ms, ready true
+probe: ready at 45.350859ms, a frame taken before: false
+probe: first frame at 47.420518ms, ready true
+probe: ready at 46.512258ms, a frame taken before: false
+probe: first frame at 46.641819ms, ready true
+probe: ready at 46.05495ms, a frame taken before: false
+probe: first frame at 46.185623ms, ready true
+probe: ready at 47.618768ms, a frame taken before: false
+probe: first frame at 49.124748ms, ready true
+probe: ready at 45.142874ms, a frame taken before: false
+probe: first frame at 46.359948ms, ready true
+probe: ready at 26.510265ms, a frame taken before: false
+probe: first frame at 26.623025ms, ready true
+probe: ready at 25.773177ms, a frame taken before: false
+probe: first frame at 25.87176ms, ready true
+probe: ready at 25.207444ms, a frame taken before: false
+probe: first frame at 25.319092ms, ready true
+probe: ready at 44.705038ms, a frame taken before: false
+probe: first frame at 65.983806ms, ready true
+probe: ready at 25.032357ms, a frame taken before: false
+probe: first frame at 25.138344ms, ready true
+probe: ready at 26.666127ms, a frame taken before: false
+probe: first frame at 26.763478ms, ready true
+probe: ready at 47.944836ms, a frame taken before: false
+probe: first frame at 48.086249ms, ready true
+probe: ready at 45.605892ms, a frame taken before: false
+probe: first frame at 45.732998ms, ready true
+probe: ready at 47.240232ms, a frame taken before: false
+probe: first frame at 47.381204ms, ready true
+probe: ready at 47.78627ms, a frame taken before: false
+probe: first frame at 47.911002ms, ready true
+probe: ready at 45.494199ms, a frame taken before: false
+probe: first frame at 45.623239ms, ready true
+probe: ready at 45.39217ms, a frame taken before: false
+probe: first frame at 45.504819ms, ready true
+probe: ready at 45.884334ms, a frame taken before: false
+probe: first frame at 46.018213ms, ready true
+probe: ready at 25.099794ms, a frame taken before: false
+probe: first frame at 25.203126ms, ready true
+probe: ready at 46.544983ms, a frame taken before: false
+probe: first frame at 46.659536ms, ready true
+probe: ready at 47.050363ms, a frame taken before: false
+probe: first frame at 47.177058ms, ready true
+probe: ready at 45.832278ms, a frame taken before: false
+probe: first frame at 45.96275ms, ready true
+probe: ready at 46.094513ms, a frame taken before: false
+probe: first frame at 48.11476ms, ready true
+probe: ready at 44.760702ms, a frame taken before: false
+probe: first frame at 46.978266ms, ready true
+probe: ready at 44.747613ms, a frame taken before: false
+probe: first frame at 46.89036ms, ready true
+probe: ready at 47.467926ms, a frame taken before: false
+probe: first frame at 47.622223ms, ready true
+probe: ready at 45.578785ms, a frame taken before: false
+probe: first frame at 45.712423ms, ready true
