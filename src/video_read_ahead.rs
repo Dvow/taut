@@ -93,7 +93,7 @@ impl<R: Reading + 'static> ReadAhead<R> {
     }
 
     /// What `read` makes of the captions read so far.
-    #[cfg(any(test, windows))]
+    #[cfg(any(test, windows, target_vendor = "apple"))]
     pub(crate) fn with<T>(&self, read: impl FnOnce(&mut R) -> T) -> T {
         read(&mut self.lock().captions)
     }
@@ -145,7 +145,7 @@ impl<R: Reading + 'static> ReadAhead<R> {
     }
 
     /// The thread read what is shown at `at`: `take` takes it in.
-    #[cfg(any(test, windows))]
+    #[cfg(any(test, windows, target_vendor = "apple"))]
     pub(crate) fn took(&self, at: Duration, take: impl FnOnce(&mut R)) {
         let mut state = self.lock();
         state.read.1 = state.read.1.max(at);

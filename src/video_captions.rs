@@ -282,7 +282,7 @@ fn line_place(value: &str) -> Option<Down> {
 
 /// A 3GPP timed text sample's text (TS 26.245: its length, then UTF-8, or UTF-16 after a byte
 /// order mark; the style boxes after it dropped), trimmed.
-#[cfg(any(test, windows, target_os = "android"))]
+#[cfg(any(test, windows, target_vendor = "apple", target_os = "android"))]
 pub(crate) fn timed_text(sample: &[u8]) -> String {
     let [high, low, rest @ ..] = sample else { return String::new() };
     let text = &rest[..(usize::from(*high) << 8 | usize::from(*low)).min(rest.len())];
@@ -296,7 +296,7 @@ pub(crate) fn timed_text(sample: &[u8]) -> String {
 }
 
 /// A WebVTT cue's text as a caption placed as its settings say (outside any region).
-#[cfg(any(test, windows, target_family = "wasm"))]
+#[cfg(any(test, windows, target_vendor = "apple", target_family = "wasm"))]
 pub(crate) fn caption_with_settings(text: &str, settings: &str) -> Caption {
     placed_caption(text, settings, &[])
 }
@@ -344,7 +344,7 @@ pub(crate) fn styled(line: &str) -> (String, bool) {
 }
 
 /// Text without its markup, its entities read (see `styled`).
-#[cfg(any(test, target_vendor = "apple"))]
+#[cfg(test)]
 pub(crate) fn plain(line: &str) -> String {
     styled(line).0
 }

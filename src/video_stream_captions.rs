@@ -69,7 +69,7 @@ impl ClosedCaptions {
     }
 
     /// The cues of the `nth` track found so far.
-    #[cfg(any(test, target_vendor = "apple"))]
+    #[cfg(test)]
     pub(crate) fn cues_of_track(&self, nth: usize) -> &[Cue] {
         self.found.get(nth).map_or(&[], |source| self.cues(*source))
     }

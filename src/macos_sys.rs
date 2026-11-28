@@ -371,7 +371,7 @@ impl<T> Block<T> {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", feature = "video"))]
 #[link(name = "objc")]
 unsafe extern "C" {
     fn class_createInstance(class: Obj, extra: usize) -> Obj;
@@ -380,7 +380,7 @@ unsafe extern "C" {
 
 /// A new object of a class of the library's with `extra` kept beside it, in its extra bytes
 /// (retained: the caller releases or autoreleases it).
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", feature = "video"))]
 pub(crate) fn new_with_extra<T: Copy>(class: Obj, extra: T) -> Obj {
     // SAFETY: an object with room for a `T` beside it, written once.
     unsafe {
@@ -394,7 +394,7 @@ pub(crate) fn new_with_extra<T: Copy>(class: Obj, extra: T) -> Obj {
 ///
 /// # Safety
 /// `object` was made by `new_with_extra` with a `T`.
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", feature = "video"))]
 pub(crate) unsafe fn extra_of<T: Copy>(object: Obj) -> T {
     // SAFETY: as the caller promises.
     unsafe { object_getIndexedIvars(object).cast::<T>().read() }

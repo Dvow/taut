@@ -89,8 +89,10 @@ pub fn answer(mut stream: TcpStream, folder: &Path, posted: &mut dyn FnMut(&str,
         "wasm" => "application/wasm",
         "ttf" | "otf" => "font/ttf",
         "png" => "image/png",
-        "mp4" => "video/mp4",
+        "mp4" | "m4s" => "video/mp4",
         "webm" => "video/webm",
+        "m3u8" => "application/vnd.apple.mpegurl",
+        "vtt" => "text/vtt; charset=utf-8",
         _ => "application/octet-stream",
     };
     let last = bytes.len().saturating_sub(1);

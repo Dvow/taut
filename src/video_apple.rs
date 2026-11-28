@@ -3,19 +3,21 @@
 //! classes are reached by name. Bytes are played from a file of their own, removed after. It
 //! plays while the main thread's run loop turns (AppKit's or UIKit's).
 //!
-//! Sound tracks are the item's audio tracks, one enabled at a time. Caption tracks are the
-//! asset's subtitle and text tracks and its closed-caption tracks (CEA-608), their cues read
-//! once by an `AVAssetReader`; then the captions in the video stream (CEA-608 and CEA-708 in
-//! H.264's or HEVC's SEI), read by another as it plays (`video_stream_captions`). Speed is the
-//! player's rate, the pitch kept by the spectral time-pitch algorithm.
+//! Sound tracks are the item's audio tracks, one enabled at a time. Caption tracks are a file's
+//! own, read by taut as it plays (`video_mp4`), or a stream's, as AVFoundation hands them over
+//! (`video_apple_legible`); then the captions in a file's video stream (CEA-608 and CEA-708 in
+//! H.264's or HEVC's SEI), read by an `AVAssetReader` as it plays (`video_stream_captions`).
+//! Speed is the player's rate, the pitch kept by the spectral time-pitch algorithm.
 
 use crate::color::Color;
 use crate::macos_sys::{Block, Bool, Obj, Pool, array_items, class, ns_string, rust_string, send, send_large};
 use crate::video::{CaptionStyle, News, Track, Tracks, VideoError, VideoSource};
-use crate::video_captions::{Caption, Cue};
+use crate::video_apple_legible::LegibleCaptions;
+use crate::video_captions::Caption;
+use crate::video_mp4::FileCaptions;
 use crate::video_read_ahead::{ReadAhead, SeiReading, Step};
 use crate::video_sei::Codec;
-use crate::video_stream_captions::{ClosedCaptions, cea608_pairs};
+use crate::video_stream_captions::ClosedCaptions;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -30,7 +32,7 @@ unsafe extern "C" {
 /// A time as CoreMedia keeps it: `value / timescale` seconds, valid where `flags & 1`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-struct CMTime {
+pub(crate) struct CMTime {
     value: i64,
     timescale: i32,
     flags: u32,
@@ -39,7 +41,7 @@ struct CMTime {
 
 impl CMTime {
     /// Its time, if a known, finite one (valid, not indefinite or infinite).
-    fn known(self) -> Option<Duration> {
+    pub(crate) fn known(self) -> Option<Duration> {
         let finite = self.flags & 1 != 0 && self.flags & 0x1C == 0 && self.timescale > 0;
         finite.then(|| Duration::from_secs_f64((self.value as f64 / self.timescale as f64).max(0.0)))
     }
@@ -50,9 +52,9 @@ impl CMTime {
 
 /// CoreVideo's functions for reading a pixel buffer, and its key for their format; CoreMedia's
 /// for reading a sample buffer; AVFoundation's name of the time-pitch algorithm that keeps the
-/// pitch at any rate. With `gpu-draw`, CoreVideo's keys asking for buffers Metal reads and its
-/// cache of Metal textures of them.
-struct Functions {
+/// pitch at any rate, and of the characteristic of caption tracks. With `gpu-draw`, CoreVideo's
+/// keys asking for buffers Metal reads and its cache of Metal textures of them.
+pub(crate) struct Functions {
     lock: unsafe extern "C" fn(*mut c_void, u64) -> i32,
     unlock: unsafe extern "C" fn(*mut c_void, u64) -> i32,
     base: unsafe extern "C" fn(*mut c_void) -> *const u8,
@@ -61,14 +63,16 @@ struct Functions {
     height: unsafe extern "C" fn(*mut c_void) -> usize,
     release: unsafe extern "C" fn(*mut c_void),
     format_key: Obj,
-    sample_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
+    pub(crate) sample_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
     decode_time: unsafe extern "C" fn(*mut c_void) -> CMTime,
-    sample_duration: unsafe extern "C" fn(*mut c_void) -> CMTime,
+    pub(crate) sample_duration: unsafe extern "C" fn(*mut c_void) -> CMTime,
+    pub(crate) sample_format: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     sample_data: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     data_length: unsafe extern "C" fn(*mut c_void) -> usize,
     copy_data: unsafe extern "C" fn(*mut c_void, usize, usize, *mut u8) -> i32,
-    media_subtype: unsafe extern "C" fn(*mut c_void) -> u32,
+    pub(crate) media_subtype: unsafe extern "C" fn(*mut c_void) -> u32,
     spectral: Obj,
+    pub(crate) legible: Obj,
     #[cfg(feature = "gpu-draw")]
     metal: MetalTextures,
 }
@@ -91,7 +95,7 @@ unsafe impl Send for Functions {}
 unsafe impl Sync for Functions {}
 
 /// The frameworks, opened once; none where AVFoundation is missing.
-fn functions() -> Option<&'static Functions> {
+pub(crate) fn functions() -> Option<&'static Functions> {
     static LOADED: OnceLock<Option<Functions>> = OnceLock::new();
     LOADED.get_or_init(load).as_ref()
 }
@@ -124,11 +128,13 @@ fn load() -> Option<Functions> {
             sample_time: function(found(media, c"CMSampleBufferGetPresentationTimeStamp")?),
             decode_time: function(found(media, c"CMSampleBufferGetDecodeTimeStamp")?),
             sample_duration: function(found(media, c"CMSampleBufferGetDuration")?),
+            sample_format: function(found(media, c"CMSampleBufferGetFormatDescription")?),
             sample_data: function(found(media, c"CMSampleBufferGetDataBuffer")?),
             data_length: function(found(media, c"CMBlockBufferGetDataLength")?),
             copy_data: function(found(media, c"CMBlockBufferCopyDataBytes")?),
             media_subtype: function(found(media, c"CMFormatDescriptionGetMediaSubType")?),
             spectral: *found(av, c"AVAudioTimePitchAlgorithmSpectral")?.cast::<Obj>(),
+            legible: *found(av, c"AVMediaCharacteristicLegible")?.cast::<Obj>(),
             #[cfg(feature = "gpu-draw")]
             metal: MetalTextures {
                 compatible_key: *found(video, c"kCVPixelBufferMetalCompatibilityKey")?.cast::<Obj>(),
@@ -174,12 +180,105 @@ pub(crate) struct Player {
     seeked: &'static Seeked,
     /// The rate it plays at.
     speed: f32,
-    /// The caption tracks' cues, read once the item is ready; the one chosen.
-    cues: Vec<Vec<Cue>>,
+    /// The source's own caption tracks, and how many of them were listed (before those of the
+    /// video stream); the one chosen.
+    own: OwnCaptions,
+    own_listed: usize,
     captions: Option<usize>,
-    /// The captions in the video stream of a file, read by a thread of their own (tracks
-    /// after the file's).
+    /// The captions in the video stream of a file, read by a thread of their own.
     in_stream: Arc<ReadAhead<SeiReading>>,
+}
+
+/// Where a source's own caption tracks come from.
+enum OwnCaptions {
+    /// A file's, read by taut as it plays.
+    File(Arc<ReadAhead<FileCaptions>>),
+    /// A stream's, as AVFoundation hands them over.
+    Stream(LegibleCaptions),
+}
+
+impl OwnCaptions {
+    /// A file's caption tracks, read from now on by a thread of their own.
+    fn of_file(path: PathBuf) -> OwnCaptions {
+        let captions = Arc::new(ReadAhead::new());
+        captions.spawn(move |captions| {
+            if let Ok(file) = std::fs::File::open(&path) {
+                crate::video_mp4::read_paced(file, captions);
+            }
+        });
+        OwnCaptions::File(captions)
+    }
+
+    /// The tracks, now listed.
+    fn tracks(&mut self) -> Vec<Track> {
+        match self {
+            OwnCaptions::File(captions) => captions.with(FileCaptions::tracks),
+            OwnCaptions::Stream(captions) => captions.tracks(),
+        }
+    }
+
+    /// Whether tracks came since they were last listed.
+    fn unlisted(&self) -> bool {
+        match self {
+            OwnCaptions::File(captions) => captions.with(|captions| captions.unlisted()),
+            OwnCaptions::Stream(captions) => captions.unlisted(),
+        }
+    }
+
+    /// Whether tracks may still come though the video stands still.
+    fn reading(&self) -> bool {
+        match self {
+            OwnCaptions::File(captions) => captions.reading(),
+            OwnCaptions::Stream(captions) => captions.loading(),
+        }
+    }
+
+    /// Shows the `nth` track from now on, or none.
+    fn choose(&mut self, nth: Option<usize>) {
+        if let OwnCaptions::Stream(captions) = self {
+            captions.choose(nth);
+        }
+    }
+
+    /// The captions the `nth` track shows at `at`.
+    fn captions_at(&self, nth: usize, at: Duration) -> Vec<Caption> {
+        match self {
+            OwnCaptions::File(captions) => captions.with(|captions| captions.captions_at(nth, at)),
+            OwnCaptions::Stream(captions) => captions.captions_at(at),
+        }
+    }
+
+    /// It plays at `position`.
+    fn played_to(&self, position: Duration) {
+        if let OwnCaptions::File(captions) = self {
+            captions.played_to(position);
+        }
+    }
+
+    /// It went to `to`.
+    fn seek(&self, to: Duration) {
+        match self {
+            OwnCaptions::File(captions) => captions.seek(to),
+            OwnCaptions::Stream(captions) => captions.sought(to),
+        }
+    }
+}
+
+impl Drop for OwnCaptions {
+    fn drop(&mut self) {
+        if let OwnCaptions::File(captions) = self {
+            captions.stop();
+        }
+    }
+}
+
+/// A source's own caption tracks: a file's, read by taut, and the captions in its video stream
+/// read into `in_stream`; or a stream's, as the item hands them over.
+fn own_captions(functions: &'static Functions, url: Obj, item: Obj, in_stream: &Arc<ReadAhead<SeiReading>>) -> OwnCaptions {
+    let Some(path) = file_of(url) else { return OwnCaptions::Stream(LegibleCaptions::new(functions, item)) };
+    let url = Retained::of(url);
+    in_stream.spawn(move |in_stream| read_captions_in_stream(functions, &url, in_stream));
+    OwnCaptions::of_file(path)
 }
 
 /// The block a seek calls when it is over, finished or not, with the count of seeks over. It
@@ -221,10 +320,7 @@ impl Player {
             }
             send::<()>(item, c"setAudioTimePitchAlgorithm:", (functions.spectral,));
             let in_stream = Arc::new(ReadAhead::new());
-            if send::<Bool>(url, c"isFileURL", ()) != 0 {
-                let url = Retained::of(url);
-                in_stream.spawn(move |in_stream| read_captions_in_stream(functions, &url, in_stream));
-            }
+            let own = own_captions(functions, url, item, &in_stream);
             Ok(Player {
                 functions,
                 player,
@@ -238,7 +334,8 @@ impl Player {
                 in_place: false,
                 seeked: seeked(),
                 speed: 1.0,
-                cues: Vec::new(),
+                own,
+                own_listed: 0,
                 captions: None,
                 in_stream,
             })
@@ -271,12 +368,14 @@ impl Player {
         // lives for good.
         unsafe { send::<()>(self.player, c"seekToTime:toleranceBefore:toleranceAfter:completionHandler:", (CMTime::of(to), exact, exact, over)) };
         self.in_stream.seek(to);
+        self.own.seek(to);
     }
-    /// Where it plays (the captions' reader reads on from there).
+    /// Where it plays (the captions' readers read on from there).
     pub(crate) fn position(&mut self) -> Duration {
         // SAFETY: a live player.
         let position = unsafe { send_large::<CMTime>(self.player, c"currentTime", ()) }.known().unwrap_or_default();
         self.in_stream.played_to(position);
+        self.own.played_to(position);
         position
     }
     pub(crate) fn length(&mut self) -> Option<Duration> {
@@ -312,8 +411,8 @@ impl Player {
         let at_end = self.length().is_some_and(|length| self.position() + Duration::from_millis(1) >= length);
         let ended = self.playing && rate == 0.0 && at_end;
         self.playing &= !ended;
-        let tracks_changed = self.ready && self.in_stream.with_tracks(|tracks| tracks.unlisted());
-        News { ended, error, clears_on_play: false, tracks_changed, reading_captions: self.in_stream.reading() }
+        let tracks_changed = self.ready && (self.own.unlisted() || self.in_stream.with_tracks(|tracks| tracks.unlisted()));
+        News { ended, error, clears_on_play: false, tracks_changed, reading_captions: self.own.reading() || self.in_stream.reading() }
     }
 
     /// The newest frame where there is one not given yet: its width and time, its pixels in
@@ -385,28 +484,21 @@ impl Player {
         all.into_iter().filter(|track| kind(track).is_some_and(|kind| kinds.contains(&kind.as_str()))).collect()
     }
 
-    /// The item's sound and caption tracks, once it is ready (the cues of its own caption tracks
-    /// read then: each closed-caption track gives a track for each CEA-608 service it holds),
-    /// and those found in the video stream so far.
+    /// The item's sound tracks, once it is ready; the source's own caption tracks found so far
+    /// (a file's closed-caption track gives a track for each CEA-608 service it holds), then
+    /// those of its video stream.
     pub(crate) fn tracks(&mut self) -> Option<Tracks> {
         if !self.ready {
             return None;
         }
         let _pool = Pool::new();
         let sound = self.item_tracks(&["soun"]);
-        let (captions, closed) = (self.item_tracks(&["sbtl", "text"]), self.item_tracks(&["clcp"]));
         // SAFETY: live tracks.
         let chosen = sound.iter().position(|track| unsafe { send::<Bool>(*track, c"isEnabled", ()) } != 0);
-        let mut listed: Vec<Track> = captions.iter().map(|track| track_of(*track)).collect();
-        self.cues = captions.iter().map(|track| self.cues_of(*track)).collect();
-        for track in closed {
-            for (service, cues) in self.cea608_services_of(track) {
-                listed.push(Track { name: service.name, ..track_of(track) });
-                self.cues.push(cues);
-            }
-        }
-        listed.extend(self.in_stream.with_tracks(ClosedCaptions::tracks));
-        Some(Tracks { sound: sound.iter().map(|track| track_of(*track)).collect(), captions: listed, sound_chosen: chosen })
+        let mut captions = self.own.tracks();
+        self.own_listed = captions.len();
+        captions.extend(self.in_stream.with_tracks(ClosedCaptions::tracks));
+        Some(Tracks { sound: sound.iter().map(|track| track_of(*track)).collect(), captions, sound_chosen: chosen })
     }
 
     /// Plays the `nth` sound track, and no other.
@@ -419,72 +511,16 @@ impl Player {
     }
     pub(crate) fn choose_captions(&mut self, nth: Option<usize>) {
         self.captions = nth;
+        self.own.choose(nth.filter(|nth| *nth < self.own_listed));
     }
-    /// The chosen caption track's captions on show: of the file's tracks, or of the video
+    /// The chosen caption track's captions on show: of the source's own tracks, or of the video
     /// stream's.
     pub(crate) fn captions(&mut self) -> Vec<Caption> {
         let (at, Some(nth)) = (self.position(), self.captions) else { return Vec::new() };
-        match nth.checked_sub(self.cues.len()) {
-            None => crate::video_captions::captions_at(&self.cues[nth], at),
+        match nth.checked_sub(self.own_listed) {
+            None => self.own.captions_at(nth, at),
             Some(in_stream) => self.in_stream.with_tracks(|tracks| tracks.captions_at(in_stream, at)),
         }
-    }
-
-    /// A caption track's cues, read from its 3GPP timed text samples; none where they can't be
-    /// read (a stream).
-    fn cues_of(&self, track: Obj) -> Vec<Cue> {
-        let mut cues = Vec::new();
-        if let Some(output) = self.samples_of(track) {
-            each_sample(output, |sample| cues.extend(self.cue_of(sample)));
-        }
-        cues.sort_by_key(|cue| cue.from);
-        cues
-    }
-
-    /// A closed-caption track's CEA-608 services (`CC1` to `CC4`, `T1` to `T4`) and their cues:
-    /// its samples' byte pairs of field 1 (`cdat` atoms) and field 2 (`cdt2`), read by taut.
-    fn cea608_services_of(&self, track: Obj) -> Vec<(Track, Vec<Cue>)> {
-        let mut decoded = ClosedCaptions::default();
-        let Some(output) = self.samples_of(track) else { return Vec::new() };
-        each_sample(output, |sample| {
-            // SAFETY: a live sample buffer.
-            let at = unsafe { (self.functions.sample_time)(sample) }.known();
-            let (Some(at), Some(bytes)) = (at, sample_bytes(self.functions, sample)) else { return };
-            cea608_pairs(&bytes).for_each(|(field, pair)| decoded.read_cea608_pair(field, pair, at));
-        });
-        decoded.tracks().into_iter().enumerate().map(|(nth, track)| (track, decoded.cues_of_track(nth).to_vec())).collect()
-    }
-
-    /// An `AVAssetReader`'s output of a track's samples as stored, reading (autoreleased, with
-    /// its reader); none where they can't be read.
-    fn samples_of(&self, track: Obj) -> Option<Obj> {
-        // SAFETY: live objects; what they give is autoreleased into the caller's pool.
-        let (asset, asset_track): (Obj, Obj) = unsafe { (send(self.item, c"asset", ()), send(track, c"assetTrack", ())) };
-        stored_samples(asset, asset_track, Duration::ZERO).map(|(_, output)| output)
-    }
-
-    /// A 3GPP timed text sample buffer's cue: its text, at its time, for its duration; none
-    /// where it is empty.
-    fn cue_of(&self, sample: *mut c_void) -> Option<Cue> {
-        let f = self.functions;
-        // SAFETY: a live sample buffer.
-        let (from, length) = unsafe { ((f.sample_time)(sample).known()?, (f.sample_duration)(sample).known()) };
-        let text = timed_text(&sample_bytes(f, sample)?)?;
-        Some(Cue { from, to: from + length.unwrap_or(Duration::MAX - from), caption: Caption::plain(text) })
-    }
-}
-
-/// Hands each sample buffer an output copies to `take`, then releases it.
-fn each_sample(output: Obj, mut take: impl FnMut(*mut c_void)) {
-    loop {
-        // SAFETY: a reading output; the sample buffer it copies is ours, read and released.
-        let sample: *mut c_void = unsafe { send(output, c"copyNextSampleBuffer", ()) };
-        if sample.is_null() {
-            return;
-        }
-        take(sample);
-        // SAFETY: as above.
-        unsafe { crate::macos_sys::CFRelease(sample) };
     }
 }
 
@@ -509,7 +545,7 @@ fn stored_samples(asset: Obj, track: Obj, from: Duration) -> Option<(Obj, Obj)> 
 }
 
 /// A sample buffer's bytes; none where it has none.
-fn sample_bytes(f: &Functions, sample: *mut c_void) -> Option<Vec<u8>> {
+pub(crate) fn sample_bytes(f: &Functions, sample: *mut c_void) -> Option<Vec<u8>> {
     // SAFETY: a live sample buffer; its data is copied within its length.
     unsafe {
         let data = (f.sample_data)(sample);
@@ -760,13 +796,6 @@ fn track_of(track: Obj) -> Track {
     Track { language: language.filter(|language| language != "und").unwrap_or_default(), name: String::new() }
 }
 
-/// A 3GPP timed text sample's text, after its length; none where it is empty.
-fn timed_text(sample: &[u8]) -> Option<String> {
-    let [high, low, rest @ ..] = sample else { return None };
-    let text = &rest[..(usize::from(*high) << 8 | usize::from(*low)).min(rest.len())];
-    Some(crate::video_captions::plain(String::from_utf8_lossy(text).trim())).filter(|text| !text.is_empty())
-}
-
 /// How captions look, as the system's caption settings say (MediaAccessibility's caption
 /// appearance, the user's): colours, their opacity, the size against the usual.
 pub(crate) fn caption_style() -> CaptionStyle {
@@ -844,6 +873,13 @@ fn url_of(source: VideoSource) -> Result<(Obj, Option<PathBuf>), VideoError> {
         true => Err(VideoError::Refused(format!("{text} is no address"))),
         false => Ok((url, written)),
     }
+}
+
+/// The file a URL names, where it is a file's.
+fn file_of(url: Obj) -> Option<PathBuf> {
+    // SAFETY: a live URL; its path is copied.
+    let path = unsafe { (send::<Bool>(url, c"isFileURL", ()) != 0).then(|| rust_string(send(url, c"path", ()))) };
+    path.flatten().map(PathBuf::from)
 }
 
 impl Drop for Player {

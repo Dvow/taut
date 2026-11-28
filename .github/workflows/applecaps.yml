@@ -1,0 +1,57 @@
+# Branch wip/applecaps only: captions of streams and WebVTT tracks on Apple (the Mac and the
+# iOS simulator), and Safari's own text tracks. Each job's output is committed into
+# ci-results/<commit>/.
+name: applecaps
+
+on:
+  push:
+    branches: [wip/applecaps]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUST_BACKTRACE: 1
+  TAUT_CI: 1
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -c clippy -t aarch64-apple-ios -t aarch64-apple-ios-sim && rustup default stable
+      - name: Video on the Mac and in the iOS simulator
+        run: |
+          set +e
+          mkdir -p ci-results/${GITHUB_SHA::7}
+          { sw_vers; TAUT_PROBE_NATIVE=0 cargo test --features video --test video_apple -- --nocapture; echo "plain $?";
+            TAUT_VIDEO=required TAUT_IOS_SIMULATOR=1 cargo test --features video --test video_apple -- --nocapture; echo "exit $?";
+            echo "==== app output"; tail -n 600 target/video-ios/*.err target/video-ios/*.out 2>/dev/null; } > ci-results/${GITHUB_SHA::7}/macos.txt 2>&1
+          code=$(grep '^exit ' ci-results/${GITHUB_SHA::7}/macos.txt | tail -1 | cut -d' ' -f2)
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci-results && git commit -q -m "results macos [skip ci]"
+          for try in 1 2 3 4 5 6 7 8 9 10; do git pull -q --rebase origin wip/applecaps && git push -q origin HEAD:wip/applecaps && break; sleep $((RANDOM % 10 + 3)); done
+          exit $code
+
+  safari:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal -t wasm32-unknown-unknown && rustup default stable
+      - name: Video in Safari
+        run: |
+          set +e
+          mkdir -p ci-results/${GITHUB_SHA::7}
+          { sudo safaridriver --enable; echo "enabled $?"; TAUT_BROWSER=safari TAUT_VIDEO=required cargo test --features video --test video_web -- --nocapture; echo "exit $?"; } > ci-results/${GITHUB_SHA::7}/safari.txt 2>&1
+          code=$(grep '^exit ' ci-results/${GITHUB_SHA::7}/safari.txt | tail -1 | cut -d' ' -f2)
+          git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci-results && git commit -q -m "results safari [skip ci]"
+          for try in 1 2 3 4 5 6 7 8 9 10; do git pull -q --rebase origin wip/applecaps && git push -q origin HEAD:wip/applecaps && break; sleep $((RANDOM % 10 + 3)); done
+          exit $code

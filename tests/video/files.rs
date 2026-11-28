@@ -534,6 +534,9 @@ pub const TWO_CAPTIONS: [Captions; 2] = [Captions { language: "eng", name: "Engl
 /// Caption tracks one plain, one placed: English as text at the usual place, French at the top
 /// left (see `CaptionFormat`).
 pub const PLAIN_AND_PLACED: [Captions; 2] = [Captions { language: "eng", name: "English", cues: ENGLISH, format: CaptionFormat::Plain }, Captions { language: "fra", name: "", cues: FRENCH, format: CaptionFormat::Placed }];
+/// The subtitle renditions of the test stream (see `hls_stream`): English at the usual place, French
+/// placed at the top left.
+pub const RENDITIONS: [Captions; 2] = [Captions { language: "eng", name: "English", cues: ENGLISH, format: CaptionFormat::Plain }, Captions { language: "fra", name: "Français", cues: FRENCH, format: CaptionFormat::Placed }];
 
 /// `count` samples of a square wave of `hertz` at 8 kHz, a quarter of full scale.
 pub fn tone(hertz: u32, count: usize) -> Vec<i16> {
@@ -608,6 +611,13 @@ impl Trak<'_> {
         let udta = atoms(b"udta", &[atom(b"name", self.name.as_bytes())]);
         atoms(b"trak", &[atom(b"tkhd", &tkhd), mdia, udta])
     }
+}
+
+/// The sample entry of 64×48 lossless H.264 frames: `avc1` with its parameters (`avcC`).
+fn avc1_entry() -> Vec<u8> {
+    let (sps, pps) = parameters();
+    let avcc = [&[1, 66, 0xC0, 30, 0xFF, 0xE1][..], &(sps.len() as u16).to_be_bytes(), &sps, &[1], &(pps.len() as u16).to_be_bytes(), &pps].concat();
+    visual_entry(b"avc1", atom(b"avcC", &avcc))
 }
 
 /// A visual sample entry of 64×48 frames, of this kind, with what follows it.
@@ -731,11 +741,7 @@ fn movie_with(count: usize, rate: u32, coding: Coding, sounds: &[Sound], caption
     let sizes: Vec<u32> = frames.iter().map(|frame| frame.len() as u32).collect();
     let entry = match coding {
         Coding::Jpeg => visual_entry(b"jpeg", Vec::new()),
-        Coding::H264 => {
-            let (sps, pps) = parameters();
-            let avcc = [&[1, 66, 0xC0, 30, 0xFF, 0xE1][..], &(sps.len() as u16).to_be_bytes(), &sps, &[1], &(pps.len() as u16).to_be_bytes(), &pps].concat();
-            visual_entry(b"avc1", atom(b"avcC", &avcc))
-        }
+        Coding::H264 => avc1_entry(),
         Coding::Hevc => visual_entry(b"hvc1", atom(b"hvcC", &hvcc())),
     };
     let video = Trak { id: 1, holds: Holds::Frames, enabled: true, group: 0, language: "und", name: "Video", timescale: rate, duration_ms, media_duration: count as u32, size: [64, 48] };
@@ -1100,4 +1106,80 @@ pub fn written(name: &str, bytes: &[u8]) -> PathBuf {
 /// A NAL unit as MP4 keeps it: its length first.
 pub fn length_prefixed(nal: Vec<u8>) -> Vec<u8> {
     [(nal.len() as u32).to_be_bytes().to_vec(), nal].concat()
+}
+
+/// An HLS stream of `count` frames at 10 a second (lossless H.264, 64×48) in fragmented MP4
+/// segments of a second, with these captions in its video stream and these subtitle renditions
+/// (WebVTT, a segment each): its files, each a name and its bytes. `master.m3u8` plays it; it
+/// declares the closed captions present (`CC1` to `CC4` and `SERVICE1`…, named as taut names
+/// them: `CC1`, `Service 1`).
+pub fn hls_stream(count: usize, in_stream: &InStream, subtitles: &[Captions]) -> Vec<(String, Vec<u8>)> {
+    let length = count as u32 * 100;
+    let mut files = vec![("init.mp4".to_string(), hls_init())];
+    let mut video = String::from("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MAP:URI=\"init.mp4\"\n");
+    let triplets = cc_data(in_stream, count);
+    for (sequence, first) in (0..count).step_by(10).enumerate() {
+        let frames: Vec<Vec<u8>> = (first..count.min(first + 10)).map(|n| [length_prefixed(caption_sei(&triplets[n], false)), length_prefixed(h264_frame(n))].concat()).collect();
+        video.push_str(&format!("#EXTINF:{:.3},\nvideo-{sequence}.m4s\n", frames.len() as f32 / 10.0));
+        files.push((format!("video-{sequence}.m4s"), hls_segment(sequence as u32, first as u32, &frames)));
+    }
+    video.push_str("#EXT-X-ENDLIST\n");
+    files.push(("video.m3u8".into(), video.into_bytes()));
+    let mut master = String::from("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+    for (nth, captions) in subtitles.iter().enumerate() {
+        let language = &captions.language[..2];
+        master.push_str(&format!("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subtitles\",NAME=\"{}\",LANGUAGE=\"{language}\",AUTOSELECT=YES,DEFAULT=NO,URI=\"subtitles-{nth}.m3u8\"\n", captions.name));
+        let playlist = format!("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:{}\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:{:.3},\nsubtitles-{nth}.vtt\n#EXT-X-ENDLIST\n", length.div_ceil(1000), length as f32 / 1000.0);
+        files.push((format!("subtitles-{nth}.m3u8"), playlist.into_bytes()));
+        files.push((format!("subtitles-{nth}.vtt"), webvtt(captions).into_bytes()));
+    }
+    let channels = in_stream.other_channels.iter().map(|(first, _)| match first {
+        0x1C => "CC2",
+        0x15 => "CC3",
+        _ => "CC4",
+    });
+    let cea608 = (!in_stream.cea608.is_empty()).then_some("CC1").into_iter().chain(channels).map(|channel| (channel.to_string(), channel.to_string()));
+    let services = in_stream.services.iter().map(|(number, _)| (format!("SERVICE{number}"), format!("Service {number}")));
+    for (id, name) in cea608.chain(services) {
+        master.push_str(&format!("#EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID=\"captions\",NAME=\"{name}\",LANGUAGE=\"en\",INSTREAM-ID=\"{id}\"\n"));
+    }
+    let subtitled = if subtitles.is_empty() { "" } else { ",SUBTITLES=\"subtitles\"" };
+    master.push_str(&format!("#EXT-X-STREAM-INF:BANDWIDTH=800000,AVERAGE-BANDWIDTH=500000,CODECS=\"avc1.42c01e\",RESOLUTION=64x48,FRAME-RATE=10.000{subtitled},CLOSED-CAPTIONS=\"captions\"\nvideo.m3u8\n"));
+    files.push(("master.m3u8".into(), master.into_bytes()));
+    files
+}
+
+/// The initialisation segment of `hls_stream`: a movie of one H.264 track (id 1, 90 kHz) with
+/// no samples, its fragments' defaults.
+fn hls_init() -> Vec<u8> {
+    let video = Trak { id: 1, holds: Holds::Frames, enabled: true, group: 0, language: "und", name: "Video", timescale: 90_000, duration_ms: 0, media_duration: 0, size: [64, 48] };
+    let mut mvhd = be32(&[0, 0, 0, 1000, 0, 0x10000]);
+    mvhd.extend_from_slice(&[1, 0, 0, 0]);
+    mvhd.extend(be32(&[0, 0]));
+    mvhd.extend(be32(&MATRIX));
+    mvhd.extend(be32(&[0, 0, 0, 0, 0, 0, 2]));
+    let mvex = atoms(b"mvex", &[atom(b"trex", &be32(&[0, 1, 1, 9000, 0, 0]))]);
+    [atom(b"ftyp", b"iso6\0\0\x02\0iso6cmfcavc1mp41"), atoms(b"moov", &[atom(b"mvhd", &mvhd), video.atom(avc1_entry(), table(&[], &[], &[])), mvex])].concat()
+}
+
+/// A media segment of `hls_stream`: these frames (each a key frame), the first numbered
+/// `first`, as fragment `sequence`.
+fn hls_segment(sequence: u32, first: u32, frames: &[Vec<u8>]) -> Vec<u8> {
+    let moof = |data_at: u32| {
+        let samples: Vec<u32> = frames.iter().flat_map(|frame| [9000, frame.len() as u32, 0x0200_0000]).collect();
+        let trun = atom(b"trun", &[be32(&[0x701, frames.len() as u32, data_at]), be32(&samples)].concat());
+        let tfdt = atom(b"tfdt", &[be32(&[1 << 24, 0]), be32(&[first * 9000])].concat());
+        let traf = atoms(b"traf", &[atom(b"tfhd", &be32(&[0x02_0000, 1])), tfdt, trun]);
+        atoms(b"moof", &[atom(b"mfhd", &be32(&[0, sequence + 1])), traf])
+    };
+    let size = moof(0).len() as u32;
+    [moof(size + 8), atom(b"mdat", &frames.concat())].concat()
+}
+
+/// A caption track as a WebVTT file: plain cues, or placed as `CaptionFormat::Placed` says.
+pub fn webvtt(captions: &Captions) -> String {
+    let time = |tenths: u32| format!("00:00:{:02}.{:03}", tenths / 10, tenths % 10 * 100);
+    let settings = if captions.format == CaptionFormat::Placed { " align:start position:10% line:10%" } else { "" };
+    let cues = captions.cues.iter().map(|(from, to, text)| format!("{} --> {}{settings}\n{text}\n", time(*from), time(*to)));
+    format!("WEBVTT\nX-TIMESTAMP-MAP=MPEGTS:0,LOCAL:00:00:00.000\n\n{}", cues.collect::<Vec<_>>().join("\n"))
 }

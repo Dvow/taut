@@ -350,6 +350,8 @@ mod video;
 mod video_android;
 #[cfg(all(feature = "video", target_vendor = "apple"))]
 mod video_apple;
+#[cfg(all(feature = "video", target_vendor = "apple"))]
+mod video_apple_legible;
 #[cfg(feature = "video")]
 mod video_captions;
 // (Captions in a video stream: read by taut on every system but the web.)
@@ -359,7 +361,7 @@ mod video_cea608;
 mod video_cea708;
 #[cfg(all(feature = "video", unix, not(any(target_vendor = "apple", target_os = "android"))))]
 mod video_gstreamer;
-#[cfg(all(feature = "video", not(target_family = "wasm"), any(test, windows)))]
+#[cfg(all(feature = "video", not(target_family = "wasm"), any(test, windows, target_vendor = "apple")))]
 mod video_mp4;
 #[cfg(all(feature = "video", feature = "gpu-draw", unix, not(target_vendor = "apple")))]
 mod video_opengl;

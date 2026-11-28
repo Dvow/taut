@@ -89,15 +89,15 @@ mod page {
             }
             ui.close();
             ui.row().gap(4.0).open();
-            let asked = ["Silent", "With sound", "Bytes", "Missing", "Many 5", "Many 40", "Languages"].map(|name| ui.button(name).clicked);
+            let asked = ["Silent", "With sound", "Bytes", "Missing", "Many 5", "Many 40", "Languages", "Placed", "Closed", "Stream"].map(|name| ui.button(name).clicked);
             ui.close();
             ui.label(&self.state());
             ui.close();
             self.asked(asked, ui);
         }
 
-        fn asked(&mut self, [silent, sound, bytes, missing, five, forty, languages]: [bool; 7], ui: &mut Ui) {
-            if silent || sound || bytes || missing || five || forty || languages {
+        fn asked(&mut self, [silent, sound, bytes, missing, five, forty, languages, placed, closed, stream]: [bool; 10], ui: &mut Ui) {
+            if silent || sound || bytes || missing || five || forty || languages || placed || closed || stream {
                 self.close(ui);
             }
             match () {
@@ -106,6 +106,9 @@ mod page {
                 _ if bytes => self.open(Video::open_silent(super::files::mp4(30, 10, false))),
                 _ if missing => self.open(Video::open_silent("missing.mp4")),
                 _ if languages => self.open(Video::open_silent("languages.mp4")),
+                _ if placed => self.open(Video::open_silent("plain-and-placed.mp4")),
+                _ if closed => self.open(Video::open_silent("closed-captions.mov")),
+                _ if stream => self.open(Video::open_silent("master.m3u8")),
                 _ if five || forty => {
                     self.open(Video::open_silent("with-sound.mp4"));
                     self.many = Some((if five { 5 } else { 40 }, false));
@@ -171,7 +174,7 @@ mod web_page;
 
 #[cfg(not(target_family = "wasm"))]
 mod checks {
-    use super::files::{TWO_CAPTIONS, TWO_LANGUAGES, movie, mp4, written};
+    use super::files::{Carried, Coding, IN_STREAM, PLAIN_AND_PLACED, RENDITIONS, TWO_CAPTIONS, TWO_LANGUAGES, hls_stream, movie, movie_captioned_in_stream, mp4, written};
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
@@ -232,6 +235,11 @@ mod checks {
             std::fs::copy(written(name, &mp4(30, 10, sound)), folder.join(name)).unwrap();
         }
         std::fs::write(folder.join("languages.mp4"), movie(30, 10, false, &TWO_LANGUAGES, &TWO_CAPTIONS)).unwrap();
+        std::fs::write(folder.join("plain-and-placed.mp4"), movie(30, 10, false, &[], &PLAIN_AND_PLACED)).unwrap();
+        std::fs::write(folder.join("closed-captions.mov"), movie_captioned_in_stream(30, Coding::H264, &IN_STREAM, Carried::InCaptionTrack)).unwrap();
+        for (name, bytes) in hls_stream(30, &IN_STREAM, &RENDITIONS) {
+            std::fs::write(folder.join(name), bytes).unwrap();
+        }
         folder
     }
 
@@ -507,6 +515,37 @@ async function the_files_tracks() {
     results.tracks = state().tracks;
 }
 
+// (Probe) The browser's own text tracks of files and a stream: what it lists and shows.
+async function in_band_tracks() {
+    results.in_band = {};
+    for (const button of ["Languages", "Placed", "Closed", "Stream"]) {
+        const seen = [];
+        await press(button);
+        await until(`the first frame of ${button}`, (now) => now.size === "64x48", 20);
+        const [id, made] = [...page.videos.entries()][0];
+        const element = made.element;
+        const describe = () => [...element.textTracks].map((track) => `${track.kind}|${track.label}|${track.language}|${track.mode}|${track.id}|${track.inBandMetadataTrackDispatchType}|cues=${track.cues?.length}`).join("; ");
+        seen.push(`at load: ${describe()} :: ${state().line}`);
+        await pause(3000);
+        await settle();
+        seen.push(`after 3 s: ${describe()} :: ${state().line}`);
+        const place = (cue) => (typeof VTTCue !== "undefined" && cue instanceof VTTCue ? `line=${cue.line} snap=${cue.snapToLines} position=${cue.position} size=${cue.size} align=${cue.align} lineAlign=${cue.lineAlign} positionAlign=${cue.positionAlign} region=${cue.region?.id}` : "not a VTTCue");
+        for (let nth = 0; nth < element.textTracks.length; nth++) {
+            page.videoChooseCaptions(id, nth);
+            for (const at of [0.7, 1.3, 2.05, 2.7]) {
+                element.currentTime = at;
+                await pause(500);
+                await settle();
+                const track = element.textTracks[nth];
+                const active = [...(track.activeCues || [])].map((cue) => `${cue.constructor.name} ${cue.startTime}-${cue.endTime} ${JSON.stringify(cue.text)} ${place(cue)}`);
+                page.videoCaption(id);
+                seen.push(`track ${nth} (${track.mode}) at ${at}: ${active.join(" | ")} :: taut ${JSON.stringify(new TextDecoder().decode(page.made))} :: ${state().caption}`);
+            }
+        }
+        results.in_band[button] = seen;
+    }
+}
+
 async function many_opens() {
     const held = () => {
         if (typeof gc === "function") gc();
@@ -528,7 +567,7 @@ async function many_opens() {
 try {
     page = await start("page.wasm", { element: document.getElementById("app") });
     await settle();
-    for (const check of [frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, browser_cue_settings, the_files_tracks, many_opens]) {
+    for (const check of [in_band_tracks, frames_at_their_times, pause_holds_and_seeks_land, the_end_once_and_a_loop, the_controls, bytes_and_errors, captions_and_speed, browser_cue_settings, the_files_tracks, many_opens]) {
         const failed = results.failed.length;
         await check();
         results[check.name] = results.failed.length === failed ? "passed" : "FAILED";
@@ -550,20 +589,93 @@ await post("/done", Object.entries(results).map(([name, value]) => `${name}=${JS
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = format!("http://127.0.0.1:{}/", listener.local_addr().unwrap().port());
-        let mut started = Command::new(&browser);
+        let showing = match browser == Path::new("safari") {
+            true => Showing::Safari(Safari::open(&address)),
+            false => Showing::Started(started(&browser, &folder, &address)),
+        };
+        let done = served(&listener, &folder);
+        drop(showing);
+        let done = done.expect("the page reported within four minutes");
+        println!("in {}:\n{done}", browser.display());
+        assert!(done.lines().any(|line| line == "failed=[]"), "the checks in the browser failed:\n{done}");
+    }
+
+    /// A browser showing the page: Edge or Chrome started here, or Safari.
+    enum Showing {
+        Started(std::process::Child),
+        Safari(Safari),
+    }
+
+    impl Drop for Showing {
+        /// Only the browser started here is stopped, by its own handle.
+        fn drop(&mut self) {
+            match self {
+                Showing::Started(running) => {
+                    let _ = running.kill();
+                    let _ = running.wait();
+                }
+                Showing::Safari(safari) => safari.close(),
+            }
+        }
+    }
+
+    /// Edge or Chrome, headless, showing `address`, with a profile of its own in `folder`.
+    fn started(browser: &Path, folder: &Path, address: &str) -> std::process::Child {
+        let mut started = Command::new(browser);
         started.args(["--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-sync", "--mute-audio", "--hide-scrollbars"]);
         started.args(["--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--window-size=800,500", "--force-device-scale-factor=1"]);
         // (Sound only after a person's press, as for most visitors; `gc()` for the memory check.)
         started.args(["--autoplay-policy=document-user-activation-required", "--js-flags=--expose-gc", "--enable-precise-memory-info"]);
-        started.arg(format!("--user-data-dir={}", folder.join("profile").display())).arg(&address).stderr(std::process::Stdio::null());
-        let mut running = started.spawn().expect("the browser starts");
-        let done = served(&listener, &folder);
-        // Only the browser started here is stopped, by its own handle.
-        let _ = running.kill();
-        let _ = running.wait();
-        let done = done.expect("the page reported within four minutes");
-        println!("in {}:\n{done}", browser.display());
-        assert!(done.lines().any(|line| line == "failed=[]"), "the checks in the browser failed:\n{done}");
+        started.arg(format!("--user-data-dir={}", folder.join("profile").display())).arg(address).stderr(std::process::Stdio::null());
+        started.spawn().expect("the browser starts")
+    }
+
+    /// Safari, through `safaridriver` on a port of its own (`TAUT_BROWSER=safari`; on a Mac that
+    /// allows remote automation: `safaridriver --enable`). It has no headless mode: its window
+    /// shows on the Mac's screen.
+    struct Safari {
+        driver: std::process::Child,
+        port: u16,
+        session: String,
+    }
+
+    impl Safari {
+        /// A session of Safari's showing `address`, not waiting for it to load.
+        fn open(address: &str) -> Safari {
+            let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+            let driver = Command::new("safaridriver").args(["--port", &port.to_string()]).spawn().expect("safaridriver starts");
+            let since = Instant::now();
+            while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+                assert!(since.elapsed() < Duration::from_secs(20), "safaridriver does not answer");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let said = webdriver(port, "POST", "/session", r#"{"capabilities":{"alwaysMatch":{"browserName":"safari","pageLoadStrategy":"none"}}}"#);
+            let session = said.split("\"sessionId\":\"").nth(1).and_then(|rest| rest.split('"').next()).unwrap_or_else(|| panic!("no Safari session: {said}")).to_string();
+            let safari = Safari { driver, port, session };
+            let went = webdriver(port, "POST", &format!("/session/{}/url", safari.session), &format!(r#"{{"url":"{address}"}}"#));
+            println!("Safari: session {}, {went}", safari.session);
+            safari
+        }
+    }
+
+    impl Safari {
+        /// Ends the session and the driver.
+        fn close(&mut self) {
+            webdriver(self.port, "DELETE", &format!("/session/{}", self.session), "");
+            let _ = self.driver.kill();
+            let _ = self.driver.wait();
+        }
+    }
+
+    /// Asks a WebDriver server on `port`: the body of its answer.
+    fn webdriver(port: u16, method: &str, path: &str, body: &str) -> String {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the driver answers");
+        let asked = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        stream.write_all(asked.as_bytes()).unwrap();
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        answer.split_once("\r\n\r\n").map_or(answer.clone(), |(_, body)| body.to_string())
     }
 
     /// Serves the folder, each request on a thread of its own (a browser may open a connection
