@@ -1,0 +1,1016 @@
+ProductName:		macOS
+ProductVersion:		26.7.2
+BuildVersion:		25G332
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+warning: constant `CEA708` is never used
+  --> src/video_apple_legible.rs:28:7
+   |
+28 | const CEA708: u32 = u32::from_be_bytes(*b"c708");
+   |       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `taut` (lib) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 27.45s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: native "none"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = English;\n    MediaSelectionOptionsPersistentID = 0;\n}") described Some("<AVMediaSelectionKeyValueOption: 0x7970f6e80, language = en, mediaType = 'sbtl', title = English>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsName = \"Fran\\U00e7ais\";\n    MediaSelectionOptionsPersistentID = 1;\n}") described Some("<AVMediaSelectionKeyValueOption: 0x7970f6ec0, language = fr, mediaType = 'sbtl', title = Français>")
+probe: option Some("en") Some("CC1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC1;\n    MediaSelectionOptionsPersistentID = 2;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0x7970f6f00, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC1, auxiliary = YES>")
+probe: option Some("en") Some("CC3 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC3;\n    MediaSelectionOptionsPersistentID = 3;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0x7970f6f40, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC3, auxiliary = YES>")
+probe: option Some("en") Some("Service 1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = \"Service 1\";\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0x7970f6f80, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = Service 1, auxiliary = YES>")
+probe: http://127.0.0.1:49179/master.m3u8: tracks [Track { language: "en", name: "English" }, Track { language: "fr", name: "French" }, Track { language: "en", name: "CC1 - English CC" }, Track { language: "en", name: "CC3 - English CC" }, Track { language: "en", name: "Service 1 - English CC" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 0 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe:   track 0 at 162.530208ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 0 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.068986666s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.053423875s: None None
+probe:   track 0 at 2.545931708s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe: 0 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 at 0ns: None None
+probe: 0 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 1 paused at 1.3s: None
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 0 at Some(64.042µs): 0 strings, 0 samples
+probe: 0 at Some(533.366667ms) string Some("Hello there{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"17.1875\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(533.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.2s): 0 strings, 0 samples
+probe: 0 at Some(1.833366667s) string Some("Second line{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(1.833366667s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 0 at Some(2.6s): 0 strings, 0 samples
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe: 0 at Some(171.25µs): 0 strings, 0 samples
+probe: 0 at Some(833.366667ms) string Some("Third channel{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"21.875\";\n    CMWritingDirectionTextPositionPercentage = \"26.24999964609742\";\n}")
+probe: 0 at Some(833.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.5s): 0 strings, 0 samples
+probe:   track 3 at 0ns: None None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 3 paused at 2.05s: None
+probe: choose Some(4)
+probe: 0 at Some(500ms): 0 strings, 0 samples
+probe: 0 at Some(800ms) string Some("Service one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"44.37499977648258\";\n}")
+probe: 0 at Some(800ms): 1 strings, 0 samples
+probe:   track 4 at 0ns: None None
+probe: 0 at Some(2.2s): 0 strings, 0 samples
+probe:   track 4 paused at 700ms: None
+probe:   track 4 paused at 1.3s: None
+probe:   track 4 paused at 2.05s: None
+probe: native "none"
+probe: http://127.0.0.1:49179/video.m3u8: tracks [] size Some((64, 48)) length Some(3s) error None
+probe: native "none"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0x79711b570, language = en, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0x797119f40>>")
+probe: option Some("en") Some("English Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0x797119f40, language = en, mediaType = 'sbtl', forced subtitles only>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0x797119ef0, language = fr, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0x79711b4d0>>")
+probe: option Some("fr") Some("French Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0x79711b4d0, language = fr, mediaType = 'sbtl', forced subtitles only>")
+probe: http://127.0.0.1:49179/languages.mp4: tracks [Track { language: "en", name: "English" }, Track { language: "en", name: "English Forced" }, Track { language: "fr", name: "French" }, Track { language: "fr", name: "French Forced" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe:   track 0 at 0ns: None None
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 0 at 0ns: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.007087375s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.031679668s: None None
+probe:   track 0 at 2.53131775s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe:   track 1 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe:   track 1 paused at 1.3s: None
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe:   track 3 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe:   track 3 paused at 1.3s: None
+probe:   track 3 paused at 2.05s: None
+captions of a stream (probe)
+video on macOS: every check passed
+video on iOS runs with TAUT_IOS_SIMULATOR=1 (it boots a simulator)
+kinds none 0
+warning: constant `CEA708` is never used
+  --> src/video_apple_legible.rs:28:7
+   |
+28 | const CEA708: u32 = u32::from_be_bytes(*b"c708");
+   |       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `taut` (lib) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 0.21s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: native "wvtt"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = English;\n    MediaSelectionOptionsPersistentID = 0;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc470bad00, language = en, mediaType = 'sbtl', title = English>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsName = \"Fran\\U00e7ais\";\n    MediaSelectionOptionsPersistentID = 1;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc470baec0, language = fr, mediaType = 'sbtl', title = Français>")
+probe: option Some("en") Some("CC1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC1;\n    MediaSelectionOptionsPersistentID = 2;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc470ba9c0, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC1, auxiliary = YES>")
+probe: option Some("en") Some("CC3 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC3;\n    MediaSelectionOptionsPersistentID = 3;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc470ba900, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC3, auxiliary = YES>")
+probe: option Some("en") Some("Service 1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = \"Service 1\";\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc470baf00, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = Service 1, auxiliary = YES>")
+probe: http://127.0.0.1:49215/master.m3u8: tracks [Track { language: "en", name: "English" }, Track { language: "fr", name: "French" }, Track { language: "en", name: "CC1 - English CC" }, Track { language: "en", name: "CC3 - English CC" }, Track { language: "en", name: "Service 1 - English CC" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: sample wvtt at 0ns for Some(1s): [00, 00, 00, 27, 76, 74, 74, 63, 00, 00, 00, 0c, 76, 73, 69, 64, 00, 00, 00, 01, 00, 00, 00, 13, 70, 61, 79, 6c, 45, 6e, 67, 6c, 69, 73, 68, 20, 6f, 6e, 65]
+probe: 0 at Some(0ns): 0 strings, 1 samples
+probe: sample wvtt at 1s for Some(1s): [00, 00, 00, 27, 76, 74, 74, 63, 00, 00, 00, 0c, 76, 73, 69, 64, 00, 00, 00, 02, 00, 00, 00, 13, 70, 61, 79, 6c, 45, 6e, 67, 6c, 69, 73, 68, 20, 74, 77, 6f]
+probe: 0 at Some(1s): 0 strings, 1 samples
+probe: sample wvtt at 2s for Some(500ms): [00, 00, 00, 08, 76, 74, 74, 65]
+probe: 0 at Some(2s): 0 strings, 1 samples
+probe:   track 0 at 0ns: None None
+probe:   track 0 at 177.402917ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: sample wvtt at 2.5s for Some(500ms): [00, 00, 00, 27, 76, 74, 74, 63, 00, 00, 00, 0c, 76, 73, 69, 64, 00, 00, 00, 03, 00, 00, 00, 13, 70, 61, 79, 6c, 45, 6e, 67, 6c, 69, 73, 68, 20, 65, 6e, 64]
+probe: 0 at Some(2.5s): 0 strings, 1 samples
+probe: sample wvtt at 3s for Some(0ns): [00, 00, 00, 08, 76, 74, 74, 65]
+probe: 0 at Some(3s): 0 strings, 1 samples
+probe:   track 0 at 1.054971s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.030420208s: None None
+probe:   track 0 at 2.539093667s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 paused at 700ms: Some("English one")
+probe: sample wvtt at 1s for Some(1s): [00, 00, 00, 27, 76, 74, 74, 63, 00, 00, 00, 0c, 76, 73, 69, 64, 00, 00, 00, 02, 00, 00, 00, 13, 70, 61, 79, 6c, 45, 6e, 67, 6c, 69, 73, 68, 20, 74, 77, 6f]
+probe: 0 at Some(1s): 0 strings, 1 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: sample wvtt at 2s for Some(500ms): [00, 00, 00, 08, 76, 74, 74, 65]
+probe: 0 at Some(2s): 0 strings, 1 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe: sample wvtt at 0ns for Some(1s): [00, 00, 00, 51, 76, 74, 74, 63, 00, 00, 00, 0c, 76, 73, 69, 64, 00, 00, 00, 01, 00, 00, 00, 29, 73, 74, 74, 67, 61, 6c, 69, 67, 6e, 3a, 73, 74, 61, 72, 74, 20, 70, 6f, 73, 69, 74, 69, 6f, 6e, 3a, 31, 30, 25, 20, 6c, 69, 6e, 65, 3a, 31, 30, 25, 00, 00, 00, 14, 70, 61, 79, 6c, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 75, 6e]
+probe: 0 at Some(0ns): 0 strings, 1 samples
+probe: sample wvtt at 1s for Some(1s): [00, 00, 00, 53, 76, 74, 74, 63, 00, 00, 00, 0c, 76, 73, 69, 64, 00, 00, 00, 02, 00, 00, 00, 29, 73, 74, 74, 67, 61, 6c, 69, 67, 6e, 3a, 73, 74, 61, 72, 74, 20, 70, 6f, 73, 69, 74, 69, 6f, 6e, 3a, 31, 30, 25, 20, 6c, 69, 6e, 65, 3a, 31, 30, 25, 00, 00, 00, 16, 70, 61, 79, 6c, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 64, 65, 75, 78]
+probe: 0 at Some(1s): 0 strings, 1 samples
+probe: sample wvtt at 2s for Some(500ms): [00, 00, 00, 08, 76, 74, 74, 65]
+probe: 0 at Some(2s): 0 strings, 1 samples
+probe:   track 1 at 0ns: None None
+probe: sample wvtt at 2.5s for Some(500ms): [00, 00, 00, 52, 76, 74, 74, 63, 00, 00, 00, 0c, 76, 73, 69, 64, 00, 00, 00, 03, 00, 00, 00, 29, 73, 74, 74, 67, 61, 6c, 69, 67, 6e, 3a, 73, 74, 61, 72, 74, 20, 70, 6f, 73, 69, 74, 69, 6f, 6e, 3a, 31, 30, 25, 20, 6c, 69, 6e, 65, 3a, 31, 30, 25, 00, 00, 00, 15, 70, 61, 79, 6c, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 66, 69, 6e]
+probe: 0 at Some(2.5s): 0 strings, 1 samples
+probe: sample wvtt at 3s for Some(0ns): [00, 00, 00, 08, 76, 74, 74, 65]
+probe: 0 at Some(3s): 0 strings, 1 samples
+probe:   track 1 paused at 700ms: None
+probe: sample wvtt at 1s for Some(1s): [00, 00, 00, 53, 76, 74, 74, 63, 00, 00, 00, 0c, 76, 73, 69, 64, 00, 00, 00, 02, 00, 00, 00, 29, 73, 74, 74, 67, 61, 6c, 69, 67, 6e, 3a, 73, 74, 61, 72, 74, 20, 70, 6f, 73, 69, 74, 69, 6f, 6e, 3a, 31, 30, 25, 20, 6c, 69, 6e, 65, 3a, 31, 30, 25, 00, 00, 00, 16, 70, 61, 79, 6c, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 64, 65, 75, 78]
+probe: 0 at Some(1s): 0 strings, 1 samples
+probe:   track 1 paused at 1.3s: None
+probe: sample wvtt at 2s for Some(500ms): [00, 00, 00, 08, 76, 74, 74, 65]
+probe: 0 at Some(2s): 0 strings, 1 samples
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 0 at Some(143.416µs): 0 strings, 0 samples
+probe: 0 at Some(533.366667ms) string Some("Hello there{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"17.1875\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(533.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.2s): 0 strings, 0 samples
+probe: 0 at Some(1.833366667s) string Some("Second line{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(1.833366667s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 0 at Some(2.6s): 0 strings, 0 samples
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe: 0 at Some(276.458µs): 0 strings, 0 samples
+probe: 0 at Some(833.366667ms) string Some("Third channel{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"21.875\";\n    CMWritingDirectionTextPositionPercentage = \"26.24999964609742\";\n}")
+probe: 0 at Some(833.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.5s): 0 strings, 0 samples
+probe:   track 3 at 0ns: None None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 3 paused at 2.05s: None
+probe: choose Some(4)
+probe: 0 at Some(500ms): 0 strings, 0 samples
+probe: 0 at Some(800ms) string Some("Service one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"44.37499977648258\";\n}")
+probe: 0 at Some(800ms): 1 strings, 0 samples
+probe:   track 4 at 0ns: None None
+probe: 0 at Some(2.2s): 0 strings, 0 samples
+probe:   track 4 paused at 700ms: None
+probe:   track 4 paused at 1.3s: None
+probe:   track 4 paused at 2.05s: None
+probe: native "wvtt"
+probe: http://127.0.0.1:49215/video.m3u8: tracks [] size Some((64, 48)) length Some(3s) error None
+probe: native "wvtt"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xc470e5ef0, language = en, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xc470e7480>>")
+probe: option Some("en") Some("English Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xc470e7480, language = en, mediaType = 'sbtl', forced subtitles only>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xc470e7160, language = fr, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xc470e7430>>")
+probe: option Some("fr") Some("French Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xc470e7430, language = fr, mediaType = 'sbtl', forced subtitles only>")
+probe: http://127.0.0.1:49215/languages.mp4: tracks [Track { language: "en", name: "English" }, Track { language: "en", name: "English Forced" }, Track { language: "fr", name: "French" }, Track { language: "fr", name: "French Forced" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 0 at 22.211042ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.002291668s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.009135167s: None None
+probe:   track 0 at 2.551398834s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe:   track 1 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe:   track 1 paused at 1.3s: None
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe:   track 3 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe:   track 3 paused at 1.3s: None
+probe:   track 3 paused at 2.05s: None
+captions of a stream (probe)
+video on macOS: every check passed
+video on iOS runs with TAUT_IOS_SIMULATOR=1 (it boots a simulator)
+kinds wvtt 0
+warning: constant `CEA708` is never used
+  --> src/video_apple_legible.rs:28:7
+   |
+28 | const CEA708: u32 = u32::from_be_bytes(*b"c708");
+   |       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `taut` (lib) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 0.02s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: native "c608"
+Objective-C exception: NSInvalidArgumentException: *** -[AVPlayerItemLegibleOutput initWithDependencyFactory:mediaSubtypesForNativeRepresentation:] Native representation is not available for media subtype 'c608'
+
+fatal runtime error: Rust cannot catch foreign exceptions, aborting
+error: test failed, to rerun pass `--test video_apple`
+
+Caused by:
+  process didn't exit successfully: `/Users/runner/work/taut/taut/target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe --nocapture` (signal: 6, SIGABRT: process abort signal)
+kinds c608 101
+warning: constant `CEA708` is never used
+  --> src/video_apple_legible.rs:28:7
+   |
+28 | const CEA708: u32 = u32::from_be_bytes(*b"c708");
+   |       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `taut` (lib) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 0.00s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: native "c708"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = English;\n    MediaSelectionOptionsPersistentID = 0;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xbc90fe900, language = en, mediaType = 'sbtl', title = English>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsName = \"Fran\\U00e7ais\";\n    MediaSelectionOptionsPersistentID = 1;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xbc90fe800, language = fr, mediaType = 'sbtl', title = Français>")
+probe: option Some("en") Some("CC1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC1;\n    MediaSelectionOptionsPersistentID = 2;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xbc90fe780, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC1, auxiliary = YES>")
+probe: option Some("en") Some("CC3 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC3;\n    MediaSelectionOptionsPersistentID = 3;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xbc90fee40, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC3, auxiliary = YES>")
+probe: option Some("en") Some("Service 1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = \"Service 1\";\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xbc90fef00, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = Service 1, auxiliary = YES>")
+probe: http://127.0.0.1:49250/master.m3u8: tracks [Track { language: "en", name: "English" }, Track { language: "fr", name: "French" }, Track { language: "en", name: "CC1 - English CC" }, Track { language: "en", name: "CC3 - English CC" }, Track { language: "en", name: "Service 1 - English CC" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 0 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe:   track 0 at 180.669209ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 0 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.016399209s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.055938375s: None None
+probe:   track 0 at 2.500555917s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe: 0 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 at 0ns: None None
+probe: 0 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 1 paused at 1.3s: None
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 0 at Some(98.25µs): 0 strings, 0 samples
+probe: 0 at Some(533.366667ms) string Some("Hello there{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"17.1875\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(533.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.2s): 0 strings, 0 samples
+probe: 0 at Some(1.833366667s) string Some("Second line{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(1.833366667s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 0 at Some(2.6s): 0 strings, 0 samples
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe: 0 at Some(430.875µs): 0 strings, 0 samples
+probe: 0 at Some(833.366667ms) string Some("Third channel{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"21.875\";\n    CMWritingDirectionTextPositionPercentage = \"26.24999964609742\";\n}")
+probe: 0 at Some(833.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.5s): 0 strings, 0 samples
+probe:   track 3 at 0ns: None None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 3 paused at 2.05s: None
+probe: choose Some(4)
+probe: 0 at Some(500ms): 0 strings, 0 samples
+probe: 0 at Some(800ms) string Some("Service one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"44.37499977648258\";\n}")
+probe: 0 at Some(800ms): 1 strings, 0 samples
+probe:   track 4 at 0ns: None None
+probe: 0 at Some(2.2s): 0 strings, 0 samples
+probe:   track 4 paused at 700ms: None
+probe:   track 4 paused at 1.3s: None
+probe:   track 4 paused at 2.05s: None
+probe: native "c708"
+probe: http://127.0.0.1:49250/video.m3u8: tracks [] size Some((64, 48)) length Some(3s) error None
+probe: native "c708"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xbc911dd10, language = en, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xbc911dd60>>")
+probe: option Some("en") Some("English Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xbc911dd60, language = en, mediaType = 'sbtl', forced subtitles only>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xbc911df40, language = fr, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xbc911f2a0>>")
+probe: option Some("fr") Some("French Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xbc911f2a0, language = fr, mediaType = 'sbtl', forced subtitles only>")
+probe: http://127.0.0.1:49250/languages.mp4: tracks [Track { language: "en", name: "English" }, Track { language: "en", name: "English Forced" }, Track { language: "fr", name: "French" }, Track { language: "fr", name: "French Forced" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 0 at 0ns: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.092388334s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.096105166s: None None
+probe:   track 0 at 2.555703084s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe:   track 1 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe:   track 1 paused at 1.3s: None
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe:   track 3 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe:   track 3 paused at 1.3s: None
+probe:   track 3 paused at 2.05s: None
+captions of a stream (probe)
+video on macOS: every check passed
+video on iOS runs with TAUT_IOS_SIMULATOR=1 (it boots a simulator)
+kinds c708 0
+warning: constant `CEA708` is never used
+  --> src/video_apple_legible.rs:28:7
+   |
+28 | const CEA708: u32 = u32::from_be_bytes(*b"c708");
+   |       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `taut` (lib) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 0.01s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: native "tx3g"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = English;\n    MediaSelectionOptionsPersistentID = 0;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa4f0e6dc0, language = en, mediaType = 'sbtl', title = English>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsName = \"Fran\\U00e7ais\";\n    MediaSelectionOptionsPersistentID = 1;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa4f0e6740, language = fr, mediaType = 'sbtl', title = Français>")
+probe: option Some("en") Some("CC1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC1;\n    MediaSelectionOptionsPersistentID = 2;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa4f0e6880, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC1, auxiliary = YES>")
+probe: option Some("en") Some("CC3 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC3;\n    MediaSelectionOptionsPersistentID = 3;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa4f0e6e80, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC3, auxiliary = YES>")
+probe: option Some("en") Some("Service 1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = \"Service 1\";\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa4f0e6f00, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = Service 1, auxiliary = YES>")
+probe: http://127.0.0.1:49284/master.m3u8: tracks [Track { language: "en", name: "English" }, Track { language: "fr", name: "French" }, Track { language: "en", name: "CC1 - English CC" }, Track { language: "en", name: "CC3 - English CC" }, Track { language: "en", name: "Service 1 - English CC" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 0 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe:   track 0 at 179.633958ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 0 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.040970708s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.076695042s: None None
+probe:   track 0 at 2.5101365s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe: 0 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 at 0ns: None None
+probe: 0 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 1 paused at 1.3s: None
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 0 at Some(392.792µs): 0 strings, 0 samples
+probe: 0 at Some(533.366667ms) string Some("Hello there{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"17.1875\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(533.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.2s): 0 strings, 0 samples
+probe: 0 at Some(1.833366667s) string Some("Second line{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(1.833366667s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 0 at Some(2.6s): 0 strings, 0 samples
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe: 0 at Some(266.167µs): 0 strings, 0 samples
+probe: 0 at Some(833.366667ms) string Some("Third channel{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"21.875\";\n    CMWritingDirectionTextPositionPercentage = \"26.24999964609742\";\n}")
+probe: 0 at Some(833.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.5s): 0 strings, 0 samples
+probe:   track 3 at 0ns: None None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 3 paused at 2.05s: None
+probe: choose Some(4)
+probe:   track 4 at 0ns: None None
+probe: 0 at Some(500ms): 0 strings, 0 samples
+probe: 0 at Some(800ms) string Some("Service one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"44.37499977648258\";\n}")
+probe: 0 at Some(800ms): 1 strings, 0 samples
+probe: 0 at Some(2.2s): 0 strings, 0 samples
+probe:   track 4 paused at 700ms: None
+probe:   track 4 paused at 1.3s: None
+probe:   track 4 paused at 2.05s: None
+probe: native "tx3g"
+probe: http://127.0.0.1:49284/video.m3u8: tracks [] size Some((64, 48)) length Some(3s) error None
+probe: native "tx3g"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xa4f109f40, language = en, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xa4f109d60>>")
+probe: option Some("en") Some("English Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xa4f109d60, language = en, mediaType = 'sbtl', forced subtitles only>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xa4f10b2a0, language = fr, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xa4f109ef0>>")
+probe: option Some("fr") Some("French Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xa4f109ef0, language = fr, mediaType = 'sbtl', forced subtitles only>")
+probe: http://127.0.0.1:49284/languages.mp4: tracks [Track { language: "en", name: "English" }, Track { language: "en", name: "English Forced" }, Track { language: "fr", name: "French" }, Track { language: "fr", name: "French Forced" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: sample tx3g at 0ns for Some(1s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 6f, 6e, 65]
+probe: 2 at Some(0ns): 0 strings, 1 samples
+probe: sample tx3g at 0ns to Some(1s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 6f, 6e, 65]
+probe: sample tx3g at 1s for Some(1s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 74, 77, 6f]
+probe: 2 at Some(1s): 0 strings, 1 samples
+probe: sample tx3g at 1s to Some(2s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 74, 77, 6f]
+probe:   track 0 at 0ns: None None
+probe: sample tx3g at 2s for Some(500ms): [00, 00]
+probe: 2 at Some(2s): 0 strings, 1 samples
+probe: sample tx3g at 2s to Some(2.5s): [00, 00]
+probe: sample tx3g at 2.5s for Some(500ms): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 65, 6e, 64]
+probe: 2 at Some(2.5s): 0 strings, 1 samples
+probe: sample tx3g at 2.5s to Some(3s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 65, 6e, 64]
+probe: sample      at 3s for Some(0ns): []
+probe: 2 at Some(3s): 0 strings, 1 samples
+probe: sample      at 3s to Some(3s): []
+probe: sample tx3g at 0ns for Some(1s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 6f, 6e, 65]
+probe: 2 at Some(0ns): 0 strings, 1 samples
+probe: sample tx3g at 0ns to Some(1s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 6f, 6e, 65]
+probe:   track 0 paused at 700ms: None
+probe: sample tx3g at 1s for Some(1s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 74, 77, 6f]
+probe: 2 at Some(1s): 0 strings, 1 samples
+probe: sample tx3g at 1s to Some(2s): [00, 0b, 45, 6e, 67, 6c, 69, 73, 68, 20, 74, 77, 6f]
+probe:   track 0 paused at 1.3s: None
+probe: sample tx3g at 2s for Some(500ms): [00, 00]
+probe: 2 at Some(2s): 0 strings, 1 samples
+probe: sample tx3g at 2s to Some(2.5s): [00, 00]
+probe:   track 0 paused at 2.05s: None
+probe: choose Some(1)
+probe:   track 1 at 0ns: None None
+probe: sample      at 3s for Some(0ns): []
+probe: 2 at Some(3s): 0 strings, 1 samples
+probe: sample      at 3s to Some(3s): []
+probe:   track 1 paused at 700ms: None
+probe:   track 1 paused at 1.3s: None
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: sample tx3g at 2s for Some(500ms): [00, 00]
+probe: 2 at Some(2s): 0 strings, 1 samples
+probe: sample tx3g at 2s to Some(2.5s): [00, 00]
+probe: sample tx3g at 0ns for Some(1s): [00, 0c, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 75, 6e]
+probe: 2 at Some(0ns): 0 strings, 1 samples
+probe: sample tx3g at 0ns to Some(1s): [00, 0c, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 75, 6e]
+probe:   track 2 at 0ns: None None
+probe: sample tx3g at 1s for Some(1s): [00, 0e, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 64, 65, 75, 78]
+probe: 2 at Some(1s): 0 strings, 1 samples
+probe: sample tx3g at 1s to Some(2s): [00, 0e, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 64, 65, 75, 78]
+probe: sample tx3g at 2s for Some(500ms): [00, 00]
+probe: 2 at Some(2s): 0 strings, 1 samples
+probe: sample tx3g at 2s to Some(2.5s): [00, 00]
+probe: sample tx3g at 2.5s for Some(500ms): [00, 0d, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 66, 69, 6e]
+probe: 2 at Some(2.5s): 0 strings, 1 samples
+probe: sample tx3g at 2.5s to Some(3s): [00, 0d, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 66, 69, 6e]
+probe: sample      at 3s for Some(0ns): []
+probe: 2 at Some(3s): 0 strings, 1 samples
+probe: sample      at 3s to Some(3s): []
+probe: sample tx3g at 0ns for Some(1s): [00, 0c, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 75, 6e]
+probe: 2 at Some(0ns): 0 strings, 1 samples
+probe: sample tx3g at 0ns to Some(1s): [00, 0c, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 75, 6e]
+probe:   track 2 paused at 700ms: None
+probe: sample tx3g at 1s for Some(1s): [00, 0e, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 64, 65, 75, 78]
+probe: 2 at Some(1s): 0 strings, 1 samples
+probe: sample tx3g at 1s to Some(2s): [00, 0e, 46, 72, 61, 6e, c3, a7, 61, 69, 73, 20, 64, 65, 75, 78]
+probe:   track 2 paused at 1.3s: None
+probe: sample tx3g at 2s for Some(500ms): [00, 00]
+probe: 2 at Some(2s): 0 strings, 1 samples
+probe: sample tx3g at 2s to Some(2.5s): [00, 00]
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe:   track 3 at 0ns: None None
+probe: sample      at 3s for Some(0ns): []
+probe: 2 at Some(3s): 0 strings, 1 samples
+probe: sample      at 3s to Some(3s): []
+probe:   track 3 paused at 700ms: None
+probe:   track 3 paused at 1.3s: None
+probe:   track 3 paused at 2.05s: None
+captions of a stream (probe)
+video on macOS: every check passed
+video on iOS runs with TAUT_IOS_SIMULATOR=1 (it boots a simulator)
+kinds tx3g 0
+warning: constant `CEA708` is never used
+  --> src/video_apple_legible.rs:28:7
+   |
+28 | const CEA708: u32 = u32::from_be_bytes(*b"c708");
+   |       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `taut` (lib) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 0.01s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: native "text"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = English;\n    MediaSelectionOptionsPersistentID = 0;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa830f6e00, language = en, mediaType = 'sbtl', title = English>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsName = \"Fran\\U00e7ais\";\n    MediaSelectionOptionsPersistentID = 1;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa830f6dc0, language = fr, mediaType = 'sbtl', title = Français>")
+probe: option Some("en") Some("CC1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC1;\n    MediaSelectionOptionsPersistentID = 2;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa830f6600, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC1, auxiliary = YES>")
+probe: option Some("en") Some("CC3 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC3;\n    MediaSelectionOptionsPersistentID = 3;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa830f6ec0, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC3, auxiliary = YES>")
+probe: option Some("en") Some("Service 1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = \"Service 1\";\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xa830f6f00, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = Service 1, auxiliary = YES>")
+probe: http://127.0.0.1:49319/master.m3u8: tracks [Track { language: "en", name: "English" }, Track { language: "fr", name: "French" }, Track { language: "en", name: "CC1 - English CC" }, Track { language: "en", name: "CC3 - English CC" }, Track { language: "en", name: "Service 1 - English CC" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 0 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe:   track 0 at 214.824875ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 0 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.077227s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.117670875s: None None
+probe:   track 0 at 2.648043125s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe: 0 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 at 0ns: None None
+probe: 0 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 1 paused at 1.3s: None
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 0 at Some(612.291µs): 0 strings, 0 samples
+probe: 0 at Some(533.366667ms) string Some("Hello there{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"17.1875\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(533.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.2s): 0 strings, 0 samples
+probe: 0 at Some(1.833366667s) string Some("Second line{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(1.833366667s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 0 at Some(2.6s): 0 strings, 0 samples
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe: 0 at Some(350.5µs): 0 strings, 0 samples
+probe: 0 at Some(833.366667ms) string Some("Third channel{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"21.875\";\n    CMWritingDirectionTextPositionPercentage = \"26.24999964609742\";\n}")
+probe: 0 at Some(833.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.5s): 0 strings, 0 samples
+probe:   track 3 at 0ns: None None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 3 paused at 2.05s: None
+probe: choose Some(4)
+probe: 0 at Some(500ms): 0 strings, 0 samples
+probe: 0 at Some(800ms) string Some("Service one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"44.37499977648258\";\n}")
+probe: 0 at Some(800ms): 1 strings, 0 samples
+probe:   track 4 at 0ns: None None
+probe: 0 at Some(2.2s): 0 strings, 0 samples
+probe:   track 4 paused at 700ms: None
+probe:   track 4 paused at 1.3s: None
+probe:   track 4 paused at 2.05s: None
+probe: native "text"
+probe: http://127.0.0.1:49319/video.m3u8: tracks [] size Some((64, 48)) length Some(3s) error None
+probe: native "text"
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xa83119f40, language = en, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xa8311b520>>")
+probe: option Some("en") Some("English Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xa8311b520, language = en, mediaType = 'sbtl', forced subtitles only>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xa8311b4d0, language = fr, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xa8311b2a0>>")
+probe: option Some("fr") Some("French Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xa8311b2a0, language = fr, mediaType = 'sbtl', forced subtitles only>")
+probe: http://127.0.0.1:49319/languages.mp4: tracks [Track { language: "en", name: "English" }, Track { language: "en", name: "English Forced" }, Track { language: "fr", name: "French" }, Track { language: "fr", name: "French Forced" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 0 at 59.041ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.051307875s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.020374166s: None None
+probe:   track 0 at 2.504205999s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe:   track 1 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe:   track 1 paused at 1.3s: None
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe:   track 3 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe:   track 3 paused at 1.3s: None
+probe:   track 3 paused at 2.05s: None
+captions of a stream (probe)
+video on macOS: every check passed
+video on iOS runs with TAUT_IOS_SIMULATOR=1 (it boots a simulator)
+kinds text 0
+warning: constant `CEA708` is never used
+  --> src/video_apple_legible.rs:28:7
+   |
+28 | const CEA708: u32 = u32::from_be_bytes(*b"c708");
+   |       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `taut` (lib) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 0.01s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: native ""
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = English;\n    MediaSelectionOptionsPersistentID = 0;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc25146e00, language = en, mediaType = 'sbtl', title = English>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsName = \"Fran\\U00e7ais\";\n    MediaSelectionOptionsPersistentID = 1;\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc25146ec0, language = fr, mediaType = 'sbtl', title = Français>")
+probe: option Some("en") Some("CC1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC1;\n    MediaSelectionOptionsPersistentID = 2;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc25146580, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC1, auxiliary = YES>")
+probe: option Some("en") Some("CC3 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = CC3;\n    MediaSelectionOptionsPersistentID = 3;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc25146f80, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = CC3, auxiliary = YES>")
+probe: option Some("en") Some("Service 1 - English CC") Some("clcp") subtypes Some("(\n)") list Some("{\n    MediaSelectionGroupMediaType = sbtl;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsName = \"Service 1\";\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n        \"public.accessibility.transcribes-spoken-dialog\",\n        \"public.accessibility.describes-music-and-sound\"\n    );\n}") described Some("<AVMediaSelectionKeyValueOption: 0xc25146c40, language = en, mediaType = 'clcp', tagged media characteristics = {public.accessibility.transcribes-spoken-dialog, public.accessibility.describes-music-and-sound}, title = Service 1, auxiliary = YES>")
+probe: http://127.0.0.1:49352/master.m3u8: tracks [Track { language: "en", name: "English" }, Track { language: "fr", name: "French" }, Track { language: "en", name: "CC1 - English CC" }, Track { language: "en", name: "CC3 - English CC" }, Track { language: "en", name: "Service 1 - English CC" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 0 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe:   track 0 at 204.704125ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 0 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.061092208s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.037127667s: None None
+probe:   track 0 at 2.598065625s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 0 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 100;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe: 0 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(0ns): 1 strings, 0 samples
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 at 0ns: None None
+probe: 0 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(2.5s): 1 strings, 0 samples
+probe: 0 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe: 0 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMWritingDirectionAlignment = \"CMWDA_start\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = 10;\n    CMWritingDirectionSizePercentage = 100;\n    CMWritingDirectionTextPositionPercentage = 10;\n}")
+probe: 0 at Some(1s): 1 strings, 0 samples
+probe:   track 1 paused at 1.3s: None
+probe: 0 at Some(2s): 0 strings, 0 samples
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 0 at Some(145.75µs): 0 strings, 0 samples
+probe: 0 at Some(533.366667ms) string Some("Hello there{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"17.1875\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(533.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.2s): 0 strings, 0 samples
+probe: 0 at Some(1.833366667s) string Some("Second line{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"23.74999960884452\";\n}")
+probe: 0 at Some(1.833366667s): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 0 at Some(2.6s): 0 strings, 0 samples
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe: 0 at Some(236.917µs): 0 strings, 0 samples
+probe: 0 at Some(833.366667ms) string Some("Third channel{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"21.875\";\n    CMWritingDirectionTextPositionPercentage = \"26.24999964609742\";\n}")
+probe: 0 at Some(833.366667ms): 1 strings, 0 samples
+probe: 0 at Some(1.5s): 0 strings, 0 samples
+probe:   track 3 at 0ns: None None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe: 0 at Some(700ms): 0 strings, 0 samples
+probe:   track 3 paused at 1.3s: None
+probe: 0 at Some(2.05s): 0 strings, 0 samples
+probe:   track 3 paused at 2.05s: None
+probe: choose Some(4)
+probe: 0 at Some(500ms): 0 strings, 0 samples
+probe: 0 at Some(800ms) string Some("Service one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666666\";\n    CMBoldStyle = 0;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"87.33333329359691\";\n    CMWritingDirectionSizePercentage = \"18.75\";\n    CMWritingDirectionTextPositionPercentage = \"44.37499977648258\";\n}")
+probe: 0 at Some(800ms): 1 strings, 0 samples
+probe:   track 4 at 0ns: None None
+probe: 0 at Some(2.2s): 0 strings, 0 samples
+probe:   track 4 paused at 700ms: None
+probe:   track 4 paused at 1.3s: None
+probe:   track 4 paused at 2.05s: None
+probe: native ""
+probe: http://127.0.0.1:49352/video.m3u8: tracks [] size Some((64, 48)) length Some(3s) error None
+probe: native ""
+probe: choose None
+probe: option Some("en") Some("English") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xc25169f90, language = en, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xc251693b0>>")
+probe: option Some("en") Some("English Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = en;\n    MediaSelectionOptionsLanguageCode = eng;\n    MediaSelectionOptionsPersistentID = 4;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xc251693b0, language = en, mediaType = 'sbtl', forced subtitles only>")
+probe: option Some("fr") Some("French") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsDisplaysNonForcedSubtitles = 1;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xc25169b30, language = fr, mediaType = 'sbtl', associated forced-only option = <AVMediaSelectionTrackOption: 0xc25169a90>>")
+probe: option Some("fr") Some("French Forced") Some("sbtl") subtypes Some("(\n    1954034535\n)") list Some("{\n    MediaSelectionGroupID = 2;\n    MediaSelectionOptionsExtendedLanguageTag = fr;\n    MediaSelectionOptionsLanguageCode = fra;\n    MediaSelectionOptionsPersistentID = 5;\n    MediaSelectionOptionsTaggedMediaCharacteristics =     (\n    );\n}") described Some("<AVMediaSelectionTrackOption: 0xc25169a90, language = fr, mediaType = 'sbtl', forced subtitles only>")
+probe: http://127.0.0.1:49352/languages.mp4: tracks [Track { language: "en", name: "English" }, Track { language: "en", name: "English Forced" }, Track { language: "fr", name: "French" }, Track { language: "fr", name: "French Forced" }] size Some((64, 48)) length Some(3s) error None
+probe: choose Some(0)
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 at 0ns: None None
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 0 at 85.87225ms: Some("English one") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(2.5s) string Some("English end{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 0 at 1.017740208s: Some("English two") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe:   track 0 at 2.018561833s: None None
+probe:   track 0 at 2.558849958s: Some("English end") Some(Rect { x: 91.77778, y: 204.44444, w: 136.44444, h: 28.88889 })
+probe: 2 at Some(0ns) string Some("English one{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 0 paused at 700ms: Some("English one")
+probe: 2 at Some(1s) string Some("English two{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 0 paused at 1.3s: Some("English one")
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 0 paused at 2.05s: Some("English one")
+probe: choose Some(1)
+probe:   track 1 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 1 paused at 700ms: None
+probe:   track 1 paused at 1.3s: None
+probe:   track 1 paused at 2.05s: None
+probe: choose Some(2)
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 2 at 0ns: None None
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe: 2 at Some(2.5s) string Some("Français fin{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(2.5s): 1 strings, 0 samples
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe: 2 at Some(0ns) string Some("Français un{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"20.3125\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(0ns): 1 strings, 0 samples
+probe:   track 2 paused at 700ms: None
+probe: 2 at Some(1s) string Some("Français deux{\n    CMBackgroundColorARGB =     (\n        \"0.5\",\n        0,\n        0,\n        0\n    );\n    CMBaseFontSizePercentage = \"4.166666666666667\";\n    CMBoldStyle = 1;\n    CMCharacterBackgroundColorARGB =     (\n        0,\n        0,\n        0,\n        0\n    );\n    CMCharacterEdgeStyle = \"CMCharacterEdgeStyle_None\";\n    CMFontFamilyName = \".AppleSystemUIFont\";\n    CMForegroundColorARGB =     (\n        1,\n        1,\n        1,\n        1\n    );\n    CMItalicStyle = 0;\n    CMRelativeFontSize = 100;\n    CMUnderlineStyle = 0;\n    CMWritingDirectionAlignment = \"CMWDA_middle\";\n    CMWritingDirectionOrthogonalLinePositionPercentage = \"92.5\";\n    CMWritingDirectionSizePercentage = \"23.4375\";\n    CMWritingDirectionTextPositionPercentage = 50;\n}")
+probe: 2 at Some(1s): 1 strings, 0 samples
+probe:   track 2 paused at 1.3s: None
+probe: 2 at Some(2s): 0 strings, 0 samples
+probe:   track 2 paused at 2.05s: None
+probe: choose Some(3)
+probe:   track 3 at 0ns: None None
+probe: 2 at Some(3s): 0 strings, 0 samples
+probe:   track 3 paused at 700ms: None
+probe:   track 3 paused at 1.3s: None
+probe:   track 3 paused at 2.05s: None
+probe: file /var/folders/q2/p1t6rgxj5fj32g1dc7dmd49r0000gn/T/taut-video-10569/webvtt-sbtl-nmhd.mp4: tracks [] size None error Some("the player stopped: The operation could not be completed")
+probe: file /var/folders/q2/p1t6rgxj5fj32g1dc7dmd49r0000gn/T/taut-video-10569/webvtt-text-nmhd.mp4: tracks [Track { language: "eng", name: "English" }, Track { language: "fra", name: "" }] size Some((64, 48)) error None
+
+thread 'main' (33465) panicked at src/testing.rs:292:33:
+nothing in the window is a Text called "English one"; what there is:
+
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: <taut::testing::Trial<taut::video::Video>>::place_of::{closure#1}
+   3: <core::option::Option<usize>>::unwrap_or_else::<<taut::testing::Trial<taut::video::Video>>::place_of::{closure#1}>
+   4: <taut::testing::Trial<taut::video::Video>>::place_of
+   5: <taut::testing::Trial<taut::video::Video>>::find
+   6: video_apple::checks::probe_file::{closure#0}
+   7: <core::option::Option<&str>>::map::<taut::geom::Rect, video_apple::checks::probe_file::{closure#0}>
+   8: video_apple::checks::probe_file
+   9: video_apple::checks::captions_of_a_stream
+  10: video_apple::checks::all
+  11: video_apple::main
+  12: <fn() as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `--test video_apple`
+exit 101
+==== app output
