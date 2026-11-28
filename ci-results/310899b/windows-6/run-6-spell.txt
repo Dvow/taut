@@ -1,0 +1,49 @@
+
+running 20 tests
+.i............. 15/20
+spell::tests::windows_checks_english_and_offers_the_right_words --- FAILED
+....
+failures:
+
+---- spell::tests::windows_checks_english_and_offers_the_right_words stdout ----
+probe: open en-US: CoInitializeEx 0x0, factory 0x80080008 after 1.4256ms
+
+thread '<unnamed>' (9176) panicked at src\spell.rs:1635:116:
+Windows has a checker for English
+stack backtrace:
+   0: std::panicking::panic_handler
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/std\src\panicking.rs:676
+   1: core::panicking::panic_fmt
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core\src\panicking.rs:80
+   2: core::panicking::panic_display
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core\src\panicking.rs:259
+   3: core::option::expect_failed
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core\src\option.rs:2262
+   4: <core::option::Option<(alloc::vec::Vec<bool>, alloc::vec::Vec<alloc::string::String>)>>::expect
+   5: taut::spell::tests::windows_checks_english_and_offers_the_right_words::{closure#0}
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (9156) panicked at src\spell.rs:1646:10:
+called `Result::unwrap()` on an `Err` value: Any { .. }
+stack backtrace:
+   0: std::panicking::panic_handler
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/std\src\panicking.rs:676
+   1: core::panicking::panic_fmt
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core\src\panicking.rs:80
+   2: core::result::unwrap_failed
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core\src\result.rs:1870
+   3: taut::spell::tests::page
+   4: taut::spell::tests::windows_checks_english_and_offers_the_right_words::{closure#0}
+   5: <taut::spell::tests::windows_checks_english_and_offers_the_right_words::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+   6: core::ops::function::FnOnce::call_once
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core\src\ops\function.rs:250
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    spell::tests::windows_checks_english_and_offers_the_right_words
+
+test result: FAILED. 18 passed; 1 failed; 1 ignored; 0 measured; 814 filtered out; finished in 0.66s
+
+error: test failed, to rerun pass `--lib`
+::error file=src/spell.rs,line=1646,title=%3A spell%3A%3Atests%3A%3Awindows_checks_english_and_offers_the_right_words::thread 'spell::tests::windows_checks_english_and_offers_the_right_words' (9156) panicked at src\spell.rs:1646:10:%0Acalled `Result::unwrap()` on an `Err` value: Any { .. }

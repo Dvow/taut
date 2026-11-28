@@ -1,0 +1,2026 @@
+   Compiling taut v0.3.0 (D:\a\taut\taut)
+    Finished `test` profile [unoptimized] target(s) in 48.18s
+     Running unittests src\lib.rs (target\debug\build\taut/7816427c542b495e\out\taut-7816427c542b495e.exe)
+
+running 1116 tests
+test accessibility::tests::a_document_an_app_tells_is_not_read_by_line_and_letter ... ok
+test accessibility::tests::a_reader_moves_through_text_by_character_word_line_and_paragraph ... ok
+test accessibility::tests::how_long_a_scroll_takes_while_a_reader_listens ... ignored
+test accessibility::tests::text_is_read_by_its_lines_as_wrapped_and_its_letters_where_drawn ... ok
+test accessibility::tests::tree_items_the_app_put_in_no_tree_are_told_in_one ... ok
+test accessibility::tests::utf16_units_and_letters_convert_both_ways ... ok
+test android_dex::tests::a_constructor_hands_its_arguments_to_its_parents ... ok
+test android_dex::tests::a_file_has_its_header_tables_and_sums ... ok
+test android_dex::tests::a_method_with_code_has_its_registers_and_resolved_references ... ok
+test android_dex::tests::descriptors_are_split_into_types ... ok
+test android_dex::tests::sha1_and_adler32_give_the_known_answers ... ok
+test android_dex::tests::strings_are_written_in_modified_utf8 ... ok
+test accessibility::tests::every_row_of_a_long_table_is_reached_and_selected_through_it ... ok
+test accessibility::tests::a_reader_pages_through_a_long_table_a_screenful_at_a_time ... ok
+test android_emulator::tests::adb_errors_from_a_dropped_emulator_are_told_apart ... ok
+test android_emulator::tests::the_system_parts_on_an_android_emulator ... ok
+test android_emulator::tests::xml_escapes_in_a_dump_are_undone ... ok
+test android_input_method::tests::what_is_composed_is_drawn_underlined_at_the_text_cursor ... ok
+test android_text::tests::the_fallbacks_are_the_unnamed_families_in_order ... ok
+test android_text::tests::the_gallery_on_an_android_emulator ... ok
+test android_text::tests::what_the_window_says_is_read_back ... ok
+test animation::tests::a_frame_of_a_hundredth_of_a_second_or_less_shows_for_a_tenth ... ok
+test animation::tests::what_is_less_than_solid_is_mixed_as_each_kind_mixes_it ... ok
+test bidi::tests::a_line_is_shown_in_the_order_unicode_gives_it ... ok
+test bidi::tests::a_line_of_a_left_to_right_paragraph_with_nothing_right_to_left_up_to_its_end_shows_as_typed ... ok
+test bidi::tests::a_line_shaped_for_its_forms_is_drawn_by_the_system_glyph_by_glyph ... ok
+test accessibility::tests::a_run_that_changes_nothing_told_tells_nothing_anew ... ok
+test android_dex::tests::the_sdks_dexdump_reads_the_file ... ok
+test android_dex::tests::the_sdks_dexdump_reads_the_packages_classes ... ok
+test bidi::tests::every_case_of_unicodes_test_of_characters_comes_out_as_it_says ... ok
+test bidi::tests::every_case_of_unicodes_test_of_characters_wrapped_anywhere_keeps_its_paragraphs_levels ... ok
+test bidi::tests::every_case_of_unicodes_test_of_kinds_comes_out_as_it_says ... ok
+test bidi::tests::an_interface_shows_text_that_runs_both_ways_and_draws_only_what_changed ... ok
+test bidi::tests::numbers_after_a_wrap_take_the_direction_of_the_text_before_it ... ok
+test bidi::tests::an_interface_shows_syllables_and_draws_only_what_changed ... ok
+test bidi::tests::text_is_told_to_run_one_way_by_its_bytes_and_never_wrongly ... ok
+test bidi::tests::text_of_india_and_south_east_asia_is_never_taken_for_plain ... ok
+test bidi::tests::lines_that_run_both_ways_are_drawn_where_they_are_seen ... ok
+test bmp::tests::an_icon_is_read_as_the_largest_picture_in_it ... ok
+test bmp::tests::an_icon_shows_the_image_made_for_its_size_or_the_nearest_larger ... ok
+test bidi::tests::syllables_are_drawn_where_they_are_measured ... ok
+test bmp::tests::every_image_of_an_icon_is_read_once_per_size_the_deepest ... ok
+test bmp::tests::every_image_of_the_systems_icons_is_read_as_windows_loads_it ... ignored, reads the system's own icons, which another system lacks
+test bmp::tests::pictures_come_out_as_ffmpeg_reads_them ... ok
+test bmp::tests::pixels_lie_where_the_file_says ... ok
+test bmp::tests::pixels_of_sixteen_bits_are_stretched_by_rounding ... ok
+test bmp::tests::the_pictures_are_made_afresh ... ignored, needs ffmpeg, and writes the files the other tests read
+test bmp::tests::what_a_file_says_wrongly_gives_nothing ... ok
+test bmp::tests::what_cannot_be_an_icon_is_not_written ... ok
+test bmp::tests::windows_loads_a_written_icon_at_every_size ... ok
+test brahmic::tests::a_sign_by_itself_is_shown_on_a_dotted_circle ... ok
+test bidi::tests::lines_the_systems_text_leaves_without_a_languages_forms_are_shaped_with_them ... ok
+test brahmic::tests::grammars_find_the_syllables_harfbuzz_finds ... ok
+test brahmic::tests::syllables_are_put_in_the_order_their_glyphs_are_drawn_in ... ok
+test brahmic::tests::words_come_to_the_glyphs_harfbuzz_makes_of_them ... ok
+test brotli::tests::a_stream_made_to_cost_the_most_costs_no_more_than_its_bound ... ok
+test brotli::tests::a_word_takes_each_of_its_forms ... ok
+test brotli::tests::streams_the_reference_made_unpack_to_what_was_packed ... ok
+test bmp::tests::an_icon_written_is_read_back_at_every_size ... ok
+test brotli::tests::the_list_of_words_and_the_tables_are_the_rfcs ... ok
+test canvas::tests::a_filled_square_shape_covers_its_area ... ok
+test canvas::tests::a_picture_drawn_smaller_shows_the_mean_of_what_falls_on_each_pixel ... ok
+test canvas::tests::a_rectangle_fills_exactly_its_pixels ... ok
+test canvas::tests::a_round_corner_is_smooth ... ok
+test canvas::tests::a_shadow_is_dark_right_from_the_lower_edge_of_its_box ... ok
+test canvas::tests::a_strip_of_a_window_holds_the_same_pixels_as_the_whole ... ok
+test bmp::tests::a_damaged_file_gives_nothing_or_some_picture ... ok
+test canvas::tests::nothing_is_drawn_outside_the_clip_or_the_block ... ok
+test canvas::tests::the_old_names_draw_as_the_new_ones ... ok
+test cells::tests::a_number_is_read_from_the_start_of_a_cells_text ... ok
+test cells::tests::rows_are_written_as_a_spreadsheet_takes_them ... ok
+test cff::tests::a_cff2_font_blends_with_its_variation_store ... ok
+test cff::tests::a_cff_font_with_several_dictionaries_gives_each_glyph_its_own_pieces ... ok
+test cff::tests::a_cff_program_does_sums_with_the_numbers_written_last ... ok
+test cff::tests::a_cff_program_ends_by_setting_an_accent_on_a_letter ... ok
+test cff::tests::a_system_fonts_charstrings_are_read_as_run ... ok
+test cff::tests::programs_of_a_cff_table_draw_lines_and_curves ... ok
+test cff::tests::what_a_cff_program_may_not_do_leaves_its_glyph_blank ... ok
+test chart::tests::a_chart_spans_its_values_and_stands_on_nought_where_bars_do ... ok
+test chart::tests::a_pie_is_cut_by_shares_from_the_top_round_to_the_right ... ok
+test chart::tests::a_small_plot_is_told_by_its_values_or_twelve_of_them ... ok
+test chart::tests::a_smooth_line_goes_through_every_value_and_never_past_two_of_them ... ok
+test chart::tests::moments_are_written_as_people_read_them_at_steps_that_are_good_to_read ... ok
+test chart::tests::of_many_more_values_than_pixels_only_the_highest_and_lowest_of_each_are_drawn ... ok
+test chart::tests::the_numbers_along_an_axis_are_good_to_read ... ok
+test chart::tests::values_stand_evenly_or_where_they_say_or_in_places ... ok
+test code_editor::tests::a_line_is_coloured_by_the_rules ... ok
+test code_editor::tests::an_input_method_delete_keeps_every_selection ... ok
+test code_editor::tests::an_input_method_deletes_whole_characters_before_every_cursor ... ok
+test code_editor::tests::brackets_pair_only_in_code ... ok
+test code_editor::tests::enter_keeps_the_indent_and_tab_indents ... ok
+test code_editor::tests::find_and_replace_with_case_and_whole_words ... ok
+test code_editor::tests::lines_are_kept_right_through_every_edit ... ok
+test code_editor::tests::rows_follow_wrapping_and_folding ... ok
+test code_editor::tests::several_cursors_type_and_move_together ... ok
+test code_editor::tests::the_pointer_selects_by_letter_word_and_line ... ok
+test code_editor::tests::what_is_left_open_is_read_only_as_far_as_needed_and_again_only_until_it_agrees ... ok
+test color::tests::a_colour_goes_to_hue_and_text_and_back ... ok
+test color::tests::colours_are_mixed_lightened_and_darkened_as_the_eye_sees_them ... ok
+test color::tests::colours_come_from_hue_strength_and_lightness ... ok
+test color::tests::colours_lie_in_oklab_where_web_pages_put_them ... ok
+test color::tests::contrast_is_counted_as_the_accessibility_guidelines_count_it ... ok
+test color::tests::laying_a_colour_over_another ... ok
+test color::tests::the_rows_of_a_chart_are_told_apart_by_everyone ... ok
+test color_profiles::tests::a_damaged_profile_is_none_or_some_change ... ok
+test brahmic::tests::any_run_of_characters_is_shaped_without_failing ... ok
+test color_profiles::tests::colours_that_are_the_screens_change_nothing ... ok
+test color_profiles::tests::curves_are_read_in_every_way_a_profile_writes_them ... ok
+test color_profiles::tests::the_pictures_are_made_afresh ... ignored, needs vips and Ghostscript's profiles, and writes the files the other tests read
+test color_profiles::tests::wider_colours_come_out_as_the_screen_shows_them ... ok
+test color_profiles::tests::colours_come_out_as_littlecms_makes_them ... ok
+test colr::tests::a_font_drawn_only_the_newer_ways_is_used_where_that_is_asked_for ... ok
+test colr::tests::a_glyph_is_its_paints_filled_layered_moved_and_laid_together ... ok
+test colr::tests::a_glyph_written_as_svg_is_drawn_in_the_fonts_units_packed_or_not ... ok
+test colr::tests::colours_go_into_each_other_along_a_line ... ok
+test canvas::tests::an_outline_covers_each_pixel_by_as_much_as_lies_on_it ... ok
+test colr::tests::paints_that_go_round_too_deep_or_too_wide_are_refused ... ok
+test colr::tests::the_glyphs_of_real_fonts_are_drawn_as_their_pictures_show_them ... ignored
+test combo::tests::the_light_goes_up_and_down_what_is_left_and_stops_at_its_ends ... ok
+test combo::tests::what_is_typed_leaves_the_options_that_hold_it_and_those_that_begin_with_it_first ... ok
+test date::tests::a_month_on_or_back_keeps_the_day_where_the_month_has_it ... ok
+test date::tests::days_are_counted_and_named_right ... ok
+test date::tests::every_day_for_eight_hundred_years_comes_back_as_itself ... ok
+test dock::tests::a_dock_gives_up_the_panels_an_app_no_longer_has ... ok
+test dock::tests::a_panel_is_moved_beside_another_and_an_empty_place_gives_up_its_room ... ok
+test colr::tests::a_damaged_table_never_stops_the_program ... ok
+test dock::tests::a_panel_that_fills_the_dock_leaves_it_when_it_floats_or_closes ... ok
+test dock::tests::a_panel_that_floats_or_is_closed_goes_back_where_it_was ... ok
+test dock::tests::places_share_the_room_as_they_are_told ... ok
+test dock::tests::places_that_name_each_other_in_a_ring_are_not_laid_out_for_ever ... ok
+test drag_drop::tests::a_picture_goes_out_as_its_own_copy ... ok
+test drag_drop::tests::nothing_goes_out_of_a_window_whose_app_does_not_hand_anything_out ... ok
+test drag_drop::tests::text_from_another_program_is_taken_by_the_box_it_is_let_go_on ... ok
+test drag_drop::tests::what_comes_back_into_its_window_is_the_number_again ... ok
+test drag_drop::tests::what_goes_out_where_nobody_hands_it_on_is_forgotten_when_the_button_comes_up ... ok
+test drag_drop::tests::what_is_dragged_past_the_windows_edge_goes_out_as_what_the_app_says_it_is ... ok
+test emoji::tests::a_font_of_the_apps_own_leaves_pictures_whole_to_the_writer_of_what_it_lacks ... ok
+test emoji::tests::a_picture_keeps_to_the_canvas_and_to_its_line ... ok
+test emoji::tests::a_picture_stands_on_the_line_in_its_own_colours ... ok
+test emoji::tests::a_picture_is_as_large_as_the_letters_are ... ok
+test emoji::tests::an_interface_shows_pictures_and_draws_only_what_changed_of_them ... ok
+test emoji::tests::characters_that_belong_together_are_one_picture_with_one_width ... ok
+test emoji::tests::an_interface_has_picture_letters_in_colour_by_itself_only_with_the_feature ... ok
+test emoji::tests::pictures_are_drawn_once_and_kept_up_to_a_limit ... ok
+test emoji::tests::pictures_stand_among_the_letters_of_the_system ... ok
+test emoji::tests::the_emoji_of_a_real_font_are_drawn_in_colour ... ok
+test event::tests::keys_are_read_the_way_a_menu_writes_them ... ok
+test exif_orientation::tests::a_picture_is_turned_each_of_eight_ways ... ok
+test exif_orientation::tests::the_notes_say_how_to_turn_whichever_end_comes_first ... ok
+test exif_orientation::tests::vips_turns_them_as_this_does ... ignored, needs vips
+test fallback_marks::tests::a_mark_above_sits_a_sixteenth_of_an_em_over_its_letter_and_the_next_over_it ... ok
+test fallback_marks::tests::marks_are_sorted_above_and_below_as_harfbuzz_sorts_them ... ok
+test file_dialog::tests::a_name_the_systems_dialog_saves_under_gets_the_ending_asked_for ... ok
+test file_dialog::tests::names_in_the_box_are_whole_paths_and_get_the_ending_asked_for ... ok
+test file_dialog::tests::sizes_are_written_the_way_people_read_them ... ok
+test file_dialog::tests::the_librarys_own_dialog_is_handed_over_only_where_it_may_show ... ok
+test emoji::tests::text_without_pictures_is_the_other_writers_to_the_pixel ... ok
+test folder_listing::tests::hidden_files_show_when_asked ... ok
+test folder_listing::tests::names_are_in_the_order_people_expect ... ok
+test font_file::tests::a_character_is_of_the_script_its_letters_are_of ... ok
+test font_file::tests::a_character_the_font_lacks_is_the_missing_glyph ... ok
+test canvas::tests::a_circle_is_round_at_any_size ... ok
+test folder_listing::tests::a_long_folder_is_read_in_the_background_and_shown_as_it_comes ... ok
+test font_file::tests::a_font_file_cut_short_meanwhile_is_still_read ... ok
+test font_file::tests::a_font_of_emoji_is_the_same_packed_for_the_web_or_opened_where_it_lies ... ok
+test font_file::tests::a_font_packed_for_the_web_is_the_font_it_was ... ok
+test font_file::tests::a_font_says_how_large_its_letters_are ... ok
+test font_file::tests::a_glyph_in_layers_is_outlines_each_filled_with_a_colour ... ok
+test font_file::tests::a_glyph_is_put_where_the_table_of_widths_has_its_left_edge ... ok
+test font_file::tests::a_glyph_is_the_outline_its_points_say ... ok
+test font_file::tests::a_glyph_made_of_others_is_their_shapes_stretched_turned_and_moved ... ok
+test font_file::tests::a_line_is_shaped_once_for_every_size ... ok
+test font_file::tests::a_part_is_put_in_its_place_by_a_move_or_by_a_point ... ok
+test font_file::tests::a_rule_holds_for_the_glyphs_it_names_and_has_lookups_carried_out_at_them ... ok
+test font_file::tests::a_variable_font_packed_for_the_web_varies_as_the_font_it_was ... ok
+test font_file::tests::characters_written_as_one_have_the_glyphs_the_font_puts_in_their_place ... ok
+test font_file::tests::each_face_is_written_with_its_file_or_with_the_regular_one ... ok
+test font_file::tests::each_script_is_kerned_by_the_lookups_of_its_own_feature ... ok
+test font_file::tests::every_way_of_listing_characters_finds_the_same_glyphs ... ok
+test font_file::tests::fonts_of_the_machine_are_read_as_freetype_reads_them ... ok
+test font_file::tests::glyphs_are_moved_to_where_they_belong_together ... ok
+test font_file::tests::large_letters_are_filled_and_what_is_kept_stays_small ... ok
+test font_file::tests::letters_the_file_lacks_are_left_to_another_writer ... ok
+test font_file::tests::measuring_goes_by_whole_pixels_and_agrees_with_drawing ... ok
+test font_file::tests::pairs_are_kerned_by_every_list_that_is_for_them ... ok
+test font_file::tests::pictures_of_the_other_kind_are_found_too ... ok
+test font_file::tests::ready_made_pictures_are_found_however_they_are_listed ... ok
+test font_file::tests::text_puts_ink_where_its_letters_are_and_nowhere_else ... ok
+test font_file::tests::the_first_font_of_a_collection_is_read ... ok
+test font_file::tests::the_first_list_of_a_lookup_that_has_a_pair_speaks_for_it_and_lookups_add_up ... ok
+test font_file::tests::the_newer_table_lists_pairs_by_classes ... ok
+test font_file::tests::the_newer_table_lists_pairs_by_their_second_glyph ... ok
+test frameless::tests::a_bare_window_is_sized_by_its_edges_and_corners ... ok
+test frameless::tests::a_window_is_taken_hold_of_by_its_strip_and_not_by_what_lies_on_it ... ok
+test frameless::tests::what_an_app_asks_of_its_window_is_taken_once_and_how_the_window_stands_is_heard ... ok
+test functions::tests::a_table_holds_each_function_found_by_its_name_and_says_which_one_is_missing ... ok
+test geom::tests::a_transform_does_its_steps_in_the_order_they_are_said ... ok
+test geom::tests::corners_are_said_by_one_number_or_four ... ok
+test gif::tests::a_damaged_file_gives_nothing_or_some_film ... ok
+test gif::tests::a_frame_is_shown_the_same_however_the_film_got_to_it ... ok
+test gif::tests::frames_come_out_as_ffmpeg_and_libnsgif_show_them ... ok
+test gif::tests::frames_make_room_for_the_next_as_they_say ... ok
+test gif::tests::the_films_are_made_afresh ... ignored, needs ffmpeg, vips and giflib's tools, and writes the files the other tests read
+test gif::tests::the_frame_that_is_due_goes_by_the_times_of_the_frames ... ok
+test gif::tests::what_is_no_gif_or_cannot_be_what_it_says_gives_nothing ... ok
+test gpu_d3d12::tests::a_removed_software_device_is_waited_for_until_it_has_run_all_it_was_given ... ok
+test gpu_d3d12::tests::alone_a_removed_software_device_is_waited_for ... ignored, run by the test before it, in a process of its own
+test gpu_draw::tests::a_glyph_goes_up_once_and_is_found_by_its_content_after ... ok
+test gpu_draw::tests::a_path_is_cut_into_bands_and_one_too_busy_is_drawn_by_the_cpu ... ok
+test gpu_draw::tests::a_quad_is_cut_to_the_clip_and_nothing_outside_is_drawn ... ok
+test gpu_draw::tests::auto_draws_only_large_parts_on_a_gpu_and_the_user_has_the_last_word ... ok
+test gpu_draw::tests::gradients_shapes_and_strokes_are_shader_math_not_patches ... ok
+test gpu_draw::tests::shelves_fill_row_by_row_and_say_when_full ... ok
+test gpu_draw::tests::what_a_patch_draws_is_cut_to_the_clip_and_the_patch_texture_full_fails_the_part ... ok
+test gpu_draw_d3d12::tests::direct3d_12_draws_every_kind_of_thing_as_the_cpu_does ... ok
+test gpu_draw_d3d12::tests::the_structures_are_laid_out_as_direct3d_lays_them_out ... ok
+test gpu_draw_vulkan::tests::the_shaders_are_their_source_compiled ... ignored, needs glslc
+test gpu_draw_vulkan::tests::the_structures_are_laid_out_as_vulkan_lays_them_out ... ok
+test gpu_draw_vulkan::tests::vulkan_draws_every_kind_of_thing_as_the_cpu_does ... ok
+test font_file::tests::a_damaged_font_never_stops_the_program ... ok
+test gpu_draw_windows::tests::direct3d_11_draws_every_kind_of_thing_as_the_cpu_does ... ok
+test gpu_frames::tests::a_buffer_is_imported_once_and_found_again_by_its_key ... ok
+test gpu_frames::tests::a_frame_of_no_key_refuses_the_device ... ok
+test gpu_frames::tests::a_frame_that_cant_be_imported_refuses_the_device ... ok
+test gpu_frames::tests::an_import_whose_source_is_gone_is_let_go_of ... ok
+test gpu_frames::tests::beyond_eight_the_least_recently_drawn_is_let_go_of ... ok
+test gpu_draw_windows::tests::direct3d_11_lays_a_see_through_boxs_kept_layer_as_the_cpu_blends_it ... ok
+test gpu_windows::tests::a_device_lost_for_good_is_left_to_the_cpu ... ok
+test gpu_windows::tests::a_path_named_comes_first_then_the_best ... ok
+test gpu_windows::tests::a_path_that_is_missing_falls_back_along_the_order ... ok
+test gpu_windows::tests::a_window_asked_to_be_drawn_by_the_cpu_never_makes_a_device ... ok
+test gpu_windows::tests::a_window_with_no_gpu_to_be_had_is_drawn_by_the_cpu ... ok
+test gpu_windows::tests::cpu_time_per_frame_of_a_1080p_video ... ignored, a measure, run alone: the CPU time per frame of a 1080p video, its frames read back or not
+test gpu_windows::tests::a_device_that_cant_import_frames_reads_them_back ... ok
+test gpu_windows::tests::direct3d_11_draws_video_frames_from_the_decoders_texture ... ok
+test gpu_windows::tests::direct3d_11_and_the_cpu_show_the_same_pixels ... ok
+test gpu_windows::tests::direct3d_12_draws_video_frames_from_the_decoders_texture ... ok
+test gpu_windows::tests::on_a_desktop_nobody_sees_a_device_lost_for_good_is_left_to_the_cpu ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_a_device_that_cant_import_frames_reads_them_back ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_direct3d_11_draws_video_frames_from_the_decoders_texture ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_direct3d_11_shows_the_same_pixels ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_direct3d_12_draws_video_frames_from_the_decoders_texture ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_direct3d_12_shows_the_same_pixels ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_on_this_computers_own_gpu_the_pixels_are_the_same ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_opengl_draws_video_frames_from_the_decoders_texture ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_opengl_shows_the_same_pixels ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_the_cpu_time_per_frame_of_a_1080p_video ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_vulkan_draws_video_frames_from_the_decoders_texture ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_vulkan_shows_the_same_pixels ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_a_desktop_nobody_sees_windows_the_gpu_showed_leave_nothing_behind ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test gpu_windows::tests::on_this_computers_own_gpu_every_path_shows_the_same_pixels ... ok
+test gpu_windows::tests::opengl_and_the_cpu_show_the_same_pixels ... ok
+test gpu_windows::tests::opengl_draws_video_frames_from_the_decoders_texture ... ok
+test gpu_windows::tests::the_users_choice_goes_over_the_apps ... ok
+test gpu_windows::tests::direct3d_12_and_the_cpu_show_the_same_pixels ... ok
+test gpu_windows::tests::vulkan_draws_video_frames_from_the_decoders_texture ... ok
+test font_file::tests::a_damaged_font_of_emoji_never_stops_the_program ... ok
+test gpu_windows::tests::with_the_feature_the_test_program_carries_the_gpu_path ... ok
+test hardening::a_letter_of_very_many_points_takes_little_time_to_set_on_whole_pixels ... ok
+test hdr::lit::a_box_beside_a_lit_one_does_not_cover_it ... ok
+test hdr::lit::a_curve_turns_values_into_gains_and_weighs_them_by_the_headroom ... ok
+test hdr::lit::a_gain_map_is_sampled_bilinearly_between_its_pixels_centres ... ok
+test hdr::lit::a_pq_png_is_read_as_its_sdr_picture_and_gains ... ok
+test hdr::lit::an_hdr_picture_lights_where_it_shows_by_its_gain_map ... ok
+test hdr::lit::bright_boxes_and_pictures_light_the_gains_and_boxes_over_them_put_them_out ... ok
+test hdr::lit::pq_and_hlg_signals_give_the_light_their_standards_say ... ok
+test hdr::tests::a_picture_brighter_than_white_is_kept_as_its_sdr_picture_and_how_much_brighter ... ok
+test hdr::tests::a_rounded_box_covers_its_inside_and_not_its_corners ... ok
+test hdr::tests::an_hdr_screen_shows_up_to_its_peak_over_its_white ... ok
+test hdr::tests::halves_are_the_nearest_16_bit_floats ... ok
+test hdr_vulkan::tests::scrgb_is_taken_where_offered_else_hdr10 ... ok
+test hdr_vulkan::tests::the_pass_lights_each_colour_by_its_gain_in_scrgb_and_hdr10 ... ok
+test hdr_vulkan::tests::the_shaders_are_their_source_compiled ... ignored, needs glslc
+test hdr_vulkan::tests::the_structures_are_laid_out_as_vulkan_lays_them_out ... ok
+test gpu_windows::tests::vulkan_and_the_cpu_show_the_same_pixels ... ok
+test hdr_windows::tests::direct3d_11_presents_brighter_than_white_in_scrgb ... ok
+test hdr_windows::tests::on_a_desktop_nobody_sees_direct3d_11_presents_in_scrgb ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test hdr_windows::tests::on_a_desktop_nobody_sees_direct3d_12_presents_in_scrgb ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test hdr_windows::tests::on_a_desktop_nobody_sees_the_own_gpu_presents_in_hdr ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test hdr_windows::tests::direct3d_12_presents_brighter_than_white_in_scrgb ... ok
+test hdr_windows::tests::the_shaders_compile_for_both_paths ... ok
+test hdr_windows::tests::the_structures_are_laid_out_as_windows_lays_them_out ... ok
+test hdr_windows::tests::this_computers_screens_say_whether_they_are_hdr ... ok
+test hinting::tests::a_stroke_fills_whole_rows_as_far_as_its_thickness_lets_it ... ok
+test hinting::tests::large_letters_and_other_scripts_are_drawn_as_they_are ... ok
+test hinting::tests::nothing_moves_sideways ... ok
+test hinting::tests::the_lines_of_a_font_are_found_from_its_letters ... ok
+test hinting::tests::the_tops_and_bars_of_small_letters_fill_whole_rows ... ok
+test hotkeys::tests::a_key_is_wanted_while_runs_say_it_and_pressed_once ... ok
+test hotkeys::tests::keys_have_the_numbers_windows_knows_them_by ... ok
+test hotkeys::tests::keys_of_the_whole_system_are_read_the_way_a_menu_writes_them ... ok
+test id::tests::bytes_are_taken_in_a_word_at_a_time ... ok
+test hdr_windows::tests::on_this_computers_own_gpu_every_path_presents_in_hdr ... ok
+test jpeg::tests::a_hierarchical_picture_that_contradicts_itself_gives_nothing ... ok
+test jpeg::tests::a_note_from_the_camera_turns_the_picture_each_of_eight_ways ... ok
+test jpeg::tests::a_picture_is_written_as_libjpeg_writes_it ... ok
+test jpeg::tests::a_picture_of_no_size_or_too_large_is_not_written ... ok
+test jpeg::tests::a_progressive_picture_is_read_back_as_its_baseline_twin ... ok
+test jpeg::tests::colour_stored_coarser_comes_back_smooth ... ok
+test jpeg::tests::guesses_are_sorted_as_the_file_says ... ok
+test jpeg::tests::hierarchical_pictures_without_loss_come_back_sample_for_sample ... ok
+test jpeg::tests::levels_of_any_depth_come_to_eight_bits_as_libjpeg_shows_them ... ok
+test jpeg::tests::metadata_is_written_where_readers_look_for_it ... ok
+test jpeg::tests::padding_long_dividers_and_a_missing_end_change_nothing ... ok
+test jpeg::tests::pictures_come_out_as_libjpeg_reads_them ... ok
+test jpeg::tests::pictures_only_the_reference_writes_come_out_as_it_reads_them ... ok
+test jpeg::tests::a_damaged_file_gives_nothing_or_some_picture ... ok
+test jpeg::tests::the_pictures_only_the_reference_writes_are_made_afresh ... ignored, needs the ISO reference codec, and writes the files the other tests read
+test jpeg::tests::the_written_pictures_are_made_afresh ... ignored, needs libjpeg-turbo's tools, exiv2 and vips, and writes the files the other tests read
+test jpeg::tests::what_is_no_jpeg_or_of_a_kind_that_is_not_read_gives_nothing ... ok
+test jpeg::tests::what_is_written_is_read_back_close_to_what_it_was ... ok
+test jpeg::tests::what_the_planes_of_a_picture_without_loss_are_goes_by_its_notes_and_their_sizes ... ok
+test layer_d3d11::tests::the_shaders_are_their_source_compiled ... ok
+test layer_d3d11::tests::what_went_wrong_is_said_in_windows_own_words ... ok
+test layer_d3d12::tests::the_shaders_are_their_source_compiled ... ok
+test layer_d3d12::tests::the_structures_are_laid_out_as_direct3d_lays_them_out ... ok
+test layer_d3d9::tests::the_structures_are_laid_out_as_direct3d_lays_them_out ... ok
+test layer_vulkan::tests::the_shaders_are_their_source_compiled ... ignored, needs glslc
+test layer_vulkan::tests::the_structures_are_laid_out_as_vulkan_lays_them_out ... ok
+test layer_vulkan::tests::what_went_wrong_is_said_in_vulkans_words ... ok
+test layout::tests::a_box_is_as_big_as_what_is_in_it ... ok
+test layout::tests::a_box_is_no_bigger_than_it_has_to_be ... ok
+test layout::tests::a_box_that_only_narrows_keeps_its_height_in_a_column_that_is_too_full ... ok
+test layout::tests::a_grid_lines_boxes_up_in_columns_and_rows ... ok
+test layout::tests::a_row_that_wraps_and_a_grid_can_have_other_room_between_lines_than_between_boxes ... ok
+test layout::tests::a_scrolling_box_lets_its_children_be_taller_than_it_is ... ok
+test layout::tests::boxes_that_give_way_get_smaller_when_there_is_too_little_room_the_readiest_first ... ok
+test layout::tests::fixed_boxes_follow_each_other_and_the_rest_is_shared ... ok
+test layout::tests::spare_room_can_go_before_between_or_around ... ok
+test layout::tests::text_draws_a_little_past_its_box_sideways_unless_the_box_leaves_room_or_cuts_it ... ok
+test layout::tests::text_wraps_to_the_width_it_gets_and_grows_its_box ... ok
+test layout::tests::the_room_between_lines_said_anew_is_laid_out_anew ... ok
+test line_breaks::tests::a_no_break_space_keeps_to_what_is_before_it_except_a_space_or_hyphen ... ok
+test line_breaks::tests::cjk_text_breaks_between_ideographs_but_not_before_closing_marks_or_after_opening_ones ... ok
+test line_breaks::tests::letters_keep_to_narrow_brackets_beside_them_but_not_to_fullwidth_ones ... ok
+test line_breaks::tests::syllables_of_thai_lao_and_burmese_are_not_broken ... ok
+test line_breaks::tests::windows_says_where_the_words_of_thai_end ... ok
+test locale::tests::a_change_of_region_settings_has_them_read_again ... ok
+test locale::tests::a_window_takes_the_systems_formats_unless_the_app_set_its_own ... ok
+test locale::tests::am_pm_is_placed_where_each_pattern_puts_it ... ok
+test locale::tests::calendars_take_the_systems_names_where_the_app_left_them_english ... ok
+test locale::tests::dates_and_hours_are_written_in_their_order_digits_and_marks ... ok
+test locale::tests::digits_of_other_scripts_are_written_and_read ... ok
+test locale::tests::group_sizes_are_read_as_each_system_writes_them ... ok
+test locale::tests::numbers_are_written_and_read_with_the_marks_of_the_place ... ok
+test locale::tests::patterns_of_dates_are_read_for_their_order_and_mark ... ok
+test locale::tests::patterns_of_times_are_read_for_hour_digits_and_mark ... ok
+test locale::tests::windows_says_how_places_write_dates_times_and_numbers ... ok
+test locales::tests::every_place_is_one_language_and_region_with_sound_formats ... ok
+test locales::tests::places_are_found_by_the_names_systems_give_them ... ok
+test markdown::tests::a_document_is_its_blocks_and_their_words_in_pieces_of_one_look ... ok
+test markdown::tests::blocks_and_what_lies_in_their_lines_are_read_as_commonmark_has_them ... ok
+test markdown::tests::blocks_nest_as_deep_as_written ... ok
+test jpeg::tests::pictures_without_loss_come_back_sample_for_sample ... ok
+test markdown::tests::githubs_tables_task_lists_and_struck_words_are_read ... ok
+test markdown::tests::blocks_past_a_depth_are_words_where_blank_lines_would_cost_too_much ... ok
+test markdown::tests::the_specifications_own_examples ... ignored
+test markdown::tests::what_is_not_read_is_kept_as_the_text_it_is ... ok
+test markdown::tests::texts_made_to_be_hard_are_read_in_time ... ok
+test markdown_pages::tests::a_document_lays_out_on_pages_of_no_size_and_of_a_size_that_is_no_number ... ok
+test markdown_pages::tests::a_document_goes_down_its_pages_and_stays_inside_their_margins ... ok
+test markdown_pages::tests::a_heading_goes_onto_the_page_of_what_follows_it ... ok
+test markdown_pages::tests::a_reader_takes_out_a_documents_words ... ok
+test markdown_pages::tests::a_right_to_left_list_has_its_numbers_at_the_right_on_paper ... ok
+test markdown_pages::tests::a_right_to_left_list_number_drawn_otherwise_reads_as_written ... ok
+test markdown_pages::tests::links_in_a_document_lead_where_they_did ... ok
+test markdown_pages::tests::a_long_document_of_every_kind_of_block_lays_out ... ok
+test markdown_view::against_edge::markers_of_right_to_left_lists_lie_at_the_right_as_in_chrome ... ok
+test markdown_view::tests::a_code_blocks_width_is_its_widest_line_not_all_its_lines ... ok
+test markdown_view::tests::a_heading_is_known_by_its_words_as_github_writes_them ... ok
+test markdown_view::tests::a_jump_to_the_end_finds_it_at_once_however_far_off_the_estimate ... ok
+test markdown_view::tests::a_jump_to_the_end_lays_out_only_the_end ... ok
+test markdown_view::tests::a_link_to_a_far_heading_and_ctrl_shift_end_lay_out_only_around_where_they_go ... ok
+test markdown_view::tests::a_long_document_is_measured_and_laid_out_only_as_far_as_it_is_seen ... ok
+test markdown_view::tests::a_new_width_keeps_what_shows_at_the_top_there ... ok
+test markdown_view::tests::a_right_to_left_list_or_quote_has_its_marks_at_the_right ... ok
+test markdown_view::tests::a_right_to_left_paragraph_of_a_document_ends_at_the_right ... ok
+test markdown_view::tests::a_selection_running_past_the_view_is_told_whole_on_the_document ... ok
+test markdown_view::tests::a_table_at_the_top_is_at_the_top_when_the_selection_jumps_back_to_it ... ok
+test markdown_view::tests::code_is_coloured_by_the_rules_of_the_language_it_names ... ok
+test markdown_view::tests::laid_out_afresh_from_further_up_it_reaches_a_screen_below_where_the_view_moves ... ok
+test markdown_view::tests::links_given_boxes_with_no_text_in_view_stay_in_text_order ... ok
+test markdown_view::tests::only_what_is_in_view_of_a_long_document_is_described ... ok
+test markdown_view::tests::right_to_left_code_lies_in_its_block ... ok
+test markdown_view::tests::right_to_left_code_naming_its_language_lies_at_the_right_and_naming_none_at_the_left ... ok
+test markdown_view::tests::right_to_left_code_wider_than_its_block_comes_scrolled_to_where_its_lines_start ... ok
+test markdown_view::tests::scrolled_back_up_from_a_jump_what_shows_stays_in_place ... ok
+test markdown_view::tests::shift_up_and_down_on_a_focused_link_select_in_one_run ... ok
+test markdown_view::tests::tab_and_shift_tab_move_on_from_a_link_far_from_the_view ... ok
+test markdown_view::tests::tab_and_shift_tab_wrap_round_a_documents_links ... ok
+test markdown_view::tests::tab_reaches_a_link_above_what_is_laid_out ... ok
+test markdown_view::tests::up_and_down_on_a_link_with_none_that_way_scroll_a_line_in_one_run ... ok
+test node_graph::tests::a_node_taken_away_takes_its_wires_and_the_rest_are_renumbered ... ok
+test node_graph::tests::a_port_tells_what_it_is_wired_to ... ok
+test node_graph::tests::a_wire_goes_only_where_it_fits_and_an_input_takes_one ... ok
+test node_graph::tests::a_wire_is_found_near_any_of_its_pieces ... ok
+test node_graph::tests::an_input_for_several_keeps_each_wire_once_and_a_wire_replacing_one_takes_its_bends ... ok
+test node_graph::tests::bends_go_with_their_wires_through_removals_raises_and_copies ... ok
+test node_graph::tests::copies_keep_the_wires_between_them_and_lie_beside_or_at_a_point ... ok
+test node_graph::tests::the_edge_pushes_harder_nearer_and_past_it_and_not_at_all_in_the_middle ... ok
+test node_graph::tests::the_keyboard_goes_round_the_ports_a_wire_could_go_to ... ok
+test node_graph::tests::undo_keeps_a_bounded_history_and_redo_goes_until_a_new_edit ... ok
+test normalization::tests::a_letter_and_its_accents_are_the_one_character_the_font_has_for_them ... ok
+test normalization::tests::a_letter_with_a_variation_selector_is_left_whole ... ok
+test normalization::tests::characters_are_made_of_what_unicode_says ... ok
+test normalization::tests::every_character_put_together_is_taken_apart_into_the_same_two ... ok
+test normalization::tests::hebrew_and_arabic_marks_take_the_order_harfbuzz_gives_them ... ok
+test normalization::tests::marks_are_put_in_their_order_then_together_as_far_as_the_font_goes ... ok
+test normalization::tests::spaces_the_font_lacks_are_its_own_space_as_wide_as_they_are ... ok
+test normalization::tests::what_the_font_lacks_is_taken_apart_into_what_it_has ... ok
+test notifications::tests::a_notification_is_kept_until_it_is_shown_and_a_click_comes_back_once ... ok
+test ole_drag::tests::a_picture_is_dragged_out_as_a_png_file_and_as_the_block_of_pixels_made_once ... ok
+test ole_drag::tests::files_are_dragged_out_as_the_list_a_file_manager_reads ... ok
+test ole_drag::tests::nothing_in_these_tests_is_dragged_by_windows ... ok
+test ole_drag::tests::text_and_links_are_dragged_out_as_text_and_a_link_as_an_address_too ... ok
+test ole_drag::tests::the_list_of_forms_is_gone_through_skipped_reset_and_copied ... ok
+test ole_drag::tests::the_source_goes_on_while_the_button_is_held_and_escape_gives_it_up ... ok
+test ole_drag::tests::what_the_program_it_went_to_says_it_did_is_heard ... ok
+test open_with::tests::links_are_told_from_paths ... ok
+test open_with::tests::the_shell_opens_what_it_is_handed ... ok
+test paint::gpu_tests::for_the_gpu_a_see_through_box_is_its_layer_laid_over_what_is_under_it ... ok
+test markdown_view::against_edge::right_to_left_code_lies_where_github_has_it_in_chrome ... ok
+test paint::tests::an_icon_draws_nothing_outside_its_box ... ok
+test paint::tests::what_only_some_programs_show_is_handed_over_by_the_first_call_that_describes_it ... ok
+test panel::tests::a_panel_inside_a_window_that_gets_smaller_is_kept_inside_it ... ok
+test panel::tests::a_panel_that_is_moved_lies_against_the_nearest_edge_within_reach ... ok
+test panel::tests::a_stretched_edge_lies_against_the_nearest_edge_and_the_panel_keeps_its_least_size ... ok
+test paper::tests::a_page_is_drawn_on_a_canvas_with_its_clip ... ok
+test paper::tests::a_page_of_endless_size_is_one_a_reader_shows_and_one_that_can_be_drawn ... ok
+test paper::tests::a_page_with_a_clip_and_a_picture_of_any_size_is_drawn ... ok
+test paper::tests::a_paragraph_breaks_into_rows_no_wider_than_its_room ... ok
+test paint::tests::a_shadow_that_reaches_past_the_box_is_drawn_again_where_it_was ... ok
+test paper::tests::text_is_as_wide_as_it_measures_and_stands_on_its_line ... ok
+test path::tests::a_plus_sign ... ok
+test paper::tests::what_is_not_seen_takes_no_room_and_a_letter_a_font_lacks_comes_from_another ... ok
+test path::tests::a_smooth_line_goes_through_its_points_without_loops ... ok
+test path::tests::an_arc_ends_where_it_says ... ok
+test path::tests::lines_with_rounded_corners_are_as_long_and_as_large_as_measured ... ok
+test path::tests::numbers_that_run_together ... ok
+test path::tests::points_along_a_shape_and_how_far_points_are_from_it ... ok
+test path::tests::rectangles_polygons_and_stars_have_their_corners_where_they_say ... ok
+test path::tests::round_shapes_lie_where_their_numbers_say ... ok
+test path::tests::shapes_are_put_together_turned_round_and_moved ... ok
+test path::tests::a_shape_is_as_long_and_as_large_as_measured ... ok
+test pdf::fonts_pictures_kept_locked::a_fonts_licence_says_how_it_goes_in ... ok
+test pdf::fonts_pictures_kept_locked::a_kept_file_says_what_it_is_and_depends_on_nothing ... ok
+test pdf::fonts_pictures_kept_locked::a_letter_no_font_has_is_not_the_fonts_own_notdef ... ok
+test path::tests::what_is_inside_a_shape_is_what_the_canvas_fills ... ok
+test pdf::fonts_pictures_kept_locked::a_picture_keeps_its_colour_profile ... ok
+test pdf::fonts_pictures_kept_locked::emoji_go_in_in_colour ... ok
+test pdf::readers::a_reader_takes_out_the_text_that_was_written ... ok
+test pdf::readers::readers_draw_text_in_every_script_as_taut_does ... ok
+test pdf::readers::readers_draw_the_sample_as_taut_does ... ok
+test pdf::samples::write_samples ... ignored, writes files for checkers outside the tests
+test pdf::tests::a_file_is_laid_out_as_readers_find_their_way_in_it ... ok
+test pdf::tests::a_font_cut_down_holds_the_glyphs_used_as_they_were ... ok
+test pdf::tests::a_font_set_on_its_axes_is_written_as_drawn_glyphs ... ok
+test pdf::tests::a_jpeg_goes_in_as_it_is_and_others_as_pixels ... ok
+test pdf::tests::a_picture_is_kept_once_and_what_shows_through_it_is_said ... ok
+test pdf::tests::each_glyph_says_what_it_stands_for ... ok
+test pdf::tests::what_a_window_shows_goes_on_a_page_as_a_picture ... ok
+test pdf_archive::tests::the_profile_is_srgb_as_the_icc_lays_it_out ... ok
+test pdf_forms::tests::a_reader_finds_the_fields_and_their_values ... ok
+test pdf_forms::tests::fields_go_in_the_file_with_their_names_values_and_looks ... ok
+test pdf_lock::tests::aes_gives_the_standards_own_answers ... ok
+test pdf_lock::tests::sha2_gives_the_standards_own_answers ... ok
+test pdf_lock::tests::what_is_sealed_is_random_whole_blocks ... ok
+test pdf_structure::tests::a_document_is_tagged_as_a_window_tells_it ... ok
+test pdf_structure::tests::a_reader_finds_the_structure ... ok
+test pdf_structure::tests::a_tables_headings_come_again_on_each_page_it_goes_on_to ... ok
+test pdf_structure::tests::a_window_on_a_page_is_described_by_what_it_tells_readers ... ok
+test pdf_structure::tests::an_apps_own_parts_hold_what_is_written_in_them ... ok
+test pdf_structure::tests::headings_make_the_outline ... ok
+test pdf_structure::tests::marked_content_opens_and_closes_in_turn ... ok
+test pen::tests::a_kept_shape_knows_when_it_is_drawn_differently ... ok
+test pen::tests::a_line_ends_and_turns_as_its_pen_says ... ok
+test pen::tests::a_line_is_drawn_as_a_drawing_from_a_file_draws_it ... ok
+test pen::tests::a_shape_is_filled_with_colours_across_it ... ok
+test pen::tests::dashes_lie_where_their_lengths_say ... ok
+test places::tests::a_moment_is_told_in_the_time_here ... ok
+test places::tests::mounted_volumes_are_the_ones_a_person_mounts ... ok
+test places::tests::the_folders_of_the_desktop_file_are_found_and_the_usual_ones_where_it_names_none ... ok
+test places::tests::the_persons_own_folders_are_there_and_the_drives_or_the_top_of_everything ... ok
+test png::tests::a_damaged_file_is_no_picture_and_stops_nothing ... ok
+test pdf::fonts_pictures_kept_locked::a_locked_file_opens_with_its_password_only ... ok
+test png::tests::a_moving_picture_is_a_picture_where_it_does_not_move ... ok
+test png::tests::a_note_from_the_camera_turns_the_picture_each_of_eight_ways ... ok
+test png::tests::a_picture_that_is_written_reads_back_the_same ... ok
+test png::tests::a_whole_pixel_at_once_comes_to_what_a_byte_at_a_time_does ... ok
+test png::tests::codes_are_no_longer_than_they_may_be_and_leave_nothing_over ... ok
+test png::tests::every_rule_for_storing_a_row_is_undone ... ok
+test png::tests::frames_lie_and_are_laid_as_their_chunks_say ... ok
+test png::tests::moving_pictures_come_out_as_ffmpeg_shows_them ... ok
+test png::tests::only_a_picture_that_a_png_can_hold_is_written ... ok
+test png::tests::pictures_from_other_programs_are_read ... ok
+test png::tests::pictures_stored_in_passes_are_read ... ok
+test png::tests::small_depths_palettes_and_grey_are_read ... ok
+test png::tests::streams_of_other_packers_are_unpacked ... ok
+test png::tests::the_moving_pictures_are_made_afresh ... ignored, needs ffmpeg, and writes the files the other tests read
+test png::tests::the_nearest_is_found_as_the_book_says ... ok
+test png::tests::the_sum_is_the_one_a_zlib_stream_ends_with ... ok
+test png::tests::what_is_packed_unpacks_to_the_same ... ok
+test popups::tests::the_letter_of_a_name_is_found_and_the_marks_are_left_out ... ok
+test preferences::tests::an_interface_hears_what_the_person_asked_for_once ... ok
+test preferences::tests::nothing_moves_by_itself_for_a_person_who_asked_for_less_movement ... ok
+test preferences::tests::what_windows_keeps_is_read ... ok
+test print_windows::tests::a_page_goes_to_a_printer_as_shapes_and_text ... ok
+test print_windows::tests::a_page_larger_than_the_sheet_goes_on_several_or_shrinks_when_asked ... ok
+test print_windows::tests::a_page_of_endless_size_goes_to_a_printer ... ok
+test print_windows::tests::pages_are_laid_out_for_the_printers_sheet ... ok
+test print_windows::tests::the_dialog_comes_between_messages_over_a_window_and_what_the_person_did_is_told ... ok
+test print_windows::tests::the_dialog_is_asked_for_every_page ... ok
+test print_windows::tests::what_gdi_cant_draw_is_blended_in_or_the_page_goes_as_pixels ... ok
+test png::tests::a_damaged_moving_picture_gives_nothing_or_some_film ... ok
+test rich_text::tests::a_face_takes_what_a_look_adds ... ok
+test rich_text::tests::a_right_to_left_paragraph_starts_at_the_right_and_runs_leftward ... ok
+test rich_text::tests::hebrew_in_a_left_to_right_paragraph_reads_right_to_left_across_its_pieces ... ok
+test rich_text::tests::pieces_break_into_rows_together_at_spaces ... ok
+test rich_text::tests::places_in_a_row_are_found_both_ways ... ok
+test ruby::tests::a_long_reading_reaches_over_its_neighbours_by_at_most_half_its_size ... ok
+test ruby::tests::a_shorter_text_is_spread_with_half_shares_at_its_ends ... ok
+test ruby::tests::cjk_text_spreads_between_characters_and_latin_only_after_spaces ... ok
+test saved_layout::tests::a_line_that_is_not_what_was_written_is_refused_whole ... ok
+test saved_layout::tests::panels_that_were_closed_or_float_or_fill_the_dock_are_written_after_the_rest ... ok
+test saved_layout::tests::what_the_person_arranged_is_written_as_a_line_and_read_back_as_it_was ... ok
+test scene_raster::tests::a_triangle_takes_the_pixels_whose_middles_lie_in_it ... ok
+test scene_raster::tests::an_outline_runs_round_a_triangle_and_shows_on_it ... ok
+test scene_raster::tests::colours_at_the_corners_go_evenly_from_one_to_the_other ... ok
+test scene_raster::tests::how_long_a_million_triangles_take ... ignored, a measurement: run it by itself, built for release
+test scene_raster::tests::many_processors_draw_what_one_draws ... ok
+test scene_raster::tests::triangles_that_share_edges_leave_no_gap_and_take_no_pixel_twice ... ok
+test scene_raster::tests::what_is_behind_the_eye_is_cut_off_where_the_eye_is ... ok
+test scene_raster::tests::what_is_nearer_hides_what_is_further_whichever_comes_first ... ok
+test screens::tests::a_place_a_screen_still_has_is_kept_and_any_other_is_moved_onto_the_nearest_screen ... ok
+test screens::tests::a_window_knows_which_screen_it_is_on_and_every_window_has_the_same_list ... ok
+test screens::tests::a_window_opens_in_the_middle_of_a_screen_or_of_its_owner ... ok
+test screens::tests::an_area_is_on_the_screen_that_has_the_most_of_it_or_else_on_the_nearest ... ok
+test seams::tests::subpaths_going_round_opposite_ways_leave_no_hairline_where_they_meet ... ok
+test seams::tests::where_subpaths_overlap_the_rule_decides_as_without_them_meeting ... ok
+test second_window::tests::a_body_the_app_handed_over_shows_in_a_scene_of_a_second_window_too ... ok
+test second_window::tests::a_dialog_keeps_the_windows_opened_before_it_from_the_keyboard_and_the_pointer ... ok
+test second_window::tests::a_second_window_costs_little_and_a_closed_one_nothing ... ok
+test second_window::tests::a_second_window_opens_as_its_app_says ... ok
+test second_window::tests::every_window_sees_the_same_screens ... ok
+test second_window::tests::the_app_is_asked_before_a_window_closes_and_can_say_no ... ok
+test selection::tests::clicks_select_one_row_add_one_and_select_a_stretch ... ok
+test selection::tests::stretches_that_touch_become_one_and_a_row_taken_out_splits_one ... ok
+test shaping::held::a_fonts_forms_for_a_language_are_used_for_text_in_it ... ok
+test shaping::held::a_variable_fonts_features_are_those_for_where_it_is_drawn ... ok
+test shaping::held::a_variation_selector_picks_the_glyph_the_font_names ... ok
+test shaping::held::an_app_font_in_a_window_shapes_as_a_page_does ... ok
+test shaping::held::every_character_is_of_the_script_unicode_says ... ok
+test shaping::held::figures_around_a_fraction_slash_are_told_what_they_are ... ok
+test shaping::held::languages_are_named_as_harfbuzz_names_them ... ok
+test shaping::held::latin_is_shaped_by_what_the_font_has_for_latin ... ok
+test shaping::held::random_alternates_are_picked_as_harfbuzz_picks_them ... ok
+test shaping::held::syriac_letters_take_their_forms_after_alaph_dalath_and_rish ... ok
+test shaping::held::the_apps_own_letters_take_the_forms_of_a_language_where_it_asks ... ok
+test shaping::held::the_window_and_the_page_measure_latin_greek_and_cyrillic_alike ... ok
+test shaping::tests::the_letters_of_words_take_their_forms_in_the_systems_font ... ok
+test single_instance::tests::a_start_is_handed_over_as_bytes_and_read_back_whole ... ok
+test single_instance::tests::starts_that_came_are_heard_once_by_the_next_run ... ok
+test single_instance::tests::words_that_are_not_whole_text_on_windows_are_handed_over_as_they_are ... ok
+test sliders::tests::the_curve_multiplies_above_nought_and_squares_from_it ... ok
+test slots::tests::a_number_stands_for_its_thing_until_that_is_let_go ... ok
+test slots::tests::things_that_come_and_go_take_no_more_places_than_were_ever_held_at_once ... ok
+test spell::tests::a_box_is_checked_in_several_languages_at_once ... ok
+test spell::tests::a_box_that_hides_its_text_or_shows_its_hint_is_not_checked_nor_is_a_language_with_no_checker ... ok
+test spell::tests::a_code_box_has_its_comments_and_strings_checked_by_its_languages_rules ... ok
+test spell::tests::a_code_boxs_menu_puts_a_right_word_into_a_comment ... ok
+test spell::tests::a_picture_of_the_marks ... ignored
+test spell::tests::a_program_that_never_asks_carries_nothing_of_it ... ok
+test spell::tests::a_screen_reader_is_told_the_words_spelt_wrong ... ok
+test spell::tests::a_word_being_typed_in_a_comment_is_marked_once_it_is_ended ... ok
+test spell::tests::a_word_ignored_or_added_is_spelt_right_everywhere ... ok
+test spell::tests::a_word_written_twice_is_marked_and_its_menu_offers_it_once ... ok
+test spell::tests::how_long_typing_takes_in_a_long_box_checked_and_not ... ok
+test spell::tests::on_a_thread_of_its_own_the_marks_come_when_the_checker_has_answered ... ok
+test spell::tests::only_the_words_in_view_are_checked_and_each_only_once ... ok
+test spell::tests::the_menu_offers_the_right_words_first_and_puts_one_in ... ok
+test spell::tests::the_word_being_typed_is_marked_once_it_is_ended ... ok
+test spell::tests::what_is_and_is_not_a_word ... ok
+test rich_text::against_edge::pieces_of_hebrew_and_arabic_lie_where_chrome_sets_them ... ok
+test spell::tests::windows_checks_a_code_boxs_comments_and_strings ... ok
+test gpu_windows::tests::windows_the_gpu_showed_leave_nothing_behind ... ok
+test spell::tests::words_spelt_wrong_are_marked_with_a_wavy_line_in_red ... ok
+test storage::tests::a_file_is_written_whole_or_left_as_it_was ... ok
+test storage::tests::an_app_keeps_its_files_where_the_system_keeps_a_persons_settings ... ok
+test svg::tests::a_background_input_takes_what_was_drawn_under_the_element ... ok
+test svg::tests::a_blur_comes_out_as_librsvg_blurs_it ... ok
+test svg::tests::a_box_square_to_the_picture_cuts_exactly_at_its_edges ... ok
+test svg::tests::a_clip_path_clipped_by_another_keeps_only_where_both_do ... ok
+test svg::tests::a_clip_path_keeps_only_what_lies_inside_it ... ok
+test spell::tests::windows_checks_english_and_offers_the_right_words ... ok
+test svg::tests::a_drawing_brought_into_a_mask_whose_fills_merge_stays_in_the_mask ... ok
+test svg::tests::a_drawing_fits_the_box_it_is_shown_in ... ok
+test svg::tests::a_drawing_in_the_drawing_fits_its_box_and_is_cut_off_at_its_edges ... ok
+test svg::tests::a_few_elements_cannot_stand_for_more_shapes_than_a_file_could_hold ... ok
+test svg::tests::a_file_is_taken_apart_whatever_stands_in_it ... ok
+test svg::tests::a_fill_goes_from_colour_to_colour_along_its_way ... ok
+test svg::tests::a_filter_draws_only_within_its_region ... ok
+test spell::tests::windows_checks_two_languages_as_one ... ok
+test svg::tests::a_kernel_convolves_as_librsvg_convolves ... ok
+test svg::tests::a_kernel_unit_finer_than_a_pixel_runs_on_a_finer_grid_as_librsvg_does ... ok
+test svg::tests::a_kernel_unit_runs_convolution_and_lighting_on_a_coarser_grid_as_librsvg_does ... ok
+test svg::tests::a_line_ends_and_turns_as_its_pen_says ... ok
+test svg::tests::a_map_moves_pixels_as_librsvg_moves_them ... ok
+test svg::tests::a_marker_that_holds_a_group_is_drawn_at_every_corner ... ok
+test svg::tests::a_mask_keeps_as_much_as_it_is_bright ... ok
+test svg::tests::a_pattern_as_a_paint_input_tiles_the_filter_region_as_librsvg_does ... ok
+test svg::tests::a_pattern_fills_a_shape_with_its_tiles_laid_edge_to_edge ... ok
+test svg::tests::a_picture_shown_smaller_is_the_mean_of_what_lies_under_each_pixel ... ok
+test svg::tests::a_hit_looks_through_its_shapes_own_clips_only ... ok
+test svg::tests::a_shape_is_drawn_wherever_it_is_used ... ok
+test svg::tests::abutting_shapes_of_a_clip_path_or_mask_leave_no_seam ... ok
+test svg::tests::an_image_read_again_is_its_own_file_whatever_other_files_hold ... ok
+test svg::tests::an_image_step_draws_an_element_or_a_picture_in_its_place ... ok
+test svg::tests::an_svg_image_is_drawn_sharp_in_its_box_as_librsvg_draws_it ... ok
+test svg::tests::colours_are_mixed_and_worked_out_afresh ... ok
+test svg::tests::crisp_shapes_cover_whole_pixels_where_their_middles_lie ... ok
+test svg::tests::dashes_lie_where_their_lengths_say ... ok
+test svg::tests::a_round_line_covers_what_lies_within_half_its_thickness ... ok
+test svg::tests::entities_named_in_each_other_make_a_file_at_most_four_times_as_long ... ok
+test svg::tests::entities_the_doctype_declares_are_written_out_where_named ... ok
+test svg::tests::filters_of_numbers_beyond_all_measure_stop_nothing ... ok
+test svg::tests::images_in_other_files_come_from_the_app_s_loader ... ok
+test svg::tests::kernel_units_and_paint_inputs_of_numbers_beyond_all_measure_stop_nothing ... ok
+test svg::tests::light_falls_on_the_surface_alpha_makes_as_librsvg_lights_it ... ok
+test svg::tests::markers_stand_at_the_ends_and_the_corners_of_an_outline ... ok
+test svg::tests::new_filter_steps_of_numbers_beyond_all_measure_stop_nothing ... ok
+test svg::tests::no_drawing_in_a_folder_comes_near_what_a_drawing_may_cost ... ignored, reads a folder of drawings: CORPUS=folder
+test svg::tests::numbers_beyond_all_measure_stop_nothing ... ok
+test svg::tests::numbers_lengths_and_colours_are_read_as_files_write_them ... ok
+test svg::tests::paint_inputs_fill_the_filter_region_with_the_element_s_paint_as_librsvg_does ... ok
+test svg::tests::shaped_text_joins_its_letters ... ok
+test svg::tests::shapes_fill_exactly_the_pixels_they_cover ... ok
+test svg::tests::steps_take_in_what_the_steps_before_them_made ... ok
+test svg::tests::subpaths_going_round_opposite_ways_meet_without_a_seam ... ok
+test svg::tests::text_comes_out_as_librsvg_writes_it ... ignored, needs rsvg-convert, which writes with the system's fonts
+test svg::tests::text_follows_its_path_turned_with_it ... ok
+test svg::tests::text_is_shaped_in_runs_of_one_script ... ok
+test svg::tests::text_is_written_in_the_fonts_of_the_system ... ok
+test svg::tests::the_ends_of_dashes_stand_square_to_a_curve ... ok
+test svg::tests::the_glyphs_of_fonts_are_drawn_without_filters ... ok
+test svg::tests::the_light_colour_is_taken_into_linear_light_as_browsers_take_it ... ok
+test svg::tests::thicker_thinner_tiles_and_noise ... ok
+test svg::tests::weights_are_taken_to_the_nearest_hundred ... ok
+test svg::tests::what_a_filter_costs_is_counted ... ok
+test svg::tests::what_drawing_costs_is_counted_as_times_over_the_whole_picture ... ok
+test svg::tests::what_goes_through_a_filter_and_what_does_not ... ok
+test svg::tests::what_is_inside_a_shape_goes_by_its_rule ... ok
+test svg::tests::what_is_less_than_solid_shows_what_is_under_it ... ok
+test svg::tests::what_is_not_read_leaves_the_rest_as_it_is ... ok
+test svg::tests::what_is_said_of_a_shape_comes_from_many_places ... ok
+test svg::tests::what_transform_says_is_done_last_first ... ok
+test svg_animation::tests::a_click_keeps_what_it_began_however_many_moves_follow ... ok
+test svg_animation::tests::a_key_time_repeated_at_the_end_holds_the_last_value ... ok
+test svg_animation::tests::a_long_animation_is_encoded_for_a_minute_at_most ... ok
+test svg_animation::tests::a_motion_moves_along_its_path_at_one_speed_before_the_element_s_own_transform ... ok
+test svg_animation::tests::a_move_of_the_pointer_makes_out_over_leave_and_enter ... ok
+test svg_animation::tests::a_repeat_and_a_restart_are_told_as_smil_says ... ok
+test svg_animation::tests::a_repeated_motion_with_accumulate_goes_on_from_where_it_ended ... ok
+test svg_animation::tests::a_schedule_takes_so_many_moments_at_most_however_its_animations_chain ... ok
+test svg_animation::tests::a_seek_back_after_twenty_thousand_events_draws_what_working_out_from_the_start_draws ... ok
+test svg_animation::tests::a_seek_back_keeps_what_happened_as_edge_does ... ok
+test svg_animation::tests::a_wall_clock_time_begins_an_animation_in_a_window_as_the_clock_reaches_it ... ok
+test svg_animation::tests::a_wall_clock_time_counts_from_the_first_show_after_an_earlier_frame ... ok
+test svg_animation::tests::an_animation_begins_and_ends_with_others ... ok
+test svg_animation::tests::an_animation_encodes_as_frames_that_play_as_drawn ... ok
+test svg_animation::tests::an_animation_is_timed_as_smil_says ... ok
+test svg_animation::tests::an_end_of_clock_values_before_a_begin_keeps_it_from_beginning ... ok
+test svg_animation::tests::an_event_costs_the_same_however_long_the_drawing_has_played ... ok
+test svg_animation::tests::an_event_on_what_a_use_brings_bubbles_through_the_use_as_in_edge ... ok
+test svg_animation::tests::begin_and_end_lists_take_every_kind_of_entry ... ok
+test svg_animation::tests::clock_values_are_read_in_every_form ... ok
+test svg_animation::tests::each_animation_told_of_a_moment_counts_against_the_budget ... ok
+test svg_animation::tests::events_begin_animations_where_they_happen_and_where_they_come_to ... ok
+test svg_animation::tests::events_with_no_frame_drawn_keep_its_timeline_small ... ok
+test svg_animation::tests::key_times_paces_and_splines_place_the_values ... ok
+test svg_animation::tests::min_holds_an_interval_past_its_end_and_its_fill_applies_past_its_repeats ... ok
+test svg_animation::tests::moves_over_a_paused_drawing_keep_its_timeline_small ... ok
+test svg_animation::tests::of_two_animations_of_one_attribute_the_one_begun_last_wins ... ok
+test svg_animation::tests::playing_on_draws_what_working_out_from_the_start_draws ... ok
+test svg_animation::tests::tab_reaches_the_lowest_positive_tabindex_first_as_in_browsers ... ok
+test svg_animation::tests::the_minute_ahead_costs_no_more_after_hours_of_play ... ok
+test svg_animation::tests::transforms_colours_sets_and_sums_are_written_where_they_count ... ok
+test svg_animation::tests::values_of_one_kind_go_number_by_number_and_others_in_one_step ... ok
+test svg_animation::tests::wall_clock_times_are_read_in_every_form ... ok
+test svg_animation::tests::what_runs_for_ever_is_one_cycle_of_all_that_repeats ... ok
+test svg_animation::window_tests::a_click_on_what_a_use_brings_comes_to_the_use_and_passes_through_what_takes_no_pointer ... ok
+test svg_animation::window_tests::a_drawing_in_a_window_waits_for_the_pointer_over_its_shapes ... ok
+test svg_animation::window_tests::a_press_moves_focus_within_the_drawing_as_in_edge ... ok
+test svg_animation::window_tests::focus_come_by_keyboard_goes_to_the_first_element_tab_reaches ... ok
+test svg_animation::window_tests::keys_begin_what_waits_for_them_while_the_drawing_has_focus ... ok
+test svg_animation::window_tests::tab_and_shift_tab_go_between_elements_as_in_edge ... ok
+test svg_animation::window_tests::tab_and_shift_tab_move_between_a_drawings_elements_and_leave_it_at_its_ends ... ok
+test svg_animation::window_tests::tab_wraps_round_a_drawing_alone_in_its_window ... ok
+test svg_animation::window_tests::the_app_begins_and_seeks_what_it_names ... ok
+test svg_animation::window_tests::the_pointer_counts_within_clip_paths_and_viewports_not_masks_as_in_edge ... ok
+test svg_animation::window_tests::the_root_svg_has_the_pointer_where_no_shape_is_as_in_edge ... ok
+test svg_filters::tests::a_blur_keeps_all_it_spreads ... ok
+test svg_filters::tests::colours_are_unmultiplied_as_a_division_would ... ok
+test svg_filters::tests::stitched_noise_meets_itself_at_the_edges_of_its_tile ... ok
+test svg_filters::tests::the_bell_curve_is_the_integral_of_itself ... ok
+test svg_filters::tests::thicker_and_thinner_are_the_most_and_least_of_each_window ... ok
+test system_fonts::on_windows::a_font_of_a_collection_is_handed_over_as_itself_with_the_tables_that_are_read ... ok
+test system_fonts::on_windows::a_letter_the_face_lacks_is_written_in_the_font_windows_would_choose ... ok
+test system_fonts::on_windows::a_line_of_letters_no_font_has_looks_through_the_fonts_once ... ok
+test system_fonts::on_windows::a_line_of_several_scripts_is_cut_where_the_font_changes ... ok
+test system_fonts::on_windows::a_named_font_is_written_in_that_font ... ok
+test system_fonts::on_windows::mixed_scripts_are_drawn_with_no_box_on_one_line ... ok
+test system_fonts::on_windows::the_families_are_those_windows_lists_with_their_styles ... ok
+test system_fonts::on_windows::the_first_font_that_has_a_letter_is_found_as_asking_each_finds_it ... ok
+test system_fonts::tests::a_face_by_name_is_one_small_number ... ok
+test system_fonts::tests::a_fallback_glyph_keeps_the_rows_within_the_line ... ok
+test system_fonts::tests::a_family_is_kept_by_its_name_once_and_only_where_it_can_be_a_familys ... ok
+test system_fonts::tests::a_font_whose_line_is_taller_is_written_smaller_until_it_fits ... ok
+test system_fonts::tests::a_group_that_starts_at_the_largest_number_holds_no_character ... ok
+test system_fonts::tests::a_style_is_read_from_its_name ... ok
+test system_fonts::tests::a_system_fonts_glyphs_are_read_as_drawn ... ok
+test system_fonts::tests::fontconfig_is_asked_for_a_family_and_its_style ... ok
+test system_fonts::tests::letters_of_fallback_fonts_stay_within_the_line ... ok
+test system_fonts::tests::of_the_fonts_that_have_a_character_the_first_is_kept ... ok
+test system_fonts::tests::the_scripts_windows_writes_in_their_own_fonts_are_in_order ... ok
+test system_fonts::tests::which_characters_a_font_has_is_read_from_its_table ... ok
+test system_forms::tests::the_systems_text_takes_a_languages_forms ... ok
+test table_paste::tests::each_column_takes_the_value_its_editor_would ... ok
+test table_paste::tests::spreadsheet_text_is_read_back_into_cells ... ok
+test testing::tests::a_change_after_the_part_that_shows_it_fails_the_step - should panic ... ok
+test testing::tests::a_heading_that_sticks_stays_at_the_top_until_the_next_one_comes ... ok
+test testing::tests::a_picture_left_stale_fails_the_step - should panic ... ok
+test testing::tests::a_press_goes_where_nothing_lies_over_the_thing ... ok
+test testing::tests::pictures_are_saved_then_held_against_and_what_differs_is_saved ... ok
+test testing::tests::text_is_typed_keys_pressed_bars_dragged_and_lists_scrolled ... ok
+test testing::tests::the_window_is_any_size_at_any_scale ... ok
+test testing::tests::things_are_found_by_what_a_screen_reader_is_told_and_pressed ... ok
+test testing::tests::time_is_told_to_an_app_that_asks ... ok
+test testing::tests::time_passes_for_tool_tips_notices_and_glides ... ok
+test testing::tests::what_is_out_of_view_is_told_and_a_screen_reader_brings_it_into_view ... ok
+test testing::tests::words_that_name_no_key_fail - should panic ... ok
+test text::tests::a_character_as_a_person_counts_them_may_be_several ... ok
+test text::tests::a_line_never_breaks_inside_a_character_of_several ... ok
+test text::tests::a_syllable_is_one_character_to_a_person ... ok
+test text::tests::a_word_longer_than_a_line_is_cut ... ok
+test text::tests::every_case_of_unicodes_test_of_characters_as_a_person_counts_them_comes_out_as_it_says ... ok
+test text::tests::letters_are_drawn_and_counted ... ok
+test text::tests::line_ends_are_kept ... ok
+test text::tests::lines_break_at_spaces ... ok
+test text::tests::thai_breaks_between_words_where_the_system_knows_them_and_else_between_syllables ... ok
+test text_edit::tests::a_character_made_of_several_is_stepped_over_whole ... ok
+test text_edit::tests::a_focused_box_flat_or_vertical_deletes_what_an_input_method_asks_in_its_run ... ok
+test text_edit::tests::a_selection_across_both_directions_is_seen_in_pieces ... ok
+test text_edit::tests::an_input_method_deletes_a_combining_mark_without_its_letter ... ok
+test text_edit::tests::an_input_method_deletes_around_the_selection_which_stays_and_undoes_at_once ... ok
+test text_edit::tests::an_input_method_deletes_whole_emoji_counted_in_utf16_units ... ok
+test text_edit::tests::cut_copy_and_paste_go_through_the_clipboard ... ok
+test text_edit::tests::in_a_paragraph_that_runs_from_right_to_left_its_start_is_at_the_right ... ok
+test text_edit::tests::text_that_is_hidden_gives_nothing_away ... ok
+test text_edit::tests::the_arrows_go_by_what_is_seen_in_text_that_runs_both_ways ... ok
+test text_edit::tests::the_cursor_moves_by_character_word_and_line ... ok
+test text_edit::tests::the_pointer_puts_the_cursor_and_selects ... ok
+test text_edit::tests::typing_goes_where_the_cursor_is_and_replaces_what_is_selected ... ok
+test text_edit::tests::typing_is_undone_a_word_at_a_time_and_can_be_done_again ... ok
+test text_edit::tests::up_and_down_in_one_line_go_to_its_start_and_its_end ... ok
+test text_edit::tests::up_and_down_keep_to_their_column ... ok
+test text_edit::tests::where_directions_meet_the_cursor_is_split_in_two_halves ... ok
+test text_edit::tests::words_and_the_pointer_keep_to_whole_characters ... ok
+test theme::tests::a_theme_is_made_around_one_colour ... ok
+test theme::tests::every_theme_keeps_its_text_readable ... ok
+test theme::tests::light_is_weighed_as_the_web_weighs_it ... ok
+test theme::tests::spacing_and_text_grow_and_shrink ... ok
+test theme::tests::the_theme_follows_what_the_person_asked_for ... ok
+test touch_windows::tests::a_fingers_messages_say_where_it_lands_moves_and_lifts ... ok
+test touch_windows::tests::a_pens_messages_say_how_it_presses_leans_and_which_end_is_down ... ok
+test touch_windows::tests::the_records_are_laid_out_as_windows_lays_them_out ... ok
+test translations::tests::a_window_and_a_file_dialog_take_a_language ... ok
+test translations::tests::every_language_has_every_word ... ok
+test translations::tests::languages_are_found_by_the_names_systems_give_them ... ok
+test translations::tests::the_users_language_comes_from_windows ... ok
+test tray::tests::a_picture_is_made_the_size_the_system_asks_for ... ok
+test tray::tests::the_icon_and_its_menu_are_what_the_last_run_said_and_only_changes_are_news ... ok
+test tray::tests::what_the_person_does_with_the_icon_comes_back_once_to_the_run_that_asks ... ok
+test tree_view::tests::a_letter_finds_the_next_item_that_begins_with_it ... ok
+test tree_view::tests::a_tree_asked_again_keeps_what_was_open_open ... ok
+test tree_view::tests::items_come_as_they_open_and_go_as_they_close ... ok
+test tree_view::tests::picks_go_by_the_items_that_show ... ok
+test truetype_hinting::tests::a_composite_hints_its_parts_then_runs_its_own_program ... ok
+test truetype_hinting::tests::a_font_without_programs_is_left_to_the_autohinter ... ok
+test truetype_hinting::tests::a_glyph_program_puts_a_height_on_a_whole_pixel ... ok
+test truetype_hinting::tests::a_program_that_never_ends_is_stopped ... ok
+test truetype_hinting::tests::a_variable_font_instance_varies_its_control_values ... ok
+test truetype_hinting::tests::app_fonts_draw_with_the_fonts_instructions_unless_asked_not_to ... ok
+test truetype_hinting::tests::control_values_set_by_prep_and_functions_from_fpgm_are_used ... ok
+test truetype_hinting::tests::every_glyph_of_every_font_is_hinted_in_bounded_time ... ignored
+test truetype_hinting::tests::fixed_point_rounds_as_freetype_does ... ok
+test truetype_hinting::tests::matches_freetype_point_for_point ... ignored
+test truetype_hinting::tests::moves_along_x_wait_for_a_font_that_asks_for_them ... ok
+test truetype_hinting::tests::prep_may_turn_hinting_off_at_a_size ... ok
+test truetype_hinting::tests::programs_of_random_bytes_end_without_harm ... ok
+test truetype_hinting::tests::rounding_keeps_the_sign_and_the_least_distance ... ok
+test uia::tests::a_provider_lasts_for_as_long_as_it_answers ... ok
+test uia::tests::a_provider_says_where_its_thing_is_and_the_window_what_is_at_a_place ... ok
+test uia::tests::a_provider_whose_thing_or_window_is_gone_says_so ... ok
+test uia::tests::a_stretch_that_is_not_one_of_these_is_not_read ... ok
+test uia::tests::a_table_is_told_as_rows_and_columns_under_headings ... ok
+test uia::tests::a_text_box_is_read_piece_by_piece ... ok
+test uia::tests::a_text_is_gone_through_by_the_letter_the_word_and_the_line ... ok
+test uia::tests::a_text_is_read_by_its_lines_as_wrapped_and_its_letters_where_drawn ... ok
+test uia::tests::a_tree_is_told_as_items_that_open_close_and_are_picked ... ok
+test uia::tests::a_window_is_walked_the_way_windows_walks_it ... ok
+test uia::tests::each_kind_of_thing_is_what_windows_calls_it_and_does_what_it_can ... ok
+test uia::tests::one_provider_stands_for_a_thing_and_is_counted ... ok
+test uia::tests::the_list_is_kept_for_as_long_as_anybody_wants_it ... ok
+test uia::tests::values_go_to_windows_and_back ... ok
+test uia::tests::what_is_asked_of_a_thing_goes_to_its_window_and_no_further ... ok
+test uia::tests::what_is_out_of_view_is_told_as_off_the_screen_and_can_be_brought_into_view ... ok
+test uia::tests::what_only_some_things_have_is_told_of_those ... ok
+test uia::tests::windows_is_told_what_changed_and_no_more ... ok
+test uia::tests::windows_itself_goes_through_a_table_by_its_rows_and_columns ... ok
+test uia::tests::windows_itself_reads_a_documents_selection_however_far_it_runs ... ok
+test uia::tests::windows_itself_reads_a_text_box_through_the_text_pattern ... ok
+test uia::tests::windows_itself_reads_a_tree_and_opens_and_picks_its_items ... ok
+test uia::tests::windows_itself_reads_the_part_of_a_selection_in_a_table_cell ... ok
+test uia::tests::windows_itself_reads_what_is_off_the_screen_and_the_words_spelt_wrong ... ok
+test uia::tests::words_spelt_wrong_are_marked_where_a_stretch_of_text_is_asked_about ... ok
+test ultra_hdr::tests::a_jpeg_without_a_gain_map_or_with_a_broken_one_is_left_to_the_usual_reader ... ok
+test ultra_hdr::tests::a_picture_file_keeps_an_ultra_hdr_jpegs_gain_map_and_its_sdr_picture ... ok
+test ultra_hdr::tests::a_start_of_a_jpeg_that_cant_be_measured_is_passed_over_to_the_gain_map ... ok
+test ultra_hdr::tests::apples_headroom_is_read_from_its_maker_notes_as_libultrahdr_reads_it ... ok
+test ultra_hdr::tests::metadata_libultrahdr_refuses_is_refused ... ok
+test ultra_hdr::tests::the_test_files_are_made_afresh ... ignored, needs libultrahdr's ultrahdr_app and libjpeg-turbo's cjpeg, and writes the files the other tests read
+test ultra_hdr::tests::ultra_hdr_jpegs_are_read_as_libultrahdr_decodes_them ... ok
+test ultra_hdr::tests::xmp_says_its_numbers_under_any_prefix_as_attributes_or_elements_and_by_colour ... ok
+test svg::tests::drawings_brought_in_cost_from_the_file_s_budget ... ok
+test variable_fonts::tests::a_font_is_picked_by_its_name_or_its_place_in_a_collection ... ok
+test variable_fonts::tests::a_glyph_moves_as_gvar_says_wherever_the_font_is_set ... ok
+test variable_fonts::tests::avar_bends_the_axes_and_moves_them_by_each_other ... ok
+test variable_fonts::tests::hvar_says_how_wide_glyphs_are_and_mvar_how_far_the_letters_reach ... ok
+test variable_fonts::tests::kerning_moves_as_gdef_says ... ok
+test vertical_layout::tests::a_column_broken_where_it_must_keeps_within_its_room_after_a_trimmed_mark ... ok
+test vertical_layout::tests::a_column_stands_upright_what_is_upright_and_turns_the_rest ... ok
+test vertical_layout::tests::a_long_reading_reaches_over_the_text_beside_it ... ok
+test vertical_layout::tests::a_reading_stands_beside_its_base_spread_over_it ... ok
+test vertical_layout::tests::columns_break_where_cjk_text_may_and_go_right_to_left ... ok
+test vertical_layout::tests::digits_set_across_take_one_em ... ok
+test vertical_layout::tests::full_stops_colons_and_quotes_take_the_kind_their_font_gives_them ... ok
+test colr::tests::every_glyph_of_the_systems_font_is_drawn has been running for over 60 seconds
+test svg::tests::a_damaged_file_gives_nothing_or_some_drawing ... ok
+test variable_fonts::tests::a_damaged_variable_font_never_stops_the_program ... ok
+test vertical_layout::tests::punctuation_and_breaks_lie_where_chrome_sets_them_in_japanese_and_chinese ... ok
+test vertical_paragraph::tests::a_link_in_vertical_text_is_pressed_and_told ... ok
+test vertical_paragraph::tests::a_paragraph_breaks_into_columns_where_its_box_ends_and_is_read_by_column ... ok
+test vertical_text::pictures::pictures_of_japanese_written_down ... ok
+test vertical_text::tests::a_label_written_down_takes_a_column_and_is_told_as_text ... ok
+test vertical_text::tests::each_character_stands_as_unicode_says ... ok
+test vertical_text::tests::written_down_each_glyph_goes_by_its_height_in_the_middle_of_the_column ... ok
+test vertical_text_box::tests::a_press_puts_the_cursor_between_the_characters_nearest_it ... ok
+test vertical_text_box::tests::an_input_method_composes_at_the_cursor_across_its_column ... ok
+test vertical_text_box::tests::up_and_down_go_along_the_column_and_left_and_right_across ... ok
+test vertical_text_box::tests::what_is_typed_wraps_into_new_columns_and_undoes ... ok
+test colr::tests::every_glyph_of_the_systems_font_is_drawn ... ok
+test video::tests::a_frame_shows_its_number ... ok
+test video::tests::a_missing_file_is_refused ... ok
+test video::tests::a_faster_or_slower_speed_moves_the_frames_that_much_faster_or_slower ... ok
+test video::tests::a_paused_video_stays_on_its_frame_and_a_seek_shows_the_frame_there ... ok
+test video::tests::a_placed_caption_is_drawn_where_its_file_puts_it ... ok
+test video::tests::a_playing_video_asks_again_sooner_than_its_frame_time ... ok
+test vertical_paragraph::against_edge::readings_over_rich_text_lie_where_chrome_sets_them ... ok
+test video::tests::a_quicktime_closed_caption_track_is_a_track_for_each_cea608_channel_in_it ... ok
+test video::tests::a_seeks_frame_the_player_lost_is_fetched_again_and_no_other_shows ... ok
+test video::tests::a_speed_set_after_a_seek_keeps_the_seek ... ok
+test vertical_paragraph::against_edge::vertical_text_lies_where_chrome_lays_it ... ok
+test video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed ... FAILED
+test video::tests::an_address_is_downloaded_once_for_the_player_and_its_captions ... ok
+test video::tests::bytes_play_as_the_file_does ... ok
+test video::tests::caption_tracks_in_mp4_files_are_read_by_taut ... ok
+test video::tests::captions_turned_on_during_a_cue_say_it ... ok
+test video::tests::cea608_and_cea708_in_h264_and_hevc_streams_are_caption_tracks_shown_at_their_times ... ok
+test video::tests::filling_cuts_the_frame_to_its_box ... ok
+test video::tests::frames_decoded_on_the_gpu_match_those_decoded_in_software_and_the_gpu_decodes_them ... ok
+test video::tests::frames_show_at_their_times_and_only_their_box_is_redrawn ... ok
+test video::tests::hevc_vp9_and_av1_play_where_the_gpu_or_an_extension_decodes_them ... ok
+test video::tests::text_is_a_path_or_an_address ... ok
+test video::tests::jpeg_frames_play_at_their_times_through_direct3d ... ok
+test video::tests::ssa_captions_in_matroska_are_placed_where_their_script_says ... ok
+test video::tests::the_apps_captions_show_over_the_video_and_are_told_as_they_change ... ok
+test video::tests::the_controls_are_told_to_readers_and_work_by_keyboard ... ok
+test video::tests::the_controls_choose_captions_sound_track_and_speed ... ok
+test video::tests::the_end_is_told_once_and_a_loop_starts_again ... ok
+test video::tests::the_other_cea608_channels_in_the_stream_are_tracks_placed_at_their_rows ... ok
+test video::tests::the_pitch_stays_at_other_speeds ... ok
+test video_captions::tests::a_cue_all_in_italics_is_italic_and_one_partly_so_is_not ... ok
+test video_captions::tests::a_cue_in_a_webvtt_region_sits_at_the_regions_bottom ... ok
+test video_captions::tests::a_lone_ampersand_or_brace_stays ... ok
+test video_captions::tests::a_webvtt_position_keeps_the_box_on_the_frame ... ok
+test video_captions::tests::srt_cues_are_read_and_sorted ... ok
+test video_captions::tests::srt_keypad_tags_place_a_cue ... ok
+test video_captions::tests::text_with_no_cues_or_bad_times_is_refused ... ok
+test video_captions::tests::the_captions_on_show_are_each_cue_holding_the_time ... ok
+test video_captions::tests::the_keypad_puts_a_box_at_its_corner_or_middle_inside_the_margins ... ok
+test video_captions::tests::the_recorder_keeps_each_change_of_several_captions_as_cues ... ok
+test video_captions::tests::timed_text_is_read_as_utf8_or_as_utf16_after_its_byte_order_mark ... ok
+test video_captions::tests::webvtt_cues_are_read_without_their_markup ... ok
+test video_captions::tests::webvtt_settings_place_a_cue_across_and_down ... ok
+test video_cea608::tests::a_caption_is_placed_at_its_row_and_indent ... ok
+test video_cea608::tests::a_pop_on_caption_shows_from_its_end_of_caption_until_it_is_erased ... ok
+test video_cea608::tests::a_text_service_fills_rows_from_the_top_and_scrolls ... ok
+test video_cea608::tests::after_a_seek_the_caption_on_show_ends_there_and_what_follows_is_read_again ... ok
+test video_cea608::tests::centred_rows_are_one_centred_caption_and_rows_apart_are_two ... ok
+test video_cea608::tests::changes_at_one_moment_make_one_cue ... ok
+test video_cea608::tests::channel_two_is_cc2_and_its_data_leaves_cc1_alone ... ok
+test video_cea608::tests::data_read_again_from_the_key_frame_before_a_seek_changes_the_captions_from_the_seek ... ok
+test video_cea608::tests::field_two_holds_cc3_and_cc4_and_its_commands_use_0x15 ... ok
+test video_cea608::tests::italics_from_a_preamble_or_a_mid_row_code_make_a_caption_italic ... ok
+test video_cea608::tests::padding_alone_is_no_captions ... ok
+test video_cea608::tests::paint_on_text_shows_as_it_is_written_and_backspace_takes_a_letter_back ... ok
+test video_cea608::tests::roll_up_rows_rise_and_each_new_line_is_a_new_cue ... ok
+test video_cea608::tests::rows_starting_in_one_column_are_one_caption_at_that_column ... ok
+test video_cea608::tests::special_and_extended_characters_are_read ... ok
+test video_cea608::tests::xds_data_in_field_two_is_skipped ... ok
+test video_cea708::tests::a_delay_cancel_or_a_reset_ends_a_delay_at_once ... ok
+test video_cea708::tests::a_delay_holds_the_commands_after_it_until_its_time ... ok
+test video_cea708::tests::a_hidden_window_written_then_shown_is_a_cue_until_it_is_deleted ... ok
+test video_cea708::tests::a_packet_spread_over_several_reads_or_cut_short_is_read ... ok
+test video_cea708::tests::a_window_is_placed_at_its_anchor_on_the_caption_screen ... ok
+test video_cea708::tests::a_windows_justification_and_style_line_up_its_lines ... ok
+test video_cea708::tests::a_word_that_does_not_fit_wraps_whole_where_words_wrap ... ok
+test video_cea708::tests::after_a_seek_the_cue_on_show_ends_there_and_what_follows_is_read_again ... ok
+test video_cea708::tests::backspace_form_feed_and_horizontal_carriage_return_take_text_back ... ok
+test video_cea708::tests::carriage_returns_scroll_a_window_of_two_rows_up ... ok
+test video_cea708::tests::extended_and_sixteen_bit_characters_and_the_music_note_are_read ... ok
+test video_cea708::tests::right_to_left_and_ticker_windows_are_read_as_written ... ok
+test video_cea708::tests::services_are_listed_as_found_and_numbers_past_six_are_read ... ok
+test video_cea708::tests::text_the_pen_writes_italic_makes_an_italic_caption ... ok
+test video_cea708::tests::text_written_into_a_shown_window_shows_as_it_is_written ... ok
+test video_cea708::tests::the_pen_moves_where_it_is_set_and_its_hidden_text_is_not_shown ... ok
+test video_cea708::tests::the_text_of_shown_windows_is_read_from_the_highest ... ok
+test video_mp4::tests::a_closed_caption_track_is_a_track_for_each_service_it_holds ... ok
+test video_mp4::tests::a_paced_reader_lists_the_tracks_reads_as_the_video_plays_and_stops_with_it ... ok
+test video_mp4::tests::a_sample_tables_chunks_follow_its_runs_and_far_offsets_stay_in_range ... ok
+test video_mp4::tests::a_track_fragment_without_a_base_follows_the_one_before ... ok
+test video_mp4::tests::a_track_that_ends_early_is_not_waited_for_to_the_files_end ... ok
+test video_mp4::tests::after_a_seek_samples_are_read_from_there_once ... ok
+test video_mp4::tests::an_edit_list_moves_a_tracks_times ... ok
+test video_mp4::tests::fragmented_files_are_read_fragment_by_fragment ... ok
+test video_mp4::tests::timed_text_and_webvtt_tracks_are_read_with_their_languages_names_and_times ... ok
+test video_mp4::tests::timed_text_justification_places_a_track ... ok
+test video_mp4::tests::webvtt_settings_in_a_sample_place_its_cue ... ok
+test video_mp4::tests::what_is_no_mp4_or_has_no_caption_tracks_is_not_read ... ok
+test video_read_ahead::tests::a_seek_to_the_latest_time_is_followed ... ok
+test video_read_ahead::tests::a_seek_within_what_was_read_keeps_its_captions_and_one_out_of_it_reads_again ... ok
+test video_read_ahead::tests::the_reading_thread_waits_until_the_video_plays_near_and_follows_a_seek ... ok
+test video_read_ahead::tests::the_thread_is_told_reading_until_it_waits_for_the_video ... ok
+test video_read_ahead::tests::units_read_in_decode_order_give_their_captions_in_display_order ... ok
+test video_read_ahead::tests::units_with_decode_times_give_their_captions_once_nothing_can_come_before_them ... ok
+test video_sei::tests::a_first_unit_whose_length_begins_as_a_start_code_is_read_by_its_length ... ok
+test video_sei::tests::hevc_prefix_and_suffix_sei_are_read_and_h264_sei_is_not_taken_for_hevc ... ok
+test video_sei::tests::sei_with_other_payloads_and_other_providers_holds_no_captions ... ok
+test video_sei::tests::start_codes_and_lengths_both_find_the_sei ... ok
+test video_ssa::tests::a_matroska_event_is_read_with_its_scripts_header ... ok
+test video_ssa::tests::a_style_places_its_captions_inside_its_margins_and_may_make_them_italic ... ok
+test video_ssa::tests::bad_times_and_scripts_without_events_are_refused ... ok
+test video_ssa::tests::dialogue_lines_are_cues_with_their_text_and_times ... ok
+test video_ssa::tests::legacy_ssa_alignments_and_tags_are_read ... ok
+test video_ssa::tests::pos_puts_the_point_its_alignment_names_where_it_says ... ok
+test video_ssa::tests::the_usual_alignment_keeps_the_usual_place ... ok
+test video_stream_captions::tests::after_a_seek_the_tracks_are_read_again_from_there ... ok
+test video_stream_captions::tests::captions_fed_in_decode_order_are_read_in_display_order ... ok
+test video_stream_captions::tests::cc2_to_cc4_and_text_services_are_tracks_once_their_data_comes ... ok
+test video_stream_captions::tests::cea608_and_cea708_in_h264_and_hevc_sei_are_tracks_read_as_written ... ok
+test video_stream_captions::tests::cea608_pairs_alone_are_the_track_cc1 ... ok
+test video_stream_captions::tests::tracks_are_listed_in_the_order_found_and_told_once ... ok
+test video_vulkan::tests::the_structures_are_laid_out_as_vulkan_lays_them_out ... ok
+test video_vulkan::tests::windows_frames_shader_is_its_source_compiled ... ignored, needs glslc
+test video_vulkan::tests::windows_structures_are_laid_out_as_vulkan_lays_them_out ... ok
+test video_windows::tests::a_player_whose_engine_was_never_made_drops_cleanly ... ok
+test video_windows::tests::the_decoder_never_waits_for_a_texture_a_window_holds ... ok
+test video_windows_download::tests::a_download_is_read_once_by_several_readers ... ok
+test video::tests::the_sources_captions_show_at_their_times ... ok
+test visible_boxes::tests::a_box_in_view_is_listed_in_no_more_than_it_takes ... ok
+test vk::tests::a_windows_surface_is_laid_out_as_vulkan_lays_it_out ... ok
+test vk::tests::the_loader_is_found_where_there_is_one ... ok
+test vk::tests::the_structures_are_laid_out_as_vulkan_lays_them_out ... ok
+test vk::tests::what_showing_a_window_takes_is_laid_out_as_vulkan_lays_it_out ... ok
+test web::tests::a_page_loads_the_program_with_the_loader ... ok
+test web::tests::the_loader_numbers_what_it_hears_as_the_program_does ... ok
+test web_input::tests::a_finger_is_a_touch_or_the_mouse ... ok
+test web_input::tests::a_mouse_moves_then_presses ... ok
+test web_input::tests::a_pen_says_what_it_is_before_it_presses ... ok
+test web_input::tests::a_wheel_counts_pixels_lines_or_pages ... ok
+test web_input::tests::keys_are_read_by_their_dom_names ... ok
+test web_input::tests::the_browser_keeps_copy_and_paste_and_its_own_keys ... ok
+test web_mirror::tests::a_documents_selection_is_sent_in_the_units_the_page_counts ... ok
+test web_mirror::tests::only_what_changed_is_sent_again ... ok
+test web_mirror::tests::readers_hear_roles_names_and_states_as_aria_has_them ... ok
+test web_mirror::tests::the_focused_node_is_named ... ok
+test web_widgets::tests::a_name_gives_its_first_letters_and_always_the_same_colour ... ok
+test web_widgets::tests::pages_show_the_first_the_last_and_those_around_the_one_shown ... ok
+test web_widgets::tests::tags_are_made_between_commas_and_never_twice ... ok
+test web_widgets::tests::the_band_of_light_goes_over_a_placeholder_and_comes_round_again ... ok
+test video::tests::the_sources_sound_tracks_are_listed_and_the_one_chosen_is_heard ... ok
+test video_windows_download::tests::an_address_that_cannot_be_read_reads_nothing ... ok
+test webp::tests::a_moving_picture_is_read_as_its_first_frame ... ok
+test webp::tests::a_note_from_the_camera_turns_the_picture_each_of_eight_ways ... ok
+test webp::tests::every_rule_for_guessing_a_pixel_is_undone ... ok
+test webp::tests::frames_lie_and_are_laid_as_their_chunks_say ... ok
+test webp::tests::moving_pictures_come_out_as_libwebp_shows_them ... ok
+test webp::tests::pictures_of_other_writers_are_made_afresh ... ignored, needs vips and ffmpeg, and writes the files the other tests read
+test webp::tests::pictures_with_loss_come_out_as_libwebp_reads_them ... ok
+test webp::tests::pictures_without_loss_come_out_pixel_for_pixel ... ok
+test webp::tests::the_pictures_are_made_afresh ... ignored, needs vips and ffmpeg, and writes the files the other tests read
+test webp::tests::what_is_no_webp_or_too_good_to_be_true_gives_nothing ... ok
+test widgets::tests::a_part_with_no_words_of_its_own_is_called_by_the_label_in_front_of_it ... ok
+test widgets::tests::a_row_of_tabs_is_one_stop_gone_along_with_the_arrows_home_and_end ... ok
+test widgets::tests::a_splitter_is_reached_and_moved_with_keys_and_told_as_a_slider ... ok
+test widgets::tests::rows_are_never_lower_than_a_line_of_the_themes_text ... ok
+test widgets::tests::tabs_that_close_are_closed_and_moved_with_keys_and_their_cross_is_told ... ok
+test widgets::tests::the_radio_buttons_of_a_choice_are_one_stop_and_the_arrows_go_round_them_picking ... ok
+test widgets::tests::with_larger_text_tabs_that_do_not_fit_go_onto_another_line ... ok
+test widgets::tests::words_wider_than_their_box_are_drawn_again_with_what_they_spill_over ... ok
+test windows::tests::a_line_of_text_stands_with_its_letters_in_the_middle_of_its_box ... ok
+test windows::tests::a_message_of_dropped_files_becomes_a_move_and_the_files ... ok
+test windows::tests::a_new_window_opens_a_step_from_the_one_before_it ... ok
+test windows::tests::a_picture_goes_into_the_block_of_pixels_windows_knows_and_back ... ok
+test windows::tests::a_program_that_reads_windows_out_is_told_what_is_in_the_window ... ok
+test webp::tests::a_damaged_file_gives_nothing_or_some_picture ... ok
+test windows::tests::a_screen_reader_brings_what_is_out_of_view_into_view ... ok
+test windows::tests::a_screen_reader_selects_part_of_what_is_typed_and_the_box_has_it ... ok
+test windows::tests::a_second_window_goes_when_the_app_no_longer_describes_it ... ok
+test windows::tests::a_second_window_has_no_frame_where_its_app_asks_for_that ... ok
+test windows::tests::a_second_window_is_a_window_of_its_own ... ok
+test windows::tests::a_second_window_is_typed_into_by_itself ... ok
+test windows::tests::a_see_through_window_is_shown_from_a_picture_that_is_clear_where_nothing_is_drawn ... ok
+test windows::tests::a_see_through_window_with_no_picture_draws_nothing ... ok
+test windows::tests::a_waker_wakes_no_window_once_the_window_is_gone ... ok
+test windows::tests::a_window_follows_the_person_when_they_change_how_things_are_to_look ... ok
+test windows::tests::a_window_is_minimized_fills_its_screen_and_lies_over_all_of_it_when_its_app_asks ... ok
+test windows::tests::a_window_moved_onto_a_screen_of_another_scale_keeps_its_size_in_units ... ok
+test windows::tests::a_window_opens_filling_its_screen_and_goes_back_to_where_it_was ... ok
+test windows::tests::a_window_opens_in_the_middle_of_the_screen_its_app_names_at_that_screens_scale ... ok
+test windows::tests::a_window_opens_minimized_comes_forward_and_stays_over_the_others_when_its_app_asks ... ok
+test windows::tests::a_window_opens_where_it_was_on_the_screen_it_was_on_or_else_on_the_nearest ... ok
+test windows::tests::a_window_opens_where_its_app_says_and_its_app_is_told_where_it_is ... ok
+test windows::tests::a_window_that_is_asked_what_is_in_it_keeps_the_list_from_then_on ... ok
+test windows::tests::a_window_that_nobody_asks_keeps_no_list_for_screen_readers ... ok
+test windows::tests::a_window_wears_the_frame_of_its_theme_and_knows_what_the_system_was_asked_for ... ok
+test windows::tests::a_window_whose_app_never_asks_about_files_is_spared_taking_them ... ok
+test windows::tests::a_window_with_no_frame_is_all_inside_and_says_what_lies_at_each_place ... ok
+test windows::tests::a_windows_text_takes_the_languages_forms ... ok
+test windows::tests::a_program_that_reads_windows_out_works_the_window ... ok
+test windows::tests::alt_going_down_and_coming_up_is_news_and_so_is_the_menu_key ... ok
+test windows::tests::alt_and_its_letters_are_the_windows_own_while_it_has_a_bar_of_menus ... ok
+test windows::tests::dropped_files_are_read_from_their_block ... ok
+test windows::tests::closing_the_first_window_ends_the_others_and_the_program ... ok
+test windows::tests::each_window_has_its_own_scale_and_its_own_smallest_size ... ok
+test windows::tests::files_are_let_go_on_the_window_whose_app_asks_for_them ... ok
+test windows::tests::files_dragged_out_of_a_window_go_to_windows_between_messages_and_its_app_hears_they_were_moved ... ok
+test windows::tests::files_go_into_the_block_a_file_manager_reads_and_back ... ok
+test windows::tests::files_dragged_over_the_window_reach_the_interface ... ok
+test windows::tests::files_may_close_the_window_they_are_let_go_on ... ok
+test windows::tests::glyphs_drawn_by_id_are_the_systems_own ... ok
+test windows::tests::how_long_ten_second_windows_take_and_what_they_hold ... ignored, a measurement: run it by itself, so that no other test's windows are counted
+test windows::tests::input_methods_are_kept_out_of_a_box_for_a_secret ... ok
+test windows::tests::its_windows_have_the_programs_own_pictures_of_itself ... ok
+test windows::tests::fonts_and_letters_made_at_every_size_are_held_to_a_bound ... ok
+test windows::tests::on_a_clipboard_that_is_nobodys ... ignored, run by the test before it, in a process of its own: it would put a clipboard of its own under every other test's windows
+test windows::tests::on_a_desktop_nobody_sees_a_reader_works_the_window ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows::tests::on_a_desktop_nobody_sees_a_see_through_window_lets_the_pointer_through ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows::tests::on_a_desktop_nobody_sees_a_window_fills_its_screen ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows::tests::on_a_desktop_nobody_sees_a_window_opens_minimized_and_comes_forward ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows::tests::on_a_desktop_nobody_sees_a_window_stands_as_its_app_asks ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows::tests::on_a_desktop_nobody_sees_the_systems_file_dialog_is_answered ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows::tests::on_a_desktop_nobody_sees_what_is_dragged_out_come_back_and_go_out_over_a_window_on_it ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows::tests::keys_the_person_at_the_computer_holds_do_not_reach_a_tests_window ... ok
+test windows::tests::second_windows_of_each_kind_stand_to_the_first_as_people_expect ... ok
+test windows::tests::text_dragged_over_a_window_whose_app_takes_text_reaches_it ... ok
+test windows::tests::text_handed_over_ends_at_its_first_zero_or_its_block ... ok
+test windows::tests::the_app_is_asked_before_a_window_closes_and_before_the_system_logs_off ... ok
+test windows::tests::the_clipboard_takes_text_pictures_and_files_and_gives_them_back ... ok
+test windows::tests::the_face_for_code_has_letters_that_are_all_as_wide ... ok
+test windows::tests::the_pointer_is_kept_until_the_last_button_is_up ... ok
+test windows::tests::the_screens_are_the_ones_windows_has_and_a_window_hears_when_they_change ... ok
+test windows::tests::the_shell_s_own_drag_is_understood ... ok
+test windows::tests::text_for_a_surface_gives_back_what_it_took ... ok
+test windows::tests::the_typing_window_follows_the_text_cursor ... ok
+test windows::tests::the_wheel_with_ctrl_zooms_and_keys_that_come_up_say_so ... ok
+test windows::tests::two_changes_far_apart_are_two_places_for_windows_to_draw ... ok
+test windows::tests::what_a_screen_reader_asks_of_a_thing_is_done_in_its_window ... ok
+test windows::tests::what_changes_in_a_second_window_is_drawn_again_there ... ok
+test windows::tests::the_systems_own_file_dialog_answers_an_app_that_asks_for_it ... ok
+test windows::tests::what_is_clear_of_a_see_through_window_lets_the_pointer_through ... ok
+test windows::tests::what_is_dragged_out_comes_back_over_its_window_and_goes_out_over_a_window_lying_on_it ... ok
+test windows::tests::what_is_given_up_with_escape_is_let_go_nowhere ... ok
+test windows::tests::what_one_window_drags_out_another_window_of_the_program_takes ... ok
+test windows::tests::what_windows_wants_drawn_is_read_as_the_rectangles_it_is_made_of ... ok
+test windows::tests::where_ole_cannot_be_had_dropped_files_come_as_a_message ... ok
+test windows::tests::where_windows_could_not_keep_to_the_thread_it_is_handed_no_provider ... ok
+test windows::tests::windows_holds_the_drop_target_until_the_window_is_destroyed ... ok
+test windows::tests::windows_that_go_leave_nothing_behind ... ok
+test windows_shell::tests::a_later_start_hands_what_it_was_given_to_the_first_which_comes_forward ... ok
+test windows_shell::tests::a_later_start_of_the_tests ... ignored, a later start of the program, started by the test before it
+test windows_shell::tests::on_a_desktop_of_its_own_a_later_start_reaches_the_first ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows_shell::tests::on_a_desktop_of_its_own_starts_are_taken_by_a_first_copy_alone ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows_shell::tests::on_a_desktop_with_a_task_bar_of_the_tests_own_the_tray_works ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows_shell::tests::on_its_own_desktop_with_the_right_button_held_the_tray_still_works ... ignored, run by the test before it, in a process of its own that is started on a desktop of its own
+test windows_shell::tests::starts_are_taken_only_by_a_first_copy_and_not_kept_without_end ... ok
+test windows_shell::tests::texts_are_cut_to_the_room_the_shell_has_for_them_at_a_whole_character ... ok
+test windows_shell::tests::the_icon_its_menu_notifications_and_keys_reach_the_shell_and_what_it_says_comes_back ... ok
+test windows_shell::tests::the_menu_is_a_menu_of_the_systems_with_the_rows_the_app_said ... ok
+test windows::tests::what_is_drawn_part_by_part_is_what_drawing_it_all_gives ... ok
+test windows_shell::tests::what_the_shell_is_told_of_an_icon_is_laid_out_as_shellapi_h_has_it ... ok
+test woff2::tests::a_damaged_font_packed_the_newer_way_never_stops_the_program ... ok
+test woff2::tests::a_font_packed_the_newer_way_is_the_font_it_was ... ok
+test woff2::tests::fonts_packed_for_the_web_unpack_as_the_reference_decoder_unpacks_them ... ok
+test windows_shell::tests::the_tray_menu_takes_its_keys_whatever_button_was_held_as_the_test_began ... ok
+test video::tests::many_opens_leave_nothing_behind has been running for over 60 seconds
+test webp::tests::a_damaged_moving_picture_gives_nothing_or_some_film ... ok
+test video::tests::many_opens_leave_nothing_behind ... ok
+
+failures:
+
+---- video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed stdout ----
+
+thread 'video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed' (3156) panicked at src\video.rs:1096:13:
+the caption tracks did not happen: Video { playing: false, position: 0ns, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
+stack backtrace:
+   0: std::panicking::panic_handler
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/std\src\panicking.rs:676
+   1: core::panicking::panic_fmt
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core\src\panicking.rs:80
+   2: std::fs::read_dir::<&str>
+   3: std::fs::read_dir::<&str>
+   4: taut::video::tests::test_file
+   5: taut::video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed::{closure#0}
+   6: <taut::video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed::{closure#0} as core::ops::function::FnOnce<()>>::call_once
+   7: core::ops::function::FnOnce::call_once
+             at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core\src\ops\function.rs:250
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed
+
+test result: FAILED. 1058 passed; 1 failed; 57 ignored; 0 measured; 0 filtered out; finished in 366.07s
+
+error: test failed, to rerun pass `--lib`
+     Running tests\accessibility.rs (target\debug\build\taut/4bdce3f44478591a\out\accessibility-4bdce3f44478591a.exe)
+
+running 27 tests
+test a_command_is_found_and_run_with_keys_and_told ... ok
+test a_combo_and_a_suggesting_box_are_used_with_keys_and_told ... ok
+test a_context_menu_opens_from_the_keyboard ... ok
+test a_dialog_takes_the_keyboard_keeps_it_and_hands_it_back ... ok
+test a_date_is_picked_in_the_calendar_with_keys_and_told ... ok
+test a_chart_is_read_with_keys_and_told ... ok
+test a_notice_is_said_once_and_shown ... ok
+test a_colour_is_picked_with_keys_and_told ... ok
+test a_second_window_is_used_with_keys_and_told ... ok
+test a_select_box_is_opened_picked_from_and_told ... ok
+test a_slider_and_a_span_are_moved_with_keys_and_told ... ok
+test buttons_and_links_are_reached_pressed_and_told ... ok
+test a_table_is_sorted_gone_through_and_arranged_with_keys_and_told ... ok
+test docks_and_panels_are_used_with_keys_and_told ... ok
+test hints_show_for_the_keyboard_and_progress_is_named ... ok
+test folds_and_trees_open_and_shut_with_keys_and_are_told ... ok
+test pictures_drawings_and_films_are_told_as_the_app_names_them ... ok
+test numbers_are_stepped_typed_and_told ... ok
+test menus_and_the_bar_of_menus_are_used_with_keys_and_told ... ok
+test tabs_are_picked_closed_and_moved_with_keys_and_told ... ok
+test rows_of_a_long_list_are_gone_through_and_picked_with_keys ... ok
+test with_larger_text_and_taller_parts_nothing_is_cut_off ... ok
+test words_and_links_are_read_and_followed ... ok
+test words_taller_than_their_part_are_drawn_again_with_it ... ok
+test tick_boxes_switches_and_radio_buttons_are_set_with_keys_and_told ... ok
+test text_boxes_are_typed_into_left_with_tab_and_told ... ok
+test a_file_is_found_in_the_dialog_with_keys_and_told ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.63s
+
+     Running tests\android.rs (target\debug\build\taut/efcee993c4ddf5cb\out\android-efcee993c4ddf5cb.exe)
+The Android checks run with TAUT_ANDROID_APK set (they need an emulator).
+     Running tests\android_gpu.rs (target\debug\build\taut/f9bd3e669319598e\out\android_gpu-f9bd3e669319598e.exe)
+no emulator adb reaches, or no NDK: the GPU checks on Android are skipped
+     Running tests\animations.rs (target\debug\build\taut/bf8e6367a8480600\out\animations-bf8e6367a8480600.exe)
+
+running 3 tests
+test a_film_shows_the_frame_that_is_due_and_asks_to_be_run_for_the_next ... ok
+test a_film_is_shown_at_any_size_and_let_go_like_a_picture ... ok
+test the_kinds_of_picture_files_are_told_apart_by_how_they_begin ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests\app_requests.rs (target\debug\build\taut/42cc28d134da5ade\out\app_requests-42cc28d134da5ade.exe)
+
+running 8 tests
+test a_key_that_is_taken_runs_the_window_once_more_as_a_click_does ... ok
+test a_trees_heading_says_whether_it_was_pressed_and_whether_it_folded ... ok
+test a_page_taller_than_its_window_scrolls_and_one_that_fits_is_as_it_was ... ok
+test a_box_scrolls_where_the_app_says_and_stays_at_its_end_while_it_is_there ... ok
+test the_wheel_over_a_box_is_the_apps_and_a_box_is_fitted_to_its_room_at_once ... ok
+test pictures_are_asked_their_size_and_fitted_to_their_room_keeping_their_shape ... ok
+test an_apps_own_edit_menu_reaches_its_text_box_and_a_page_of_text_fills_its_room ... ok
+test a_long_list_of_rows_of_different_heights_describes_only_what_is_in_view ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\apps.rs (target\debug\build\taut/3963d3c3403397ce\out\apps-3963d3c3403397ce.exe)
+
+running 11 tests
+test chat::tests::the_list_stays_at_its_end_while_the_person_is_there ... ok
+test file_dialog::tests::folders_are_gone_into_files_sorted_and_opened ... ok
+test editor::tests::papers_are_written_found_in_replaced_saved_and_closed_with_care ... ok
+test node_graph::tests::nodes_work_themselves_out_as_they_are_wired_by_the_pointer_and_the_keys ... ok
+test report::tests::the_report_is_a_chart_and_a_page_of_words ... ok
+test node_graph::tests::the_right_button_adds_a_node_where_it_was_pressed_and_words_do_not_go_into_a_number ... ok
+test report::tests::the_report_is_saved_from_its_window ... ok
+test viewer::tests::pictures_of_every_kind_are_shown_picked_zoomed_and_moved ... ok
+test settings::tests::sections_are_picked_and_the_window_takes_what_is_set ... ok
+test node_graph::tests::a_wire_let_go_on_nothing_and_a_search_add_nodes_and_undo_takes_them_back ... ok
+test dashboard::tests::new_numbers_come_every_second_until_it_is_paused ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.21s
+
+     Running tests\book.rs (target\debug\build\taut/7f866f423b044831\out\book-7f866f423b044831.exe)
+
+running 3 tests
+test the_app_the_fourth_chapter_builds_is_the_example ... ok
+test every_picture_shown_is_there_and_every_one_there_is_shown ... ok
+test every_picture_is_drawn_from_code_its_chapter_shows ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\charts.rs (target\debug\build\taut/fc50a8bf866ad697\out\charts-fc50a8bf866ad697.exe)
+
+running 6 tests
+test a_chart_fed_new_values_draws_again_only_the_strips_they_changed ... ok
+test a_ring_leaves_its_middle_and_bars_that_are_stacked_stand_on_each_other ... ok
+test a_smooth_line_is_drawn_again_only_near_a_value_that_changed ... ok
+test a_scatter_is_zoomed_by_the_wheel_moved_by_dragging_and_read_off_at_the_nearest_dot ... ok
+test a_time_axis_writes_the_hours_as_people_read_them ... ok
+test a_pie_is_read_off_by_its_slices_and_a_slice_is_switched_off_by_its_name ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests\code_editor.rs (target\debug\build\taut/e02bbe55160788f1\out\code_editor-e02bbe55160788f1.exe)
+
+running 5 tests
+test code_is_typed_in_the_editor_and_text_in_a_text_box ... ok
+test tab_indents_and_escape_then_tab_goes_on ... ok
+test find_opens_its_bar_and_selects_what_it_finds ... ok
+test wrapping_and_folding_are_drawn_as_they_change ... ok
+test a_large_file_is_typed_into_and_scrolled_where_it_is ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running tests\day_one.rs (target\debug\build\taut/203c86e55d663057\out\day_one-203c86e55d663057.exe)
+
+running 12 tests
+test a_box_that_scrolls_with_no_height_takes_the_height_it_is_given ... ok
+test a_button_with_an_icon_or_a_picture_has_it_before_its_words ... ok
+test a_group_is_drawn_see_through_as_one_picture ... ok
+test a_hidden_box_keeps_its_room_and_nothing_reaches_it ... ok
+test a_link_before_a_slider_or_a_select_names_it ... ok
+test a_box_left_open_is_named_by_the_line_that_opened_it ... ok
+test a_select_picks_among_the_apps_own_values ... ok
+test a_trial_takes_a_closure_that_keeps_what_it_needs ... ok
+test the_systems_letters_come_in_a_box_that_any_interface_takes ... ok
+test every_other_row_of_a_grid_has_a_stripe ... ok
+test a_slider_and_a_bar_write_their_value_and_a_dragged_number_keeps_to_its_range ... ok
+test the_pictures_of_two_failures_are_named_apart ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests\dll.rs (target\debug\build\taut/200f1807bf19f542\out\dll-200f1807bf19f542.exe)
+
+running 1 test
+test a_program_drives_an_interface_that_lives_in_a_dll ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\drawing_costs.rs (target\debug\build\taut/2e1a9ed28cf2f3f6\out\drawing_costs-2e1a9ed28cf2f3f6.exe)
+
+running 9 tests
+test groups_laid_down_as_one_cost_no_more_than_the_file_could_write_out ... ok
+test groups_that_are_cut_cost_no_more_than_the_file_could_write_out ... ok
+test shapes_filled_with_patterns_cost_no_more_than_the_file_could_write_out ... ok
+test shapes_as_large_as_the_picture_cost_no_more_than_the_file_could_write_out ... ok
+test tiles_larger_than_the_picture_cost_no_more_than_the_file_could_write_out ... ok
+test wide_lines_with_round_corners_cost_no_more_than_the_file_could_write_out ... ok
+test letters_no_font_has_cost_no_more_than_the_file_could_write_out ... ok
+test style_sheets_cost_no_more_to_read_than_the_file_could_write_out ... ok
+test markers_at_every_corner_cost_no_more_than_the_file_could_write_out ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+
+     Running tests\drawings.rs (target\debug\build\taut/940516354284a6d4\out\drawings-940516354284a6d4.exe)
+
+running 6 tests
+test a_drawing_that_is_let_go_shows_nothing_and_takes_no_room ... ok
+test a_box_shows_a_drawing_sharp_at_any_size_and_scale ... ok
+test the_pictures_of_librsvg_are_drawn_afresh ... ignored, needs rsvg-convert, and writes the pictures the other tests read
+test a_drawing_takes_the_colour_the_box_says ... ok
+test drawings_come_out_as_librsvg_draws_them ... ok
+test a_drawing_larger_than_is_kept_is_drawn_where_it_is_in_view ... ok
+
+test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.78s
+
+     Running tests\file_dialog.rs (target\debug\build\taut/cf58337ca5e14084\out\file_dialog-cf58337ca5e14084.exe)
+
+running 11 tests
+test a_folder_that_is_not_there_opens_the_nearest_one_above_it ... ok
+test hidden_files_show_when_asked ... ok
+test a_folder_is_made_in_place_and_a_folder_is_picked ... ok
+test pictures_with_the_systems_letters ... ignored
+test a_file_is_picked_by_its_name_by_the_keyboard_and_by_the_pointer ... ok
+test many_files_are_picked_with_control_and_shift ... ok
+test saving_types_over_the_name_adds_the_ending_and_asks_before_writing_over ... ok
+test small_pictures_of_picture_files_show_in_a_grid ... ok
+test the_places_the_path_and_a_path_typed_take_the_dialog_there ... ok
+test the_list_is_sorted_by_its_headings_looked_through_and_gone_through_by_typing ... ok
+test a_long_folder_is_read_while_it_shows_and_costs_what_a_screenful_does ... ok
+
+test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 8.73s
+
+     Running tests\flat.rs (target\debug\build\taut/a033dca2cef882aa\out\flat-a033dca2cef882aa.exe)
+
+running 2 tests
+test the_source_is_one_flat_folder ... ok
+test no_code_is_nested_deeper_than_two_blocks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests\forms.rs (target\debug\build\taut/15b9a5f83c40307b\out\forms-15b9a5f83c40307b.exe)
+
+running 11 tests
+test a_date_and_a_time_are_set_in_one_box ... ok
+test a_number_has_its_limits_its_steps_and_its_unit_and_what_is_no_number_is_refused_kindly ... ok
+test a_time_is_typed_stepped_by_keys_and_the_wheel_and_told_part_by_part ... ok
+test numbers_dates_and_times_are_written_and_typed_in_the_places_own_digits ... ok
+test on_a_clock_that_goes_round_twice_a_day_the_hours_go_from_12_and_the_half_follows ... ok
+test a_span_of_days_is_picked_in_one_calendar_by_the_pointer_and_by_the_keys ... ok
+test a_date_is_written_as_the_person_writes_one_and_its_calendar_walked_by_the_keys ... ok
+test on_a_clock_with_am_pm_first_the_half_is_the_first_field ... ok
+test the_calendar_starts_its_weeks_on_the_day_the_person_does ... ok
+test a_slider_stops_at_steps_with_marks_and_another_goes_by_a_curve ... ok
+test the_colour_picker_is_reached_by_the_keys_typed_as_numbers_and_remembers_what_was_picked ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests\fuzzed.rs (target\debug\build\taut/861eb4e6c1a75c20\out\fuzzed-861eb4e6c1a75c20.exe)
+
+running 3 tests
+test text_taller_than_its_box_is_drawn_the_same_in_strips_and_whole ... ok
+test a_slider_with_its_range_backwards_takes_the_arrow_keys ... ok
+test a_list_in_a_column_asks_only_for_the_rows_the_window_shows ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests\fuzzed_apps.rs (target\debug\build\taut/b2a658aa85380de4\out\fuzzed_apps-b2a658aa85380de4.exe)
+
+running 1 test
+test the_cursor_of_the_gallery_number_box_blinks_where_it_is_drawn ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests\fuzzed_canvas.rs (target\debug\build\taut/4c8140551b79ce13\out\fuzzed_canvas-4c8140551b79ce13.exe)
+
+running 3 tests
+test a_huge_rounded_box_does_not_overflow ... ok
+test a_shape_that_reaches_far_is_still_drawn ... ok
+test an_outline_past_the_right_edge_down_to_the_last_row_does_not_panic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\fuzzed_charts.rs (target\debug\build\taut/99d5b4b529bc5fa8\out\fuzzed_charts-99d5b4b529bc5fa8.exe)
+
+running 2 tests
+test a_chart_whose_side_is_upside_down_is_laid_out ... ok
+test a_chart_of_a_value_that_does_not_change_is_laid_out ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\fuzzed_code.rs (target\debug\build\taut/9246ac75033c06db\out\fuzzed_code-9246ac75033c06db.exe)
+
+running 2 tests
+test a_code_box_without_the_keyboard_leaves_the_blinking_to_the_box_typed_in ... ok
+test a_long_line_costs_no_more_than_its_length_every_run ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests\fuzzed_dates.rs (target\debug\build\taut/b8de6d0947fc0fe9\out\fuzzed_dates-b8de6d0947fc0fe9.exe)
+
+running 2 tests
+test a_date_at_the_ends_of_what_its_numbers_hold_is_worked_out_without_overflowing ... ok
+test the_calendar_of_a_date_far_ahead_opens ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\fuzzed_documents.rs (target\debug\build\taut/04cadf9d0773b714\out\fuzzed_documents-04cadf9d0773b714.exe)
+
+running 3 tests
+test an_empty_item_of_a_list_is_as_high_as_its_mark ... ok
+test a_list_of_empty_items_after_a_long_paragraph_is_drawn_the_same_in_strips_and_whole ... ok
+test lists_nested_thousands_deep_are_read_and_laid_out_in_time ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests\fuzzed_drawings.rs (target\debug\build\taut/77ce2f2be3c27401\out\fuzzed_drawings-77ce2f2be3c27401.exe)
+
+running 1 test
+test a_few_uses_of_a_long_outline_cannot_stand_for_seconds_of_drawing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\fuzzed_fonts.rs (target\debug\build\taut/eb4a604905a50f48\out\fuzzed_fonts-eb4a604905a50f48.exe)
+
+running 1 test
+test a_font_for_the_web_takes_no_room_for_what_it_only_says_it_holds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\fuzzed_saved_layout.rs (target\debug\build\taut/2b10432b0af27a1f\out\fuzzed_saved_layout-2b10432b0af27a1f.exe)
+
+running 1 test
+test whole_numbers_of_a_table_come_back_as_they_were_written ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\fuzzed_shaping.rs (target\debug\build\taut/efd426e9bb625e41\out\fuzzed_shaping-efd426e9bb625e41.exe)
+
+running 1 test
+test a_font_whose_lookups_say_they_have_thousands_of_lists_does_not_take_seconds_a_line ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests\fuzzed_wayland.rs (target\debug\build\taut/b94fccc6ef622f57\out\fuzzed_wayland-b94fccc6ef622f57.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\gallery_writing.rs (target\debug\build\taut/445fd9742f5366ba\out\gallery_writing-445fd9742f5366ba.exe)
+
+running 1 test
+test the_writing_page_shows_a_line_of_each_script ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests\inspect.rs (target\debug\build\taut/c2e981f3537f611e\out\inspect-c2e981f3537f611e.exe)
+
+running 9 tests
+test a_field_is_found_by_typing_a_part_of_its_name ... ok
+test a_path_is_picked_with_the_file_dialog ... ok
+test how_long_an_inspector_takes ... ignored
+test headings_fold_out_and_a_list_is_added_to_taken_from_and_put_in_another_order ... ok
+test the_keyboard_goes_from_row_to_row_and_the_divider_is_dragged ... ok
+test a_struct_is_rows_of_names_and_parts_that_change_what_they_name ... ok
+test several_things_show_where_they_differ_and_are_set_together ... ok
+test what_was_changed_is_marked_put_back_and_undone ... ok
+test a_thousand_fields_and_ten_thousand_rows_describe_only_what_is_in_view ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests\interface.rs (target\debug\build\taut/15bd3ad61b4b7719\out\interface-15bd3ad61b4b7719.exe)
+
+running 29 tests
+test a_box_among_boxes_on_top_of_each_other_is_placed_across_and_down ... ok
+test a_box_that_was_there_already_has_all_its_text_selected ... ok
+test a_click_reaches_the_app_and_only_what_changed_is_drawn_again ... ok
+test a_dialog_opens_with_the_name_in_its_box_selected ... ok
+test a_dialog_that_opens_can_put_the_keyboard_in_its_text_box ... ok
+test a_host_is_told_whose_the_pointer_and_the_keyboard_are ... ok
+test a_line_of_text_is_centred_on_its_capitals_and_keeps_one_baseline ... ok
+test a_long_line_scrolls_to_keep_the_cursor_in_view ... ok
+test a_long_list_describes_only_the_rows_in_view_and_its_bar_is_dragged ... ok
+test a_dialog_keeps_what_is_under_it_out_of_reach ... ok
+test a_screen_reader_is_told_each_part_as_the_kind_of_thing_it_is ... ok
+test a_screen_reader_is_told_what_is_in_the_window_and_works_it ... ok
+test a_splitter_is_dragged_to_resize_what_is_beside_it ... ok
+test a_box_that_is_typed_into_keeps_room_clear_at_its_ends_when_it_is_asked_to ... ok
+test a_box_alone_in_its_window_hears_of_the_pointer_like_any_other ... ok
+test an_app_draws_its_own_shapes_and_pictures_where_it_likes_and_closes_its_window ... ok
+test an_app_hears_of_its_window_and_asks_things_of_it ... ok
+test a_menu_opens_is_picked_from_and_closes ... ok
+test changes_far_apart_are_drawn_each_by_itself ... ok
+test a_switch_a_radio_button_a_slider_tabs_and_a_fold_do_what_they_say ... ok
+test a_tool_tip_shows_once_the_pointer_has_rested ... ok
+test tab_moves_the_keyboard_and_space_presses_what_it_is_on ... ok
+test notices_lie_in_a_corner_over_a_dialog_and_keep_only_their_own_place_from_it ... ok
+test text_is_typed_selected_copied_pasted_and_undone ... ok
+test the_page_takes_the_colour_of_the_theme_at_once ... ok
+test the_wheel_scrolls_the_list_under_the_pointer_and_stops_at_its_end ... ok
+test rows_are_picked_trees_open_numbers_are_dragged_and_parts_are_switched_off ... ok
+test strips_of_any_height_draw_the_same_window ... ok
+test the_arrow_keys_take_the_keyboard_to_the_nearest_thing_that_way ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests\ios.rs (target\debug\build\taut/32205c103d0ce9ea\out\ios-32205c103d0ce9ea.exe)
+     Running tests\larger_widgets.rs (target\debug\build\taut/e75a26b1f020d9c1\out\larger_widgets-e75a26b1f020d9c1.exe)
+
+running 49 tests
+test a_box_knows_the_pointer_is_over_it_unless_another_layer_lies_between ... ok
+test a_box_for_a_secret_shows_dots_and_lets_nothing_out ... ok
+test a_box_that_scrolls_both_ways_shows_its_end_clear_of_both_bars ... ok
+test a_button_stays_down_while_it_is_on_and_choices_in_one_frame_are_picked ... ok
+test a_box_that_is_typed_into_has_a_menu_and_opens_with_its_text_selected ... ok
+test a_chart_of_numbers_over_numbers_marks_its_bottom_in_steps_and_leaves_gaps ... ok
+test a_command_is_found_by_typing_in_a_box_over_the_window ... ok
+test a_box_pinned_to_an_edge_lies_over_the_page_and_the_panels ... ok
+test a_fill_goes_evenly_from_one_colour_into_another ... ok
+test a_bar_of_menus_opens_menus_and_menus_out_of_them ... ok
+test a_line_with_two_knobs_sets_both_ends_of_a_span ... ok
+test a_date_is_picked_from_a_calendar_with_the_keyboard ... ok
+test a_large_picture_shown_small_is_the_mean_of_all_of_it ... ok
+test a_point_of_a_scene_is_found_in_the_window_and_outlines_run_where_the_edges_are ... ok
+test a_picture_and_a_body_that_are_let_go_show_nothing_and_their_places_are_used_again ... ok
+test a_ring_turns_while_something_is_going_on ... ok
+test a_chart_writes_its_axes_and_reads_off_what_stands_under_the_pointer_and_at_the_keys ... ok
+test a_row_that_wraps_goes_on_to_the_next_line_when_its_room_runs_out ... ok
+test a_second_window_is_an_interface_of_its_own ... ok
+test a_table_is_told_to_a_screen_reader_as_rows_and_columns_under_headings ... ok
+test a_text_box_shows_no_bar_however_long_its_text_is ... ok
+test a_scene_shows_bodies_of_triangles_and_is_drawn_again_only_when_it_changes ... ok
+test a_tick_box_narrows_in_a_row_that_is_too_full_and_keeps_its_height_in_a_column_that_is ... ok
+test a_window_is_laid_out_once_for_what_changed_and_for_its_new_size_together ... ok
+test a_wide_table_is_scrolled_sideways_under_the_columns_it_keeps_in_view ... ok
+test an_icon_in_a_cell_keeps_its_size_at_the_side_its_column_says ... ok
+test a_number_is_typed_and_stepped_and_a_colour_is_picked ... ok
+test a_window_is_written_with_a_font_file ... ok
+test an_interface_that_is_the_whole_screen_draws_the_pointer_itself ... ok
+test files_from_another_program_are_let_go_over_a_box ... ok
+test a_table_lines_cells_up_under_headings_that_sort_and_are_dragged ... ok
+test boxes_kept_in_view_stay_put_and_the_rest_scrolls_between_them ... ok
+test picture_files_are_shown_and_text_is_written_with_what_the_app_brings ... ok
+test rows_in_view_are_found_wherever_they_are_in_a_box_that_scrolls ... ok
+test panels_share_a_dock_and_are_carried_from_place_to_place ... ok
+test something_is_carried_from_one_box_and_let_go_over_another ... ok
+test rows_of_a_table_are_kept_in_view_over_and_under_the_others ... ok
+test tabs_are_closed_and_put_in_another_order ... ok
+test text_is_written_with_a_line_through_it_or_under_it ... ok
+test text_that_does_not_fit_a_box_that_clips_ends_in_dots ... ok
+test text_sits_where_it_is_told_and_dragging_never_runs_away ... ok
+test one_of_a_long_list_is_found_by_typing_and_picked_with_the_keys ... ok
+test the_page_keys_scroll_what_the_wheel_would ... ok
+test what_a_box_that_scrolls_holds_keeps_clear_of_its_bar ... ok
+test what_an_app_says_in_a_corner_goes_by_itself_and_its_keys_are_asked_for_as_written ... ok
+test what_a_box_might_become_is_listed_under_it_while_it_is_typed_into ... ok
+test panels_are_moved_brought_forward_stretched_folded_and_closed ... ok
+test words_of_several_kinds_break_into_lines_together_and_a_link_among_them_is_pressed ... ok
+test the_columns_of_a_table_are_moved_and_hidden ... ok
+
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests\logic.rs (target\debug\build\taut/cdebf77af6559ae0\out\logic-cdebf77af6559ae0.exe)
+
+running 17 tests
+test a_box_whose_size_is_no_number_is_described_again_without_a_panic ... ok
+test a_drawing_the_app_handed_over_shows_in_a_second_window_too ... ok
+test a_glide_to_no_number_does_not_keep_the_window_running ... ok
+test a_notice_that_is_to_stay_for_ever_does_not_overflow_the_clock ... ok
+test a_table_of_many_columns_shows_each_column_once_whatever_order_was_kept ... ok
+test an_icon_that_turns_from_a_line_into_a_filled_shape_is_drawn_again ... ok
+test asking_to_run_again_never_does_not_overflow_the_clock ... ok
+test the_panel_in_front_stays_in_front_when_a_tab_before_it_goes ... ok
+test the_rows_of_a_long_list_stand_one_under_the_other_at_its_end ... ok
+test the_wheel_scrolls_a_long_list_at_its_end ... ok
+test two_pieces_of_text_that_trade_a_letter_are_laid_out_again ... ok
+test what_an_app_tells_of_a_part_is_what_a_screen_reader_hears ... ok
+test what_is_suggested_follows_options_that_changed ... ok
+test what_one_box_that_grows_cannot_take_goes_to_the_others ... ok
+test a_chart_of_a_value_that_never_changes_still_draws_its_line ... ok
+test a_box_whose_room_inside_changes_is_drawn_again ... ok
+test a_click_that_brings_up_a_table_is_settled_by_the_run_that_sees_it ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests\macos.rs (target\debug\build\taut/4205e7bf6ee4fea8\out\macos-4205e7bf6ee4fea8.exe)
+     Running tests\menus_and_toolbars.rs (target\debug\build\taut/0871a95abf82a0c6\out\menus_and_toolbars-0871a95abf82a0c6.exe)
+
+running 12 tests
+test a_notice_that_is_pressed_goes_though_one_before_it_went_meanwhile ... ok
+test a_choice_in_a_menu_is_picked_and_told_as_one ... ok
+test a_menu_that_does_not_fit_goes_left_or_up_and_a_long_one_scrolls ... ok
+test a_popover_points_at_its_box_and_stays_inside_the_window ... ok
+test a_tool_bar_puts_what_does_not_fit_into_a_menu_at_its_end ... ok
+test alt_alone_puts_the_keyboard_on_the_bar_and_f10_opens_the_first_menu ... ok
+test letters_pick_menus_and_rows_and_are_underlined_while_alt_is_held ... ok
+test panels_lie_against_edges_and_stay_inside_a_window_that_gets_smaller ... ok
+test shift_f10_and_the_menu_key_open_the_menu_of_what_the_keyboard_is_on ... ok
+test rows_of_a_menu_line_up_their_words_marks_and_keys ... ok
+test tabs_of_a_dock_go_in_another_order_close_and_float_and_come_back ... ok
+test a_place_fills_the_dock_and_the_keyboard_goes_from_place_to_place ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests\node_graphs.rs (target\debug\build\taut/4597039f9b2d39e8\out\node_graphs-4597039f9b2d39e8.exe)
+
+running 24 tests
+test a_node_pressed_under_another_comes_on_top_and_its_wires_go_with_it ... ok
+test a_double_click_bends_a_wire_there_the_bend_moves_and_goes_again ... ok
+test a_small_map_of_all_of_it_moves_the_board_where_it_is_pressed ... ok
+test a_wire_is_drawn_from_an_output_into_an_input_that_takes_it_and_shows_where_it_goes ... ok
+test a_wire_is_refused_where_the_kinds_do_not_fit_unless_the_app_says_they_do ... ok
+test a_wire_let_go_on_a_node_goes_into_its_first_free_input_that_takes_it ... ok
+test a_new_wire_let_go_on_nothing_asks_the_app_for_a_node_there ... ok
+test a_wire_pulled_off_its_input_goes_into_another_or_is_gone ... ok
+test a_frame_carries_the_nodes_in_it_resizes_by_its_corner_and_the_keys_do_both ... ok
+test control_g_frames_what_is_selected_and_f_shows_it ... ok
+test how_long_a_graph_of_a_thousand_nodes_takes ... ignored
+test an_input_the_app_makes_for_several_takes_every_wire_given_it ... ok
+test dragging_near_the_edge_pans_the_view_and_what_is_dragged_stays_under_the_pointer ... ok
+test nodes_are_picked_by_a_click_and_by_a_rectangle_and_move_together ... ok
+test keys_move_delete_copy_and_paste_the_nodes_picked ... ok
+test only_the_nodes_in_sight_are_described_and_each_is_told_with_its_ports ... ok
+test every_edit_undoes_and_redoes_and_the_app_can_keep_its_own ... ok
+test on_a_grid_nodes_bends_and_frames_snap_to_it_and_it_is_drawn ... ok
+test tab_goes_from_node_to_node_and_the_board_goes_along ... ok
+test the_parts_in_a_node_work_at_any_zoom ... ok
+test the_keyboard_wires_a_port_by_going_through_the_ports_that_take_it ... ok
+test the_right_button_asks_for_the_apps_menu_where_it_was_pressed ... ok
+test wires_are_told_to_readers_and_reached_by_tab_followed_bent_and_removed_by_keys ... ok
+test of_a_thousand_nodes_only_those_in_sight_are_described ... ok
+
+test result: ok. 23 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running tests\page_scrolling.rs (target\debug\build\taut/e9cf3596e114bb0c\out\page_scrolling-e9cf3596e114bb0c.exe)
+
+running 3 tests
+test the_page_scrolls_sideways_where_its_content_is_wider_than_the_window ... ok
+test a_screen_reader_brings_what_lies_right_of_the_window_into_view ... ok
+test what_fits_or_scrolls_in_a_box_of_its_own_does_not_scroll_the_page ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests\pan_zoom.rs (target\debug\build\taut/8d06f8ee5356429e\out\pan_zoom-8d06f8ee5356429e.exe)
+
+running 8 tests
+test a_view_is_written_as_three_numbers_and_read_back ... ok
+test a_view_shows_only_what_is_in_it_and_its_bars_say_where_the_rest_is ... ok
+test a_view_is_dragged_by_the_middle_button_and_by_its_background ... ok
+test space_held_drags_a_view_by_what_is_on_it_until_it_comes_up ... ok
+test text_too_small_to_read_shows_as_a_bar_on_each_of_its_lines ... ok
+test the_wheel_moves_a_view_and_control_with_it_zooms_about_the_pointer ... ok
+test two_fingers_on_a_view_move_it_and_pinch_it_about_their_middle ... ok
+test keys_zoom_a_view_in_out_to_its_own_size_and_to_fit ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests\pens.rs (target\debug\build\taut/d83e548b52104684\out\pens-d83e548b52104684.exe)
+
+running 3 tests
+test the_pictures_of_librsvg_are_drawn_afresh ... ignored, needs rsvg-convert, and writes the pictures the other test reads
+test what_an_app_draws_comes_out_as_librsvg_draws_it ... ok
+test a_shape_is_drawn_again_only_when_how_it_is_drawn_changes ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests\reading_costs.rs (target\debug\build\taut/835dab9cf661a917\out\reading_costs-835dab9cf661a917.exe)
+
+running 4 tests
+test how_much_a_page_of_east_asian_text_takes ... ignored
+test a_font_for_the_web_takes_no_room_for_a_table_it_only_says_it_holds ... ok
+test naming_fonts_holds_little_however_many_and_however_long_the_names ... ok
+test packed_bytes_take_no_room_for_what_they_only_say_they_hold ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+     Running tests\recent_colors.rs (target\debug\build\taut/8b977e93958123f4\out\recent_colors-8b977e93958123f4.exe)
+
+running 1 test
+test recent_colours_are_written_as_a_line_and_offered_again_in_the_next_run ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\renderers.rs (target\debug\build\taut/1754157a44417ab3\out\renderers-1754157a44417ab3.exe)
+
+running 38 tests
+test a_surface_hands_out_each_place_as_texture_uploads_take_it ... ok
+test direct3d_11::direct3d_11_puts_back_what_it_sets ... ok
+test direct3d_11::direct3d_11_says_what_went_wrong ... ok
+test direct3d_11::direct3d_11_lies_at_the_programs_viewport ... ok
+test direct3d_11::how_long_direct3d_11_takes_to_copy_a_change ... ignored
+test a_surface_says_where_it_changed_in_pixels ... ok
+test direct3d_11::the_direct3d_11_example_draws_into_its_window_at_any_size ... ok
+test direct3d_11::direct3d_11_shows_the_surface_over_what_was_drawn ... ok
+test direct3d_11::direct3d_11_is_given_only_the_places_that_changed ... ok
+test direct3d_12::direct3d_12_is_given_only_the_places_that_changed ... ok
+test direct3d_12::direct3d_12_lies_at_the_programs_viewport ... ok
+test direct3d_12::direct3d_12_says_what_went_wrong ... ok
+test direct3d_12::direct3d_12_shows_the_surface_over_what_was_drawn ... ok
+test direct3d_12::direct3d_12_survives_a_removed_device ... ok
+test direct3d_9::direct3d_9_lies_at_the_programs_viewport ... ok
+test direct3d_12::the_direct3d_12_example_draws_into_its_window_at_any_size ... ok
+test direct3d_9::direct3d_9_puts_back_what_it_sets ... ok
+test direct3d_9::direct3d_9_says_what_went_wrong ... ok
+test direct3d_9::is_given_only_the_places_that_changed_alone ... ignored, run by the test above, on a desktop of its own
+test direct3d_9::lies_at_the_programs_viewport_alone ... ignored, run by the test above, on a desktop of its own
+test direct3d_9::puts_back_what_it_sets_alone ... ignored, run by the test above, on a desktop of its own
+test direct3d_9::says_what_went_wrong_alone ... ignored, run by the test above, on a desktop of its own
+test direct3d_9::shows_the_surface_over_what_was_drawn_alone ... ignored, run by the test above, on a desktop of its own
+test direct3d_9::takes_a_reset_and_a_resize_alone ... ignored, run by the test above, on a desktop of its own
+test direct3d_9::direct3d_9_is_given_only_the_places_that_changed ... ok
+test direct3d_9::the_example_draws_into_its_window_at_any_size_alone ... ignored, run by the test above, on a desktop of its own
+test on_vulkan::vulkan_is_given_only_the_places_that_changed ... ok
+test on_vulkan::vulkan_lies_at_the_programs_viewport ... ok
+test on_vulkan::vulkan_shows_each_frame_as_it_was_and_is_made_again ... ok
+test on_vulkan::vulkan_shows_the_surface_over_what_was_drawn ... ok
+test open_gl::opengl_is_given_only_the_places_that_changed ... ok
+test open_gl::opengl_lies_at_the_programs_viewport ... ok
+test open_gl::opengl_puts_back_what_it_sets ... ok
+test open_gl::opengl_says_what_went_wrong ... ok
+test open_gl::opengl_shows_the_surface_over_what_was_drawn ... ok
+test direct3d_9::direct3d_9_takes_a_reset_and_a_resize ... ok
+test direct3d_9::the_direct3d_9_example_draws_into_its_window_at_any_size ... ok
+test direct3d_9::direct3d_9_shows_the_surface_over_what_was_drawn ... ok
+
+test result: ok. 30 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 1.37s
+
+     Running tests\rich_text.rs (target\debug\build\taut/9d559580c3fb5355\out\rich_text-9d559580c3fb5355.exe)
+
+running 16 tests
+test a_document_is_selected_by_the_pointer_and_the_keys_and_copied ... ok
+test a_documents_context_menu_copies_selects_all_and_copies_a_link ... ok
+test a_documents_table_rows_keep_their_places_when_laid_out_at_another_width ... ok
+test a_links_title_shows_while_it_is_hovered_and_is_told ... ok
+test a_list_nested_thousands_deep_shows_its_text_wide_enough_to_read ... ok
+test a_wide_code_block_scrolls_sideways_by_its_keys ... ok
+test code_is_coloured_by_its_language_and_pictures_are_given_by_name ... ok
+test a_documents_table_is_told_as_rows_and_cells_under_its_headings ... ok
+test ctrl_c_on_a_document_with_nothing_selected_is_left_to_the_app ... ok
+test a_document_is_told_as_a_document ... ok
+test icons_and_pictures_stand_on_the_line_among_the_words ... ok
+test the_selection_in_a_document_is_told_in_each_block_it_covers ... ok
+test pieces_of_rich_text_break_into_rows_together_and_its_links_are_pressed ... ok
+test the_selection_in_a_documents_table_is_told_in_each_cell_it_covers ... ok
+test links_in_a_document_are_reached_by_tab_and_followed ... ok
+test a_selection_dragged_past_the_views_edge_scrolls_it ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running tests\see_through.rs (target\debug\build\taut/f7d2c4daeef9dd82\out\see_through-f7d2c4daeef9dd82.exe)
+
+running 2 tests
+test a_box_touching_a_see_through_one_changing_draws_its_layer_again ... ok
+test a_see_through_box_is_blended_again_from_its_layer_while_nothing_in_or_under_it_changes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\sticky.rs (target\debug\build\taut/f46e8818b1f5c08f\out\sticky-f46e8818b1f5c08f.exe)
+
+running 4 tests
+test a_box_sticky_both_ways_stays_in_the_corner ... ok
+test a_sticky_column_stays_at_the_left_while_its_row_scrolls_sideways ... ok
+test a_box_sticks_in_the_next_box_out_that_scrolls_its_way ... ok
+test a_box_kept_in_view_that_sticks_too_sticks_in_the_next_box_out ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests\stripes.rs (target\debug\build\taut/c59f482d0488d335\out\stripes-c59f482d0488d335.exe)
+
+running 4 tests
+test a_tree_views_rows_are_striped_as_they_show ... ok
+test a_list_stripes_every_other_row_counted_from_its_first ... ok
+test a_tables_rows_are_striped_under_their_selection ... ok
+test a_row_kept_in_view_is_passed_over_by_the_stripes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests\table_keyboard.rs (target\debug\build\taut/1249589a004d24f5\out\table_keyboard-1249589a004d24f5.exe)
+
+running 4 tests
+test a_table_without_a_long_list_is_worked_by_its_cell_too ... ok
+test picked_rows_are_copied_as_a_spreadsheet_takes_them_and_with_none_the_cell ... ok
+test a_table_is_one_stop_for_the_keyboard_and_its_cell_goes_where_the_keys_say ... ok
+test a_cell_is_changed_in_place_and_the_app_hears_what_and_where ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests\table_paste.rs (target\debug\build\taut/9fcdb10f53a5798c\out\table_paste-9fcdb10f53a5798c.exe)
+
+running 6 tests
+test an_undone_paste_takes_its_rows_out_in_one_run_and_redraws_them_away ... ok
+test a_table_takes_pasted_cells_and_gives_them_back_on_undo ... ok
+test undoing_an_edit_after_a_paste_that_added_rows_removes_none ... ok
+test values_a_column_refuses_are_heard_and_their_cells_outlined_until_the_table_changes ... ok
+test a_paste_past_the_last_row_adds_rows_where_the_app_lets_it ... ok
+test an_empty_table_takes_a_paste_at_its_first_cell ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests\touch.rs (target\debug\build\taut/88f1086838732032\out\touch-88f1086838732032.exe)
+
+running 12 tests
+test a_finger_that_lands_beside_a_part_presses_the_nearest_one_within_reach ... ok
+test a_finger_the_system_takes_away_clicks_nothing ... ok
+test a_finger_held_still_is_the_menus_press ... ok
+test a_finger_dragged_through_a_list_scrolls_it_and_clicks_nothing ... ok
+test a_pen_is_the_mouse_and_says_how_hard_it_presses ... ok
+test a_part_that_is_dragged_takes_the_finger_where_a_scroll_would ... ok
+test a_flick_stops_at_the_end_of_the_list ... ok
+test the_wheel_with_ctrl_zooms_what_zooms_under_the_pointer ... ok
+test a_tap_clicks_once_and_leaves_nothing_under_the_pointer ... ok
+test two_taps_close_together_are_a_double_click ... ok
+test two_fingers_pinch_a_box_that_zooms_and_scroll_a_list ... ok
+test a_flick_goes_on_slowing_and_stops_and_a_finger_stops_it_sooner ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests\trees.rs (target\debug\build\taut/11bfdd837c256730\out\trees-11bfdd837c256730.exe)
+
+running 5 tests
+test a_tree_written_by_hand_is_told_as_one_and_walked_by_the_arrows ... ok
+test a_screen_reader_opens_closes_and_picks_items_of_a_tree ... ok
+test the_pointer_picks_one_item_more_with_control_and_a_stretch_with_shift ... ok
+test a_tree_is_walked_by_the_arrows_home_end_and_letters_and_the_keyboard_picks ... ok
+test a_long_tree_is_described_and_told_only_as_far_as_it_shows ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests\video_android.rs (target\debug\build\taut/0cdab9e19fbc062d\out\video_android-0cdab9e19fbc062d.exe)
+
+running 2 tests
+test on_android::adb_errors_from_a_dropped_emulator_are_told_apart ... ok
+test the_video_checks_pass_on_an_android_emulator ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\video_apple.rs (target\debug\build\taut/835c65bca5d9b375\out\video_apple-835c65bca5d9b375.exe)
+     Running tests\video_web.rs (target\debug\build\taut/0d16131d0057688a\out\video_web-0d16131d0057688a.exe)
+no wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown): skipped
+     Running tests\web.rs (target\debug\build\taut/c186f50447230ec5\out\web-c186f50447230ec5.exe)
+
+running 3 tests
+test a_page_keeps_opens_and_saves_through_the_browser ... ok
+test the_gallery_in_a_browser_is_drawn_as_here_and_heard_through_the_dom ... ok
+test hello_under_node_draws_what_it_draws_here_and_hears_a_press ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\web_system.rs (target\debug\build\taut/518ef3371d36c65a\out\web_system-518ef3371d36c65a.exe)
+no wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown): skipped
+     Running tests\web_widgets.rs (target\debug\build\taut/b4bcf13124bea793\out\web_widgets-b4bcf13124bea793.exe)
+
+running 13 tests
+test a_card_is_pressed_as_one_but_its_own_buttons_are_pressed_by_themselves ... ok
+test a_box_to_search_with_is_emptied_by_its_cross_and_by_escape ... ok
+test a_banner_is_said_once_holds_the_apps_buttons_and_is_closed_by_its_cross ... ok
+test a_person_is_a_round_picture_or_their_first_letters_on_a_colour_of_their_own ... ok
+test a_placeholder_has_a_band_of_light_go_over_it_and_only_it_is_drawn_again ... ok
+test keys_are_written_as_keys_and_told_as_they_are_written ... ok
+test a_path_of_places_goes_back_along_it_and_folds_what_there_is_no_room_for ... ok
+test a_split_button_does_the_usual_thing_and_its_arrow_opens_the_other_ways ... ok
+test stars_are_given_by_the_pointer_and_by_the_keys_in_halves ... ok
+test pages_of_results_are_gone_through_by_their_numbers_and_their_arrows ... ok
+test the_steps_of_a_task_go_back_to_one_that_is_done_and_never_on ... ok
+test what_the_guide_has_an_app_write_itself_works_as_it_says ... ok
+test typed_words_become_tags_which_go_by_their_cross_and_by_backspace ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests taut
+
+running 142 tests
+test src\../GUIDE.md - guide (line 1022) - compile ... ok
+test src\../GUIDE.md - guide (line 1048) - compile ... ok
+test src\../GUIDE.md - guide (line 1086) - compile ... ok
+test src\../GUIDE.md - guide (line 1134) - compile ... ok
+test src\../GUIDE.md - guide (line 1224) - compile ... ok
+test src\../GUIDE.md - guide (line 1290) - compile ... ok
+test src\../GUIDE.md - guide (line 131) - compile ... ok
+test src\../GUIDE.md - guide (line 1332) - compile ... ok
+test src\../GUIDE.md - guide (line 33) - compile ... ok
+test src\../GUIDE.md - guide (line 402) - compile ... ok
+test src\../GUIDE.md - guide (line 468) - compile ... ok
+test src\../GUIDE.md - guide (line 68) ... ignored
+test src\../GUIDE.md - guide (line 652) ... ok
+test src\../GUIDE.md - guide (line 628) ... ok
+test src\../GUIDE.md - guide (line 836) - compile ... ok
+test src\../GUIDE.md - guide (line 726) ... ok
+test src\../GUIDE.md - guide (line 686) ... ok
+test src\../GUIDE.md - guide (line 964) - compile ... ok
+test src\accessibility.rs - accessibility (line 9) ... ignored
+test src\../GUIDE.md - guide (line 775) ... ok
+test src\cells.rs - cells (line 4) ... ignored
+test src\chart.rs - chart (line 5) ... ignored
+test src\clock.rs - clock (line 3) ... ignored
+test src\../GUIDE.md - guide (line 846) ... ok
+test src\combo.rs - combo (line 3) ... ignored
+test src\date.rs - date (line 3) ... ignored
+test src\dock.rs - dock (line 9) ... ignored
+test src\drag_drop.rs - drag_drop (line 9) ... ignored
+test src\el.rs - el (line 4) ... ignored
+test src\../GUIDE.md - guide (line 935) ... ok
+test src\code_editor.rs - code_editor::CodeEditor (line 516) ... ok
+test src\file_dialog.rs - file_dialog (line 22) ... ignored
+test src\frameless.rs - frameless (line 9) ... ignored
+test src\inspect.rs - inspect (line 4) ... ignored
+test src\inspect.rs - inspect::Field (line 72) ... ignored
+test src\inspect.rs - inspect::Inspect (line 152) ... ignored
+test src\inspect.rs - inspect::inspect (line 1274) ... ignored
+test src\accessibility.rs - accessibility::Ui::tell_separately (line 1272) ... ok
+test src\layer_d3d11.rs - layer_d3d11 (line 4) ... ignored
+test src\layer_d3d12.rs - layer_d3d12 (line 4) ... ignored
+test src\layer_d3d9.rs - layer_d3d9 (line 4) ... ignored
+test src\layer_opengl.rs - layer_opengl (line 5) ... ignored
+test src\layer_vulkan.rs - layer_vulkan (line 4) ... ignored
+test src\lib.rs - (line 8) - compile ... ok
+test src\el.rs - el::El<'_>::sticky (line 545) ... ok
+test src\el.rs - el::El<'_>::sticky_x (line 571) ... ok
+test src\jpeg.rs - jpeg::Encoder (line 1432) ... ok
+test src\lib.rs - Written (line 1002) ... ok
+test src\lib.rs - Written (line 1024) ... ok
+test src\lib.rs - Written (line 1058) ... ok
+test src\lib.rs - Written (line 1087) ... ok
+test src\lib.rs - Written (line 1142) ... ok
+test src\lib.rs - Written (line 1252) ... ok
+test src\lib.rs - Written (line 1377) - compile ... ok
+test src\lib.rs - Written (line 1178) ... ok
+test src\lib.rs - Written (line 1445) - compile ... ok
+test src\lib.rs - Written (line 1298) ... ok
+test src\lib.rs - Written (line 1329) ... ok
+test src\lib.rs - Written (line 1413) ... ok
+test src\lib.rs - Written (line 1748) ... ok
+test src\lib.rs - Written (line 1825) ... ok
+test src\lib.rs - Written (line 1851) ... ok
+test src\lib.rs - Written (line 1894) ... ok
+test src\lib.rs - Written (line 1953) ... ok
+test src\lib.rs - Written (line 1986) ... ok
+test src\lib.rs - Written (line 2016) ... ok
+test src\lib.rs - Written (line 2042) ... ok
+test src\lib.rs - Written (line 2060) ... ok
+test src\lib.rs - Written (line 2090) ... ok
+test src\lib.rs - Written (line 2123) ... ok
+test src\lib.rs - Written (line 2153) ... ok
+test src\lib.rs - Written (line 2189) ... ok
+test src\lib.rs - Written (line 2215) ... ok
+test src\lib.rs - Written (line 2271) ... ok
+test src\lib.rs - Written (line 2319) ... ok
+test src\lib.rs - Written (line 2352) ... ok
+test src\lib.rs - Written (line 2374) ... ok
+test src\lib.rs - Written (line 2418) ... ok
+test src\lib.rs - Written (line 2447) ... ok
+test src\lib.rs - Written (line 2500) ... ok
+test src\lib.rs - Written (line 2585) ... ok
+test src\lib.rs - Written (line 2529) ... ok
+test src\lib.rs - Written (line 2636) ... ok
+test src\lib.rs - Written (line 2679) ... ok
+test src\lib.rs - Written (line 2704) ... ok
+test src\lib.rs - Written (line 2718) ... ok
+test src\lib.rs - Written (line 2864) ... ok
+test src\lib.rs - Written (line 2912) ... ok
+test src\lib.rs - Written (line 3111) ... ignored
+test src\lib.rs - Written (line 3123) ... ignored
+test src\lib.rs - Written (line 3132) ... ignored
+test src\lib.rs - Written (line 3176) ... ignored
+test src\lib.rs - Written (line 2965) ... ok
+test src\lib.rs - Written (line 2763) ... ok
+test src\lib.rs - Written (line 3009) ... ok
+test src\lib.rs - Written (line 3244) ... ok
+test src\lib.rs - Written (line 512) - compile ... ok
+test src\lib.rs - Written (line 675) - compile ... ok
+test src\lib.rs - Written (line 3265) ... ok
+test src\lib.rs - Written (line 3324) ... ok
+test src\lib.rs - Written (line 3497) ... ok
+test src\lib.rs - Written (line 736) ... ok
+test src\lib.rs - Written (line 789) ... ok
+test src\lib.rs - Written (line 823) ... ok
+test src\lib.rs - Written (line 837) ... ok
+test src\lib.rs - Written (line 859) ... ok
+test src\lib.rs - Written (line 886) ... ok
+test src\node_graph.rs - node_graph (line 6) ... ignored
+test src\number.rs - number (line 4) ... ignored
+test src\pan_zoom.rs - pan_zoom (line 5) ... ignored
+test src\panel.rs - panel (line 4) ... ignored
+test src\lib.rs - Written (line 916) ... ok
+test src\lib.rs - Written (line 943) ... ok
+test src\lib.rs - Written (line 968) ... ok
+test src\platform.rs - platform::system_text (line 430) - compile ... ok
+test src\popups.rs - popups (line 6) ... ignored
+test src\paper.rs - paper::Paper (line 39) ... ok
+test src\print.rs - print::print (line 60) - compile ... ok
+test src\print.rs - print::print_laid (line 85) - compile ... ok
+test src\rich_text.rs - rich_text::Span (line 137) ... ignored
+test src\saved_layout.rs - saved_layout (line 6) ... ignored
+test src\scene.rs - scene (line 3) ... ignored
+test src\second_window.rs - second_window (line 4) ... ignored
+test src\single_instance.rs - single_instance (line 5) ... ignored
+test src\sliders.rs - sliders (line 5) ... ignored
+test src\storage.rs - storage (line 5) - compile ... ok
+test src\surface.rs - surface (line 5) ... ignored
+test src\surface.rs - surface::Upload (line 135) ... ignored
+test src\table.rs - table (line 7) ... ignored
+test src\table_paste.rs - table_paste (line 3) ... ignored
+test src\pdf_structure.rs - pdf_structure::Paper::begin (line 129) ... ok
+test src\pen.rs - pen::Pen (line 60) ... ok
+test src\toolbar.rs - toolbar (line 5) ... ignored
+test src\touch.rs - touch::Ui::zoom (line 536) ... ignored
+test src\tray.rs - tray (line 5) ... ignored
+test src\tree_view.rs - tree_view (line 4) ... ignored
+test src\ui.rs - ui (line 7) ... ignored
+test src\video.rs - video (line 10) - compile ... ok
+test src\video.rs - video::Video::add_captions (line 462) - compile ... ok
+test src\widgets.rs - widgets::Ui::tree (line 665) ... ignored
+test src\popups.rs - popups::Ui::select_value (line 542) ... ok
+test src\testing.rs - testing (line 5) ... ok
+
+test result: ok. 96 passed; 0 failed; 46 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+
+running 3 tests
+test src\lib.rs - Written (line 783) - compile ... ok
+test src\lib.rs - Written (line 877) - compile fail ... ok
+test src\lib.rs - Written (line 1489) - compile ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+all doctests ran in 1.43s; merged doctests compilation took 1.07s
+error: 1 target failed:
+    `--lib`
+::error file=src/video.rs,line=1096,title=src/lib.rs%3A video%3A%3Atests%3A%3Aa_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed::thread 'video::tests::a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed' (3156) panicked at src\video.rs:1096:13:%0Athe caption tracks did not happen: Video { playing: false, position: 0ns, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
