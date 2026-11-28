@@ -1,0 +1,41 @@
+ProductName:		macOS
+ProductVersion:		26.7.2
+BuildVersion:		25G332
+   Compiling taut v0.3.0 (/Users/runner/work/taut/taut)
+    Finished `test` profile [unoptimized] target(s) in 20.15s
+     Running tests/video_apple.rs (target/debug/build/taut/cda95e7c38c23ebe/out/video_apple-cda95e7c38c23ebe)
+probe: asked GET /master.m3u8 HTTP/1.1
+probe: asked GET /video.m3u8 HTTP/1.1
+probe: asked GET /video.m3u8 HTTP/1.1
+probe: asked GET /init.mp4 HTTP/1.1
+probe: asked GET /video-0.m4s HTTP/1.1
+probe: asked GET /video-1.m4s HTTP/1.1
+probe: asked GET /video-2.m4s HTTP/1.1
+probe: chose None: None
+probe: chose Some(1): Some("<AVMediaSelectionKeyValueOption: 0x7a0cfaf80, language = fr, mediaType = 'sbtl', title = Français>")
+probe: asked GET /subtitles-1.m3u8 HTTP/1.1
+probe: asked GET /subtitles-1.vtt HTTP/1.1
+probe: paused, chosen: None
+probe: handed 0 at 0ns: ["Français un"]
+probe: handed 0 at 1s: ["Français deux"]
+probe: handed 0 at 2s: []
+probe: handed 0 at 2.5s: ["Français fin"]
+probe: handed 0 at 3s: []
+probe: played to 3s: None
+probe: chose Some(1): Some("<AVMediaSelectionKeyValueOption: 0x7a0cfaf80, language = fr, mediaType = 'sbtl', title = Français>")
+
+thread 'main' (12387) panicked at tests/video_apple.rs:176:13:
+Some("Français un") at 500ms did not happen: Video { playing: false, position: 500ms, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: video_apple::checks::until_run::<video_apple::checks::caption_at::{closure#0}>
+   3: video_apple::checks::caption_at
+   4: video_apple::checks::captions_of_a_stream
+   5: video_apple::checks::all
+   6: video_apple::main
+   7: <fn() as core::ops::function::FnOnce<()>>::call_once
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+error: test failed, to rerun pass `--test video_apple`
+exit 101
+==== app output
