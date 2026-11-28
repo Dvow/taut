@@ -11,6 +11,10 @@
 //! box of a hundred thousand lines costs what its visible lines do. The word at the cursor is
 //! not marked while being typed: only once ended, by what follows or by the cursor leaving.
 //!
+//! A code box ([`Ui::code_editor`]) that asks has its comments and strings checked, as code
+//! editors do: the pieces its language's rules ([`Syntax`](crate::Syntax)) colour as such, each
+//! a box of its own, checked as part of the code.
+//!
 //! The checker is Windows' own (`ISpellChecker` through COM, Windows 8 on), or on Linux Enchant
 //! (`libenchant-2`, opened by name on first use, as FreeType is), which asks Hunspell, Nuspell
 //! or Aspell. GNOME programs check with Enchant, and its personal dictionary is the user's
@@ -89,26 +93,55 @@ pub(crate) struct Hooks {
     /// Draws one box's wavy lines, in a colour.
     pub wavy: Wavy,
     /// The misspellings in the box of an id, as byte ranges of its text, in order: for screen
-    /// readers. All of them while one listens; else those visible.
+    /// readers. All of them while one listens; else those visible. (A code box's: in the
+    /// comments and strings described.)
     pub wrong: fn(&Spelling, Id) -> Vec<Range<usize>>,
+    /// A code box takes the language it was asked to be checked in, if any.
+    pub asked: fn(&mut Spelling) -> Option<usize>,
+    /// A comment or string of a code box was described: the box's id, the piece's tree index,
+    /// where its text starts in the code, and the language. It is checked.
+    pub part: fn(&mut Spelling, Id, u32, usize, usize),
+    /// The correction chosen from a code box's menu, for the box to make: the byte range of
+    /// its code it replaces, the old text, and the new.
+    pub correction: fn(&mut Spelling, Id) -> Option<Correction>,
 }
+
+/// A correction chosen from a menu: the byte range it replaces, the old text, and the new.
+pub(crate) type Correction = (Range<usize>, String, String);
 
 /// Draws the wavy lines under misspellings in tree box `at`.
 pub(crate) type Wavy = fn(&mut Canvas, &Spelling, u32);
 
-static HOOKS: Hooks = Hooks { noted, rows, typed, settle, wavy, wrong };
+static HOOKS: Hooks = Hooks { noted, rows, typed, settle, wavy, wrong, asked, part, correction };
 
 /// The misspellings found in box `id` when it was last processed (see `Hooks::wrong`): all,
-/// while a screen reader listens; else the visible ones.
+/// while a screen reader listens; else the visible ones. (A code box's from each of its pieces
+/// checked.)
 fn wrong(spelling: &Spelling, id: Id) -> Vec<Range<usize>> {
-    let kept = spelling.kept.as_ref().and_then(|kept| kept.downcast_ref::<Kept>());
-    if let Some((.., all)) = kept.and_then(|kept| kept.told.iter().find(|told| told.0 == id)) {
-        return all.clone();
+    let Some(kept) = spelling.kept.as_ref().and_then(|kept| kept.downcast_ref::<Kept>()) else { return Vec::new() };
+    let mut words: Vec<Range<usize>> = kept.told.iter().filter(|told| told.0 == id).flat_map(|(.., all)| all.iter().cloned()).collect();
+    if !kept.told.iter().any(|told| told.0 == id) {
+        words.extend(kept.found.iter().filter(|found| found.id == id).flat_map(|found| found.spots.iter().map(|(bytes, _)| bytes.clone())));
     }
-    let found = kept.and_then(|kept| kept.found.iter().find(|found| found.id == id));
-    let mut words: Vec<Range<usize>> = found.map_or(Vec::new(), |found| found.spots.iter().map(|(bytes, _)| bytes.clone()).collect());
     words.sort_by_key(|word| word.start);
     words
+}
+
+/// A code box takes the language it asked for (see `Hooks::asked`).
+fn asked(spelling: &mut Spelling) -> Option<usize> {
+    kept(spelling)?.next.take()
+}
+
+/// A code box's comment or string was described (see `Hooks::part`).
+fn part(spelling: &mut Spelling, id: Id, at: u32, offset: usize, language: usize) {
+    if let Some(kept) = kept(spelling) {
+        kept.boxes.push(Checked { at, id, language, offset });
+    }
+}
+
+/// The correction a code box's menu chose (see `Hooks::correction`).
+fn correction(spelling: &mut Spelling, id: Id) -> Option<Correction> {
+    kept(spelling)?.replacing.take_if(|(of, ..)| *of == id).map(|(_, range, word, with)| (range, word, with))
 }
 
 /// A checker for one language: the system's (or, in tests, a stand-in).
@@ -145,11 +178,13 @@ struct Language {
     version: u64,
 }
 
-/// A box checked in this pass: its tree index, id and language.
+/// A box checked in this pass: its tree index, id and language; and where its text starts in
+/// the text the box stands for (a code box's comment or string: in all its code).
 struct Checked {
     at: u32,
     id: Id,
     language: usize,
+    offset: usize,
 }
 
 /// What was found in a visible box: a hash of its inputs (unchanged while nothing it depends on
@@ -508,7 +543,7 @@ fn with_kept(ui: &mut Ui, work: impl FnOnce(&mut Ui, &mut Kept)) {
 fn noted(ui: &mut Ui, state: &Response, at: Option<u32>) {
     let Some(kept) = kept(&mut ui.asks.spelling) else { return };
     let (Some(language), Some(at)) = (kept.next.take(), at) else { return };
-    kept.boxes.push(Checked { at, id: state.id, language });
+    kept.boxes.push(Checked { at, id: state.id, language, offset: 0 });
 }
 
 /// The box being typed into took its keys (see `Hooks::typed`).
@@ -588,23 +623,31 @@ impl Kept {
 
     /// The misspelling a box's menu opens on, if any: its byte range, text, and language.
     fn word_for_menu(&self, ui: &Ui, state: &Response, language: usize) -> Option<(Range<usize>, String, usize)> {
-        let found = self.found.iter().find(|found| found.id == state.id)?;
+        let mut spots = self.found.iter().filter(|found| found.id == state.id).flat_map(|found| found.spots.iter());
         let pointer = ui.pointer().filter(|_| state.right_clicked);
         let cursor = (ui.edit.id == state.id).then_some(ui.edit.cursor);
         let on = |(range, spot): &&(Range<usize>, Rect)| match pointer {
             Some(p) => spot.contains(p),
             None => cursor.is_some_and(|at| range.contains(&at) || range.end == at),
         };
-        let (range, _) = found.spots.iter().find(on)?;
+        let (range, _) = spots.find(on)?;
         Some((range.clone(), self.spelt(ui, state.id, range.clone())?, language))
     }
 
     /// The word at byte range `range` of box `id`'s text, as in the tree.
     fn spelt(&self, ui: &Ui, id: Id, range: Range<usize>) -> Option<String> {
-        let at = self.boxes.iter().find(|checked| checked.id == id)?.at;
-        let Content::Text { start, end, .. } = ui.tree.specs.get(at as usize)?.content else { return None };
-        let text = ui.tree.strings.get(start as usize..end as usize)?;
-        text.get(range).map(str::to_owned)
+        let (text, offset) = self.text_holding(ui, id, &range)?;
+        text.get(range.start - offset..range.end - offset).map(str::to_owned)
+    }
+
+    /// The text of a box checked as box `id` that holds byte range `range` of the text `id`
+    /// stands for (in a code box, the comment or string holding it), and where it starts there.
+    fn text_holding<'a>(&self, ui: &'a Ui, id: Id, range: &Range<usize>) -> Option<(&'a str, usize)> {
+        self.boxes.iter().filter(|checked| checked.id == id).find_map(|checked| {
+            let Content::Text { start, end, .. } = ui.tree.specs.get(checked.at as usize)?.content else { return None };
+            let text = ui.tree.strings.get(start as usize..end as usize)?;
+            (range.start >= checked.offset && range.end <= checked.offset + text.len()).then_some((text, checked.offset))
+        })
     }
 
     /// Where the same word (in any case) ends just before `word`, a byte range of `text` whose box
@@ -623,11 +666,9 @@ impl Kept {
     /// For a word written twice at byte range `range` of box `id`'s text: the range of both,
     /// and the word once (as written first).
     fn twice_in_box(&self, ui: &Ui, id: Id, range: Range<usize>) -> Option<(Range<usize>, String)> {
-        let at = self.boxes.iter().find(|checked| checked.id == id)?.at;
-        let Content::Text { start, end, .. } = ui.tree.specs.get(at as usize)?.content else { return None };
-        let text = ui.tree.strings.get(start as usize..end as usize)?;
-        let from = self.twice(text, 0, range.clone())?;
-        Some((from..range.end, text[from..from + range.len()].to_owned()))
+        let (text, offset) = self.text_holding(ui, id, &range)?;
+        let from = self.twice(text, 0, range.start - offset..range.end - offset)?;
+        Some((from + offset..range.end, text[from..from + range.len()].to_owned()))
     }
 
     /// After layout: each box checked this pass has its visible words found, looked up, sent
@@ -665,14 +706,14 @@ impl Kept {
         matches!(ui.tree.specs[checked.at as usize].content, Content::Text { start, end, .. } if (end - start) as usize <= TOLD_WHOLE)
     }
     /// While a screen reader listens: the misspellings in all of a checked box's text, seen or
-    /// not, as byte ranges of it (as far as known, unknown words sent). Not the word being
-    /// written. Taken from `was` where its text and what is known are unchanged.
+    /// not, as byte ranges of the text it stands for (as far as known, unknown words sent). Not
+    /// the word being written. Taken from `was` where its text and what is known are unchanged.
     fn told_in(&mut self, ui: &mut Ui, checked: &Checked, was: &mut Vec<(Id, u64, Vec<Range<usize>>)>) -> (Id, u64, Vec<Range<usize>>) {
         let Content::Text { start, end, .. } = ui.tree.specs[checked.at as usize].content else { return (checked.id, 0, Vec::new()) };
         let (start, end) = (start as usize, end as usize);
         let typing = ui.focus == checked.id && ui.edit.id == checked.id && ui.edit.writing && ui.edit.cursor == ui.edit.anchor;
-        let writing = typing.then_some(start + ui.edit.cursor);
-        let key = hash((&ui.tree.strings[start..end], self.languages[checked.language].version, self.ignores, writing));
+        let writing = typing.then(|| (start + ui.edit.cursor).checked_sub(checked.offset)).flatten();
+        let key = hash((&ui.tree.strings[start..end], self.languages[checked.language].version, self.ignores, writing, checked.offset));
         if let Some(at) = was.iter().position(|(id, made, _)| *id == checked.id && *made == key) {
             return was.swap_remove(at);
         }
@@ -684,24 +725,26 @@ impl Kept {
             }
             let twice = !self.languages[checked.language].none && self.twice(&ui.tree.strings, start, word.clone()).is_some();
             if twice || self.verdict(checked.language, &ui.tree.strings[word.clone()]) == Verdict::Wrong {
-                wrong.push(word.start - start..word.end - start);
+                wrong.push(word.start - start + checked.offset..word.end - start + checked.offset);
             }
         }
         (checked.id, key, wrong)
     }
 
-    /// A checked box's visible content and the window area it covers: reused where nothing it
-    /// depends on changed. Nothing for a box out of view.
+    /// A checked box's visible content and the window area it covers, its misspellings as byte
+    /// ranges of the text it stands for: reused where nothing it depends on changed. Nothing
+    /// for a box out of view.
     fn find(&mut self, ui: &mut Ui, checked: &Checked) -> Option<(Rect, Found)> {
         let seen = ui.visible_boxes.boxes.iter().find(|seen| seen.at == checked.at && !seen.leaving)?;
         let (r, area) = (seen.rect, seen.area);
         let view = View::of(ui, checked.at, r, area)?;
         // The word being written, if in this box: unchecked until ended.
         let typing = ui.focus == checked.id && ui.edit.id == checked.id && ui.edit.writing && ui.edit.cursor == ui.edit.anchor;
-        let writing = typing.then_some(view.start + ui.edit.cursor);
+        let writing = typing.then(|| (view.start + ui.edit.cursor).checked_sub(checked.offset)).flatten();
         let language = &self.languages[checked.language];
         let shown = &ui.tree.strings[view.lines.first()?.start..view.lines.last()?.end];
-        let key = hash((r.x.to_bits(), r.y.to_bits(), area.y.to_bits(), area.h.to_bits(), view.font.size.to_bits(), ui.scale.to_bits(), shown, (language.version, self.ignores, writing)));
+        let key =
+            hash((r.x.to_bits(), r.y.to_bits(), area.y.to_bits(), area.h.to_bits(), view.font.size.to_bits(), ui.scale.to_bits(), shown, (language.version, self.ignores, writing, checked.offset)));
         if let Some(at) = self.found.iter().position(|found| found.id == checked.id && found.key == key) {
             return Some((area, self.found.swap_remove(at)));
         }
@@ -711,6 +754,8 @@ impl Kept {
             self.wrong_in(ui, &view, line, writing, checked.language, &mut wrong);
             view.spots(ui, line, view.first + row, &wrong, &mut now);
         }
+        // (A code box's piece is placed in its code.)
+        now.spots.iter_mut().for_each(|(bytes, _)| *bytes = bytes.start + checked.offset..bytes.end + checked.offset);
         Some((area, now))
     }
 
@@ -865,8 +910,8 @@ impl Ui {
     /// in `language` as the system names languages ("en-US", "de_DE", "fr"); or with none, the
     /// user's own language. Only visible text is checked, and marks appear as the checker
     /// answers, from its own thread: a box of any length costs what it shows. Where the system
-    /// has no checker for the language, nothing is marked. (Password and code boxes are never
-    /// checked.)
+    /// has no checker for the language, nothing is marked. A password box is never checked; a
+    /// code box ([`code_editor`](Self::code_editor)) has its comments and strings checked.
     pub fn check_spelling(&mut self, language: Option<&str>) {
         self.spell_with(language, system, false);
     }
@@ -1186,7 +1231,7 @@ impl Drop for Speller {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::accessibility::Role;
+    use crate::accessibility::{AccessNode, Role};
     use crate::geom::pt;
     use crate::testing::Trial;
     use crate::{LocalClipboard, Size, Surface, text::BuiltInFont};
@@ -1254,8 +1299,7 @@ pub(crate) mod tests {
         r - g > 40 && r - b > 30
     }
     /// The bounding rectangle of the window's reddish pixels, if any.
-    fn red(trial: &Trial<Page>) -> Option<Rect> {
-        let screen = &trial.screen;
+    fn red(screen: &Surface) -> Option<Rect> {
         let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
         for y in 0..screen.pixels.len() / screen.width {
             for x in (0..screen.width).filter(|x| reddish(screen, pt(*x as f32, y as f32))) {
@@ -1273,7 +1317,7 @@ pub(crate) mod tests {
         assert_eq!(waves(&trial), [[48.0, 108.0, 0.0], [72.0, 108.0, 1.0]]);
         // And they are drawn: in red, under those letters only.
         let at = letters(&trial);
-        let marked = red(&trial).expect("nothing is drawn in red");
+        let marked = red(&trial.screen).expect("nothing is drawn in red");
         assert!(marked.x >= at.x + 47.0 && marked.right() <= at.x + 109.0, "{marked:?}");
         assert!(marked.y >= at.y + 15.0 && marked.bottom() <= at.y + 40.0, "under the letters of both lines: {marked:?}");
         for x in [48.0, 60.0, 100.0] {
@@ -1283,7 +1327,7 @@ pub(crate) mod tests {
         let mut plain = trial;
         plain.app.checked = false;
         plain.run();
-        assert_eq!((red(&plain), wrong(&plain.ui).len()), (None, 0));
+        assert_eq!((red(&plain.screen), wrong(&plain.ui).len()), (None, 0));
     }
 
     #[test]
@@ -1800,5 +1844,113 @@ pub(crate) mod tests {
         }
         assert_eq!(wrong, [false, false, true, true]);
         assert!(offered.len() <= OFFERED);
+    }
+
+    /// A code box, checked or not, in the stand-in or the system checker's `language`.
+    struct Code {
+        code: crate::CodeEditor,
+        checked: Option<Opens>,
+        language: Option<&'static str>,
+        here: bool,
+    }
+    fn code(app: &mut Code, ui: &mut Ui) {
+        if let Some(opens) = app.checked {
+            ui.spell_with(app.language, opens, app.here);
+        }
+        ui.code_editor(&mut app.code, "Source");
+    }
+    fn code_trial(text: &str, rules: &'static crate::Syntax) -> Trial<Code> {
+        Trial::new(Code { code: crate::CodeEditor::new(text, rules), checked: Some(stand_in), language: None, here: true }, code)
+    }
+    /// The misspellings a screen reader is told of in the code box, as the words.
+    fn told_wrong(trial: &Trial<Code>) -> Vec<String> {
+        let source = trial.find(Role::TextBox, "Source");
+        let letters: Vec<char> = source.value.chars().collect();
+        source.misspelled.iter().map(|[from, to]| letters[*from as usize..*to as usize].iter().collect()).collect()
+    }
+
+    #[test]
+    fn a_code_box_has_its_comments_and_strings_checked_by_its_languages_rules() {
+        // Rust: a line comment, a block comment and a string are checked; names, keywords and
+        // what lies between are not, misspelt or not.
+        let mut trial = code_trial("// the quikc fox\nlet quikc = \"the lazy dgo\";\n/* jumps ovr */\n", &crate::Syntax::RUST);
+        assert_eq!(told_wrong(&trial), ["quikc", "dgo", "ovr"]);
+        assert_eq!(wrong(&trial.ui).len(), 3, "three wavy lines");
+        assert!(red(&trial.screen).is_some(), "drawn");
+        // Python's comments start with `#`; its strings may be single-quoted.
+        let mut python = code_trial("# a dgo\nx = 'quikc' # ovr\n", &crate::Syntax::PYTHON);
+        python.run();
+        assert_eq!(told_wrong(&python), ["dgo", "quikc", "ovr"]);
+        // Not asked, nothing is checked.
+        trial.app.checked = None;
+        trial.run();
+        assert_eq!((told_wrong(&trial).len(), wrong(&trial.ui).len()), (0, 0));
+    }
+
+    #[test]
+    fn a_code_boxs_menu_puts_a_right_word_into_a_comment() {
+        let mut trial = code_trial("let x = 1; // the quikc fox\n", &crate::Syntax::RUST);
+        let (_, wave) = wrong(&trial.ui)[0];
+        trial.right_click(pt(wave.x + wave.w / 2.0, wave.y - 6.0));
+        let offered: Vec<String> = trial.visible_access_nodes().iter().filter(|said| said.role == Role::MenuItem).map(|said| said.name.clone()).collect();
+        assert_eq!(offered[..5], ["quick", "quiet", "quilt", "Add to dictionary", "Ignore"]);
+        trial.press(Role::MenuItem, "quiet");
+        assert_eq!((trial.app.code.text(), wrong(&trial.ui).len()), ("let x = 1; // the quiet fox\n", 0));
+        // As one change, undone as one.
+        trial.key("Ctrl+Z");
+        assert_eq!(trial.app.code.text(), "let x = 1; // the quikc fox\n");
+    }
+
+    #[test]
+    fn a_word_being_typed_in_a_comment_is_marked_once_it_is_ended() {
+        let mut trial = code_trial("", &crate::Syntax::RUST);
+        trial.press(Role::TextBox, "Source");
+        trial.type_text("// the quikc");
+        assert!(told_wrong(&trial).is_empty(), "still being written");
+        trial.type_text(" ");
+        assert_eq!(told_wrong(&trial), ["quikc"]);
+        // A word moved off by the cursor alone is ended too.
+        trial.type_text("ovr");
+        trial.key("Home");
+        assert_eq!(told_wrong(&trial), ["quikc", "ovr"]);
+    }
+
+    /// The misspellings the system checker for `language` finds in a code box, once it has
+    /// answered (on its own thread, as in a window, which it wakes: here, runs until then).
+    #[cfg_attr(any(target_vendor = "apple", target_os = "android"), allow(dead_code))]
+    fn system_marks_in_code(language: &'static str) -> Vec<String> {
+        let mut app = Code { code: crate::CodeEditor::new("// helo world\nlet helo = \"recieve it\";\n", &crate::Syntax::RUST), checked: Some(system), language: Some(language), here: false };
+        let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
+        ui.resize(Size { w: 400.0, h: 200.0 }, 1.0);
+        ui.set_screen_reader(true);
+        let told = |ui: &Ui| {
+            let source = ui.access_nodes().iter().find(|node| node.role == Role::TextBox).cloned().unwrap_or_else(|| AccessNode::plain(0, Role::TextBox, String::new(), Rect::EMPTY, None));
+            let letters: Vec<char> = source.value.chars().collect();
+            source.misspelled.iter().map(|[from, to]| letters[*from as usize..*to as usize].iter().collect::<String>()).collect::<Vec<_>>()
+        };
+        for _ in 0..400 {
+            ui.run(&mut |ui| code(&mut app, ui));
+            if told(&ui).len() >= 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        told(&ui)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_checks_a_code_boxs_comments_and_strings() {
+        assert_eq!(system_marks_in_code("en-US"), ["helo", "recieve"]);
+    }
+
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+    #[test]
+    fn enchant_checks_a_code_boxs_comments_and_strings() {
+        enchant_brought();
+        if system("en_US").is_none() {
+            return eprintln!("(no Enchant here, or no English dictionary for it: nothing to check)");
+        }
+        assert_eq!(system_marks_in_code("en_US"), ["helo", "recieve"]);
     }
 }

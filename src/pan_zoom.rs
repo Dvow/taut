@@ -37,8 +37,6 @@ const STEP: f32 = 40.0;
 const NEARER: f32 = 1.25;
 /// The margin around everything when all is shown at once.
 const MARGIN: f32 = 24.0;
-/// The smallest text drawn in a view, in window units.
-const LEGIBLE: f32 = 4.0;
 
 /// A pan-and-zoom view: what an app keeps of one. As text, three numbers (`to_string()`, and
 /// back with `parse()`).
@@ -213,6 +211,8 @@ impl Ui {
     #[cfg_attr(debug_assertions, track_caller)]
     pub(crate) fn open_pan_zoom(&mut self, view: &mut PanZoom, name: &str, zoom: RangeInclusive<f32>, drag_pans: bool, close_together: bool) -> Response {
         self.pan_zoom_views.settle = Some(settle);
+        // (Zoomed far out, text too small to read shows as bars: see `paint::stand_in`.)
+        self.shows.stand_in = Some(crate::paint::stand_in);
         let zoom = zoom.start().max(1e-6)..=zoom.end().max(zoom.start().max(1e-6));
         view.repair(&zoom);
         let (id, outer) = (self.next_id(), self.zoom_here());
@@ -422,11 +422,8 @@ fn zoom_box(spec: &mut Spec, shapes: &mut [Inked], by: f32) {
     frame.pad = Insets { left: pad.left * by, top: pad.top * by, right: pad.right * by, bottom: pad.bottom * by };
     (frame.gap, frame.shadow, spec.radius, spec.border_width) = (frame.gap * by, frame.shadow * by, spec.radius * by, spec.border_width * by);
     match &mut spec.content {
-        // Text too small to read is not drawn: it takes its room and shows nothing.
-        Content::Text { font, color, .. } => {
-            font.size *= by;
-            *color = if font.size < LEGIBLE { Color::NONE } else { *color };
-        }
+        // (Text too small to read shows as bars: see `paint`.)
+        Content::Text { font, .. } => font.size *= by,
         Content::Shape { shape } => {
             if let Some(shape) = shapes.get_mut(*shape as usize) {
                 shape.scale_by(by);

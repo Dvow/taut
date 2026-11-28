@@ -581,6 +581,9 @@ pub struct CodeEditor {
     /// The last highlighted line's pieces, which line, and as of which version.
     pieces: Vec<(usize, TokenKind)>,
     coloured: (u64, usize),
+    /// The language its comments and strings are spell-checked in this run, where the app asked
+    /// (see `spell`).
+    checked_in: Option<usize>,
 }
 
 impl std::fmt::Debug for CodeEditor {
@@ -642,6 +645,7 @@ impl CodeEditor {
             paired: (u64::MAX, 0, None),
             pieces: Vec::new(),
             coloured: (u64::MAX, 0),
+            checked_in: None,
         };
         code.index();
         code
@@ -1590,10 +1594,15 @@ impl Ui {
     /// unfolds the cursor's block, as does a click on the marker by its line number. Files of
     /// any length open, scroll and edit instantly: only what is visible is described and
     /// highlighted.
+    ///
+    /// After [`check_spelling`](Self::check_spelling), its comments and strings are
+    /// spell-checked, as its language's rules find them.
     pub fn code_editor(&mut self, code: &mut CodeEditor, hint: &str) -> Response {
         // (Typed into by the system's keyboard, as text boxes are.)
         #[cfg(target_os = "android")]
         crate::android_input_method::hand_over();
+        // (Asked to check spelling, its comments and strings are: see `spell`.)
+        code.checked_in = self.asks.spelling.hooks().and_then(|hooks| (hooks.asked)(&mut self.asks.spelling));
         let t = self.theme;
         let sizes = self.code_sizes(code);
         if let Some(room) = self.rooms.get(&code.measured) {
@@ -1643,6 +1652,7 @@ impl Ui {
         if std::mem::take(&mut self.select_all) {
             code.sels = vec![Sel { cursor: code.text.len(), anchor: 0, column: None }];
         }
+        self.take_correction(code, state.id);
         let was = (code.version, code.sels.clone());
         self.code_pointer(code, state, sizes);
         // The system's keyboard types into it (iOS).
@@ -1669,11 +1679,28 @@ impl Ui {
         if was != (code.version, code.sels.clone()) {
             (code.moved, code.reveal, self.again) = (self.now, true, true);
         }
+        // (The word at the cursor is being written while the last change was to the text; see
+        // `spell`.)
+        if was.0 != code.version {
+            self.edit.writing = true;
+        } else if was.1 != code.sels {
+            self.edit.writing = false;
+        }
         // The box stands for the edited text: the context menu, and screen reader selection,
         // use it.
         let primary = code.sels[0];
         (self.edit.id, self.edit.secret, self.edit.code, self.edit.cursor, self.edit.anchor) = (state.id, false, true, primary.cursor, primary.anchor);
         self.takes_tab = [if code.escaped { 0 } else { state.id }; 2];
+    }
+
+    /// Makes the correction chosen from its menu for a misspelled word, unless the text there
+    /// changed meanwhile.
+    fn take_correction(&mut self, code: &mut CodeEditor, id: Id) {
+        let Some((range, word, with)) = self.asks.spelling.hooks().and_then(|hooks| (hooks.correction)(&mut self.asks.spelling, id)) else { return };
+        if code.text.get(range.clone()) == Some(word.as_str()) {
+            code.change(vec![(range, with)], None, false);
+            self.edit.writing = false;
+        }
     }
 
     /// The pointer in a code editor: on the text it places the cursor (dragging selects); on
@@ -1952,8 +1979,16 @@ impl Ui {
                 let (x, column) = self.code_x_on(code, (went.0, went.1), went.2, at, sizes);
                 went = (x, column, at);
                 self.el().text(piece, sizes.font, sort.color(&t)).select(None, false).place((Align::Start, Align::Center)).offset(sizes.text + x, 0.0).show();
+                self.check_piece(code, sort, at);
             }
         }
+    }
+
+    /// Has the piece of text just described, from byte `at` of the code, checked for spelling
+    /// where it is a comment or string and the box asked.
+    fn check_piece(&mut self, code: &CodeEditor, sort: TokenKind, at: usize) {
+        let (Some(language), Some(hooks), TokenKind::Comment | TokenKind::String) = (code.checked_in, self.asks.spelling.hooks(), sort) else { return };
+        (hooks.part)(&mut self.asks.spelling, code.id, self.tree.specs.len() as u32 - 1, at, language);
     }
 
     /// The line number, at the row's left however far it is scrolled sideways, over what

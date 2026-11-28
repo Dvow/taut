@@ -67,7 +67,8 @@ Popovers anchored to their button.
   choice); Ctrl+C copies rows as spreadsheet text; Ctrl+V pastes it into editable cells, past
   the last row adding rows where the app lets it (`ui.paste_adds_rows`), values a column
   refuses outlined and handed to the app (`ui.refused_cells`); Ctrl+Z and Ctrl+Y undo and redo
-  edits and pastes (`ui.cell_changes`).
+  edits and pastes (`ui.cell_changes`), an undone paste handing back the rows it added
+  (`ui.removed_rows`).
 - Lists of any length cost only visible rows, including rows of varying height.
 - Striped rows in lists, tables and tree views (`ui.striped_rows`).
 
@@ -78,7 +79,8 @@ Popovers anchored to their button.
 - **Docks:** split, stacked and tabbed; drag tabs to drop markers; float and re-dock; reorder,
   close, maximise; Ctrl+Tab, Ctrl+F6, Ctrl+F4. The layout is a plain value.
 - **Pan and zoom:** own coordinate space; pan by drag, wheel and bars; zoom by Ctrl+wheel, pinch and
-  keys. Only visible content is described, drawn at its zoomed size.
+  keys. Only visible content is described, drawn at its zoomed size; text under 4 units shows
+  as a faint bar per line.
 - **Node graphs:** typed ports, inputs for one wire or several, app parts in nodes, wiring with
   type checks, rubber-band selection, copy and delete, grid snap, frames that carry their nodes,
   bends on wires, undo and redo, raise on pick, panning while dragging at an edge, minimap.
@@ -89,16 +91,19 @@ Popovers anchored to their button.
 
 - **Code box:** syntax colouring from data (`Syntax`: Rust, C, Python, JavaScript, custom),
   multiple cursors, undo, folding; the system's keyboard on Android (no suggestions or capitals;
-  its deletes keep each selection); cost is the visible lines.
+  its deletes keep each selection); comments and strings spell-checked when asked
+  (`ui.check_spelling`); cost is the visible lines.
 - **Inspector:** an app value as name/editor rows; folding sections, editable lists, filter,
   changed marks, reset, undo, several values at once.
 - **Rich text:** styled pieces with links, icons and pictures in one wrapping paragraph.
 - **Markdown:** CommonMark plus GitHub tables, task lists and strikethrough; highlighted code
   that scrolls sideways, app pictures, any nesting depth; Hebrew and Arabic right to left, with
-  list markers and quote bars at the right; selectable, copyable, a context menu, keyboard links
-  with titles (Tab wraps round them; Shift+arrows select from one), heading links scroll; a document to screen readers, tables as tables, the
-  selection told, in cells too; laid out only around what is seen, a far jump (Ctrl+End, a
-  heading link, the scroll bar) included: cost is the visible part.
+  list markers, quote bars and code naming its language at the right (as GitHub has them);
+  selectable, copyable, a context menu, keyboard links with titles (Tab wraps round them;
+  Shift+arrows select from one), heading links scroll; a document to screen readers, tables as
+  tables, the selection told, in cells too, and whole however far past the view (UI Automation,
+  AT-SPI, macOS); laid out only around what is seen, a far jump (Ctrl+End, a heading link, the
+  scroll bar) included: cost is the visible part.
 
 ## Fonts and text
 

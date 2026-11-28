@@ -516,11 +516,12 @@ struct At {
 }
 
 /// A width rows are never wrapped in (a code block's): they start at the left, whichever way
-/// they read, as there is no right edge.
+/// they read, as there is no right edge (a right-to-left code block aligns its rows itself).
 pub(crate) const NO_WRAP: f32 = f32::MAX;
 
 /// Every row's minimum and placement: ascent and descent, row height; left edge, width, and
-/// where narrower rows align.
+/// where narrower rows align; and the direction the text reads (right to left: `Some(true)`)
+/// where its block sets one, else none: its first strong letter decides.
 #[derive(Clone, Copy)]
 pub(crate) struct Room {
     pub above: f32,
@@ -529,6 +530,7 @@ pub(crate) struct Room {
     pub left: f32,
     pub wide: f32,
     pub side: Align,
+    pub direction: Option<bool>,
 }
 
 /// Breaks a paragraph into rows.
@@ -559,7 +561,7 @@ pub(crate) fn lay(laid: &mut Laid, bits: Range<u32>, text: &str, from: u32, room
         x: 0.0,
     });
     let text_end = laid.bits.get(bits.end.wrapping_sub(1) as usize).filter(|_| !bits.is_empty()).map_or(from, |bit| bit.words[1]);
-    let leftward = crate::bidi::leftward(&text[start.byte as usize..text_end.max(start.byte) as usize]);
+    let leftward = room.direction.unwrap_or_else(|| crate::bidi::leftward(&text[start.byte as usize..text_end.max(start.byte) as usize]));
     let mut breaker = Breaker { laid, text, room, scale, start, top, space: None, end: bits.end, leftward };
     for at in bits.clone() {
         let bit = breaker.laid.bits[at as usize];
@@ -1048,7 +1050,7 @@ impl Ui {
         let laid = &mut paragraph.laid;
         (laid.rows, laid.frags, paragraph.width) = (Vec::new(), Vec::new(), width);
         let [above, below] = heights(self.text.as_mut(), t.font, scale, &mut Vec::new());
-        let room = Room { above, below, high: 0.0, left: 0.0, wide: width.max(1.0), side: Align::Start };
+        let room = Room { above, below, high: 0.0, left: 0.0, wide: width.max(1.0), side: Align::Start, direction: None };
         paragraph.high = lay(laid, 0..laid.bits.len() as u32, &paragraph.text, 0, room, 0.0, scale);
     }
 }
@@ -1107,7 +1109,7 @@ mod tests {
             laid.bits.push(Bit::new([start, text.len() as u32], *font, Color::WHITE, Color::NONE, 0, Thing::Words));
         }
         laid.measure(0..laid.bits.len(), &text, &mut BuiltInFont, 1.0, &mut Vec::new());
-        let room = Room { above: 0.0, below: 0.0, high: 0.0, left: 0.0, wide, side: Align::Start };
+        let room = Room { above: 0.0, below: 0.0, high: 0.0, left: 0.0, wide, side: Align::Start, direction: None };
         let count = laid.bits.len() as u32;
         lay(&mut laid, 0..count, &text, 0, room, 0.0, 1.0);
         let frags = |row: &Row| laid.frags[row.frags[0] as usize..row.frags[1] as usize].iter().map(|frag| text[frag.words[0] as usize..frag.words[1] as usize].to_string()).collect();
@@ -1134,7 +1136,7 @@ mod tests {
         laid.bits.push(Bit::new([0, 2], Font::new(8.0), Color::WHITE, Color::NONE, 0, Thing::Words));
         laid.bits.push(Bit::new([2, 5], Font::new(8.0).bold(), Color::WHITE, Color::NONE, 0, Thing::Words));
         laid.measure(0..2, text, &mut BuiltInFont, 1.0, &mut Vec::new());
-        let room = Room { above: 0.0, below: 0.0, high: 0.0, left: 0.0, wide: 100.0, side: Align::Start };
+        let room = Room { above: 0.0, below: 0.0, high: 0.0, left: 0.0, wide: 100.0, side: Align::Start, direction: None };
         lay(&mut laid, 0..2, text, 0, room, 0.0, 1.0);
         // Plain letters are 6 wide, bold 7: "ab" ends at 12, " cd" at 12 + 21.
         assert_eq!([0, 1, 2, 3, 5].map(|at| laid.x_at(text, 0, at)), [0.0, 6.0, 12.0, 19.0, 33.0]);
@@ -1162,7 +1164,7 @@ mod tests {
             laid.bits.push(Bit::new([start, text.len() as u32], font, Color::WHITE, Color::NONE, 0, Thing::Words));
         }
         laid.measure(0..laid.bits.len(), &text, &mut crate::bidi::tests::hebrew(), 1.0, &mut Vec::new());
-        let room = Room { above: 0.0, below: 0.0, high: 0.0, left: 0.0, wide, side: Align::Start };
+        let room = Room { above: 0.0, below: 0.0, high: 0.0, left: 0.0, wide, side: Align::Start, direction: None };
         let count = laid.bits.len() as u32;
         lay(&mut laid, 0..count, &text, 0, room, 0.0, 1.0);
         (text, laid)

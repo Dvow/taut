@@ -3449,6 +3449,48 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_documents_selection_is_told_whole_however_far_past_the_view_it_runs() {
+        let text: String = std::iter::once("# Notes\n\n".to_string()).chain((0..300).map(|n| format!("Paragraph {n} of many.\n\n"))).collect();
+        let doc = crate::Markdown::parse(&text);
+        let mut ui = Ui::new(Box::new(BuiltInFont), Box::new(LocalClipboard::default()));
+        ui.resize(Size { w: 420.0, h: 300.0 }, 1.0);
+        ui.set_screen_reader(true);
+        let mut build = |ui: &mut Ui| {
+            ui.column().grow().scroll().open();
+            ui.markdown(&doc);
+            ui.close();
+        };
+        ui.run(&mut build);
+        ui.run(&mut build);
+        // A click into the document, and all of it selected: most of it out of view, without
+        // nodes.
+        let at = crate::geom::pt(60.0, 40.0);
+        let steps = [
+            crate::Event::Move(at),
+            crate::Event::Press(crate::Button::Left, crate::Mods::NONE),
+            crate::Event::Release(crate::Button::Left),
+            crate::Event::Key(crate::Key::Char('a'), crate::Mods::CTRL),
+        ];
+        for step in steps {
+            ui.event(step);
+            for _ in 0..2 {
+                ui.run(&mut build);
+            }
+        }
+        assert!(!ui.access_nodes().iter().any(|node| node.name == "Paragraph 299 of many."));
+        assert!(ui.access_nodes().iter().any(|node| node.role == Role::Document && node.caret.is_some()), "selected");
+        let (mut readers, mut peer) = told_of(&mut ui);
+        let document = readers.path(Which::Thing(0, readers.frames[0].nodes.iter().position(|node| node.role == Role::Document).unwrap()));
+        let mut ask = |member: &str, kinds: &str, asked: &Pack| peer.ask(&mut readers, &document, TEXT, member, kinds, asked).3;
+        // (All of it, as the document holds its text: blocks a line apart.)
+        let all = doc.writing.words.trim_end_matches('\n').chars().count() as i32;
+        assert_eq!(numbers_in(&ask("GetNSelections", "", &Pack::default()), 1), [1]);
+        assert_eq!(numbers_in(&ask("GetSelection", "i", Pack::default().i32(0)), 2), [0, all]);
+        let last = body(&ask("GetText", "ii", Pack::default().i32(all - 22).i32(all))).text().unwrap().to_string();
+        assert_eq!(last, "Paragraph 299 of many.", "the selected text out of view is read");
+    }
+
+    #[test]
     fn what_is_out_of_view_and_the_words_spelt_wrong_are_told() {
         let mut app = App { name: "the quikc fox".into(), checked: true, lines: 40, ..Default::default() };
         let mut ui = window(&mut app);

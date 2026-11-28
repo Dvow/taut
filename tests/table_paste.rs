@@ -2,6 +2,7 @@
 mod common;
 
 use common::*;
+use taut::testing::Trial;
 use taut::{Align, CellEditor, CellValue, Column, Key, Mods, RefusedCell, Role, Table, Ui};
 
 const KINDS: [&str; 3] = ["text", "picture", "sound"];
@@ -19,8 +20,9 @@ struct Sheet {
     names: Vec<String>,
     sizes: Vec<f64>,
     kinds: Vec<usize>,
-    /// How many changes the app heard, in how many runs.
+    /// How many changes the app heard, in how many runs; and the rows it was told to remove.
     heard: Vec<usize>,
+    removed: Vec<[usize; 2]>,
     /// It lets pastes add rows; and the values its columns refused, as it heard them.
     adds_rows: bool,
     refused: Vec<RefusedCell>,
@@ -59,6 +61,13 @@ fn sheet(app: &mut Sheet, ui: &mut Ui) {
         ui.paste_adds_rows(&table);
     }
     let changes = ui.cell_changes(&table, &COLUMNS, |row, column| app.text(row, column));
+    let removed = ui.removed_rows(&table);
+    if !removed.is_empty() {
+        app.removed.push([removed.start, removed.end]);
+    }
+    app.names.drain(removed.clone());
+    app.sizes.drain(removed.clone());
+    app.kinds.drain(removed);
     app.refused.extend(ui.refused_cells(&table));
     if !changes.is_empty() {
         app.heard.push(changes.len());
@@ -143,9 +152,37 @@ fn a_paste_past_the_last_row_adds_rows_where_the_app_lets_it() {
     assert_eq!(app.names, ["file 0", "file 1", "two", "three", "four"]);
     assert_eq!(app.sizes[2..], [2.0, 3.0, 4.0]);
     assert_eq!(app.heard, [6], "one run, every cell");
-    // Undone, the row that was there is put back; the rows it added are the app's.
+    // Undone, the row that was there is put back and the rows it added are removed, at once.
     key(&mut ui, Key::Char('z'), Mods::CTRL, |ui| sheet(&mut app, ui));
-    assert_eq!((app.names[2].as_str(), app.sizes[2], app.names.len()), ("file 2", 2.0, 5));
+    assert_eq!((app.names.as_slice(), app.sizes.as_slice()), (&["file 0", "file 1", "file 2"].map(String::from)[..], &[0.0, 1.0, 2.0][..]));
+    assert_eq!(app.removed, [[3, 5]], "told once");
+    // Redone, they come back; undone again, they go again.
+    key(&mut ui, Key::Char('y'), Mods::CTRL, |ui| sheet(&mut app, ui));
+    assert_eq!((app.names.as_slice(), &app.sizes[2..]), (&["file 0", "file 1", "two", "three", "four"].map(String::from)[..], &[2.0, 3.0, 4.0][..]));
+    key(&mut ui, Key::Char('z'), Mods::CTRL, |ui| sheet(&mut app, ui));
+    assert_eq!((app.names.len(), app.removed.as_slice()), (3, &[[3, 5], [3, 5]][..]));
+}
+
+#[test]
+fn undoing_an_edit_after_a_paste_that_added_rows_removes_none() {
+    let (mut app, mut ui) = (Sheet { adds_rows: true, ..Sheet::of(2) }, window(1.0));
+    settle(&mut ui, |ui| sheet(&mut app, ui));
+    onto(&mut ui, &mut app, [1, 0]);
+    ui.copy("one\nmore\n");
+    key(&mut ui, Key::Char('v'), Mods::CTRL, |ui| sheet(&mut app, ui));
+    assert_eq!(app.names, ["file 0", "one", "more"]);
+    // An edit in place of a cell the paste added: undone, its cell goes back; no row goes.
+    app.table.focused_cell = Some([2, 0]);
+    settle(&mut ui, |ui| sheet(&mut app, ui));
+    key(&mut ui, Key::F(2), Mods::NONE, |ui| sheet(&mut app, ui));
+    typed(&mut ui, "x", |ui| sheet(&mut app, ui));
+    key(&mut ui, Key::Enter, Mods::NONE, |ui| sheet(&mut app, ui));
+    assert_eq!(app.names[2], "x");
+    key(&mut ui, Key::Char('z'), Mods::CTRL, |ui| sheet(&mut app, ui));
+    assert_eq!((app.names.as_slice(), app.removed.len()), (&["file 0", "one", "more"].map(String::from)[..], 0));
+    // Then the paste: its row goes.
+    key(&mut ui, Key::Char('z'), Mods::CTRL, |ui| sheet(&mut app, ui));
+    assert_eq!((app.names.as_slice(), app.removed.as_slice()), (&["file 0", "file 1"].map(String::from)[..], &[[2, 3]][..]));
 }
 
 #[test]
@@ -193,4 +230,22 @@ fn values_a_column_refuses_are_heard_and_their_cells_outlined_until_the_table_ch
     key(&mut ui, Key::Enter, Mods::NONE, |ui| sheet(&mut app, ui));
     settle(&mut ui, |ui| sheet(&mut app, ui));
     assert_eq!(pixels_in(&ui, size, red), 0);
+}
+
+#[test]
+fn an_undone_paste_takes_its_rows_out_in_one_run_and_redraws_them_away() {
+    let mut trial = Trial::new(Sheet { adds_rows: true, ..Sheet::of(2) }, sheet);
+    for _ in 0..5 {
+        trial.key("Tab");
+    }
+    trial.app.table.focused_cell = Some([1, 0]);
+    trial.run();
+    trial.ui.copy("one\nmore\nlast\n");
+    trial.key("Ctrl+V");
+    assert!(trial.has(Role::Cell, "last"));
+    trial.key("Ctrl+Z");
+    assert_eq!(trial.app.names, ["file 0", "file 1"]);
+    assert!(!trial.has(Role::Cell, "more") && !trial.has(Role::Cell, "last"), "the rows went at once");
+    trial.key("Ctrl+Y");
+    assert!(trial.has(Role::Cell, "last"));
 }

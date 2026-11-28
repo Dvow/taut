@@ -14,10 +14,60 @@ use crate::visible_boxes::{Fade, VisibleBox};
 use std::any::Any;
 use std::collections::HashMap;
 
+/// The smallest text drawn as letters, in units, once a pan-zoom view is described. Smaller text
+/// (a view zoomed far out) shows each line as a faint bar where its letters would be (see
+/// `stand_in`): letters that small can't be read, and the bar costs a rectangle.
+const LEGIBLE: f32 = 4.0;
+
 /// An icon rasterized once at one size: each pixel's coverage.
 pub(crate) struct Mask {
     pub(crate) width: usize,
     pub(crate) cover: Vec<u8>,
+}
+
+/// Draws text box `at` (`inside`: the box less its padding), too small to read (see `LEGIBLE`):
+/// each line where `words` would put it, as a faint bar in its colour, as long as the line and
+/// as thick as its letters' middle (half their size), in the line's middle; cut to `inside`, on
+/// whole pixels.
+pub(crate) fn stand_in(tree: &Tree, at: u32, inside: Rect, canvas: &mut Canvas) {
+    let (scale, spec, place) = (canvas.scale(), &tree.specs[at as usize], &tree.places[at as usize]);
+    let Content::Text { start, end, font, color, wrap, side } = spec.content else { return };
+    let pixel = |units: f32| (units * scale).round() / scale;
+    let whole = [single_line(tree, at, scale)];
+    let lines = if wrap { &tree.lines[place.lines.0 as usize..place.lines.1 as usize] } else { &whole[..] };
+    let (own, first, top) = (&tree.strings[start as usize..end as usize], start as usize, first_line_top(tree, at, inside));
+    for (i, line) in lines.iter().enumerate() {
+        let leftward = Paragraph::of(own, line.start - first..line.end - first).right_to_left;
+        let (x, y) = (line_start(inside, line.width, side, leftward), top + i as f32 * place.line_height);
+        let (high, low) = (y.max(inside.y), (y + place.line_height).min(inside.bottom()));
+        let thick = pixel(font.size * 0.5).max(1.0 / scale).min(((low - high) * scale).floor() / scale);
+        let (left, right) = (pixel(x.max(inside.x)), pixel((x + line.width).min(inside.right())));
+        canvas.rect(rect(left, pixel((high + low - thick) / 2.0), (right - left).max(0.0), thick.max(0.0)), color.with_alpha(0.45));
+    }
+}
+
+/// Text box `at`'s one line, where it does not wrap. (Its real width matters only where it does
+/// not start at the start.)
+fn single_line(tree: &Tree, at: u32, scale: f32) -> Line {
+    let (spec, place) = (&tree.specs[at as usize], &tree.places[at as usize]);
+    let Content::Text { start, end, side, .. } = spec.content else { return Line { start: 0, end: 0, width: 0.0 } };
+    let asked = place.fit[0] - spec.frame.pad.horizontal();
+    let wide = if side == Align::Start { asked } else { tree.text_width(at, scale).unwrap_or(asked) };
+    Line { start: start as usize, end: end as usize, width: wide }
+}
+
+/// Where text box `at`'s first line starts down from the top of `inside`: one line is centred in
+/// its box's height; wrapped lines start at the top.
+fn first_line_top(tree: &Tree, at: u32, inside: Rect) -> f32 {
+    let wrap = matches!(tree.specs[at as usize].content, Content::Text { wrap: true, .. });
+    inside.y + if wrap { 0.0 } else { ((inside.h - tree.places[at as usize].line_height) / 2.0).max(0.0) }
+}
+
+/// Where a line `width` wide starts across `inside`: what room it leaves goes before it as its
+/// box's `side` says, from the right for a line reading right to left.
+fn line_start(inside: Rect, width: f32, side: Align, leftward: bool) -> f32 {
+    let before = [0.0, 0.5, 1.0, 0.0][side as usize];
+    inside.x + ((inside.w - width).max(0.0) * if leftward { 1.0 - before } else { before }).round()
 }
 
 /// Fills every other line of box `at`'s content (the second, fourth and so on) in `color`, the
@@ -109,6 +159,9 @@ pub(crate) struct Shows {
     pub fade: Option<&'static Fades>,
     /// Fills every other line of a box's content, as `stripes` does.
     pub stripes: Option<ShowsStripes>,
+    /// Draws a text box too small to read as bars, as `stand_in` does: set by a pan-zoom view,
+    /// where text shrinks that far.
+    pub stand_in: Option<fn(&Tree, u32, Rect, &mut Canvas)>,
 }
 /// Fills every other line of a box's content: the tree, the box, its place, the colour.
 type ShowsStripes = fn(&Tree, u32, Rect, Color, &mut Canvas);
@@ -446,7 +499,11 @@ impl Painter<'_> {
         match spec.content {
             Content::None | Content::Gradient { .. } => {}
             Content::Stripes { color, .. } => self.shows.stripes.map_or((), |stripes| stripes(self.tree, at, r, color, canvas)),
-            Content::Text { .. } => self.words(at, inside, canvas),
+            // (Text too small to read, where a pan-zoom view shrinks it, shows as bars.)
+            Content::Text { font, .. } => match self.shows.stand_in {
+                Some(stand_in) if font.size < LEGIBLE => stand_in(self.tree, at, inside, canvas),
+                _ => self.words(at, inside, canvas),
+            },
             // A picture the app let go draws nothing.
             Content::Picture { picture, keep } => {
                 let to = self.pictures.get(picture).map_or(inside, |stored| fit_aspect(inside, [stored.width as f32, (stored.pixels.len() / stored.width.max(1)) as f32], keep));
@@ -506,19 +563,13 @@ impl Painter<'_> {
         let (tree, scale, visible) = (self.tree, canvas.scale(), canvas.visible());
         let (spec, place) = (&tree.specs[at as usize], &tree.places[at as usize]);
         let Content::Text { start, end, font, color, wrap, side } = spec.content else { return };
-        // Text that does not wrap is one line. (Its real width matters only where it does not
-        // start at the start.)
-        let asked = place.fit[0] - spec.frame.pad.horizontal();
-        let wide = if side == Align::Start { asked } else { tree.text_width(at, scale).unwrap_or(asked) };
-        let whole = [Line { start: start as usize, end: end as usize, width: wide }];
+        // Text that does not wrap is one line.
+        let whole = [single_line(tree, at, scale)];
         let lines = if wrap { &tree.lines[place.lines.0 as usize..place.lines.1 as usize] } else { &whole[..] };
-        // How much of the room a line leaves goes before it.
-        let before = [0.0, 0.5, 1.0, 0.0][side as usize];
         // The selection (from, to) and the cursor, as byte offsets in the run's text.
         let marked = spec.select.map(|[a, b]| (start as usize + a.min(b) as usize, start as usize + a.max(b) as usize, start as usize + b as usize));
         let cursor_line = marked.and_then(|(.., at)| lines.iter().rposition(|l| l.start <= at));
-        // One line is centred in its box's height; wrapped lines start at the top.
-        let top = inside.y + if wrap { 0.0 } else { ((inside.h - place.line_height) / 2.0).max(0.0) };
+        let top = first_line_top(tree, at, inside);
         // One line too long for a clipping box is cut and ends in "…".
         let cut = if wrap || marked.is_some() || !spec.frame.clip { None } else { self.cut(at, inside.w, scale) };
         for (i, line) in lines.iter().enumerate() {
@@ -531,7 +582,7 @@ impl Painter<'_> {
             let (own, first) = (&tree.strings[start as usize..end as usize], start as usize);
             let paragraph = Paragraph::of(own, line.start - first..line.end - first);
             let leftward = paragraph.right_to_left;
-            let x = inside.x + ((inside.w - line.width).max(0.0) * if leftward { 1.0 - before } else { before }).round();
+            let x = line_start(inside, line.width, side, leftward);
             // The line's selected part (several pieces where it runs both ways), and where the
             // cursor shows on it.
             let (mut selected, text) = (Vec::new(), &tree.strings[line.start..line.end]);

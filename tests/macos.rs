@@ -1248,6 +1248,53 @@ mod mac {
         })
     }
 
+    /// A client reads a long document's selection: all of it selected by the keys, most of it
+    /// out of view, read whole from the document.
+    fn a_reader_reads_a_documents_selection_however_far_past_the_view_it_runs() -> Vec<String> {
+        const COMMAND: usize = 1 << 20;
+        let text: String = (0..100).map(|n| format!("Paragraph {n} of many.\n\n")).collect();
+        let doc = taut::Markdown::parse(&text);
+        let window = Window { title: "Long document", width: 360.0, height: 200.0, ..Default::default() };
+        check(window, move |steps, ui| {
+            ui.column().grow().scroll().open();
+            ui.markdown(&doc);
+            ui.close();
+            let Some(window) = window_titled("Long document") else { return };
+            match steps.step {
+                0 if steps.waited(300) => {
+                    if unsafe { AXIsProcessTrusted() } == 0 {
+                        println!("    the system does not trust this program to read others: not read");
+                        steps.done = true;
+                        return;
+                    }
+                    send::<()>(window, c"makeKeyAndOrderFront:", (std::ptr::null_mut::<c_void>(),));
+                    send::<()>(app(), c"activateIgnoringOtherApps:", (1u8,));
+                    steps.next();
+                }
+                1 if steps.waited(300) => {
+                    for (code, typed, flags) in [(0x30, "\t", 0), (0x00, "a", COMMAND)] {
+                        post_key(window, code, typed, flags, 10);
+                        post_key(window, code, typed, flags, 11);
+                    }
+                    steps.next();
+                }
+                2 if steps.waited(500) => {
+                    let program = unsafe { AXUIElementCreateApplication(std::process::id() as i32) };
+                    let windows = ask(program, "AXWindows").map(items).unwrap_or_default();
+                    let mut found = Vec::new();
+                    let ours = windows.into_iter().find(|one| ask(*one, "AXTitle").and_then(text_of).as_deref() == Some("Long document"));
+                    ours.into_iter().for_each(|one| all_under(one, 0, &mut found));
+                    let groups = found.iter().filter(|(_, role, _)| role == "AXGroup").map(|(group, ..)| *group);
+                    let read: Vec<String> = groups.filter_map(|group| ask(group, "AXSelectedText").and_then(text_of)).collect();
+                    let whole = read.iter().any(|said| said.starts_with("Paragraph 0 of many.") && said.ends_with("Paragraph 99 of many."));
+                    steps.check(whole, || format!("the document read {:?}", read.iter().map(|said| said.len()).collect::<Vec<_>>()));
+                    steps.done = true;
+                }
+                _ => {}
+            }
+        })
+    }
+
     thread_local! {
         /// What a reader asking for a long table's row out of view was given: the row its cell
         /// says it is in, or what went wrong.
@@ -1717,7 +1764,7 @@ mod mac {
     pub fn main() {
         unsafe { objc_setExceptionPreprocessor(thrown) };
         type Check = fn() -> Vec<String>;
-        let checks: [(&str, Check); 20] = [
+        let checks: [(&str, Check); 21] = [
             ("a window shows what the library draws, and a click redraws it", a_window_shows_what_the_library_draws_and_a_click_redraws_it),
             ("metal shows on the screen what the CPU shows", metal_shows_on_the_screen_what_the_cpu_shows),
             ("keys and an input method's text reach the focused box", keys_and_an_input_methods_text_reach_the_focused_box),
@@ -1733,6 +1780,7 @@ mod mac {
             ("a reader reads the window and presses its button", a_reader_reads_the_window_and_presses_its_button),
             ("a reader reads text by ranges, and tables and trees by rows", a_reader_reads_text_by_ranges_and_tables_and_trees_by_rows),
             ("a reader reads the part of a document's selection in a cell", a_reader_reads_the_part_of_a_documents_selection_in_a_cell),
+            ("a reader reads a document's selection however far past the view it runs", a_reader_reads_a_documents_selection_however_far_past_the_view_it_runs),
             ("a long table's cell out of view comes on the first ask", a_long_tables_cell_out_of_view_comes_on_the_first_ask),
             ("the tray icon is a status item with a menu", the_tray_icon_is_a_status_item_with_a_menu),
             ("a notification from an app bundle reaches the system", a_notification_from_an_app_bundle_reaches_the_system),

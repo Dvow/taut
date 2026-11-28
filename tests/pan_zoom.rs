@@ -3,6 +3,7 @@
 mod common;
 use common::*;
 use taut::geom::{pt, rect};
+use taut::testing::Trial;
 use taut::{Button, Event, Key, Mods, PanZoom, Rect, Response, Ui};
 
 /// A view that fills the window, with three things on it: two labelled boxes in view and
@@ -140,4 +141,55 @@ fn a_view_is_written_as_three_numbers_and_read_back() {
     assert_eq!(view.to_string(), "-12.5 300 0.75");
     assert_eq!("-12.5 300 0.75".parse::<PanZoom>(), Ok(view));
     assert!("1 2".parse::<PanZoom>().is_err() && "1 2 0".parse::<PanZoom>().is_err() && "1 2 NaN".parse::<PanZoom>().is_err());
+}
+
+/// A board of labels: a box of text in a panel, and a long label wrapped in two lines.
+fn labels(view: &mut PanZoom, ui: &mut Ui) {
+    let t = ui.theme;
+    ui.pan_zoom(view, "Labels", 0.05..=8.0);
+    for (n, at) in [rect(20.0, 20.0, 300.0, 60.0), rect(20.0, 120.0, 300.0, 200.0)].into_iter().enumerate() {
+        if ui.in_view(at) {
+            ui.el().key(n).offset(at.x, at.y).size(at.w, at.h).fill(t.panel).open();
+            let words = if n == 0 { "A label to read" } else { "A longer label that wraps onto a second line here" };
+            ui.el().text(words, t.font, t.text).w(taut::Length::Grow(1.0)).wrap().show();
+            ui.close();
+        }
+    }
+    ui.close();
+}
+
+/// The pixels of `color` in window area `area`.
+fn inked(trial: &Trial<PanZoom>, area: Rect, color: taut::Color) -> Vec<(usize, usize)> {
+    let width = trial.screen.width;
+    let (xs, ys) = (area.x as usize..area.right() as usize, area.y as usize..area.bottom() as usize);
+    ys.flat_map(|y| xs.clone().map(move |x| (x, y))).filter(|(x, y)| trial.screen.pixels[y * width + x] & 0x00ff_ffff == color.0 & 0x00ff_ffff).collect()
+}
+
+#[test]
+fn text_too_small_to_read_shows_as_a_bar_on_each_of_its_lines() {
+    let mut trial = Trial::new(PanZoom { x: 0.0, y: 0.0, zoom: 0.2 }, labels);
+    let (panel, text) = (trial.ui.theme.panel, trial.ui.theme.text);
+    // At a fifth, the text is under 4 units: each line is one bar, of neither the panel's colour
+    // nor the text's (the text's, faint), inside its box.
+    let first = rect(4.0, 4.0, 60.0, 12.0);
+    let barred = |trial: &Trial<PanZoom>, area: Rect| {
+        let width = trial.screen.width;
+        let rows: Vec<usize> = (area.y as usize..area.bottom() as usize)
+            .filter(|y| (area.x as usize..area.right() as usize).any(|x| ![panel.0, text.0].contains(&(trial.screen.pixels[y * width + x] | 0xff00_0000))))
+            .collect();
+        rows
+    };
+    let rows = barred(&trial, first);
+    assert!(!rows.is_empty() && rows.len() <= 3, "one thin bar: {rows:?}");
+    assert!(inked(&trial, first, text).is_empty(), "no letters");
+    // The wrapped label: two bars, one a line below the other.
+    let rows = barred(&trial, rect(4.0, 24.0, 60.0, 40.0));
+    assert!(rows.windows(2).any(|pair| pair[1] > pair[0] + 1), "two bars: {rows:?}");
+    // Nearer, letters again; and back (Trial checks each redraw against a full one).
+    trial.app.zoom = 1.0;
+    trial.run();
+    assert!(!inked(&trial, rect(20.0, 20.0, 300.0, 60.0), text).is_empty());
+    trial.app.zoom = 0.2;
+    trial.run();
+    assert!(inked(&trial, first, text).is_empty());
 }

@@ -6,6 +6,7 @@
 //! for change in ui.cell_changes(&table, &COLUMNS, |row, column| app.text(row, column)) {
 //!     app.put(change.row, change.column, change.value); // edits, pastes, undo and redo
 //! }
+//! app.rows.drain(ui.removed_rows(&table)); // rows a paste added, taken out by its undo
 //! for refused in ui.refused_cells(&table) {
 //!     app.warn(refused.row, refused.column, &refused.text); // values a column can't take
 //! }
@@ -19,8 +20,8 @@
 //! are left as they are; cells past the last row too, unless the app lets pastes add rows. A
 //! value a column refuses leaves its cell as it is: the app hears it, and the cell is outlined in
 //! red until the table next changes. Ctrl+Z undoes the last edit or paste, Ctrl+Y or
-//! Ctrl+Shift+Z redoes it; 100 steps a table. (Undoing a paste puts back the rows that were
-//! there; rows it added are the app's to remove.)
+//! Ctrl+Shift+Z redoes it; 100 steps a table. Undoing a paste puts back the rows that were there
+//! and hands the app the rows it added to remove; redoing it adds them again.
 //!
 //! A program that never asks for [`cell_changes`](Ui::cell_changes) carries none of this: the
 //! first call hands the keys over (as `paint::Shows` does for drawings). What is kept is the
@@ -31,6 +32,7 @@ use crate::id::Id;
 use crate::table::Column;
 use crate::ui::{Response, Ui};
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 
 /// The most steps a table keeps to undo.
 const STEPS: usize = 100;
@@ -85,8 +87,22 @@ enum Made {
     Again,
 }
 
-/// One undoable step: each cell's new value and the value before.
-type Step = Vec<(EditedCell, CellValue)>;
+/// One undoable step: each cell's new value and the value before; and the rows a paste added
+/// (from the first to one past the last), with the cells it put in them.
+struct Step {
+    changed: Vec<(EditedCell, CellValue)>,
+    added: Vec<EditedCell>,
+    rows: Range<usize>,
+}
+
+/// Changes waiting for their table's app: the cells, the rows to remove, and where they came
+/// from.
+struct Pending {
+    table: Of,
+    cells: Vec<EditedCell>,
+    removed: Range<usize>,
+    made: Made,
+}
 
 /// A paste waiting for its table's app: how many rows the table had, the cells it fills, and
 /// the values its columns refused.
@@ -97,12 +113,14 @@ struct Paste {
     refused: Vec<RefusedCell>,
 }
 
-/// What is kept: changes not yet handed to the app, each table's steps done and undone, the
-/// tables whose app lets pastes add rows, and the cells each table's last paste refused (handed
-/// to the app once, outlined until the table next changes).
+/// What is kept: changes not yet handed to the app, and rows an undo took out (handed once);
+/// each table's steps done and undone, the tables whose app lets pastes add rows, and the cells
+/// each table's last paste refused (handed to the app once, outlined until the table next
+/// changes).
 #[derive(Default)]
 struct Kept {
-    pending: Option<(Of, Vec<EditedCell>, Made)>,
+    pending: Option<Pending>,
+    removed: Option<(Of, Range<usize>)>,
     paste: Option<Paste>,
     tables: Vec<(Of, Vec<Step>, Vec<Step>)>,
     adding: Vec<Of>,
@@ -127,14 +145,18 @@ impl Kept {
         done.push(step);
         undone.clear();
     }
-    /// Undoes (or redoes) table `table`'s last step: its changes wait for the app.
+    /// Undoes (or redoes) table `table`'s last step: its changes wait for the app. Undone, a
+    /// paste's added rows go; redone, they come again.
     fn again(&mut self, table: Of, undo: bool) {
         let (_, done, undone) = self.steps(table);
         let (from, to) = if undo { (done, undone) } else { (undone, done) };
         let Some(step) = from.pop() else { return };
-        let changes = step.iter().map(|(new, old)| if undo { EditedCell { value: old.clone(), ..new.clone() } } else { new.clone() }).collect();
+        let (cells, removed) = match undo {
+            true => (step.changed.iter().map(|(new, old)| EditedCell { value: old.clone(), ..new.clone() }).collect(), step.rows.clone()),
+            false => (step.changed.iter().map(|(new, _)| new.clone()).chain(step.added.iter().cloned()).collect(), 0..0),
+        };
         to.push(step);
-        self.pending = Some((table, changes, Made::Again));
+        self.pending = Some(Pending { table, cells, removed, made: Made::Again });
     }
     /// The cells a paste fills, for its table's app: past the table's last row only where the
     /// app lets pastes add rows. What its columns refused there is kept for the app, and
@@ -193,9 +215,12 @@ impl Ui {
     pub fn cell_changes(&mut self, of: &Response, columns: &[Column], text: impl Fn(usize, usize) -> String) -> Vec<EditedCell> {
         KEYS.set(Some((Ui::paste_and_undo_keys, Ui::is_refused)));
         let (edited, locale, table) = (self.edited_cell(of), self.locale_in_use(), (std::ptr::from_ref(self) as usize, of.id));
-        let (pending, paste) = with_kept(|kept| (kept.pending.take_if(|(of, ..)| *of == table), kept.paste.take_if(|paste| paste.table == table)));
-        let (mut changes, made) = pending.map_or((Vec::new(), Made::New), |(_, pending, made)| (pending, made));
-        // (A paste's added rows had no text before it: they are not undone.)
+        let (pending, paste) = with_kept(|kept| (kept.pending.take_if(|pending| pending.table == table), kept.paste.take_if(|paste| paste.table == table)));
+        // (Rows an undo took out are handed in this run only.)
+        let removed = pending.as_ref().map(|pending| pending.removed.clone()).filter(|rows| !rows.is_empty());
+        with_kept(|kept| kept.removed = removed.map(|rows| (table, rows)).or(kept.removed.take().filter(|(of, _)| *of != table)));
+        let (mut changes, made) = pending.map_or((Vec::new(), Made::New), |pending| (pending.cells, pending.made));
+        // (A paste's added rows had no text before it: undone, they are removed.)
         let rows = paste.as_ref().map_or(usize::MAX, |paste| paste.rows);
         match paste {
             Some(paste) => changes.extend(with_kept(|kept| kept.hand_out(paste))),
@@ -207,9 +232,21 @@ impl Ui {
             return changes;
         }
         let before = |change: &EditedCell| value_of(columns.get(change.column).map_or(CellEditor::Text, |column| column.editor), &text(change.row, change.column), locale);
-        let step: Step = changes.iter().filter(|change| change.row < rows).filter_map(|change| Some((change.clone(), before(change)?))).collect();
+        let (old, added): (Vec<&EditedCell>, Vec<&EditedCell>) = changes.iter().partition(|change| change.row < rows);
+        let changed = old.into_iter().filter_map(|change| Some((change.clone(), before(change)?))).collect();
+        let last = added.iter().map(|change| change.row + 1).max().unwrap_or(rows);
+        let step = Step { changed, added: added.into_iter().cloned().collect(), rows: rows..last };
         with_kept(|kept| kept.record(table, step));
         changes
+    }
+
+    /// The rows an undo took out of table `of`: those its paste added, from the first to one
+    /// past the last, for the app to remove (empty for none). Handed once, in the run the
+    /// undo's changes come in: ask after [`cell_changes`](Ui::cell_changes). Redone, the paste
+    /// adds them again.
+    pub fn removed_rows(&mut self, of: &Response) -> Range<usize> {
+        let table = (std::ptr::from_ref(self) as usize, of.id);
+        with_kept(|kept| kept.removed.take_if(|(of, _)| *of == table)).map_or(0..0, |(_, rows)| rows)
     }
 
     /// Lets a paste into table `of` run past its last row, from now on: the cells of the rows

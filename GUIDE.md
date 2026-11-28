@@ -531,7 +531,8 @@ fn larger_parts(state: &mut State, ui: &mut Ui) {
     // Escape cancels; the app applies the change. Ctrl+C copies the rows the app supplies;
     // Ctrl+V pastes spreadsheet text into editable cells (`ui.paste_adds_rows(&table)`: past the
     // last row, adding rows; `ui.refused_cells(&table)`: values a column refused, outlined in
-    // red); Ctrl+Z and Ctrl+Y undo and redo.
+    // red); Ctrl+Z and Ctrl+Y undo and redo (`ui.removed_rows(&table)`: the rows an undone paste
+    // had added, for the app to remove).
     ui.striped_rows(ui.theme.panel);
     let table = ui.table(&mut state.table, &COLUMNS);
     if table.changed {
@@ -908,7 +909,7 @@ Reopen the window there with `Window { .. }.with_placement(saved.window)` ("Wher
 | Drag and drop | `ui.drag_source(&from, what)` · `ui.drag_payload()` · `ui.dropped(&on)` · from other programs: `ui.files_hovered()`, `ui.files_dropped(&on)`, `ui.text_hovered()`, `ui.text_dropped(&on)` · out: `ui.drag_out(&from, DragData::Files(&paths))` (`Text`, `Picture`, `Link`) every run → `Some(DropEffect::Copied)` or `Some(DropEffect::Moved)` |
 | Overlays | `ui.open_popup(id, rect)` · `ui.popup(id)` · `ui.menu(id)` · `ui.close_popup()` · `ui.dialog_max_width(width)` · `ui.notice("Saved")` (4 s), `ui.notice_for(text, time)` · `ui.notices(Align::End, Align::End)`: a corner column for custom notices · `ui.pin(Align::Start, Align::End)`: pin the next box to a window edge |
 | Focus | `ui.focus()` · `ui.set_focus(id)` · `ui.select_all()` after it · `ui.move_focus(forward)` · `ui.focus_visible()`: focus came by keyboard |
-| Text boxes | Context menu: cut, copy, paste, select all (`ui.edit_words` translates) · `ui.check_spelling(None)` (or `Some("de-DE")`, `Some("en-US,de-DE")`) before a box: misspellings and words written twice · `ui.enter_submits()`: Enter is the app's, Shift+Enter a new line · `ui.text_page(&mut text, hint)` fills its room · `ui.text_command(id, TextCommand::Undo)` (`Redo`, `Cut`, `Copy`, `Paste`, `SelectAll`) for Edit menus · `ui.text_edit_state(id)`: cursor, selection, undo state (`TextEditState::line_column(text)`) · `ui.select_text(id, [from, to])` |
+| Text boxes | Context menu: cut, copy, paste, select all (`ui.edit_words` translates) · `ui.check_spelling(None)` (or `Some("de-DE")`, `Some("en-US,de-DE")`) before a box: misspellings and words written twice (before a code box: in its comments and strings) · `ui.enter_submits()`: Enter is the app's, Shift+Enter a new line · `ui.text_page(&mut text, hint)` fills its room · `ui.text_command(id, TextCommand::Undo)` (`Redo`, `Cut`, `Copy`, `Paste`, `SelectAll`) for Edit menus · `ui.text_edit_state(id)`: cursor, selection, undo state (`TextEditState::line_column(text)`) · `ui.select_text(id, [from, to])` |
 | Ids | `ui.next_id()` · `ui.id(key)` |
 | Motion and time | `ui.animate(id, target, duration)` · `ui.wake_after(duration)` · `ui.rerun()` |
 | Where a window is | `ui.window_placement()` (save on close) · `Window { .. }.with_placement(saved)` restores it · `SecondWindow::new(420.0, 300.0).position(x, y).min_size(200.0, 120.0)` · `ui.screens()`, `ui.screen()`, `Window { screen: Some(1), .. }`, `.on_screen(1)`: "Screens, kinds of second window, and closing" |

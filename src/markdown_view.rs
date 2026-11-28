@@ -16,21 +16,48 @@
 //!
 //! Nesting has no limit here: containers are walked with stacks of their own, not by calling
 //! back in, and indents stop where they would leave the text too narrow.
-use crate::accessibility::Role;
+use crate::accessibility::{AccessNode, Letters, Role};
 use crate::code_editor::Syntax;
 use crate::color::Color;
 use crate::event::{Cursor, Key, Mods};
 use crate::geom::{Point, Rect, pt, rect};
-use crate::id::{Id, hash};
+use crate::id::{Id, fold, hash};
 use crate::layout::{Align, Flow, Length};
 use crate::markdown::Markdown;
-use crate::rich_text::{Bit, Kind, Laid, Links, NO_WRAP, Room, Shape, THING, Target, TextStyle, Thing, Writing, face_of, heights, lay, row_of};
+use crate::rich_text::{Bit, Kind, Laid, Links, NO_WRAP, Room, Shape, THING, Target, TextStyle, Thing, Writing, Writings, face_of, heights, lay, row_of};
 use crate::slots::Slots;
 use crate::text::{Decoration, Face, Font, TextSystem};
 use crate::text_edit::{step, word, word_edge};
 use crate::theme::Theme;
 use crate::ui::{LINE, Measure, Response, Stored, Stroke, Ui};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+/// Whether readers here read a document by all its text, with its selection however far it
+/// runs (UI Automation, AT-SPI, macOS). Phone readers and the web read each block's own.
+pub(crate) const WHOLE_TOLD: bool = cfg!(not(any(target_os = "android", target_os = "ios", target_family = "wasm")));
+/// What gives documents' nodes their whole text (see `WHOLE_TOLD`), as nodes are built: set as
+/// the first document is told, so a program with none carries no code for it.
+pub(crate) static WHOLE: OnceLock<fn(&Writings, &mut [AccessNode])> = OnceLock::new();
+
+/// Gives each document's node its whole text and its lines, kept once for its parse and shared
+/// (see `WHOLE`). They go along with the node as it moves (`accessibility::follow_letters`).
+fn tell_whole(writings: &Writings, nodes: &mut [AccessNode]) {
+    let Some(kept) = writings.kept.as_ref().and_then(|kept| kept.downcast_ref::<crate::rich_text::Kept>()) else { return };
+    for node in nodes.iter_mut().filter(|node| node.role == Role::Document) {
+        let told = kept.documents.get(&node.id).and_then(|shown| shown.told.clone());
+        (node.letters, node.text_box, node.text_rect) = (told, node.at, node.rect);
+    }
+}
+
+/// A document's text as its node tells it whole: all of it, and where its lines start (after
+/// each line break), in characters.
+fn whole_letters(doc: &Markdown) -> Letters {
+    let text = doc.writing.words.clone();
+    let breaks = text.chars().enumerate().filter(|(_, letter)| *letter == '\n').map(|(at, _)| at as u32 + 1);
+    let lines = std::iter::once(0).chain(breaks).collect();
+    Letters { key: doc.serial, lines, places: Vec::new(), text }
+}
 
 /// How often the view scrolls while a selection is dragged past its edge.
 const TICK: Duration = Duration::from_millis(16);
@@ -81,6 +108,11 @@ pub(crate) struct Shown {
     picked: [u32; 2],
     clicks: u8,
     grabbed: [u32; 2],
+    /// Its text as told to readers that read a document whole (see `WHOLE_TOLD`), once one
+    /// listens; and where each end of the selection was last counted in characters (a byte and
+    /// the characters before it), to count on from there.
+    told: Option<Arc<Letters>>,
+    counted: [[u32; 2]; 2],
     /// The link with keyboard focus and its box, and the link its context menu is for (0 for
     /// none).
     focused: u32,
@@ -99,7 +131,7 @@ pub(crate) struct Shown {
 /// item: its first row's baseline offset (where its marker goes), and its index and count in
 /// its list. For a list: its marker column's width, and its nesting depth. For a table row: its
 /// index among the body rows (the header row is none of them), and their count. A list or quote
-/// reading right to left has its marks at the right.
+/// reading right to left has its marks at the right; a code block reading so, its rows.
 #[derive(Clone, Copy, Default)]
 struct Area {
     bits: [u32; 2],
@@ -174,6 +206,21 @@ pub(crate) fn quoted(writing: &Writing, at: usize) -> bool {
 pub(crate) fn leftward(writing: &Writing, at: usize) -> bool {
     let [from, to] = writing.blocks[at].words;
     writing.words[from as usize..to as usize].split('\n').find_map(crate::bidi::strong_direction) == Some(true)
+}
+
+/// Whether a code block reads right to left, as GitHub shows it: one naming its language as
+/// `dir="auto"` has it (its first strong letter decides, for all its lines); one naming none,
+/// never.
+pub(crate) fn code_leftward(writing: &Writing, at: usize) -> bool {
+    matches!(writing.blocks[at].kind, Kind::Code(language) if language != 0) && leftward(writing, at)
+}
+
+/// Where a row's content lies from its left edge: its first fragment's left and its last one's
+/// right.
+fn row_span(laid: &Laid, row: &crate::rich_text::Row) -> [f32; 2] {
+    let frags = &laid.frags[row.frags[0] as usize..row.frags[1] as usize];
+    let [left, right] = frags.iter().fold([f32::MAX, 0.0f32], |[left, right], frag| [left.min(frag.x), right.max(frag.x + frag.wide)]);
+    [left.min(right), right]
 }
 
 /// Whether a block has its own text (and so rows).
@@ -268,6 +315,7 @@ impl Shown {
         (self.theme, self.scale, self.width) = (Some(*t), scale, -1.0);
         if self.serial != doc.serial {
             (self.serial, self.picked, self.clicks) = (doc.serial, [0; 2], 0);
+            (self.told, self.counted) = (None, [[0; 2]; 2]);
         }
         (self.laid, self.areas, self.links) = (Laid::default(), vec![Area::default(); writing.blocks.len()], link_words(writing, doc.links.len()));
         self.kids = children(writing, &mut self.areas);
@@ -486,11 +534,27 @@ impl Shown {
         (rows * least(Kind::Paragraph, t.font) + blocks * sizes(t).gap / 2.0).round()
     }
 
-    /// Block `at`'s unwrapped text width.
+    /// Block `at`'s unwrapped text width. (A code block's is its widest row: see `widest_row`.)
     fn long(&self, at: usize) -> f32 {
         let [from, to] = self.areas[at].bits;
         let last = (to > from).then(|| self.laid.bits[to as usize - 1]);
         last.map_or(0.0, |bit| bit.x + bit.wide)
+    }
+
+    /// The widest of block `at`'s rows, as laid out.
+    fn widest_row(&self, at: usize) -> f32 {
+        let [first, end] = self.areas[at].rows.map(|row| row as usize);
+        self.laid.rows[first..end].iter().map(|row| row_span(&self.laid, row)).fold(0.0, |widest, [left, right]| widest.max(right - left))
+    }
+
+    /// Moves block `at`'s rows to the right of `wide`, or of the widest row where wider.
+    fn align_rows_right(&mut self, at: usize, wide: f32) {
+        let (wide, [first, end]) = (self.widest_row(at).max(wide), self.areas[at].rows.map(|row| row as usize));
+        for row in first..end {
+            let shift = ((wide - row_span(&self.laid, &self.laid.rows[row])[1]) * self.scale).round() / self.scale;
+            let [from, to] = self.laid.rows[row].frags.map(|frag| frag as usize);
+            self.laid.frags[from..to].iter_mut().for_each(|frag| frag.x += shift);
+        }
     }
 
     /// The blocks in view (`view`, from the top), each container before its content, in
@@ -630,6 +694,16 @@ impl Shown {
         }
         let unit = self.unit(writing, at);
         self.picked = if at < self.grabbed[0] { [self.grabbed[1], unit[0]] } else { [self.grabbed[0], unit[1]] };
+    }
+
+    /// The selection's end `end` (0 its anchor, 1 its cursor) in characters from the start of
+    /// `text`: counted on from where it was counted last, so a run costs what it moved.
+    fn letters_at(&mut self, text: &str, end: usize) -> u32 {
+        let ([byte, letters], to) = (self.counted[end], self.picked[end]);
+        let between = |from: u32, to: u32| text.get(from as usize..to as usize).map_or(0, |part| part.chars().count() as u32);
+        let now = if to >= byte { letters + between(byte, to) } else { letters.saturating_sub(between(to, byte)) };
+        self.counted[end] = [to, now];
+        now
     }
 
     /// What a press at byte `at` selects, by click count: the point, the word there, or its
@@ -825,16 +899,22 @@ impl Laying<'_, '_> {
         let block = self.writing.blocks[at];
         let font = font_of(block.kind, heads(self.writing, at), given.t);
         let [above, below] = heights(given.system, font, given.scale, &mut self.shown.fonts);
-        let (pad, side, wide) = match block.kind {
-            Kind::Code(_) => ([self.size.pad; 2], Align::Start, NO_WRAP),
-            Kind::Cell(side) => (self.size.cell, side, w - 2.0 * self.size.cell[0]),
-            _ => ([0.0; 2], Align::Start, w),
+        let (pad, side, wide, direction) = match block.kind {
+            Kind::Code(_) => ([self.size.pad; 2], Align::Start, NO_WRAP, Some(code_leftward(self.writing, at))),
+            Kind::Cell(side) => (self.size.cell, side, w - 2.0 * self.size.cell[0], None),
+            _ => ([0.0; 2], Align::Start, w, None),
         };
-        let room = Room { above, below, high: least(block.kind, font), left: x + pad[0], wide: wide.max(1.0), side };
+        let room = Room { above, below, high: least(block.kind, font), left: x + pad[0], wide: wide.max(1.0), side, direction };
         let ([from, to], first) = (self.shown.areas[at].bits, self.shown.laid.rows.len() as u32);
         let high = lay(&mut self.shown.laid, from..to, &self.writing.words, block.words[0], room, y + pad[1], given.scale);
         self.shown.areas[at].rows = [first, self.shown.laid.rows.len() as u32];
-        self.shown.long = self.shown.long.max(x + 2.0 * pad[0] + self.shown.long(at));
+        // (Right-to-left code lies at the right of its block, or of its widest row past that.)
+        self.shown.areas[at].leftward = direction == Some(true);
+        if direction == Some(true) {
+            self.shown.align_rows_right(at, w - 2.0 * pad[0]);
+        }
+        let long = if direction.is_some() { self.shown.widest_row(at) } else { self.shown.long(at) };
+        self.shown.long = self.shown.long.max(x + 2.0 * pad[0] + long);
         let under = if matches!(block.kind, Kind::Heading(1 | 2)) { (font.size * 0.3).round() + 1.0 } else { 0.0 };
         high + 2.0 * pad[1] + under
     }
@@ -961,6 +1041,9 @@ impl Ui {
         let whole = self.el().flow(Flow::Stack).w(Length::Grow(1.0)).h(Length::Px(shown.high)).sense().focusable().open();
         let [from, to] = shown.title;
         self.tell(&whole, Role::Document, None, doc.writing.words.get(from as usize..to as usize).unwrap_or(""));
+        if WHOLE_TOLD && self.listening {
+            self.tell_whole_document(shown, doc);
+        }
         // In a box that sizes to its content, it asks for its widest block.
         self.el().w(Length::Px(shown.long)).show();
         let shape = Shape { laid: &shown.laid, text: &doc.writing.words, links: &shown.links, titles: &doc.links, picked: in_order(shown.picked), keyed: state.focused };
@@ -1142,6 +1225,19 @@ impl Ui {
             if !shown.link_beyond(key == Key::Down) && (self.key(key, Mods::NONE) || self.key(key, Mods::CTRL)) {
                 self.scroll_document(within, by);
             }
+        }
+    }
+
+    /// Tells readers that read a document whole (see `WHOLE_TOLD`) its selection in characters,
+    /// however far it runs (right after the document is told); and its text, as its node is
+    /// built (see `WHOLE`). A new parse is a new text: the nodes are built anew for it.
+    fn tell_whole_document(&mut self, shown: &mut Shown, doc: &Markdown) {
+        WHOLE.get_or_init(|| tell_whole);
+        shown.told.get_or_insert_with(|| Arc::new(whole_letters(doc)));
+        self.layout_key = fold(self.layout_key, doc.serial);
+        if shown.picked[0] != shown.picked[1] {
+            let caret = [0, 1].map(|end| shown.letters_at(&doc.writing.words, end));
+            self.tell_caret(caret);
         }
     }
 
@@ -1400,8 +1496,15 @@ impl Ui {
         let words = page.writing.words.get(block.words[0] as usize..block.words[1] as usize).unwrap_or("").trim_end();
         self.tell(&state, Role::Code, None, words);
         self.tell_picked(page, at);
-        let (wide, box_at) = ((page.shown.long(at) + 2.0 * pad).max(r.w), self.open.last().map_or(0, |open| open.at));
+        let (wide, box_at) = ((page.shown.widest_row(at) + 2.0 * pad).max(r.w), self.open.last().map_or(0, |open| open.at));
         let across = self.tree.specs[box_at as usize].offset[0];
+        // (Right-to-left code wider than its block comes into view scrolled to its right end,
+        // where its lines start.)
+        let arrives = !page.shown.code_scrolls.iter().any(|(block, _)| *block as usize == at);
+        if area.leftward && arrives && wide > r.w && !self.scrolls.contains_key(&state.id) {
+            self.scrolls.insert(state.id, [wide - r.w, 0.0]);
+            self.again = true;
+        }
         page.code_scrolls.push((at as u32, across));
         self.el().size(wide, r.h).show();
         let [from, to] = page.shown.rows_in_view(at, page.view);
@@ -1523,6 +1626,30 @@ mod tests {
         });
         trial.resize(420.0, 300.0, 1.0);
         trial
+    }
+
+    // (Where readers read a document whole: see `WHOLE_TOLD`.)
+    #[cfg(not(any(target_os = "android", target_os = "ios", target_family = "wasm")))]
+    #[test]
+    fn a_selection_running_past_the_view_is_told_whole_on_the_document() {
+        let text: String = (0..400).map(|n| format!("Paragraph {n} of many.\n\n")).collect();
+        let mut trial = scrolled_document(&text);
+        trial.click(crate::geom::pt(40.0, 8.0));
+        trial.key("Ctrl+Shift+End");
+        let words = trial.app.writing.words.clone();
+        let document = |trial: &Trial<Markdown>| trial.access_nodes().iter().find(|node| node.role == Role::Document).cloned().unwrap();
+        let told = document(&trial);
+        // The view is at the end; the selection runs from the first paragraph, which is not
+        // described.
+        assert!(!trial.has(Role::Paragraph, "Paragraph 0 of many.") && trial.has(Role::Paragraph, "Paragraph 399 of many."));
+        let [anchor, cursor] = told.caret.expect("a selection");
+        assert!(anchor > 0 && anchor < 12, "{anchor}");
+        assert_eq!((told.text(), cursor as usize), (words.as_str(), words.chars().count()));
+        // Back up a line: the cursor follows; the text is the same, shared, never copied.
+        trial.key("Shift+Up");
+        let after = document(&trial);
+        assert!(after.caret.is_some_and(|[_, moved]| moved < cursor && moved > cursor - 40), "{:?}", after.caret);
+        assert!(after.letters.zip(told.letters).is_some_and(|(now, was)| Arc::ptr_eq(&now, &was)));
     }
 
     /// Four thousand lines, each with code `high` lines high below it, then `Last words.`: code
@@ -1753,6 +1880,69 @@ mod tests {
         assert!(ui.tree.strings.contains(".1"), "a number reads point first, right to left");
     }
 
+    /// The code blocks of a document, by block index.
+    fn code_blocks(doc: &Markdown) -> Vec<usize> {
+        (0..doc.writing.blocks.len()).filter(|at| matches!(doc.writing.blocks[*at].kind, Kind::Code(_))).collect()
+    }
+
+    /// Each row of block `at`: its content's left and right, from the document's left.
+    #[cfg(feature = "right-to-left")]
+    fn row_ends(shown: &Shown, at: usize) -> Vec<[f32; 2]> {
+        let [first, end] = shown.areas[at].rows.map(|row| row as usize);
+        let ends = |row: &crate::rich_text::Row| row_span(&shown.laid, row).map(|x| row.left + x);
+        shown.laid.rows[first..end].iter().map(ends).collect()
+    }
+
+    #[test]
+    fn a_code_blocks_width_is_its_widest_line_not_all_its_lines() {
+        let text = format!("```\n{}```\n", "abcdefghij\n".repeat(40));
+        let doc = Markdown::parse(&text);
+        let mut ui = shown_in_a_window(Box::new(crate::text::BuiltInFont));
+        let mut build = |ui: &mut Ui| _ = ui.markdown(&doc);
+        ui.run(&mut build);
+        ui.run(&mut build);
+        let line = ui.text.measure("abcdefghij", ui.theme.font.mono(), 1.0, None);
+        let (long, widest) = with_shown(&mut ui, |shown| (shown.long, shown.widest_row(code_blocks(&doc)[0])));
+        assert_eq!((widest, long), (line, line + 2.0 * sizes(&ui.theme).pad));
+        // So it has nothing to scroll sideways.
+        let code = ui.tree.specs.iter().position(|spec| spec.frame.scroll[0]).unwrap();
+        assert_eq!(ui.tree.scroll_end(code as u32, 0), 0.0);
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn right_to_left_code_naming_its_language_lies_at_the_right_and_naming_none_at_the_left() {
+        let (hebrew, latin) = ("\u{5d0}\u{5d2} \u{5d2}\u{5d0}", "ABC");
+        // As GitHub has them: a block naming its language reads as its first strong letter does,
+        // every line of it; one naming none reads left to right.
+        let doc = Markdown::parse(&format!("```rust\n{hebrew}\n{latin}\n```\n\n```\n{hebrew}\n```\n\n```rust\n{latin}\n{hebrew}\n```\n"));
+        let mut ui = shown_in_a_window(Box::new(crate::bidi::tests::hebrew_letters()));
+        let mut build = |ui: &mut Ui| _ = ui.markdown(&doc);
+        ui.run(&mut build);
+        ui.run(&mut build);
+        let pad = sizes(&ui.theme).pad;
+        let blocks = code_blocks(&doc);
+        let rows: Vec<Vec<[f32; 2]>> = with_shown(&mut ui, |shown| blocks.iter().map(|at| row_ends(shown, *at)).collect());
+        let (right, left) = (420.0 - pad, pad);
+        assert!(rows[0].iter().all(|[_, end]| (end - right).abs() < 1.0), "both lines at the right: {:?}", rows[0]);
+        assert!(rows[1].iter().all(|[start, _]| (start - left).abs() < 1.0), "at the left: {:?}", rows[1]);
+        assert!(rows[2].iter().all(|[start, _]| (start - left).abs() < 1.0), "a Latin first line leads: {:?}", rows[2]);
+    }
+
+    #[cfg(feature = "right-to-left")]
+    #[test]
+    fn right_to_left_code_wider_than_its_block_comes_scrolled_to_where_its_lines_start() {
+        let doc = Markdown::parse(&format!("```rust\n{}\n```\n", "\u{5d0}\u{5d2} ".repeat(60)));
+        let mut trial = Trial::new(doc, |doc, ui| _ = ui.markdown(doc));
+        trial.run();
+        let code = trial.ui.tree.specs.iter().position(|spec| spec.frame.scroll[0]).unwrap() as u32;
+        let end = trial.ui.tree.scroll_end(code, 0);
+        assert!(end > 0.0 && trial.ui.tree.specs[code as usize].offset[0] == end, "scrolled to {} of {end}", trial.ui.tree.specs[code as usize].offset[0]);
+        // Scrolled back by the person, it stays.
+        trial.wheel(crate::geom::pt(100.0, 20.0), -1e6, 0.0);
+        assert!(trial.ui.tree.specs[code as usize].offset[0] < end);
+    }
+
     #[test]
     fn links_given_boxes_with_no_text_in_view_stay_in_text_order() {
         let doc = Markdown::parse("[one](#a) and [two](#b).\n");
@@ -1794,9 +1984,11 @@ mod tests {
     }
 }
 
-/// Lists in Hebrew and in Latin, held against Chrome's drawing of the same (`dir="auto"`, the
-/// marker column as wide as the library's), in Arial: each item's text and marker lie where
-/// Chrome puts them, the markers of a right-to-left list at the right.
+/// Lists and code in Hebrew and in Latin, held against Chrome's drawing of the same, in Arial:
+/// each list's text and markers lie where Chrome puts them for `dir="auto"` (the marker column
+/// as wide as the library's), the markers of a right-to-left list at the right; each code
+/// block's lines lie where they do in GitHub's HTML for it (`dir="auto"` where it names its
+/// language).
 #[cfg(all(test, windows, feature = "right-to-left"))]
 mod against_edge {
     use super::*;
@@ -1832,15 +2024,28 @@ mod against_edge {
         html
     }
 
-    #[test]
-    fn markers_of_right_to_left_lists_lie_at_the_right_as_in_chrome() {
-        let Some(browser) = browser() else { return eprintln!("no Edge or Chrome here: not compared") };
+    /// Edge or Chrome, Arial's path, and a window of `size` writing in Arial at 20 units: text in
+    /// the first ink, dim text in the second, on white. None where either is missing.
+    fn in_arial(size: [usize; 2]) -> Option<(std::path::PathBuf, std::path::PathBuf, Ui)> {
+        let Some(browser) = browser() else {
+            eprintln!("no Edge or Chrome here: not compared");
+            return None;
+        };
         let path = std::path::Path::new(&std::env::var_os("WINDIR").unwrap_or_default()).join(r"Fonts\arial.ttf");
-        let Some(font) = FontFile::open(&path) else { return eprintln!("no Arial here: not compared") };
-        let size = [440, 220];
+        let Some(font) = FontFile::open(&path) else {
+            eprintln!("no Arial here: not compared");
+            return None;
+        };
         let mut ui = Ui::new(Box::new(AppFonts::new(font)), Box::new(crate::platform::LocalClipboard::default()));
         ui.resize(crate::geom::Size { w: size[0] as f32, h: size[1] as f32 }, 1.0);
         (ui.theme.bg, ui.theme.text, ui.theme.text_dim, ui.theme.font) = (Color::WHITE, Color::rgb(INKS[0]), Color::rgb(INKS[1]), Font::new(20.0));
+        Some((browser, path, ui))
+    }
+
+    #[test]
+    fn markers_of_right_to_left_lists_lie_at_the_right_as_in_chrome() {
+        let size = [440, 220];
+        let Some((browser, path, mut ui)) = in_arial(size) else { return };
         let docs: Vec<Markdown> = CASES.iter().map(|(text, ..)| Markdown::parse(text)).collect();
         let mut written = |ui: &mut Ui| {
             ui.el().flow(Flow::Stack).w(Length::Grow(1.0)).h(Length::Grow(1.0)).open();
@@ -1877,5 +2082,70 @@ mod against_edge {
         let html = page(&path.to_string_lossy().replace('\\', "/"), sizes(&ui.theme).marks);
         let wrong = lasting_differences(&browser, &html, size, "list-markers", differ);
         assert!(wrong.is_empty(), "{} lists lie elsewhere than in Chrome", wrong.len());
+    }
+
+    /// Code blocks as Markdown and as GitHub writes them in HTML, and whether they read right to
+    /// left.
+    const CODE: [(&str, &str, bool); 4] = [
+        ("```rust\n\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}\n```\n", "<div dir=auto><pre>\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}</pre></div>", true),
+        ("```\n\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}\n```\n", "<div><pre>\u{5e9}\u{5dc}\u{5d5}\u{5dd} \u{5e2}\u{5d5}\u{5dc}\u{5dd}</pre></div>", false),
+        ("```rust\n\u{5e9}\u{5dc}\u{5d5}\u{5dd}\nabc xyz\n```\n", "<div dir=auto><pre>\u{5e9}\u{5dc}\u{5d5}\u{5dd}\nabc xyz</pre></div>", true),
+        ("```rust\nabc xyz\n\u{5e9}\u{5dc}\u{5d5}\u{5dd}\n```\n", "<div dir=auto><pre>abc xyz\n\u{5e9}\u{5dc}\u{5d5}\u{5dd}</pre></div>", false),
+    ];
+
+    /// Where code case `n` is drawn: its left and top.
+    fn code_place(n: usize) -> [f32; 2] {
+        [10.0, 10.0 + 100.0 * n as f32]
+    }
+
+    #[test]
+    fn right_to_left_code_lies_where_github_has_it_in_chrome() {
+        let size = [440, 420];
+        let Some((browser, path, mut ui)) = in_arial(size) else { return };
+        // (The code's panel and edge in white: only the letters are ink.)
+        (ui.theme.panel, ui.theme.line) = (Color::WHITE, Color::WHITE);
+        let docs: Vec<Markdown> = CODE.iter().map(|(text, ..)| Markdown::parse(text)).collect();
+        let mut written = |ui: &mut Ui| {
+            ui.el().flow(Flow::Stack).w(Length::Grow(1.0)).h(Length::Grow(1.0)).open();
+            for (n, doc) in docs.iter().enumerate() {
+                let [x, y] = code_place(n);
+                ui.el().offset(x, y).w(Length::Px(400.0)).open();
+                ui.markdown(doc);
+                ui.close();
+            }
+            ui.close();
+        };
+        ui.run(&mut written);
+        ui.run(&mut written);
+        let ours = crate::surface::Surface::draw(&mut ui, 64).pixels;
+        let (pad, high) = (sizes(&ui.theme).pad, least(Kind::Code(0), ui.theme.font.mono()));
+        let differ = |theirs: &[u32]| {
+            let mut wrong = Vec::new();
+            for (n, (text, _, leftward)) in CODE.iter().enumerate() {
+                let [x, y] = code_place(n);
+                // Each line's ink, held apart: the first line, then the second.
+                for line in 0..2 {
+                    let band = rect(x - 5.0, y + pad + high * line as f32, 410.0, high);
+                    let middle = |pixels: &[u32]| ink_middle(pixels, size[0], band, INKS[0], &INKS).map(|[x, _]| x);
+                    let (here, there) = (middle(&ours), middle(theirs));
+                    let side = here.map(|here| here > x + 200.0);
+                    let far = here.zip(there).is_some_and(|(here, there)| (here - there).abs() > 3.0);
+                    if far || here.is_some() != there.is_some() || line == 0 && side != Some(*leftward) {
+                        wrong.push((format!("{text:?} line {line}"), format!("ours at {here:?}, Edge's at {there:?}")));
+                    }
+                }
+            }
+            wrong
+        };
+        let path = path.to_string_lossy().replace('\\', "/");
+        let mut html = format!(
+            "<!doctype html><meta charset=utf-8><style>@font-face {{ font-family: Probe; src: url('file:///{path}'); }} body {{ margin: 0; background: #fff; }} body > div {{ position: absolute; width: 400px; }} pre {{ margin: 0; padding: {pad}px; font: 20px Probe; line-height: {high}px; color: #000; font-kerning: none; }}</style>"
+        );
+        for (n, (_, code, _)) in CODE.iter().enumerate() {
+            let [x, y] = code_place(n);
+            html += &code.replacen("<div", &format!("<div style='left: {x}px; top: {y}px'"), 1);
+        }
+        let wrong = lasting_differences(&browser, &html, size, "rtl-code", differ);
+        assert!(wrong.is_empty(), "{} lines of code lie elsewhere than in Chrome", wrong.len());
     }
 }

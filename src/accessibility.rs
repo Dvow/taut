@@ -211,7 +211,8 @@ pub struct AccessNode {
     /// Its box, by index among the run's boxes.
     pub(crate) at: u32,
     /// For text read by line and letter ([`AccessNode::reads_text`]) that shows: its lines and
-    /// letters, where its text is one box's; the box, and where it lies.
+    /// letters, where its text is one box's; the box, and where it lies. (For a document told
+    /// whole: its lines and all its text.)
     pub(crate) letters: Option<Arc<Letters>>,
     pub(crate) text_box: u32,
     pub(crate) text_rect: Rect,
@@ -239,14 +240,18 @@ pub(crate) struct Letters {
     /// Each line's first character; the first is 0.
     pub(crate) lines: Vec<u32>,
     /// Each character's place, from its box's corner. (A line break, or a space a wrap left
-    /// out, is empty at its line's end.)
+    /// out, is empty at its line's end.) None for a document's.
     pub(crate) places: Vec<Rect>,
+    /// The text, where it is not its node's own: a document's, told whole (see
+    /// `markdown_view::WHOLE`). Else empty.
+    pub(crate) text: String,
 }
 
-/// Letters are the same where they lie the same, however their key was made.
+/// Letters are the same where they lie the same (and are of the same text), however their key
+/// was made.
 impl PartialEq for Letters {
     fn eq(&self, other: &Letters) -> bool {
-        (&self.lines, &self.places) == (&other.lines, &other.places)
+        (&self.lines, &self.places, &self.text) == (&other.lines, &other.places, &other.text)
     }
 }
 
@@ -348,13 +353,22 @@ impl AccessNode {
     }
 
     /// Whether a reader reads its text by line and letter: a text box, plain text, a heading,
-    /// a paragraph, code, a table cell.
+    /// a paragraph, code, a table cell; and a document, where readers read one whole (see
+    /// `markdown_view::WHOLE_TOLD`).
     pub(crate) fn reads_text(&self) -> bool {
-        matches!(self.role, Role::TextBox | Role::PasswordBox | Role::Text | Role::Heading | Role::Paragraph | Role::Code | Role::Cell | Role::ColumnHeader)
+        let text = matches!(self.role, Role::TextBox | Role::PasswordBox | Role::Text | Role::Heading | Role::Paragraph | Role::Code | Role::Cell | Role::ColumnHeader);
+        text || crate::markdown_view::WHOLE_TOLD && self.role == Role::Document
     }
-    /// The text it is read by: a text box's own (`value`), else its name.
+    /// The text it is read by: a text box's own (`value`), a document's whole text where told,
+    /// else its name.
     pub(crate) fn text(&self) -> &str {
-        if matches!(self.role, Role::TextBox | Role::PasswordBox) { &self.value } else { &self.name }
+        if matches!(self.role, Role::TextBox | Role::PasswordBox) {
+            &self.value
+        } else if self.role == Role::Document {
+            self.letters.as_ref().map_or("", |letters| &letters.text)
+        } else {
+            &self.name
+        }
     }
     /// Each line's first character: as wrapped where its text is laid out, else after each
     /// line break.
@@ -406,12 +420,12 @@ impl AccessNode {
         }
         lines
     }
-    /// The characters that show: from the first to one past the last. (All, where its letters
-    /// are not known.)
+    /// The characters that show: from the first to one past the last. (All, where its letters'
+    /// places are not known: a document's.)
     #[cfg(any(windows, target_os = "macos"))]
     pub(crate) fn shown_letters(&self) -> [u32; 2] {
         let count = self.text().chars().count() as u32;
-        let Some(letters) = &self.letters else { return [0, count] };
+        let Some(letters) = self.letters.as_ref().filter(|letters| !letters.places.is_empty()) else { return [0, count] };
         let shows = |place: &Rect| !place.moved(self.text_rect.x, self.text_rect.y).grow(0.5).intersect(self.seen).is_empty();
         let first = letters.places.iter().position(shows).unwrap_or(0);
         let last = letters.places.iter().rposition(shows).map_or(first, |last| last + 1);
@@ -1056,7 +1070,7 @@ fn lay_letters(tree: &Tree, text: &mut dyn TextSystem, scale: f32, (at, r): (u32
     }
     let (high, before) = (place.line_height.max(1.0), [0.0, 0.5, 1.0, 0.0][side as usize]);
     let top = inside.y + if wrap { 0.0 } else { ((inside.h - place.line_height) / 2.0).max(0.0) };
-    let (mut letters, mut edges) = (Letters { key, lines: Vec::new(), places: Vec::new() }, Vec::new());
+    let (mut letters, mut edges) = (Letters { key, lines: Vec::new(), places: Vec::new(), text: String::new() }, Vec::new());
     // (What a wrap leaves out, a line break or a space, lies at the end of the line before.)
     let (mut done, mut after) = (start, rect(inside.x, top, 0.0, high));
     for (row, line) in lines.iter().enumerate() {
@@ -1577,6 +1591,10 @@ impl Ui {
             (vertical.tell_letters)(writings, nodes, boxes);
         }
         select_rows(nodes, &table_reading.told);
+        // (Documents are told whole by their own code: see `markdown_view::WHOLE`.)
+        if let Some(tell) = crate::markdown_view::WHOLE.get() {
+            tell(writings, nodes);
+        }
     }
 
     /// Presses element `id` for a screen reader that asked: focus goes to it, and it is pressed

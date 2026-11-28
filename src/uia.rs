@@ -2580,7 +2580,7 @@ pub(crate) mod tests {
         // "three" spelt wrong.
         let line_of = |letter: usize| [0, 4, 8].iter().rposition(|start| *start <= letter).unwrap();
         let places = (0..13).map(|letter| rect(((letter - [0, 4, 8][line_of(letter)]) * 10) as f32, line_of(letter) as f32 * 20.0, 10.0, 20.0)).collect();
-        let letters = Some(Arc::new(Letters { key: 0, lines: vec![0, 4, 8], places }));
+        let letters = Some(Arc::new(Letters { key: 0, lines: vec![0, 4, 8], places, text: String::new() }));
         let (area, wrong) = (rect(0.0, 0.0, 200.0, 60.0), vec![[8, 13]]);
         let node = AccessNode { letters, text_rect: area, rect: area, seen: area, misspelled: wrong, ..notes() };
         let tree = made_tree(vec![node]);
@@ -2980,6 +2980,45 @@ pub(crate) mod tests {
         unsafe {
             [stretch, pattern, node].into_iter().zip(let_go).for_each(|(held, let_go)| _ = let_go(held));
             SafeArrayDestroy(row);
+            Provider::release(face);
+            CoUninitialize();
+        }
+        tree.hwnd.set(0);
+    }
+
+    #[test]
+    fn windows_itself_reads_a_documents_selection_however_far_it_runs() {
+        // Windows' own UI Automation client, only reading: a document told whole, its selection
+        // running from a paragraph in view to text with no node. (No window, no other program.)
+        type Handle = *mut c_void;
+        let core = library("uiautomationcore.dll").unwrap();
+        let (node_of, pattern_of): (unsafe extern "system" fn(*mut Face, *mut Handle) -> i32, unsafe extern "system" fn(Handle, i32, *mut Handle) -> i32) =
+            unsafe { (found(core, c"UiaNodeFromProvider").unwrap(), found(core, c"UiaGetPatternProvider").unwrap()) };
+        let picked_of: unsafe extern "system" fn(Handle, *mut *mut c_void) -> i32 = unsafe { found(core, c"TextPattern_GetSelection").unwrap() };
+        let all_of: unsafe extern "system" fn(Handle, *mut Handle) -> i32 = unsafe { found(core, c"TextPattern_get_DocumentRange").unwrap() };
+        let text_of: unsafe extern "system" fn(Handle, i32, *mut Text) -> i32 = unsafe { found(core, c"TextRange_GetText").unwrap() };
+        let let_go: [unsafe extern "system" fn(Handle) -> i32; 3] = unsafe { [c"UiaTextRangeRelease", c"UiaPatternRelease", c"UiaNodeRelease"].map(|name| found(core, name).unwrap()) };
+        let _alone = WINDOWS_ASKS.lock().unwrap_or_else(|held| held.into_inner());
+        assert!(unsafe { CoInitializeEx(std::ptr::null_mut(), 2) } >= 0);
+        let whole = Letters { key: 0, lines: vec![0, 6, 22, 50], places: Vec::new(), text: "Notes\nThe first part.\nA second part, out of view.\nThe end.".into() };
+        let document = AccessNode { letters: Some(Arc::new(whole)), caret: Some([10, 48]), ..thing(1, Role::Document, "Notes", None) };
+        let tree = made_tree(vec![document, AccessNode { caret: Some([4, 16]), ..thing(2, Role::Paragraph, "The first part.", Some(0)) }]);
+        let (face, mut node, mut pattern, mut picked, mut all, mut text) =
+            (Provider::of(&tree, 1, THING), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
+        let mut first = std::mem::MaybeUninit::<Variant>::zeroed();
+        let stretch = unsafe {
+            assert_eq!((node_of(face, &mut node), pattern_of(node, 10014, &mut pattern), pattern.is_null()), (0, 0, false), "a document is read as text");
+            assert_eq!((picked_of(pattern, &mut picked), SafeArrayGetElement(picked, &0, first.as_mut_ptr().cast())), (0, 0));
+            first.assume_init().held.object
+        };
+        assert_eq!(unsafe { text_of(stretch, -1, &mut text) }, 0);
+        assert_eq!(read_text(text), "first part.\nA second part, out of view", "all of the selection");
+        assert_eq!(unsafe { (all_of(pattern, &mut all), text_of(all, -1, &mut text)) }, (0, 0));
+        assert!(read_text(text).ends_with("The end."), "and all of the text");
+        unsafe {
+            let_go[0](all);
+            [stretch, pattern, node].into_iter().zip(let_go).for_each(|(held, let_go)| _ = let_go(held));
+            SafeArrayDestroy(picked);
             Provider::release(face);
             CoUninitialize();
         }

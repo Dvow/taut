@@ -352,6 +352,20 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   `WGL_NV_DX_interop2`. A device that can't open a frame reads frames back from then on. CPU a
   1080p H.264 frame (RTX 2080 Ti): Direct3D 12 2.2 ms instead of 5.9, Vulkan 1.5 instead of 6.0,
   OpenGL 2.7 instead of 7.7. The decoder's texture is now shared by an NT handle.
+- **Markdown selection told whole:** on UI Automation, AT-SPI and macOS a document is read by
+  all its text (kept once per parse and shared, not copied a run) with its selection, however far past the view it
+  runs. Before, only blocks in view told their part.
+- **Markdown code right to left:** a code block naming its language reads as its first strong
+  letter does, all its lines at the right (GitHub's `dir="auto"`); one naming none stays left
+  to right. A wide one comes into view scrolled to where its lines start. A code block is as
+  wide as its widest line (before: all its lines end to end, so it scrolled sideways far past
+  its text).
+- **Tables:** undoing a paste removes the rows it added: `ui.removed_rows(&table)` hands them
+  to the app once; redo adds them again.
+- **Spelling in the code box:** `ui.check_spelling` before `ui.code_editor` checks its comments
+  and strings, by its language's rules; corrections from its menu, undone as one.
+- **Pan-zoom text too small to read:** in a view zoomed far out, text under 4 units shows as a
+  faint bar per line, where before it drew nothing.
 
 ## 0.3.0 (2026-11-24)
 

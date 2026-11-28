@@ -85,14 +85,13 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
   and Polish); no right-to-left marks in Arabic dates; no 0–11 hours (Japanese `K`). glibc's
   locales write 0–9 only. Linux takes a region changed while running at the next start (GTK and
   Qt too); only GNOME's 12/24-hour clock is followed live.
-- Undoing a paste into a table puts back the rows that were there; rows it added stay (the app's).
-  Windows time axes use today's UTC offset. Uneven-height lists estimate unseen rows. Second windows don't show the first's meshes.
-  Pan-zoom text under 4 units isn't drawn.
+- Windows time axes use today's UTC offset. Uneven-height lists estimate unseen rows. Second
+  windows don't show the first's meshes. Pan-zoom text under 4 units shows as a bar per line.
 - Node graphs: frames don't nest or hold other frames; only the first 64 inputs of a node can
   take several wires; a wire's bends are reached by keys only while its output's node is in
   view; undo keeps a copy of the graph per step (100 steps or 100,000 nodes in all).
-- Spelling: code box unchecked; readers get errors
-  among visible words only; UI Automation's `FindAttribute` unanswered.
+- Spelling: readers get a code box's errors among the lines in view only; UI Automation's
+  `FindAttribute` unanswered.
 
 ## Renderers
 
@@ -157,8 +156,8 @@ Known gaps and limits. Features: [what is in it](what-is-in-it.md).
 
 ## Documents (Markdown)
 
-- The selection is told for the blocks in view only.
-- Right-to-left lines of code start at the left.
+- iOS, Android and the web tell each block in view its part of the selection: their readers read
+  no document whole.
 - Past 100 deep, nesting becomes text where blank lines times depth would pass 4 million.
 
 ## File dialog

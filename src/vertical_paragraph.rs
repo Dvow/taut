@@ -282,7 +282,7 @@ fn tell_letters(writings: &Writings, nodes: &mut [AccessNode], boxes: &[AccessBo
 /// at `middles` and tops at 0. A character with no place of its own (a newline, a reading's
 /// bracket) lies empty where the one before it ends.
 pub(crate) fn letters_of(laid: &Laid, middles: &[f32], key: u64) -> Letters {
-    let mut letters = Letters { key, lines: Vec::new(), places: Vec::new() };
+    let mut letters = Letters { key, lines: Vec::new(), places: Vec::new(), text: String::new() };
     let mut places: Vec<(u32, Rect)> = Vec::new();
     for (column, x) in laid.columns.iter().zip(middles) {
         letters.lines.push(laid.text[..laid.steps.get(column.steps[0] as usize).map_or(laid.text.len(), |step| step.bytes[0] as usize)].chars().count() as u32);

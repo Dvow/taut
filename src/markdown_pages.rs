@@ -19,7 +19,7 @@ use crate::color::Color;
 use crate::geom::{Rect, Size, rect};
 use crate::layout::Align;
 use crate::markdown::Markdown;
-use crate::markdown_view::{Sizes, font_of, least, leftward, quoted, rules_for, sizes, slug, worded};
+use crate::markdown_view::{Sizes, code_leftward, font_of, least, leftward, quoted, rules_for, sizes, slug, worded};
 use crate::paper::{Mark, Paper};
 use crate::pdf_structure::Tag;
 use crate::rich_text::{Bit, Kind, Laid, Room, THING, TextStyle, Thing, face_of, heights, lay};
@@ -309,14 +309,14 @@ impl Pages<'_> {
         let font = font_of(block.kind, head, &self.t);
         self.bits(at, font);
         let [above, below] = heights(&mut Measured(self.paper), font, 1.0, &mut self.fonts);
-        let (pad, side) = match block.kind {
-            Kind::Code(_) => ([self.size.pad; 2], Align::Start),
-            Kind::Cell(side) => (self.size.cell, side),
-            _ => ([0.0; 2], Align::Start),
+        let (pad, side, direction) = match block.kind {
+            Kind::Code(_) => ([self.size.pad; 2], Align::Start, Some(code_leftward(&self.doc.writing, at))),
+            Kind::Cell(side) => (self.size.cell, side, None),
+            _ => ([0.0; 2], Align::Start, None),
         };
         let bits = 0..self.laid.bits.len();
         self.laid.measure(bits.clone(), &self.doc.writing.words, &mut Measured(self.paper), 1.0, &mut self.fonts);
-        let room = Room { above, below, high: least(block.kind, font), left: pad[0], wide: (w - 2.0 * pad[0]).max(1.0), side };
+        let room = Room { above, below, high: least(block.kind, font), left: pad[0], wide: (w - 2.0 * pad[0]).max(1.0), side, direction };
         lay(&mut self.laid, 0..bits.end as u32, &self.doc.writing.words, block.words[0], room, 0.0, 1.0);
         (font, pad)
     }
