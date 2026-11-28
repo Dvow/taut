@@ -1,0 +1,4 @@
+run 1 all exit 0 in 1394 s
+run 2 all exit 0 in 54 s
+run 1 lib exit 0 in 106 s
+run 1 display exit 0 in 74 s
