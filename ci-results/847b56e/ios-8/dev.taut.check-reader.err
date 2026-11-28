@@ -1,0 +1,8 @@
+reader.txt: ok reader asked (667 ms)
+reader.txt: ok lines as wrapped (219 ms)
+reader.txt: ok letters where drawn (224 ms)
+reader.txt: ok a reader selects in the text box (775 ms)
+reader.txt: ok a data table (445 ms)
+reader.txt: ok a row out of view comes at once (118 ms)
+reader.txt: ok a three-finger swipe pages the table on (110 ms)
+reader.txt: done
