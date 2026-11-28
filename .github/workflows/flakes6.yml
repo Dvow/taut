@@ -158,7 +158,7 @@ jobs:
           O=ci-results/${GITHUB_SHA::7}/mac-spell
           mkdir -p $O
           cargo test -q --lib --no-run
-          for begin in stop relaunch cold; do for way in async checkstring sync; do
+          for begin in disabled disabled-cold; do for way in async checkstring sync; do
             start=$(date +%s)
             PROBE_START=$begin PROBE_WAY=$way cargo test --lib probe_spell_server_stopped -- --ignored --nocapture > $O/$begin-$way.txt 2>&1
             echo "$begin $way exit $? in $(( $(date +%s) - start )) s" >> $O/summary.txt
