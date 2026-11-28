@@ -1,0 +1,8 @@
+async exit 0 in 2 s
+ 2861 runner           U    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+checkstring exit 0 in 1 s
+ 2861 runner           U    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+sync exit 0 in 1 s
+ 2861 runner           U    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+spell-test exit 0 in 0 s
+ 2861 runner           U    /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell

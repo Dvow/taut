@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized] target(s) in 0.00s
+     Running unittests src/lib.rs (target/debug/build/taut/fe4b8e13aec337b8/out/taut-fe4b8e13aec337b8)
+
+running 1 test
+probe: warm, helo wrong: true
+probe: -STOP  2861 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -STOP 2861: Ok(ExitStatus(unix_wait_status(0)))
+2026-11-28 17:15:07.694 taut-fe4b8e13aec337b8[3207:13069] NSSpellServer findMisspelledWordInString timed out, index is 0
+2026-11-28 17:15:08.254 taut-fe4b8e13aec337b8[3207:13069] NSSpellServer findMisspelledWordInString timed out, index is 0
+probe: sync says wrld wrong: false
+probe: sync done after 1.072648375s
+probe: -CONT  2861 runner           /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+probe: kill -CONT 2861: Ok(ExitStatus(unix_wait_status(0)))
+probe: after CONT, wrld wrong: true
+test ns_spell_checker::probe::probe_spell_server_stopped ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 686 filtered out; finished in 1.29s
+
