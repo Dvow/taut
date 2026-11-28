@@ -1,0 +1,3 @@
+dialog.txt: ok a dialog is asked for (619 ms)
+dialog.txt: ok a touch on the first window still reaches it (115 ms)
+dialog.txt: done

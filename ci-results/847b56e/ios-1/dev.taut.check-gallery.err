@@ -1,0 +1,72 @@
+ready.txt: 402 778 3 0 62 0 1 Cpu
+elements.txt: "File" "" 0x1 4,64 37x24
+elements.txt: "View" "" 0x1 43,64 45x24
+elements.txt: "Gallery: 60 items, 0 presses counted" "" 0x40 10,98 202x16
+elements.txt: "Add an item" "" 0x1 14,126 28x28
+elements.txt: "The colour that stands out" "" 0x1 44,126 28x28
+elements.txt: "Starred" "" 0x9 74,126 28x28
+elements.txt: "Copy the notes" "" 0x1 115,126 28x28
+elements.txt: "Start over" "" 0x1 145,126 28x28
+elements.txt: "A tool that does nothing" "" 0x1 175,126 28x28
+elements.txt: "Filter items" "" 0x0 10,166 170x28
+elements.txt: "" "Roomy" 0x1 188,166 79x28
+elements.txt: "Start over" "" 0x1 275,166 75x28
+elements.txt: "Count one" "" 0x1 10,202 82x28
+elements.txt: "More" "" 0x1 100,202 28x28
+elements.txt: "List" "" 0x9 10,243 40x29
+elements.txt: "Table" "" 0x1 52,243 51x29
+elements.txt: "Parts" "" 0x1 105,243 49x29
+elements.txt: "Drawing" "" 0x1 156,243 66x29
+elements.txt: "More" "" 0x1 224,243 49x29
+elements.txt: "Dock" "" 0x1 275,243 49x29
+elements.txt: "Familiar" "" 0x1 326,243 63x29
+elements.txt: "Charts" "" 0x1 391,243 57x29
+elements.txt: "A tick box, which the keyboard can reach with Tab and flip with Space" "" 0x1 10,283 372x32
+elements.txt: "A paragraph breaks into as many lines as the width of the window needs. Under it is a box for several lines of text, then a list that scrolls." "" 0x40 10,321 372x48
+elements.txt: "Notes" "" 0x0 10,375 372x44
+elements.txt: "Items 0 to 9" "" 0x40 14,429 60x15
+elements.txt: "item 0" "" 0x40 44,465 35x16
+elements.txt: "a note" "" 0x40 87,466 31x15
+elements.txt: "2 KB" "" 0x40 312,466 24x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,459 28x28
+elements.txt: "item 1" "" 0x40 44,509 33x16
+elements.txt: "a note" "" 0x40 85,510 31x15
+elements.txt: "9 KB" "" 0x40 311,510 25x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,503 28x28
+elements.txt: "item 2" "" 0x40 44,553 34x16
+elements.txt: "a note" "" 0x40 86,554 31x15
+elements.txt: "16 KB" "" 0x40 306,554 30x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,547 28x28
+elements.txt: "item 3" "" 0x40 44,597 35x16
+elements.txt: "a note" "" 0x40 87,598 31x15
+elements.txt: "23 KB" "" 0x40 305,598 31x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,591 28x28
+elements.txt: "item 4" "" 0x40 44,641 35x16
+elements.txt: "a note" "" 0x40 87,642 31x15
+elements.txt: "30 KB" "" 0x40 304,642 32x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,635 28x28
+elements.txt: "item 5" "" 0x40 44,685 35x16
+elements.txt: "a note" "" 0x40 87,686 31x15
+elements.txt: "37 KB" "" 0x40 305,686 31x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,679 28x28
+elements.txt: "item 6" "" 0x40 44,729 35x16
+elements.txt: "a note" "" 0x40 87,730 31x15
+elements.txt: "4 KB" "" 0x40 311,730 25x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,723 28x28
+elements.txt: "item 7" "" 0x40 44,773 34x16
+elements.txt: "a note" "" 0x40 86,774 31x15
+elements.txt: "11 KB" "" 0x40 308,774 28x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,767 28x28
+elements.txt: "item 8" "" 0x40 44,817 35x16
+elements.txt: "a note" "" 0x40 87,818 31x15
+elements.txt: "18 KB" "" 0x40 306,818 30x15
+elements.txt: "A button that is only an icon says what it does here" "" 0x1 344,811 28x28
+elements.txt: done
+looks.txt: dark false
+looks.txt: away false
+looks.txt: dark true
+looks.txt: dark false
+looks.txt: away true
+looks.txt: dark true
+looks.txt: dark false
+looks.txt: away false

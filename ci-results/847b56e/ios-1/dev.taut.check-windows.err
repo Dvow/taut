@@ -1,0 +1,21 @@
+windows.txt: ok reader asked (652 ms)
+windows.txt: ok a second window opens in a scene of its own (853 ms)
+windows.txt: ok a touch on it reaches its interface (57 ms)
+windows.txt: ok it shows its own page (0 ms)
+windows.txt: ok a touch on its text box gives it the keyboard (212 ms)
+windows.txt: ok the system lets go of its scene: it stays open (88 ms)
+windows.txt: ok its scene comes back: it shows as it was, with the keyboard (172 ms)
+windows.txt: ok typing still reaches its text box (285 ms)
+2026-11-28 17:36:28.876 check[34174:97021] CoreText note: Client requested name ".SFCompact", it will get TimesNewRomanPSMT rather than the intended font. All system UI font access should be through proper APIs such as CTFontCreateUIFontForLanguage() or +[UIFont systemFontOfSize:].
+2026-11-28 17:36:28.876 check[34174:97021] CoreText note: Set a breakpoint on CTFontLogSystemFontNameRequest to debug.
+windows.txt: ok a touch on it still reaches its interface (16102 ms)
+windows.txt: ok the person closing its scene is a close request (1837 ms)
+windows.txt: ok it opens again (960 ms)
+windows.txt: ok the app closes it: the first window comes forward (970 ms)
+windows.txt: ok it opens once more (369 ms)
+windows.txt: ok a touch on the first window reaches it (53 ms)
+windows.txt: ok the system lets go of the first scene and brings it back (29 ms)
+2026-11-28 17:36:33.396 check[34174:97021] Unbalanced calls to begin/end appearance transitions for <TautViewController: 0x104194400>.
+windows.txt: ok the first window shows as it was and takes the keys (187 ms)
+windows.txt: ok the person closing the first scene, refused, gets a new scene (693 ms)
+windows.txt: done
