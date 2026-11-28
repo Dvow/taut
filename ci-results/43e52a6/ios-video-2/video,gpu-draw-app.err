@@ -1,0 +1,2410 @@
+probe: reader 0 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 0 read 0ns in 643.29325ms after waiting 2.083µs, 645.683709ms in
+probe: reader 0 read 0ns in 34.792µs after waiting 2.25µs, 645.796834ms in
+probe: reader 0 read 100ms in 8.417µs after waiting 583ns, 645.89425ms in
+probe: reader 0 read 200ms in 6.833µs after waiting 333ns, 645.953959ms in
+probe: reader 0 read 300ms in 8.291µs after waiting 417ns, 646.011542ms in
+probe: reader 0 read 400ms in 9.125µs after waiting 125ns, 646.06775ms in
+probe: reader 0 read 500ms in 6µs after waiting 208ns, 646.172709ms in
+probe: reader 0 read 600ms in 3.916µs after waiting 125ns, 646.225167ms in
+probe: reader 0 read 700ms in 7.333µs after waiting 333ns, 646.280542ms in
+probe: reader 0 read 800ms in 5.833µs after waiting 291ns, 646.346167ms in
+probe: reader 0 read 900ms in 18.5µs after waiting 334ns, 646.412292ms in
+probe: reader 0 read 1s in 108.332833ms after waiting 83ns, 754.788375ms in
+probe: reader 0 read 1.1s in 17.142584ms after waiting 459ns, 771.99525ms in
+probe: reader 0 read 1.2s in 7.105333ms after waiting 750ns, 779.195209ms in
+probe: reader 0 read 1.3s in 107.834µs after waiting 458ns, 779.3725ms in
+probe: reader 0 read 1.4s in 10.417µs after waiting 542ns, 779.446209ms in
+probe: reader 0 read 1.5s in 9.843125ms after waiting 250ns, 789.348084ms in
+probe: reader 0 read 1.6s in 8.244416ms after waiting 584ns, 797.678042ms in
+probe: reader 0 read 1.7s in 16.834µs after waiting 750ns, 797.7855ms in
+probe: reader 0 read 1.8s in 6.375µs after waiting 250ns, 797.85375ms in
+probe: reader 0 read 1.9s in 14.625µs after waiting 833ns, 797.986625ms in
+probe: reader 0 read 2s in 19µs after waiting 667ns, 798.079292ms in
+probe: reader 0 read 2.1s in 5.400375ms after waiting 209ns, 803.524459ms in
+probe: reader 0 read 2.2s in 1.664416ms after waiting 500ns, 805.254584ms in
+probe: reader 0 read 2.3s in 11.25µs after waiting 917ns, 805.3575ms in
+probe: reader 0 read 2.4s in 5.042µs after waiting 375ns, 805.414209ms in
+probe: reader 0 read 2.5s in 4.041µs after waiting 125ns, 805.467042ms in
+probe: reader 0 read 2.6s in 4.708µs after waiting 125ns, 805.520834ms in
+probe: reader 0 read 2.7s in 5.167µs after waiting 125ns, 805.5895ms in
+probe: reader 0 read 2.8s in 3.791µs after waiting 125ns, 805.646292ms in
+probe: reader 0 read 2.9s in 3.375µs after waiting 125ns, 805.696625ms in
+probe: sample at 0ns without bytes
+probe: reader 0 read 0ns in 28.208µs after waiting 125ns, 805.773084ms in
+probe: sample at 0ns without bytes
+probe: reader 0 read 0ns in 192.75µs after waiting 166ns, 806.016167ms in
+probe: sample at 3s without bytes
+probe: reader 0 read 3s in 1.271833ms after waiting 375ns, 807.339167ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 0 read 18446744073709551615.999999999s in 2.3245ms after waiting 625ns, 809.708834ms in
+probe: reader 0 stops at 18446744073709551615.999999999s, 3.743125375s in
+probe: reader 1 of silent.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 1 read 0ns in 53.013458ms after waiting 1.792µs, 58.196292ms in
+probe: reader 1 read 0ns in 8.271542ms after waiting 2.083µs, 66.525958ms in
+probe: reader 1 read 100ms in 2.226708ms after waiting 458ns, 68.844958ms in
+probe: reader 1 read 200ms in 703.5µs after waiting 500ns, 69.630375ms in
+probe: reader 1 read 300ms in 836µs after waiting 750ns, 70.546292ms in
+probe: reader 1 read 400ms in 276.916µs after waiting 417ns, 70.89475ms in
+probe: reader 1 read 500ms in 84.958µs after waiting 291ns, 71.033375ms in
+probe: reader 1 read 600ms in 49.042µs after waiting 250ns, 71.138958ms in
+probe: reader 1 read 700ms in 126µs after waiting 541ns, 71.327875ms in
+probe: reader 1 read 800ms in 48µs after waiting 250ns, 71.426625ms in
+probe: reader 1 read 900ms in 88.792µs after waiting 417ns, 71.572042ms in
+probe: reader 1 read 1s in 130.833µs after waiting 167ns, 71.748292ms in
+probe: reader 1 read 1.1s in 61.792µs after waiting 209ns, 71.859375ms in
+probe: reader 1 read 1.2s in 87.958µs after waiting 208ns, 72.023208ms in
+probe: reader 1 read 1.3s in 56.584µs after waiting 458ns, 72.137542ms in
+probe: reader 1 read 1.4s in 107.167µs after waiting 208ns, 72.293833ms in
+probe: reader 1 read 1.5s in 70.333µs after waiting 375ns, 72.400917ms in
+probe: reader 1 read 1.6s in 68.625µs after waiting 125ns, 72.502208ms in
+probe: reader 1 read 1.7s in 70.959µs after waiting 167ns, 72.609167ms in
+probe: reader 1 read 1.8s in 158.459µs after waiting 209ns, 72.811333ms in
+probe: reader 1 read 1.9s in 197.375µs after waiting 1µs, 73.196708ms in
+probe: reader 1 read 2s in 93.667µs after waiting 750ns, 73.389417ms in
+probe: reader 1 read 2.1s in 132.792µs after waiting 541ns, 73.597958ms in
+probe: reader 1 read 2.2s in 47.792µs after waiting 417ns, 73.702458ms in
+probe: reader 1 read 2.3s in 50µs after waiting 375ns, 73.8105ms in
+probe: reader 1 read 2.4s in 26.333µs after waiting 375ns, 73.892375ms in
+probe: reader 1 read 2.5s in 29µs after waiting 375ns, 73.98525ms in
+probe: reader 1 read 2.6s in 10.792µs after waiting 458ns, 74.205083ms in
+probe: reader 1 read 2.7s in 7.333µs after waiting 333ns, 74.256625ms in
+probe: reader 1 read 2.8s in 7.125µs after waiting 417ns, 74.3135ms in
+probe: reader 1 read 2.9s in 18.417µs after waiting 750ns, 74.435083ms in
+probe: sample at 0ns without bytes
+probe: reader 1 read 0ns in 26.042µs after waiting 375ns, 74.522125ms in
+probe: sample at 0ns without bytes
+probe: reader 1 read 0ns in 22.167µs after waiting 542ns, 74.6125ms in
+probe: sample at 3s without bytes
+probe: reader 1 read 3s in 24µs after waiting 375ns, 74.674167ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 1 read 18446744073709551615.999999999s in 622.833µs after waiting 458ns, 75.335917ms in
+probe: reader 1 stops at 18446744073709551615.999999999s, 2.026958583s in
+probe: reader 2 of silent.mp4
+probe: reader started at 0ns: true
+probe: reader 2 stops at 0ns, 6.435083ms in
+probe: reader 3 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 3 read 0ns in 192.814625ms after waiting 2µs, 194.014042ms in
+probe: reader 3 read 0ns in 6.353166ms after waiting 1.042µs, 200.419875ms in
+probe: reader 3 read 100ms in 6.929042ms after waiting 375ns, 207.416417ms in
+probe: reader 3 read 200ms in 16.625µs after waiting 375ns, 207.489875ms in
+probe: reader 3 read 300ms in 3.563ms after waiting 167ns, 211.084708ms in
+probe: reader 3 read 400ms in 4.6165ms after waiting 333ns, 215.744083ms in
+probe: reader 3 read 500ms in 243.083µs after waiting 208ns, 216.029875ms in
+probe: reader 3 read 600ms in 129.25µs after waiting 375ns, 216.207667ms in
+probe: reader 3 read 700ms in 104.75µs after waiting 250ns, 216.36125ms in
+probe: reader 3 read 800ms in 2.973042ms after waiting 167ns, 219.369333ms in
+probe: reader 3 read 900ms in 21.155584ms after waiting 333ns, 240.572833ms in
+probe: reader 3 read 1s in 11.167µs after waiting 459ns, 240.630917ms in
+probe: reader 3 read 1.1s in 4.667µs after waiting 125ns, 240.665417ms in
+probe: reader 3 read 1.2s in 6.458µs after waiting 208ns, 240.72025ms in
+probe: reader 3 read 1.3s in 976.042µs after waiting 166ns, 241.732667ms in
+probe: reader 3 read 1.4s in 574.334µs after waiting 250ns, 242.349583ms in
+probe: reader 3 read 1.5s in 556.583µs after waiting 375ns, 242.965333ms in
+probe: reader 3 read 1.6s in 536.333µs after waiting 250ns, 243.550667ms in
+probe: reader 3 read 1.7s in 58.667µs after waiting 167ns, 243.647708ms in
+probe: reader 3 read 1.8s in 6.541µs after waiting 167ns, 243.699875ms in
+probe: reader 3 read 1.9s in 5.791µs after waiting 250ns, 243.76575ms in
+probe: reader 3 read 2s in 4.5µs after waiting 83ns, 243.80375ms in
+probe: reader 3 read 2.1s in 4.667µs after waiting 84ns, 243.837875ms in
+probe: reader 3 read 2.2s in 3.25µs after waiting 83ns, 243.873458ms in
+probe: reader 3 read 2.3s in 3.5µs after waiting 83ns, 243.909792ms in
+probe: reader 3 read 2.4s in 53.083µs after waiting 125ns, 243.996ms in
+probe: reader 3 read 2.5s in 38.083µs after waiting 167ns, 244.079292ms in
+probe: reader 3 read 2.6s in 6.125µs after waiting 166ns, 244.129792ms in
+probe: reader 3 read 2.7s in 6.041µs after waiting 208ns, 244.19ms in
+probe: reader 3 read 2.8s in 4.167µs after waiting 125ns, 244.233083ms in
+probe: reader 3 read 2.9s in 3.167µs after waiting 125ns, 244.268375ms in
+probe: sample at 0ns without bytes
+probe: reader 3 read 0ns in 12.541µs after waiting 83ns, 244.313208ms in
+probe: sample at 0ns without bytes
+probe: reader 3 read 0ns in 9.958µs after waiting 125ns, 244.351875ms in
+probe: sample at 3s without bytes
+probe: reader 3 read 3s in 12.334µs after waiting 125ns, 244.394958ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 3 read 18446744073709551615.999999999s in 648.792µs after waiting 125ns, 245.072167ms in
+probe: reader 3 stops at 18446744073709551615.999999999s, 1.066855792s in
+probe: reader 4 of silent.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 4 read 0ns in 33.391583ms after waiting 1.125µs, 52.163167ms in
+probe: reader 4 read 0ns in 140.253042ms after waiting 2.041µs, 192.460958ms in
+probe: reader 4 read 100ms in 24.683541ms after waiting 375ns, 217.203375ms in
+probe: reader 5 of taut-video-8948-140334.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 5 read 0ns in 1.45225ms after waiting 1.583µs, 11.332375ms in
+probe: reader 5 read 0ns in 20.125µs after waiting 958ns, 11.387542ms in
+probe: reader 5 read 100ms in 41.25µs after waiting 166ns, 11.468958ms in
+probe: reader 5 read 200ms in 2.429166ms after waiting 125ns, 13.936958ms in
+probe: reader 5 read 300ms in 632.875µs after waiting 959ns, 14.648333ms in
+probe: reader 5 read 400ms in 10.583µs after waiting 291ns, 14.726ms in
+probe: reader 5 read 500ms in 5.333µs after waiting 167ns, 14.780542ms in
+probe: reader 5 read 600ms in 5.083µs after waiting 125ns, 14.819792ms in
+probe: reader 5 read 700ms in 5.25µs after waiting 166ns, 14.873417ms in
+probe: reader 5 read 800ms in 3.459µs after waiting 125ns, 14.916083ms in
+probe: reader 5 read 900ms in 3.875µs after waiting 125ns, 14.953542ms in
+probe: reader 5 read 1s in 55.042µs after waiting 125ns, 15.042792ms in
+probe: reader 5 read 1.1s in 8.791µs after waiting 125ns, 15.099375ms in
+probe: reader 5 read 1.2s in 3.75µs after waiting 125ns, 15.140875ms in
+probe: reader 5 read 1.3s in 13.25µs after waiting 750ns, 15.381833ms in
+probe: reader 5 read 1.4s in 14.042µs after waiting 333ns, 15.617958ms in
+probe: reader 5 read 1.5s in 5.25µs after waiting 167ns, 15.677ms in
+probe: reader 5 read 1.6s in 31.209µs after waiting 209ns, 15.755ms in
+probe: reader 5 read 1.7s in 31.792µs after waiting 667ns, 16.416708ms in
+probe: reader 5 read 1.8s in 18.493ms after waiting 417ns, 35.020833ms in
+probe: reader 4 read 200ms in 67.109916ms after waiting 375ns, 284.362417ms in
+probe: reader 4 stops at 200ms, 284.412917ms in
+probe: reader 5 read 1.9s in 8.308292ms after waiting 334ns, 43.392667ms in
+probe: reader 5 read 2s in 5.517292ms after waiting 250ns, 48.965583ms in
+probe: reader 5 read 2.1s in 22.541µs after waiting 1.208µs, 49.1905ms in
+probe: reader 5 read 2.2s in 5.416µs after waiting 208ns, 49.243083ms in
+probe: reader 5 read 2.3s in 5µs after waiting 250ns, 49.286542ms in
+probe: reader 5 read 2.4s in 3.875µs after waiting 125ns, 49.328417ms in
+probe: reader 5 read 2.5s in 5.917µs after waiting 125ns, 49.384167ms in
+probe: reader 5 read 2.6s in 5.584µs after waiting 167ns, 49.442208ms in
+probe: reader 5 read 2.7s in 4.708µs after waiting 167ns, 49.492167ms in
+probe: reader 5 read 2.8s in 13.083µs after waiting 375ns, 49.559125ms in
+probe: reader 5 read 2.9s in 206.417µs after waiting 125ns, 49.821208ms in
+probe: sample at 0ns without bytes
+probe: reader 5 read 0ns in 22.625µs after waiting 458ns, 49.901958ms in
+probe: sample at 0ns without bytes
+probe: reader 5 read 0ns in 1.38875ms after waiting 459ns, 51.334958ms in
+probe: sample at 3s without bytes
+probe: reader 5 read 3s in 27.583µs after waiting 1µs, 51.421167ms in
+probe: reader gave no sample after 38 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 5 read 18446744073709551615.999999999s in 2.105166ms after waiting 625ns, 53.586542ms in
+probe: reader 6 of languages.mp4
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 6 read 0ns in 64.032791ms after waiting 1.958µs, 65.629875ms in
+probe: reader 6 read 0ns in 36.875µs after waiting 11.125µs, 65.731583ms in
+probe: reader 6 read 100ms in 11.417µs after waiting 208ns, 65.787458ms in
+probe: reader 6 read 200ms in 7.709µs after waiting 250ns, 65.828708ms in
+probe: reader 6 read 300ms in 8.958µs after waiting 125ns, 65.876875ms in
+probe: reader 6 read 400ms in 6.75µs after waiting 166ns, 65.914667ms in
+probe: reader 6 read 500ms in 5.541µs after waiting 125ns, 65.955375ms in
+probe: reader 6 read 600ms in 4.125µs after waiting 167ns, 65.992083ms in
+probe: reader 6 read 700ms in 3.959µs after waiting 167ns, 66.031708ms in
+probe: reader 6 read 800ms in 4µs after waiting 125ns, 66.068542ms in
+probe: reader 6 read 900ms in 4.667µs after waiting 125ns, 66.109208ms in
+probe: reader 6 read 1s in 5.791µs after waiting 292ns, 66.158125ms in
+probe: reader 6 read 1.1s in 3.75µs after waiting 125ns, 66.193375ms in
+probe: reader 6 read 1.2s in 3.416µs after waiting 125ns, 66.228333ms in
+probe: reader 6 read 1.3s in 4.292µs after waiting 125ns, 66.270042ms in
+probe: reader 6 read 1.4s in 4.833µs after waiting 375ns, 66.326042ms in
+probe: reader 6 read 1.5s in 3.5µs after waiting 125ns, 66.369ms in
+probe: reader 6 read 1.6s in 5.292µs after waiting 291ns, 66.409042ms in
+probe: reader 6 read 1.7s in 3.084µs after waiting 125ns, 66.442958ms in
+probe: reader 6 read 1.8s in 3.458µs after waiting 125ns, 66.477125ms in
+probe: reader 6 read 1.9s in 330.25µs after waiting 83ns, 66.839833ms in
+probe: reader 6 read 2s in 3.426ms after waiting 250ns, 70.3225ms in
+probe: reader 6 read 2.1s in 7.167µs after waiting 333ns, 70.375833ms in
+probe: reader 6 read 2.2s in 7.333µs after waiting 500ns, 70.434542ms in
+probe: reader 6 read 2.3s in 4.667µs after waiting 208ns, 70.481833ms in
+probe: reader 6 read 2.4s in 5µs after waiting 208ns, 70.531417ms in
+probe: reader 6 read 2.5s in 4.125µs after waiting 208ns, 70.580417ms in
+probe: reader 6 read 2.6s in 4.041µs after waiting 209ns, 70.636125ms in
+probe: reader 6 read 2.7s in 4.125µs after waiting 167ns, 70.685125ms in
+probe: reader 6 read 2.8s in 4.25µs after waiting 167ns, 70.729333ms in
+probe: reader 6 read 2.9s in 3.541µs after waiting 125ns, 70.765125ms in
+probe: sample at 0ns without bytes
+probe: reader 6 read 0ns in 11.792µs after waiting 125ns, 70.808167ms in
+probe: sample at 0ns without bytes
+probe: reader 6 read 0ns in 1.085084ms after waiting 167ns, 71.924ms in
+probe: sample at 3s without bytes
+probe: reader 6 read 3s in 32.458µs after waiting 1.583µs, 72.002292ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 6 read 18446744073709551615.999999999s in 639.875µs after waiting 333ns, 72.678792ms in
+probe: reader started at 0ns: true
+probe: reader 6 stops at 18446744073709551615.999999999s, 1.54634125s in
+probe: reader 7 of in-stream.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 7 read 0ns in 106.334µs after waiting 1.459µs, 925.375µs in
+probe: reader 7 read 0ns in 83.791µs after waiting 875ns, 1.045667ms in
+probe: reader 7 read 100ms in 10.584µs after waiting 292ns, 1.089625ms in
+probe: reader 7 read 200ms in 19.542µs after waiting 208ns, 1.145125ms in
+probe: reader 7 read 300ms in 11.875µs after waiting 167ns, 1.190792ms in
+probe: reader 7 read 400ms in 12.042µs after waiting 125ns, 1.232875ms in
+probe: reader 7 read 500ms in 12.708µs after waiting 167ns, 1.274542ms in
+probe: reader 7 read 600ms in 29.542µs after waiting 125ns, 1.334292ms in
+probe: reader 7 read 700ms in 16.041µs after waiting 417ns, 1.401917ms in
+probe: reader 7 read 800ms in 71.625µs after waiting 167ns, 1.501917ms in
+probe: reader 7 read 900ms in 28µs after waiting 291ns, 1.567709ms in
+probe: reader 7 read 1s in 48.042µs after waiting 208ns, 1.648875ms in
+probe: reader 7 read 1.1s in 100.792µs after waiting 208ns, 1.784417ms in
+probe: reader 7 read 1.2s in 13.438333ms after waiting 500ns, 15.292459ms in
+probe: reader 7 read 1.3s in 159.834µs after waiting 750ns, 15.527375ms in
+probe: reader 7 read 1.4s in 16.166µs after waiting 208ns, 15.58875ms in
+probe: reader 7 read 1.5s in 16.167µs after waiting 333ns, 15.656375ms in
+probe: reader 7 read 1.6s in 14µs after waiting 166ns, 15.716834ms in
+probe: reader 7 read 1.7s in 11.875µs after waiting 167ns, 15.76475ms in
+probe: reader 7 read 1.8s in 12.042µs after waiting 167ns, 15.816959ms in
+probe: reader 7 read 1.9s in 19.875µs after waiting 125ns, 15.875959ms in
+probe: reader 7 read 2s in 14.208µs after waiting 167ns, 15.931209ms in
+probe: reader 7 read 2.1s in 9.25µs after waiting 167ns, 15.98875ms in
+probe: reader 7 read 2.2s in 7.458µs after waiting 167ns, 16.038709ms in
+probe: reader 7 read 2.3s in 15.375µs after waiting 167ns, 16.101125ms in
+probe: reader 7 read 2.4s in 14.709µs after waiting 167ns, 16.16475ms in
+probe: reader 7 read 2.5s in 7.166µs after waiting 125ns, 16.214417ms in
+probe: reader 7 read 2.6s in 6.042µs after waiting 167ns, 16.263959ms in
+probe: reader 7 read 2.7s in 10.375µs after waiting 125ns, 16.320959ms in
+probe: reader 7 read 2.8s in 6.167µs after waiting 125ns, 16.366959ms in
+probe: reader 7 read 2.9s in 6.5µs after waiting 125ns, 16.410417ms in
+probe: sample at 0ns without bytes
+probe: reader 7 read 0ns in 14.958µs after waiting 125ns, 16.469917ms in
+probe: sample at 0ns without bytes
+probe: reader 7 read 0ns in 12.167µs after waiting 125ns, 16.519084ms in
+probe: sample at 3s without bytes
+probe: reader 7 read 3s in 23.125µs after waiting 166ns, 16.582709ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 7 read 18446744073709551615.999999999s in 349.375µs after waiting 250ns, 16.975542ms in
+probe: reader 7 stops at 18446744073709551615.999999999s, 2.555578292s in
+probe: reader 8 of in-stream-hevc.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 8 read 0ns in 149.541µs after waiting 833ns, 779.542µs in
+probe: reader 8 read 0ns in 38µs after waiting 875ns, 876.25µs in
+probe: reader 8 read 100ms in 12.5µs after waiting 375ns, 940.209µs in
+probe: reader 8 read 200ms in 19.584µs after waiting 250ns, 1.012125ms in
+probe: reader 8 read 300ms in 14.625µs after waiting 167ns, 1.08475ms in
+probe: reader 8 read 400ms in 18.333µs after waiting 375ns, 1.157334ms in
+probe: reader 8 read 500ms in 15.709µs after waiting 333ns, 1.226125ms in
+probe: reader 8 read 600ms in 57.209µs after waiting 416ns, 1.3605ms in
+probe: reader 8 read 700ms in 16.292µs after waiting 500ns, 1.448625ms in
+probe: reader 8 read 800ms in 10.541µs after waiting 417ns, 1.524292ms in
+probe: reader 8 read 900ms in 27.667µs after waiting 375ns, 1.605375ms in
+probe: reader 8 read 1s in 8.417µs after waiting 458ns, 1.674375ms in
+probe: reader 8 read 1.1s in 22.292µs after waiting 375ns, 1.749625ms in
+probe: reader 8 read 1.2s in 18.833µs after waiting 542ns, 1.909167ms in
+probe: reader 8 read 1.3s in 18.5µs after waiting 375ns, 1.983584ms in
+probe: reader 8 read 1.4s in 11.375µs after waiting 459ns, 2.065125ms in
+probe: reader 8 read 1.5s in 11.667µs after waiting 292ns, 2.141459ms in
+probe: reader 8 read 1.6s in 32.5µs after waiting 417ns, 2.224375ms in
+probe: reader 8 read 1.7s in 20.25µs after waiting 459ns, 2.310334ms in
+probe: reader 8 read 1.8s in 16.583µs after waiting 375ns, 2.391084ms in
+probe: reader 8 read 1.9s in 16.291µs after waiting 375ns, 2.460417ms in
+probe: reader 8 read 2s in 8.375µs after waiting 375ns, 2.527417ms in
+probe: reader 8 read 2.1s in 21.625µs after waiting 750ns, 2.609959ms in
+probe: reader 8 read 2.2s in 14.709µs after waiting 250ns, 2.696125ms in
+probe: reader 8 read 2.3s in 16.291µs after waiting 500ns, 2.761792ms in
+probe: reader 8 read 2.4s in 15.833µs after waiting 167ns, 2.813209ms in
+probe: reader 8 read 2.5s in 8.5µs after waiting 167ns, 2.866167ms in
+probe: reader 8 read 2.6s in 5.833µs after waiting 167ns, 2.914709ms in
+probe: reader 8 read 2.7s in 12.584µs after waiting 333ns, 2.96275ms in
+probe: reader 8 read 2.8s in 7.5µs after waiting 292ns, 3.008542ms in
+probe: reader 8 read 2.9s in 10.75µs after waiting 375ns, 3.062709ms in
+probe: sample at 0ns without bytes
+probe: reader 8 read 0ns in 19.084µs after waiting 375ns, 3.134125ms in
+probe: sample at 0ns without bytes
+probe: reader 8 read 0ns in 13.458µs after waiting 666ns, 3.195542ms in
+probe: sample at 3s without bytes
+probe: reader 8 read 3s in 44.042µs after waiting 375ns, 3.297ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 8 read 18446744073709551615.999999999s in 390.417µs after waiting 459ns, 3.7275ms in
+unrecognised property keyprobe: reader 8 stops at 18446744073709551615.999999999s, 2.55335625s in
+unrecognised property keyprobe: reader 9 of closed-captions.mov
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 9 read 0ns in 13.059791ms after waiting 1.333µs, 13.682667ms in
+probe: reader 9 read 0ns in 252.542µs after waiting 2.25µs, 13.97875ms in
+probe: reader 9 read 100ms in 9.458µs after waiting 291ns, 14.033917ms in
+probe: reader 9 read 200ms in 4.459µs after waiting 125ns, 14.068334ms in
+probe: reader 9 read 300ms in 4.333µs after waiting 125ns, 14.101834ms in
+probe: reader 9 read 400ms in 5.083µs after waiting 208ns, 14.143792ms in
+probe: reader 9 read 500ms in 3.375µs after waiting 125ns, 14.182709ms in
+probe: reader 9 read 600ms in 3.291µs after waiting 83ns, 14.216042ms in
+probe: reader 9 read 700ms in 3.333µs after waiting 125ns, 14.248917ms in
+probe: reader 9 read 800ms in 3µs after waiting 125ns, 14.279292ms in
+probe: reader 9 read 900ms in 5.958µs after waiting 125ns, 14.309792ms in
+probe: reader 9 read 1s in 975.167µs after waiting 125ns, 15.312584ms in
+probe: reader 9 read 1.1s in 283.25µs after waiting 375ns, 15.649959ms in
+probe: reader 9 read 1.2s in 5.084µs after waiting 208ns, 15.695375ms in
+probe: reader 9 read 1.3s in 3.75µs after waiting 167ns, 15.7365ms in
+probe: reader 9 read 1.4s in 3.5µs after waiting 125ns, 15.781459ms in
+probe: reader 9 read 1.5s in 3.5µs after waiting 125ns, 15.824ms in
+probe: reader 9 read 1.6s in 4.917µs after waiting 125ns, 15.866834ms in
+probe: reader 9 read 1.7s in 3.25µs after waiting 125ns, 15.906ms in
+probe: reader 9 read 1.8s in 3.333µs after waiting 125ns, 15.946792ms in
+probe: reader 9 read 1.9s in 3.625µs after waiting 83ns, 15.989ms in
+probe: reader 9 read 2s in 4.5µs after waiting 125ns, 16.029875ms in
+probe: reader 9 read 2.1s in 53.041µs after waiting 875ns, 16.157917ms in
+probe: reader 9 read 2.2s in 7.208µs after waiting 250ns, 16.211084ms in
+probe: reader 9 read 2.3s in 4.459µs after waiting 209ns, 16.26875ms in
+probe: reader 9 read 2.4s in 9.625µs after waiting 125ns, 16.314875ms in
+probe: reader 9 read 2.5s in 4.875µs after waiting 167ns, 16.365667ms in
+probe: reader 9 read 2.6s in 4.5µs after waiting 125ns, 16.414292ms in
+probe: reader 9 read 2.7s in 3.458µs after waiting 125ns, 16.458834ms in
+probe: reader 9 read 2.8s in 3.791µs after waiting 125ns, 16.504167ms in
+probe: reader 9 read 2.9s in 3.125µs after waiting 83ns, 16.549125ms in
+probe: sample at 0ns without bytes
+probe: reader 9 read 0ns in 14.416µs after waiting 167ns, 16.603292ms in
+probe: sample at 0ns without bytes
+probe: reader 9 read 0ns in 10.25µs after waiting 125ns, 16.650917ms in
+probe: sample at 3s without bytes
+probe: reader 9 read 3s in 21.333µs after waiting 125ns, 16.703792ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 9 read 18446744073709551615.999999999s in 291.375µs after waiting 167ns, 17.03475ms in
+probe: reader started at 0ns: true
+probe: reader 9 stops at 18446744073709551615.999999999s, 2.181408292s in
+probe: reader 10 of in-stream.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 10 read 0ns in 37.450542ms after waiting 1µs, 38.651875ms in
+probe: reader 10 read 0ns in 12.77825ms after waiting 875ns, 51.461709ms in
+probe: reader 10 read 100ms in 18.667µs after waiting 583ns, 51.530334ms in
+probe: reader 10 read 200ms in 19.459µs after waiting 291ns, 51.59525ms in
+probe: reader 10 read 300ms in 16.25µs after waiting 250ns, 51.653375ms in
+probe: reader 10 read 400ms in 12.375µs after waiting 166ns, 51.702209ms in
+probe: reader 10 read 500ms in 13.209µs after waiting 125ns, 51.749875ms in
+probe: reader 10 read 600ms in 30.333µs after waiting 125ns, 51.814709ms in
+probe: reader 10 read 700ms in 12.333µs after waiting 166ns, 51.865292ms in
+probe: reader 10 read 800ms in 9.75µs after waiting 125ns, 51.910334ms in
+probe: reader 10 read 900ms in 22.75µs after waiting 167ns, 51.974459ms in
+probe: reader 10 read 1s in 9.25µs after waiting 416ns, 52.023417ms in
+probe: reader 10 read 1.1s in 8.167µs after waiting 333ns, 52.07675ms in
+probe: reader 10 read 1.2s in 17.834µs after waiting 416ns, 52.14925ms in
+probe: reader 10 read 1.3s in 10.791µs after waiting 125ns, 52.2075ms in
+probe: reader 10 read 1.4s in 5.875µs after waiting 125ns, 52.249667ms in
+probe: reader 10 read 1.5s in 8.291µs after waiting 167ns, 52.294167ms in
+probe: reader 10 read 1.6s in 9.959µs after waiting 125ns, 52.3415ms in
+probe: reader 10 read 1.7s in 10.125µs after waiting 125ns, 52.388042ms in
+probe: reader 10 read 1.8s in 21.042µs after waiting 375ns, 52.448459ms in
+probe: reader 10 read 1.9s in 13.208µs after waiting 166ns, 52.508417ms in
+probe: reader 10 read 2s in 7.792µs after waiting 250ns, 52.567ms in
+probe: reader 10 read 2.1s in 5.833µs after waiting 167ns, 52.613959ms in
+probe: reader 10 read 2.2s in 6.792µs after waiting 166ns, 52.66225ms in
+probe: reader 10 read 2.3s in 8.25µs after waiting 83ns, 52.712875ms in
+probe: reader 10 read 2.4s in 7.416µs after waiting 125ns, 52.757542ms in
+probe: reader 10 read 2.5s in 6.417µs after waiting 167ns, 52.809959ms in
+probe: reader 10 read 2.6s in 5.625µs after waiting 125ns, 52.8545ms in
+probe: reader 10 read 2.7s in 8.75µs after waiting 125ns, 52.90025ms in
+probe: reader 10 read 2.8s in 5.291µs after waiting 125ns, 52.9415ms in
+probe: reader 10 read 2.9s in 8.334µs after waiting 125ns, 52.986584ms in
+probe: sample at 0ns without bytes
+probe: reader 10 read 0ns in 11.458µs after waiting 125ns, 53.035042ms in
+probe: sample at 0ns without bytes
+probe: reader 10 read 0ns in 10.458µs after waiting 125ns, 53.077292ms in
+probe: sample at 3s without bytes
+probe: reader 10 read 3s in 12.916µs after waiting 125ns, 53.122167ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 10 read 18446744073709551615.999999999s in 373.375µs after waiting 125ns, 53.527042ms in
+probe: reader 10 stops at 18446744073709551615.999999999s, 2.591870834s in
+probe: reader 11 of in-stream-hevc.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 11 read 0ns in 72.125µs after waiting 958ns, 635.334µs in
+probe: reader 11 read 0ns in 27.458µs after waiting 250ns, 702.292µs in
+probe: reader 11 read 100ms in 8.542µs after waiting 209ns, 747.834µs in
+probe: reader 11 read 200ms in 21µs after waiting 458ns, 808.25µs in
+probe: reader 11 read 300ms in 15.667µs after waiting 250ns, 868.125µs in
+probe: reader 11 read 400ms in 13µs after waiting 208ns, 917.084µs in
+probe: reader 11 read 500ms in 15.041µs after waiting 167ns, 959.417µs in
+probe: reader 11 read 600ms in 28.792µs after waiting 167ns, 1.024084ms in
+probe: reader 11 read 700ms in 8.208µs after waiting 166ns, 1.068167ms in
+probe: reader 11 read 800ms in 6.708µs after waiting 125ns, 1.109625ms in
+probe: reader 11 read 900ms in 23.625µs after waiting 167ns, 1.170459ms in
+probe: reader 11 read 1s in 16.417µs after waiting 166ns, 1.240875ms in
+probe: reader 11 read 1.1s in 10.75µs after waiting 166ns, 1.289834ms in
+probe: reader 11 read 1.2s in 7.25µs after waiting 167ns, 1.331542ms in
+probe: reader 11 read 1.3s in 10.25µs after waiting 167ns, 1.38125ms in
+probe: reader 11 read 1.4s in 7.125µs after waiting 333ns, 1.444125ms in
+probe: reader 11 read 1.5s in 8µs after waiting 125ns, 1.483292ms in
+probe: reader 11 read 1.6s in 15.083µs after waiting 166ns, 1.530917ms in
+probe: reader 11 read 1.7s in 9.709µs after waiting 125ns, 1.5795ms in
+probe: reader 11 read 1.8s in 15.25µs after waiting 167ns, 1.635375ms in
+probe: reader 11 read 1.9s in 15.083µs after waiting 167ns, 1.686292ms in
+probe: reader 11 read 2s in 7.167µs after waiting 166ns, 1.736209ms in
+probe: reader 11 read 2.1s in 5.125µs after waiting 125ns, 1.769834ms in
+probe: reader 11 read 2.2s in 5.042µs after waiting 125ns, 1.806459ms in
+probe: reader 11 read 2.3s in 14.125µs after waiting 125ns, 1.853334ms in
+probe: reader 11 read 2.4s in 6.25µs after waiting 291ns, 1.900459ms in
+probe: reader 11 read 2.5s in 19.417µs after waiting 167ns, 1.961709ms in
+probe: reader 11 read 2.6s in 8.833µs after waiting 125ns, 2.010834ms in
+probe: reader 11 read 2.7s in 9.167µs after waiting 125ns, 2.0605ms in
+probe: reader 11 read 2.8s in 8.625µs after waiting 209ns, 2.110042ms in
+probe: reader 11 read 2.9s in 9.75µs after waiting 167ns, 2.161875ms in
+probe: sample at 0ns without bytes
+probe: reader 11 read 0ns in 13.75µs after waiting 167ns, 2.215042ms in
+probe: sample at 0ns without bytes
+probe: reader 11 read 0ns in 13.292µs after waiting 167ns, 2.263834ms in
+probe: sample at 3s without bytes
+probe: reader 11 read 3s in 26.708µs after waiting 166ns, 2.326542ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 11 read 18446744073709551615.999999999s in 1.124583ms after waiting 208ns, 3.48925ms in
+unrecognised property keyprobe: reader 11 stops at 18446744073709551615.999999999s, 2.548349s in
+unrecognised property keyprobe: reader 12 of closed-captions.mov
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 12 read 0ns in 3.986958ms after waiting 1.708µs, 13.080333ms in
+probe: reader 12 read 0ns in 1.426083ms after waiting 1.375µs, 14.552542ms in
+probe: reader 12 read 100ms in 48.666µs after waiting 209ns, 14.647042ms in
+probe: reader 12 read 200ms in 39.458µs after waiting 167ns, 14.726417ms in
+probe: reader 12 read 300ms in 38.75µs after waiting 167ns, 14.805875ms in
+probe: reader 12 read 400ms in 49.75µs after waiting 125ns, 14.898125ms in
+probe: reader 12 read 500ms in 339.333µs after waiting 167ns, 15.276958ms in
+probe: reader 12 read 600ms in 91.417µs after waiting 250ns, 15.416833ms in
+probe: reader 12 read 700ms in 156.291µs after waiting 208ns, 15.60475ms in
+probe: reader 12 read 800ms in 58µs after waiting 125ns, 15.706792ms in
+probe: reader 12 read 900ms in 33.958µs after waiting 208ns, 15.781167ms in
+probe: reader 12 read 1s in 33.708µs after waiting 166ns, 15.86025ms in
+probe: reader 12 read 1.1s in 32.208µs after waiting 208ns, 15.938375ms in
+probe: reader 12 read 1.2s in 32.334µs after waiting 167ns, 16.013708ms in
+probe: reader 12 read 1.3s in 33.333µs after waiting 167ns, 16.089667ms in
+probe: reader 12 read 1.4s in 32.125µs after waiting 167ns, 16.163958ms in
+probe: reader 12 read 1.5s in 49.5µs after waiting 167ns, 16.257625ms in
+probe: reader 12 read 1.6s in 57.417µs after waiting 209ns, 16.377792ms in
+probe: reader 12 read 1.7s in 5.417µs after waiting 208ns, 16.427708ms in
+probe: reader 12 read 1.8s in 13.042µs after waiting 125ns, 16.483417ms in
+probe: reader 12 read 1.9s in 8.75µs after waiting 125ns, 16.538375ms in
+probe: reader 12 read 2s in 6.667µs after waiting 125ns, 16.583958ms in
+probe: reader 12 read 2.1s in 5.416µs after waiting 125ns, 16.634625ms in
+probe: reader 12 read 2.2s in 5.041µs after waiting 167ns, 16.69125ms in
+probe: reader 12 read 2.3s in 3.708µs after waiting 167ns, 16.752625ms in
+probe: reader 12 read 2.4s in 4.25µs after waiting 167ns, 16.800083ms in
+probe: reader 12 read 2.5s in 3.458µs after waiting 125ns, 16.8465ms in
+probe: reader 12 read 2.6s in 38.041µs after waiting 83ns, 16.919958ms in
+probe: reader 12 read 2.7s in 3.125µs after waiting 125ns, 16.961167ms in
+probe: reader 12 read 2.8s in 3.667µs after waiting 125ns, 17.003167ms in
+probe: reader 12 read 2.9s in 3µs after waiting 125ns, 17.043625ms in
+probe: sample at 0ns without bytes
+probe: reader 12 read 0ns in 13.208µs after waiting 125ns, 17.09175ms in
+probe: sample at 0ns without bytes
+probe: reader 12 read 0ns in 11.417µs after waiting 167ns, 17.139542ms in
+probe: sample at 3s without bytes
+probe: reader 12 read 3s in 11.209µs after waiting 84ns, 17.186583ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 12 read 18446744073709551615.999999999s in 416.75µs after waiting 125ns, 17.633792ms in
+probe: reader started at 0ns: true
+probe: reader 12 stops at 18446744073709551615.999999999s, 2.168906458s in
+probe: reader 13 of in-stream.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 13 read 0ns in 271.167µs after waiting 709ns, 1.206042ms in
+probe: reader 13 read 0ns in 29.042µs after waiting 750ns, 1.265875ms in
+probe: reader 13 read 100ms in 22.208µs after waiting 208ns, 1.320875ms in
+probe: reader 13 read 200ms in 17.209µs after waiting 209ns, 1.385417ms in
+probe: reader 13 read 300ms in 20.375µs after waiting 166ns, 1.435667ms in
+probe: reader 13 read 400ms in 11.875µs after waiting 167ns, 1.483333ms in
+probe: reader 13 read 500ms in 12.666µs after waiting 125ns, 1.525208ms in
+probe: reader 13 read 600ms in 30.625µs after waiting 125ns, 1.59ms in
+probe: reader 13 read 700ms in 101.75µs after waiting 167ns, 1.7235ms in
+probe: reader 13 read 800ms in 40.5µs after waiting 208ns, 1.802792ms in
+probe: reader 13 read 900ms in 30.709µs after waiting 208ns, 1.873083ms in
+probe: reader 13 read 1s in 16.959µs after waiting 500ns, 1.960708ms in
+probe: reader 13 read 1.1s in 10.792µs after waiting 250ns, 2.011458ms in
+probe: reader 13 read 1.2s in 7.041µs after waiting 125ns, 2.054ms in
+probe: reader 13 read 1.3s in 10.709µs after waiting 125ns, 2.095583ms in
+probe: reader 13 read 1.4s in 6.416µs after waiting 167ns, 2.13325ms in
+probe: reader 13 read 1.5s in 16.709µs after waiting 167ns, 2.180833ms in
+probe: reader 13 read 1.6s in 13µs after waiting 167ns, 2.236667ms in
+probe: reader 13 read 1.7s in 11.084µs after waiting 167ns, 2.276542ms in
+probe: reader 13 read 1.8s in 12.875µs after waiting 125ns, 2.320125ms in
+probe: reader 13 read 1.9s in 23.084µs after waiting 334ns, 2.617458ms in
+probe: reader 13 read 2s in 1.185417ms after waiting 250ns, 3.86ms in
+probe: reader 13 read 2.1s in 5.660209ms after waiting 250ns, 9.587208ms in
+probe: reader 13 read 2.2s in 140.666µs after waiting 333ns, 9.78ms in
+probe: reader 13 read 2.3s in 164.625µs after waiting 334ns, 10.00425ms in
+probe: reader 13 read 2.4s in 55.042µs after waiting 166ns, 10.099792ms in
+probe: reader 13 read 2.5s in 195.333µs after waiting 208ns, 10.343625ms in
+probe: reader 13 read 2.6s in 33.75µs after waiting 208ns, 10.415708ms in
+probe: reader 13 read 2.7s in 12.334µs after waiting 167ns, 10.464208ms in
+probe: reader 13 read 2.8s in 8µs after waiting 208ns, 10.511333ms in
+probe: reader 13 read 2.9s in 6.792µs after waiting 166ns, 10.566333ms in
+probe: sample at 0ns without bytes
+probe: reader 13 read 0ns in 14.125µs after waiting 209ns, 10.627125ms in
+probe: sample at 0ns without bytes
+probe: reader 13 read 0ns in 89.709µs after waiting 125ns, 10.749208ms in
+probe: sample at 3s without bytes
+probe: reader 13 read 3s in 3.995875ms after waiting 209ns, 14.777ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 13 read 18446744073709551615.999999999s in 2.44275ms after waiting 542ns, 17.254458ms in
+probe: reader 13 stops at 18446744073709551615.999999999s, 2.545737625s in
+probe: reader 14 of in-stream-hevc.mp4
+probe: reader started at 0ns: true
+unrecognised property keyprobe: sample at 0ns without bytes
+probe: reader 14 read 0ns in 37.260792ms after waiting 1.209µs, 38.053458ms in
+probe: reader 14 read 0ns in 1.985042ms after waiting 2.167µs, 40.092792ms in
+probe: reader 14 read 100ms in 405.167µs after waiting 1.084µs, 40.561292ms in
+probe: reader 14 read 200ms in 39.875µs after waiting 333ns, 40.657792ms in
+probe: reader 14 read 300ms in 27.583µs after waiting 208ns, 40.722583ms in
+probe: reader 14 read 400ms in 13.917µs after waiting 166ns, 40.778708ms in
+probe: reader 14 read 500ms in 44.458µs after waiting 417ns, 40.860917ms in
+probe: reader 14 read 600ms in 59.042µs after waiting 500ns, 40.981708ms in
+probe: reader 14 read 700ms in 11.333µs after waiting 416ns, 41.037625ms in
+probe: reader 14 read 800ms in 113.541µs after waiting 500ns, 41.2075ms in
+probe: reader 14 read 900ms in 127.041µs after waiting 208ns, 41.380917ms in
+probe: reader 14 read 1s in 15.542µs after waiting 375ns, 41.447208ms in
+probe: reader 14 read 1.1s in 9.542µs after waiting 209ns, 41.488667ms in
+probe: reader 14 read 1.2s in 8.458µs after waiting 166ns, 41.530083ms in
+probe: reader 14 read 1.3s in 13.416µs after waiting 167ns, 41.575875ms in
+probe: reader 14 read 1.4s in 7.042µs after waiting 166ns, 41.617333ms in
+probe: reader 14 read 1.5s in 8.25µs after waiting 166ns, 41.656ms in
+probe: reader 14 read 1.6s in 13.5µs after waiting 125ns, 41.700375ms in
+probe: reader 14 read 1.7s in 10.083µs after waiting 83ns, 41.744667ms in
+probe: reader 14 read 1.8s in 11.375µs after waiting 125ns, 41.79ms in
+probe: reader 14 read 1.9s in 16.541µs after waiting 125ns, 41.8375ms in
+probe: reader 14 read 2s in 5.708µs after waiting 125ns, 41.875125ms in
+probe: reader 14 read 2.1s in 10.042µs after waiting 125ns, 41.917583ms in
+probe: reader 14 read 2.2s in 207.75µs after waiting 125ns, 42.163458ms in
+probe: reader 14 read 2.3s in 24.792µs after waiting 250ns, 42.248417ms in
+probe: reader 14 read 2.4s in 11.416µs after waiting 209ns, 42.30575ms in
+probe: reader 14 read 2.5s in 10.708µs after waiting 250ns, 42.3635ms in
+probe: reader 14 read 2.6s in 9µs after waiting 250ns, 42.432792ms in
+probe: reader 14 read 2.7s in 13.417µs after waiting 208ns, 42.496458ms in
+probe: reader 14 read 2.8s in 7.333µs after waiting 208ns, 42.551667ms in
+probe: reader 14 read 2.9s in 7.583µs after waiting 208ns, 42.600125ms in
+probe: sample at 0ns without bytes
+probe: reader 14 read 0ns in 16.291µs after waiting 333ns, 42.660125ms in
+probe: sample at 0ns without bytes
+probe: reader 14 read 0ns in 13.458µs after waiting 167ns, 42.712292ms in
+probe: sample at 3s without bytes
+probe: reader 14 read 3s in 16.542µs after waiting 166ns, 42.766583ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 14 read 18446744073709551615.999999999s in 727.5µs after waiting 125ns, 43.530042ms in
+probe: reader 14 stops at 18446744073709551615.999999999s, 2.570143833s in
+unrecognised property keyprobe: reader 15 of closed-captions.mov
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 15 read 0ns in 75.5µs after waiting 1µs, 683.208µs in
+probe: reader 15 read 0ns in 13.417µs after waiting 334ns, 745.208µs in
+probe: reader 15 read 100ms in 6.875µs after waiting 209ns, 792.125µs in
+probe: reader 15 read 200ms in 5.917µs after waiting 209ns, 846.75µs in
+probe: reader 15 read 300ms in 4.708µs after waiting 167ns, 888.625µs in
+probe: reader 15 read 400ms in 4.5µs after waiting 167ns, 928.541µs in
+probe: reader 15 read 500ms in 9.458µs after waiting 125ns, 979.958µs in
+probe: reader 15 read 600ms in 4.334µs after waiting 125ns, 1.029291ms in
+probe: reader 15 read 700ms in 4.791µs after waiting 125ns, 1.078458ms in
+probe: reader 15 read 800ms in 3.166µs after waiting 125ns, 1.130333ms in
+probe: reader 15 read 900ms in 3.25µs after waiting 83ns, 1.172166ms in
+probe: reader 15 read 1s in 5.5µs after waiting 333ns, 1.22225ms in
+probe: reader 15 read 1.1s in 8.125µs after waiting 84ns, 1.265958ms in
+probe: reader 15 read 1.2s in 4.75µs after waiting 83ns, 1.31825ms in
+probe: reader 15 read 1.3s in 4.5µs after waiting 125ns, 1.370666ms in
+probe: reader 15 read 1.4s in 3.042µs after waiting 125ns, 1.416916ms in
+probe: reader 15 read 1.5s in 2.958µs after waiting 125ns, 1.458625ms in
+probe: reader 15 read 1.6s in 2.917µs after waiting 83ns, 1.501166ms in
+probe: reader 15 read 1.7s in 7.375µs after waiting 167ns, 1.550041ms in
+probe: reader 15 read 1.8s in 3.875µs after waiting 167ns, 1.601ms in
+probe: reader 15 read 1.9s in 4.542µs after waiting 125ns, 1.654625ms in
+probe: reader 15 read 2s in 3.208µs after waiting 83ns, 1.699125ms in
+probe: reader 15 read 2.1s in 3µs after waiting 125ns, 1.737333ms in
+probe: reader 15 read 2.2s in 2.875µs after waiting 125ns, 1.77725ms in
+probe: reader 15 read 2.3s in 7.833µs after waiting 125ns, 1.82575ms in
+probe: reader 15 read 2.4s in 5µs after waiting 125ns, 1.877375ms in
+probe: reader 15 read 2.5s in 3.5µs after waiting 84ns, 1.925083ms in
+probe: reader 15 read 2.6s in 3.458µs after waiting 167ns, 1.979458ms in
+probe: reader 15 read 2.7s in 4.125µs after waiting 125ns, 2.022916ms in
+probe: reader 15 read 2.8s in 4.333µs after waiting 167ns, 2.063625ms in
+probe: reader 15 read 2.9s in 7.25µs after waiting 125ns, 2.11225ms in
+probe: sample at 0ns without bytes
+probe: reader 15 read 0ns in 12.125µs after waiting 125ns, 2.166541ms in
+probe: sample at 0ns without bytes
+probe: reader 15 read 0ns in 12.625µs after waiting 167ns, 2.215916ms in
+probe: sample at 3s without bytes
+probe: reader 15 read 3s in 15.375µs after waiting 167ns, 2.266083ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 15 read 18446744073709551615.999999999s in 626.416µs after waiting 167ns, 2.921583ms in
+probe: reader started at 0ns: true
+probe: reader 15 stops at 18446744073709551615.999999999s, 2.172210375s in
+probe: reader 16 of in-stream.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 16 read 0ns in 113.833µs after waiting 708ns, 753.541µs in
+probe: reader 16 read 0ns in 1.437208ms after waiting 542ns, 2.220708ms in
+probe: reader 16 read 100ms in 5.813084ms after waiting 667ns, 8.111833ms in
+probe: reader 16 read 200ms in 5.921834ms after waiting 333ns, 14.083916ms in
+probe: reader 16 read 300ms in 10.909125ms after waiting 209ns, 25.035125ms in
+probe: reader 16 read 400ms in 5.465583ms after waiting 333ns, 30.544875ms in
+probe: reader 16 read 500ms in 11.326667ms after waiting 458ns, 41.926833ms in
+probe: reader 16 read 600ms in 5.231917ms after waiting 459ns, 47.211208ms in
+probe: reader 16 read 700ms in 5.390041ms after waiting 500ns, 52.671166ms in
+probe: reader 16 read 800ms in 105.584µs after waiting 334ns, 52.840833ms in
+probe: reader 16 read 900ms in 74.458µs after waiting 375ns, 52.973625ms in
+probe: reader 16 read 1s in 64.334µs after waiting 334ns, 53.094416ms in
+probe: reader 16 read 1.1s in 65.833µs after waiting 167ns, 53.210125ms in
+probe: reader 16 read 1.2s in 72.166µs after waiting 292ns, 53.334125ms in
+probe: reader 16 read 1.3s in 85.041µs after waiting 458ns, 53.479208ms in
+probe: reader 16 read 1.4s in 55.333µs after waiting 167ns, 53.5925ms in
+probe: reader 16 read 1.5s in 55µs after waiting 208ns, 53.703875ms in
+probe: reader 16 read 1.6s in 63.75µs after waiting 208ns, 53.818791ms in
+probe: reader 16 read 1.7s in 62.625µs after waiting 208ns, 53.933333ms in
+probe: reader 16 read 1.8s in 60.083µs after waiting 125ns, 54.037625ms in
+probe: reader 16 read 1.9s in 26.25µs after waiting 125ns, 54.121708ms in
+probe: reader 16 read 2s in 55.958µs after waiting 250ns, 54.23075ms in
+probe: reader 16 read 2.1s in 83.209µs after waiting 125ns, 54.351416ms in
+probe: reader 16 read 2.2s in 64.625µs after waiting 125ns, 54.459416ms in
+probe: reader 16 read 2.3s in 54.708µs after waiting 208ns, 54.56825ms in
+probe: reader 16 read 2.4s in 42.75µs after waiting 250ns, 54.668291ms in
+probe: reader 16 read 2.5s in 73.792µs after waiting 166ns, 54.791291ms in
+probe: reader 16 read 2.6s in 44.708µs after waiting 208ns, 54.882375ms in
+probe: reader 16 read 2.7s in 75.625µs after waiting 166ns, 55.00875ms in
+probe: reader 16 read 2.8s in 47.958µs after waiting 208ns, 55.109875ms in
+probe: reader 16 read 2.9s in 58.625µs after waiting 292ns, 55.232458ms in
+probe: sample at 0ns without bytes
+probe: reader 16 read 0ns in 14µs after waiting 167ns, 55.297166ms in
+probe: sample at 0ns without bytes
+probe: reader 16 read 0ns in 12.083µs after waiting 208ns, 55.345041ms in
+probe: sample at 3s without bytes
+probe: reader 16 read 3s in 22.125µs after waiting 167ns, 55.405833ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 16 read 18446744073709551615.999999999s in 636.25µs after waiting 166ns, 56.07225ms in
+probe: reader 16 stops at 18446744073709551615.999999999s, 2.589027333s in
+probe: reader 17 of in-stream-hevc.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 17 read 0ns in 383.125µs after waiting 875ns, 1.034ms in
+unrecognised property keyprobe: reader 17 read 0ns in 9.346833ms after waiting 583ns, 10.419042ms in
+probe: reader 17 read 100ms in 1.465541ms after waiting 333ns, 11.936375ms in
+probe: reader 17 read 200ms in 5.205916ms after waiting 542ns, 17.187667ms in
+probe: reader 17 read 300ms in 5.561417ms after waiting 500ns, 22.816583ms in
+probe: reader 17 read 400ms in 5.705417ms after waiting 250ns, 28.584208ms in
+probe: reader 17 read 500ms in 5.133ms after waiting 375ns, 33.761833ms in
+probe: reader 17 read 600ms in 5.038166ms after waiting 375ns, 38.848292ms in
+probe: reader 17 read 700ms in 5.227709ms after waiting 417ns, 44.127042ms in
+probe: reader 17 read 800ms in 5.683084ms after waiting 334ns, 49.861333ms in
+probe: reader 17 read 900ms in 5.420958ms after waiting 375ns, 55.325667ms in
+probe: reader 17 read 1s in 5.132209ms after waiting 250ns, 60.502792ms in
+probe: reader 17 read 1.1s in 5.15425ms after waiting 292ns, 65.702125ms in
+probe: reader 17 read 1.2s in 5.166708ms after waiting 250ns, 70.912542ms in
+probe: reader 17 read 1.3s in 5.194417ms after waiting 292ns, 76.157208ms in
+probe: reader 17 read 1.4s in 65.208µs after waiting 375ns, 76.279792ms in
+probe: reader 17 read 1.5s in 58.291µs after waiting 292ns, 76.388042ms in
+probe: reader 17 read 1.6s in 81.375µs after waiting 292ns, 76.5145ms in
+probe: reader 17 read 1.7s in 268.958µs after waiting 209ns, 76.823583ms in
+probe: reader 17 read 1.8s in 23.209µs after waiting 250ns, 76.912833ms in
+probe: reader 17 read 1.9s in 108.5µs after waiting 167ns, 77.067875ms in
+probe: reader 17 read 2s in 356.083µs after waiting 542ns, 77.532708ms in
+probe: reader 17 read 2.1s in 143.291µs after waiting 250ns, 77.715ms in
+probe: reader 17 read 2.2s in 81.792µs after waiting 250ns, 77.847667ms in
+probe: reader 17 read 2.3s in 24.5µs after waiting 292ns, 77.942833ms in
+probe: reader 17 read 2.4s in 12.459µs after waiting 250ns, 78.010583ms in
+probe: reader 17 read 2.5s in 53.042µs after waiting 250ns, 78.122ms in
+probe: reader 17 read 2.6s in 58.625µs after waiting 291ns, 78.221792ms in
+probe: reader 17 read 2.7s in 86.792µs after waiting 250ns, 78.371833ms in
+probe: reader 17 read 2.8s in 157.166µs after waiting 208ns, 78.571875ms in
+probe: reader 17 read 2.9s in 80.875µs after waiting 167ns, 78.688542ms in
+probe: sample at 0ns without bytes
+probe: reader 17 read 0ns in 14.042µs after waiting 208ns, 78.763958ms in
+probe: sample at 0ns without bytes
+probe: reader 17 read 0ns in 99.125µs after waiting 209ns, 78.904292ms in
+probe: sample at 3s without bytes
+probe: reader 17 read 3s in 17.5µs after waiting 542ns, 78.959375ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 17 read 18446744073709551615.999999999s in 765.708µs after waiting 125ns, 79.752292ms in
+probe: reader 17 stops at 18446744073709551615.999999999s, 2.664318833s in
+unrecognised property keyprobe: reader 18 of closed-captions.mov
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 18 read 0ns in 92.25µs after waiting 834ns, 644.208µs in
+probe: reader 18 read 0ns in 16.417µs after waiting 375ns, 697.208µs in
+probe: reader 18 read 100ms in 6.084µs after waiting 209ns, 738.083µs in
+probe: reader 18 read 200ms in 5.083µs after waiting 167ns, 779.667µs in
+probe: reader 18 read 300ms in 4.417µs after waiting 125ns, 820.208µs in
+probe: reader 18 read 400ms in 4.417µs after waiting 167ns, 861.542µs in
+probe: reader 18 read 500ms in 4.084µs after waiting 125ns, 901.083µs in
+probe: reader 18 read 600ms in 8.959µs after waiting 125ns, 945.917µs in
+probe: reader 18 read 700ms in 6.5µs after waiting 125ns, 986.292µs in
+probe: reader 18 read 800ms in 3.208µs after waiting 83ns, 1.020292ms in
+probe: reader 18 read 900ms in 4.041µs after waiting 83ns, 1.0565ms in
+probe: reader 18 read 1s in 3.584µs after waiting 125ns, 1.091333ms in
+probe: reader 18 read 1.1s in 3µs after waiting 83ns, 1.126875ms in
+probe: reader 18 read 1.2s in 2.833µs after waiting 83ns, 1.160208ms in
+probe: reader 18 read 1.3s in 7.334µs after waiting 84ns, 1.197208ms in
+probe: reader 18 read 1.4s in 3.833µs after waiting 83ns, 1.24025ms in
+probe: reader 18 read 1.5s in 3.916µs after waiting 125ns, 1.281542ms in
+probe: reader 18 read 1.6s in 3.417µs after waiting 125ns, 1.323083ms in
+probe: reader 18 read 1.7s in 3.208µs after waiting 125ns, 1.357792ms in
+probe: reader 18 read 1.8s in 2.709µs after waiting 84ns, 1.395417ms in
+probe: reader 18 read 1.9s in 6.791µs after waiting 125ns, 1.4305ms in
+probe: reader 18 read 2s in 5.208µs after waiting 167ns, 1.473208ms in
+probe: reader 18 read 2.1s in 3.334µs after waiting 125ns, 1.511083ms in
+probe: reader 18 read 2.2s in 4µs after waiting 125ns, 1.555083ms in
+probe: reader 18 read 2.3s in 3.666µs after waiting 167ns, 1.59425ms in
+probe: reader 18 read 2.4s in 8.459µs after waiting 125ns, 1.640708ms in
+probe: reader 18 read 2.5s in 3.833µs after waiting 166ns, 1.68625ms in
+probe: reader 18 read 2.6s in 3.875µs after waiting 125ns, 1.732583ms in
+probe: reader 18 read 2.7s in 3.125µs after waiting 125ns, 1.772708ms in
+probe: reader 18 read 2.8s in 3.167µs after waiting 166ns, 1.815708ms in
+probe: reader 18 read 2.9s in 5.958µs after waiting 83ns, 1.856667ms in
+probe: sample at 0ns without bytes
+probe: reader 18 read 0ns in 12.708µs after waiting 125ns, 1.907125ms in
+probe: sample at 0ns without bytes
+probe: reader 18 read 0ns in 11.833µs after waiting 167ns, 1.949375ms in
+probe: sample at 3s without bytes
+probe: reader 18 read 3s in 22.666µs after waiting 167ns, 2.005875ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 18 read 18446744073709551615.999999999s in 401.292µs after waiting 209ns, 2.444167ms in
+probe: reader started at 0ns: true
+probe: reader 18 stops at 18446744073709551615.999999999s, 2.156628792s in
+probe: reader 19 of in-stream.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 19 read 0ns in 107.416µs after waiting 542ns, 740.708µs in
+probe: reader 19 read 0ns in 6.743167ms after waiting 500ns, 7.52225ms in
+probe: reader 19 read 100ms in 7.878958ms after waiting 667ns, 15.492416ms in
+probe: reader 19 read 200ms in 5.806ms after waiting 375ns, 21.352583ms in
+probe: reader 19 read 300ms in 5.849875ms after waiting 292ns, 27.247916ms in
+probe: reader 19 read 400ms in 5.772667ms after waiting 292ns, 33.07525ms in
+probe: reader 19 read 500ms in 5.185208ms after waiting 333ns, 38.321208ms in
+probe: reader 19 read 600ms in 7.753375ms after waiting 375ns, 46.130541ms in
+probe: reader 19 read 700ms in 5.580792ms after waiting 375ns, 51.759ms in
+probe: reader 19 read 800ms in 51.416µs after waiting 375ns, 51.871583ms in
+probe: reader 19 read 900ms in 65.084µs after waiting 250ns, 51.989666ms in
+probe: reader 19 read 1s in 49.459µs after waiting 209ns, 52.086208ms in
+probe: reader 19 read 1.1s in 36.417µs after waiting 250ns, 52.180375ms in
+probe: reader 19 read 1.2s in 13.917µs after waiting 166ns, 52.241166ms in
+probe: reader 19 read 1.3s in 54.25µs after waiting 209ns, 52.343583ms in
+probe: reader 19 read 1.4s in 7.083µs after waiting 208ns, 52.39975ms in
+probe: reader 19 read 1.5s in 35.584µs after waiting 167ns, 52.483416ms in
+probe: reader 19 read 1.6s in 14.208µs after waiting 167ns, 52.548375ms in
+probe: reader 19 read 1.7s in 50.834µs after waiting 167ns, 52.645666ms in
+probe: reader 19 read 1.8s in 14.833µs after waiting 166ns, 52.709583ms in
+probe: reader 19 read 1.9s in 16.583µs after waiting 167ns, 52.773ms in
+probe: reader 19 read 2s in 6.875µs after waiting 209ns, 52.826958ms in
+probe: reader 19 read 2.1s in 42.208µs after waiting 167ns, 52.91025ms in
+probe: reader 19 read 2.2s in 47.625µs after waiting 166ns, 53.004666ms in
+probe: reader 19 read 2.3s in 53.833µs after waiting 250ns, 53.109458ms in
+probe: reader 19 read 2.4s in 9.25µs after waiting 291ns, 53.173875ms in
+probe: reader 19 read 2.5s in 11.833µs after waiting 208ns, 53.23625ms in
+probe: reader 19 read 2.6s in 35.375µs after waiting 209ns, 53.318916ms in
+probe: reader 19 read 2.7s in 11.583µs after waiting 208ns, 53.379333ms in
+probe: reader 19 read 2.8s in 71.959µs after waiting 125ns, 53.493791ms in
+probe: reader 19 read 2.9s in 72.5µs after waiting 208ns, 53.612ms in
+probe: sample at 0ns without bytes
+probe: reader 19 read 0ns in 15.416µs after waiting 208ns, 53.671583ms in
+probe: sample at 0ns without bytes
+probe: reader 19 read 0ns in 12.167µs after waiting 167ns, 53.7175ms in
+probe: sample at 3s without bytes
+probe: reader 19 read 3s in 21.584µs after waiting 167ns, 53.773916ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 19 read 18446744073709551615.999999999s in 424.5µs after waiting 250ns, 54.240916ms in
+probe: reader 19 stops at 18446744073709551615.999999999s, 2.571405s in
+probe: reader 20 of in-stream-hevc.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 20 read 0ns in 107.458µs after waiting 666ns, 691.084µs in
+probe: reader 20 read 0ns in 1.522875ms after waiting 833ns, 2.252959ms in
+unrecognised property keyprobe: reader 20 read 100ms in 7.967667ms after waiting 334ns, 10.279084ms in
+probe: reader 20 read 200ms in 6.241459ms after waiting 250ns, 16.5785ms in
+probe: reader 20 read 300ms in 5.543583ms after waiting 291ns, 22.179792ms in
+probe: reader 20 read 400ms in 5.850208ms after waiting 250ns, 28.090125ms in
+probe: reader 20 read 500ms in 7.23625ms after waiting 250ns, 35.391459ms in
+probe: reader 20 read 600ms in 5.78375ms after waiting 250ns, 41.234417ms in
+probe: reader 20 read 700ms in 5.598041ms after waiting 292ns, 46.887709ms in
+probe: reader 20 read 800ms in 5.150292ms after waiting 1.125µs, 52.162625ms in
+probe: reader 20 read 900ms in 7.598917ms after waiting 167ns, 59.822084ms in
+probe: reader 20 read 1s in 6.205417ms after waiting 208ns, 66.081ms in
+probe: reader 20 read 1.1s in 5.262334ms after waiting 250ns, 71.404375ms in
+probe: reader 20 read 1.2s in 6.289417ms after waiting 166ns, 77.74325ms in
+probe: reader 20 read 1.3s in 17.542µs after waiting 334ns, 77.821834ms in
+probe: reader 20 read 1.4s in 54.875µs after waiting 208ns, 77.929375ms in
+probe: reader 20 read 1.5s in 58.125µs after waiting 333ns, 78.054125ms in
+probe: reader 20 read 1.6s in 54.291µs after waiting 208ns, 78.173167ms in
+probe: reader 20 read 1.7s in 55.75µs after waiting 209ns, 78.288167ms in
+probe: reader 20 read 1.8s in 17.958µs after waiting 250ns, 78.360542ms in
+probe: reader 20 read 1.9s in 40.541µs after waiting 167ns, 78.456667ms in
+probe: reader 20 read 2s in 46.916µs after waiting 167ns, 78.561292ms in
+probe: reader 20 read 2.1s in 61.375µs after waiting 250ns, 78.678875ms in
+probe: reader 20 read 2.2s in 48.917µs after waiting 292ns, 78.789459ms in
+probe: reader 20 read 2.3s in 52.917µs after waiting 250ns, 78.903375ms in
+probe: reader 20 read 2.4s in 9.875µs after waiting 250ns, 78.986334ms in
+probe: reader 20 read 2.5s in 53.708µs after waiting 208ns, 79.075375ms in
+probe: reader 20 read 2.6s in 50.5µs after waiting 250ns, 79.172292ms in
+probe: reader 20 read 2.7s in 51.833µs after waiting 167ns, 79.265334ms in
+probe: reader 20 read 2.8s in 48.75µs after waiting 167ns, 79.359625ms in
+probe: reader 20 read 2.9s in 45.667µs after waiting 209ns, 79.445334ms in
+probe: sample at 0ns without bytes
+probe: reader 20 read 0ns in 15.833µs after waiting 167ns, 79.507209ms in
+probe: sample at 0ns without bytes
+probe: reader 20 read 0ns in 14.334µs after waiting 209ns, 79.559209ms in
+probe: sample at 3s without bytes
+probe: reader 20 read 3s in 21.75µs after waiting 167ns, 79.615417ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 20 read 18446744073709551615.999999999s in 404.791µs after waiting 208ns, 80.051792ms in
+probe: reader 20 stops at 18446744073709551615.999999999s, 2.659893459s in
+unrecognised property keyprobe: reader 21 of closed-captions.mov
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 21 read 0ns in 4.343084ms after waiting 750ns, 5.15625ms in
+probe: reader 21 read 0ns in 5.751125ms after waiting 584ns, 11.013375ms in
+probe: reader 21 read 100ms in 3.223208ms after waiting 417ns, 14.305375ms in
+probe: reader 21 read 200ms in 5.644833ms after waiting 208ns, 19.99825ms in
+probe: reader started at 0ns: true
+probe: reader 21 read 300ms in 6.9175ms after waiting 375ns, 26.967292ms in
+probe: reader 21 read 400ms in 15.841084ms after waiting 292ns, 42.846125ms in
+probe: reader 21 read 500ms in 90.666µs after waiting 417ns, 42.990167ms in
+probe: reader 21 read 600ms in 116.333µs after waiting 250ns, 43.151583ms in
+probe: reader 21 read 700ms in 283.792µs after waiting 333ns, 43.477458ms in
+probe: reader 21 read 800ms in 98.167µs after waiting 292ns, 43.630208ms in
+probe: reader 21 read 900ms in 163.083µs after waiting 333ns, 43.839625ms in
+probe: reader 21 read 1s in 156.583µs after waiting 500ns, 44.06025ms in
+probe: reader 21 read 1.1s in 87.375µs after waiting 250ns, 44.196375ms in
+probe: reader 21 read 1.2s in 57.375µs after waiting 250ns, 44.301833ms in
+probe: reader 21 read 1.3s in 48.084µs after waiting 334ns, 44.401833ms in
+probe: reader 21 read 1.4s in 169.25µs after waiting 125ns, 44.616792ms in
+probe: reader 21 read 1.5s in 58.417µs after waiting 250ns, 44.721708ms in
+probe: reader 21 read 1.6s in 46µs after waiting 209ns, 44.814125ms in
+probe: reader 21 read 1.7s in 139.542µs after waiting 167ns, 44.993667ms in
+probe: reader 21 read 1.8s in 45.292µs after waiting 209ns, 45.085417ms in
+probe: reader 21 read 1.9s in 48µs after waiting 209ns, 45.177375ms in
+probe: reader 21 read 2s in 42.959µs after waiting 167ns, 45.261083ms in
+probe: reader 21 read 2.1s in 136.167µs after waiting 166ns, 45.438333ms in
+probe: reader 21 read 2.2s in 53.917µs after waiting 208ns, 45.533583ms in
+probe: reader 21 read 2.3s in 34.667µs after waiting 167ns, 45.611542ms in
+probe: reader 21 read 2.4s in 45.125µs after waiting 166ns, 45.700417ms in
+probe: reader 21 read 2.5s in 42.292µs after waiting 208ns, 45.787708ms in
+probe: reader 21 read 2.6s in 44.333µs after waiting 208ns, 45.877292ms in
+probe: reader 21 read 2.7s in 33.708µs after waiting 291ns, 45.991875ms in
+probe: reader 21 read 2.8s in 7.5µs after waiting 167ns, 46.042125ms in
+probe: reader 21 read 2.9s in 79.625µs after waiting 125ns, 46.154958ms in
+probe: sample at 0ns without bytes
+probe: reader 21 read 0ns in 17.375µs after waiting 375ns, 46.236083ms in
+probe: sample at 0ns without bytes
+probe: reader 21 read 0ns in 14.583µs after waiting 250ns, 46.298ms in
+probe: sample at 3s without bytes
+probe: reader 21 read 3s in 20.083µs after waiting 625ns, 46.476542ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 21 read 18446744073709551615.999999999s in 1.873333ms after waiting 208ns, 48.388583ms in
+probe: reader 21 stops at 18446744073709551615.999999999s, 2.18283875s in
+probe: reader 22 of other-channels.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 22 read 0ns in 90.666µs after waiting 1.083µs, 701µs in
+probe: reader 22 read 0ns in 26.792µs after waiting 416ns, 764.958µs in
+probe: reader 22 read 100ms in 8.084µs after waiting 250ns, 811.958µs in
+probe: reader 22 read 200ms in 21.625µs after waiting 250ns, 873.5µs in
+probe: reader 22 read 300ms in 10.417µs after waiting 167ns, 922.917µs in
+probe: reader 22 read 400ms in 17.458µs after waiting 208ns, 976.667µs in
+probe: reader 22 read 500ms in 21.292µs after waiting 166ns, 1.03425ms in
+probe: reader 22 read 600ms in 30.083µs after waiting 125ns, 1.09825ms in
+probe: reader 22 read 700ms in 16.125µs after waiting 209ns, 1.157ms in
+probe: reader 22 read 800ms in 15.666µs after waiting 167ns, 1.210167ms in
+probe: reader 22 read 900ms in 12.334µs after waiting 125ns, 1.254833ms in
+probe: reader 22 read 1s in 5.75µs after waiting 167ns, 1.290042ms in
+probe: reader 22 read 1.1s in 5.208µs after waiting 125ns, 1.324292ms in
+probe: reader 22 read 1.2s in 7.708µs after waiting 167ns, 1.363292ms in
+probe: reader 22 read 1.3s in 10.084µs after waiting 125ns, 1.411708ms in
+probe: reader 22 read 1.4s in 7.667µs after waiting 166ns, 1.458583ms in
+probe: reader 22 read 1.5s in 7.25µs after waiting 167ns, 1.5105ms in
+probe: reader 22 read 1.6s in 8.084µs after waiting 125ns, 1.555667ms in
+probe: reader 22 read 1.7s in 9.542µs after waiting 125ns, 1.595375ms in
+probe: reader 22 read 1.8s in 17.75µs after waiting 125ns, 1.643375ms in
+probe: reader 22 read 1.9s in 15.417µs after waiting 167ns, 1.696458ms in
+probe: reader 22 read 2s in 14.5µs after waiting 166ns, 1.753292ms in
+probe: reader 22 read 2.1s in 15.625µs after waiting 125ns, 1.805333ms in
+probe: reader 22 read 2.2s in 7.792µs after waiting 167ns, 1.855917ms in
+probe: reader 22 read 2.3s in 7.958µs after waiting 166ns, 1.9065ms in
+probe: reader 22 read 2.4s in 10.5µs after waiting 125ns, 1.957375ms in
+probe: reader 22 read 2.5s in 6µs after waiting 167ns, 2.005333ms in
+probe: reader 22 read 2.6s in 7.541µs after waiting 167ns, 2.050875ms in
+probe: reader 22 read 2.7s in 8.167µs after waiting 167ns, 2.100917ms in
+probe: reader 22 read 2.8s in 7.25µs after waiting 167ns, 2.1525ms in
+probe: reader 22 read 2.9s in 17.375µs after waiting 166ns, 2.206042ms in
+probe: sample at 0ns without bytes
+probe: reader 22 read 0ns in 10.084µs after waiting 167ns, 2.253708ms in
+probe: sample at 0ns without bytes
+probe: reader 22 read 0ns in 12.375µs after waiting 208ns, 2.300667ms in
+probe: sample at 3s without bytes
+probe: reader 22 read 3s in 19.708µs after waiting 166ns, 2.356625ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 22 read 18446744073709551615.999999999s in 720.458µs after waiting 333ns, 3.122375ms in
+probe: reader 22 stops at 18446744073709551615.999999999s, 94.024208ms in
+probe: reader 23 of other-channels.mov
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 23 read 0ns in 101.666µs after waiting 625ns, 782.292µs in
+probe: reader 23 read 0ns in 17.25µs after waiting 416ns, 839.042µs in
+probe: reader 23 read 100ms in 6.458µs after waiting 250ns, 880.417µs in
+probe: reader 23 read 200ms in 4.75µs after waiting 125ns, 923.125µs in
+probe: reader 23 read 300ms in 5µs after waiting 166ns, 977.542µs in
+probe: reader 23 read 400ms in 70.5µs after waiting 208ns, 1.081417ms in
+probe: reader 23 read 500ms in 8.708µs after waiting 291ns, 1.135083ms in
+probe: reader 23 read 600ms in 4.083µs after waiting 166ns, 1.170125ms in
+probe: reader 23 read 700ms in 3.541µs after waiting 125ns, 1.200958ms in
+probe: reader 23 read 800ms in 3.375µs after waiting 83ns, 1.233292ms in
+probe: reader 23 read 900ms in 12.375µs after waiting 125ns, 1.274167ms in
+probe: reader 23 read 1s in 5.458µs after waiting 125ns, 1.3165ms in
+probe: reader 23 read 1.1s in 7.25µs after waiting 125ns, 1.365083ms in
+probe: reader 23 read 1.2s in 4.666µs after waiting 125ns, 1.40025ms in
+probe: reader 23 read 1.3s in 3.792µs after waiting 84ns, 1.4345ms in
+probe: reader 23 read 1.4s in 3.5µs after waiting 83ns, 1.477042ms in
+probe: reader 23 read 1.5s in 3.917µs after waiting 84ns, 1.514042ms in
+probe: reader 23 read 1.6s in 5.541µs after waiting 125ns, 1.549458ms in
+probe: reader 23 read 1.7s in 6.375µs after waiting 83ns, 1.590125ms in
+probe: reader 23 read 1.8s in 5.416µs after waiting 125ns, 1.632708ms in
+probe: reader 23 read 1.9s in 3.541µs after waiting 83ns, 1.667ms in
+probe: reader 23 read 2s in 2.875µs after waiting 84ns, 1.698833ms in
+probe: reader 23 read 2.1s in 3.792µs after waiting 209ns, 1.741292ms in
+probe: reader 23 read 2.2s in 10.542µs after waiting 83ns, 1.781458ms in
+probe: reader 23 read 2.3s in 7.125µs after waiting 125ns, 1.829208ms in
+probe: reader 23 read 2.4s in 5.125µs after waiting 83ns, 1.865708ms in
+probe: reader 23 read 2.5s in 3.833µs after waiting 83ns, 1.898458ms in
+probe: reader 23 read 2.6s in 4.041µs after waiting 83ns, 1.937625ms in
+probe: reader 23 read 2.7s in 3.167µs after waiting 83ns, 1.971583ms in
+probe: reader 23 read 2.8s in 2.833µs after waiting 125ns, 2.004917ms in
+probe: reader 23 read 2.9s in 7.292µs after waiting 84ns, 2.042417ms in
+probe: sample at 0ns without bytes
+probe: reader 23 read 0ns in 11.083µs after waiting 125ns, 2.083417ms in
+probe: sample at 0ns without bytes
+probe: reader 23 read 0ns in 8.958µs after waiting 125ns, 2.116875ms in
+probe: sample at 3s without bytes
+probe: reader 23 read 3s in 15.5µs after waiting 83ns, 2.159125ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 23 read 18446744073709551615.999999999s in 230.25µs after waiting 125ns, 2.414292ms in
+probe: reader started at 0ns: true
+probe: reader 23 stops at 18446744073709551615.999999999s, 95.317375ms in
+probe: reader 24 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 24 read 0ns in 1.135667ms after waiting 750ns, 4.288166ms in
+probe: reader 24 read 0ns in 6.794958ms after waiting 583ns, 11.145625ms in
+probe: reader 24 read 100ms in 6.147791ms after waiting 542ns, 17.341ms in
+probe: reader 24 read 200ms in 5.18175ms after waiting 292ns, 22.565458ms in
+probe: reader 24 read 300ms in 5.27675ms after waiting 333ns, 27.894791ms in
+probe: reader 24 read 400ms in 6.796542ms after waiting 292ns, 34.75525ms in
+probe: reader 24 read 500ms in 5.349708ms after waiting 333ns, 40.147416ms in
+probe: reader 24 read 600ms in 5.344166ms after waiting 375ns, 45.536583ms in
+probe: reader 24 read 700ms in 5.105334ms after waiting 292ns, 50.688166ms in
+probe: reader 24 read 800ms in 55.583µs after waiting 250ns, 50.815ms in
+probe: reader 24 read 900ms in 62.458µs after waiting 167ns, 50.936625ms in
+probe: reader 24 read 1s in 65.292µs after waiting 209ns, 51.052708ms in
+probe: reader 24 read 1.1s in 50.417µs after waiting 375ns, 51.16675ms in
+probe: reader 24 read 1.2s in 47.417µs after waiting 208ns, 51.263791ms in
+probe: reader 24 read 1.3s in 52µs after waiting 166ns, 51.356541ms in
+probe: reader 24 read 1.4s in 118.5µs after waiting 250ns, 51.516416ms in
+probe: reader 24 read 1.5s in 60.417µs after waiting 209ns, 51.6215ms in
+probe: reader 24 read 1.6s in 44.542µs after waiting 125ns, 51.718791ms in
+probe: reader 24 read 1.7s in 63.625µs after waiting 333ns, 51.835666ms in
+probe: reader 24 read 1.8s in 50.916µs after waiting 250ns, 51.939958ms in
+probe: reader 24 read 1.9s in 49.875µs after waiting 208ns, 52.037375ms in
+probe: reader 24 read 2s in 44.25µs after waiting 167ns, 52.125916ms in
+probe: reader 24 read 2.1s in 52.292µs after waiting 167ns, 52.2215ms in
+probe: reader 24 read 2.2s in 36.834µs after waiting 167ns, 52.303541ms in
+probe: reader 24 read 2.3s in 47.916µs after waiting 125ns, 52.395583ms in
+probe: reader 24 read 2.4s in 44.584µs after waiting 167ns, 52.485541ms in
+probe: reader 24 read 2.5s in 37.5µs after waiting 208ns, 52.576ms in
+probe: reader 24 read 2.6s in 79.208µs after waiting 166ns, 52.700083ms in
+probe: reader 24 read 2.7s in 58.792µs after waiting 125ns, 52.79975ms in
+probe: reader 24 read 2.8s in 61.292µs after waiting 125ns, 52.898958ms in
+probe: reader 24 read 2.9s in 54.75µs after waiting 250ns, 53.001625ms in
+probe: sample at 0ns without bytes
+probe: reader 24 read 0ns in 16.542µs after waiting 167ns, 53.061458ms in
+probe: sample at 0ns without bytes
+probe: reader 24 read 0ns in 15.625µs after waiting 208ns, 53.11575ms in
+probe: sample at 3s without bytes
+probe: reader 24 read 3s in 16.667µs after waiting 125ns, 53.16825ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 24 read 18446744073709551615.999999999s in 397.125µs after waiting 917ns, 53.619041ms in
+probe: reader 24 stops at 18446744073709551615.999999999s, 125.612375ms in
+probe: reader 25 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 25 read 0ns in 90.708µs after waiting 916ns, 763.125µs in
+probe: reader 25 read 0ns in 5.398417ms after waiting 542ns, 6.195416ms in
+probe: reader 25 read 100ms in 5.09825ms after waiting 208ns, 11.342791ms in
+probe: reader 25 read 200ms in 5.106875ms after waiting 250ns, 16.496958ms in
+probe: reader 25 read 300ms in 5.143708ms after waiting 292ns, 21.691625ms in
+probe: reader 25 read 400ms in 6.181667ms after waiting 208ns, 27.912708ms in
+probe: reader 25 read 500ms in 5.206625ms after waiting 291ns, 33.167166ms in
+probe: reader 25 read 600ms in 52.167µs after waiting 417ns, 33.281541ms in
+probe: reader 25 read 700ms in 68.375µs after waiting 291ns, 33.393125ms in
+probe: reader 25 read 800ms in 70.917µs after waiting 250ns, 33.5035ms in
+probe: reader 25 read 900ms in 111.209µs after waiting 209ns, 33.652916ms in
+probe: reader 25 read 1s in 53.667µs after waiting 209ns, 33.746416ms in
+probe: reader 25 read 1.1s in 62.208µs after waiting 250ns, 33.849583ms in
+probe: reader 25 read 1.2s in 46.5µs after waiting 208ns, 33.938583ms in
+probe: reader 25 read 1.3s in 53.709µs after waiting 209ns, 34.029958ms in
+probe: reader 25 read 1.4s in 36.125µs after waiting 375ns, 34.12075ms in
+probe: reader 25 read 1.5s in 49.166µs after waiting 208ns, 34.214666ms in
+probe: reader 25 read 1.6s in 56.5µs after waiting 208ns, 34.317125ms in
+probe: reader 25 read 1.7s in 75.959µs after waiting 125ns, 34.432041ms in
+probe: reader 25 read 1.8s in 56.625µs after waiting 208ns, 34.539625ms in
+probe: reader 25 read 1.9s in 53.333µs after waiting 208ns, 34.637375ms in
+probe: reader 25 read 2s in 50µs after waiting 167ns, 34.731208ms in
+probe: reader 25 read 2.1s in 52.541µs after waiting 167ns, 34.819708ms in
+probe: reader 25 read 2.2s in 59.167µs after waiting 166ns, 34.91875ms in
+probe: reader 25 read 2.3s in 41.833µs after waiting 208ns, 35.00625ms in
+probe: reader 25 read 2.4s in 48.042µs after waiting 209ns, 35.09975ms in
+probe: reader 25 read 2.5s in 53.875µs after waiting 208ns, 35.199416ms in
+probe: reader 25 read 2.6s in 57.541µs after waiting 167ns, 35.296458ms in
+probe: reader 25 read 2.7s in 48.417µs after waiting 166ns, 35.387916ms in
+probe: reader 25 read 2.8s in 62.833µs after waiting 167ns, 35.499ms in
+probe: reader 25 read 2.9s in 78.875µs after waiting 250ns, 35.625791ms in
+probe: sample at 0ns without bytes
+probe: reader 25 read 0ns in 16.917µs after waiting 209ns, 35.689ms in
+probe: sample at 0ns without bytes
+probe: reader 25 read 0ns in 13.791µs after waiting 167ns, 35.735083ms in
+probe: sample at 3s without bytes
+probe: reader 25 read 3s in 15.25µs after waiting 125ns, 35.785083ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 25 read 18446744073709551615.999999999s in 348.666µs after waiting 167ns, 36.187833ms in
+probe: reader 25 stops at 18446744073709551615.999999999s, 164.36575ms in
+probe: reader 26 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 26 read 0ns in 86.917µs after waiting 916ns, 774.333µs in
+probe: reader 26 read 0ns in 5.718958ms after waiting 375ns, 6.527666ms in
+probe: reader 26 read 100ms in 5.894833ms after waiting 333ns, 12.477625ms in
+probe: reader 26 read 200ms in 5.23325ms after waiting 459ns, 17.772333ms in
+probe: reader 26 read 300ms in 5.585583ms after waiting 375ns, 23.408125ms in
+probe: reader 26 read 400ms in 11.633708ms after waiting 292ns, 35.083666ms in
+probe: reader 26 read 500ms in 117.417µs after waiting 458ns, 35.244708ms in
+probe: reader 26 read 600ms in 64.375µs after waiting 291ns, 35.361791ms in
+probe: reader 26 read 700ms in 71.875µs after waiting 208ns, 35.475791ms in
+probe: reader 26 read 800ms in 64.625µs after waiting 375ns, 35.582583ms in
+probe: reader 26 read 900ms in 73.375µs after waiting 333ns, 35.700666ms in
+probe: reader 26 read 1s in 62.25µs after waiting 208ns, 35.802041ms in
+probe: reader 26 read 1.1s in 51.583µs after waiting 208ns, 35.889333ms in
+probe: reader 26 read 1.2s in 53.416µs after waiting 208ns, 35.987708ms in
+probe: reader 26 read 1.3s in 44.25µs after waiting 209ns, 36.074333ms in
+probe: reader 26 read 1.4s in 52.375µs after waiting 167ns, 36.165208ms in
+probe: reader 26 read 1.5s in 48.334µs after waiting 250ns, 36.257416ms in
+probe: reader 26 read 1.6s in 48.084µs after waiting 167ns, 36.346916ms in
+probe: reader 26 read 1.7s in 47µs after waiting 208ns, 36.43825ms in
+probe: reader 26 read 1.8s in 59.125µs after waiting 208ns, 36.53225ms in
+probe: reader 26 read 1.9s in 46.916µs after waiting 167ns, 36.621958ms in
+probe: reader 26 read 2s in 44.292µs after waiting 208ns, 36.708291ms in
+probe: reader 26 read 2.1s in 50.958µs after waiting 167ns, 36.797ms in
+probe: reader 26 read 2.2s in 46.083µs after waiting 208ns, 36.884458ms in
+probe: reader 26 read 2.3s in 49.75µs after waiting 209ns, 36.978875ms in
+probe: reader 26 read 2.4s in 47.25µs after waiting 208ns, 37.069916ms in
+probe: reader 26 read 2.5s in 57.458µs after waiting 166ns, 37.169083ms in
+probe: reader 26 read 2.6s in 32.125µs after waiting 166ns, 37.243375ms in
+probe: reader 26 read 2.7s in 53.333µs after waiting 167ns, 37.338ms in
+probe: reader 26 read 2.8s in 39.667µs after waiting 166ns, 37.427166ms in
+probe: reader 26 read 2.9s in 72.25µs after waiting 208ns, 37.544083ms in
+probe: sample at 0ns without bytes
+probe: reader 26 read 0ns in 13.875µs after waiting 166ns, 37.603125ms in
+probe: sample at 0ns without bytes
+probe: reader 26 read 0ns in 12.959µs after waiting 209ns, 37.648541ms in
+probe: sample at 3s without bytes
+probe: reader 26 read 3s in 14.875µs after waiting 125ns, 37.694625ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 26 read 18446744073709551615.999999999s in 320.375µs after waiting 750ns, 38.068875ms in
+probe: reader 26 stops at 18446744073709551615.999999999s, 165.767625ms in
+probe: reader 27 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 27 read 0ns in 96.958µs after waiting 1.208µs, 719.584µs in
+probe: reader 27 read 0ns in 5.097916ms after waiting 667ns, 5.863917ms in
+probe: reader 27 read 100ms in 10.396334ms after waiting 417ns, 16.320167ms in
+probe: reader 27 read 200ms in 5.258208ms after waiting 500ns, 21.623084ms in
+probe: reader 27 read 300ms in 5.125083ms after waiting 375ns, 26.79875ms in
+probe: reader 27 read 400ms in 5.833ms after waiting 375ns, 32.676125ms in
+probe: reader 27 read 500ms in 690.75µs after waiting 291ns, 33.414459ms in
+probe: reader 27 read 600ms in 184.875µs after waiting 375ns, 33.638875ms in
+probe: reader 27 read 700ms in 89.5µs after waiting 375ns, 33.778834ms in
+probe: reader 27 read 800ms in 57.458µs after waiting 208ns, 33.878292ms in
+probe: reader 27 read 900ms in 50.583µs after waiting 208ns, 33.976125ms in
+probe: reader 27 read 1s in 59.709µs after waiting 375ns, 34.079917ms in
+probe: reader 27 read 1.1s in 76.166µs after waiting 208ns, 34.196917ms in
+probe: reader 27 read 1.2s in 69.708µs after waiting 291ns, 34.313834ms in
+probe: reader 27 read 1.3s in 39.416µs after waiting 208ns, 34.396292ms in
+probe: reader 27 read 1.4s in 82.541µs after waiting 125ns, 34.519667ms in
+probe: reader 27 read 1.5s in 127.875µs after waiting 209ns, 34.691834ms in
+probe: reader 27 read 1.6s in 46.083µs after waiting 291ns, 34.792292ms in
+probe: reader 27 read 1.7s in 68.25µs after waiting 167ns, 34.902042ms in
+probe: reader 27 read 1.8s in 50.25µs after waiting 334ns, 35.033959ms in
+probe: reader 27 read 1.9s in 87.25µs after waiting 166ns, 35.170709ms in
+probe: reader 27 read 2s in 573.583µs after waiting 208ns, 35.783792ms in
+probe: reader 27 read 2.1s in 112.209µs after waiting 250ns, 35.936667ms in
+probe: reader 27 read 2.2s in 49.25µs after waiting 333ns, 36.038625ms in
+probe: reader 27 read 2.3s in 69.709µs after waiting 209ns, 36.15775ms in
+probe: reader 27 read 2.4s in 58.375µs after waiting 208ns, 36.261084ms in
+probe: reader 27 read 2.5s in 107.417µs after waiting 166ns, 36.421625ms in
+probe: reader 27 read 2.6s in 61.417µs after waiting 125ns, 36.529375ms in
+probe: reader 27 read 2.7s in 65.042µs after waiting 250ns, 36.650959ms in
+probe: reader 27 read 2.8s in 86.541µs after waiting 250ns, 36.787292ms in
+probe: reader 27 read 2.9s in 56.208µs after waiting 208ns, 36.887042ms in
+probe: sample at 0ns without bytes
+probe: reader 27 read 0ns in 16.167µs after waiting 208ns, 36.948959ms in
+probe: sample at 0ns without bytes
+probe: reader 27 read 0ns in 12.334µs after waiting 167ns, 36.999084ms in
+probe: sample at 3s without bytes
+probe: reader 27 read 3s in 17.459µs after waiting 209ns, 37.04725ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 27 read 18446744073709551615.999999999s in 281µs after waiting 208ns, 37.363584ms in
+probe: reader 27 stops at 18446744073709551615.999999999s, 170.648167ms in
+probe: reader 28 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 28 read 0ns in 121.375µs after waiting 833ns, 814.667µs in
+probe: reader 28 read 0ns in 1.45125ms after waiting 458ns, 2.300375ms in
+probe: reader 28 read 100ms in 5.141083ms after waiting 292ns, 7.486459ms in
+probe: reader 28 read 200ms in 11.811208ms after waiting 250ns, 19.348334ms in
+probe: reader 28 read 300ms in 4.948959ms after waiting 292ns, 24.34125ms in
+probe: reader 28 read 400ms in 5.448375ms after waiting 208ns, 29.822875ms in
+probe: reader 28 read 500ms in 104.083µs after waiting 250ns, 29.9695ms in
+probe: reader 28 read 600ms in 83.875µs after waiting 333ns, 30.095375ms in
+probe: reader 28 read 700ms in 53.416µs after waiting 333ns, 30.194459ms in
+probe: reader 28 read 800ms in 41.958µs after waiting 333ns, 30.288834ms in
+probe: reader 28 read 900ms in 46.625µs after waiting 334ns, 30.387084ms in
+probe: reader 28 read 1s in 41µs after waiting 250ns, 30.477709ms in
+probe: reader 28 read 1.1s in 87.542µs after waiting 250ns, 30.605375ms in
+probe: reader 28 read 1.2s in 50.875µs after waiting 209ns, 30.696667ms in
+probe: reader 28 read 1.3s in 51.792µs after waiting 208ns, 30.788709ms in
+probe: reader 28 read 1.4s in 35.583µs after waiting 250ns, 30.865459ms in
+probe: reader 28 read 1.5s in 27.292µs after waiting 250ns, 30.93625ms in
+probe: reader 28 read 1.6s in 35.875µs after waiting 208ns, 31.013584ms in
+probe: reader 28 read 1.7s in 34.875µs after waiting 208ns, 31.091875ms in
+probe: reader 28 read 1.8s in 24.5µs after waiting 167ns, 31.156625ms in
+probe: reader 28 read 1.9s in 36µs after waiting 166ns, 31.234542ms in
+probe: reader 28 read 2s in 24.541µs after waiting 167ns, 31.295917ms in
+probe: reader 28 read 2.1s in 46.417µs after waiting 167ns, 31.381625ms in
+probe: reader 28 read 2.2s in 43µs after waiting 167ns, 31.472042ms in
+probe: reader 28 read 2.3s in 41.208µs after waiting 166ns, 31.552417ms in
+probe: reader 28 read 2.4s in 50.416µs after waiting 208ns, 31.646542ms in
+probe: reader 28 read 2.5s in 25.083µs after waiting 208ns, 31.712334ms in
+probe: reader 28 read 2.6s in 34.667µs after waiting 166ns, 31.791125ms in
+probe: reader 28 read 2.7s in 41.834µs after waiting 209ns, 31.871875ms in
+probe: reader 28 read 2.8s in 53.209µs after waiting 125ns, 31.965ms in
+probe: reader 28 read 2.9s in 34.958µs after waiting 125ns, 32.039334ms in
+probe: sample at 0ns without bytes
+probe: reader 28 read 0ns in 14.375µs after waiting 167ns, 32.09625ms in
+probe: sample at 0ns without bytes
+probe: reader 28 read 0ns in 12µs after waiting 208ns, 32.142334ms in
+probe: sample at 3s without bytes
+probe: reader 28 read 3s in 17.292µs after waiting 125ns, 32.186375ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 28 read 18446744073709551615.999999999s in 285.208µs after waiting 250ns, 32.507459ms in
+probe: reader 28 stops at 18446744073709551615.999999999s, 163.231375ms in
+probe: reader 29 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 29 read 0ns in 103.666µs after waiting 1.25µs, 708.875µs in
+probe: reader 29 read 0ns in 5.536ms after waiting 542ns, 6.280042ms in
+probe: reader 29 read 100ms in 5.083833ms after waiting 333ns, 11.408417ms in
+probe: reader 29 read 200ms in 5.688542ms after waiting 333ns, 17.14225ms in
+probe: reader 29 read 300ms in 5.202125ms after waiting 250ns, 22.384292ms in
+probe: reader 29 read 400ms in 7.222667ms after waiting 334ns, 29.6535ms in
+probe: reader 29 read 500ms in 57.208µs after waiting 333ns, 29.764584ms in
+probe: reader 29 read 600ms in 56.959µs after waiting 209ns, 29.860375ms in
+probe: reader 29 read 700ms in 53.709µs after waiting 167ns, 29.950625ms in
+probe: reader 29 read 800ms in 45µs after waiting 167ns, 30.035ms in
+probe: reader 29 read 900ms in 38.208µs after waiting 292ns, 30.113334ms in
+probe: reader 29 read 1s in 42.167µs after waiting 209ns, 30.195834ms in
+probe: reader 29 read 1.1s in 28.833µs after waiting 166ns, 30.262042ms in
+probe: reader 29 read 1.2s in 28.292µs after waiting 125ns, 30.33075ms in
+probe: reader 29 read 1.3s in 56.75µs after waiting 167ns, 30.429917ms in
+probe: reader 29 read 1.4s in 16.375µs after waiting 583ns, 30.51775ms in
+probe: reader 29 read 1.5s in 82.583µs after waiting 167ns, 30.640709ms in
+probe: reader 29 read 1.6s in 602.291µs after waiting 708ns, 31.318417ms in
+probe: reader 29 read 1.7s in 464.792µs after waiting 333ns, 31.865875ms in
+probe: reader 29 read 1.8s in 252.208µs after waiting 292ns, 32.177709ms in
+probe: reader 29 read 1.9s in 257.791µs after waiting 250ns, 32.507042ms in
+probe: reader 29 read 2s in 549.25µs after waiting 166ns, 33.114334ms in
+probe: reader 29 read 2.1s in 852.042µs after waiting 250ns, 34.01375ms in
+probe: reader 29 read 2.2s in 88.583µs after waiting 125ns, 34.145834ms in
+probe: reader 29 read 2.3s in 54.208µs after waiting 458ns, 34.267167ms in
+probe: reader 29 read 2.4s in 89.458µs after waiting 125ns, 34.389125ms in
+probe: reader 29 read 2.5s in 66.209µs after waiting 250ns, 34.500667ms in
+probe: reader 29 read 2.6s in 188.625µs after waiting 292ns, 34.73125ms in
+probe: reader 29 read 2.7s in 62.5µs after waiting 292ns, 34.842084ms in
+probe: reader 29 read 2.8s in 147.167µs after waiting 375ns, 35.045209ms in
+probe: reader 29 read 2.9s in 198.875µs after waiting 250ns, 35.291ms in
+probe: sample at 0ns without bytes
+probe: reader 29 read 0ns in 81.042µs after waiting 166ns, 35.411125ms in
+probe: sample at 0ns without bytes
+probe: reader 29 read 0ns in 50.542µs after waiting 292ns, 35.504125ms in
+probe: sample at 3s without bytes
+probe: reader 29 read 3s in 21.167µs after waiting 291ns, 35.5635ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 29 read 18446744073709551615.999999999s in 347.625µs after waiting 208ns, 35.946875ms in
+probe: reader 29 stops at 18446744073709551615.999999999s, 170.878167ms in
+probe: reader 30 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 30 read 0ns in 113.208µs after waiting 1µs, 777µs in
+probe: reader 30 read 0ns in 5.567667ms after waiting 875ns, 6.377333ms in
+probe: reader 30 read 100ms in 7.305375ms after waiting 500ns, 13.734041ms in
+probe: reader 30 read 200ms in 5.173167ms after waiting 333ns, 18.949333ms in
+probe: reader 30 read 300ms in 12.244083ms after waiting 208ns, 31.234083ms in
+probe: reader 30 read 400ms in 57.5µs after waiting 291ns, 31.33275ms in
+probe: reader 30 read 500ms in 48.833µs after waiting 333ns, 31.430791ms in
+probe: reader 30 read 600ms in 58.334µs after waiting 292ns, 31.529666ms in
+probe: reader 30 read 700ms in 43.25µs after waiting 208ns, 31.613541ms in
+probe: reader 30 read 800ms in 36.458µs after waiting 208ns, 31.68625ms in
+probe: reader 30 read 900ms in 29.166µs after waiting 208ns, 31.752958ms in
+probe: reader 30 read 1s in 38.917µs after waiting 167ns, 31.82875ms in
+probe: reader 30 read 1.1s in 37.042µs after waiting 167ns, 31.90475ms in
+probe: reader 30 read 1.2s in 54.084µs after waiting 167ns, 32.002666ms in
+probe: reader 30 read 1.3s in 43.916µs after waiting 167ns, 32.091208ms in
+probe: reader 30 read 1.4s in 37.583µs after waiting 166ns, 32.170333ms in
+probe: reader 30 read 1.5s in 34.084µs after waiting 125ns, 32.243791ms in
+probe: reader 30 read 1.6s in 45.042µs after waiting 167ns, 32.33175ms in
+probe: reader 30 read 1.7s in 42.625µs after waiting 167ns, 32.417208ms in
+probe: reader 30 read 1.8s in 39.667µs after waiting 208ns, 32.49825ms in
+probe: reader 30 read 1.9s in 6.708µs after waiting 250ns, 32.56125ms in
+probe: reader 30 read 2s in 39.583µs after waiting 208ns, 32.648416ms in
+probe: reader 30 read 2.1s in 41.459µs after waiting 167ns, 32.725916ms in
+probe: reader 30 read 2.2s in 54.833µs after waiting 125ns, 32.819ms in
+probe: reader 30 read 2.3s in 70.25µs after waiting 250ns, 32.934583ms in
+probe: reader 30 read 2.4s in 53.791µs after waiting 208ns, 33.035458ms in
+probe: reader 30 read 2.5s in 24.416µs after waiting 291ns, 33.117833ms in
+probe: reader 30 read 2.6s in 127.625µs after waiting 166ns, 33.280708ms in
+probe: reader 30 read 2.7s in 113.375µs after waiting 333ns, 33.4425ms in
+probe: reader 30 read 2.8s in 125.708µs after waiting 250ns, 33.610208ms in
+probe: reader 30 read 2.9s in 73.5µs after waiting 250ns, 33.728958ms in
+probe: sample at 0ns without bytes
+probe: reader 30 read 0ns in 15.625µs after waiting 208ns, 33.789041ms in
+probe: sample at 0ns without bytes
+probe: reader 30 read 0ns in 12.667µs after waiting 166ns, 33.835125ms in
+probe: sample at 3s without bytes
+probe: reader 30 read 3s in 19.334µs after waiting 125ns, 33.885541ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 30 read 18446744073709551615.999999999s in 310.041µs after waiting 9.375µs, 34.262833ms in
+probe: reader 30 stops at 18446744073709551615.999999999s, 165.31625ms in
+probe: reader 31 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 31 read 0ns in 133.042µs after waiting 792ns, 750.708µs in
+probe: reader 31 read 0ns in 1.443666ms after waiting 500ns, 2.222167ms in
+probe: reader 31 read 100ms in 5.756542ms after waiting 375ns, 8.037833ms in
+probe: reader 31 read 200ms in 16.939375ms after waiting 292ns, 25.021583ms in
+probe: reader 31 read 300ms in 4.12075ms after waiting 375ns, 29.186625ms in
+probe: reader 31 read 400ms in 368µs after waiting 417ns, 29.612958ms in
+probe: reader 31 read 500ms in 526.083µs after waiting 250ns, 30.180417ms in
+probe: reader 31 read 600ms in 493.75µs after waiting 291ns, 30.722167ms in
+probe: reader 31 read 700ms in 1.336666ms after waiting 292ns, 32.108208ms in
+probe: reader 31 read 800ms in 176.333µs after waiting 292ns, 32.335458ms in
+probe: reader 31 read 900ms in 45.958µs after waiting 333ns, 32.428125ms in
+probe: reader 31 read 1s in 60µs after waiting 209ns, 32.52975ms in
+probe: reader 31 read 1.1s in 98.666µs after waiting 250ns, 32.665875ms in
+probe: reader 31 read 1.2s in 146µs after waiting 208ns, 32.86075ms in
+probe: reader 31 read 1.3s in 75.833µs after waiting 208ns, 32.98ms in
+probe: reader 31 read 1.4s in 67.667µs after waiting 166ns, 33.093625ms in
+probe: reader 31 read 1.5s in 229.958µs after waiting 208ns, 33.372792ms in
+probe: reader 31 read 1.6s in 97.292µs after waiting 166ns, 33.517458ms in
+probe: reader 31 read 1.7s in 114.75µs after waiting 209ns, 33.68275ms in
+probe: reader 31 read 1.8s in 171.083µs after waiting 250ns, 33.895875ms in
+probe: reader 31 read 1.9s in 81.959µs after waiting 209ns, 34.0345ms in
+probe: reader 31 read 2s in 35.875µs after waiting 291ns, 34.124917ms in
+probe: reader 31 read 2.1s in 56.042µs after waiting 208ns, 34.219833ms in
+probe: reader 31 read 2.2s in 36.208µs after waiting 167ns, 34.302167ms in
+probe: reader 31 read 2.3s in 44.375µs after waiting 167ns, 34.391083ms in
+probe: reader 31 read 2.4s in 231.416µs after waiting 167ns, 34.663417ms in
+probe: reader 31 read 2.5s in 48.333µs after waiting 166ns, 34.7535ms in
+probe: reader 31 read 2.6s in 43.334µs after waiting 167ns, 34.841833ms in
+probe: reader 31 read 2.7s in 51.708µs after waiting 208ns, 34.937625ms in
+probe: reader 31 read 2.8s in 36.334µs after waiting 250ns, 35.029208ms in
+probe: reader 31 read 2.9s in 44.125µs after waiting 209ns, 35.115ms in
+probe: sample at 0ns without bytes
+probe: reader 31 read 0ns in 14.75µs after waiting 166ns, 35.175917ms in
+probe: sample at 0ns without bytes
+probe: reader 31 read 0ns in 16.375µs after waiting 166ns, 35.227417ms in
+probe: sample at 3s without bytes
+probe: reader 31 read 3s in 12.833µs after waiting 125ns, 35.27275ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 31 read 18446744073709551615.999999999s in 339.833µs after waiting 166ns, 35.649292ms in
+probe: reader 31 stops at 18446744073709551615.999999999s, 169.309667ms in
+probe: reader 32 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 32 read 0ns in 107.75µs after waiting 750ns, 728.542µs in
+probe: reader 32 read 0ns in 1.496125ms after waiting 2.625µs, 2.262833ms in
+probe: reader 32 read 100ms in 5.744875ms after waiting 292ns, 8.058583ms in
+probe: reader 32 read 200ms in 13.424709ms after waiting 250ns, 21.544ms in
+probe: reader 32 read 300ms in 6.140083ms after waiting 333ns, 27.738208ms in
+probe: reader 32 read 400ms in 6.234458ms after waiting 333ns, 34.031208ms in
+probe: reader 32 read 500ms in 38.875µs after waiting 375ns, 34.124042ms in
+probe: reader 32 read 600ms in 66.916µs after waiting 333ns, 34.238ms in
+probe: reader 32 read 700ms in 69.167µs after waiting 208ns, 34.345083ms in
+probe: reader 32 read 800ms in 44.833µs after waiting 209ns, 34.427208ms in
+probe: reader 32 read 900ms in 29.5µs after waiting 291ns, 34.501292ms in
+probe: reader 32 read 1s in 43.084µs after waiting 209ns, 34.583208ms in
+probe: reader 32 read 1.1s in 34.333µs after waiting 208ns, 34.655125ms in
+probe: reader 32 read 1.2s in 49.666µs after waiting 208ns, 34.745ms in
+probe: reader 32 read 1.3s in 37.125µs after waiting 167ns, 34.821708ms in
+probe: reader 32 read 1.4s in 27.042µs after waiting 167ns, 34.888542ms in
+probe: reader 32 read 1.5s in 46.25µs after waiting 125ns, 34.973875ms in
+probe: reader 32 read 1.6s in 41.625µs after waiting 208ns, 35.055875ms in
+probe: reader 32 read 1.7s in 46.083µs after waiting 167ns, 35.141042ms in
+probe: reader 32 read 1.8s in 51.417µs after waiting 209ns, 35.234667ms in
+probe: reader 32 read 1.9s in 7.208µs after waiting 292ns, 35.295917ms in
+probe: reader 32 read 2s in 53.167µs after waiting 209ns, 35.399292ms in
+probe: reader 32 read 2.1s in 90.375µs after waiting 209ns, 35.527542ms in
+probe: reader 32 read 2.2s in 54.083µs after waiting 333ns, 35.633542ms in
+probe: reader 32 read 2.3s in 70.125µs after waiting 250ns, 35.748667ms in
+probe: reader 32 read 2.4s in 230.708µs after waiting 167ns, 36.0265ms in
+probe: reader 32 read 2.5s in 66.667µs after waiting 250ns, 36.158417ms in
+probe: reader 32 read 2.6s in 119.667µs after waiting 208ns, 36.318667ms in
+probe: reader 32 read 2.7s in 36.583µs after waiting 208ns, 36.398625ms in
+probe: reader 32 read 2.8s in 49.625µs after waiting 166ns, 36.490167ms in
+probe: reader 32 read 2.9s in 36.541µs after waiting 167ns, 36.5665ms in
+probe: sample at 0ns without bytes
+probe: reader 32 read 0ns in 13.125µs after waiting 125ns, 36.62125ms in
+probe: sample at 0ns without bytes
+probe: reader 32 read 0ns in 11.667µs after waiting 125ns, 36.665375ms in
+probe: sample at 3s without bytes
+probe: reader 32 read 3s in 15.166µs after waiting 167ns, 36.707083ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 32 read 18446744073709551615.999999999s in 283.208µs after waiting 166ns, 37.02575ms in
+probe: reader 32 stops at 18446744073709551615.999999999s, 163.271ms in
+probe: reader 33 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 33 read 0ns in 108.792µs after waiting 583ns, 699.75µs in
+probe: reader 33 read 0ns in 1.517625ms after waiting 375ns, 2.256209ms in
+probe: reader 33 read 100ms in 13.824208ms after waiting 292ns, 16.129042ms in
+probe: reader 33 read 200ms in 5.408208ms after waiting 250ns, 21.583417ms in
+probe: reader 33 read 300ms in 6.636083ms after waiting 250ns, 28.259917ms in
+probe: reader 33 read 400ms in 6.355084ms after waiting 208ns, 34.652417ms in
+probe: reader 33 read 500ms in 380.334µs after waiting 292ns, 35.076042ms in
+probe: reader 33 read 600ms in 143.666µs after waiting 333ns, 35.265834ms in
+probe: reader 33 read 700ms in 295.541µs after waiting 208ns, 35.601959ms in
+probe: reader 33 read 800ms in 43.958µs after waiting 250ns, 35.70825ms in
+probe: reader 33 read 900ms in 55.708µs after waiting 250ns, 35.806167ms in
+probe: reader 33 read 1s in 94.75µs after waiting 209ns, 35.935834ms in
+probe: reader 33 read 1.1s in 59.042µs after waiting 166ns, 36.03625ms in
+probe: reader 33 read 1.2s in 131.167µs after waiting 334ns, 36.21775ms in
+probe: reader 33 read 1.3s in 47.25µs after waiting 291ns, 36.323625ms in
+probe: reader 33 read 1.4s in 71.583µs after waiting 208ns, 36.439959ms in
+probe: reader 33 read 1.5s in 27.292µs after waiting 167ns, 36.511584ms in
+probe: reader 33 read 1.6s in 42.125µs after waiting 208ns, 36.601459ms in
+probe: reader 33 read 1.7s in 71.833µs after waiting 167ns, 36.713334ms in
+probe: reader 33 read 1.8s in 59.042µs after waiting 166ns, 36.8175ms in
+probe: reader 33 read 1.9s in 71.458µs after waiting 167ns, 36.927834ms in
+probe: reader 33 read 2s in 79.833µs after waiting 166ns, 37.050459ms in
+probe: reader 33 read 2.1s in 51.125µs after waiting 333ns, 37.16475ms in
+probe: reader 33 read 2.2s in 78.875µs after waiting 125ns, 37.2785ms in
+probe: reader 33 read 2.3s in 46.583µs after waiting 208ns, 37.376417ms in
+probe: reader 33 read 2.4s in 46.417µs after waiting 250ns, 37.474084ms in
+probe: reader 33 read 2.5s in 28.791µs after waiting 208ns, 37.550084ms in
+probe: reader 33 read 2.6s in 25.583µs after waiting 750ns, 37.650292ms in
+probe: reader 33 read 2.7s in 182.5µs after waiting 208ns, 37.873625ms in
+probe: reader 33 read 2.8s in 370.166µs after waiting 208ns, 38.283917ms in
+probe: reader 33 read 2.9s in 142.875µs after waiting 208ns, 38.479792ms in
+probe: sample at 0ns without bytes
+probe: reader 33 read 0ns in 12.833µs after waiting 167ns, 38.535334ms in
+probe: sample at 0ns without bytes
+probe: reader 33 read 0ns in 1.295167ms after waiting 250ns, 39.865042ms in
+probe: sample at 3s without bytes
+probe: reader 33 read 3s in 44.667µs after waiting 541ns, 39.945ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 33 read 18446744073709551615.999999999s in 674.208µs after waiting 250ns, 40.660334ms in
+probe: reader 33 stops at 18446744073709551615.999999999s, 171.60325ms in
+probe: reader 34 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 34 read 0ns in 100.875µs after waiting 792ns, 767.083µs in
+probe: reader 34 read 0ns in 5.126875ms after waiting 583ns, 5.93175ms in
+probe: reader 34 read 100ms in 5.78925ms after waiting 333ns, 11.791541ms in
+probe: reader 34 read 200ms in 6.0315ms after waiting 250ns, 17.86725ms in
+probe: reader 34 read 300ms in 11.864209ms after waiting 333ns, 29.792333ms in
+probe: reader 34 read 400ms in 118.334µs after waiting 250ns, 29.955666ms in
+probe: reader 34 read 500ms in 72.791µs after waiting 208ns, 30.068833ms in
+probe: reader 34 read 600ms in 115.291µs after waiting 250ns, 30.223083ms in
+probe: reader 34 read 700ms in 137.042µs after waiting 209ns, 30.4075ms in
+probe: reader 34 read 800ms in 50.625µs after waiting 334ns, 30.515708ms in
+probe: reader 34 read 900ms in 38.75µs after waiting 208ns, 30.594416ms in
+probe: reader 34 read 1s in 36.25µs after waiting 250ns, 30.674666ms in
+probe: reader 34 read 1.1s in 40.125µs after waiting 208ns, 30.75275ms in
+probe: reader 34 read 1.2s in 27.208µs after waiting 208ns, 30.81825ms in
+probe: reader 34 read 1.3s in 33.584µs after waiting 167ns, 30.890375ms in
+probe: reader 34 read 1.4s in 34.958µs after waiting 166ns, 30.966208ms in
+probe: reader 34 read 1.5s in 33.25µs after waiting 125ns, 31.038125ms in
+probe: reader 34 read 1.6s in 33.5µs after waiting 167ns, 31.111791ms in
+probe: reader 34 read 1.7s in 37.042µs after waiting 208ns, 31.191041ms in
+probe: reader 34 read 1.8s in 35.125µs after waiting 167ns, 31.263791ms in
+probe: reader 34 read 1.9s in 71µs after waiting 125ns, 31.374625ms in
+probe: reader 34 read 2s in 60.166µs after waiting 167ns, 31.471458ms in
+probe: reader 34 read 2.1s in 51.583µs after waiting 125ns, 31.560458ms in
+probe: reader 34 read 2.2s in 36.083µs after waiting 166ns, 31.636833ms in
+probe: reader 34 read 2.3s in 46.708µs after waiting 167ns, 31.725125ms in
+probe: reader 34 read 2.4s in 48µs after waiting 250ns, 31.820041ms in
+probe: reader 34 read 2.5s in 34.583µs after waiting 167ns, 31.88975ms in
+probe: reader 34 read 2.6s in 33.417µs after waiting 166ns, 31.969291ms in
+probe: reader 34 read 2.7s in 66.083µs after waiting 166ns, 32.074208ms in
+probe: reader 34 read 2.8s in 26.792µs after waiting 209ns, 32.14275ms in
+probe: reader 34 read 2.9s in 27.875µs after waiting 166ns, 32.210875ms in
+probe: sample at 0ns without bytes
+probe: reader 34 read 0ns in 14.584µs after waiting 167ns, 32.266291ms in
+probe: sample at 0ns without bytes
+probe: reader 34 read 0ns in 11.791µs after waiting 167ns, 32.309208ms in
+probe: sample at 3s without bytes
+probe: reader 34 read 3s in 15.75µs after waiting 167ns, 32.358125ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 34 read 18446744073709551615.999999999s in 319.875µs after waiting 209ns, 32.7135ms in
+probe: reader 34 stops at 18446744073709551615.999999999s, 163.632833ms in
+probe: reader 35 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 35 read 0ns in 116.416µs after waiting 542ns, 777.667µs in
+probe: reader 35 read 0ns in 1.380709ms after waiting 292ns, 2.192792ms in
+probe: reader 35 read 100ms in 5.191458ms after waiting 334ns, 7.429917ms in
+probe: reader 35 read 200ms in 11.607333ms after waiting 333ns, 19.086417ms in
+probe: reader 35 read 300ms in 5.992083ms after waiting 291ns, 25.119709ms in
+probe: reader 35 read 400ms in 5.49025ms after waiting 292ns, 30.654125ms in
+probe: reader 35 read 500ms in 348.75µs after waiting 250ns, 31.046959ms in
+probe: reader 35 read 600ms in 233.708µs after waiting 416ns, 31.331209ms in
+probe: reader 35 read 700ms in 664.625µs after waiting 333ns, 32.043459ms in
+probe: reader 35 read 800ms in 641.625µs after waiting 291ns, 32.721ms in
+probe: reader 35 read 900ms in 705.958µs after waiting 417ns, 33.665417ms in
+probe: reader 35 read 1s in 70.417µs after waiting 250ns, 33.776584ms in
+probe: reader 35 read 1.1s in 80.583µs after waiting 208ns, 33.90075ms in
+probe: reader 35 read 1.2s in 60.042µs after waiting 334ns, 34.009709ms in
+probe: reader 35 read 1.3s in 51.5µs after waiting 208ns, 34.103959ms in
+probe: reader 35 read 1.4s in 47.125µs after waiting 208ns, 34.195209ms in
+probe: reader 35 read 1.5s in 112.834µs after waiting 209ns, 34.352667ms in
+probe: reader 35 read 1.6s in 46.125µs after waiting 208ns, 34.442917ms in
+probe: reader 35 read 1.7s in 73.5µs after waiting 209ns, 34.557417ms in
+probe: reader 35 read 1.8s in 82.959µs after waiting 167ns, 34.683167ms in
+probe: reader 35 read 1.9s in 100.667µs after waiting 333ns, 34.841125ms in
+probe: reader 35 read 2s in 236.125µs after waiting 125ns, 35.124375ms in
+probe: reader 35 read 2.1s in 124.834µs after waiting 208ns, 35.307417ms in
+probe: reader 35 read 2.2s in 92.667µs after waiting 250ns, 35.445084ms in
+probe: reader 35 read 2.3s in 33.875µs after waiting 250ns, 35.539084ms in
+probe: reader 35 read 2.4s in 1.059667ms after waiting 250ns, 36.650084ms in
+probe: reader 35 read 2.5s in 346.458µs after waiting 250ns, 37.04475ms in
+probe: reader 35 read 2.6s in 341.708µs after waiting 250ns, 37.431417ms in
+probe: reader 35 read 2.7s in 114.5µs after waiting 208ns, 37.594375ms in
+probe: reader 35 read 2.8s in 102.459µs after waiting 167ns, 37.741042ms in
+probe: reader 35 read 2.9s in 134.875µs after waiting 208ns, 37.921125ms in
+probe: sample at 0ns without bytes
+probe: reader 35 read 0ns in 48.583µs after waiting 208ns, 38.013834ms in
+probe: sample at 0ns without bytes
+probe: reader 35 read 0ns in 76.75µs after waiting 292ns, 38.125917ms in
+probe: sample at 3s without bytes
+probe: reader 35 read 3s in 150.5µs after waiting 292ns, 38.311625ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 35 read 18446744073709551615.999999999s in 417.083µs after waiting 250ns, 38.764084ms in
+probe: reader 35 stops at 18446744073709551615.999999999s, 169.867417ms in
+probe: reader 36 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 36 read 0ns in 105.375µs after waiting 959ns, 788.167µs in
+probe: reader 36 read 0ns in 1.498708ms after waiting 625ns, 2.320083ms in
+probe: reader 36 read 100ms in 12.811709ms after waiting 334ns, 15.175583ms in
+probe: reader 36 read 200ms in 6.399125ms after waiting 375ns, 21.626292ms in
+probe: reader 36 read 300ms in 5.388375ms after waiting 209ns, 27.055667ms in
+probe: reader 36 read 400ms in 5.741875ms after waiting 208ns, 32.835542ms in
+probe: reader 36 read 500ms in 43.708µs after waiting 209ns, 32.9225ms in
+probe: reader 36 read 600ms in 41.333µs after waiting 292ns, 33.008833ms in
+probe: reader 36 read 700ms in 37.291µs after waiting 250ns, 33.08575ms in
+probe: reader 36 read 800ms in 24.917µs after waiting 166ns, 33.146542ms in
+probe: reader 36 read 900ms in 38.292µs after waiting 208ns, 33.223458ms in
+probe: reader 36 read 1s in 35.041µs after waiting 167ns, 33.293625ms in
+probe: reader 36 read 1.1s in 34.5µs after waiting 167ns, 33.365833ms in
+probe: reader 36 read 1.2s in 34.417µs after waiting 208ns, 33.440583ms in
+probe: reader 36 read 1.3s in 77.541µs after waiting 209ns, 33.559125ms in
+probe: reader 36 read 1.4s in 81.791µs after waiting 208ns, 33.681875ms in
+probe: reader 36 read 1.5s in 41.916µs after waiting 167ns, 33.763375ms in
+probe: reader 36 read 1.6s in 62.333µs after waiting 166ns, 33.86675ms in
+probe: reader 36 read 1.7s in 37.916µs after waiting 167ns, 33.942875ms in
+probe: reader 36 read 1.8s in 44.917µs after waiting 209ns, 34.027417ms in
+probe: reader 36 read 1.9s in 36.125µs after waiting 167ns, 34.106667ms in
+probe: reader 36 read 2s in 44.875µs after waiting 166ns, 34.189667ms in
+probe: reader 36 read 2.1s in 33.75µs after waiting 208ns, 34.263042ms in
+probe: reader 36 read 2.2s in 35.333µs after waiting 167ns, 34.340667ms in
+probe: reader 36 read 2.3s in 39.167µs after waiting 167ns, 34.421917ms in
+probe: reader 36 read 2.4s in 64.875µs after waiting 167ns, 34.529ms in
+probe: reader 36 read 2.5s in 62µs after waiting 125ns, 34.629833ms in
+probe: reader 36 read 2.6s in 43.959µs after waiting 167ns, 34.711625ms in
+probe: reader 36 read 2.7s in 39µs after waiting 167ns, 34.788208ms in
+probe: reader 36 read 2.8s in 47.75µs after waiting 166ns, 34.871917ms in
+probe: reader 36 read 2.9s in 37.5µs after waiting 208ns, 34.951542ms in
+probe: sample at 0ns without bytes
+probe: reader 36 read 0ns in 12.875µs after waiting 166ns, 35.004667ms in
+probe: sample at 0ns without bytes
+probe: reader 36 read 0ns in 11.916µs after waiting 208ns, 35.04975ms in
+probe: sample at 3s without bytes
+probe: reader 36 read 3s in 18.541µs after waiting 125ns, 35.100125ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 36 read 18446744073709551615.999999999s in 384.834µs after waiting 250ns, 35.530208ms in
+probe: reader 36 stops at 18446744073709551615.999999999s, 165.084958ms in
+probe: reader 37 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 37 read 0ns in 100.042µs after waiting 625ns, 724.792µs in
+probe: reader 37 read 0ns in 5.5885ms after waiting 459ns, 6.368125ms in
+probe: reader 37 read 100ms in 5.0905ms after waiting 208ns, 11.501375ms in
+probe: reader 37 read 200ms in 5.982417ms after waiting 250ns, 17.533458ms in
+probe: reader 37 read 300ms in 5.236208ms after waiting 291ns, 22.81275ms in
+probe: reader 37 read 400ms in 5.166167ms after waiting 250ns, 28.021167ms in
+probe: reader 37 read 500ms in 6.405041ms after waiting 292ns, 34.474125ms in
+probe: reader 37 read 600ms in 231.083µs after waiting 250ns, 34.742292ms in
+probe: reader 37 read 700ms in 283.583µs after waiting 250ns, 35.065917ms in
+probe: reader 37 read 800ms in 249.625µs after waiting 250ns, 35.360833ms in
+probe: reader 37 read 900ms in 47.667µs after waiting 250ns, 35.450667ms in
+probe: reader 37 read 1s in 73.041µs after waiting 208ns, 35.56475ms in
+probe: reader 37 read 1.1s in 57.458µs after waiting 250ns, 35.662042ms in
+probe: reader 37 read 1.2s in 37.416µs after waiting 208ns, 35.760917ms in
+probe: reader 37 read 1.3s in 37.25µs after waiting 334ns, 35.846083ms in
+probe: reader 37 read 1.4s in 42.125µs after waiting 209ns, 35.942417ms in
+probe: reader 37 read 1.5s in 47.875µs after waiting 208ns, 36.035417ms in
+probe: reader 37 read 1.6s in 75.333µs after waiting 208ns, 36.178542ms in
+probe: reader 37 read 1.7s in 128.167µs after waiting 292ns, 36.361708ms in
+probe: reader 37 read 1.8s in 70.792µs after waiting 625ns, 36.483083ms in
+probe: reader 37 read 1.9s in 107.666µs after waiting 583ns, 36.634042ms in
+probe: reader 37 read 2s in 62.625µs after waiting 208ns, 36.738667ms in
+probe: reader 37 read 2.1s in 70.375µs after waiting 500ns, 36.85325ms in
+probe: reader 37 read 2.2s in 69.333µs after waiting 583ns, 36.974208ms in
+probe: reader 37 read 2.3s in 47.916µs after waiting 500ns, 37.0685ms in
+probe: reader 37 read 2.4s in 82.042µs after waiting 209ns, 37.195542ms in
+probe: reader 37 read 2.5s in 37.791µs after waiting 250ns, 37.279875ms in
+probe: reader 37 read 2.6s in 108.583µs after waiting 208ns, 37.430458ms in
+probe: reader 37 read 2.7s in 100.917µs after waiting 500ns, 37.577583ms in
+probe: reader 37 read 2.8s in 41.458µs after waiting 166ns, 37.666292ms in
+probe: reader 37 read 2.9s in 45.125µs after waiting 208ns, 37.772167ms in
+probe: sample at 0ns without bytes
+probe: reader 37 read 0ns in 12.75µs after waiting 125ns, 37.827333ms in
+probe: sample at 0ns without bytes
+probe: reader 37 read 0ns in 11.25µs after waiting 125ns, 37.865917ms in
+probe: sample at 3s without bytes
+probe: reader 37 read 3s in 29.459µs after waiting 166ns, 37.926833ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 37 read 18446744073709551615.999999999s in 319.833µs after waiting 167ns, 38.278417ms in
+probe: reader 37 stops at 18446744073709551615.999999999s, 166.601917ms in
+probe: reader 38 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 38 read 0ns in 97.667µs after waiting 625ns, 676.375µs in
+probe: reader 38 read 0ns in 1.512958ms after waiting 541ns, 2.224792ms in
+probe: reader 38 read 100ms in 13.481709ms after waiting 334ns, 15.75075ms in
+probe: reader 38 read 200ms in 5.341375ms after waiting 250ns, 21.13725ms in
+probe: reader 38 read 300ms in 12.802ms after waiting 166ns, 33.974917ms in
+probe: reader 38 read 400ms in 4.975333ms after waiting 458ns, 39.003042ms in
+probe: reader 38 read 500ms in 11.454458ms after waiting 292ns, 50.4955ms in
+probe: reader 38 read 600ms in 19.249542ms after waiting 458ns, 69.796417ms in
+probe: reader 38 read 700ms in 5.10675ms after waiting 541ns, 74.961917ms in
+probe: reader 38 read 800ms in 14.181458ms after waiting 417ns, 89.200959ms in
+probe: reader 38 read 900ms in 5.415375ms after waiting 666ns, 94.659125ms in
+probe: reader 38 read 1s in 74.25µs after waiting 208ns, 94.7785ms in
+probe: reader 38 read 1.1s in 320.459µs after waiting 167ns, 95.133125ms in
+probe: reader 38 read 1.2s in 512.958µs after waiting 333ns, 95.698209ms in
+probe: reader 38 read 1.3s in 65.375µs after waiting 458ns, 95.808ms in
+probe: reader 38 read 1.4s in 111.292µs after waiting 291ns, 95.962792ms in
+probe: reader 38 read 1.5s in 21.166µs after waiting 708ns, 96.067667ms in
+probe: reader 38 read 1.6s in 57.209µs after waiting 250ns, 96.1795ms in
+probe: reader 38 read 1.7s in 86.833µs after waiting 208ns, 96.314584ms in
+probe: reader 38 read 1.8s in 60.75µs after waiting 459ns, 96.431417ms in
+probe: reader 38 read 1.9s in 139.833µs after waiting 166ns, 96.614292ms in
+probe: reader 38 read 2s in 11.167µs after waiting 542ns, 96.703334ms in
+probe: reader 38 read 2.1s in 80.125µs after waiting 417ns, 96.847167ms in
+probe: reader 38 read 2.2s in 37.834µs after waiting 500ns, 96.93675ms in
+probe: reader 38 read 2.3s in 74.083µs after waiting 167ns, 97.047292ms in
+probe: reader 38 read 2.4s in 96µs after waiting 417ns, 97.185375ms in
+probe: reader 38 read 2.5s in 61.333µs after waiting 541ns, 97.314792ms in
+probe: reader 38 read 2.6s in 33.125µs after waiting 209ns, 97.395417ms in
+probe: reader 38 read 2.7s in 38.75µs after waiting 417ns, 97.481625ms in
+probe: reader 38 read 2.8s in 38.542µs after waiting 8.833µs, 97.574125ms in
+probe: reader 38 read 2.9s in 129.792µs after waiting 208ns, 97.739334ms in
+probe: sample at 0ns without bytes
+probe: reader 38 read 0ns in 24.125µs after waiting 291ns, 97.806584ms in
+probe: sample at 0ns without bytes
+probe: reader 38 read 0ns in 13.541µs after waiting 250ns, 97.854417ms in
+probe: sample at 3s without bytes
+probe: reader 38 read 3s in 19.292µs after waiting 208ns, 97.909125ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 38 read 18446744073709551615.999999999s in 464.583µs after waiting 208ns, 98.409084ms in
+probe: reader 38 stops at 18446744073709551615.999999999s, 170.159959ms in
+probe: reader 39 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 39 read 0ns in 220.625µs after waiting 792ns, 1.131125ms in
+probe: reader 39 read 0ns in 7.678917ms after waiting 500ns, 8.851ms in
+probe: reader 39 read 100ms in 11.621542ms after waiting 375ns, 20.53225ms in
+probe: reader 39 read 200ms in 5.586125ms after waiting 625ns, 26.189666ms in
+probe: reader 39 read 300ms in 13.670375ms after waiting 708ns, 39.96875ms in
+probe: reader 39 read 400ms in 6.711042ms after waiting 417ns, 46.746291ms in
+probe: reader 39 read 500ms in 11.514125ms after waiting 500ns, 58.317333ms in
+probe: reader 39 read 600ms in 5.076792ms after waiting 1.084µs, 63.572875ms in
+probe: reader 39 read 700ms in 11.371292ms after waiting 541ns, 75.09275ms in
+probe: reader 39 read 800ms in 5.17925ms after waiting 291ns, 80.326416ms in
+probe: reader 39 read 900ms in 10.291667ms after waiting 542ns, 90.685291ms in
+probe: reader 39 read 1s in 5.213458ms after waiting 500ns, 95.956416ms in
+probe: reader 39 read 1.1s in 11.390708ms after waiting 458ns, 107.400291ms in
+probe: reader 39 read 1.2s in 5.452667ms after waiting 708ns, 112.917208ms in
+probe: reader 39 read 1.3s in 11.331458ms after waiting 666ns, 124.335625ms in
+probe: reader 39 read 1.4s in 5.142083ms after waiting 500ns, 129.524791ms in
+probe: reader 39 read 1.5s in 11.320625ms after waiting 750ns, 140.938208ms in
+probe: reader 39 read 1.6s in 5.814417ms after waiting 291ns, 146.800166ms in
+probe: reader 39 read 1.7s in 11.448959ms after waiting 292ns, 158.292333ms in
+probe: reader 39 read 1.8s in 5.148709ms after waiting 584ns, 163.492291ms in
+probe: reader 40 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 40 read 0ns in 118.708µs after waiting 1.084µs, 825.708µs in
+probe: reader 39 read 1.9s in 12.566958ms after waiting 542ns, 176.126125ms in
+probe: reader 39 stops at 1.9s, 176.19325ms in
+probe: reader 40 read 0ns in 8.823584ms after waiting 500ns, 9.680833ms in
+probe: reader 40 read 100ms in 23.230209ms after waiting 292ns, 32.956208ms in
+probe: reader 40 read 200ms in 12.307458ms after waiting 375ns, 45.307375ms in
+probe: reader 40 read 300ms in 5.172583ms after waiting 291ns, 50.519625ms in
+probe: reader 40 read 400ms in 12.835625ms after waiting 334ns, 63.4025ms in
+probe: reader 40 read 500ms in 5.682041ms after waiting 250ns, 69.132333ms in
+probe: reader 40 read 600ms in 11.516959ms after waiting 208ns, 80.690458ms in
+probe: reader 40 read 700ms in 6.027833ms after waiting 208ns, 86.7665ms in
+probe: reader 40 read 800ms in 11.427291ms after waiting 292ns, 98.2425ms in
+probe: reader 40 read 900ms in 6.012667ms after waiting 667ns, 104.374666ms in
+probe: reader 40 read 1s in 12.171708ms after waiting 250ns, 116.585041ms in
+probe: reader 40 read 1.1s in 19.25275ms after waiting 500ns, 135.886708ms in
+probe: reader 40 read 1.2s in 5.030208ms after waiting 250ns, 140.965833ms in
+probe: reader 40 read 1.3s in 11.435542ms after waiting 334ns, 152.439416ms in
+probe: reader 40 read 1.4s in 5.185791ms after waiting 250ns, 157.663625ms in
+probe: reader 40 read 1.5s in 11.546917ms after waiting 250ns, 169.25375ms in
+probe: reader 40 read 1.6s in 6.34975ms after waiting 416ns, 175.655458ms in
+probe: reader 40 stops at 1.6s, 175.701958ms in
+probe: reader 41 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 41 read 0ns in 95.875µs after waiting 1µs, 792.166µs in
+probe: reader 41 read 0ns in 15.508417ms after waiting 625ns, 16.329541ms in
+probe: reader 41 read 100ms in 19.024542ms after waiting 333ns, 35.395125ms in
+probe: reader 41 read 200ms in 11.761375ms after waiting 458ns, 47.206666ms in
+probe: reader 41 read 300ms in 5.110958ms after waiting 458ns, 52.38ms in
+probe: reader 41 read 400ms in 10.595917ms after waiting 334ns, 63.032083ms in
+probe: reader 41 read 500ms in 5.068917ms after waiting 375ns, 68.160416ms in
+probe: reader 41 read 600ms in 11.6645ms after waiting 583ns, 79.881125ms in
+probe: reader 41 read 700ms in 5.382959ms after waiting 542ns, 85.313916ms in
+probe: reader 41 read 800ms in 12.098625ms after waiting 541ns, 97.461583ms in
+probe: reader 41 read 900ms in 6.892833ms after waiting 375ns, 104.415ms in
+probe: reader 41 read 1s in 13.830375ms after waiting 250ns, 118.288041ms in
+probe: reader 41 read 1.1s in 6.180708ms after waiting 292ns, 124.515291ms in
+probe: reader 41 read 1.2s in 11.223334ms after waiting 250ns, 135.781041ms in
+probe: reader 41 read 1.3s in 8.727042ms after waiting 250ns, 144.570708ms in
+probe: reader 41 read 1.4s in 11.80125ms after waiting 333ns, 156.412083ms in
+probe: reader 41 read 1.5s in 5.308584ms after waiting 292ns, 161.769416ms in
+probe: reader 42 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 42 read 0ns in 118.625µs after waiting 1.083µs, 835.625µs in
+probe: reader 41 read 1.6s in 11.784166ms after waiting 167ns, 173.599208ms in
+probe: reader 41 stops at 1.6s, 173.644416ms in
+probe: reader 42 read 0ns in 8.212834ms after waiting 459ns, 9.083042ms in
+probe: reader 42 read 100ms in 19.214708ms after waiting 375ns, 28.347834ms in
+probe: reader 42 read 200ms in 11.026792ms after waiting 833ns, 39.5275ms in
+probe: reader 42 read 300ms in 5.769542ms after waiting 250ns, 45.33725ms in
+probe: reader 42 read 400ms in 14.128375ms after waiting 250ns, 59.518125ms in
+probe: reader 42 read 500ms in 6.726708ms after waiting 250ns, 66.285084ms in
+probe: reader 42 read 600ms in 11.938167ms after waiting 542ns, 78.274542ms in
+probe: reader 42 read 700ms in 5.3735ms after waiting 417ns, 83.693709ms in
+probe: reader 42 read 800ms in 13.299709ms after waiting 334ns, 97.044584ms in
+probe: reader 42 read 900ms in 8.292µs after waiting 542ns, 97.11675ms in
+probe: reader 42 read 1s in 84.916µs after waiting 250ns, 97.237542ms in
+probe: reader 42 read 1.1s in 63.583µs after waiting 167ns, 97.337584ms in
+probe: reader 42 read 1.2s in 58.875µs after waiting 209ns, 97.437959ms in
+probe: reader 42 read 1.3s in 46.166µs after waiting 375ns, 97.535084ms in
+probe: reader 42 read 1.4s in 62.625µs after waiting 250ns, 97.644334ms in
+probe: reader 42 read 1.5s in 47.292µs after waiting 125ns, 97.73225ms in
+probe: reader 42 read 1.6s in 34.583µs after waiting 250ns, 97.826792ms in
+probe: reader 42 read 1.7s in 58.084µs after waiting 209ns, 97.927625ms in
+probe: reader 42 read 1.8s in 35µs after waiting 542ns, 98.012ms in
+probe: reader 42 read 1.9s in 49.75µs after waiting 167ns, 98.102542ms in
+probe: reader 42 read 2s in 6.959µs after waiting 125ns, 98.15225ms in
+probe: reader 42 read 2.1s in 74.333µs after waiting 458ns, 98.266042ms in
+probe: reader 42 read 2.2s in 44.625µs after waiting 208ns, 98.356125ms in
+probe: reader 42 read 2.3s in 47.75µs after waiting 125ns, 98.450125ms in
+probe: reader 42 read 2.4s in 48µs after waiting 208ns, 98.546584ms in
+probe: reader 42 read 2.5s in 47.583µs after waiting 167ns, 98.636209ms in
+probe: reader 42 read 2.6s in 45.458µs after waiting 125ns, 98.725834ms in
+probe: reader 42 read 2.7s in 45.375µs after waiting 167ns, 98.816875ms in
+probe: reader 42 read 2.8s in 41.291µs after waiting 167ns, 98.905167ms in
+probe: reader 42 read 2.9s in 43.75µs after waiting 166ns, 98.9935ms in
+probe: sample at 0ns without bytes
+probe: reader 42 read 0ns in 15.667µs after waiting 166ns, 99.048375ms in
+probe: sample at 0ns without bytes
+probe: reader 42 read 0ns in 10.125µs after waiting 125ns, 99.089542ms in
+probe: sample at 3s without bytes
+probe: reader 42 read 3s in 18.625µs after waiting 166ns, 99.144209ms in
+probe: reader gave no sample after 91 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 42 read 18446744073709551615.999999999s in 350.917µs after waiting 291ns, 99.538625ms in
+probe: reader 42 stops at 18446744073709551615.999999999s, 166.037792ms in
+probe: reader 43 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 43 read 0ns in 102.875µs after waiting 542ns, 821.292µs in
+probe: reader 43 read 0ns in 5.132584ms after waiting 584ns, 5.992583ms in
+probe: reader 43 read 100ms in 12.488292ms after waiting 209ns, 18.543292ms in
+probe: reader 43 read 200ms in 11.178833ms after waiting 208ns, 29.783667ms in
+probe: reader 43 read 300ms in 1.101042ms after waiting 541ns, 30.946125ms in
+probe: reader 43 read 400ms in 819.042µs after waiting 709ns, 31.857667ms in
+probe: reader 43 read 500ms in 132.667µs after waiting 334ns, 32.046208ms in
+probe: reader 43 read 600ms in 24.75µs after waiting 250ns, 32.117042ms in
+probe: reader 43 read 700ms in 75.458µs after waiting 208ns, 32.233125ms in
+probe: reader 43 read 800ms in 74.667µs after waiting 500ns, 32.354917ms in
+probe: reader 43 read 900ms in 61.583µs after waiting 208ns, 32.458167ms in
+probe: reader 43 read 1s in 67.875µs after waiting 166ns, 32.558042ms in
+probe: reader 43 read 1.1s in 59.417µs after waiting 458ns, 32.666167ms in
+probe: reader 43 read 1.2s in 42.166µs after waiting 167ns, 32.762167ms in
+probe: reader 43 read 1.3s in 62.708µs after waiting 500ns, 32.876042ms in
+probe: reader 43 read 1.4s in 63.042µs after waiting 458ns, 32.987958ms in
+probe: reader 43 read 1.5s in 20.667µs after waiting 541ns, 33.101833ms in
+probe: reader 43 read 1.6s in 60.209µs after waiting 209ns, 33.216708ms in
+probe: reader 43 read 1.7s in 67.625µs after waiting 208ns, 33.330792ms in
+probe: reader 43 read 1.8s in 40.958µs after waiting 167ns, 33.41025ms in
+probe: reader 43 read 1.9s in 54.75µs after waiting 459ns, 33.5285ms in
+probe: reader 43 read 2s in 37.375µs after waiting 208ns, 33.631417ms in
+probe: reader 43 read 2.1s in 63.917µs after waiting 166ns, 33.735208ms in
+probe: reader 43 read 2.2s in 45.333µs after waiting 208ns, 33.823333ms in
+probe: reader 43 read 2.3s in 41.917µs after waiting 292ns, 33.908792ms in
+probe: reader 43 read 2.4s in 60.833µs after waiting 167ns, 34.009292ms in
+probe: reader 43 read 2.5s in 38.875µs after waiting 292ns, 34.094375ms in
+probe: reader 43 read 2.6s in 31.709µs after waiting 166ns, 34.166333ms in
+probe: reader 43 read 2.7s in 72.042µs after waiting 208ns, 34.278958ms in
+probe: reader 43 read 2.8s in 66.042µs after waiting 166ns, 34.391583ms in
+probe: reader 43 read 2.9s in 59.5µs after waiting 375ns, 34.495958ms in
+probe: sample at 0ns without bytes
+probe: reader 43 read 0ns in 16.125µs after waiting 209ns, 34.556375ms in
+probe: sample at 0ns without bytes
+probe: reader 43 read 0ns in 12.958µs after waiting 250ns, 34.603875ms in
+probe: sample at 3s without bytes
+probe: reader 43 read 3s in 22.916µs after waiting 208ns, 34.662167ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 43 read 18446744073709551615.999999999s in 303.625µs after waiting 375ns, 35.004542ms in
+probe: reader 43 stops at 18446744073709551615.999999999s, 165.753875ms in
+probe: reader 44 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 44 read 0ns in 101.25µs after waiting 1.042µs, 783.417µs in
+probe: reader 44 read 0ns in 1.399375ms after waiting 2.25µs, 2.222ms in
+probe: reader 44 read 100ms in 13.524542ms after waiting 166ns, 15.791917ms in
+probe: reader 44 read 200ms in 12.632667ms after waiting 292ns, 28.467459ms in
+probe: reader 44 read 300ms in 5.302875ms after waiting 292ns, 33.813542ms in
+probe: reader 44 read 400ms in 50.709µs after waiting 292ns, 33.907792ms in
+probe: reader 44 read 500ms in 42µs after waiting 292ns, 34.002125ms in
+probe: reader 44 read 600ms in 36.25µs after waiting 209ns, 34.076292ms in
+probe: reader 44 read 700ms in 70.5µs after waiting 167ns, 34.184ms in
+probe: reader 44 read 800ms in 78.125µs after waiting 167ns, 34.301375ms in
+probe: reader 44 read 900ms in 70.75µs after waiting 208ns, 34.41325ms in
+probe: reader 44 read 1s in 75.292µs after waiting 167ns, 34.525709ms in
+probe: reader 44 read 1.1s in 59.875µs after waiting 208ns, 34.624584ms in
+probe: reader 44 read 1.2s in 63.75µs after waiting 167ns, 34.729792ms in
+probe: reader 44 read 1.3s in 58.291µs after waiting 208ns, 34.830917ms in
+probe: reader 44 read 1.4s in 71.583µs after waiting 166ns, 34.943375ms in
+probe: reader 44 read 1.5s in 55µs after waiting 167ns, 35.041292ms in
+probe: reader 44 read 1.6s in 70.083µs after waiting 458ns, 35.152167ms in
+probe: reader 44 read 1.7s in 56.333µs after waiting 167ns, 35.251459ms in
+probe: reader 44 read 1.8s in 48.916µs after waiting 167ns, 35.340167ms in
+probe: reader 44 read 1.9s in 44.708µs after waiting 125ns, 35.424292ms in
+probe: reader 44 read 2s in 48.292µs after waiting 166ns, 35.514ms in
+probe: reader 44 read 2.1s in 56.333µs after waiting 167ns, 35.606334ms in
+probe: reader 44 read 2.2s in 54.25µs after waiting 208ns, 35.704667ms in
+probe: reader 44 read 2.3s in 17.708µs after waiting 333ns, 35.785167ms in
+probe: reader 44 read 2.4s in 9.667µs after waiting 250ns, 35.850334ms in
+probe: reader 44 read 2.5s in 55.667µs after waiting 167ns, 35.943959ms in
+probe: reader 44 read 2.6s in 49.958µs after waiting 125ns, 36.036917ms in
+probe: reader 44 read 2.7s in 48.416µs after waiting 208ns, 36.130792ms in
+probe: reader 44 read 2.8s in 52.667µs after waiting 209ns, 36.225834ms in
+probe: reader 44 read 2.9s in 39.625µs after waiting 167ns, 36.30825ms in
+probe: sample at 0ns without bytes
+probe: reader 44 read 0ns in 14.834µs after waiting 167ns, 36.366125ms in
+probe: sample at 0ns without bytes
+probe: reader 44 read 0ns in 12.708µs after waiting 167ns, 36.411584ms in
+probe: sample at 3s without bytes
+probe: reader 44 read 3s in 17.667µs after waiting 167ns, 36.465125ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 44 read 18446744073709551615.999999999s in 304.584µs after waiting 209ns, 36.806ms in
+probe: reader 44 stops at 18446744073709551615.999999999s, 167.13775ms in
+probe: reader 45 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 45 read 0ns in 127.334µs after waiting 709ns, 769.333µs in
+probe: reader 45 read 0ns in 1.477291ms after waiting 500ns, 2.286625ms in
+probe: reader 45 read 100ms in 11.729042ms after waiting 292ns, 14.068208ms in
+probe: reader 45 read 200ms in 5.752959ms after waiting 459ns, 19.889542ms in
+probe: reader 45 read 300ms in 12.087667ms after waiting 750ns, 32.030333ms in
+probe: reader 45 read 400ms in 270.958µs after waiting 416ns, 32.362917ms in
+probe: reader 45 read 500ms in 299.625µs after waiting 459ns, 32.730125ms in
+probe: reader 45 read 600ms in 269.708µs after waiting 666ns, 33.071333ms in
+probe: reader 45 read 700ms in 63.375µs after waiting 375ns, 33.191542ms in
+probe: reader 45 read 800ms in 38.042µs after waiting 291ns, 33.282417ms in
+probe: reader 45 read 900ms in 61.833µs after waiting 208ns, 33.387667ms in
+probe: reader 45 read 1s in 589.834µs after waiting 209ns, 34.023583ms in
+probe: reader 45 read 1.1s in 330.25µs after waiting 208ns, 34.393208ms in
+probe: reader 45 read 1.2s in 129.334µs after waiting 250ns, 34.572583ms in
+probe: reader 45 read 1.3s in 66.416µs after waiting 250ns, 34.684417ms in
+probe: reader 45 read 1.4s in 52.834µs after waiting 292ns, 34.787375ms in
+probe: reader 45 read 1.5s in 38.583µs after waiting 208ns, 34.867208ms in
+probe: reader 45 read 1.6s in 39.084µs after waiting 209ns, 34.950708ms in
+probe: reader 45 read 1.7s in 41.875µs after waiting 250ns, 35.050292ms in
+probe: reader 45 read 1.8s in 6.333µs after waiting 208ns, 35.103125ms in
+probe: reader 45 read 1.9s in 35.458µs after waiting 167ns, 35.177875ms in
+probe: reader 45 read 2s in 37.083µs after waiting 458ns, 35.273ms in
+probe: reader 45 read 2.1s in 74.5µs after waiting 167ns, 35.383ms in
+probe: reader 45 read 2.2s in 47.417µs after waiting 209ns, 35.474292ms in
+probe: reader 45 read 2.3s in 41.583µs after waiting 167ns, 35.558542ms in
+probe: reader 45 read 2.4s in 49.542µs after waiting 167ns, 35.649292ms in
+probe: reader 45 read 2.5s in 38.125µs after waiting 167ns, 35.727583ms in
+probe: reader 45 read 2.6s in 59.541µs after waiting 125ns, 35.827ms in
+probe: reader 45 read 2.7s in 26.75µs after waiting 167ns, 35.897458ms in
+probe: reader 45 read 2.8s in 36.209µs after waiting 333ns, 35.979833ms in
+probe: reader 45 read 2.9s in 7.541µs after waiting 167ns, 36.03ms in
+probe: sample at 0ns without bytes
+probe: reader 45 read 0ns in 24.625µs after waiting 167ns, 36.093375ms in
+probe: sample at 0ns without bytes
+probe: reader 45 read 0ns in 12.084µs after waiting 250ns, 36.137083ms in
+probe: sample at 3s without bytes
+probe: reader 45 read 3s in 16.708µs after waiting 125ns, 36.187667ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 45 read 18446744073709551615.999999999s in 348.208µs after waiting 250ns, 36.5705ms in
+probe: reader 45 stops at 18446744073709551615.999999999s, 168.406458ms in
+probe: reader 46 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 46 read 0ns in 166.292µs after waiting 666ns, 810.833µs in
+probe: reader 46 read 0ns in 1.450125ms after waiting 250ns, 2.296333ms in
+probe: reader 46 read 100ms in 20.075875ms after waiting 333ns, 22.407416ms in
+probe: reader 46 read 200ms in 5.069625ms after waiting 500ns, 27.531958ms in
+probe: reader 46 read 300ms in 16.788333ms after waiting 333ns, 44.359791ms in
+probe: reader 46 read 400ms in 10.762ms after waiting 416ns, 55.168541ms in
+probe: reader 46 read 500ms in 5.188709ms after waiting 334ns, 60.399291ms in
+probe: reader 46 read 600ms in 13.6515ms after waiting 375ns, 74.095958ms in
+probe: reader 46 read 700ms in 5.129375ms after waiting 417ns, 79.280708ms in
+probe: reader 46 read 800ms in 12.521334ms after waiting 375ns, 91.856083ms in
+probe: reader 46 read 900ms in 6.412167ms after waiting 375ns, 98.31375ms in
+probe: reader 46 read 1s in 75.708µs after waiting 334ns, 98.436375ms in
+probe: reader 46 read 1.1s in 46.667µs after waiting 250ns, 98.520166ms in
+probe: reader 46 read 1.2s in 42.833µs after waiting 291ns, 98.601083ms in
+probe: reader 46 read 1.3s in 59.375µs after waiting 334ns, 98.706ms in
+probe: reader 46 read 1.4s in 16.084µs after waiting 375ns, 98.783041ms in
+probe: reader 46 read 1.5s in 57.167µs after waiting 208ns, 98.887416ms in
+probe: reader 46 read 1.6s in 48.792µs after waiting 250ns, 98.981458ms in
+probe: reader 46 read 1.7s in 48.834µs after waiting 167ns, 99.070291ms in
+probe: reader 46 read 1.8s in 74.5µs after waiting 250ns, 99.189375ms in
+probe: reader 46 read 1.9s in 65.875µs after waiting 167ns, 99.299041ms in
+probe: reader 46 read 2s in 65.583µs after waiting 166ns, 99.40675ms in
+probe: reader 46 read 2.1s in 71.792µs after waiting 166ns, 99.519916ms in
+probe: reader 46 read 2.2s in 55.333µs after waiting 166ns, 99.618208ms in
+probe: reader 46 read 2.3s in 35.875µs after waiting 208ns, 99.708166ms in
+probe: reader 46 read 2.4s in 46.75µs after waiting 208ns, 99.805291ms in
+probe: reader 46 read 2.5s in 40.25µs after waiting 292ns, 99.899833ms in
+probe: reader 46 read 2.6s in 49.333µs after waiting 167ns, 99.99275ms in
+probe: reader 46 read 2.7s in 45.708µs after waiting 167ns, 100.084ms in
+probe: reader 46 read 2.8s in 57.292µs after waiting 209ns, 100.185666ms in
+probe: reader 46 read 2.9s in 44.75µs after waiting 208ns, 100.2745ms in
+probe: sample at 0ns without bytes
+probe: reader 46 read 0ns in 14.625µs after waiting 167ns, 100.331791ms in
+probe: sample at 0ns without bytes
+probe: reader 46 read 0ns in 12.375µs after waiting 166ns, 100.373375ms in
+probe: sample at 3s without bytes
+probe: reader 46 read 3s in 14.792µs after waiting 209ns, 100.42425ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 46 read 18446744073709551615.999999999s in 434.125µs after waiting 250ns, 100.903291ms in
+probe: reader 46 stops at 18446744073709551615.999999999s, 169.237583ms in
+probe: reader 47 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 47 read 0ns in 469.875µs after waiting 1.042µs, 1.173708ms in
+probe: reader 47 read 0ns in 4.866792ms after waiting 500ns, 6.084875ms in
+probe: reader 47 read 100ms in 5.048791ms after waiting 250ns, 11.171458ms in
+probe: reader 47 read 200ms in 10.996416ms after waiting 292ns, 22.225583ms in
+probe: reader 47 read 300ms in 5.124333ms after waiting 458ns, 27.397791ms in
+probe: reader 47 read 400ms in 6.188625ms after waiting 375ns, 33.632583ms in
+probe: reader 47 read 500ms in 40.875µs after waiting 291ns, 33.717416ms in
+probe: reader 47 read 600ms in 43.916µs after waiting 208ns, 33.79775ms in
+probe: reader 47 read 700ms in 43.375µs after waiting 208ns, 33.879208ms in
+probe: reader 47 read 800ms in 37.75µs after waiting 209ns, 33.957083ms in
+probe: reader 47 read 900ms in 40.625µs after waiting 167ns, 34.035916ms in
+probe: reader 47 read 1s in 39.792µs after waiting 209ns, 34.11325ms in
+probe: reader 47 read 1.1s in 39.417µs after waiting 209ns, 34.193125ms in
+probe: reader 47 read 1.2s in 28µs after waiting 208ns, 34.264666ms in
+probe: reader 47 read 1.3s in 41.417µs after waiting 167ns, 34.341875ms in
+probe: reader 47 read 1.4s in 39.333µs after waiting 167ns, 34.422125ms in
+probe: reader 47 read 1.5s in 25.333µs after waiting 208ns, 34.489625ms in
+probe: reader 47 read 1.6s in 39.709µs after waiting 167ns, 34.570541ms in
+probe: reader 47 read 1.7s in 41µs after waiting 209ns, 34.659666ms in
+probe: reader 47 read 1.8s in 34.5µs after waiting 167ns, 34.731666ms in
+probe: reader 47 read 1.9s in 26µs after waiting 167ns, 34.799208ms in
+probe: reader 47 read 2s in 32.25µs after waiting 167ns, 34.868666ms in
+probe: reader 47 read 2.1s in 42.834µs after waiting 250ns, 34.949541ms in
+probe: reader 47 read 2.2s in 26.166µs after waiting 208ns, 35.024458ms in
+probe: reader 47 read 2.3s in 37.542µs after waiting 166ns, 35.103041ms in
+probe: reader 47 read 2.4s in 23.583µs after waiting 166ns, 35.168083ms in
+probe: reader 47 read 2.5s in 29.833µs after waiting 166ns, 35.237458ms in
+probe: reader 47 read 2.6s in 36.084µs after waiting 167ns, 35.313541ms in
+probe: reader 47 read 2.7s in 34.292µs after waiting 166ns, 35.389541ms in
+probe: reader 47 read 2.8s in 45.625µs after waiting 167ns, 35.477041ms in
+probe: reader 47 read 2.9s in 56.25µs after waiting 167ns, 35.575583ms in
+probe: sample at 0ns without bytes
+probe: reader 47 read 0ns in 14.208µs after waiting 166ns, 35.630833ms in
+probe: sample at 0ns without bytes
+probe: reader 47 read 0ns in 10.375µs after waiting 167ns, 35.674041ms in
+probe: sample at 3s without bytes
+probe: reader 47 read 3s in 18.75µs after waiting 166ns, 35.725833ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 47 read 18446744073709551615.999999999s in 327.667µs after waiting 250ns, 36.085458ms in
+probe: reader 47 stops at 18446744073709551615.999999999s, 162.839375ms in
+probe: reader 48 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 48 read 0ns in 87.541µs after waiting 708ns, 757.709µs in
+probe: reader 48 read 0ns in 1.334916ms after waiting 792ns, 2.127459ms in
+probe: reader 48 read 100ms in 13.723ms after waiting 208ns, 15.895334ms in
+probe: reader 48 read 200ms in 5.748708ms after waiting 291ns, 21.689667ms in
+probe: reader 48 read 300ms in 12.066875ms after waiting 209ns, 33.800209ms in
+probe: reader 48 read 400ms in 57µs after waiting 292ns, 33.902584ms in
+probe: reader 48 read 500ms in 53.334µs after waiting 10.875µs, 34.002875ms in
+probe: reader 48 read 600ms in 31.5µs after waiting 166ns, 34.078084ms in
+probe: reader 48 read 700ms in 35.375µs after waiting 209ns, 34.152292ms in
+probe: reader 48 read 800ms in 38.208µs after waiting 208ns, 34.229792ms in
+probe: reader 48 read 900ms in 42.375µs after waiting 209ns, 34.310042ms in
+probe: reader 48 read 1s in 43.708µs after waiting 167ns, 34.392709ms in
+probe: reader 48 read 1.1s in 33.042µs after waiting 166ns, 34.462334ms in
+probe: reader 48 read 1.2s in 28.458µs after waiting 208ns, 34.530709ms in
+probe: reader 48 read 1.3s in 34.458µs after waiting 208ns, 34.607459ms in
+probe: reader 48 read 1.4s in 32.458µs after waiting 166ns, 34.679334ms in
+probe: reader 48 read 1.5s in 29.416µs after waiting 250ns, 34.762417ms in
+probe: reader 48 read 1.6s in 35.208µs after waiting 250ns, 34.848792ms in
+probe: reader 48 read 1.7s in 32.292µs after waiting 167ns, 34.923209ms in
+probe: reader 48 read 1.8s in 30.667µs after waiting 209ns, 35.007334ms in
+probe: reader 48 read 1.9s in 34.041µs after waiting 208ns, 35.092292ms in
+probe: reader 48 read 2s in 27.833µs after waiting 167ns, 35.162959ms in
+probe: reader 48 read 2.1s in 29.583µs after waiting 250ns, 35.242459ms in
+probe: reader 48 read 2.2s in 29.75µs after waiting 166ns, 35.313709ms in
+probe: reader 48 read 2.3s in 31.459µs after waiting 209ns, 35.39875ms in
+probe: reader 48 read 2.4s in 38.459µs after waiting 167ns, 35.4775ms in
+probe: reader 48 read 2.5s in 33.042µs after waiting 166ns, 35.55175ms in
+probe: reader 48 read 2.6s in 36.667µs after waiting 125ns, 35.629209ms in
+probe: reader 48 read 2.7s in 48.25µs after waiting 167ns, 35.715917ms in
+probe: reader 48 read 2.8s in 13.5µs after waiting 375ns, 35.795334ms in
+probe: reader 48 read 2.9s in 5.583µs after waiting 292ns, 35.843334ms in
+probe: sample at 0ns without bytes
+probe: reader 48 read 0ns in 14.208µs after waiting 166ns, 35.895792ms in
+probe: sample at 0ns without bytes
+probe: reader 48 read 0ns in 11.667µs after waiting 167ns, 35.938959ms in
+probe: sample at 3s without bytes
+probe: reader 48 read 3s in 16.958µs after waiting 166ns, 35.989084ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 48 read 18446744073709551615.999999999s in 260.125µs after waiting 167ns, 36.284542ms in
+probe: reader 48 stops at 18446744073709551615.999999999s, 168.482209ms in
+probe: reader 49 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 49 read 0ns in 121.792µs after waiting 666ns, 871.333µs in
+probe: reader 49 read 0ns in 2.066834ms after waiting 1.417µs, 2.965583ms in
+probe: reader 49 read 100ms in 13.856791ms after waiting 667ns, 16.9005ms in
+probe: reader 49 read 200ms in 4.546166ms after waiting 333ns, 21.485792ms in
+probe: reader 49 read 300ms in 11.105ms after waiting 375ns, 32.642292ms in
+probe: reader 49 read 400ms in 37.458µs after waiting 667ns, 32.737167ms in
+probe: reader 49 read 500ms in 67.834µs after waiting 167ns, 32.84325ms in
+probe: reader 49 read 600ms in 32.792µs after waiting 333ns, 32.923125ms in
+probe: reader 49 read 700ms in 34.542µs after waiting 292ns, 33.003792ms in
+probe: reader 49 read 800ms in 33.5µs after waiting 208ns, 33.076458ms in
+probe: reader 49 read 900ms in 29.583µs after waiting 208ns, 33.145167ms in
+probe: reader 49 read 1s in 34.25µs after waiting 167ns, 33.218375ms in
+probe: reader 49 read 1.1s in 29.917µs after waiting 167ns, 33.287042ms in
+probe: reader 49 read 1.2s in 37.333µs after waiting 166ns, 33.36625ms in
+probe: reader 49 read 1.3s in 40.791µs after waiting 208ns, 33.44675ms in
+probe: reader 49 read 1.4s in 32.75µs after waiting 209ns, 33.520875ms in
+probe: reader 49 read 1.5s in 41.417µs after waiting 208ns, 33.603833ms in
+probe: reader 49 read 1.6s in 61.959µs after waiting 167ns, 33.7065ms in
+probe: reader 49 read 1.7s in 36.042µs after waiting 333ns, 33.784583ms in
+probe: reader 49 read 1.8s in 34.333µs after waiting 167ns, 33.861167ms in
+probe: reader 49 read 1.9s in 35µs after waiting 167ns, 33.938333ms in
+probe: reader 49 read 2s in 37.875µs after waiting 167ns, 34.010208ms in
+probe: reader 49 read 2.1s in 44.25µs after waiting 125ns, 34.09075ms in
+probe: reader 49 read 2.2s in 34.375µs after waiting 167ns, 34.166583ms in
+probe: reader 49 read 2.3s in 57.209µs after waiting 125ns, 34.262083ms in
+probe: reader 49 read 2.4s in 46.25µs after waiting 250ns, 34.351625ms in
+probe: reader 49 read 2.5s in 56.875µs after waiting 166ns, 34.44375ms in
+probe: reader 49 read 2.6s in 33.292µs after waiting 292ns, 34.531542ms in
+probe: reader 49 read 2.7s in 38.042µs after waiting 417ns, 34.624792ms in
+probe: reader 49 read 2.8s in 42.125µs after waiting 208ns, 34.704208ms in
+probe: reader 49 read 2.9s in 34.125µs after waiting 166ns, 34.776417ms in
+probe: sample at 0ns without bytes
+probe: reader 49 read 0ns in 14.208µs after waiting 166ns, 34.831875ms in
+probe: sample at 0ns without bytes
+probe: reader 49 read 0ns in 12.208µs after waiting 167ns, 34.878667ms in
+probe: sample at 3s without bytes
+probe: reader 49 read 3s in 13.25µs after waiting 167ns, 34.925833ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 49 read 18446744073709551615.999999999s in 318.708µs after waiting 125ns, 35.287ms in
+probe: reader 49 stops at 18446744073709551615.999999999s, 167.127833ms in
+probe: reader 50 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 50 read 0ns in 118.375µs after waiting 1.291µs, 746.625µs in
+probe: reader 50 read 0ns in 7.815667ms after waiting 334ns, 8.601ms in
+probe: reader 50 read 100ms in 13.118125ms after waiting 250ns, 21.765709ms in
+probe: reader 50 read 200ms in 5.724833ms after waiting 291ns, 27.53225ms in
+probe: reader 50 read 300ms in 5.171834ms after waiting 500ns, 32.753042ms in
+probe: reader 50 read 400ms in 59.334µs after waiting 500ns, 32.87425ms in
+probe: reader 50 read 500ms in 52.875µs after waiting 292ns, 32.975084ms in
+probe: reader 50 read 600ms in 45.875µs after waiting 333ns, 33.066084ms in
+probe: reader 50 read 700ms in 37.208µs after waiting 208ns, 33.154209ms in
+probe: reader 50 read 800ms in 37.416µs after waiting 292ns, 33.235792ms in
+probe: reader 50 read 900ms in 67.75µs after waiting 167ns, 33.339375ms in
+probe: reader 50 read 1s in 44.958µs after waiting 208ns, 33.422167ms in
+probe: reader 50 read 1.1s in 27µs after waiting 167ns, 33.489292ms in
+probe: reader 50 read 1.2s in 50.667µs after waiting 209ns, 33.576834ms in
+probe: reader 50 read 1.3s in 11.791µs after waiting 208ns, 33.629542ms in
+probe: reader 50 read 1.4s in 47.125µs after waiting 167ns, 33.716667ms in
+probe: reader 50 read 1.5s in 30.125µs after waiting 166ns, 33.790334ms in
+probe: reader 50 read 1.6s in 40.041µs after waiting 167ns, 33.870542ms in
+probe: reader 50 read 1.7s in 38µs after waiting 125ns, 33.950834ms in
+probe: reader 50 read 1.8s in 28.417µs after waiting 166ns, 34.017375ms in
+probe: reader 50 read 1.9s in 35.834µs after waiting 167ns, 34.094125ms in
+probe: reader 50 read 2s in 36.5µs after waiting 208ns, 34.175084ms in
+probe: reader 50 read 2.1s in 82.792µs after waiting 209ns, 34.297459ms in
+probe: reader 50 read 2.2s in 57.25µs after waiting 166ns, 34.396167ms in
+probe: reader 50 read 2.3s in 45µs after waiting 167ns, 34.481875ms in
+probe: reader 50 read 2.4s in 45.375µs after waiting 166ns, 34.566209ms in
+probe: reader 50 read 2.5s in 49.416µs after waiting 167ns, 34.660042ms in
+probe: reader 50 read 2.6s in 62.167µs after waiting 167ns, 34.762959ms in
+probe: reader 50 read 2.7s in 35.75µs after waiting 166ns, 34.841584ms in
+probe: reader 50 read 2.8s in 9.791µs after waiting 375ns, 34.902042ms in
+probe: reader 50 read 2.9s in 43.5µs after waiting 125ns, 34.984792ms in
+probe: sample at 0ns without bytes
+probe: reader 50 read 0ns in 13.959µs after waiting 208ns, 35.039875ms in
+probe: sample at 0ns without bytes
+probe: reader 50 read 0ns in 12.583µs after waiting 208ns, 35.086917ms in
+probe: sample at 3s without bytes
+probe: reader 50 read 3s in 18.834µs after waiting 84ns, 35.13725ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 50 read 18446744073709551615.999999999s in 301.834µs after waiting 166ns, 35.475ms in
+probe: reader 50 stops at 18446744073709551615.999999999s, 167.576167ms in
+probe: reader 51 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 51 read 0ns in 1.359834ms after waiting 667ns, 2.151417ms in
+probe: reader 51 read 0ns in 2.504667ms after waiting 625ns, 4.70225ms in
+probe: reader 51 read 100ms in 12.508625ms after waiting 292ns, 17.267792ms in
+probe: reader 51 read 200ms in 5.188541ms after waiting 542ns, 22.556459ms in
+probe: reader 51 read 300ms in 13.574333ms after waiting 333ns, 36.18025ms in
+probe: reader 51 read 400ms in 59.542µs after waiting 250ns, 36.282834ms in
+probe: reader 51 read 500ms in 51µs after waiting 250ns, 36.375459ms in
+probe: reader 51 read 600ms in 45.375µs after waiting 209ns, 36.455417ms in
+probe: reader 51 read 700ms in 52.291µs after waiting 250ns, 36.548875ms in
+probe: reader 51 read 800ms in 29µs after waiting 208ns, 36.621584ms in
+probe: reader 51 read 900ms in 40.375µs after waiting 208ns, 36.697459ms in
+probe: reader 51 read 1s in 48.542µs after waiting 167ns, 36.782084ms in
+probe: reader 51 read 1.1s in 35.542µs after waiting 209ns, 36.868334ms in
+probe: reader 51 read 1.2s in 34.875µs after waiting 166ns, 36.942959ms in
+probe: reader 51 read 1.3s in 9.375µs after waiting 167ns, 36.99375ms in
+probe: reader 51 read 1.4s in 50.167µs after waiting 166ns, 37.082959ms in
+probe: reader 51 read 1.5s in 41.708µs after waiting 166ns, 37.168209ms in
+probe: reader 51 read 1.6s in 7.333µs after waiting 291ns, 37.222042ms in
+probe: reader 51 read 1.7s in 52.209µs after waiting 459ns, 37.317875ms in
+probe: reader 51 read 1.8s in 38.709µs after waiting 292ns, 37.4035ms in
+probe: reader 51 read 1.9s in 38.083µs after waiting 166ns, 37.483542ms in
+probe: reader 51 read 2s in 35.542µs after waiting 291ns, 37.573125ms in
+probe: reader 51 read 2.1s in 69.333µs after waiting 375ns, 37.682375ms in
+probe: reader 51 read 2.2s in 32.041µs after waiting 250ns, 37.767667ms in
+probe: reader 51 read 2.3s in 34.375µs after waiting 166ns, 37.842834ms in
+probe: reader 51 read 2.4s in 35.708µs after waiting 166ns, 37.920042ms in
+probe: reader 51 read 2.5s in 37.292µs after waiting 166ns, 38.00025ms in
+probe: reader 51 read 2.6s in 31µs after waiting 166ns, 38.071209ms in
+probe: reader 51 read 2.7s in 66.958µs after waiting 167ns, 38.176334ms in
+probe: reader 51 read 2.8s in 33.583µs after waiting 208ns, 38.251792ms in
+probe: reader 51 read 2.9s in 59.459µs after waiting 167ns, 38.3555ms in
+probe: sample at 0ns without bytes
+probe: reader 51 read 0ns in 14.5µs after waiting 167ns, 38.412ms in
+probe: sample at 0ns without bytes
+probe: reader 51 read 0ns in 11.791µs after waiting 167ns, 38.455167ms in
+probe: sample at 3s without bytes
+probe: reader 51 read 3s in 17.209µs after waiting 167ns, 38.50475ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 51 read 18446744073709551615.999999999s in 411.5µs after waiting 250ns, 38.951875ms in
+probe: reader 51 stops at 18446744073709551615.999999999s, 164.449334ms in
+probe: reader 52 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 52 read 0ns in 126.167µs after waiting 667ns, 839.084µs in
+probe: reader 52 read 0ns in 1.530291ms after waiting 1.375µs, 2.420084ms in
+probe: reader 52 read 100ms in 5.085959ms after waiting 209ns, 7.56ms in
+probe: reader 52 read 200ms in 11.389875ms after waiting 250ns, 18.986042ms in
+probe: reader 52 read 300ms in 5.730792ms after waiting 250ns, 24.758709ms in
+probe: reader 52 read 400ms in 7.493417ms after waiting 333ns, 32.301125ms in
+probe: reader 52 read 500ms in 983.458µs after waiting 208ns, 33.328709ms in
+probe: reader 52 read 600ms in 58.375µs after waiting 375ns, 33.448834ms in
+probe: reader 52 read 700ms in 249.916µs after waiting 250ns, 33.744542ms in
+probe: reader 52 read 800ms in 498.834µs after waiting 375ns, 34.296667ms in
+probe: reader 52 read 900ms in 428.041µs after waiting 209ns, 34.758792ms in
+probe: reader 52 read 1s in 90.959µs after waiting 250ns, 34.893875ms in
+probe: reader 52 read 1.1s in 51.375µs after waiting 208ns, 34.987167ms in
+probe: reader 52 read 1.2s in 38.25µs after waiting 291ns, 35.068084ms in
+probe: reader 52 read 1.3s in 42.916µs after waiting 250ns, 35.154542ms in
+probe: reader 52 read 1.4s in 47.542µs after waiting 209ns, 35.244834ms in
+probe: reader 52 read 1.5s in 5.75µs after waiting 250ns, 35.303334ms in
+probe: reader 52 read 1.6s in 49.125µs after waiting 250ns, 35.400125ms in
+probe: reader 52 read 1.7s in 49.084µs after waiting 209ns, 35.489875ms in
+probe: reader 52 read 1.8s in 34.042µs after waiting 167ns, 35.563959ms in
+probe: reader 52 read 1.9s in 36.375µs after waiting 167ns, 35.6385ms in
+probe: reader 52 read 2s in 27.5µs after waiting 167ns, 35.708917ms in
+probe: reader 52 read 2.1s in 49.208µs after waiting 209ns, 35.793584ms in
+probe: reader 52 read 2.2s in 34.75µs after waiting 167ns, 35.870792ms in
+probe: reader 52 read 2.3s in 59.667µs after waiting 167ns, 35.970584ms in
+probe: reader 52 read 2.4s in 40.792µs after waiting 208ns, 36.054875ms in
+probe: reader 52 read 2.5s in 26.167µs after waiting 458ns, 36.126ms in
+probe: reader 52 read 2.6s in 29.167µs after waiting 166ns, 36.196375ms in
+probe: reader 52 read 2.7s in 29.625µs after waiting 125ns, 36.26725ms in
+probe: reader 52 read 2.8s in 37.917µs after waiting 167ns, 36.345709ms in
+probe: reader 52 read 2.9s in 24.708µs after waiting 125ns, 36.411125ms in
+probe: sample at 0ns without bytes
+probe: reader 52 read 0ns in 17.167µs after waiting 166ns, 36.46875ms in
+probe: sample at 0ns without bytes
+probe: reader 52 read 0ns in 11.334µs after waiting 167ns, 36.51275ms in
+probe: sample at 3s without bytes
+probe: reader 52 read 3s in 17.084µs after waiting 125ns, 36.56075ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 52 read 18446744073709551615.999999999s in 339.667µs after waiting 209ns, 36.943625ms in
+probe: reader 52 stops at 18446744073709551615.999999999s, 169.871292ms in
+probe: reader 53 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 53 read 0ns in 92µs after waiting 583ns, 827.625µs in
+probe: reader 53 read 0ns in 3.382834ms after waiting 667ns, 4.245167ms in
+probe: reader 53 read 100ms in 6.420459ms after waiting 375ns, 10.717083ms in
+probe: reader 53 read 200ms in 12.130166ms after waiting 458ns, 22.900125ms in
+probe: reader 53 read 300ms in 5.91575ms after waiting 208ns, 28.86375ms in
+probe: reader 53 read 400ms in 6.303083ms after waiting 125ns, 35.206125ms in
+probe: reader 53 read 500ms in 60.709µs after waiting 167ns, 35.3155ms in
+probe: reader 53 read 600ms in 37µs after waiting 250ns, 35.397542ms in
+probe: reader 53 read 700ms in 69.125µs after waiting 208ns, 35.500917ms in
+probe: reader 53 read 800ms in 32.125µs after waiting 166ns, 35.574167ms in
+probe: reader 53 read 900ms in 40.959µs after waiting 166ns, 35.653333ms in
+probe: reader 53 read 1s in 37.833µs after waiting 208ns, 35.729375ms in
+probe: reader 53 read 1.1s in 35.625µs after waiting 166ns, 35.803458ms in
+probe: reader 53 read 1.2s in 28.709µs after waiting 167ns, 35.874583ms in
+probe: reader 53 read 1.3s in 76.5µs after waiting 125ns, 35.991667ms in
+probe: reader 53 read 1.4s in 69.5µs after waiting 209ns, 36.102875ms in
+probe: reader 53 read 1.5s in 47.333µs after waiting 166ns, 36.192625ms in
+probe: reader 53 read 1.6s in 45.125µs after waiting 208ns, 36.282167ms in
+probe: reader 53 read 1.7s in 47.541µs after waiting 208ns, 36.37375ms in
+probe: reader 53 read 1.8s in 32.791µs after waiting 250ns, 36.4615ms in
+probe: reader 53 read 1.9s in 60.583µs after waiting 166ns, 36.558542ms in
+probe: reader 53 read 2s in 47.417µs after waiting 167ns, 36.646667ms in
+probe: reader 53 read 2.1s in 59.708µs after waiting 166ns, 36.746042ms in
+probe: reader 53 read 2.2s in 23.209µs after waiting 375ns, 36.819833ms in
+probe: reader 53 read 2.3s in 11.792µs after waiting 208ns, 36.873375ms in
+probe: reader 53 read 2.4s in 29.042µs after waiting 500ns, 36.957417ms in
+probe: reader 53 read 2.5s in 48.709µs after waiting 209ns, 37.052458ms in
+probe: reader 53 read 2.6s in 6.75µs after waiting 208ns, 37.110292ms in
+probe: reader 53 read 2.7s in 40.25µs after waiting 250ns, 37.19975ms in
+probe: reader 53 read 2.8s in 36.875µs after waiting 167ns, 37.275333ms in
+probe: reader 53 read 2.9s in 8.083µs after waiting 166ns, 37.32525ms in
+probe: sample at 0ns without bytes
+probe: reader 53 read 0ns in 21.375µs after waiting 167ns, 37.385667ms in
+probe: sample at 0ns without bytes
+probe: reader 53 read 0ns in 12.042µs after waiting 209ns, 37.439667ms in
+probe: sample at 3s without bytes
+probe: reader 53 read 3s in 35.791µs after waiting 208ns, 37.536917ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 53 read 18446744073709551615.999999999s in 2.1265ms after waiting 333ns, 39.692583ms in
+probe: reader 53 stops at 18446744073709551615.999999999s, 163.993208ms in
+probe: reader 54 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 54 read 0ns in 93.916µs after waiting 1.334µs, 748.875µs in
+probe: reader 54 read 0ns in 5.538875ms after waiting 583ns, 6.326667ms in
+probe: reader 54 read 100ms in 15.604458ms after waiting 500ns, 21.994667ms in
+probe: reader 54 read 200ms in 5.464375ms after waiting 375ns, 27.518875ms in
+probe: reader 54 read 300ms in 5.316292ms after waiting 166ns, 32.875625ms in
+probe: reader 54 read 400ms in 152.208µs after waiting 333ns, 33.080375ms in
+probe: reader 54 read 500ms in 94.792µs after waiting 333ns, 33.245292ms in
+probe: reader 54 read 600ms in 794µs after waiting 416ns, 34.095792ms in
+probe: reader 54 read 700ms in 114.042µs after waiting 250ns, 34.272667ms in
+probe: reader 54 read 800ms in 61.125µs after waiting 666ns, 34.391042ms in
+probe: reader 54 read 900ms in 64.834µs after waiting 584ns, 34.520958ms in
+probe: reader 54 read 1s in 79.209µs after waiting 375ns, 34.644083ms in
+probe: reader 54 read 1.1s in 52.25µs after waiting 250ns, 34.740833ms in
+probe: reader 54 read 1.2s in 50.5µs after waiting 500ns, 34.835542ms in
+probe: reader 54 read 1.3s in 53µs after waiting 208ns, 34.931417ms in
+probe: reader 54 read 1.4s in 28.917µs after waiting 333ns, 35.013958ms in
+probe: reader 54 read 1.5s in 59.5µs after waiting 250ns, 35.1255ms in
+probe: reader 54 read 1.6s in 64.792µs after waiting 250ns, 35.232458ms in
+probe: reader 54 read 1.7s in 77.25µs after waiting 167ns, 35.345833ms in
+probe: reader 54 read 1.8s in 67.25µs after waiting 167ns, 35.455833ms in
+probe: reader 54 read 1.9s in 49.416µs after waiting 167ns, 35.547792ms in
+probe: reader 54 read 2s in 44.375µs after waiting 208ns, 35.634458ms in
+probe: reader 54 read 2.1s in 61µs after waiting 167ns, 35.735875ms in
+probe: reader 54 read 2.2s in 44.958µs after waiting 166ns, 35.82ms in
+probe: reader 54 read 2.3s in 45.375µs after waiting 208ns, 35.906458ms in
+probe: reader 54 read 2.4s in 52.334µs after waiting 125ns, 36.011875ms in
+probe: reader 54 read 2.5s in 44.416µs after waiting 208ns, 36.09725ms in
+probe: reader 54 read 2.6s in 40.042µs after waiting 166ns, 36.176583ms in
+probe: reader 54 read 2.7s in 32.208µs after waiting 208ns, 36.24825ms in
+probe: reader 54 read 2.8s in 67.083µs after waiting 500ns, 36.357167ms in
+probe: reader 54 read 2.9s in 41.875µs after waiting 167ns, 36.43925ms in
+probe: sample at 0ns without bytes
+probe: reader 54 read 0ns in 12.167µs after waiting 208ns, 36.493583ms in
+probe: sample at 0ns without bytes
+probe: reader 54 read 0ns in 11.834µs after waiting 167ns, 36.537708ms in
+probe: sample at 3s without bytes
+probe: reader 54 read 3s in 18.042µs after waiting 166ns, 36.589708ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 54 read 18446744073709551615.999999999s in 275.875µs after waiting 250ns, 36.899792ms in
+probe: reader 54 stops at 18446744073709551615.999999999s, 167.699625ms in
+probe: reader 55 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 55 read 0ns in 100.75µs after waiting 750ns, 810.375µs in
+probe: reader 55 read 0ns in 3.550666ms after waiting 417ns, 4.402167ms in
+probe: reader 55 read 100ms in 4.1705ms after waiting 542ns, 8.825ms in
+probe: reader 55 read 200ms in 13.081708ms after waiting 334ns, 21.951833ms in
+probe: reader 55 read 300ms in 6.110375ms after waiting 333ns, 28.113333ms in
+probe: reader 55 read 400ms in 6.408291ms after waiting 333ns, 34.569125ms in
+probe: reader 55 read 500ms in 87.75µs after waiting 291ns, 34.701417ms in
+probe: reader 55 read 600ms in 88.458µs after waiting 167ns, 34.827958ms in
+probe: reader 55 read 700ms in 68.5µs after waiting 334ns, 34.941167ms in
+probe: reader 55 read 800ms in 48µs after waiting 250ns, 35.039083ms in
+probe: reader 55 read 900ms in 52.25µs after waiting 208ns, 35.126417ms in
+probe: reader 55 read 1s in 60.208µs after waiting 208ns, 35.225167ms in
+probe: reader 55 read 1.1s in 31.208µs after waiting 167ns, 35.293542ms in
+probe: reader 55 read 1.2s in 40.375µs after waiting 167ns, 35.372375ms in
+probe: reader 55 read 1.3s in 29.417µs after waiting 208ns, 35.441333ms in
+probe: reader 55 read 1.4s in 46.916µs after waiting 167ns, 35.530625ms in
+probe: reader 55 read 1.5s in 40.083µs after waiting 125ns, 35.614417ms in
+probe: reader 55 read 1.6s in 65.709µs after waiting 125ns, 35.720708ms in
+probe: reader 55 read 1.7s in 35.166µs after waiting 125ns, 35.795875ms in
+probe: reader 55 read 1.8s in 35.834µs after waiting 125ns, 35.871458ms in
+probe: reader 55 read 1.9s in 34.375µs after waiting 167ns, 35.949583ms in
+probe: reader 55 read 2s in 57.625µs after waiting 167ns, 36.047958ms in
+probe: reader 55 read 2.1s in 30.167µs after waiting 458ns, 36.120333ms in
+probe: reader 55 read 2.2s in 35.125µs after waiting 167ns, 36.198875ms in
+probe: reader 55 read 2.3s in 30.417µs after waiting 167ns, 36.27075ms in
+probe: reader 55 read 2.4s in 61.25µs after waiting 167ns, 36.37375ms in
+probe: reader 55 read 2.5s in 27.875µs after waiting 166ns, 36.441167ms in
+probe: reader 55 read 2.6s in 35.5µs after waiting 125ns, 36.517583ms in
+probe: reader 55 read 2.7s in 23.958µs after waiting 125ns, 36.583417ms in
+probe: reader 55 read 2.8s in 43.708µs after waiting 125ns, 36.668542ms in
+probe: reader 55 read 2.9s in 52.917µs after waiting 250ns, 36.764833ms in
+probe: sample at 0ns without bytes
+probe: reader 55 read 0ns in 15.25µs after waiting 250ns, 36.825042ms in
+probe: sample at 0ns without bytes
+probe: reader 55 read 0ns in 12.75µs after waiting 250ns, 36.871708ms in
+probe: sample at 3s without bytes
+probe: reader 55 read 3s in 17.875µs after waiting 167ns, 36.923292ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 55 read 18446744073709551615.999999999s in 318.708µs after waiting 250ns, 37.27725ms in
+probe: reader 55 stops at 18446744073709551615.999999999s, 164.503333ms in
+probe: reader 56 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 56 read 0ns in 106.5µs after waiting 917ns, 785.708µs in
+probe: reader 56 read 0ns in 1.495625ms after waiting 625ns, 2.321416ms in
+probe: reader 56 read 100ms in 14.10625ms after waiting 375ns, 16.483791ms in
+probe: reader 56 read 200ms in 5.100875ms after waiting 292ns, 21.637291ms in
+probe: reader 56 read 300ms in 11.715167ms after waiting 209ns, 33.396125ms in
+probe: reader 56 read 400ms in 309.792µs after waiting 334ns, 33.749791ms in
+probe: reader 56 read 500ms in 71.584µs after waiting 292ns, 33.869541ms in
+probe: reader 56 read 600ms in 92.583µs after waiting 250ns, 34.00475ms in
+probe: reader 56 read 700ms in 73.333µs after waiting 375ns, 34.129041ms in
+probe: reader 56 read 800ms in 32.625µs after waiting 500ns, 34.212291ms in
+probe: reader 56 read 900ms in 31.375µs after waiting 209ns, 34.2835ms in
+probe: reader 56 read 1s in 34.542µs after waiting 166ns, 34.358041ms in
+probe: reader 56 read 1.1s in 33.958µs after waiting 166ns, 34.432333ms in
+probe: reader 56 read 1.2s in 26.667µs after waiting 166ns, 34.500166ms in
+probe: reader 56 read 1.3s in 5.458µs after waiting 167ns, 34.548875ms in
+probe: reader 56 read 1.4s in 37.041µs after waiting 500ns, 34.630458ms in
+probe: reader 56 read 1.5s in 5.042µs after waiting 125ns, 34.678291ms in
+probe: reader 56 read 1.6s in 30.584µs after waiting 125ns, 34.748291ms in
+probe: reader 56 read 1.7s in 56.5µs after waiting 125ns, 34.845375ms in
+probe: reader 56 read 1.8s in 35µs after waiting 166ns, 34.92ms in
+probe: reader 56 read 1.9s in 30.042µs after waiting 166ns, 34.989666ms in
+probe: reader 56 read 2s in 53.25µs after waiting 166ns, 35.0825ms in
+probe: reader 56 read 2.1s in 53.25µs after waiting 167ns, 35.175166ms in
+probe: reader 56 read 2.2s in 35.292µs after waiting 250ns, 35.252291ms in
+probe: reader 56 read 2.3s in 6.083µs after waiting 250ns, 35.31325ms in
+probe: reader 56 read 2.4s in 25.167µs after waiting 209ns, 35.38975ms in
+probe: reader 56 read 2.5s in 6.333µs after waiting 250ns, 35.443041ms in
+probe: reader 56 read 2.6s in 27.875µs after waiting 166ns, 35.51225ms in
+probe: reader 56 read 2.7s in 28.125µs after waiting 208ns, 35.582291ms in
+probe: reader 56 read 2.8s in 34.125µs after waiting 167ns, 35.659916ms in
+probe: reader 56 read 2.9s in 33.292µs after waiting 209ns, 35.73275ms in
+probe: sample at 0ns without bytes
+probe: reader 56 read 0ns in 16.084µs after waiting 167ns, 35.793666ms in
+probe: sample at 0ns without bytes
+probe: reader 56 read 0ns in 12.792µs after waiting 208ns, 35.839416ms in
+probe: sample at 3s without bytes
+probe: reader 56 read 3s in 18.708µs after waiting 125ns, 35.898708ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 56 read 18446744073709551615.999999999s in 260.167µs after waiting 166ns, 36.195666ms in
+probe: reader 56 stops at 18446744073709551615.999999999s, 170.304791ms in
+probe: reader 57 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 57 read 0ns in 152.333µs after waiting 917ns, 806.792µs in
+probe: reader 57 read 0ns in 1.429291ms after waiting 500ns, 2.274875ms in
+probe: reader 57 read 100ms in 5.9265ms after waiting 291ns, 8.245167ms in
+probe: reader 57 read 200ms in 14.307209ms after waiting 209ns, 22.590875ms in
+probe: reader 57 read 300ms in 5.743959ms after waiting 250ns, 28.3745ms in
+probe: reader 57 read 400ms in 5.003125ms after waiting 292ns, 33.430167ms in
+probe: reader 57 read 500ms in 52.916µs after waiting 292ns, 33.531667ms in
+probe: reader 57 read 600ms in 65.625µs after waiting 208ns, 33.638833ms in
+probe: reader 57 read 700ms in 81.417µs after waiting 167ns, 33.759917ms in
+probe: reader 57 read 800ms in 57.708µs after waiting 166ns, 33.864875ms in
+probe: reader 57 read 900ms in 54.875µs after waiting 250ns, 33.977625ms in
+probe: reader 57 read 1s in 93.083µs after waiting 167ns, 34.107917ms in
+probe: reader 57 read 1.1s in 92.583µs after waiting 166ns, 34.2385ms in
+probe: reader 57 read 1.2s in 73.208µs after waiting 167ns, 34.357167ms in
+probe: reader 57 read 1.3s in 47.292µs after waiting 250ns, 34.459083ms in
+probe: reader 57 read 1.4s in 61.625µs after waiting 333ns, 34.574292ms in
+probe: reader 57 read 1.5s in 48.458µs after waiting 208ns, 34.671625ms in
+probe: reader 57 read 1.6s in 71.333µs after waiting 166ns, 34.785ms in
+probe: reader 57 read 1.7s in 61.375µs after waiting 417ns, 34.893208ms in
+probe: reader 57 read 1.8s in 36.5µs after waiting 209ns, 34.973ms in
+probe: reader 57 read 1.9s in 55.041µs after waiting 250ns, 35.079792ms in
+probe: reader 57 read 2s in 63.542µs after waiting 292ns, 35.192833ms in
+probe: reader 57 read 2.1s in 35.958µs after waiting 208ns, 35.269042ms in
+probe: reader 57 read 2.2s in 71.75µs after waiting 167ns, 35.38425ms in
+probe: reader 57 read 2.3s in 50.125µs after waiting 250ns, 35.486375ms in
+probe: reader 57 read 2.4s in 74.334µs after waiting 167ns, 35.594625ms in
+probe: reader 57 read 2.5s in 54.791µs after waiting 333ns, 35.696375ms in
+probe: reader 57 read 2.6s in 62.292µs after waiting 166ns, 35.803083ms in
+probe: reader 57 read 2.7s in 54.208µs after waiting 208ns, 35.899542ms in
+probe: reader 57 read 2.8s in 69.375µs after waiting 208ns, 36.010167ms in
+probe: reader 57 read 2.9s in 57.5µs after waiting 167ns, 36.10925ms in
+probe: sample at 0ns without bytes
+probe: reader 57 read 0ns in 16.5µs after waiting 208ns, 36.166583ms in
+probe: sample at 0ns without bytes
+probe: reader 57 read 0ns in 12.458µs after waiting 208ns, 36.213042ms in
+probe: sample at 3s without bytes
+probe: reader 57 read 3s in 21µs after waiting 167ns, 36.267625ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 57 read 18446744073709551615.999999999s in 390.583µs after waiting 250ns, 36.689375ms in
+probe: reader 57 stops at 18446744073709551615.999999999s, 164.020292ms in
+probe: reader 58 of with-sound.mp4
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader 58 read 0ns in 116.625µs after waiting 750ns, 798µs in
+probe: reader 58 read 0ns in 1.635208ms after waiting 584ns, 2.461791ms in
+probe: reader 58 read 100ms in 11.81675ms after waiting 334ns, 14.322833ms in
+probe: reader 58 read 200ms in 6.179ms after waiting 292ns, 20.558291ms in
+probe: reader 58 read 300ms in 12.268916ms after waiting 292ns, 32.873625ms in
+probe: reader 58 read 400ms in 345.417µs after waiting 1.042µs, 33.504416ms in
+probe: reader 58 read 500ms in 476.208µs after waiting 291ns, 34.04825ms in
+probe: reader 58 read 600ms in 357.75µs after waiting 500ns, 34.460666ms in
+probe: reader 58 read 700ms in 472.5µs after waiting 375ns, 34.986875ms in
+probe: reader 58 read 800ms in 517.292µs after waiting 292ns, 35.553625ms in
+probe: reader 58 read 900ms in 200.959µs after waiting 334ns, 35.809291ms in
+probe: reader 58 read 1s in 65.25µs after waiting 208ns, 35.918083ms in
+probe: reader 58 read 1.1s in 52.333µs after waiting 417ns, 36.027416ms in
+probe: reader 58 read 1.2s in 61.417µs after waiting 250ns, 36.135458ms in
+probe: reader 58 read 1.3s in 53.542µs after waiting 333ns, 36.238375ms in
+probe: reader 58 read 1.4s in 55.875µs after waiting 333ns, 36.340291ms in
+probe: reader 58 read 1.5s in 57.541µs after waiting 208ns, 36.441ms in
+probe: reader 58 read 1.6s in 52.458µs after waiting 208ns, 36.535833ms in
+probe: reader 58 read 1.7s in 39.958µs after waiting 250ns, 36.630208ms in
+probe: reader 58 read 1.8s in 53.334µs after waiting 166ns, 36.727416ms in
+probe: reader 58 read 1.9s in 34.792µs after waiting 334ns, 36.815875ms in
+probe: reader 58 read 2s in 40.792µs after waiting 250ns, 36.9085ms in
+probe: reader 58 read 2.1s in 62.625µs after waiting 167ns, 37.010041ms in
+probe: reader 58 read 2.2s in 70.5µs after waiting 250ns, 37.125208ms in
+probe: reader 58 read 2.3s in 51.75µs after waiting 208ns, 37.216916ms in
+probe: reader 58 read 2.4s in 56.792µs after waiting 250ns, 37.312625ms in
+probe: reader 58 read 2.5s in 44.917µs after waiting 125ns, 37.39925ms in
+probe: reader 58 read 2.6s in 5.917µs after waiting 209ns, 37.46175ms in
+probe: reader 58 read 2.7s in 40.084µs after waiting 250ns, 37.552541ms in
+probe: reader 58 read 2.8s in 54.75µs after waiting 125ns, 37.648833ms in
+probe: reader 58 read 2.9s in 46.417µs after waiting 208ns, 37.743416ms in
+probe: sample at 0ns without bytes
+probe: reader 58 read 0ns in 16.708µs after waiting 167ns, 37.8035ms in
+probe: sample at 0ns without bytes
+probe: reader 58 read 0ns in 13.208µs after waiting 208ns, 37.850083ms in
+probe: sample at 3s without bytes
+probe: reader 58 read 3s in 20.25µs after waiting 125ns, 37.902416ms in
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader 58 read 18446744073709551615.999999999s in 374µs after waiting 250ns, 38.311541ms in
+probe: reader 58 stops at 18446744073709551615.999999999s, 168.492375ms in
+probe: reader 5 stops at 18446744073709551615.999999999s, 44.736873125s in
