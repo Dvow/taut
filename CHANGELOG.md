@@ -417,6 +417,11 @@ code changes; a new patch version (0.1.0 → 0.1.1) never does.
   and OpenGL read past its end; the video memory check measures only once memory stops growing
   (some 200 opens on Windows); `tests/video_apple.rs` shuts down the simulator it booted, which
   kept the Mac busy and its frames late in the steps after.
+- **Fixed (Windows video):** a seek made as a video pauses sometimes never showed its frame.
+  Media Foundation can end such a seek with no frame (one in eight on a computer with no GPU).
+  The player now seeks elsewhere and back for it, its position held. A caption track Media
+  Foundation tells of after the first frame (at times a file's second) now shows in
+  `caption_tracks()`: the window wakes, and a paused video asks until every track told is listed.
 
 ## 0.3.0 (2026-11-24)
 

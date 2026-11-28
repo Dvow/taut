@@ -387,6 +387,7 @@ unsafe extern "system" fn track_added(this: *mut Listener<Showing>, _: u32) {
     let told = unsafe { &(*this).told };
     told.tracks.fetch_add(1, Ordering::AcqRel);
     told.tracks_changed.store(true, Ordering::Release);
+    wake_window();
 }
 
 unsafe extern "system" fn track_removed(this: *mut Listener<Showing>, _: u32) {
@@ -394,7 +395,21 @@ unsafe extern "system" fn track_removed(this: *mut Listener<Showing>, _: u32) {
     let told = unsafe { &(*this).told };
     told.tracks.fetch_sub(1, Ordering::AcqRel);
     told.tracks_changed.store(true, Ordering::Release);
+    wake_window();
 }
+
+/// Has the window run its interface again: the timed text tells of tracks from threads of its
+/// own, a file's second track as late as after the first frame, when a paused video no longer
+/// asks. (Tests count these: a window runs once for each.)
+fn wake_window() {
+    #[cfg(test)]
+    WOKEN.fetch_add(1, Ordering::Relaxed);
+    crate::platform::Waker.wake();
+}
+
+/// (Tests: how many times the window was woken.)
+#[cfg(test)]
+pub(crate) static WOKEN: AtomicU32 = AtomicU32::new(0);
 
 /// A cue came on show (0), went (1), or all went (2). (Of the cue: 3: GetId, 8: GetTrackId.)
 unsafe extern "system" fn cue(this: *mut Listener<Showing>, happened: u32, _: f64, cue: *mut Com) {
@@ -434,6 +449,10 @@ pub(crate) struct Player {
     frames: Frames,
     /// The last frame's time, in 100 ns.
     last: Option<i64>,
+    /// A frame was put in the target since the source was given.
+    framed: bool,
+    /// The frame of the last seek: waited for, or fetched again.
+    sought: Sought,
     /// The source's metadata was read: its tracks are known.
     loaded: bool,
     /// The engine's streams that are sound tracks, in order.
@@ -458,7 +477,29 @@ pub(crate) struct Player {
     /// (Tests: the effect that hears what plays, or null.)
     #[cfg(test)]
     hearing: *mut Listener<Mutex<hearing::Hearing>>,
+    /// (Tests: the next seek's frame is taken as lost.)
+    #[cfg(test)]
+    lose: bool,
 }
+
+/// The frame of the last seek, while it is due.
+#[derive(Clone, Copy)]
+enum Sought {
+    /// None is due: it came.
+    Done,
+    /// The frame at `at` s is due, fetched again `tries` times.
+    Due { at: f64, tries: u8 },
+    /// Seeking elsewhere, to seek back to `at` s and fetch its frame again.
+    Away { at: f64, tries: u8 },
+}
+
+/// How many times a seek's lost frame is fetched again, at most.
+const FETCHES: u8 = 2;
+/// The time `OnVideoStreamTick` gives while the engine holds no frame.
+const NO_FRAME: i64 = i64::MIN;
+/// (Tests: how many lost frames were fetched again.)
+#[cfg(test)]
+pub(crate) static FETCHED: AtomicU32 = AtomicU32::new(0);
 
 impl Player {
     /// Opens the source in a new engine; with no sound, muted. Decoded on the GPU where there is
@@ -503,6 +544,8 @@ impl Player {
             showing: Listener::boxed(&SHOWING.unknown, &A_CUE_NOTIFY, Showing { cues: Mutex::new(Vec::new()), tracks_changed: AtomicBool::new(false), tracks: AtomicU32::new(0) }),
             frames: Frames::Bitmap { wic: null_mut(), bitmap: null_mut(), size: (0, 0) },
             last: None,
+            framed: false,
+            sought: Sought::Done,
             loaded: false,
             sound_streams: Vec::new(),
             timed_text: null_mut(),
@@ -516,6 +559,8 @@ impl Player {
             pending: None,
             #[cfg(test)]
             hearing: null_mut(),
+            #[cfg(test)]
+            lose: false,
         })
     }
 
@@ -734,14 +779,19 @@ impl Player {
         self.call::<i32>(33);
     }
     pub(crate) fn seek(&mut self, to: Duration) {
-        self.last = None;
+        (self.last, self.sought) = (None, Sought::Due { at: to.as_secs_f64(), tries: 0 });
         self.set(17, to.as_secs_f64());
         self.in_stream.seek(to);
         self.file_captions.seek(to);
     }
-    /// Where it plays (the captions' readers read on from there).
+    /// Where it plays (the captions' readers read on from there): where it was sought while
+    /// its frame is fetched again.
     pub(crate) fn position(&mut self) -> Duration {
-        let position = Duration::try_from_secs_f64(self.call::<f64>(16)).unwrap_or_default();
+        let seconds = match self.sought {
+            Sought::Away { at, .. } => at,
+            _ => self.call::<f64>(16),
+        };
+        let position = Duration::try_from_secs_f64(seconds).unwrap_or_default();
         self.in_stream.played_to(position);
         self.file_captions.played_to(position);
         position
@@ -774,10 +824,12 @@ impl Player {
         let error = (said & FAILED != 0).then(|| format!("the player stopped: {} ({:#010x})", self.error_words(), code as u32));
         // SAFETY: as above.
         let showing = unsafe { &(*self.showing).told };
-        // (A track told before the list held it is listed again until the list does.)
-        let timed_text = showing.tracks_changed.swap(false, Ordering::AcqRel) || showing.tracks.load(Ordering::Acquire) > self.timed_tracks;
+        // (A track told before the list held it is listed again until the list does, asked for
+        // meanwhile though paused.)
+        let unlisted = showing.tracks.load(Ordering::Acquire) > self.timed_tracks;
+        let timed_text = showing.tracks_changed.swap(false, Ordering::AcqRel) || unlisted;
         let tracks_changed = timed_text || self.in_stream.with_tracks(|tracks| tracks.unlisted()) || self.file_captions.with(|captions| captions.unlisted());
-        let reading_captions = self.in_stream.reading() || self.file_captions.reading();
+        let reading_captions = unlisted || self.in_stream.reading() || self.file_captions.reading();
         News { ended: said & ENDED != 0, error: unread.or(error), clears_on_play: false, tracks_changed, reading_captions }
     }
     /// The engine's error as words (3: GetError; of the error, 3: GetErrorCode).
@@ -823,20 +875,66 @@ impl Player {
     /// its time and width. (44: OnVideoStreamTick, 40: GetNativeVideoSize.)
     fn transferred(&mut self) -> Option<(Duration, usize)> {
         let (mut at, mut width, mut height) = (0i64, 0u32, 0u32);
-        // SAFETY: the engine is alive, and writes the time and size.
-        unsafe {
-            let tick = call!(self.engine, 44, unsafe extern "system" fn(*mut Com, *mut i64) -> i32, &mut at);
-            if tick != 0 || self.last == Some(at) {
-                return None;
-            }
-            call!(self.engine, 40, unsafe extern "system" fn(*mut Com, *mut u32, *mut u32) -> i32, &mut width, &mut height);
+        // SAFETY: the engine is alive, and writes the time.
+        let tick = unsafe { call!(self.engine, 44, unsafe extern "system" fn(*mut Com, *mut i64) -> i32, &mut at) };
+        if self.fetching_again(tick, at) || tick != 0 || self.last == Some(at) {
+            return None;
         }
+        // SAFETY: as above; it writes the size.
+        unsafe { call!(self.engine, 40, unsafe extern "system" fn(*mut Com, *mut u32, *mut u32) -> i32, &mut width, &mut height) };
         let whole = [0i32, 0, width as i32, height as i32];
         if width == 0 || height == 0 || !self.frames.sized(width, height) || !self.frames.transfer(self.engine, &whole) {
             return None;
         }
-        self.last = Some(at);
+        (self.last, self.framed, self.sought) = (Some(at), true, Sought::Done);
         Some((Duration::from_nanos(at.max(0) as u64 * 100), width as usize))
+    }
+
+    /// Fetches a paused seek's frame again where the engine lost it: whether this tick is part
+    /// of that, and gives no frame. A seek made as the video pauses may end with no frame, and
+    /// none comes after (one in eight on a runner with no GPU), while a seek to where the engine
+    /// stands is done at once with none. So it seeks elsewhere, then back; the frame from
+    /// elsewhere is never given.
+    fn fetching_again(&mut self, tick: i32, at: i64) -> bool {
+        if let Sought::Away { at: back, tries } = self.sought {
+            if !self.seeking() && (tick == 0 || at == NO_FRAME) {
+                (self.last, self.sought) = ((tick == 0).then_some(at), Sought::Due { at: back, tries });
+                self.set(17, back);
+            }
+            return true;
+        }
+        let Sought::Due { at: time, tries } = self.sought else { return false };
+        if tries >= FETCHES || !(self.lost(tick, at) || self.faked_loss()) {
+            return false;
+        }
+        let Some(away) = self.elsewhere(time) else { return false };
+        #[cfg(test)]
+        FETCHED.fetch_add(1, Ordering::Relaxed);
+        self.sought = Sought::Away { at: time, tries: tries + 1 };
+        self.set(17, away);
+        true
+    }
+    /// Whether the engine lost a seek's frame: paused, the seek done, a frame shown before, and
+    /// it holds none (20: IsPaused; 14: GetReadyState, `HAVE_CURRENT_DATA` at least).
+    fn lost(&self, tick: i32, at: i64) -> bool {
+        tick != 0 && at == NO_FRAME && self.framed && !self.seeking() && self.call::<i32>(20) != 0 && self.call::<u16>(14) >= 2
+    }
+    /// Whether the engine still seeks (15: IsSeeking).
+    fn seeking(&self) -> bool {
+        self.call::<i32>(15) != 0
+    }
+    /// A time a quarter of the length or more from `time`, never the end: a seek there is one
+    /// the engine makes (19: GetDuration). None for a live stream.
+    fn elsewhere(&self, time: f64) -> Option<f64> {
+        let length = self.call::<f64>(19);
+        (length.is_finite() && length > 0.0).then(|| if time > length / 2.0 { time / 2.0 } else { (time + length) / 2.0 })
+    }
+    /// (Tests: a lost frame faked once.)
+    fn faked_loss(&mut self) -> bool {
+        #[cfg(test)]
+        return std::mem::take(&mut self.lose);
+        #[cfg(not(test))]
+        false
     }
 
     // ---- tracks ----
@@ -1822,6 +1920,20 @@ impl Player {
         let mut player = Player::new(false, false)?;
         player.set_source(source)?;
         Ok(player)
+    }
+    /// Takes the next seek's frame as lost, as the engine sometimes loses it.
+    pub(crate) fn lose_next_frame(&mut self) {
+        self.lose = true;
+    }
+    /// The timed text telling of a track added or removed, as it does from a thread of its own.
+    pub(crate) fn tell_track(&self, added: bool) {
+        // SAFETY: the listener lives as long as the player.
+        unsafe {
+            match added {
+                true => track_added(self.showing, 0),
+                false => track_removed(self.showing, 0),
+            }
+        }
     }
 }
 

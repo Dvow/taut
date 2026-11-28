@@ -182,8 +182,8 @@ pub(crate) struct News {
     /// The source's tracks changed since they were read: captions in the video stream found
     /// once they play.
     pub tracks_changed: bool,
-    /// A thread of its own still reads the captions in the video stream: tracks may come while
-    /// the video stands still.
+    /// Tracks may come while the video stands still: a thread of its own still reads the
+    /// captions in the video stream, or the player told of tracks it does not list yet.
     pub reading_captions: bool,
 }
 
@@ -1062,10 +1062,21 @@ pub(crate) mod tests {
     }
     use crate::testing::Trial;
 
-    /// Lets `time` pass for real, then in the trial: it runs whenever the video asked.
+    /// Lets `time` pass for real, then in the trial: it runs whenever the video asked, and once
+    /// more where the player woke the window meanwhile, as a window runs then.
     fn pass(trial: &mut Trial<Video>, time: Duration) {
         std::thread::sleep(time);
         trial.wait(time);
+        if woken() {
+            trial.run();
+        }
+    }
+    /// Whether the player woke the window since last asked.
+    fn woken() -> bool {
+        #[cfg(windows)]
+        return crate::video_windows::WOKEN.swap(0, Ordering::Relaxed) > 0;
+        #[cfg(not(windows))]
+        false
     }
     /// Passes time until `done`, or fails after 10 s saying `what`.
     fn until(trial: &mut Trial<Video>, what: &str, done: impl Fn(&Video) -> bool) {
@@ -1237,6 +1248,28 @@ pub(crate) mod tests {
             pass(&mut trial, Duration::from_millis(100));
             assert_eq!(shown(&trial), frame, "after a seek to {to} s");
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_seeks_frame_the_player_lost_is_fetched_again_and_no_other_shows() {
+        use crate::video_windows::FETCHED;
+        let _alone = alone();
+        let Some(video) = opened(false) else { return };
+        let mut trial = trial(video, false);
+        until(&mut trial, "the first frame", |video| video.size().is_some());
+        let (fetched, frames) = (FETCHED.load(Ordering::Relaxed), trial.app.frames_shown());
+        trial.app.player.lose_next_frame();
+        trial.app.seek(Duration::from_secs(2));
+        trial.run();
+        let start = std::time::Instant::now();
+        while trial.app.awaited {
+            assert!(start.elapsed() < Duration::from_secs(10), "the frame after a seek did not happen: {:?}", trial.app);
+            assert_eq!(trial.app.position(), Duration::from_secs(2), "the position moved while the frame was fetched again");
+            pass(&mut trial, Duration::from_millis(20));
+        }
+        assert_eq!(FETCHED.load(Ordering::Relaxed), fetched + 1, "the frame was not fetched again");
+        assert_eq!((shown(&trial), trial.app.frames_shown(), trial.app.position()), (20, frames + 1, Duration::from_secs(2)));
     }
 
     #[test]
@@ -1884,6 +1917,32 @@ pub(crate) mod tests {
         let Down::At(down, Align::Start) = place.down else { panic!("{place:?}") };
         assert!((place.x - 0.1).abs() < 0.02 && place.across == Align::Start && (down - 0.1).abs() < 0.02, "{place:?}");
         assert_eq!(place_of("en", "English one"), Some(None));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_track_told_while_paused_wakes_the_window_and_is_asked_for_until_listed() {
+        let _alone = alone();
+        let file = written("placed.mkv", &matroska(30, 10, &[], &PLAIN_AND_PLACED));
+        let Some(video) = player(Video::open_silent(file)) else { return };
+        let mut trial = trial(video, false);
+        until(&mut trial, "the caption tracks", |video| video.caption_tracks().len() == 2);
+        let start = std::time::Instant::now();
+        while trial.ui.wake_in().is_some() {
+            assert!(start.elapsed() < Duration::from_secs(10), "the paused video still asks again in {:?}", trial.ui.wake_in());
+            pass(&mut trial, Duration::from_millis(20));
+        }
+        // Media Foundation tells of a track the list does not hold yet, as it does of a file's
+        // second track as late as after the first frame: the window wakes, and the video asks
+        // until the list holds as many as were told.
+        crate::video_windows::WOKEN.store(0, Ordering::Relaxed);
+        trial.app.player.tell_track(true);
+        assert_eq!(crate::video_windows::WOKEN.load(Ordering::Relaxed), 1, "the window was not woken");
+        pass(&mut trial, Duration::from_millis(20));
+        assert!(trial.ui.wake_in().is_some(), "the video asks no more with a track told and not listed");
+        trial.app.player.tell_track(false);
+        pass(&mut trial, Duration::from_millis(120));
+        assert_eq!((trial.ui.wake_in(), trial.app.caption_tracks().len()), (None, 2));
     }
 
     #[test]
