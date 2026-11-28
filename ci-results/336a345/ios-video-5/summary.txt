@@ -1,0 +1,981 @@
+video exit 0 in 355 s
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 35 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 70 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 3 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+unrecognised property keyprobe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+unrecognised property keyprobe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+unrecognised property keyprobe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+unrecognised property keyprobe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+unrecognised property keyprobe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+unrecognised property keyprobe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+unrecognised property keyprobe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+unrecognised property keyprobe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+unrecognised property keyprobe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+unrecognised property keyprobe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 50 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 52 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 48 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+video,gpu-draw exit 101 in 271 s
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader started at 0ns: true
+probe: reader gave no sample after 56 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 15 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+::error file=tests/video_apple.rs,line=354,title=tests/video_apple.rs%3A thread 'main' panicked::thread 'main' (25732) panicked at tests/video_apple.rs:354:25:%0Avideo on iOS:%0Aframes show at their times%0Apause and seek%0Aa seek before the first frame%0Athe end, and a loop%0Athe controls%0Abytes%0Atracks, captions and speed
+::error file=tests/video_apple.rs,line=85,title=tests/video_apple.rs%3A thread 'main' panicked::thread 'main' (36785) panicked at tests/video_apple.rs:85:13:%0Athe captions read did not happen: Video { playing: false, position: 2.5s, length: Some(3s), size: Some((64, 48)), speed: 1.0, caption: None, error: None, .. }
+::error title=tests/video_apple.rs%3A thread 'main' panicked::thread 'main' (36785) panicked at /rustc/20ddd01716a87c0fcf06ae4752d85a4abc15bcdf/library/core/src/panicking.rs:225:5:%0Apanic in a function that cannot unwind
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 34 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader started at 0ns: true
+probe: reader gave no sample after 56 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: sample at 0ns without bytes
+probe: sample at 0ns without bytes
+probe: sample at 3s without bytes
+probe: reader gave no sample after 15 read: status 2 (2 completed, 3 failed, 4 cancelled), error None
+probe: reader started at 0ns: true
+probe: sample at 0ns without bytes
