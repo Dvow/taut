@@ -896,9 +896,15 @@ pub(crate) mod tests {
             return;
         }
         assert!(is_on_its_own_desktop(), "this is the desktop the person works on: no window is shown on it");
-        // Software devices: Direct3D 12's WARP takes frames but can't open the decoder's (the
-        // GPU's); SwiftShader's Vulkan can't import them at all.
+        // Software devices: Direct3D 12's WARP takes frames but can't open the decoder's where
+        // the decoder is on a GPU (with none, both are on Microsoft's adapter and it opens
+        // them); SwiftShader's Vulkan can't import them at all.
+        let decoder_on_a_gpu = crate::gpu_d3d11::Device::gpu().is_some();
         for path in [Renderer::Direct3D12, Renderer::Vulkan] {
+            if path == Renderer::Direct3D12 && !decoder_on_a_gpu {
+                println!("no GPU here: WARP opens the decoder's frames, nothing to fall back from");
+                continue;
+            }
             let Some(usual) = tested_with(path).filter(|usual| usual.software) else { continue };
             let Some(videos) = two_videos() else { return println!("no video player here: skipped") };
             let (gpu, on_gpu, read_back) = played(path, usual, videos);
