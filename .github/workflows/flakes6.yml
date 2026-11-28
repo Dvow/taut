@@ -95,6 +95,7 @@ jobs:
           cargo build -q --example overlay
           run 1 all cargo test --all-features --no-fail-fast -- --test-threads=4
           run 1 lib cargo test --lib --no-fail-fast
+          for i in $(seq 1 20); do run $i spell cargo test -q --lib spell; done
           cat $O/summary.txt $O/probes.txt
           git config user.name "github-actions[bot]" && git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f ci-results && git commit -q -m "results windows ${{ matrix.copy }}"

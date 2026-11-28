@@ -1041,17 +1041,32 @@ impl Speller {
         // SAFETY: the factory is created, asked whether it supports the language (4) and for
         // its checker (5), and released. The name is NUL-terminated and outlives the calls.
         unsafe {
-            crate::windows::sys::CoInitializeEx(std::ptr::null_mut(), 0);
-            if crate::windows::sys::CoCreateInstance(&FACTORY, std::ptr::null_mut(), 1, &A_FACTORY, &mut factory) < 0 || factory.is_null() {
+            let start = std::time::Instant::now();
+            let com = crate::windows::sys::CoInitializeEx(std::ptr::null_mut(), 0);
+            let made = crate::windows::sys::CoCreateInstance(&FACTORY, std::ptr::null_mut(), 1, &A_FACTORY, &mut factory);
+            if made < 0 || factory.is_null() {
+                probe_note(&format!("probe: open {language}: CoInitializeEx {com:#x}, factory {made:#x} after {:?}", start.elapsed()));
                 return None;
             }
-            Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut i32) -> i32>(factory, 4)(factory, name.as_ptr(), &mut known);
+            let supported = Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut i32) -> i32>(factory, 4)(factory, name.as_ptr(), &mut known);
+            let mut created = 0;
             if known != 0 {
-                Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut *mut Com) -> i32>(factory, 5)(factory, name.as_ptr(), &mut checker);
+                created = Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut *mut Com) -> i32>(factory, 5)(factory, name.as_ptr(), &mut checker);
             }
+            probe_note(&format!("probe: open {language}: CoInitializeEx {com:#x}, factory {made:#x}, supported {supported:#x} known {known}, checker {created:#x} null {} after {:?}", checker.is_null(), start.elapsed()));
             Com::release(factory);
         }
         (!checker.is_null()).then(|| Speller(checker))
+    }
+}
+
+/// (Probe) A line to stderr and to the file TAUT_PROBE names.
+#[cfg(windows)]
+fn probe_note(line: &str) {
+    eprintln!("{line}");
+    if let Ok(path) = std::env::var("TAUT_PROBE") {
+        use std::io::Write;
+        _ = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| writeln!(file, "{line}"));
     }
 }
 
@@ -1062,7 +1077,12 @@ impl Check for Speller {
         // SAFETY: the checker is alive; its results are asked for their first error, and both
         // are released.
         unsafe {
-            if Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut *mut Com) -> i32>(self.0, 4)(self.0, word.as_ptr(), &mut found) < 0 || found.is_null() {
+            let start = std::time::Instant::now();
+            let checked = Com::function::<unsafe extern "system" fn(*mut Com, *const u16, *mut *mut Com) -> i32>(self.0, 4)(self.0, word.as_ptr(), &mut found);
+            if checked < 0 || found.is_null() || start.elapsed() > std::time::Duration::from_millis(100) {
+                probe_note(&format!("probe: check {}: {checked:#x} null {} after {:?}", String::from_utf16_lossy(&word), found.is_null(), start.elapsed()));
+            }
+            if checked < 0 || found.is_null() {
                 return false;
             }
             let more = Com::function::<unsafe extern "system" fn(*mut Com, *mut *mut Com) -> i32>(found, 3)(found, &mut first);
@@ -1938,13 +1958,22 @@ pub(crate) mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        let line = format!("probe: {language} marks {:?} after {:?} in {runs} runs\n", told(&ui), start.elapsed());
+        let mut line = format!("probe: {language} marks {:?} after {:?} in {runs} runs\n", told(&ui), start.elapsed());
+        let early = told(&ui);
+        if early.len() < 2 {
+            let late = std::time::Instant::now();
+            while told(&ui).len() < 2 && late.elapsed() < Duration::from_secs(30) {
+                ui.run(&mut |ui| code(&mut app, ui));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            line += &format!("probe: past the 400 runs, marks {:?} {:?} later\n", told(&ui), late.elapsed());
+        }
         eprint!("{line}");
         if let Ok(path) = std::env::var("TAUT_PROBE") {
             use std::io::Write;
             _ = std::fs::OpenOptions::new().create(true).append(true).open(path).and_then(|mut file| file.write_all(line.as_bytes()));
         }
-        told(&ui)
+        early
     }
 
     #[cfg(windows)]
