@@ -263,6 +263,11 @@ struct TestReport {
     listing: bool,
     /// The failed tests, as (program, name).
     failed: Vec<(String, String)>,
+    /// Lines a program without libtest marks `FAILED`, and the indented lines under each, as
+    /// (program, line).
+    marked: Vec<(String, String)>,
+    /// Whether the last line was one of `marked`.
+    marking: bool,
     /// The programs that failed.
     ended: Vec<Ended>,
 }
@@ -307,7 +312,17 @@ impl TestReport {
         self.end_kept();
         self.read_panic(&line);
         self.read_list(&line);
+        self.read_marked(&line);
         self.read_ended(&line);
+    }
+
+    /// Keeps a check's own failure report (`FAILED name …`, then its indented details), as the
+    /// test programs without libtest print them.
+    fn read_marked(&mut self, line: &str) {
+        self.marking = line.trim_start().starts_with("FAILED") || (self.marking && line.starts_with("    "));
+        if self.marking {
+            self.marked.push((self.program.clone(), line.to_string()));
+        }
     }
 
     /// Follows cargo's report of a program that failed: `error: test failed, to rerun pass …`
@@ -391,7 +406,8 @@ impl TestReport {
     }
 
     /// The annotations for a failed program beyond the tests libtest named: a crash, or else each
-    /// thread that panicked (a program without libtest), or else its last lines.
+    /// thread that panicked (a program without libtest), or else the checks it marked `FAILED`,
+    /// or else its last lines.
     fn unnamed_failure(&self, ended: &Ended) -> Vec<Annotation> {
         let program = &ended.program;
         if let Some(why) = &ended.crash {
@@ -402,6 +418,10 @@ impl TestReport {
         }
         let panics = self.said.iter().filter(|said| said.program == *program && said.lines.iter().any(|line| is_panic(line)));
         let mut annotations: Vec<Annotation> = panics.map(|said| Annotation::quoting(format!("{program}: thread '{}' panicked", said.test), &said.lines)).collect();
+        let marked: Vec<String> = self.marked.iter().filter(|(marked_in, _)| marked_in == program).map(|(_, line)| line.clone()).collect();
+        if annotations.is_empty() && !marked.is_empty() {
+            annotations.push(Annotation::quoting(format!("{program}: checks failed"), &marked));
+        }
         if annotations.is_empty() {
             annotations.push(Annotation::quoting(format!("{program} failed"), &ended.last));
         }
